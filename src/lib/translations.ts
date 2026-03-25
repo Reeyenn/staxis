@@ -95,7 +95,9 @@ type TranslationKey =
   | 'noStaffYet' | 'scheduledTodayStatus' | 'notScheduled'
   | 'addStaffMember' | 'nameRequired' | 'phoneOptional'
   | 'hourlyWageOptional' | 'maxWeeklyHoursLabel' | 'seniorStaff'
-  | 'hoursLeftLabel';
+  | 'hoursLeftLabel'
+  // Priority queue
+  | 'priorityOrder' | 'vipCheckout' | 'earlyCheckout' | 'standardCheckout' | 'vipStayover' | 'standardStayover';
 
 const translations: Record<Language, Record<TranslationKey, string>> = {
   en: {
@@ -342,6 +344,13 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     maxWeeklyHoursLabel: 'Max Weekly Hours',
     seniorStaff: 'Senior Staff',
     hoursLeftLabel: 'h left',
+    // Priority queue
+    priorityOrder: 'Priority Order',
+    vipCheckout: 'VIP Checkout',
+    earlyCheckout: 'Early Checkout',
+    standardCheckout: 'Standard Checkout',
+    vipStayover: 'VIP Stayover',
+    standardStayover: 'Standard Stayover',
   },
 
   es: {
@@ -588,6 +597,13 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     maxWeeklyHoursLabel: 'Horas Semanales Máximas',
     seniorStaff: 'Personal Senior',
     hoursLeftLabel: 'h restantes',
+    // Priority queue
+    priorityOrder: 'Orden de Prioridad',
+    vipCheckout: 'Salida VIP',
+    earlyCheckout: 'Salida Temprana',
+    standardCheckout: 'Salida Estándar',
+    vipStayover: 'Permanencia VIP',
+    standardStayover: 'Permanencia Estándar',
   },
 };
 

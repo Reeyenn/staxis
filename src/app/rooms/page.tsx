@@ -29,6 +29,15 @@ const PRIORITY_ORDER: Record<string, number> = {
   vip_stayover: 3, standard_stayover: 4,
 };
 
+const PRIORITY_BADGE: Record<string, { label: string; labelEs: string; color: string; bg: string; border: string }> = {
+  vip_checkout:      { label: '★ VIP Checkout',     labelEs: '★ Salida VIP',           color: '#DC2626', bg: 'rgba(220,38,38,0.1)',   border: 'rgba(220,38,38,0.3)'   },
+  early_checkout:    { label: '⚡ Early Checkout',   labelEs: '⚡ Salida Temprana',      color: '#EA580C', bg: 'rgba(234,88,12,0.1)',   border: 'rgba(234,88,12,0.3)'   },
+  standard_checkout: { label: 'Checkout',            labelEs: 'Salida',                  color: '#2563EB', bg: 'rgba(37,99,235,0.1)',   border: 'rgba(37,99,235,0.3)'   },
+  vip_stayover:      { label: '★ VIP Stayover',      labelEs: '★ Permanencia VIP',      color: '#7C3AED', bg: 'rgba(124,58,237,0.1)', border: 'rgba(124,58,237,0.3)'  },
+  early_stayover:    { label: '⚡ Early Stayover',   labelEs: '⚡ Permanencia Temprana', color: '#EA580C', bg: 'rgba(234,88,12,0.1)',   border: 'rgba(234,88,12,0.3)'   },
+  standard_stayover: { label: 'Stayover',            labelEs: 'Permanencia',             color: '#4B5563', bg: 'rgba(75,85,99,0.1)',   border: 'rgba(75,85,99,0.3)'    },
+};
+
 function sortRooms(rooms: Room[]): Room[] {
   return [...rooms].sort((a, b) => {
     // vacant rooms sink to bottom (after stayovers but before inspected)
@@ -65,6 +74,8 @@ export default function RoomsPage() {
   const [filterStatus,  setFilterStatus]  = useState<RoomStatus | 'all'>('all');
   const [toast,         setToast]         = useState<string | null>(null);
   const [typeEditingRoomId, setTypeEditingRoomId] = useState<string | null>(null);
+  const [priorityEditingRoomId, setPriorityEditingRoomId] = useState<string | null>(null);
+  const [sortMode, setSortMode] = useState<'priority' | 'number'>('priority');
 
   // Carry-over state
   const [yesterdayCount, setYesterdayCount] = useState<number | null>(null);
@@ -114,7 +125,9 @@ export default function RoomsPage() {
     showToast(lang === 'es' ? `${count} habitaciones transferidas — estado reiniciado a sucias` : `${count} rooms carried over — all reset to dirty`);
   };
 
-  const sorted    = sortRooms(rooms);
+  const sorted    = sortMode === 'number'
+    ? [...rooms].sort((a, b) => a.number.localeCompare(b.number, undefined, { numeric: true }))
+    : sortRooms(rooms);
   const displayed = filterStatus === 'all' ? sorted : sorted.filter(r => r.status === filterStatus);
 
   const handleAdd = async () => {
@@ -247,6 +260,12 @@ export default function RoomsPage() {
     await deleteRoom(user.uid, activePropertyId, rid);
   };
 
+  const handlePriorityChange = async (room: Room, newPriority: RoomPriority) => {
+    if (!user || !activePropertyId) return;
+    await updateRoom(user.uid, activePropertyId, room.id, { priority: newPriority });
+    setPriorityEditingRoomId(null);
+  };
+
   const showToast = (msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(null), 3000);
@@ -365,6 +384,39 @@ export default function RoomsPage() {
           </button>
         )}
 
+        {/* ── Sort toggle ── */}
+        {rooms.length > 0 && (
+          <div className="animate-in stagger-2" style={{ display:'flex', alignItems:'center', gap:'8px', justifyContent:'flex-end' }}>
+            <span style={{ fontSize:'11px', fontWeight:600, color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.06em', flexShrink:0 }}>
+              {lang === 'es' ? 'Ordenar' : 'Sort'}
+            </span>
+            <div style={{ display:'flex', gap:'2px', background:'var(--bg-card)', border:'1px solid var(--border)', borderRadius:'8px', padding:'3px', flexShrink:0 }}>
+              <button
+                onClick={() => setSortMode('priority')}
+                style={{
+                  padding:'4px 10px', fontSize:'11px', fontWeight:600, borderRadius:'6px', border:'none', cursor:'pointer',
+                  background: sortMode === 'priority' ? 'var(--amber)' : 'transparent',
+                  color: sortMode === 'priority' ? '#0A0A0A' : 'var(--text-secondary)',
+                  transition:'all 150ms ease-out',
+                }}
+              >
+                {t('priorityOrder', lang)}
+              </button>
+              <button
+                onClick={() => setSortMode('number')}
+                style={{
+                  padding:'4px 10px', fontSize:'11px', fontWeight:600, borderRadius:'6px', border:'none', cursor:'pointer',
+                  background: sortMode === 'number' ? 'var(--amber)' : 'transparent',
+                  color: sortMode === 'number' ? '#0A0A0A' : 'var(--text-secondary)',
+                  transition:'all 150ms ease-out',
+                }}
+              >
+                # {t('roomNumber', lang)}
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* ── Room list / empty state ── */}
         {displayed.length === 0 ? (
           <div className="animate-in stagger-2" style={{ display:'flex', flexDirection:'column', gap:'12px' }}>
@@ -442,8 +494,11 @@ export default function RoomsPage() {
                 onInspect={() => { setInspectingRoom(room); setInspectorName(''); }}
                 onTypeChange={(newType) => { if (user && activePropertyId) updateRoom(user.uid, activePropertyId, room.id, { type: newType }); }}
                 onDndToggle={() => { if (user && activePropertyId) updateRoom(user.uid, activePropertyId, room.id, { isDnd: !room.isDnd }); }}
+                onPriorityChange={(newPriority) => handlePriorityChange(room, newPriority)}
                 typeEditingRoomId={typeEditingRoomId}
                 setTypeEditingRoomId={setTypeEditingRoomId}
+                priorityEditingRoomId={priorityEditingRoomId}
+                setPriorityEditingRoomId={setPriorityEditingRoomId}
                 lang={lang}
               />
             ))}
@@ -768,7 +823,8 @@ export default function RoomsPage() {
 
 /* ── Room Card ── */
 function RoomCard({
-  room, onStatusChange, onDelete, onInspect, onTypeChange, onDndToggle, typeEditingRoomId, setTypeEditingRoomId, lang,
+  room, onStatusChange, onDelete, onInspect, onTypeChange, onDndToggle, onPriorityChange,
+  typeEditingRoomId, setTypeEditingRoomId, priorityEditingRoomId, setPriorityEditingRoomId, lang,
 }: {
   room: Room;
   onStatusChange: (r: Room, s: RoomStatus) => void;
@@ -776,12 +832,17 @@ function RoomCard({
   onInspect: () => void;
   onTypeChange: (newType: RoomType) => void;
   onDndToggle: () => void;
+  onPriorityChange: (newPriority: RoomPriority) => void;
   typeEditingRoomId: string | null;
   setTypeEditingRoomId: (id: string | null) => void;
+  priorityEditingRoomId: string | null;
+  setPriorityEditingRoomId: (id: string | null) => void;
   lang: 'en' | 'es';
 }) {
   const s = STATUS[room.status] ?? STATUS.dirty;
   const isTypeEditing = typeEditingRoomId === room.id;
+  const isPriorityEditing = priorityEditingRoomId === room.id;
+  const pb = room.type !== 'vacant' ? PRIORITY_BADGE[`${room.priority}_${room.type}`] : undefined;
 
   return (
     <div style={{
@@ -813,7 +874,7 @@ function RoomCard({
             {/* Type badge with inline selector */}
             <div style={{ position:'relative' }}>
               <button
-                onClick={() => setTypeEditingRoomId(isTypeEditing ? null : room.id)}
+                onClick={() => { setPriorityEditingRoomId(null); setTypeEditingRoomId(isTypeEditing ? null : room.id); }}
                 className={`badge badge-${room.type}`}
                 style={{ cursor:'pointer' }}
               >
@@ -852,8 +913,49 @@ function RoomCard({
               )}
             </div>
             {room.isDnd && <span style={{ fontSize:'10px', fontWeight:700, padding:'2px 7px', borderRadius:'6px', background:'rgba(249,115,22,0.12)', color:'#F97316', border:'1px solid rgba(249,115,22,0.3)' }}>DND</span>}
-            {room.priority === 'vip'   && <span className="badge badge-vip">⭐ {t('vip', lang)}</span>}
-            {room.priority === 'early' && <span className="badge badge-early">⚡ {t('earlyCheckin', lang)}</span>}
+            {/* Priority badge — color-coded, clickable to change */}
+            {room.type !== 'vacant' && pb && (
+              <div style={{ position:'relative' }}>
+                <button
+                  onClick={() => { setTypeEditingRoomId(null); setPriorityEditingRoomId(isPriorityEditing ? null : room.id); }}
+                  style={{
+                    fontSize:'10px', fontWeight:700, padding:'2px 7px', borderRadius:'6px',
+                    background: pb.bg, color: pb.color, border:`1px solid ${pb.border}`,
+                    cursor:'pointer', transition:'all 150ms ease-out',
+                  }}
+                >
+                  {lang === 'es' ? pb.labelEs : pb.label}
+                </button>
+                {isPriorityEditing && (
+                  <div style={{
+                    position:'absolute', top:'100%', left:0, marginTop:'4px', zIndex:20,
+                    display:'flex', gap:'4px',
+                    background:'var(--bg-card)', border:'1px solid var(--border)',
+                    borderRadius:'var(--radius-md)', padding:'6px',
+                    boxShadow:'0 4px 16px rgba(0,0,0,0.15)', whiteSpace:'nowrap',
+                  }}>
+                    {(['standard', 'vip', 'early'] as RoomPriority[]).map(p => {
+                      const optBadge = PRIORITY_BADGE[`${p}_${room.type}`];
+                      return (
+                        <button
+                          key={p}
+                          onClick={() => onPriorityChange(p)}
+                          style={{
+                            padding:'5px 9px', fontSize:'11px', fontWeight:600, borderRadius:'4px',
+                            border: room.priority === p ? `1.5px solid ${optBadge?.color ?? 'var(--border)'}` : '1px solid var(--border)',
+                            background: room.priority === p ? (optBadge?.bg ?? 'transparent') : 'transparent',
+                            color: room.priority === p ? (optBadge?.color ?? 'var(--text-secondary)') : 'var(--text-secondary)',
+                            cursor:'pointer', transition:'all 150ms ease-out',
+                          }}
+                        >
+                          {p === 'vip' ? '★ VIP' : p === 'early' ? (lang === 'es' ? '⚡ Temprana' : '⚡ Early') : (lang === 'es' ? 'Estándar' : 'Standard')}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
             {/* Status badge */}
             {room.status === 'dirty'       && <span className="badge badge-dirty">{t('dirty', lang)}</span>}
             {room.status === 'in_progress' && <span className="badge badge-progress">{t('inProgress', lang)}</span>}

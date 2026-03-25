@@ -425,7 +425,10 @@ function RoomCard({
   };
 
   const typeLabel = room.type === 'checkout' ? 'Checkout' : 'Stayover';
-  const priorityLabel = room.priority === 'vip' ? '⭐ VIP' : room.priority === 'early' ? '⚡ Early' : null;
+  const priorityLabel = room.priority === 'vip' ? '★ VIP' : room.priority === 'early' ? '⚡ Early' : null;
+  const priorityColor = room.priority === 'vip'
+    ? (room.type === 'checkout' ? '#DC2626' : '#7C3AED')
+    : room.priority === 'early' ? '#EA580C' : '#6B7280';
 
   return (
     <div style={{
@@ -474,7 +477,12 @@ function RoomCard({
               {typeLabel}
             </span>
             {priorityLabel && (
-              <span style={{ fontSize: '11px', fontWeight: 600, color: '#7C3AED' }}>
+              <span style={{
+                fontSize: '11px', fontWeight: 700, padding: '1px 6px', borderRadius: '5px',
+                color: priorityColor,
+                background: `${priorityColor}1A`,
+                border: `1px solid ${priorityColor}4D`,
+              }}>
                 {priorityLabel}
               </span>
             )}
