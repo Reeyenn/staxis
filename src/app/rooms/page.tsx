@@ -1069,17 +1069,18 @@ function RoomCard({
 
 /* ── Smart Assign Modal ──────────────────────────────────────────────────── */
 
-const PRIORITY_LABELS: Record<string, string> = {
-  vip_checkout: '⭐ VIP Checkout',
-  early_checkout: '⚡ Early Checkout',
-  standard_checkout: 'Checkout',
-  vip_stayover: '⭐ VIP Stayover',
-  standard_stayover: 'Stayover',
-  early_stayover: 'Stayover',
+const PRIORITY_LABELS: Record<string, { en: string; es: string }> = {
+  vip_checkout:      { en: '⭐ VIP Checkout',   es: '⭐ Salida VIP'          },
+  early_checkout:    { en: '⚡ Early Checkout',  es: '⚡ Salida Temprana'     },
+  standard_checkout: { en: 'Checkout',           es: 'Salida'                },
+  vip_stayover:      { en: '⭐ VIP Stayover',    es: '⭐ Permanencia VIP'    },
+  standard_stayover: { en: 'Stayover',           es: 'Continuación'          },
+  early_stayover:    { en: 'Stayover',           es: 'Continuación'          },
 };
 
-function getPriorityLabel(type: string, priority: string) {
-  return PRIORITY_LABELS[`${priority}_${type}`] ?? type;
+function getPriorityLabel(type: string, priority: string, lang: 'en' | 'es' = 'en') {
+  const entry = PRIORITY_LABELS[`${priority}_${type}`];
+  return entry ? entry[lang] : type;
 }
 
 function getPriorityColor(type: string, priority: string): { bg: string; color: string; border: string } {
@@ -1301,7 +1302,7 @@ function HkCard({
       <div style={{ display: 'flex', flexDirection: 'column' }}>
         {hk.rooms.map((room, idx) => {
           const colors = getPriorityColor(room.type, room.priority);
-          const label  = getPriorityLabel(room.type, room.priority);
+          const label  = getPriorityLabel(room.type, room.priority, lang);
           const mins   = getRoomMinutes(room);
 
           return (

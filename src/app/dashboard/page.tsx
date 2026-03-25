@@ -185,7 +185,7 @@ export default function DashboardPage() {
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <Sparkles size={13} color="var(--amber)" />
                 <span style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--amber)' }}>
-                  AI Staffing Recommendation
+                  {t('aiStaffingRec', lang)}
                 </span>
               </div>
               <span style={{ fontSize: '10px', color: 'var(--text-muted)', fontWeight: 500 }}>
@@ -205,11 +205,11 @@ export default function DashboardPage() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '3px' }}>
                       <AlertTriangle size={17} color="var(--red)" />
                       <span style={{ fontWeight: 700, fontSize: '17px', color: 'var(--red)', lineHeight: 1.2 }}>
-                        Overstaffed by {staffDelta} {staffDelta === 1 ? 'person' : 'people'} today
+                        {t('overstaffedBy', lang)} {staffDelta} {lang === 'es' ? (staffDelta === 1 ? 'persona' : 'personas') : (staffDelta === 1 ? 'person' : 'people')} {lang === 'es' ? 'hoy' : 'today'}
                       </span>
                     </div>
                     <p style={{ fontSize: '13px', color: 'var(--text-secondary)', paddingLeft: '24px' }}>
-                      <strong style={{ color: 'var(--red)', fontFamily: 'var(--font-mono)' }}>{formatCurrency(dollarDelta)}</strong> in avoidable labor costs
+                      <strong style={{ color: 'var(--red)', fontFamily: 'var(--font-mono)' }}>{formatCurrency(dollarDelta)}</strong> {t('avoidableLaborCost', lang)}
                     </p>
                   </>
                 )}
@@ -218,11 +218,11 @@ export default function DashboardPage() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '3px' }}>
                       <Zap size={17} color="var(--yellow)" />
                       <span style={{ fontWeight: 700, fontSize: '17px', color: 'var(--yellow)', lineHeight: 1.2 }}>
-                        Understaffed by {Math.abs(staffDelta!)} {Math.abs(staffDelta!) === 1 ? 'person' : 'people'}
+                        {t('understaffedBy', lang)} {Math.abs(staffDelta!)} {lang === 'es' ? (Math.abs(staffDelta!) === 1 ? 'persona' : 'personas') : (Math.abs(staffDelta!) === 1 ? 'person' : 'people')}
                       </span>
                     </div>
                     <p style={{ fontSize: '13px', color: 'var(--text-secondary)', paddingLeft: '24px' }}>
-                      Rooms may not finish on time — consider adding staff
+                      {t('roomsMayNotFinish', lang)}
                     </p>
                   </>
                 )}
@@ -231,11 +231,11 @@ export default function DashboardPage() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '3px' }}>
                       <CheckCircle size={17} color="var(--green)" />
                       <span style={{ fontWeight: 700, fontSize: '17px', color: 'var(--green)', lineHeight: 1.2 }}>
-                        Perfectly staffed today
+                        {t('staffedPerfect', lang)}
                       </span>
                     </div>
                     <p style={{ fontSize: '13px', color: 'var(--text-secondary)', paddingLeft: '24px' }}>
-                      Scheduled staff matches the AI recommendation
+                      {t('scheduledMatchesRec', lang)}
                     </p>
                   </>
                 )}
@@ -254,7 +254,7 @@ export default function DashboardPage() {
               {/* Recommended */}
               <div style={{ textAlign: 'center' }}>
                 <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '6px' }}>
-                  Recommended
+                  {t('recommended', lang)}
                 </p>
                 <div style={{
                   fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '56px', lineHeight: 1,
@@ -263,7 +263,7 @@ export default function DashboardPage() {
                 }}>
                   {aiRecommended ?? '—'}
                 </div>
-                <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '5px' }}>housekeepers</p>
+                <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '5px' }}>{t('housekeepers', lang).toLowerCase()}</p>
               </div>
 
               {/* VS divider */}
@@ -274,7 +274,7 @@ export default function DashboardPage() {
               {/* Scheduled — tap to edit */}
               <div style={{ textAlign: 'center' }}>
                 <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '6px' }}>
-                  Scheduled
+                  {t('scheduled', lang)}
                 </p>
 
                 {editingScheduled ? (
@@ -330,7 +330,7 @@ export default function DashboardPage() {
                     fontWeight: 500,
                   }}
                 >
-                  tap to {scheduledStaff ? 'edit' : 'enter'}
+                  {scheduledStaff ? t('tapToEdit', lang) : t('tapToEnter', lang)}
                 </button>
               </div>
             </div>
@@ -345,19 +345,19 @@ export default function DashboardPage() {
                 {[
                   {
                     icon: BedDouble,
-                    label: 'Rooms',
+                    label: t('rooms', lang),
                     value: (coLabel + soLabel) > 0
                       ? `${coLabel}co + ${soLabel}so`
                       : `${aiRecommended} staff`,
                   },
                   {
                     icon: Clock,
-                    label: 'Total work',
+                    label: t('totalWork', lang),
                     value: totalWorkMins ? `${(totalWorkMins / 60).toFixed(1)}h` : '—',
                   },
                   {
                     icon: DollarSign,
-                    label: 'Labor cost',
+                    label: t('laborCost', lang),
                     value: recommendedLaborCost != null ? formatCurrency(recommendedLaborCost) : '—',
                   },
                 ].map(({ icon: Icon, label, value }) => (
@@ -380,7 +380,7 @@ export default function DashboardPage() {
               }}>
                 <Clock size={13} color="var(--amber)" />
                 <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                  Estimated finish: <strong style={{ color: 'var(--text-primary)' }}>{todayLog.completionTime}</strong>
+                  {t('estimatedFinishLabel', lang)}: <strong style={{ color: 'var(--text-primary)' }}>{todayLog.completionTime}</strong>
                 </span>
               </div>
             )}
@@ -395,7 +395,7 @@ export default function DashboardPage() {
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <TrendingUp size={13} color="var(--green)" />
-                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Saved in past 30 days</span>
+                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{t('savedPast30', lang)}</span>
                 </div>
                 <span style={{ fontFamily: 'var(--font-mono)', fontSize: '15px', fontWeight: 700, color: 'var(--green)' }}>
                   {formatCurrency(monthSaved)}
@@ -408,7 +408,9 @@ export default function DashboardPage() {
               <div style={{ padding: '20px 14px', textAlign: 'center' }}>
                 <Sun size={24} color="var(--amber)" style={{ marginBottom: '10px' }} />
                 <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '14px', lineHeight: 1.6 }}>
-                  Add today&apos;s rooms or complete morning setup<br />to see your AI staffing recommendation
+                  {lang === 'es'
+                    ? <>Agrega habitaciones de hoy o completa la configuración matutina<br />para ver tu recomendación de personal IA</>
+                    : <>Add today&apos;s rooms or complete morning setup<br />to see your AI staffing recommendation</>}
                 </p>
                 <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', flexWrap: 'wrap' }}>
                   <Link href="/rooms" style={{ textDecoration: 'none' }}>
@@ -418,7 +420,7 @@ export default function DashboardPage() {
                       color: 'var(--amber)', borderRadius: 'var(--radius-md)',
                       fontSize: '12px', fontWeight: 600,
                     }}>
-                      Add Rooms
+                      {t('addRooms', lang)}
                     </span>
                   </Link>
                   <Link href="/morning-setup" style={{ textDecoration: 'none' }}>
@@ -428,7 +430,7 @@ export default function DashboardPage() {
                       borderRadius: 'var(--radius-md)',
                       fontSize: '12px', fontWeight: 600,
                     }}>
-                      Morning Setup →
+                      {t('morningSetup', lang)} →
                     </span>
                   </Link>
                 </div>
@@ -445,7 +447,7 @@ export default function DashboardPage() {
                   cursor: 'pointer',
                 }}>
                   <span style={{ fontSize: '12px', color: 'var(--text-muted)', flex: 1 }}>
-                    Run morning setup for a more accurate estimate
+                    {t('runMorningSetup', lang)}
                   </span>
                   <ArrowRight size={13} color="var(--amber)" />
                 </div>

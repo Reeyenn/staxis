@@ -108,7 +108,14 @@ type TranslationKey =
   | 'new' | 'all' | 'newGuestRequest' | 'requestType' | 'notesOptional' | 'selectStaff' | 'create' | 'noStaff'
   // Housekeeping page
   | 'housekeeping' | 'todaysProgress' | 'approved' | 'locked' | 'cleaning' | 'reset' | 'vacant'
-  | 'noRoomsTodayHkp' | 'noRoomsFloor';
+  | 'noRoomsTodayHkp' | 'noRoomsFloor'
+  // AI Staffing card (dashboard)
+  | 'aiStaffingRec' | 'scheduled' | 'tapToEnter' | 'tapToEdit' | 'runMorningSetup'
+  | 'totalWork' | 'staffedPerfect'
+  | 'avoidableLaborCost' | 'roomsMayNotFinish' | 'scheduledMatchesRec'
+  | 'estimatedFinishLabel' | 'savedPast30' | 'addRooms'
+  // Smart Assign modal
+  | 'assignPreview' | 'confirmAssign';
 
 const translations: Record<Language, Record<TranslationKey, string>> = {
   en: {
@@ -399,6 +406,23 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     vacant: 'Vacant',
     noRoomsTodayHkp: 'No rooms for today. Ask the manager to add rooms first.',
     noRoomsFloor: 'No rooms on this floor.',
+    // AI Staffing card
+    aiStaffingRec: 'AI Staffing Recommendation',
+    scheduled: 'Scheduled',
+    tapToEnter: 'tap to enter',
+    tapToEdit: 'tap to edit',
+    runMorningSetup: 'Run morning setup for a more accurate estimate',
+    totalWork: 'Total work',
+    staffedPerfect: 'Perfectly staffed today',
+    avoidableLaborCost: 'in avoidable labor costs',
+    roomsMayNotFinish: 'Rooms may not finish on time — consider adding staff',
+    scheduledMatchesRec: 'Scheduled staff matches the AI recommendation',
+    estimatedFinishLabel: 'Estimated finish',
+    savedPast30: 'Saved in past 30 days',
+    addRooms: 'Add Rooms',
+    // Smart Assign modal
+    assignPreview: 'Assignment Preview',
+    confirmAssign: 'Confirm & Assign',
   },
 
   es: {
@@ -689,6 +713,23 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     vacant: 'Vacía',
     noRoomsTodayHkp: 'Sin habitaciones para hoy. Pide al gerente que agregue habitaciones.',
     noRoomsFloor: 'Sin habitaciones en este piso.',
+    // AI Staffing card
+    aiStaffingRec: 'Recomendación IA de Personal',
+    scheduled: 'Programado',
+    tapToEnter: 'toca para ingresar',
+    tapToEdit: 'toca para editar',
+    runMorningSetup: 'Configura el turno matutino para mayor precisión',
+    totalWork: 'Trabajo total',
+    staffedPerfect: 'Personal perfecto hoy',
+    avoidableLaborCost: 'en costos de labor evitables',
+    roomsMayNotFinish: 'Las habitaciones pueden no terminar a tiempo — considera agregar personal',
+    scheduledMatchesRec: 'El personal programado coincide con la recomendación IA',
+    estimatedFinishLabel: 'Fin estimado',
+    savedPast30: 'Ahorrado en los últimos 30 días',
+    addRooms: 'Agregar Hab.',
+    // Smart Assign modal
+    assignPreview: 'Vista Previa de Asignación',
+    confirmAssign: 'Confirmar y Asignar',
   },
 };
 
