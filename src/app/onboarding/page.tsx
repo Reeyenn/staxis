@@ -96,27 +96,6 @@ export default function OnboardingPage() {
     }
   };
 
-  const Field = ({ label, value, onChange, type = 'text', placeholder = '', suffix = '' }: any) => (
-    <div style={{ marginBottom: '20px' }}>
-      <label className="label">{label}</label>
-      <div style={{ position: 'relative' }}>
-        <input
-          type={type}
-          value={value}
-          onChange={e => onChange(type === 'number' ? Number(e.target.value) : e.target.value)}
-          placeholder={placeholder}
-          className="input"
-          style={suffix ? { paddingRight: '48px' } : {}}
-        />
-        {suffix && (
-          <span style={{ position: 'absolute', right: '14px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', fontSize: '14px' }}>
-            {suffix}
-          </span>
-        )}
-      </div>
-    </div>
-  );
-
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
       <div style={{ width: '100%', maxWidth: '480px' }}>

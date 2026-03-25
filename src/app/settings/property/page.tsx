@@ -9,6 +9,22 @@ import { updateProperty, createProperty } from '@/lib/firestore';
 import { Building2, Plus, Check } from 'lucide-react';
 import Link from 'next/link';
 
+const Field = ({ label, field, type = 'text', suffix = '', form, setForm }: { label: string; field: string; type?: string; suffix?: string; form: Record<string, any>; setForm: React.Dispatch<React.SetStateAction<any>> }) => (
+  <div style={{ marginBottom: '16px' }}>
+    <label className="label">{label}</label>
+    <div style={{ position: 'relative' }}>
+      <input
+        type={type}
+        value={form[field]}
+        onChange={e => setForm((f: any) => ({ ...f, [field]: type === 'number' ? Number(e.target.value) : e.target.value }))}
+        className="input"
+        style={suffix ? { paddingRight: '48px' } : {}}
+      />
+      {suffix && <span style={{ position: 'absolute', right: '14px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', fontSize: '13px' }}>{suffix}</span>}
+    </div>
+  </div>
+);
+
 export default function PropertySettingsPage() {
   const { user } = useAuth();
   const { activeProperty, activePropertyId, properties, setActivePropertyId, refreshProperty } = useProperty();
@@ -80,22 +96,6 @@ export default function PropertySettingsPage() {
     setNewPropertyName('');
   };
 
-  const Field = ({ label, field, type = 'text', suffix = '' }: { label: string; field: keyof typeof form; type?: string; suffix?: string }) => (
-    <div style={{ marginBottom: '16px' }}>
-      <label className="label">{label}</label>
-      <div style={{ position: 'relative' }}>
-        <input
-          type={type}
-          value={form[field]}
-          onChange={e => setForm(f => ({ ...f, [field]: type === 'number' ? Number(e.target.value) : e.target.value }))}
-          className="input"
-          style={suffix ? { paddingRight: '48px' } : {}}
-        />
-        {suffix && <span style={{ position: 'absolute', right: '14px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', fontSize: '13px' }}>{suffix}</span>}
-      </div>
-    </div>
-  );
-
   return (
     <AppLayout>
       <div style={{ padding: '16px', maxWidth: '600px', margin: '0 auto' }}>
@@ -153,22 +153,22 @@ export default function PropertySettingsPage() {
 
         {/* Property form */}
         <div className="card" style={{ padding: '20px' }}>
-          <Field label="Property Name" field="name" />
-          <Field label="Total Rooms" field="totalRooms" type="number" />
-          <Field label="Average Occupied Per Night" field="avgOccupancy" type="number" suffix="rooms" />
-          <Field label="Housekeeping Staff on Roster" field="totalStaffOnRoster" type="number" suffix="people" />
+          <Field label="Property Name" field="name" form={form} setForm={setForm} />
+          <Field label="Total Rooms" field="totalRooms" type="number" form={form} setForm={setForm} />
+          <Field label="Average Occupied Per Night" field="avgOccupancy" type="number" suffix="rooms" form={form} setForm={setForm} />
+          <Field label="Housekeeping Staff on Roster" field="totalStaffOnRoster" type="number" suffix="people" form={form} setForm={setForm} />
 
           <div className="divider" style={{ margin: '20px 0' }} />
           <p className="label" style={{ marginBottom: '14px' }}>Labor Settings</p>
 
-          <Field label="Housekeeper Hourly Wage" field="hourlyWage" type="number" suffix="$/hr" />
+          <Field label="Housekeeper Hourly Wage" field="hourlyWage" type="number" suffix="$/hr" form={form} setForm={setForm} />
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-            <Field label="Checkout Minutes" field="checkoutMinutes" type="number" suffix="min" />
-            <Field label="Stayover Minutes" field="stayoverMinutes" type="number" suffix="min" />
+            <Field label="Checkout Minutes" field="checkoutMinutes" type="number" suffix="min" form={form} setForm={setForm} />
+            <Field label="Stayover Minutes" field="stayoverMinutes" type="number" suffix="min" form={form} setForm={setForm} />
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-            <Field label="Shift Length" field="shiftMinutes" type="number" suffix="min" />
-            <Field label="Weekly Budget" field="weeklyBudget" type="number" suffix="$" />
+            <Field label="Shift Length" field="shiftMinutes" type="number" suffix="min" form={form} setForm={setForm} />
+            <Field label="Weekly Budget" field="weeklyBudget" type="number" suffix="$" form={form} setForm={setForm} />
           </div>
         </div>
 
