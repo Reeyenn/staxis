@@ -274,3 +274,78 @@ body {
 ::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 2px; }
 
 :focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+
+/* ── Modal ─────────────────────────────────────────────────────────────────── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  animation: fadeOverlay 160ms var(--ease) both;
+}
+
+@keyframes fadeOverlay {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* Mobile: bottom sheet */
+.modal-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border-bright);
+  border-bottom: none;
+  border-radius: 20px 20px 0 0;
+  padding: 20px 20px 40px;
+  width: 100%;
+  max-width: 600px;
+  max-height: 92dvh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  animation: sheetUp 220ms var(--ease) both;
+}
+
+@keyframes sheetUp {
+  from { transform: translateY(32px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+/* Desktop: centered dialog */
+@media (min-width: 640px) {
+  .modal-overlay {
+    align-items: center;
+    padding: 24px;
+  }
+  .modal-panel {
+    border-radius: var(--radius-xl);
+    border-bottom: 1px solid var(--border-bright);
+    padding: 24px;
+    max-height: 88vh;
+  }
+}
+
+/* ── Mobile refinements ─────────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  /* iOS: prevent page zoom on input focus — must be >= 16px */
+  .input,
+  textarea.input,
+  select.input { font-size: 16px; }
+
+  /* Slightly taller touch targets for small buttons */
+  .btn-sm {
+    height: 38px;
+    padding: 0 14px;
+    font-size: 13px;
+    border-radius: var(--radius-md);
+  }
+
+  /* Ensure room card action buttons are tap-friendly */
+  .btn { min-height: 44px; }
+}
+
+/* ── Safe area helpers ──────────────────────────────────────────────────────── */
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }

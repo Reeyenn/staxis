@@ -5,6 +5,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
+import Link from 'next/link';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { subscribeToRooms, addRoom, updateRoom, deleteRoom, bulkAddRooms, getRoomsForDate, carryOverRooms } from '@/lib/firestore';
 import { autoAssignRooms } from '@/lib/calculations';
@@ -12,8 +13,16 @@ import { sendAssignmentNotifications, sendSmsNotifications } from '@/lib/notific
 import { todayStr, yesterdayStr } from '@/lib/utils';
 import type { Room, RoomStatus, RoomType, RoomPriority } from '@/types';
 import { Modal } from '@/components/ui/Modal';
-import { BedDouble, Plus, Zap, CheckCircle, Clock, Trash2, Upload, ClipboardCheck, ShieldCheck, X } from 'lucide-react';
+import { BedDouble, Plus, Zap, CheckCircle, Clock, Trash2, Upload, ClipboardCheck, ShieldCheck, X, Users } from 'lucide-react';
 import { format } from 'date-fns';
+
+interface FloorRow {
+  id: string;
+  start: string;
+  end: string;
+  type: RoomType;
+  priority: RoomPriority;
+}
 
 const PRIORITY_ORDER: Record<string, number> = {
   vip_checkout: 0, early_checkout: 1, standard_checkout: 2,
@@ -72,6 +81,10 @@ export default function RoomsPage() {
   const [bulkText,     setBulkText]     = useState('');
   const [bulkType,     setBulkType]     = useState<RoomType>('checkout');
   const [bulkPriority, setBulkPriority] = useState<RoomPriority>('standard');
+  const [bulkMode,     setBulkMode]     = useState<'manual' | 'floors'>('manual');
+  const [floorRows,    setFloorRows]    = useState<FloorRow[]>([
+    { id: '1', start: '101', end: '120', type: 'checkout', priority: 'standard' },
+  ]);
 
   useEffect(() => {
     if (!user || !activePropertyId) return;
@@ -121,6 +134,28 @@ export default function RoomsPage() {
     })));
     setBulkText('');
     setShowBulkModal(false);
+  };
+
+  const handleFloorAdd = async () => {
+    if (!user || !activePropertyId) return;
+    const roomsToAdd: Omit<Room, 'id'>[] = [];
+    for (const row of floorRows) {
+      const start = parseInt(row.start);
+      const end   = parseInt(row.end);
+      if (isNaN(start) || isNaN(end) || end < start || (end - start) > 200) continue;
+      for (let n = start; n <= end; n++) {
+        roomsToAdd.push({
+          number: String(n), type: row.type, priority: row.priority,
+          status: 'dirty' as RoomStatus, date: todayStr(), propertyId: activePropertyId,
+        });
+      }
+    }
+    if (roomsToAdd.length === 0) return;
+    await bulkAddRooms(user.uid, activePropertyId, roomsToAdd);
+    setFloorRows([{ id: '1', start: '101', end: '120', type: 'checkout', priority: 'standard' }]);
+    setBulkMode('manual');
+    setShowBulkModal(false);
+    showToast(`${roomsToAdd.length} rooms added!`);
   };
 
   const handleSmartAssign = async () => {
@@ -228,6 +263,27 @@ export default function RoomsPage() {
             </button>
           </div>
         </div>
+
+        {/* ── Housekeeping View shortcut ── */}
+        <Link href="/housekeeping" style={{ textDecoration:'none' }} className="animate-in">
+          <div style={{
+            display:'flex', alignItems:'center', justifyContent:'space-between',
+            padding:'12px 14px', borderRadius:'var(--radius-md)',
+            background:'var(--bg-card)', border:'1px solid var(--border)',
+            transition:'all 150ms',
+          }}>
+            <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
+              <div style={{ width:'32px', height:'32px', borderRadius:'8px', background:'var(--amber-dim)', border:'1px solid var(--amber-border)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                <Users size={15} color="var(--amber)" />
+              </div>
+              <div>
+                <p style={{ fontSize:'14px', fontWeight:700, color:'var(--text-primary)', lineHeight:1.2 }}>Housekeeping View</p>
+                <p style={{ fontSize:'11px', color:'var(--text-muted)' }}>Big buttons · Floor filters · Mobile-first</p>
+              </div>
+            </div>
+            <span style={{ fontSize:'16px', color:'var(--text-muted)' }}>›</span>
+          </div>
+        </Link>
 
         {/* ── Stat cards — 2×2 grid ── */}
         <div className="animate-in stagger-1" style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
@@ -422,40 +478,181 @@ export default function RoomsPage() {
         </Modal>
 
         {/* ── Bulk add modal ── */}
-        <Modal isOpen={showBulkModal} onClose={() => setShowBulkModal(false)} title={t('bulkAdd', lang)}>
+        <Modal isOpen={showBulkModal} onClose={() => { setShowBulkModal(false); setBulkMode('manual'); }} title="Add Rooms">
           <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
-            <div>
-              <label className="label">Room Numbers (comma or line separated)</label>
-              <textarea
-                placeholder={'201, 202, 203\nor one per line'}
-                value={bulkText} onChange={e => setBulkText(e.target.value)}
-                className="input" rows={5}
-                style={{ resize:'vertical', fontFamily:'var(--font-mono)', fontSize:'16px' }}
-              />
+
+            {/* Mode tabs */}
+            <div style={{ display:'flex', background:'var(--bg)', border:'1px solid var(--border)', borderRadius:'var(--radius-md)', padding:'3px', gap:'3px' }}>
+              {(['manual', 'floors'] as const).map(mode => (
+                <button key={mode} onClick={() => setBulkMode(mode)} style={{
+                  flex:1, padding:'8px', borderRadius:'calc(var(--radius-md) - 3px)',
+                  background: bulkMode === mode ? 'var(--bg-card)' : 'transparent',
+                  border: bulkMode === mode ? '1px solid var(--border)' : 'none',
+                  cursor:'pointer', color: bulkMode === mode ? 'var(--text-primary)' : 'var(--text-muted)',
+                  fontWeight: bulkMode === mode ? 600 : 400, fontSize:'13px',
+                  fontFamily:'var(--font-sans)', transition:'all 120ms',
+                }}>
+                  {mode === 'manual' ? 'Manual' : '🏨 Floor Setup'}
+                </button>
+              ))}
             </div>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
-              <div>
-                <label className="label">{t('type', lang)} (all)</label>
-                <select value={bulkType} onChange={e => setBulkType(e.target.value as RoomType)} className="input">
-                  <option value="checkout">{t('checkout', lang)}</option>
-                  <option value="stayover">{t('stayover', lang)}</option>
-                </select>
-              </div>
-              <div>
-                <label className="label">{t('priority', lang)} (all)</label>
-                <select value={bulkPriority} onChange={e => setBulkPriority(e.target.value as RoomPriority)} className="input">
-                  <option value="standard">{t('standard', lang)}</option>
-                  <option value="vip">{t('vip', lang)}</option>
-                  <option value="early">{t('earlyCheckin', lang)}</option>
-                </select>
-              </div>
-            </div>
-            <div style={{ display:'flex', gap:'10px', marginTop:'4px' }}>
-              <button onClick={() => setShowBulkModal(false)} className="btn btn-secondary" style={{ flex:1 }}>{t('cancel', lang)}</button>
-              <button onClick={handleBulkAdd} disabled={!bulkText.trim()} className="btn btn-primary" style={{ flex:1 }}>
-                Add {bulkCount} Rooms
-              </button>
-            </div>
+
+            {bulkMode === 'manual' ? (
+              <>
+                <div>
+                  <label className="label">Room Numbers (comma or line separated)</label>
+                  <textarea
+                    placeholder={'201, 202, 203\nor one per line'}
+                    value={bulkText} onChange={e => setBulkText(e.target.value)}
+                    className="input" rows={5}
+                    style={{ resize:'vertical', fontFamily:'var(--font-mono)', fontSize:'16px' }}
+                  />
+                </div>
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
+                  <div>
+                    <label className="label">{t('type', lang)} (all)</label>
+                    <select value={bulkType} onChange={e => setBulkType(e.target.value as RoomType)} className="input">
+                      <option value="checkout">{t('checkout', lang)}</option>
+                      <option value="stayover">{t('stayover', lang)}</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="label">{t('priority', lang)} (all)</label>
+                    <select value={bulkPriority} onChange={e => setBulkPriority(e.target.value as RoomPriority)} className="input">
+                      <option value="standard">{t('standard', lang)}</option>
+                      <option value="vip">{t('vip', lang)}</option>
+                      <option value="early">{t('earlyCheckin', lang)}</option>
+                    </select>
+                  </div>
+                </div>
+                <div style={{ display:'flex', gap:'10px', marginTop:'4px' }}>
+                  <button onClick={() => setShowBulkModal(false)} className="btn btn-secondary" style={{ flex:1 }}>{t('cancel', lang)}</button>
+                  <button onClick={handleBulkAdd} disabled={!bulkText.trim()} className="btn btn-primary" style={{ flex:1 }}>
+                    Add {bulkCount} Rooms
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p style={{ fontSize:'13px', color:'var(--text-muted)', marginTop:'-4px' }}>
+                  Set room ranges per floor. Each floor adds all rooms in the range.
+                </p>
+
+                <div style={{ display:'flex', flexDirection:'column', gap:'10px', maxHeight:'360px', overflowY:'auto' }}>
+                  {floorRows.map((row, idx) => {
+                    const startNum = parseInt(row.start);
+                    const endNum   = parseInt(row.end);
+                    const count    = (!isNaN(startNum) && !isNaN(endNum) && endNum >= startNum) ? endNum - startNum + 1 : 0;
+                    const floorLabel = (!isNaN(startNum) && startNum >= 100) ? Math.floor(startNum / 100) : idx + 1;
+                    return (
+                      <div key={row.id} style={{
+                        background:'var(--bg)', border:'1px solid var(--border)',
+                        borderRadius:'var(--radius-md)', padding:'12px',
+                      }}>
+                        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'8px' }}>
+                          <span style={{ fontSize:'13px', fontWeight:700, color:'var(--text-primary)' }}>
+                            Floor {floorLabel}
+                          </span>
+                          <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
+                            {count > 0 && (
+                              <span style={{ fontSize:'11px', fontWeight:600, color:'var(--amber)', background:'var(--amber-dim)', border:'1px solid var(--amber-border)', padding:'2px 8px', borderRadius:'100px' }}>
+                                {count} rooms
+                              </span>
+                            )}
+                            {floorRows.length > 1 && (
+                              <button
+                                onClick={() => setFloorRows(rows => rows.filter(r => r.id !== row.id))}
+                                style={{ background:'none', border:'none', cursor:'pointer', color:'var(--text-muted)', padding:'0 4px', fontSize:'18px', lineHeight:1 }}
+                              >×</button>
+                            )}
+                          </div>
+                        </div>
+                        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'8px' }}>
+                          <div>
+                            <label className="label" style={{ fontSize:'10px' }}>Start Room #</label>
+                            <input
+                              type="text" inputMode="numeric" value={row.start}
+                              onChange={e => setFloorRows(rows => rows.map(r => r.id === row.id ? { ...r, start: e.target.value } : r))}
+                              className="input" style={{ fontFamily:'var(--font-mono)', fontWeight:700, fontSize:'20px', textAlign:'center' }}
+                            />
+                          </div>
+                          <div>
+                            <label className="label" style={{ fontSize:'10px' }}>End Room #</label>
+                            <input
+                              type="text" inputMode="numeric" value={row.end}
+                              onChange={e => setFloorRows(rows => rows.map(r => r.id === row.id ? { ...r, end: e.target.value } : r))}
+                              className="input" style={{ fontFamily:'var(--font-mono)', fontWeight:700, fontSize:'20px', textAlign:'center' }}
+                            />
+                          </div>
+                        </div>
+                        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
+                          <div>
+                            <label className="label" style={{ fontSize:'10px' }}>Type</label>
+                            <select value={row.type} onChange={e => setFloorRows(rows => rows.map(r => r.id === row.id ? { ...r, type: e.target.value as RoomType } : r))} className="input" style={{ fontSize:'13px' }}>
+                              <option value="checkout">Checkout</option>
+                              <option value="stayover">Stayover</option>
+                              <option value="vacant">Vacant</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="label" style={{ fontSize:'10px' }}>Priority</label>
+                            <select value={row.priority} onChange={e => setFloorRows(rows => rows.map(r => r.id === row.id ? { ...r, priority: e.target.value as RoomPriority } : r))} className="input" style={{ fontSize:'13px' }}>
+                              <option value="standard">Standard</option>
+                              <option value="vip">VIP</option>
+                              <option value="early">Early</option>
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <button
+                  onClick={() => {
+                    const last = floorRows[floorRows.length - 1];
+                    const lastEnd = parseInt(last?.end ?? '120');
+                    const nextStart = isNaN(lastEnd) ? 201 : (Math.floor(lastEnd / 100) + 1) * 100 + 1;
+                    setFloorRows(rows => [...rows, {
+                      id: String(Date.now()),
+                      start: String(nextStart),
+                      end: String(nextStart + 19),
+                      type: 'checkout', priority: 'standard',
+                    }]);
+                  }}
+                  className="btn btn-secondary"
+                  style={{ width:'100%' }}
+                >
+                  + Add Floor
+                </button>
+
+                {(() => {
+                  const total = floorRows.reduce((sum, row) => {
+                    const s = parseInt(row.start), e = parseInt(row.end);
+                    return (!isNaN(s) && !isNaN(e) && e >= s) ? sum + (e - s + 1) : sum;
+                  }, 0);
+                  return total > 0 ? (
+                    <p style={{ fontSize:'12px', color:'var(--text-muted)', textAlign:'center' }}>
+                      Preview: <strong style={{ color:'var(--text-primary)' }}>{total}</strong> rooms across <strong style={{ color:'var(--text-primary)' }}>{floorRows.length}</strong> floor{floorRows.length !== 1 ? 's' : ''}
+                    </p>
+                  ) : null;
+                })()}
+
+                <div style={{ display:'flex', gap:'10px', marginTop:'4px' }}>
+                  <button onClick={() => { setShowBulkModal(false); setBulkMode('manual'); }} className="btn btn-secondary" style={{ flex:1 }}>
+                    {t('cancel', lang)}
+                  </button>
+                  <button
+                    onClick={handleFloorAdd}
+                    disabled={floorRows.reduce((sum, row) => { const s = parseInt(row.start), e = parseInt(row.end); return (!isNaN(s) && !isNaN(e) && e >= s) ? sum + (e - s + 1) : sum; }, 0) === 0}
+                    className="btn btn-primary"
+                    style={{ flex:1 }}
+                  >
+                    Add {floorRows.reduce((sum, row) => { const s = parseInt(row.start), e = parseInt(row.end); return (!isNaN(s) && !isNaN(e) && e >= s) ? sum + (e - s + 1) : sum; }, 0)} Rooms
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </Modal>
 
