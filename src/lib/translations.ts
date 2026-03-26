@@ -129,7 +129,11 @@ type TranslationKey =
   | 'totalAssigned' | 'checkoutsShort' | 'stayoversShort'
   | 'loadingHistory' | 'topPerformer'
   // Offline / sync status
-  | 'syncingChanges' | 'backOnline' | 'changesQueued';
+  | 'syncingChanges' | 'backOnline' | 'changesQueued'
+  // CSV room import
+  | 'roomImport' | 'csvImportTitle' | 'uploadCsv' | 'csvPreviewLabel'
+  | 'importRoomsBtn' | 'csvHelpText' | 'csvRoomsFound' | 'csvImportDone'
+  | 'csvImportFailed' | 'csvDropHint' | 'csvSkipped';
 
 const translations: Record<Language, Record<TranslationKey, string>> = {
   en: {
@@ -474,6 +478,18 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     syncingChanges: 'Syncing changes…',
     backOnline: 'Back online',
     changesQueued: 'changes queued',
+    // CSV import
+    roomImport: 'Room Import',
+    csvImportTitle: 'Occupancy Import',
+    uploadCsv: 'Upload CSV File',
+    csvPreviewLabel: 'Preview',
+    importRoomsBtn: 'Import Rooms',
+    csvHelpText: 'Accepts Choice Advantage, Opera, and similar PMS CSV exports',
+    csvRoomsFound: 'rooms found',
+    csvImportDone: 'rooms imported',
+    csvImportFailed: 'Import failed — check the file format and try again',
+    csvDropHint: 'Drop a CSV here or click to browse',
+    csvSkipped: 'skipped (already exist today)',
   },
 
   es: {
@@ -818,6 +834,18 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     syncingChanges: 'Sincronizando cambios…',
     backOnline: 'Conexión restaurada',
     changesQueued: 'cambios en cola',
+    // CSV import
+    roomImport: 'Importar Hab.',
+    csvImportTitle: 'Importar Ocupación',
+    uploadCsv: 'Subir archivo CSV',
+    csvPreviewLabel: 'Vista previa',
+    importRoomsBtn: 'Importar habitaciones',
+    csvHelpText: 'Acepta exportaciones CSV de Choice Advantage, Opera y sistemas similares',
+    csvRoomsFound: 'habitaciones encontradas',
+    csvImportDone: 'habitaciones importadas',
+    csvImportFailed: 'Error al importar — verifica el formato del archivo',
+    csvDropHint: 'Arrastra un CSV aquí o haz clic para buscar',
+    csvSkipped: 'omitidas (ya existen hoy)',
   },
 };
 

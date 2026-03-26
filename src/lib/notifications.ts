@@ -5,6 +5,9 @@ import app from './firebase';
  * Requests notification permission and returns an FCM token.
  * Call this on the housekeeper's phone after they select their name.
  * Returns null if permission was denied or any error occurred.
+ *
+ * Key fix: explicitly registers the service worker before calling getToken()
+ * so FCM can always find it, even on first load before the SW is cached.
  */
 export async function registerForPushNotifications(): Promise<string | null> {
   try {
@@ -21,8 +24,16 @@ export async function registerForPushNotifications(): Promise<string | null> {
       return null;
     }
 
+    // Explicitly register (or re-use) the FCM service worker.
+    // Passing serviceWorkerRegistration to getToken prevents FCM from
+    // trying to auto-register it, which can silently fail on first load.
+    const swReg = await navigator.serviceWorker.register(
+      '/firebase-messaging-sw.js',
+      { scope: '/' }
+    );
+
     const messaging = getMessaging(app);
-    const token = await getToken(messaging, { vapidKey });
+    const token = await getToken(messaging, { vapidKey, serviceWorkerRegistration: swReg });
     return token || null;
   } catch (err) {
     console.error('Push registration failed:', err);
@@ -31,7 +42,7 @@ export async function registerForPushNotifications(): Promise<string | null> {
 }
 
 /**
- * Sends SMS room assignment notifications via Twilio.
+ * Sends SMS room assignment notifications via Textbelt.
  * Called alongside sendAssignmentNotifications after Smart Assign.
  */
 export async function sendSmsNotifications(
@@ -65,21 +76,22 @@ export async function sendSmsNotifications(
 }
 
 /**
- * Sends room assignment notifications to all assigned housekeepers.
+ * Sends push notification room assignments to all assigned housekeepers.
  * Called by the GM after Smart Assign runs.
  *
  * assignments: map of staffId → array of room numbers they were assigned
- * staffTokens: map of staffId → FCM token (pull from staff records)
+ * staffNames:  map of staffId → display name
+ * staffTokens: map of staffId → FCM token (pulled from staff records)
  */
 export async function sendAssignmentNotifications(
-  assignments: Record<string, string[]>,   // staffId → room numbers[]
-  staffNames: Record<string, string>,       // staffId → name
-  staffTokens: Record<string, string>,      // staffId → fcmToken
-): Promise<void> {
+  assignments: Record<string, string[]>,
+  staffNames: Record<string, string>,
+  staffTokens: Record<string, string>,
+): Promise<{ sent: number; failed: number }> {
   const entries = Object.entries(assignments).filter(([staffId]) => staffTokens[staffId]);
-  if (entries.length === 0) return;
+  if (entries.length === 0) return { sent: 0, failed: 0 };
 
-  await fetch('/api/notify-housekeepers', {
+  const res = await fetch('/api/notify-housekeepers', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(
@@ -90,4 +102,12 @@ export async function sendAssignmentNotifications(
       }))
     ),
   });
+
+  if (!res.ok) {
+    const text = await res.text();
+    console.error(`notify-housekeepers HTTP ${res.status}:`, text);
+    return { sent: 0, failed: entries.length };
+  }
+
+  return res.json() as Promise<{ sent: number; failed: number }>;
 }

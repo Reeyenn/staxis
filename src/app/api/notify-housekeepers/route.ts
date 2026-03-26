@@ -7,7 +7,19 @@ interface NotifyEntry {
   rooms: string[];   // room numbers assigned to them
 }
 
+const APP_URL =
+  process.env.NEXT_PUBLIC_APP_URL ?? 'https://hotelops-ai.vercel.app';
+
 export async function POST(req: NextRequest) {
+  // Guard: admin SDK must be initialized (requires server env vars)
+  if (!admin.apps.length) {
+    console.error('notify-housekeepers: Firebase Admin SDK not initialized');
+    return NextResponse.json(
+      { error: 'Server not configured for push notifications' },
+      { status: 503 }
+    );
+  }
+
   try {
     const entries: NotifyEntry[] = await req.json();
     if (!Array.isArray(entries) || entries.length === 0) {
@@ -33,13 +45,14 @@ export async function POST(req: NextRequest) {
           },
           webpush: {
             notification: {
-              icon: '/icon-192.png',
-              badge: '/icon-192.png',
+              icon: `${APP_URL}/icon-192.png`,
+              badge: `${APP_URL}/icon-192.png`,
               tag: 'room-assignment',
               renotify: true,
             },
             fcmOptions: {
-              link: '/rooms',
+              // Absolute URL — relative URLs are rejected by the push service
+              link: `${APP_URL}/rooms`,
             },
           },
         });

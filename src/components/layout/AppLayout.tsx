@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Header } from './Header';
 import { BottomNav } from './BottomNav';
 import { useLang } from '@/contexts/LanguageContext';
@@ -21,6 +21,15 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const offlineLabel = pendingCount > 0
     ? `Offline — ${pendingCount} ${t('changesQueued', lang)}`
     : t('offline', lang);
+
+  // Register FCM service worker for push notifications
+  useEffect(() => {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker
+        .register('/firebase-messaging-sw.js', { scope: '/' })
+        .catch((err) => console.warn('SW registration failed:', err));
+    }
+  }, []);
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg)' }}>
