@@ -127,7 +127,9 @@ type TranslationKey =
   | 'roomsDone' | 'avgPerDay' | 'noActivityToday'
   | 'noHistoryYet' | 'historyTab' | 'liveToday'
   | 'totalAssigned' | 'checkoutsShort' | 'stayoversShort'
-  | 'loadingHistory' | 'topPerformer';
+  | 'loadingHistory' | 'topPerformer'
+  // Offline / sync status
+  | 'syncingChanges' | 'backOnline' | 'changesQueued';
 
 const translations: Record<Language, Record<TranslationKey, string>> = {
   en: {
@@ -468,6 +470,10 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     stayoversShort: 'SO',
     loadingHistory: 'Loading history...',
     topPerformer: 'Top Performer',
+    // Offline / sync status
+    syncingChanges: 'Syncing changes…',
+    backOnline: 'Back online',
+    changesQueued: 'changes queued',
   },
 
   es: {
@@ -808,6 +814,10 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     stayoversShort: 'CON',
     loadingHistory: 'Cargando historial...',
     topPerformer: 'Mejor Desempeño',
+    // Offline / sync status
+    syncingChanges: 'Sincronizando cambios…',
+    backOnline: 'Conexión restaurada',
+    changesQueued: 'cambios en cola',
   },
 };
 

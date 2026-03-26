@@ -7,6 +7,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { subscribeToRooms, updateRoom } from '@/lib/firestore';
+import { useSyncContext } from '@/contexts/SyncContext';
 import { todayStr } from '@/lib/utils';
 import type { Room, RoomStatus } from '@/types';
 import { format } from 'date-fns';
@@ -30,6 +31,7 @@ export default function HousekeepingPage() {
   const { user }                               = useAuth();
   const { activePropertyId, activeProperty }   = useProperty();
   const { lang }                               = useLang();
+  const { recordOfflineAction }                = useSyncContext();
 
   const [rooms,         setRooms]         = useState<Room[]>([]);
   const [loading,       setLoading]       = useState(true);
@@ -91,6 +93,9 @@ export default function HousekeepingPage() {
     const updates: Partial<Room> = { status: newStatus };
     if (newStatus === 'in_progress') updates.startedAt  = new Date();
     if (newStatus === 'clean')       updates.completedAt = new Date();
+    // With Firestore offline persistence enabled, this write is applied
+    // optimistically to the local cache and queued for sync when online.
+    if (!navigator.onLine) recordOfflineAction();
     await updateRoom(user.uid, activePropertyId, room.id, updates);
   };
 

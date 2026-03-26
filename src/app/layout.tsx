@@ -3,6 +3,8 @@ import './globals.css';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { LanguageProvider } from '@/contexts/LanguageContext';
 import { PropertyProvider } from '@/contexts/PropertyContext';
+import { SyncProvider } from '@/contexts/SyncContext';
+import { ServiceWorkerRegistration } from '@/components/ServiceWorkerRegistration';
 
 export const metadata: Metadata = {
   title: 'HotelOps AI — Hotel Operations Platform',
@@ -26,17 +28,23 @@ export default function RootLayout({
       <head>
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+        <meta name="apple-mobile-web-app-title" content="HotelOps AI" />
+        <link rel="manifest" href="/manifest.json" />
+        <link rel="apple-touch-icon" href="/icons/icon.svg" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
       </head>
       <body>
-        <AuthProvider>
-          <LanguageProvider>
-            <PropertyProvider>
-              {children}
-            </PropertyProvider>
-          </LanguageProvider>
-        </AuthProvider>
+        <SyncProvider>
+          <AuthProvider>
+            <LanguageProvider>
+              <PropertyProvider>
+                {children}
+              </PropertyProvider>
+            </LanguageProvider>
+          </AuthProvider>
+        </SyncProvider>
+        <ServiceWorkerRegistration />
       </body>
     </html>
   );

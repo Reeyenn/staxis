@@ -1,43 +1,54 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { Header } from './Header';
 import { BottomNav } from './BottomNav';
 import { useLang } from '@/contexts/LanguageContext';
+import { useSyncContext } from '@/contexts/SyncContext';
 import { t } from '@/lib/translations';
-import { WifiOff } from 'lucide-react';
+import { WifiOff, RefreshCw } from 'lucide-react';
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
-  const [isOnline, setIsOnline] = useState(true);
   const { lang } = useLang();
+  const { isOnline, pendingCount, isSyncing } = useSyncContext();
 
-  useEffect(() => {
-    setIsOnline(navigator.onLine);
-    const handleOnline  = () => setIsOnline(true);
-    const handleOffline = () => setIsOnline(false);
-    window.addEventListener('online',  handleOnline);
-    window.addEventListener('offline', handleOffline);
-    return () => {
-      window.removeEventListener('online',  handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
-  }, []);
+  /* ── Determine which banner (if any) to show ── */
+  const showOffline  = !isOnline;
+  const showSyncing  = isOnline && isSyncing;
+  const showBanner   = showOffline || showSyncing;
+
+  /* ── Build the offline label with optional pending count ── */
+  const offlineLabel = pendingCount > 0
+    ? `Offline — ${pendingCount} ${t('changesQueued', lang)}`
+    : t('offline', lang);
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg)' }}>
       <Header />
 
-      {/* ── Offline banner ── */}
-      {!isOnline && (
+      {/* ── Status banner ── */}
+      {showBanner && (
         <div style={{
-          background: 'rgba(239,68,68,0.12)', borderBottom: '1px solid rgba(239,68,68,0.3)',
+          borderBottom: '1px solid ' + (showSyncing ? 'rgba(251,191,36,0.3)' : 'rgba(239,68,68,0.3)'),
+          background:   showSyncing ? 'rgba(251,191,36,0.10)' : 'rgba(239,68,68,0.12)',
           padding: '8px 16px',
           display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
         }}>
-          <WifiOff size={14} color="#EF4444" />
-          <span style={{ fontSize: '12px', fontWeight: 600, color: '#EF4444' }}>
-            {t('offline', lang)}
-          </span>
+          {showSyncing ? (
+            <>
+              <RefreshCw size={14} color="#D97706" style={{ animation: 'spin 1s linear infinite' }} />
+              <span style={{ fontSize: '12px', fontWeight: 600, color: '#D97706' }}>
+                {t('syncingChanges', lang)}
+              </span>
+            </>
+          ) : (
+            <>
+              <WifiOff size={14} color="#EF4444" />
+              <span style={{ fontSize: '12px', fontWeight: 600, color: '#EF4444' }}>
+                {offlineLabel}
+              </span>
+            </>
+          )}
         </div>
       )}
 
