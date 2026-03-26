@@ -1,0 +1,25 @@
+{
+  "name": "HotelOps AI",
+  "short_name": "HotelOps",
+  "description": "AI-powered hotel operations platform — housekeeping, staffing, and maintenance in one app",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#060c14",
+  "theme_color": "#D49040",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -115,7 +115,13 @@ type TranslationKey =
   | 'avoidableLaborCost' | 'roomsMayNotFinish' | 'scheduledMatchesRec'
   | 'estimatedFinishLabel' | 'savedPast30' | 'addRooms'
   // Smart Assign modal
-  | 'assignPreview' | 'confirmAssign';
+  | 'assignPreview' | 'confirmAssign'
+  // Offline / sync
+  | 'syncing'
+  // CSV room import
+  | 'roomImport' | 'csvImportTitle' | 'uploadCsv' | 'csvPreviewLabel'
+  | 'importRoomsBtn' | 'csvHelpText' | 'csvRoomsFound' | 'csvImportDone'
+  | 'csvImportFailed' | 'csvDropHint' | 'csvSkipped';
 
 const translations: Record<Language, Record<TranslationKey, string>> = {
   en: {
@@ -423,6 +429,20 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     // Smart Assign modal
     assignPreview: 'Assignment Preview',
     confirmAssign: 'Confirm & Assign',
+    // Offline / sync
+    syncing: 'Syncing changes…',
+    // CSV import
+    roomImport: 'Room Import',
+    csvImportTitle: 'Occupancy Import',
+    uploadCsv: 'Upload CSV File',
+    csvPreviewLabel: 'Preview',
+    importRoomsBtn: 'Import Rooms',
+    csvHelpText: 'Accepts Choice Advantage, Opera, and similar PMS CSV exports',
+    csvRoomsFound: 'rooms found',
+    csvImportDone: 'rooms imported',
+    csvImportFailed: 'Import failed — check the file format and try again',
+    csvDropHint: 'Drop a CSV here or click to browse',
+    csvSkipped: 'skipped (already exist today)',
   },
 
   es: {
@@ -730,6 +750,20 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     // Smart Assign modal
     assignPreview: 'Vista Previa de Asignación',
     confirmAssign: 'Confirmar y Asignar',
+    // Offline / sync
+    syncing: 'Sincronizando cambios…',
+    // CSV import
+    roomImport: 'Importar Hab.',
+    csvImportTitle: 'Importar Ocupación',
+    uploadCsv: 'Subir archivo CSV',
+    csvPreviewLabel: 'Vista previa',
+    importRoomsBtn: 'Importar habitaciones',
+    csvHelpText: 'Acepta exportaciones CSV de Choice Advantage, Opera y sistemas similares',
+    csvRoomsFound: 'habitaciones encontradas',
+    csvImportDone: 'habitaciones importadas',
+    csvImportFailed: 'Error al importar — verifica el formato del archivo',
+    csvDropHint: 'Arrastra un CSV aquí o haz clic para buscar',
+    csvSkipped: 'omitidas (ya existen hoy)',
   },
 };
 

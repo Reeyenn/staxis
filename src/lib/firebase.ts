@@ -1,6 +1,6 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { getFirestore, initializeFirestore, persistentLocalCache } from 'firebase/firestore';
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -15,7 +15,20 @@ const firebaseConfig = {
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
 export const auth = getAuth(app);
-export const db = getFirestore(app);
+
+// Enable offline persistence (IndexedDB) in the browser so data is available
+// when connectivity drops.  On the server, or on hot-reload when the instance
+// already exists, fall back to the default Firestore instance.
+export const db = (() => {
+  if (typeof window === 'undefined') return getFirestore(app);
+  try {
+    return initializeFirestore(app, { localCache: persistentLocalCache() });
+  } catch {
+    // Instance already initialized (hot reload) — reuse it
+    return getFirestore(app);
+  }
+})();
+
 export const googleProvider = new GoogleAuthProvider();
 
 googleProvider.setCustomParameters({ prompt: 'select_account' });
