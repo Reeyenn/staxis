@@ -113,8 +113,10 @@ export function calcSchedule(
   const estimatedLaborCost =
     recommendedStaff * hourlyWage * (minutesPerHK / 60);
 
-  // Labor saved vs full roster
-  const fullRoster = form.scheduledStaff || property.totalStaffOnRoster || recommendedStaff;
+  // Labor saved vs full roster — always compare against the total roster size,
+  // not against however many the manager happened to schedule today.
+  // This represents "what you would have spent sending your full crew."
+  const fullRoster = property.totalStaffOnRoster || form.scheduledStaff || recommendedStaff;
   const staffSaved = Math.max(0, fullRoster - recommendedStaff);
   const laborSaved = staffSaved * hourlyWage * (shiftMinutes / 60);
 

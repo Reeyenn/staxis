@@ -15,7 +15,7 @@ import { format } from 'date-fns';
 import {
   BedDouble, Clock, DollarSign, TrendingUp, Sun, ChevronRight, ArrowRight,
   Bell, Users, Package, BookOpen, Monitor, AlertTriangle, CheckCircle, Zap,
-  Sparkles, LayoutGrid, Trophy,
+  Sparkles, LayoutGrid, Trophy, Calculator,
 } from 'lucide-react';
 import Link from 'next/link';
 
@@ -577,6 +577,7 @@ export default function DashboardPage() {
               { href: '/ops-wall',     icon: Monitor,     label: t('opsWallLabel', lang),      sub: t('opsWallSub', lang)         },
               { href: '/war-room',     icon: LayoutGrid,  label: t('warRoom', lang),           sub: t('warRoomSub', lang)         },
               { href: '/performance',  icon: Trophy,      label: t('teamPerformance', lang),   sub: t('performanceSub', lang)     },
+              { href: '/staffing',     icon: Calculator,  label: t('staffingCalculatorTitle', lang), sub: t('planningTool', lang)   },
             ].map(({ href, icon: Icon, label, sub }) => (
               <Link key={href} href={href} style={{ textDecoration: 'none' }}>
                 <div className="card" style={{ padding: '14px', display: 'flex', flexDirection: 'column', gap: '8px', height: '100%' }}>
