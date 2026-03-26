@@ -34,9 +34,13 @@ const CONFIG = {
   PROPERTY_ID: process.env.HOTELOPS_PROPERTY_ID,
 
   // Scraper
-  INTERVAL_MINUTES:       parseInt(process.env.SCRAPE_INTERVAL_MINUTES || '15'),
+  INTERVAL_MINUTES:        parseInt(process.env.SCRAPE_INTERVAL_MINUTES || '15'),
   OPERATIONAL_HOURS_START: parseInt(process.env.OPERATIONAL_HOURS_START || '6'),
   OPERATIONAL_HOURS_END:   parseInt(process.env.OPERATIONAL_HOURS_END || '22'),
+
+  // Timezone — Railway runs UTC; set to hotel's local timezone so operational
+  // hours and date bucketing are correct. Beaumont TX is America/Chicago.
+  TIMEZONE: process.env.TIMEZONE || 'America/Chicago',
 
   // Session state file (persists login cookies between runs)
   SESSION_FILE: path.join(__dirname, '.session.json'),
@@ -57,11 +61,22 @@ const db = getFirestore();
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 function todayISO() {
-  return new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+  // Use the hotel's local timezone so date bucketing is correct.
+  // 'en-CA' formats as YYYY-MM-DD; Intl handles DST automatically.
+  return new Intl.DateTimeFormat('en-CA', { timeZone: CONFIG.TIMEZONE }).format(new Date());
+}
+
+function localHour() {
+  // Returns the current hour (0–23) in the hotel's local timezone.
+  // Railway runs UTC, so using new Date().getHours() would be wrong.
+  return parseInt(
+    new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: CONFIG.TIMEZONE }).format(new Date()),
+    10
+  );
 }
 
 function isOperationalHours() {
-  const hour = new Date().getHours();
+  const hour = localHour();
   return hour >= CONFIG.OPERATIONAL_HOURS_START && hour < CONFIG.OPERATIONAL_HOURS_END;
 }
 
@@ -297,7 +312,8 @@ async function writeRoomsToFirestore(rooms) {
 async function run() {
   log('=== HotelOps AI Scraper starting ===');
   log(`Property: ${CONFIG.PROPERTY_ID} | User: ${CONFIG.USER_ID}`);
-  log(`Interval: every ${CONFIG.INTERVAL_MINUTES} min | Hours: ${CONFIG.OPERATIONAL_HOURS_START}:00–${CONFIG.OPERATIONAL_HOURS_END}:00`);
+  log(`Timezone: ${CONFIG.TIMEZONE} | Local hour: ${localHour()} | Today: ${todayISO()}`);
+  log(`Interval: every ${CONFIG.INTERVAL_MINUTES} min | Hours: ${CONFIG.OPERATIONAL_HOURS_START}:00–${CONFIG.OPERATIONAL_HOURS_END}:00 (${CONFIG.TIMEZONE})`);
 
   // Launch browser (headless in production, headed for debugging)
   const browser = await chromium.launch({

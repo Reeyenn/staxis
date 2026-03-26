@@ -5,13 +5,13 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
-import { LayoutDashboard, Sun, BedDouble, BarChart3, Settings, Calculator, Wrench } from 'lucide-react';
+import { LayoutDashboard, Sun, BedDouble, BarChart3, Settings, Calculator, Wrench, LayoutGrid } from 'lucide-react';
 
 const navItems = [
   { href: '/dashboard',     icon: LayoutDashboard, key: 'dashboard'    as const },
   { href: '/morning-setup', icon: Sun,              key: 'morningSetup' as const },
+  { href: '/war-room',      icon: LayoutGrid,       key: 'warRoom'      as const },
   { href: '/rooms',         icon: BedDouble,        key: 'rooms'        as const },
-  { href: '/maintenance',   icon: Wrench,           key: 'maintenance'  as const },
   { href: '/analytics',     icon: BarChart3,        key: 'analytics'    as const },
   { href: '/settings',      icon: Settings,         key: 'settings'     as const },
 ];

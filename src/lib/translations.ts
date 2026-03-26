@@ -115,7 +115,10 @@ type TranslationKey =
   | 'avoidableLaborCost' | 'roomsMayNotFinish' | 'scheduledMatchesRec'
   | 'estimatedFinishLabel' | 'savedPast30' | 'addRooms'
   // Smart Assign modal
-  | 'assignPreview' | 'confirmAssign';
+  | 'assignPreview' | 'confirmAssign'
+  // War Room dashboard
+  | 'warRoom' | 'warRoomSub' | 'roomStatusBoard' | 'noRoomsWarRoom'
+  | 'co' | 'so' | 'vac' | 'pmsSync' | 'neverSynced';
 
 const translations: Record<Language, Record<TranslationKey, string>> = {
   en: {
@@ -423,6 +426,16 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     // Smart Assign modal
     assignPreview: 'Assignment Preview',
     confirmAssign: 'Confirm & Assign',
+    // War Room dashboard
+    warRoom: 'War Room',
+    warRoomSub: 'Front Desk Display',
+    roomStatusBoard: 'Room Status Board',
+    noRoomsWarRoom: 'No rooms found for today. Add rooms or wait for the scraper to sync.',
+    co: 'CO',
+    so: 'SO',
+    vac: 'VAC',
+    pmsSync: 'PMS Sync',
+    neverSynced: 'Never synced',
   },
 
   es: {
@@ -730,6 +743,16 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     // Smart Assign modal
     assignPreview: 'Vista Previa de Asignación',
     confirmAssign: 'Confirmar y Asignar',
+    // War Room dashboard
+    warRoom: 'Centro de Mando',
+    warRoomSub: 'Pantalla de Recepción',
+    roomStatusBoard: 'Estado de Habitaciones',
+    noRoomsWarRoom: 'No hay habitaciones hoy. Agrega habitaciones o espera la sincronización.',
+    co: 'CO',
+    so: 'SO',
+    vac: 'VAC',
+    pmsSync: 'Sincronización PMS',
+    neverSynced: 'Sin sincronizar',
   },
 };
 
