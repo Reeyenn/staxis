@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Dark background with rounded corners -->
+  <rect width="512" height="512" rx="96" fill="#0A0A0F"/>
+  <!-- Hotel building body -->
+  <rect x="120" y="168" width="272" height="296" rx="8" fill="#F59E0B"/>
+  <!-- Top accent bar -->
+  <rect x="120" y="168" width="272" height="24" rx="8" fill="#D97706"/>
+  <rect x="120" y="180" width="272" height="12" fill="#D97706"/>
+  <!-- Row 1 windows -->
+  <rect x="156" y="216" width="52" height="44" rx="6" fill="#0A0A0F" opacity="0.85"/>
+  <rect x="230" y="216" width="52" height="44" rx="6" fill="#0A0A0F" opacity="0.85"/>
+  <rect x="304" y="216" width="52" height="44" rx="6" fill="#0A0A0F" opacity="0.85"/>
+  <!-- Row 2 windows -->
+  <rect x="156" y="280" width="52" height="44" rx="6" fill="#0A0A0F" opacity="0.85"/>
+  <rect x="230" y="280" width="52" height="44" rx="6" fill="#0A0A0F" opacity="0.85"/>
+  <rect x="304" y="280" width="52" height="44" rx="6" fill="#0A0A0F" opacity="0.85"/>
+  <!-- Row 3 windows (flanking door) -->
+  <rect x="156" y="344" width="52" height="44" rx="6" fill="#0A0A0F" opacity="0.85"/>
+  <rect x="304" y="344" width="52" height="44" rx="6" fill="#0A0A0F" opacity="0.85"/>
+  <!-- Door -->
+  <rect x="216" y="356" width="80" height="108" rx="8" fill="#0A0A0F" opacity="0.85"/>
+  <!-- Door handle -->
+  <circle cx="284" cy="416" r="5" fill="#F59E0B"/>
+</svg>

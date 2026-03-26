@@ -1,6 +1,11 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import {
+  getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+} from 'firebase/firestore';
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -15,7 +20,27 @@ const firebaseConfig = {
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
 export const auth = getAuth(app);
-export const db = getFirestore(app);
+
+// Enable IndexedDB offline persistence in the browser so housekeepers can
+// read and write room data without an internet connection. Writes are queued
+// locally and automatically synced when the connection returns.
+// On the server (SSR/API routes) we fall back to in-memory storage.
+export const db = (() => {
+  if (typeof window !== 'undefined') {
+    try {
+      return initializeFirestore(app, {
+        localCache: persistentLocalCache({
+          tabManager: persistentMultipleTabManager(),
+        }),
+      });
+    } catch {
+      // Firestore was already initialized (e.g. Next.js HMR) — reuse it.
+      return getFirestore(app);
+    }
+  }
+  return getFirestore(app);
+})();
+
 export const googleProvider = new GoogleAuthProvider();
 
 googleProvider.setCustomParameters({ prompt: 'select_account' });

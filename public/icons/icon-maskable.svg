@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Full-bleed background (maskable — safe zone is center 80%) -->
+  <rect width="512" height="512" fill="#0A0A0F"/>
+  <!-- Hotel building body — slightly smaller to stay within safe zone -->
+  <rect x="136" y="180" width="240" height="276" rx="8" fill="#F59E0B"/>
+  <!-- Top accent -->
+  <rect x="136" y="180" width="240" height="22" rx="8" fill="#D97706"/>
+  <rect x="136" y="190" width="240" height="12" fill="#D97706"/>
+  <!-- Row 1 windows -->
+  <rect x="168" y="224" width="46" height="40" rx="5" fill="#0A0A0F" opacity="0.85"/>
+  <rect x="233" y="224" width="46" height="40" rx="5" fill="#0A0A0F" opacity="0.85"/>
+  <rect x="298" y="224" width="46" height="40" rx="5" fill="#0A0A0F" opacity="0.85"/>
+  <!-- Row 2 windows -->
+  <rect x="168" y="283" width="46" height="40" rx="5" fill="#0A0A0F" opacity="0.85"/>
+  <rect x="233" y="283" width="46" height="40" rx="5" fill="#0A0A0F" opacity="0.85"/>
+  <rect x="298" y="283" width="46" height="40" rx="5" fill="#0A0A0F" opacity="0.85"/>
+  <!-- Row 3 windows -->
+  <rect x="168" y="342" width="46" height="40" rx="5" fill="#0A0A0F" opacity="0.85"/>
+  <rect x="298" y="342" width="46" height="40" rx="5" fill="#0A0A0F" opacity="0.85"/>
+  <!-- Door -->
+  <rect x="220" y="354" width="72" height="102" rx="6" fill="#0A0A0F" opacity="0.85"/>
+  <circle cx="279" cy="410" r="5" fill="#F59E0B"/>
+</svg>

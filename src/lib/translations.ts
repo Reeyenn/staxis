@@ -115,7 +115,9 @@ type TranslationKey =
   | 'avoidableLaborCost' | 'roomsMayNotFinish' | 'scheduledMatchesRec'
   | 'estimatedFinishLabel' | 'savedPast30' | 'addRooms'
   // Smart Assign modal
-  | 'assignPreview' | 'confirmAssign';
+  | 'assignPreview' | 'confirmAssign'
+  // Offline / sync status
+  | 'syncingChanges' | 'backOnline' | 'changesQueued';
 
 const translations: Record<Language, Record<TranslationKey, string>> = {
   en: {
@@ -423,6 +425,10 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     // Smart Assign modal
     assignPreview: 'Assignment Preview',
     confirmAssign: 'Confirm & Assign',
+    // Offline / sync status
+    syncingChanges: 'Syncing changes…',
+    backOnline: 'Back online',
+    changesQueued: 'changes queued',
   },
 
   es: {
@@ -730,6 +736,10 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     // Smart Assign modal
     assignPreview: 'Vista Previa de Asignación',
     confirmAssign: 'Confirmar y Asignar',
+    // Offline / sync status
+    syncingChanges: 'Sincronizando cambios…',
+    backOnline: 'Conexión restaurada',
+    changesQueued: 'cambios en cola',
   },
 };
 
