@@ -12,12 +12,22 @@ export default function RootPage() {
 
   useEffect(() => {
     if (authLoading || propLoading) return;
+
     if (!user) {
       router.replace('/signin');
-    } else if (properties.length === 0) {
-      router.replace('/onboarding');
-    } else {
+      return;
+    }
+
+    // Check if the user has already selected a property this session
+    const sessionSelected = typeof window !== 'undefined'
+      && sessionStorage.getItem('hotelops-session-selected') === '1';
+
+    if (sessionSelected) {
       router.replace('/dashboard');
+    } else {
+      // Always route through property-selector on new sessions.
+      // It will auto-select if there's only 1 property.
+      router.replace('/property-selector');
     }
   }, [user, authLoading, propLoading, properties, router]);
 

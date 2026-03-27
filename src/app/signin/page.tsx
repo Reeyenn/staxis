@@ -14,7 +14,7 @@ export default function SignInPage() {
   const [signing, setSigning] = React.useState(false);
 
   useEffect(() => {
-    if (!loading && user) router.replace('/dashboard');
+    if (!loading && user) router.replace('/');
   }, [user, loading, router]);
 
   const handleSignIn = async () => {

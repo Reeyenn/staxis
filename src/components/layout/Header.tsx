@@ -1,20 +1,32 @@
 'use client';
 
-'use client';
-
 import React from 'react';
+import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
-import { ChevronDown, LogOut, Globe } from 'lucide-react';
+import { ChevronDown, LogOut, Globe, LayoutGrid } from 'lucide-react';
 
 export function Header() {
   const { user, signOut } = useAuth();
   const { properties, activeProperty, setActivePropertyId } = useProperty();
   const { lang, setLang } = useLang();
+  const router = useRouter();
   const [showPropMenu, setShowPropMenu] = React.useState(false);
   const [showUserMenu, setShowUserMenu] = React.useState(false);
+
+  const handleSwitchProperty = (id: string) => {
+    setActivePropertyId(id);
+    sessionStorage.setItem('hotelops-session-selected', '1');
+    setShowPropMenu(false);
+  };
+
+  const handleGoToSelector = () => {
+    sessionStorage.removeItem('hotelops-session-selected');
+    setShowPropMenu(false);
+    router.push('/property-selector');
+  };
 
   return (
     <header style={{
@@ -93,13 +105,13 @@ export function Header() {
                   <div style={{
                     position: 'absolute', right: 0, top: 'calc(100% + 4px)',
                     background: 'var(--bg-elevated)', border: '1px solid var(--border-bright)',
-                    borderRadius: 'var(--radius-lg)', minWidth: '180px',
+                    borderRadius: 'var(--radius-lg)', minWidth: '200px',
                     overflow: 'hidden', zIndex: 50,
                     boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
                   }}>
                     {properties.map(p => (
                       <button key={p.id}
-                        onClick={() => { setActivePropertyId(p.id); setShowPropMenu(false); }}
+                        onClick={() => handleSwitchProperty(p.id)}
                         style={{
                           width: '100%', padding: '10px 14px', textAlign: 'left',
                           background: p.id === activeProperty?.id ? 'var(--amber-dim)' : 'transparent',
@@ -113,6 +125,21 @@ export function Header() {
                         {p.name}
                       </button>
                     ))}
+                    {properties.length > 1 && (
+                      <button
+                        onClick={handleGoToSelector}
+                        style={{
+                          width: '100%', padding: '10px 14px', textAlign: 'left',
+                          background: 'transparent', border: 'none',
+                          color: 'var(--text-muted)', fontSize: '12px',
+                          cursor: 'pointer', fontFamily: 'var(--font-sans)',
+                          display: 'flex', alignItems: 'center', gap: '6px',
+                        }}
+                      >
+                        <LayoutGrid size={11} />
+                        All properties…
+                      </button>
+                    )}
                   </div>
                 </>
               )}
