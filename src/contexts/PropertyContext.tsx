@@ -60,17 +60,13 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   const [laundryConfig, setLaundryConfig] = useState<LaundryCategory[]>([]);
   const [loading, setLoading] = useState(true);
 
-  console.log('[DEBUG] PropertyProvider render — user:', user?.uid ?? null, 'activePropertyId:', activePropertyId);
-
   const setActivePropertyId = (id: string) => {
-    console.log('[DEBUG] setActivePropertyId called with:', id);
     setActivePropertyIdState(id);
     localStorage.setItem('hotelops-active-property', id);
   };
 
   // Load properties list
   useEffect(() => {
-    console.log('[DEBUG] properties effect — user:', user?.uid ?? null);
     if (!user) {
       setLoading(false);
       return;
@@ -78,17 +74,14 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     (async () => {
       setLoading(true);
       try {
-        console.log('[DEBUG] calling getProperties for uid:', user.uid);
         const props = await getProperties(user.uid);
-        console.log('[DEBUG] properties loaded:', props.length, props.map(p => p.id));
         setProperties(props);
 
         const stored = localStorage.getItem('hotelops-active-property');
         const pid = stored && props.find(p => p.id === stored) ? stored : props[0]?.id ?? null;
-        console.log('[DEBUG] activePropertyId resolved to:', pid, '(stored was:', stored, ')');
         setActivePropertyIdState(pid);
       } catch (err) {
-        console.error('[DEBUG] PropertyContext: failed to load properties', err);
+        console.error('PropertyContext: failed to load properties', err);
       } finally {
         setLoading(false);
       }
@@ -100,9 +93,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   // response arrives after a cache miss — preventing the intermittent "no staff"
   // bug caused by getDocs returning an empty cached snapshot.
   useEffect(() => {
-    console.log('[DEBUG] staff/property effect — user:', user?.uid ?? null, 'activePropertyId:', activePropertyId);
     if (!user || !activePropertyId) {
-      console.log('[DEBUG] skipping staff load — missing user or activePropertyId');
       setActiveProperty(null);
       setStaff([]);
       setStaffLoaded(false);
@@ -115,9 +106,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     // Fires immediately with whatever is in the local cache (possibly empty),
     // then fires again when the server response arrives. This eliminates the
     // race where getDocs resolves from cache before data is on the server.
-    console.log('[DEBUG] subscribing to staff for uid:', user.uid, 'propertyId:', activePropertyId);
     const unsubStaff = subscribeToStaff(user.uid, activePropertyId, staffList => {
-      console.log('[DEBUG] staff snapshot received:', staffList.length, 'docs', staffList.map(s => s.id));
       if (!cancelled) {
         setStaff(staffList);
         setStaffLoaded(true);
@@ -129,10 +118,9 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
       // Load property separately so a failure here doesn't kill staff.
       try {
         const prop = await getProperty(user.uid, activePropertyId);
-        console.log('[DEBUG] property loaded:', prop?.id ?? null);
         if (!cancelled) setActiveProperty(prop);
       } catch (err) {
-        console.error('[DEBUG] PropertyContext: failed to load property', err);
+        console.error('PropertyContext: failed to load property', err);
       }
 
       // Load areas + laundry config in a separate try/catch so a migration
@@ -177,7 +165,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
           if (!cancelled) setPublicAreas(defaults);
         }
       } catch (err) {
-        console.error('[DEBUG] PropertyContext: failed to load areas/laundry config', err);
+        console.error('PropertyContext: failed to load areas/laundry config', err);
       }
     })();
 
