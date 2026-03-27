@@ -4,7 +4,6 @@ import { AuthProvider } from '@/contexts/AuthContext';
 import { LanguageProvider } from '@/contexts/LanguageContext';
 import { PropertyProvider } from '@/contexts/PropertyContext';
 import { SyncProvider } from '@/contexts/SyncContext';
-import { ServiceWorkerRegistration } from '@/components/ServiceWorkerRegistration';
 
 export const metadata: Metadata = {
   title: 'HotelOps AI — Hotel Operations Platform',
@@ -44,7 +43,6 @@ export default function RootLayout({
             </LanguageProvider>
           </AuthProvider>
         </SyncProvider>
-        <ServiceWorkerRegistration />
       </body>
     </html>
   );
