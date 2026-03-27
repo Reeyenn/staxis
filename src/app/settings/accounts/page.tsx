@@ -1,0 +1,517 @@
+'use client';
+
+import React, { useCallback, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { AppLayout } from '@/components/layout/AppLayout';
+import { useAuth } from '@/contexts/AuthContext';
+import { useProperty } from '@/contexts/PropertyContext';
+import { Users, Plus, Trash2, Pencil, X, Check, ChevronLeft, Shield, User } from 'lucide-react';
+
+interface AccountRow {
+  accountId: string;
+  username: string;
+  displayName: string;
+  role: 'admin' | 'owner' | 'staff';
+  propertyAccess: string[];
+  createdAt: string | null;
+}
+
+interface FormState {
+  username: string;
+  displayName: string;
+  password: string;
+  role: 'admin' | 'owner' | 'staff';
+  propertyAccess: string[];  // property IDs, or ["*"] for all
+}
+
+const BLANK_FORM: FormState = {
+  username: '',
+  displayName: '',
+  password: '',
+  role: 'owner',
+  propertyAccess: [],
+};
+
+export default function AccountsPage() {
+  const { user } = useAuth();
+  const { properties } = useProperty();
+  const router = useRouter();
+
+  const [accounts, setAccounts] = useState<AccountRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  // Add/Edit modal state
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState<FormState>(BLANK_FORM);
+  const [formError, setFormError] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  // Redirect non-admins
+  useEffect(() => {
+    if (user && user.role !== 'admin') router.replace('/settings');
+  }, [user, router]);
+
+  const loadAccounts = useCallback(async () => {
+    if (!user) return;
+    setLoading(true);
+    try {
+      const res = await fetch('/api/auth/accounts', {
+        headers: { 'x-account-id': user.accountId },
+      });
+      if (!res.ok) throw new Error('Failed to load accounts');
+      const data = await res.json();
+      setAccounts(data.accounts);
+    } catch (err) {
+      setError('Failed to load accounts');
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  }, [user]);
+
+  useEffect(() => { loadAccounts(); }, [loadAccounts]);
+
+  const openAdd = () => {
+    setEditingId(null);
+    setForm(BLANK_FORM);
+    setFormError('');
+    setShowForm(true);
+  };
+
+  const openEdit = (acct: AccountRow) => {
+    setEditingId(acct.accountId);
+    setForm({
+      username: acct.username,
+      displayName: acct.displayName,
+      password: '',
+      role: acct.role,
+      propertyAccess: acct.propertyAccess,
+    });
+    setFormError('');
+    setShowForm(true);
+  };
+
+  const handleSave = async () => {
+    if (!user) return;
+    if (!form.username.trim()) { setFormError('Username is required'); return; }
+    if (!editingId && !form.password.trim()) { setFormError('Password is required for new accounts'); return; }
+
+    setSaving(true);
+    setFormError('');
+
+    try {
+      if (editingId) {
+        const res = await fetch('/api/auth/accounts', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', 'x-account-id': user.accountId },
+          body: JSON.stringify({
+            accountId: editingId,
+            displayName: form.displayName || form.username,
+            role: form.role,
+            propertyAccess: form.propertyAccess,
+            ...(form.password ? { password: form.password } : {}),
+          }),
+        });
+        if (!res.ok) {
+          const d = await res.json();
+          setFormError(d.error || 'Failed to update');
+          return;
+        }
+      } else {
+        const res = await fetch('/api/auth/accounts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-account-id': user.accountId },
+          body: JSON.stringify({
+            username: form.username.trim(),
+            displayName: form.displayName || form.username,
+            password: form.password,
+            role: form.role,
+            propertyAccess: form.propertyAccess,
+          }),
+        });
+        if (!res.ok) {
+          const d = await res.json();
+          setFormError(d.error || 'Failed to create');
+          return;
+        }
+      }
+
+      setShowForm(false);
+      await loadAccounts();
+    } catch (err) {
+      console.error(err);
+      setFormError('An error occurred');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (accountId: string) => {
+    if (!user) return;
+    if (!confirm('Delete this account?')) return;
+
+    try {
+      const res = await fetch(`/api/auth/accounts?accountId=${accountId}`, {
+        method: 'DELETE',
+        headers: { 'x-account-id': user.accountId },
+      });
+      if (!res.ok) {
+        const d = await res.json();
+        alert(d.error || 'Failed to delete');
+        return;
+      }
+      await loadAccounts();
+    } catch (err) {
+      console.error(err);
+      alert('Failed to delete account');
+    }
+  };
+
+  const togglePropertyAccess = (pid: string) => {
+    setForm(f => {
+      if (f.propertyAccess.includes('*')) return f; // admin access — skip
+      const has = f.propertyAccess.includes(pid);
+      return {
+        ...f,
+        propertyAccess: has
+          ? f.propertyAccess.filter(id => id !== pid)
+          : [...f.propertyAccess, pid],
+      };
+    });
+  };
+
+  const setAdminAccess = (admin: boolean) => {
+    setForm(f => ({ ...f, propertyAccess: admin ? ['*'] : [] }));
+  };
+
+  if (user?.role !== 'admin') return null;
+
+  return (
+    <AppLayout>
+      <div style={{ padding: '20px 16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+
+        {/* Header */}
+        <div className="animate-in">
+          <button
+            onClick={() => router.back()}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: '4px',
+              background: 'transparent', border: 'none',
+              color: 'var(--text-muted)', fontSize: '13px',
+              cursor: 'pointer', padding: '0 0 12px',
+              fontFamily: 'var(--font-sans)',
+            }}
+          >
+            <ChevronLeft size={14} />
+            Settings
+          </button>
+          <h1 style={{
+            fontFamily: 'var(--font-sans)', fontWeight: 700,
+            fontSize: '26px', color: 'var(--text-primary)',
+            letterSpacing: '-0.02em',
+            display: 'flex', alignItems: 'center', gap: '8px',
+          }}>
+            <Users size={18} color="var(--amber)" />
+            Accounts
+          </h1>
+          <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginTop: '4px' }}>
+            Manage logins and property access for your team.
+          </p>
+        </div>
+
+        {/* Add button */}
+        <button
+          onClick={openAdd}
+          className="animate-in stagger-1"
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: '8px',
+            background: 'var(--amber)', color: '#0A0A0A',
+            border: 'none', borderRadius: 'var(--radius-md)',
+            padding: '10px 16px', fontSize: '14px', fontWeight: 600,
+            cursor: 'pointer', fontFamily: 'var(--font-sans)',
+            alignSelf: 'flex-start',
+          }}
+        >
+          <Plus size={15} />
+          Add account
+        </button>
+
+        {/* List */}
+        {loading ? (
+          <div style={{ display: 'flex', justifyContent: 'center', padding: '32px' }}>
+            <div className="spinner" style={{ width: '28px', height: '28px' }} />
+          </div>
+        ) : error ? (
+          <p style={{ color: 'var(--red)', fontSize: '14px' }}>{error}</p>
+        ) : (
+          <div className="animate-in stagger-2" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {accounts.map(acct => (
+              <div key={acct.accountId} style={{
+                background: 'var(--bg-card)', border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-lg)', padding: '14px 16px',
+                display: 'flex', alignItems: 'center', gap: '14px',
+              }}>
+                {/* Avatar */}
+                <div style={{
+                  width: '38px', height: '38px', borderRadius: '50%',
+                  background: acct.role === 'admin' ? 'var(--amber-dim)' : 'rgba(100,116,139,0.12)',
+                  border: `1px solid ${acct.role === 'admin' ? 'var(--amber-border)' : 'var(--border)'}`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  flexShrink: 0,
+                }}>
+                  {acct.role === 'admin'
+                    ? <Shield size={16} color="var(--amber)" />
+                    : <User size={16} color="var(--text-muted)" />
+                  }
+                </div>
+
+                {/* Info */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{
+                    fontSize: '14px', fontWeight: 600,
+                    color: 'var(--text-primary)', fontFamily: 'var(--font-sans)',
+                  }}>
+                    {acct.displayName}
+                    <span style={{
+                      marginLeft: '8px', fontSize: '11px', fontWeight: 500,
+                      color: 'var(--text-muted)', letterSpacing: '0.02em',
+                    }}>
+                      @{acct.username}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                    {acct.role}
+                    {' · '}
+                    {acct.propertyAccess.includes('*')
+                      ? 'All properties'
+                      : acct.propertyAccess.length === 0
+                        ? 'No properties'
+                        : acct.propertyAccess.length === 1
+                          ? `${acct.propertyAccess.length} property`
+                          : `${acct.propertyAccess.length} properties`
+                    }
+                  </div>
+                </div>
+
+                {/* Actions */}
+                <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+                  <button
+                    onClick={() => openEdit(acct)}
+                    style={{
+                      width: '32px', height: '32px', borderRadius: 'var(--radius-sm)',
+                      background: 'transparent', border: '1px solid var(--border)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      cursor: 'pointer', color: 'var(--text-muted)',
+                    }}
+                  >
+                    <Pencil size={13} />
+                  </button>
+                  {acct.accountId !== user.accountId && (
+                    <button
+                      onClick={() => handleDelete(acct.accountId)}
+                      style={{
+                        width: '32px', height: '32px', borderRadius: 'var(--radius-sm)',
+                        background: 'transparent', border: '1px solid rgba(239,68,68,0.3)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        cursor: 'pointer', color: 'var(--red)',
+                      }}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+      </div>
+
+      {/* Add/Edit modal */}
+      {showForm && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 60,
+          background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)',
+          display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+        }}
+          onClick={e => { if (e.target === e.currentTarget) setShowForm(false); }}
+        >
+          <div style={{
+            width: '100%', maxWidth: '480px',
+            background: 'var(--bg-elevated)',
+            borderRadius: 'var(--radius-lg) var(--radius-lg) 0 0',
+            border: '1px solid var(--border-bright)',
+            padding: '24px 20px 32px',
+            display: 'flex', flexDirection: 'column', gap: '16px',
+          }}>
+
+            {/* Modal header */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <h2 style={{
+                fontFamily: 'var(--font-sans)', fontWeight: 700,
+                fontSize: '18px', color: 'var(--text-primary)',
+              }}>
+                {editingId ? 'Edit account' : 'Add account'}
+              </h2>
+              <button
+                onClick={() => setShowForm(false)}
+                style={{
+                  background: 'transparent', border: 'none',
+                  color: 'var(--text-muted)', cursor: 'pointer',
+                  display: 'flex', padding: '4px',
+                }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Username */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <label style={labelStyle}>Username</label>
+              <input
+                type="text"
+                value={form.username}
+                onChange={e => setForm(f => ({ ...f, username: e.target.value }))}
+                disabled={!!editingId}
+                placeholder="lowercase, no spaces"
+                style={{ ...inputStyle, opacity: editingId ? 0.5 : 1 }}
+              />
+            </div>
+
+            {/* Display name */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <label style={labelStyle}>Display name</label>
+              <input
+                type="text"
+                value={form.displayName}
+                onChange={e => setForm(f => ({ ...f, displayName: e.target.value }))}
+                placeholder="Full name (e.g. Jay Patel)"
+                style={inputStyle}
+              />
+            </div>
+
+            {/* Password */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <label style={labelStyle}>{editingId ? 'New password (leave blank to keep)' : 'Password'}</label>
+              <input
+                type="password"
+                value={form.password}
+                onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
+                placeholder={editingId ? 'Leave blank to keep current' : 'Set a password'}
+                style={inputStyle}
+              />
+            </div>
+
+            {/* Role */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <label style={labelStyle}>Role</label>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                {(['admin', 'owner', 'staff'] as const).map(r => (
+                  <button key={r} onClick={() => setForm(f => ({ ...f, role: r }))} style={{
+                    flex: 1, height: '36px', borderRadius: 'var(--radius-sm)',
+                    background: form.role === r ? 'var(--amber-dim)' : 'var(--bg-card)',
+                    border: `1px solid ${form.role === r ? 'var(--amber-border)' : 'var(--border)'}`,
+                    color: form.role === r ? 'var(--amber)' : 'var(--text-secondary)',
+                    fontSize: '13px', fontWeight: form.role === r ? 600 : 400,
+                    cursor: 'pointer', fontFamily: 'var(--font-sans)',
+                    textTransform: 'capitalize',
+                  }}>
+                    {r}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Property access */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <label style={labelStyle}>Property access</label>
+
+              {/* All properties toggle */}
+              <button
+                onClick={() => setAdminAccess(!form.propertyAccess.includes('*'))}
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  background: form.propertyAccess.includes('*') ? 'var(--amber-dim)' : 'var(--bg-card)',
+                  border: `1px solid ${form.propertyAccess.includes('*') ? 'var(--amber-border)' : 'var(--border)'}`,
+                  borderRadius: 'var(--radius-sm)', padding: '10px 12px',
+                  cursor: 'pointer',
+                }}
+              >
+                <span style={{ fontSize: '13px', color: 'var(--text-secondary)', fontFamily: 'var(--font-sans)' }}>
+                  All properties (current & future)
+                </span>
+                {form.propertyAccess.includes('*') && <Check size={14} color="var(--amber)" />}
+              </button>
+
+              {/* Individual property toggles */}
+              {!form.propertyAccess.includes('*') && properties.map(p => (
+                <button
+                  key={p.id}
+                  onClick={() => togglePropertyAccess(p.id)}
+                  style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    background: form.propertyAccess.includes(p.id) ? 'rgba(100,200,100,0.08)' : 'var(--bg-card)',
+                    border: `1px solid ${form.propertyAccess.includes(p.id) ? 'rgba(100,200,100,0.3)' : 'var(--border)'}`,
+                    borderRadius: 'var(--radius-sm)', padding: '10px 12px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <span style={{ fontSize: '13px', color: 'var(--text-secondary)', fontFamily: 'var(--font-sans)' }}>
+                    {p.name}
+                  </span>
+                  {form.propertyAccess.includes(p.id) && <Check size={14} color="var(--green)" />}
+                </button>
+              ))}
+            </div>
+
+            {formError && (
+              <p style={{
+                fontSize: '13px', color: 'var(--red)',
+                background: 'rgba(239,68,68,0.08)',
+                border: '1px solid rgba(239,68,68,0.2)',
+                borderRadius: 'var(--radius-sm)', padding: '10px 12px',
+              }}>
+                {formError}
+              </p>
+            )}
+
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              style={{
+                height: '48px', borderRadius: 'var(--radius-md)',
+                background: saving ? 'rgba(212,144,64,0.5)' : 'var(--amber)',
+                color: '#0A0A0A',
+                fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: '15px',
+                border: 'none', cursor: saving ? 'wait' : 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >
+              {saving
+                ? <div className="spinner" style={{ width: '18px', height: '18px', borderTopColor: '#0A0A0A', borderColor: 'rgba(0,0,0,0.2)' }} />
+                : editingId ? 'Save changes' : 'Create account'
+              }
+            </button>
+          </div>
+        </div>
+      )}
+    </AppLayout>
+  );
+}
+
+const labelStyle: React.CSSProperties = {
+  fontSize: '12px', fontWeight: 600,
+  letterSpacing: '0.04em', color: 'var(--text-secondary)',
+  textTransform: 'uppercase', fontFamily: 'var(--font-sans)',
+};
+
+const inputStyle: React.CSSProperties = {
+  height: '42px', borderRadius: 'var(--radius-md)',
+  background: 'var(--bg-card)', border: '1px solid var(--border)',
+  padding: '0 12px',
+  color: 'var(--text-primary)', fontSize: '14px',
+  fontFamily: 'var(--font-sans)',
+  outline: 'none', width: '100%',
+};

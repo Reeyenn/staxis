@@ -161,10 +161,7 @@ export function Header() {
                   fontFamily: 'var(--font-sans)',
                 }}
               >
-                {user.photoURL
-                  ? <img src={user.photoURL} alt="avatar" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                  : (user.displayName?.[0] ?? user.email?.[0] ?? 'U').toUpperCase()
-                }
+                {(user.displayName?.[0] ?? user.username?.[0] ?? 'U').toUpperCase()}
               </button>
 
               {showUserMenu && (
@@ -182,7 +179,7 @@ export function Header() {
                         {user.displayName ?? 'User'}
                       </div>
                       <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '2px' }}>
-                        {user.email}
+                        {user.role}
                       </div>
                     </div>
                     <button

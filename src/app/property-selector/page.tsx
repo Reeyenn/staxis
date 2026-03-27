@@ -90,7 +90,7 @@ export default function PropertySelectorPage() {
           </h1>
           {user && (
             <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>
-              Signed in as {user.email}
+              Signed in as {user.username}
             </p>
           )}
         </div>

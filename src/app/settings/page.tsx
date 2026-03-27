@@ -5,17 +5,22 @@ import Link from 'next/link';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useLang } from '@/contexts/LanguageContext';
 import { useProperty } from '@/contexts/PropertyContext';
+import { useAuth } from '@/contexts/AuthContext';
 import { t } from '@/lib/translations';
-import { Building2, Wifi, ChevronRight, Settings } from 'lucide-react';
-
-const sections = [
-  { href:'/settings/property', icon:Building2, label:'Property',       desc:'Name, room count, wages, shift length'              },
-  { href:'/settings/pms',      icon:Wifi,      label:'PMS Connection', desc:'Auto-sync data from your property management system'},
-];
+import { Building2, Wifi, Users, ChevronRight, Settings } from 'lucide-react';
 
 export default function SettingsPage() {
   const { lang }           = useLang();
   const { activeProperty } = useProperty();
+  const { user }           = useAuth();
+
+  const sections = [
+    { href:'/settings/property', icon:Building2, label:'Property',       desc:'Name, room count, wages, shift length'              },
+    { href:'/settings/pms',      icon:Wifi,      label:'PMS Connection', desc:'Auto-sync data from your property management system'},
+    ...(user?.role === 'admin'
+      ? [{ href:'/settings/accounts', icon:Users, label:'Accounts', desc:'Manage user logins and property access' }]
+      : []),
+  ];
 
   return (
     <AppLayout>
@@ -34,9 +39,6 @@ export default function SettingsPage() {
           </h1>
         </div>
 
-        {/* ── List of settings sections
-              spec: list.md §standard density — row height 56px min
-              spec: card.md §Interactive — hover translateY(-1px) shadow-2 ── */}
         <div className="animate-in stagger-1" style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
           {sections.map(({ href, icon: Icon, label, desc }, idx) => (
             <Link key={href} href={href} style={{ textDecoration:'none' }}>
@@ -48,7 +50,6 @@ export default function SettingsPage() {
                   animationDelay:`${idx * 40}ms`,
                 }}
               >
-                {/* Icon container — spec: misc.md §Avatar — circular/rounded icon bg */}
                 <div style={{
                   width:'48px', height:'48px', borderRadius:'13px', flexShrink:0,
                   background:'var(--amber-dim)',
@@ -58,7 +59,6 @@ export default function SettingsPage() {
                   <Icon size={21} color="var(--amber)" />
                 </div>
 
-                {/* Text */}
                 <div style={{ flex:1, minWidth:0 }}>
                   <p style={{
                     fontWeight:700, fontSize:'16px',
@@ -75,7 +75,6 @@ export default function SettingsPage() {
           ))}
         </div>
 
-        {/* ── Footer ── */}
         <p style={{
           textAlign:'center', fontSize:'11px', color:'var(--text-muted)',
           fontWeight:500, letterSpacing:'0.06em', padding:'8px',
