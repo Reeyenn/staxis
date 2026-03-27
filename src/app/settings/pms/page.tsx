@@ -141,7 +141,11 @@ export default function PMSPage() {
               <p style={{ fontWeight: 600, fontSize: '14px', color: '#22c55e' }}>Connected</p>
               <p style={{ fontSize: '12px', color: 'rgba(34,197,94,0.7)' }}>
                 {PMS_SYSTEMS.find(p => p.value === activeProperty.pmsType)?.label ?? activeProperty.pmsType}
-                {activeProperty.lastSyncedAt && ` · Last synced ${new Date(activeProperty.lastSyncedAt as any).toLocaleTimeString()}`}
+                {activeProperty.lastSyncedAt && (() => {
+                  const ts = activeProperty.lastSyncedAt as any;
+                  const d = ts?.toDate ? ts.toDate() : new Date(ts);
+                  return isNaN(d.getTime()) ? '' : ` · Last synced ${d.toLocaleTimeString()}`;
+                })()}
               </p>
             </div>
           </div>
