@@ -37,7 +37,10 @@ service cloud.firestore {
               'inspectedAt',
               'issueNote',
               'isDnd',
-              'priority'
+              'dndNote',
+              'priority',
+              'checklist',
+              'hasPhoto'
             ]);
     }
   }
