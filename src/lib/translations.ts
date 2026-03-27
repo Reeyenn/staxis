@@ -142,7 +142,7 @@ type TranslationKey =
   | 'weeklyHoursTracker' | 'notificationsTitle' | 'noNotifications' | 'markAllRead'
   | 'daysWorkedLabel' | 'onVacation' | 'inactiveLabel' | 'maxDaysPerWeekLabel'
   | 'vacationDatesLabel' | 'vacationDatesHelp' | 'isActiveLabel'
-  | 'eligibleLabel' | 'atLimitLabel' | 'sendingLabel' | 'crewSelectedCount'
+  | 'eligibleLabel' | 'atLimitLabel' | 'noPhoneLabel' | 'sendingLabel' | 'crewSelectedCount'
   | 'confirmDeclinedMsg' | 'replacementFoundMsg' | 'noReplacementMsg' | 'allConfirmedMsg';
 
 const translations: Record<Language, Record<TranslationKey, string>> = {
@@ -527,6 +527,7 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     isActiveLabel: 'Active',
     eligibleLabel: 'Eligible',
     atLimitLabel: 'At limit',
+    noPhoneLabel: 'No phone — add in Staff page',
     sendingLabel: 'Sending…',
     crewSelectedCount: 'selected',
     confirmDeclinedMsg: 'declined — finding replacement',
@@ -916,6 +917,7 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     isActiveLabel: 'Activa',
     eligibleLabel: 'Disponible',
     atLimitLabel: 'Al límite',
+    noPhoneLabel: 'Sin teléfono — agregar en Personal',
     sendingLabel: 'Enviando…',
     crewSelectedCount: 'seleccionadas',
     confirmDeclinedMsg: 'rechazó — buscando reemplazo',

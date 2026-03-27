@@ -404,11 +404,17 @@ export default function SchedulingPage() {
             </button>
           </div>
 
-          {eligiblePool.length === 0 && alreadyInPool.size === 0 ? (
+          {staff.filter(s => s.isActive !== false).length === 0 ? (
             <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>
               {t('noEligibleStaff', lang)}
             </p>
           ) : (
+            <>
+            {eligiblePool.length === 0 && alreadyInPool.size === 0 && (
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '0 0 12px', lineHeight: 1.5 }}>
+                {t('noEligibleStaff', lang)}
+              </p>
+            )}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: '8px' }}>
               {staff
                 .filter(s => s.isActive !== false)
@@ -486,11 +492,12 @@ export default function SchedulingPage() {
                           {member.name}
                         </p>
                         <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0 }}>
-                          {inPool    ? t('crewForDate', lang) :
-                           onVacation ? t('onVacation', lang) :
-                           isAtLimit  ? t('atLimitLabel', lang) :
-                           eligible   ? `${member.daysWorkedThisWeek ?? 0} ${t('daysWorkedLabel', lang)}` :
-                                        t('inactiveLabel', lang)}
+                          {inPool      ? t('crewForDate', lang) :
+                           onVacation  ? t('onVacation', lang) :
+                           !member.phone ? t('noPhoneLabel', lang) :
+                           isAtLimit   ? t('atLimitLabel', lang) :
+                           eligible    ? `${member.daysWorkedThisWeek ?? 0} ${t('daysWorkedLabel', lang)}` :
+                                         t('inactiveLabel', lang)}
                         </p>
                       </div>
 
@@ -503,6 +510,7 @@ export default function SchedulingPage() {
                   );
                 })}
             </div>
+            </>
           )}
 
           {/* Send button */}

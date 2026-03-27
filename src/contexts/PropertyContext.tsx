@@ -86,46 +86,50 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     (async () => {
-      const [prop, staffList, areas, laundry] = await Promise.all([
-        getProperty(user.uid, activePropertyId),
-        getStaff(user.uid, activePropertyId),
-        getPublicAreas(user.uid, activePropertyId),
-        getLaundryConfig(user.uid, activePropertyId),
-      ]);
+      try {
+        const [prop, staffList, areas, laundry] = await Promise.all([
+          getProperty(user.uid, activePropertyId),
+          getStaff(user.uid, activePropertyId),
+          getPublicAreas(user.uid, activePropertyId),
+          getLaundryConfig(user.uid, activePropertyId),
+        ]);
 
-      setActiveProperty(prop);
-      setStaff(staffList);
+        setActiveProperty(prop);
+        setStaff(staffList);
 
-      // Seed defaults if empty
-      if (areas.length === 0) {
-        const defaults = getDefaultPublicAreas().map(a => ({ ...a, id: generateId() }));
-        await bulkSetPublicAreas(user.uid, activePropertyId, defaults);
-        setPublicAreas(defaults);
-      } else {
-        setPublicAreas(areas);
-      }
+        // Seed defaults if empty
+        if (areas.length === 0) {
+          const defaults = getDefaultPublicAreas().map(a => ({ ...a, id: generateId() }));
+          await bulkSetPublicAreas(user.uid, activePropertyId, defaults);
+          setPublicAreas(defaults);
+        } else {
+          setPublicAreas(areas);
+        }
 
-      // Migrate bad laundry defaults: if any category has minutesPerLoad >= 60,
-      // it was seeded with the old incorrect values — reset to fixed defaults.
-      const laundryNeedsMigration = laundry.length === 0 || laundry.some(c => c.minutesPerLoad >= 60);
-      if (laundryNeedsMigration) {
-        const defaults = getDefaultLaundryCategories().map(c => ({ ...c, id: generateId() }));
-        await Promise.all(defaults.map(c => setLaundryCategory(user.uid, activePropertyId!, c)));
-        setLaundryConfig(defaults);
-      } else {
-        setLaundryConfig(laundry);
-      }
+        // Migrate bad laundry defaults: if any category has minutesPerLoad >= 60,
+        // it was seeded with the old incorrect values — reset to fixed defaults.
+        const laundryNeedsMigration = laundry.length === 0 || laundry.some(c => c.minutesPerLoad >= 60);
+        if (laundryNeedsMigration) {
+          const defaults = getDefaultLaundryCategories().map(c => ({ ...c, id: generateId() }));
+          await Promise.all(defaults.map(c => setLaundryCategory(user.uid, activePropertyId!, c)));
+          setLaundryConfig(defaults);
+        } else {
+          setLaundryConfig(laundry);
+        }
 
-      // Migrate bad public area defaults: if all non-daily areas have today as startDate,
-      // they were seeded without staggering — reset to fixed defaults.
-      const todayStr = format(new Date(), 'yyyy-MM-dd');
-      const nonDailyAreas = areas.filter(a => a.frequencyDays > 1 && !a.onlyWhenRented);
-      const areasNeedMigration = areas.length > 0 && nonDailyAreas.length > 0 &&
-        nonDailyAreas.every(a => a.startDate === todayStr);
-      if (areasNeedMigration) {
-        const defaults = getDefaultPublicAreas().map(a => ({ ...a, id: generateId() }));
-        await bulkSetPublicAreas(user.uid, activePropertyId!, defaults);
-        setPublicAreas(defaults);
+        // Migrate bad public area defaults: if all non-daily areas have today as startDate,
+        // they were seeded without staggering — reset to fixed defaults.
+        const todayStr = format(new Date(), 'yyyy-MM-dd');
+        const nonDailyAreas = areas.filter(a => a.frequencyDays > 1 && !a.onlyWhenRented);
+        const areasNeedMigration = areas.length > 0 && nonDailyAreas.length > 0 &&
+          nonDailyAreas.every(a => a.startDate === todayStr);
+        if (areasNeedMigration) {
+          const defaults = getDefaultPublicAreas().map(a => ({ ...a, id: generateId() }));
+          await bulkSetPublicAreas(user.uid, activePropertyId!, defaults);
+          setPublicAreas(defaults);
+        }
+      } catch (err) {
+        console.error('PropertyContext: failed to load property data', err);
       }
     })();
   }, [user, activePropertyId]);
