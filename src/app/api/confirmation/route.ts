@@ -112,7 +112,38 @@ export async function POST(req: NextRequest) {
       .collection('managerNotifications');
 
     if (response === 'confirmed') {
-      // Check if everyone confirmed for this date
+      // ── Follow-up SMS: room list + personal app link ─────────────────────
+      const rooms     = (data.assignedRooms as string[] | undefined) ?? [];
+      const areas     = (data.assignedAreas as string[] | undefined) ?? [];
+      const hkUrl     = (data.hkUrl as string | undefined) ?? '';
+      const lang      = (data.language as 'en' | 'es' | undefined) ?? 'en';
+      const firstName = (data.staffName as string).split(' ')[0];
+      const phone164  = toE164(data.staffPhone as string);
+
+      if (phone164 && (rooms.length > 0 || areas.length > 0)) {
+        let followUp: string;
+        if (lang === 'es') {
+          followUp = `✅ ¡Confirmado, ${firstName}! Mañana te toca:`;
+          if (rooms.length > 0) followUp += `\nHabitaciones: ${rooms.join(', ')}`;
+          if (areas.length > 0) followUp += `\nÁreas: ${areas.join(', ')}`;
+          if (hkUrl)            followUp += `\nTu enlace: ${hkUrl}`;
+          followUp += `\n– HotelOps`;
+        } else {
+          followUp = `✅ Confirmed, ${firstName}! Here's your assignment for tomorrow:`;
+          if (rooms.length > 0) followUp += `\nRooms: ${rooms.join(', ')}`;
+          if (areas.length > 0) followUp += `\nAreas: ${areas.join(', ')}`;
+          if (hkUrl)            followUp += `\nYour link: ${hkUrl}`;
+          followUp += `\n– HotelOps`;
+        }
+        try {
+          await sendSms(phone164, followUp);
+        } catch (smsErr) {
+          console.error('Follow-up SMS failed:', smsErr);
+          // Non-fatal — confirmation is already saved
+        }
+      }
+
+      // ── Check if everyone has confirmed ──────────────────────────────────
       const allSnap = await db
         .collection('users').doc(uid)
         .collection('properties').doc(pid)

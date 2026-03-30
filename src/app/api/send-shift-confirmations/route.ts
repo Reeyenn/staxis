@@ -7,6 +7,8 @@ interface StaffEntry {
   name: string;
   phone: string;
   language: 'en' | 'es';
+  assignedRooms?: string[];   // room numbers assigned to this HK
+  assignedAreas?: string[];   // public area names assigned to this HK
 }
 
 interface RequestBody {
@@ -60,12 +62,17 @@ export async function POST(req: NextRequest) {
     const db = admin.firestore();
 
     const results = await Promise.allSettled(
-      staff.map(async ({ staffId, name, phone, language }) => {
+      staff.map(async ({ staffId, name, phone, language, assignedRooms, assignedAreas }) => {
         const token = randomUUID();
         const phone164 = toE164(phone);
         if (!phone164) throw new Error(`Invalid phone number: ${phone}`);
 
-        // Create confirmation doc (token = doc ID)
+        const rooms  = assignedRooms ?? [];
+        const areas  = assignedAreas ?? [];
+        const hkUrl  = `${baseUrl}/housekeeper/${staffId}`;
+
+        // Store confirmation doc with room + area assignments so the
+        // post-confirm SMS can include the full list.
         await db
           .collection('users').doc(uid)
           .collection('properties').doc(pid)
@@ -79,18 +86,28 @@ export async function POST(req: NextRequest) {
             shiftDate,
             status: 'pending',
             language,
+            assignedRooms:  rooms,
+            assignedAreas:  areas,
+            hkUrl,
             sentAt: admin.firestore.FieldValue.serverTimestamp(),
             respondedAt: null,
             smsSent: false,
           });
 
-        const dateLabel = formatShiftDate(shiftDate, language);
-        const confirmUrl = `${baseUrl}/confirm/${token}?uid=${uid}&pid=${pid}`;
-        const firstName = name.split(' ')[0];
+        const dateLabel   = formatShiftDate(shiftDate, language);
+        const confirmUrl  = `${baseUrl}/confirm/${token}?uid=${uid}&pid=${pid}`;
+        const firstName   = name.split(' ')[0];
+
+        // Availability check — mention room count so they know what to expect.
+        const roomCount  = rooms.length;
+        const areaCount  = areas.length;
+        const workSummary = language === 'es'
+          ? `${roomCount} hab.${areaCount > 0 ? ` + ${areaCount} área(s)` : ''}`
+          : `${roomCount} room${roomCount !== 1 ? 's' : ''}${areaCount > 0 ? ` + ${areaCount} area${areaCount !== 1 ? 's' : ''}` : ''}`;
 
         const message = language === 'es'
-          ? `Hola ${firstName}, estás programada para el ${dateLabel}. Confirma aquí: ${confirmUrl} – HotelOps`
-          : `Hi ${firstName}, you're scheduled for ${dateLabel}. Confirm: ${confirmUrl} – HotelOps`;
+          ? `Hola ${firstName} 👋 ¿Puedes venir mañana (${dateLabel})? Tendrías ${workSummary}. Confirma: ${confirmUrl} – HotelOps`
+          : `Hi ${firstName} 👋 Can you come in tomorrow (${dateLabel})? You'd have ${workSummary}. Confirm: ${confirmUrl} – HotelOps`;
 
         await sendSms(phone164, message);
 
@@ -104,7 +121,7 @@ export async function POST(req: NextRequest) {
       })
     );
 
-    const sent = results.filter(r => r.status === 'fulfilled').length;
+    const sent   = results.filter(r => r.status === 'fulfilled').length;
     const failed = results.filter(r => r.status === 'rejected').length;
     const tokens = results.flatMap(r => r.status === 'fulfilled' ? [r.value] : []);
 

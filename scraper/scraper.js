@@ -312,15 +312,16 @@ async function writeRoomsToFirestore(rooms) {
 }
 
 // ─── Scheduler trigger ─────────────────────────────────────────────────────
-// Tracks whether the nightly scheduler has already run today so it
-// fires exactly once per night even though the scraper loops every 15 min.
-let lastSchedulerDate = null;
+// Tracks whether each daily trigger has already fired today so they
+// run exactly once per calendar day even though the scraper loops every 15 min.
+let lastSchedulerDate    = null; // 10pm nightly scheduler
+let lastMorningResendDate = null; // 6am morning re-send
 
 async function maybeRunScheduler() {
-  const hour = localHour();
+  const hour  = localHour();
   const today = todayISO();
 
-  // Run between 22:00–22:59 local time, once per calendar day
+  // ── 10pm: nightly scheduler (build tomorrow's schedule + send availability texts) ──
   if (hour === 22 && lastSchedulerDate !== today) {
     lastSchedulerDate = today;
     try {
@@ -332,6 +333,28 @@ async function maybeRunScheduler() {
       }, log);
     } catch (err) {
       log(`Scheduler error: ${err.message}`);
+    }
+  }
+
+  // ── 6am: morning re-send (update confirmed HKs with fresh room counts) ──
+  if (hour === 6 && lastMorningResendDate !== today) {
+    lastMorningResendDate = today;
+    const appUrl = process.env.APP_URL || 'https://hotelops-ai.vercel.app';
+    try {
+      const res = await fetch(`${appUrl}/api/morning-resend`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uid:       CONFIG.USER_ID,
+          pid:       CONFIG.PROPERTY_ID,
+          shiftDate: today,
+          baseUrl:   appUrl,
+        }),
+      });
+      const result = await res.json();
+      log(`Morning re-send: ${result.message ?? JSON.stringify(result)}`);
+    } catch (err) {
+      log(`Morning re-send error: ${err.message}`);
     }
   }
 }
