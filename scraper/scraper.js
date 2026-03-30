@@ -267,9 +267,10 @@ async function writeRoomsToFirestore(rooms) {
   // Fetch all existing docs in parallel to know which are new vs existing
   const snaps = await Promise.all(refs.map(({ ref }) => ref.get()));
 
-  // Build batch — scraper only writes reliable CA fields, never touches status.
-  // status is owned by HotelOps (housekeepers mark rooms clean from their phone).
-  // New docs get status:'dirty' as default. Existing docs keep their current status.
+  // Build batch — scraper writes CA fields including status.
+  // NOTE: While housekeepers aren't yet using the app to mark rooms clean,
+  // CA condition is the source of truth for status. Once HKs are live on the
+  // app, flip this back to preserve status on existing docs.
   const batch = db.batch();
 
   refs.forEach(({ room, ref }, i) => {
@@ -277,6 +278,7 @@ async function writeRoomsToFirestore(rooms) {
     const syncData = {
       number:        room.number,
       type:          mapRoomType(room.service, room.roomStatus), // checkout|stayover|vacant
+      status:        mapRoomStatus(room.condition),              // clean|dirty — from CA condition
       priority:      'standard',
       date:          today,
       propertyId:    CONFIG.PROPERTY_ID,
@@ -284,14 +286,15 @@ async function writeRoomsToFirestore(rooms) {
       _caRoomType:   room.roomType,    // SNK, SNQQ, HSNK, etc.
       _caRoomStatus: room.roomStatus,  // Occupied / Vacant
       _caService:    room.service,     // Check Out / Stay Over / None
+      _caCondition:  room.condition,   // Clean / Dirty
       _lastSyncedAt: now,
     };
 
     if (isNew) {
-      // First sync of the day — initialize with status:'dirty', no assignment
-      batch.set(ref, { ...syncData, status: 'dirty', assignedTo: null, assignedName: null });
+      // First sync of the day — initialize with no assignment
+      batch.set(ref, { ...syncData, assignedTo: null, assignedName: null });
     } else {
-      // Already exists — merge only CA fields, preserve status/assignedTo/etc.
+      // Already exists — merge all fields including status
       batch.set(ref, syncData, { merge: true });
     }
   });
