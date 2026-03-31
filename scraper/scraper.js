@@ -314,12 +314,38 @@ async function writeRoomsToFirestore(rooms) {
 // ─── Scheduler trigger ─────────────────────────────────────────────────────
 // Tracks whether each daily trigger has already fired today so they
 // run exactly once per calendar day even though the scraper loops every 15 min.
-let lastSchedulerDate    = null; // 10pm nightly scheduler
-let lastMorningResendDate = null; // 6am morning re-send
+let lastSchedulerDate       = null; // 10pm nightly scheduler
+let lastAvailCheckDate      = null; // 9pm availability check texts
+let lastMorningResendDate   = null; // 6am morning re-send
 
 async function maybeRunScheduler() {
   const hour  = localHour();
   const today = todayISO();
+
+  // ── 9pm: send night-before YES/NO availability texts to all active HKs ──
+  if (hour === 21 && lastAvailCheckDate !== today) {
+    lastAvailCheckDate = today;
+    const appUrl = process.env.APP_URL || 'https://hotelops-ai.vercel.app';
+    // shiftDate = tomorrow (the shift they're being asked about)
+    const tomorrowISO = new Intl.DateTimeFormat('en-CA', { timeZone: CONFIG.TIMEZONE }).format(
+      new Date(Date.now() + 24 * 60 * 60 * 1000),
+    );
+    try {
+      const res = await fetch(`${appUrl}/api/nightly-availability-check`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uid:       CONFIG.USER_ID,
+          pid:       CONFIG.PROPERTY_ID,
+          shiftDate: tomorrowISO,
+        }),
+      });
+      const result = await res.json();
+      log(`Availability check: sent=${result.sent ?? '?'} failed=${result.failed ?? '?'} for ${tomorrowISO}`);
+    } catch (err) {
+      log(`Availability check error: ${err.message}`);
+    }
+  }
 
   // ── 10pm: nightly scheduler (build tomorrow's schedule + send availability texts) ──
   if (hour === 22 && lastSchedulerDate !== today) {

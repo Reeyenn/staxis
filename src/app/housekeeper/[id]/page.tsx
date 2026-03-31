@@ -3,6 +3,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   collectionGroup,
+  doc,
+  getDoc,
   query,
   where,
   onSnapshot,
@@ -55,6 +57,23 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   const [issueRoomId, setIssueRoomId] = useState<string | null>(null);
   const [issueNote, setIssueNote] = useState('');
   const [savingIssue, setSavingIssue] = useState(false);
+
+  // Load saved language preference from staffPrefs on mount so the page
+  // auto-displays in Spanish for HKs who replied ESPAÑOL to a text.
+  useEffect(() => {
+    if (!housekeeperId) return;
+    const prefRef = doc(db, 'staffPrefs', housekeeperId);
+    getDoc(prefRef)
+      .then(snap => {
+        if (snap.exists()) {
+          const pref = snap.data() as { language?: 'en' | 'es' };
+          if (pref.language === 'es' || pref.language === 'en') {
+            setLang(pref.language as Language);
+          }
+        }
+      })
+      .catch(err => console.error('[housekeeper] staffPrefs load failed:', err));
+  }, [housekeeperId, setLang]);
 
   useEffect(() => {
     let unsub: (() => void) | undefined;
