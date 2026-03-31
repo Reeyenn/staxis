@@ -76,9 +76,17 @@ export async function POST(req: NextRequest) {
       .where('isActive', '!=', false)
       .get();
 
+    type StaffEntry = {
+      id: string;
+      name?: string;
+      phone?: string;
+      isActive?: boolean;
+      [key: string]: unknown;
+    };
+
     const activeStaff = staffSnap.docs
-      .map(d => ({ id: d.id, ...d.data() as Record<string, unknown> }))
-      .filter(s => s.phone && typeof s.phone === 'string');
+      .map(d => ({ id: d.id, ...(d.data() as Omit<StaffEntry, 'id'>) } as StaffEntry))
+      .filter((s): s is StaffEntry & { phone: string } => typeof s.phone === 'string' && s.phone.length > 0);
 
     if (activeStaff.length === 0) {
       return NextResponse.json({ message: 'No active staff with phone numbers', sent: 0 });
