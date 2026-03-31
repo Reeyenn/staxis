@@ -121,7 +121,7 @@ export async function POST(req: NextRequest) {
         // Always include ESPAÑOL prompt unless they already speak Spanish
         let message: string;
         if (lang === 'es') {
-          message = `Hola ${firstName}! ¿Puedes venir mañana (${dateLabel})?\nResponde SÍ o NO.\n\nPara inglés, responde ENGLISH\n– HotelOps`;
+          message = `Hola ${firstName}! ¿Puedes venir mañana (${dateLabel})?\nResponde SÍ o NO.\n\nFor English, reply ENGLISH\n– HotelOps`;
         } else {
           message = `Hi ${firstName}! Can you come in tomorrow (${dateLabel})?\nReply YES or NO.\n\nPara español, responde ESPAÑOL\n– HotelOps`;
         }

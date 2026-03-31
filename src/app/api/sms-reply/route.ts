@@ -141,7 +141,7 @@ export async function POST(req: NextRequest) {
       const dateLabel = formatShiftDate(shiftDate, 'es');
       const esMsg =
         `Hola ${firstName}! ¿Puedes venir mañana (${dateLabel})?\n` +
-        `Responde SÍ o NO.\n\nPara inglés, responde ENGLISH\n– HotelOps`;
+        `Responde SÍ o NO.\n\nFor English, reply ENGLISH\n– HotelOps`;
 
       await sendSms(phone164, esMsg, replyWebhookUrl);
       return NextResponse.json({ ok: true });
