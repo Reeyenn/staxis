@@ -136,7 +136,7 @@ export async function POST(req: NextRequest) {
         `Hi ${firstName}! Can you come in tomorrow (${dateLabel})?\n` +
         `Reply YES or NO.\n\nPara español, responde ESPAÑOL\n– Comfort Suites`;
 
-      await sendSms(phone164, enMsg, replyWebhookUrl);
+      await sendSms(phone164, enMsg);
       return NextResponse.json({ ok: true });
     }
 
