@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import admin from '@/lib/firebase-admin';
+import { sendSms } from '@/lib/sms';
 
 /**
  * POST /api/sms-reply
@@ -23,26 +24,6 @@ function toE164(raw: string): string | null {
   return null;
 }
 
-async function sendSms(
-  phone: string,
-  message: string,
-  replyWebhookUrl?: string,
-): Promise<void> {
-  const body: Record<string, string> = {
-    phone,
-    message,
-    key: process.env.TEXTBELT_API_KEY ?? 'textbelt',
-  };
-  if (replyWebhookUrl) body.replyWebhookUrl = replyWebhookUrl;
-
-  const res = await fetch('https://textbelt.com/text', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json() as { success: boolean; error?: string };
-  if (!data.success) throw new Error(data.error ?? 'Textbelt send failed');
-}
 
 function formatShiftDate(dateStr: string, lang: 'en' | 'es'): string {
   const [year, month, day] = dateStr.split('-').map(Number);
@@ -70,16 +51,11 @@ export async function POST(req: NextRequest) {
     let fromNumber: string | undefined;
     let text: string | undefined;
 
-    const contentType = req.headers.get('content-type') ?? '';
-    if (contentType.includes('application/json')) {
-      const body = await req.json() as { fromNumber?: string; text?: string };
-      fromNumber = body.fromNumber;
-      text = body.text;
-    } else {
-      const form = await req.formData();
-      fromNumber = form.get('fromNumber') as string | undefined ?? undefined;
-      text = form.get('text') as string | undefined ?? undefined;
-    }
+    // Twilio always sends application/x-www-form-urlencoded
+    // Fields: From, Body, MessageSid, To, etc.
+    const form = await req.formData();
+    fromNumber = form.get('From') as string | undefined ?? undefined;
+    text       = form.get('Body') as string | undefined ?? undefined;
 
     if (!fromNumber || !text) {
       return NextResponse.json({ ok: true }); // Always 200 to prevent Textbelt retries
@@ -91,7 +67,6 @@ export async function POST(req: NextRequest) {
     const reply = normalise(text);
     const db = admin.firestore();
     const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://hotelops-ai.vercel.app';
-    const replyWebhookUrl = `${baseUrl}/api/sms-reply`;
 
     // ── Find the most recent pending availability check for this phone ──────
     // Try raw fromNumber first, then E164, so we match however the phone was stored.
@@ -143,7 +118,7 @@ export async function POST(req: NextRequest) {
         `Hola ${firstName}! ¿Puedes venir mañana (${dateLabel})?\n` +
         `Responde SÍ o NO.\n\nFor English, reply ENGLISH\n– Comfort Suites`;
 
-      await sendSms(phone164, esMsg, replyWebhookUrl);
+      await sendSms(phone164, esMsg);
       return NextResponse.json({ ok: true });
     }
 
@@ -339,7 +314,7 @@ export async function POST(req: NextRequest) {
           });
 
           try {
-            await sendSms(nextPhone164, nextMsg, replyWebhookUrl);
+            await sendSms(nextPhone164, nextMsg);
             await newCheckRef.update({ smsSent: true });
           } catch (smsErr) {
             console.error('Cascade SMS failed:', smsErr);

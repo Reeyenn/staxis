@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import admin from '@/lib/firebase-admin';
+import { sendSms } from '@/lib/sms';
 
 /**
  * POST /api/nightly-availability-check
@@ -37,20 +38,6 @@ function formatShiftDate(dateStr: string, lang: 'en' | 'es'): string {
   return `${dayName}, ${dateFormatted}`;
 }
 
-async function sendSms(phone: string, message: string, replyWebhookUrl: string): Promise<void> {
-  const res = await fetch('https://textbelt.com/text', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      phone,
-      message,
-      key: process.env.TEXTBELT_API_KEY ?? 'textbelt',
-      replyWebhookUrl,
-    }),
-  });
-  const data = await res.json() as { success: boolean; error?: string; textId?: string };
-  if (!data.success) throw new Error(data.error ?? 'Textbelt send failed');
-}
 
 export async function POST(req: NextRequest) {
   try {
@@ -65,9 +52,6 @@ export async function POST(req: NextRequest) {
     }
 
     const db = admin.firestore();
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://hotelops-ai.vercel.app';
-    const replyWebhookUrl = `${baseUrl}/api/sms-reply`;
-
     // Load all active staff with phone numbers
     const staffSnap = await db
       .collection('users').doc(uid)
@@ -146,7 +130,7 @@ export async function POST(req: NextRequest) {
           respondedAt: null,
         });
 
-        await sendSms(phone164, message, replyWebhookUrl);
+        await sendSms(phone164, message);
 
         await checkRef.update({ smsSent: true });
 

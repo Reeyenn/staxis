@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
 import admin from '@/lib/firebase-admin';
+import { sendSms } from '@/lib/sms';
 
 function toE164(raw: string): string | null {
   const digits = raw.replace(/\D/g, '');
@@ -10,19 +11,6 @@ function toE164(raw: string): string | null {
   return null;
 }
 
-async function sendSms(phone: string, message: string): Promise<void> {
-  const res = await fetch('https://textbelt.com/text', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      phone,
-      message,
-      key: process.env.TEXTBELT_API_KEY ?? 'textbelt',
-    }),
-  });
-  const data = await res.json() as { success: boolean; error?: string };
-  if (!data.success) throw new Error(data.error ?? 'Textbelt send failed');
-}
 
 function formatShiftDate(dateStr: string, lang: 'en' | 'es'): string {
   const [year, month, day] = dateStr.split('-').map(Number);

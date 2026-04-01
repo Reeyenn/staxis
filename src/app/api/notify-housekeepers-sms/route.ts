@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { sendSms } from '@/lib/sms';
 
 interface SmsEntry {
   phone: string;          // E.164 format, e.g. +15551234567
@@ -16,22 +17,6 @@ function toE164(raw: string): string | null {
   return null;
 }
 
-async function sendSms(phone: string, message: string): Promise<void> {
-  const res = await fetch('https://textbelt.com/text', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      phone,
-      message,
-      key: process.env.TEXTBELT_API_KEY ?? 'textbelt',
-    }),
-  });
-
-  const data = await res.json() as { success: boolean; error?: string; textId?: string; quotaRemaining?: number };
-  if (!data.success) {
-    throw new Error(data.error ?? 'Textbelt send failed');
-  }
-}
 
 export async function POST(req: NextRequest) {
   try {
