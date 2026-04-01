@@ -198,12 +198,12 @@ export async function POST(req: NextRequest) {
         confirmMsg = `✅ ¡Confirmado, ${firstName}!`;
         if (assignedRooms.length > 0) confirmMsg += `\nHabitaciones: ${assignedRooms.join(', ')}`;
         if (assignedAreas.length > 0) confirmMsg += `\nÁreas: ${assignedAreas.join(', ')}`;
-        confirmMsg += `\n– Comfort Suites`;
+        confirmMsg += `\nTu enlace: ${hkUrl}\n– Comfort Suites`;
       } else {
         confirmMsg = `✅ Got it, ${firstName}! See you tomorrow.`;
         if (assignedRooms.length > 0) confirmMsg += `\nRooms: ${assignedRooms.join(', ')}`;
         if (assignedAreas.length > 0) confirmMsg += `\nAreas: ${assignedAreas.join(', ')}`;
-        confirmMsg += `\n– Comfort Suites`;
+        confirmMsg += `\nYour link: ${hkUrl}\n– Comfort Suites`;
       }
 
       await sendSms(phone164, confirmMsg);
