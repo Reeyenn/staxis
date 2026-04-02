@@ -79,7 +79,7 @@ export default function PropertySelectorPage() {
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             margin: '0 auto 16px',
           }}>
-            <span style={{ fontSize: '22px', fontWeight: 700, color: '#0A0A0A', fontFamily: 'var(--font-mono)' }}>H</span>
+            <span style={{ fontSize: '22px', fontWeight: 700, color: '#0A0A0A', fontFamily: 'var(--font-mono)' }}>S</span>
           </div>
           <h1 style={{
             fontFamily: 'var(--font-sans)', fontWeight: 700,

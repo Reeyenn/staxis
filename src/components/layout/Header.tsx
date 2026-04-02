@@ -49,7 +49,7 @@ export function Header() {
             background: 'var(--amber)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
-            <span style={{ fontSize: '14px', fontWeight: 700, color: '#0A0A0A', fontFamily: 'var(--font-mono)' }}>H</span>
+            <span style={{ fontSize: '14px', fontWeight: 700, color: '#0A0A0A', fontFamily: 'var(--font-mono)' }}>S</span>
           </div>
           <span style={{
             fontFamily: 'var(--font-sans)', fontWeight: 600,
