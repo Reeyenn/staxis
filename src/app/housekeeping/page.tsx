@@ -1190,23 +1190,25 @@ export default function HousekeepingPage() {
   return (
     <AppLayout>
       {/* ── Page header ── */}
-      <div style={{ padding: '16px 16px 0' }}>
-        <div style={{ padding: '8px 0 4px' }}>
+      <div style={{ padding: '20px 16px 0' }}>
+        <div style={{ padding: '0 0 4px' }}>
           {activeProperty && (
-            <p style={{ color: 'var(--text-muted)', fontSize: '11px', fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: '2px' }}>
+            <p style={{ color: 'var(--text-muted)', fontSize: '13px', fontWeight: 500, marginBottom: '4px' }}>
               {activeProperty.name}
             </p>
           )}
-          <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '26px', color: 'var(--text-primary)', letterSpacing: '-0.02em', display: 'flex', alignItems: 'center', gap: '8px', margin: 0 }}>
-            <BedDouble size={20} color="var(--amber)" />
+          <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '24px', color: 'var(--text-primary)', letterSpacing: '-0.02em', display: 'flex', alignItems: 'center', gap: '8px', margin: 0 }}>
             {t('housekeeping', lang)}
           </h1>
+          <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginTop: '2px' }}>
+            {lang === 'es' ? 'Gestiona las operaciones diarias de limpieza' : 'Manage daily housekeeping operations'}
+          </p>
         </div>
       </div>
 
       {/* ── Sub-tab bar ── */}
-      <div style={{ padding: '12px 16px 0', position: 'sticky', top: 0, zIndex: 10, background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}>
-        <div style={{ display: 'flex', gap: '4px', overflowX: 'auto', paddingBottom: '12px', scrollbarWidth: 'none' }}>
+      <div style={{ padding: '16px 16px 0', position: 'sticky', top: 52, zIndex: 10, background: 'var(--bg)' }}>
+        <div style={{ display: 'flex', gap: '0', borderBottom: '2px solid var(--border)' }}>
           {TABS.map(tab => {
             const isActive = activeTab === tab.key;
             return (
@@ -1214,14 +1216,15 @@ export default function HousekeepingPage() {
                 key={tab.key}
                 onClick={() => setActiveTab(tab.key)}
                 style={{
-                  padding: '8px 16px',
-                  borderRadius: '100px',
+                  padding: '10px 20px',
                   flexShrink: 0,
-                  border: `1.5px solid ${isActive ? 'var(--amber-border)' : 'var(--border)'}`,
-                  background: isActive ? 'var(--amber-dim)' : 'transparent',
-                  color: isActive ? 'var(--amber)' : 'var(--text-secondary)',
-                  fontWeight: isActive ? 700 : 500,
-                  fontSize: '13px',
+                  border: 'none',
+                  borderBottom: `2px solid ${isActive ? 'var(--navy-light)' : 'transparent'}`,
+                  marginBottom: '-2px',
+                  background: 'transparent',
+                  color: isActive ? 'var(--navy-light)' : 'var(--text-muted)',
+                  fontWeight: isActive ? 600 : 500,
+                  fontSize: '14px',
                   cursor: 'pointer',
                   whiteSpace: 'nowrap',
                   fontFamily: 'var(--font-sans)',

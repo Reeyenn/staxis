@@ -64,7 +64,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       <main style={{
         flex: 1,
         width: '100%',
-        maxWidth: '800px',
+        maxWidth: '960px',
         margin: '0 auto',
         /* bottom padding = nav 64px + safe area + 8px breathing room */
         paddingBottom: 'calc(72px + env(safe-area-inset-bottom, 0px))',

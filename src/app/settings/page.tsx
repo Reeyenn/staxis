@@ -30,12 +30,11 @@ export default function SettingsPage() {
         {/* ── Header ── */}
         <div className="animate-in">
           {activeProperty && (
-            <p style={{ color:'var(--text-muted)', fontSize:'11px', fontWeight:500, letterSpacing:'0.06em', textTransform:'uppercase', marginBottom:'4px' }}>
+            <p style={{ color:'var(--text-muted)', fontSize:'13px', fontWeight:500, marginBottom:'4px' }}>
               {activeProperty.name}
             </p>
           )}
-          <h1 style={{ fontFamily:'var(--font-sans)', fontWeight:700, fontSize:'26px', color:'var(--text-primary)', letterSpacing:'-0.02em', display:'flex', alignItems:'center', gap:'8px' }}>
-            <Settings size={18} color="var(--amber)" />
+          <h1 style={{ fontFamily:'var(--font-sans)', fontWeight:700, fontSize:'24px', color:'var(--text-primary)', letterSpacing:'-0.02em' }}>
             {t('settings', lang)}
           </h1>
         </div>
@@ -53,11 +52,11 @@ export default function SettingsPage() {
               >
                 <div style={{
                   width:'48px', height:'48px', borderRadius:'13px', flexShrink:0,
-                  background:'var(--amber-dim)',
-                  border:'1px solid var(--amber-border)',
+                  background:'rgba(27,58,92,0.06)',
+                  border:'1px solid rgba(27,58,92,0.12)',
                   display:'flex', alignItems:'center', justifyContent:'center',
                 }}>
-                  <Icon size={21} color="var(--amber)" />
+                  <Icon size={21} color="var(--navy)" />
                 </div>
 
                 <div style={{ flex:1, minWidth:0 }}>
@@ -80,7 +79,7 @@ export default function SettingsPage() {
           textAlign:'center', fontSize:'11px', color:'var(--text-muted)',
           fontWeight:500, letterSpacing:'0.06em', padding:'8px',
         }}>
-          Staxis <span style={{ color:'var(--amber)' }}>AI</span>
+          Staxis <span style={{ color:'var(--navy-light)' }}>AI</span>
         </p>
 
       </div>

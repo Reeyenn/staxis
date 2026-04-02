@@ -55,7 +55,7 @@ export function Header() {
             fontFamily: 'var(--font-sans)', fontWeight: 600,
             fontSize: '15px', color: 'var(--text-primary)', letterSpacing: '-0.01em',
           }}>
-            Staxis <span style={{ color: 'var(--amber)' }}>AI</span>
+            Staxis <span style={{ color: 'var(--navy-light)', fontWeight: 700 }}>AI</span>
           </span>
         </div>
 
