@@ -51,21 +51,22 @@ function RoomGrid({ rooms }: { rooms: Room[] }) {
                   key={room.id}
                   title={`Room ${room.number} · ${room.type ?? ''} · ${room.status}`}
                   style={{
-                    width: '34px', height: '34px',
+                    width: '38px', height: '34px',
                     borderRadius: '7px',
                     background: bg,
                     border: `1.5px solid ${border}`,
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontSize: '10px', fontWeight: 700,
+                    fontSize: '9px', fontWeight: 700,
                     fontFamily: 'var(--font-mono)',
                     color,
                     position: 'relative',
                     transition: 'transform 0.1s',
                     cursor: 'default',
                     flexShrink: 0,
+                    letterSpacing: '-0.02em',
                   }}
                 >
-                  {room.number.slice(-2)}
+                  {room.number}
                   {/* Red dot for checkout rooms that are dirty */}
                   {isDirty && room.type === 'checkout' && (
                     <div style={{
