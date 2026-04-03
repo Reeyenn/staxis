@@ -252,7 +252,7 @@ export default function DashboardPage() {
           </div>
 
           {/* RIGHT: Tomorrow's crew */}
-          <div className="card" style={{ padding: '18px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div className="card" onClick={() => { localStorage.setItem('hk-tab', 'schedule'); router.push('/housekeeping'); }} style={{ padding: '18px', display: 'flex', flexDirection: 'column', overflow: 'hidden', cursor: 'pointer', transition: 'box-shadow 150ms' }} onMouseEnter={e => (e.currentTarget.style.boxShadow = '0 0 0 2px var(--navy-light)')} onMouseLeave={e => (e.currentTarget.style.boxShadow = '')}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', flexShrink: 0 }}>
               <Users size={14} color="var(--navy-light)" />
               <h2 style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)' }}>
