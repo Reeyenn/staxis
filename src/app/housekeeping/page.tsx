@@ -620,20 +620,29 @@ function RoomsSection() {
       )}
 
       {floors.length > 1 && (
-        <div style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '4px', flexWrap: 'nowrap' }}>
+        <select
+          value={selectedFloor}
+          onChange={e => setSelectedFloor(e.target.value)}
+          style={{
+            height: '40px', borderRadius: 'var(--radius-md)',
+            border: '1.5px solid var(--border)',
+            background: 'var(--bg-card)', color: 'var(--text-primary)',
+            fontSize: '13px', fontWeight: 500,
+            padding: '0 12px', cursor: 'pointer',
+            fontFamily: 'var(--font-sans)',
+            width: '100%', maxWidth: '220px',
+          }}
+        >
           {['all', ...floors].map(floor => {
             const floorRooms = floor === 'all' ? rooms : rooms.filter(r => getFloor(r.number) === floor);
             const floorDone  = floorRooms.filter(r => r.status === 'clean' || r.status === 'inspected').length;
-            const isActive   = selectedFloor === floor;
             return (
-              <button key={floor} onClick={() => setSelectedFloor(floor)}
-                style={{ padding: '9px 16px', borderRadius: '100px', flexShrink: 0, border: `1.5px solid ${isActive ? 'var(--amber-border)' : 'var(--border)'}`, background: isActive ? 'var(--amber-dim)' : 'var(--bg-card)', color: isActive ? 'var(--amber)' : 'var(--text-secondary)', fontWeight: isActive ? 700 : 500, fontSize: '13px', cursor: 'pointer', whiteSpace: 'nowrap', fontFamily: 'var(--font-sans)', transition: 'all 120ms' }}>
-                {floor === 'all' ? t('all', lang) : `${t('floor', lang)} ${floor}`}
-                {' '}<span style={{ fontSize: '11px', opacity: 0.7 }}>{floorDone}/{floorRooms.length}</span>
-              </button>
+              <option key={floor} value={floor}>
+                {floor === 'all' ? `${t('all', lang)} floors` : `${t('floor', lang)} ${floor}`} — {floorDone}/{floorRooms.length} done
+              </option>
             );
           })}
-        </div>
+        </select>
       )}
 
       {loading ? (
@@ -656,49 +665,49 @@ function RoomsSection() {
             <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginLeft: 'auto' }}>{lang === 'es' ? 'Toca para cambiar estado' : 'Tap to cycle status'}</span>
           </div>
 
-          {/* Tile grid */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(68px, 1fr))', gap: '6px' }}>
+          {/* Tile grid — every tile is exactly the same fixed size */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, 72px)', gap: '6px' }}>
             {sorted.map(room => {
               const info = STATUS_INFO[room.status];
-              const isDone = room.status === 'clean' || room.status === 'inspected';
+              const completedTime = room.completedAt
+                ? format(
+                    typeof (room.completedAt as unknown as { toDate?: () => Date })?.toDate === 'function'
+                      ? (room.completedAt as unknown as { toDate: () => Date }).toDate()
+                      : new Date(room.completedAt as unknown as string | number),
+                    'h:mm a'
+                  )
+                : null;
               return (
                 <button
                   key={room.id}
                   onClick={() => handleToggle(room)}
                   disabled={room.status === 'inspected'}
-                  title={`Room ${room.number} · ${room.type ?? ''} · ${info.label}`}
+                  title={`Room ${room.number} · ${room.type ?? ''} · ${info.label}${completedTime ? ` · Done ${completedTime}` : ''}`}
                   style={{
+                    width: '72px', height: '72px',
+                    flexShrink: 0,
                     display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                    gap: '3px', padding: '10px 4px',
+                    gap: '4px',
                     background: info.bgColor, border: `1.5px solid ${info.borderColor}`,
                     borderRadius: '10px',
                     cursor: room.status === 'inspected' ? 'default' : 'pointer',
                     opacity: room.status === 'inspected' ? 0.55 : 1,
-                    transition: 'transform 0.1s',
+                    transition: 'opacity 0.1s',
                     fontFamily: 'var(--font-sans)',
                     position: 'relative',
+                    overflow: 'hidden',
                   }}
                 >
-                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: room.number.length > 3 ? '12px' : '14px', color: info.color, lineHeight: 1 }}>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '14px', color: info.color, lineHeight: 1 }}>
                     {room.number}
                   </span>
-                  <span style={{ fontSize: '9px', fontWeight: 600, color: info.color, opacity: 0.8, textAlign: 'center', lineHeight: 1.2 }}>
+                  <span style={{ fontSize: '9px', fontWeight: 600, color: info.color, opacity: 0.85, textAlign: 'center', lineHeight: 1 }}>
                     {info.label.replace(' ✓', '')}
                   </span>
                   {(room.priority === 'vip' || room.isDnd || room.type === 'checkout') && (
-                    <div style={{ position: 'absolute', top: '3px', right: '3px', fontSize: '8px', lineHeight: 1 }}>
-                      {room.priority === 'vip' ? '⭐' : room.isDnd ? '🚫' : room.type === 'checkout' ? '🚪' : ''}
+                    <div style={{ position: 'absolute', top: '3px', right: '4px', fontSize: '9px', lineHeight: 1 }}>
+                      {room.priority === 'vip' ? '⭐' : room.isDnd ? '🚫' : '🚪'}
                     </div>
-                  )}
-                  {isDone && room.completedAt && (
-                    <span style={{ fontSize: '8px', color: info.color, opacity: 0.7, lineHeight: 1 }}>
-                      {format(
-                        typeof (room.completedAt as unknown as { toDate?: () => Date })?.toDate === 'function'
-                          ? (room.completedAt as unknown as { toDate: () => Date }).toDate()
-                          : new Date(room.completedAt as unknown as string | number),
-                        'h:mm'
-                      )}
-                    </span>
                   )}
                 </button>
               );
