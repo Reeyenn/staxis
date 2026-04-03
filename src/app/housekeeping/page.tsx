@@ -706,19 +706,14 @@ function RoomsSection() {
       ) : (
         <>
 
-          {/* Legend + Rooms */}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginBottom: '4px' }}>
-            <span style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>🚪 Checkout</span>
-            <span style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>🚫 Do Not Disturb</span>
-          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            {floors.map(floor => {
+            {floors.map((floor, floorIdx) => {
               const floorRooms = sorted.filter(r => getFloor(r.number) === floor);
               const floorDone  = floorRooms.filter(r => r.status === 'clean' || r.status === 'inspected').length;
               if (floorRooms.length === 0) return null;
               return (
                 <div key={floor}>
-                  {/* Floor label */}
+                  {/* Floor label + legend on first floor */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
                     <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>
                       Floor {floor}
@@ -727,6 +722,12 @@ function RoomsSection() {
                       {floorDone}/{floorRooms.length}
                     </span>
                     <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
+                    {floorIdx === 0 && (
+                      <>
+                        <span style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '3px', whiteSpace: 'nowrap' }}>🚪 Checkout</span>
+                        <span style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '3px', whiteSpace: 'nowrap' }}>🚫 DND</span>
+                      </>
+                    )}
                   </div>
                   {/* Tiles */}
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
