@@ -185,7 +185,7 @@ export function Header() {
                         {user.displayName ?? 'User'}
                       </div>
                       <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '2px' }}>
-                        {user.role}
+                        {user.role ? user.role.charAt(0).toUpperCase() + user.role.slice(1) : ''}
                       </div>
                     </div>
                     <button
