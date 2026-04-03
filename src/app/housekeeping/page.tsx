@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -1200,7 +1201,18 @@ function ImportSection() {
 // ══════════════════════════════════════════════════════════════════════════════
 
 export default function HousekeepingPage() {
-  const [activeTab, setActiveTab] = useState<TabKey>('schedule');
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const tabParam = searchParams.get('tab') as TabKey | null;
+  const validTabs: TabKey[] = ['schedule', 'rooms', 'performance', 'import'];
+  const activeTab: TabKey = tabParam && validTabs.includes(tabParam) ? tabParam : 'schedule';
+
+  const setActiveTab = (tab: TabKey) => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('tab', tab);
+    router.replace(`/housekeeping?${params.toString()}`, { scroll: false });
+  };
+
   const { lang } = useLang();
   const { activeProperty } = useProperty();
 
