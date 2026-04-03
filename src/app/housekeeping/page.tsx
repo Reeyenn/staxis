@@ -306,7 +306,7 @@ function ScheduleSection() {
   // Fetch public areas (seed defaults if none, or reseed if outdated V3 data)
   useEffect(() => {
     if (!uid || !pid) return;
-    const OLD_NAMES = ['stairwell', 'staff / service', 'floor 2 hallway', 'floor 3 hallway', 'floor 4 hallway', 'restrooms (3', 'elevator area (1st'];
+    const OLD_NAMES = ['stairwell', 'staff / service', 'floor 2 hallway', 'floor 3 hallway', 'floor 4 hallway', 'restrooms (3', 'elevator area (1st', '2nd, 3rd, & 4th floor hallways'];
     const needsReseed = (areas: PublicArea[]) => areas.some(a => OLD_NAMES.some(old => a.name.toLowerCase().includes(old)));
 
     const seedDefaults = async () => {
@@ -325,7 +325,7 @@ function ScheduleSection() {
       if (fetched.length === 0) {
         setPublicAreas(await seedDefaults());
       } else if (needsReseed(fetched)) {
-        // V4 migration: wipe old data and reseed with correct list
+        // V5 migration: split upper-floor areas into per-floor entries
         for (const a of fetched) await deletePublicArea(uid, pid, a.id);
         setPublicAreas(await seedDefaults());
       } else {
@@ -1029,7 +1029,7 @@ function PublicAreasSection() {
   useEffect(() => {
     if (!uid || !pid) return;
     setLoading(true);
-    const OLD_NAMES = ['stairwell', 'staff / service', 'floor 2 hallway', 'floor 3 hallway', 'floor 4 hallway', 'restrooms (3', 'elevator area (1st'];
+    const OLD_NAMES = ['stairwell', 'staff / service', 'floor 2 hallway', 'floor 3 hallway', 'floor 4 hallway', 'restrooms (3', 'elevator area (1st', '2nd, 3rd, & 4th floor hallways'];
     const needsReseed = (areas: PublicArea[]) => areas.some(a => OLD_NAMES.some(old => a.name.toLowerCase().includes(old)));
 
     const seedDefaults = async () => {

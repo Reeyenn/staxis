@@ -33,11 +33,21 @@ export function getDefaultPublicAreas(): Omit<PublicArea, 'id'>[] {
     { name: 'Laundry + Linen Room', floor: '1', locations: 1, frequencyDays: 2, minutesPerClean: 30, startDate: d1 },
     { name: 'Laundry Break Room', floor: '1', locations: 1, frequencyDays: 2, minutesPerClean: 10, startDate: d1 },
 
-    // ── Upper Floors (2nd, 3rd, 4th) ─────────────────────────────────
-    { name: '2nd, 3rd, & 4th Floor Hallways + Side Hallways', floor: '2', locations: 3, frequencyDays: 1, minutesPerClean: 60, startDate: d },
-    { name: 'Guest Laundry Room (2nd Floor)', floor: '2', locations: 1, frequencyDays: 3, minutesPerClean: 15, startDate: d1 },
-    { name: 'Soda Ice Room', floor: '2', locations: 3, frequencyDays: 3, minutesPerClean: 10, startDate: d1 },
-    { name: 'Housekeeping Room', floor: '2', locations: 3, frequencyDays: 7, minutesPerClean: 15, startDate: d3 },
+    // ── Floor 2 ───────────────────────────────────────────────────────
+    { name: '2nd Floor Hallway + Side Hallway', floor: '2', locations: 1, frequencyDays: 1, minutesPerClean: 16, startDate: d },
+    { name: 'Guest Laundry Room', floor: '2', locations: 1, frequencyDays: 3, minutesPerClean: 15, startDate: d1 },
+    { name: 'Soda Ice Room', floor: '2', locations: 1, frequencyDays: 3, minutesPerClean: 10, startDate: d1 },
+    { name: 'Housekeeping Room', floor: '2', locations: 1, frequencyDays: 7, minutesPerClean: 15, startDate: d3 },
+
+    // ── Floor 3 ───────────────────────────────────────────────────────
+    { name: '3rd Floor Hallway + Side Hallway', floor: '3', locations: 1, frequencyDays: 1, minutesPerClean: 16, startDate: d },
+    { name: 'Soda Ice Room', floor: '3', locations: 1, frequencyDays: 3, minutesPerClean: 10, startDate: d1 },
+    { name: 'Housekeeping Room', floor: '3', locations: 1, frequencyDays: 7, minutesPerClean: 15, startDate: d3 },
+
+    // ── Floor 4 ───────────────────────────────────────────────────────
+    { name: '4th Floor Hallway + Side Hallway', floor: '4', locations: 1, frequencyDays: 1, minutesPerClean: 16, startDate: d },
+    { name: 'Soda Ice Room', floor: '4', locations: 1, frequencyDays: 3, minutesPerClean: 10, startDate: d1 },
+    { name: 'Housekeeping Room', floor: '4', locations: 1, frequencyDays: 7, minutesPerClean: 15, startDate: d3 },
 
     // ── Other ────────────────────────────────────────────────────────
     { name: 'Stairs', floor: 'other', locations: 2, frequencyDays: 7, minutesPerClean: 30, startDate: d3 },
