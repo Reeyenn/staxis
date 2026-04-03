@@ -549,9 +549,8 @@ function RoomsSection() {
   const { lang }                               = useLang();
   const { recordOfflineAction }                = useSyncContext();
 
-  const [rooms,         setRooms]         = useState<Room[]>([]);
-  const [loading,       setLoading]       = useState(true);
-  const [selectedFloor, setSelectedFloor] = useState<string>('all');
+  const [rooms,   setRooms]   = useState<Room[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!user || !activePropertyId) return;
@@ -564,8 +563,7 @@ function RoomsSection() {
     return parseInt(a) - parseInt(b);
   });
 
-  const filtered = selectedFloor === 'all' ? rooms : rooms.filter(r => getFloor(r.number) === selectedFloor);
-  const sorted = [...filtered].sort((a, b) => (parseInt(a.number.replace(/\D/g, '')) || 0) - (parseInt(b.number.replace(/\D/g, '')) || 0));
+  const sorted = [...rooms].sort((a, b) => (parseInt(a.number.replace(/\D/g, '')) || 0) - (parseInt(b.number.replace(/\D/g, '')) || 0));
 
   const doneCount  = rooms.filter(r => r.status === 'clean' || r.status === 'inspected').length;
   const totalCount = rooms.length;
@@ -619,31 +617,6 @@ function RoomsSection() {
         </div>
       )}
 
-      {floors.length > 1 && (
-        <select
-          value={selectedFloor}
-          onChange={e => setSelectedFloor(e.target.value)}
-          style={{
-            height: '40px', borderRadius: 'var(--radius-md)',
-            border: '1.5px solid var(--border)',
-            background: 'var(--bg-card)', color: 'var(--text-primary)',
-            fontSize: '13px', fontWeight: 500,
-            padding: '0 12px', cursor: 'pointer',
-            fontFamily: 'var(--font-sans)',
-            width: '100%', maxWidth: '220px',
-          }}
-        >
-          {['all', ...floors].map(floor => {
-            const floorRooms = floor === 'all' ? rooms : rooms.filter(r => getFloor(r.number) === floor);
-            const floorDone  = floorRooms.filter(r => r.status === 'clean' || r.status === 'inspected').length;
-            return (
-              <option key={floor} value={floor}>
-                {floor === 'all' ? `All floors (${floorDone}/${floorRooms.length} done)` : `Floor ${floor} (${floorDone}/${floorRooms.length} done)`}
-              </option>
-            );
-          })}
-        </select>
-      )}
 
       {loading ? (
         <p style={{ color: 'var(--text-muted)', fontSize: '14px', textAlign: 'center', padding: '48px 0' }}>{t('loading', lang)}</p>
@@ -654,20 +627,10 @@ function RoomsSection() {
         </div>
       ) : (
         <>
-          {/* Legend */}
-          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-            {(['dirty', 'in_progress', 'clean', 'inspected'] as RoomStatus[]).map(s => (
-              <div key={s} style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                <div style={{ width: '10px', height: '10px', borderRadius: '3px', background: STATUS_INFO[s].bgColor, border: `1.5px solid ${STATUS_INFO[s].borderColor}` }} />
-                <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)' }}>{STATUS_INFO[s].label.replace(' ✓', '')}</span>
-              </div>
-            ))}
-            <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginLeft: 'auto' }}>{lang === 'es' ? 'Toca para cambiar estado' : 'Tap to cycle status'}</span>
-          </div>
 
           {/* Rooms grouped by floor */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            {(selectedFloor === 'all' ? floors : [selectedFloor]).map(floor => {
+            {floors.map(floor => {
               const floorRooms = sorted.filter(r => getFloor(r.number) === floor);
               const floorDone  = floorRooms.filter(r => r.status === 'clean' || r.status === 'inspected').length;
               if (floorRooms.length === 0) return null;
@@ -678,9 +641,10 @@ function RoomsSection() {
                     <span style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)' }}>
                       Floor {floor}
                     </span>
-                    <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 500 }}>
-                      {floorDone}/{floorRooms.length} done
+                    <span style={{ fontSize: '12px', color: 'var(--text-primary)', fontWeight: 800, fontFamily: 'var(--font-mono)' }}>
+                      {floorDone}/{floorRooms.length}
                     </span>
+                    <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 500 }}>done</span>
                     <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
                   </div>
                   {/* Tiles */}
