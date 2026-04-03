@@ -268,7 +268,7 @@ function staffInitials(name: string): string {
 
 function ScheduleSection() {
   const { user } = useAuth();
-  const { activePropertyId, staff, staffLoaded, refreshStaff } = useProperty();
+  const { activeProperty, activePropertyId, staff, staffLoaded, refreshStaff } = useProperty();
   const { lang } = useLang();
 
   const tomorrow = addDays(schedTodayStr(), 1);
@@ -324,12 +324,17 @@ function ScheduleSection() {
   }, [uid, pid]);
 
   // ── Prediction model: 4 separate buckets ──
+  const coMins = activeProperty?.checkoutMinutes ?? 30;
+  const soMins = activeProperty?.stayoverMinutes ?? 20;
+  const prepPerActivity = activeProperty?.prepMinutesPerActivity ?? 5;
+  const shiftLen = activeProperty?.shiftMinutes ?? 480;
+
   const checkouts = shiftRooms.filter(r => r.type === 'checkout').length;
   const stayovers = shiftRooms.filter(r => r.type === 'stayover').length;
   const totalRooms = checkouts + stayovers;
 
-  // 1. Room Minutes = (checkouts x 30) + (stayovers x 20)
-  const roomMinutes = (checkouts * 30) + (stayovers * 20);
+  // 1. Room Minutes
+  const roomMinutes = (checkouts * coMins) + (stayovers * soMins);
 
   // 2. Public Area Minutes = sum of (minutesPerClean x locations) for areas due that day
   const [shiftY, shiftM, shiftD] = shiftDate.split('-').map(Number);
@@ -338,15 +343,15 @@ function ScheduleSection() {
   const publicAreaMinutes = calcPublicAreaMinutes(areasDueToday);
   const totalPublicAreaActivities = areasDueToday.reduce((sum, a) => sum + a.locations, 0);
 
-  // 3. Prep Minutes = (total rooms + total public area activities) x 5 min each
-  const prepMinutes = (totalRooms + totalPublicAreaActivities) * 5;
+  // 3. Prep Minutes
+  const prepMinutes = (totalRooms + totalPublicAreaActivities) * prepPerActivity;
 
   // 4. Laundry = 1 fixed person, always added
   const LAUNDRY_STAFF = 1;
 
   // Final calculation
   const workloadMinutes = roomMinutes + prepMinutes + publicAreaMinutes;
-  const cleaningStaff = workloadMinutes > 0 ? Math.ceil(workloadMinutes / 480) : 0;
+  const cleaningStaff = workloadMinutes > 0 ? Math.ceil(workloadMinutes / shiftLen) : 0;
   const recommendedStaff = cleaningStaff + LAUNDRY_STAFF;
 
   useEffect(() => {
@@ -478,13 +483,13 @@ function ScheduleSection() {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', background: 'rgba(0,0,0,0.02)', borderRadius: 'var(--radius-sm)' }}>
                 <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Room Minutes</span>
                 <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
-                  {checkouts} CO x 30 + {stayovers} SO x 20 = {roomMinutes}m
+                  {checkouts} CO x {coMins} + {stayovers} SO x {soMins} = {roomMinutes}m
                 </span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', background: 'rgba(0,0,0,0.02)', borderRadius: 'var(--radius-sm)' }}>
                 <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Prep Minutes</span>
                 <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
-                  ({totalRooms} rooms + {totalPublicAreaActivities} areas) x 5 = {prepMinutes}m
+                  ({totalRooms} rooms + {totalPublicAreaActivities} areas) x {prepPerActivity} = {prepMinutes}m
                 </span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', background: 'rgba(0,0,0,0.02)', borderRadius: 'var(--radius-sm)' }}>
@@ -497,7 +502,7 @@ function ScheduleSection() {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px' }}>
                 <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>Total Workload</span>
                 <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
-                  {workloadMinutes}m / 480m per shift = {cleaningStaff} cleaners + {LAUNDRY_STAFF} laundry
+                  {workloadMinutes}m / {shiftLen}m per shift = {cleaningStaff} cleaners + {LAUNDRY_STAFF} laundry
                 </span>
               </div>
             </div>

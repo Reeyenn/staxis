@@ -7,7 +7,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { t } from '@/lib/translations';
-import { Building2, Wifi, Users, ChevronRight, Settings } from 'lucide-react';
+import { Building2, Wifi, Users, ChevronRight, Settings, Wrench } from 'lucide-react';
 
 export default function SettingsPage() {
   const { lang }           = useLang();
@@ -15,7 +15,8 @@ export default function SettingsPage() {
   const { user }           = useAuth();
 
   const sections = [
-    { href:'/settings/property', icon:Building2, label:'Property',        desc:'Name, room count, wages, shift length'              },
+    { href:'/settings/property', icon:Building2, label:'Property',         desc:'Name, room count, wages, shift length'              },
+    { href:'/settings/operations', icon:Wrench, label:'Operations Config', desc:'Public areas, cleaning times, prep time'            },
     { href:'/settings/pms',      icon:Wifi,      label:'PMS Connection',  desc:'Auto-sync data from your property management system'},
     { href:'/staff',             icon:Users,     label:'Staff Directory', desc:'View and manage all hotel staff by department'      },
     ...(user?.role === 'admin'

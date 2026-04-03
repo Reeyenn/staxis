@@ -94,6 +94,7 @@ export const DEFAULT_PROPERTY = {
   hourlyWage: 12,
   checkoutMinutes: 30,
   stayoverMinutes: 20,
+  prepMinutesPerActivity: 5,
   shiftMinutes: 480,
   totalStaffOnRoster: 8,
   weeklyBudget: 2500,

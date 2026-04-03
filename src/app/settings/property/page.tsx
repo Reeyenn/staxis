@@ -38,6 +38,7 @@ export default function PropertySettingsPage() {
     hourlyWage: 12,
     checkoutMinutes: 30,
     stayoverMinutes: 20,
+    prepMinutesPerActivity: 5,
     shiftMinutes: 480,
     weeklyBudget: 2500,
   });
@@ -56,6 +57,7 @@ export default function PropertySettingsPage() {
         hourlyWage: activeProperty.hourlyWage ?? 12,
         checkoutMinutes: activeProperty.checkoutMinutes ?? 30,
         stayoverMinutes: activeProperty.stayoverMinutes ?? 20,
+        prepMinutesPerActivity: activeProperty.prepMinutesPerActivity ?? 5,
         shiftMinutes: activeProperty.shiftMinutes ?? 480,
         weeklyBudget: activeProperty.weeklyBudget ?? 2500,
       });
@@ -84,6 +86,7 @@ export default function PropertySettingsPage() {
       hourlyWage: 12,
       checkoutMinutes: 30,
       stayoverMinutes: 20,
+      prepMinutesPerActivity: 5,
       shiftMinutes: 480,
       totalStaffOnRoster: 8,
       weeklyBudget: 2500,
@@ -166,6 +169,7 @@ export default function PropertySettingsPage() {
             <Field label="Checkout Minutes" field="checkoutMinutes" type="number" suffix="min" form={form} setForm={setForm} />
             <Field label="Stayover Minutes" field="stayoverMinutes" type="number" suffix="min" form={form} setForm={setForm} />
           </div>
+          <Field label="Prep Time Per Activity" field="prepMinutesPerActivity" type="number" suffix="min" form={form} setForm={setForm} />
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
             <Field label="Shift Length" field="shiftMinutes" type="number" suffix="min" form={form} setForm={setForm} />
             <Field label="Weekly Budget" field="weeklyBudget" type="number" suffix="$" form={form} setForm={setForm} />

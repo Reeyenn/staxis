@@ -8,6 +8,7 @@ export interface Property {
   hourlyWage: number;
   checkoutMinutes: number;      // default 30
   stayoverMinutes: number;      // default 20
+  prepMinutesPerActivity: number; // default 5
   shiftMinutes: number;         // default 480 (8 hrs)
   totalStaffOnRoster: number;
   weeklyBudget?: number;
