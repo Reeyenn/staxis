@@ -57,11 +57,8 @@ function formatDisplayDate(dateStr: string, lang: 'en' | 'es'): string {
 
 function isEligible(s: StaffMember, date: string): boolean {
   if (s.isActive === false) return false;
-  if (!s.phone) return false;
   if (s.vacationDates?.includes(date)) return false;
-  const maxDays = s.maxDaysPerWeek ?? 5;
-  const maxHrs  = s.maxWeeklyHours ?? 40;
-  if ((s.daysWorkedThisWeek ?? 0) >= maxDays) return false;
+  const maxHrs = s.maxWeeklyHours ?? 40;
   if ((s.weeklyHours ?? 0) >= maxHrs) return false;
   return true;
 }
@@ -444,8 +441,8 @@ function ScheduleSection() {
                   const isSelected = selected.some(s => s.id === member.id);
                   const eligible = isEligible(member, shiftDate) && !inPool;
                   const onVacation = member.vacationDates?.includes(shiftDate);
-                  const isAtLimit = !eligible && !inPool && !onVacation && member.isActive !== false && !!member.phone &&
-                    ((member.daysWorkedThisWeek ?? 0) >= (member.maxDaysPerWeek ?? 5) || (member.weeklyHours ?? 0) >= (member.maxWeeklyHours ?? 40));
+                  const isAtLimit = !eligible && !inPool && !onVacation && member.isActive !== false &&
+                    ((member.weeklyHours ?? 0) >= (member.maxWeeklyHours ?? 40));
                   const hrs = member.weeklyHours ?? 0;
                   const maxHrs = member.maxWeeklyHours ?? 40;
                   const hrsNearLimit = hrs >= maxHrs - 4;
@@ -459,7 +456,7 @@ function ScheduleSection() {
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <p style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', margin: '0 0 2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{member.name}</p>
                         <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0 }}>
-                          {inPool ? t('crewForDate', lang) : onVacation ? t('onVacation', lang) : !member.phone ? t('noPhoneLabel', lang) : isAtLimit ? t('atLimitLabel', lang) : eligible ? `${member.daysWorkedThisWeek ?? 0} ${t('daysWorkedLabel', lang)}` : t('inactiveLabel', lang)}
+                          {inPool ? t('crewForDate', lang) : onVacation ? t('onVacation', lang) : isAtLimit ? t('atLimitLabel', lang) : eligible ? `${member.daysWorkedThisWeek ?? 0} ${t('daysWorkedLabel', lang)}` : t('inactiveLabel', lang)}
                         </p>
                       </div>
                       {member.isSenior && <span style={{ fontSize: '9px', fontWeight: 700, color: 'var(--amber)', background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.2)', borderRadius: '4px', padding: '1px 5px', flexShrink: 0 }}>SR</span>}
