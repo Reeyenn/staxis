@@ -78,7 +78,8 @@ function localHour() {
 
 function isOperationalHours() {
   const hour = localHour();
-  return hour >= CONFIG.OPERATIONAL_HOURS_START && hour < CONFIG.OPERATIONAL_HOURS_END;
+  // Normal hours (6am-10pm) + midnight scrape (hour 0) for next-day data
+  return (hour >= CONFIG.OPERATIONAL_HOURS_START && hour < CONFIG.OPERATIONAL_HOURS_END) || hour === 0;
 }
 
 function log(msg) {
