@@ -421,8 +421,8 @@ function ScheduleSection() {
 
       {/* Auto-select crew */}
       <div className="card" style={{ padding: '16px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
-          <p style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', margin: 0 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
+          <p style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', margin: 0, textAlign: 'center' }}>
             {t('autoSelectCrew', lang)}
             {selected.length > 0 && <span style={{ marginLeft: '8px', color: 'var(--amber)' }}>— {selected.length} {t('crewSelectedCount', lang)}</span>}
           </p>
