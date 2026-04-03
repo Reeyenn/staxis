@@ -986,11 +986,12 @@ function StaffSection() {
 // ══════════════════════════════════════════════════════════════════════════════
 
 const PA_FLOORS = [
-  { value: '1', label: 'F1' },
-  { value: '2', label: 'F2' },
-  { value: '3', label: 'F3' },
-  { value: '4', label: 'F4' },
-  { value: 'exterior', label: 'Ext' },
+  { value: '1', label: 'Floor 1' },
+  { value: '2', label: 'Floor 2' },
+  { value: '3', label: 'Floor 3' },
+  { value: '4', label: 'Floor 4' },
+  { value: 'exterior', label: 'Exterior' },
+  { value: 'all', label: 'All Floors' },
 ];
 
 const PA_FREQ: { value: number; label: string }[] = [
@@ -1137,7 +1138,7 @@ function PublicAreasSection() {
                       <div>
                         <label className="label">Floor</label>
                         <select className="input" value={area.floor} onChange={e => handleUpdate(area.id, { floor: e.target.value })} style={{ width: '100%' }}>
-                          {PA_FLOORS.map(f => <option key={f.value} value={f.value}>{f.label === 'Ext' ? 'Exterior' : `Floor ${f.value}`}</option>)}
+                          {PA_FLOORS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
                         </select>
                       </div>
                       <div>

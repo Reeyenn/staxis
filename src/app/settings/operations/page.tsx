@@ -47,6 +47,7 @@ const FLOORS = [
   { value: '3', label: 'Floor 3' },
   { value: '4', label: 'Floor 4' },
   { value: 'exterior', label: 'Exterior' },
+  { value: 'all', label: 'All Floors' },
 ];
 
 const FREQ_OPTIONS = [
@@ -161,11 +162,12 @@ function AreaRow({
 // ── Floor tab labels (short for tabs) ──────────────────────────────────────
 
 const FLOOR_TABS = [
-  { value: '1', label: 'F1' },
-  { value: '2', label: 'F2' },
-  { value: '3', label: 'F3' },
-  { value: '4', label: 'F4' },
-  { value: 'exterior', label: 'Ext' },
+  { value: '1', label: 'Floor 1' },
+  { value: '2', label: 'Floor 2' },
+  { value: '3', label: 'Floor 3' },
+  { value: '4', label: 'Floor 4' },
+  { value: 'exterior', label: 'Exterior' },
+  { value: 'all', label: 'All Floors' },
 ];
 
 // ── Main page ──────────────────────────────────────────────────────────────

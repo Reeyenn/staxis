@@ -30,30 +30,29 @@ export function getDefaultPublicAreas(): Omit<PublicArea, 'id'>[] {
     { name: 'Meeting Room', floor: '1', locations: 1, frequencyDays: 1, minutesPerClean: 30, startDate: d, onlyWhenRented: true, isRentedToday: false },
     { name: 'Business Center', floor: '1', locations: 1, frequencyDays: 1, minutesPerClean: 10, startDate: d },
     { name: 'Fitness Center', floor: '1', locations: 1, frequencyDays: 1, minutesPerClean: 10, startDate: d },
-    { name: 'Stairwells (Ground Floor)', floor: '1', locations: 2, frequencyDays: 7, minutesPerClean: 30, startDate: d3 },
     { name: 'Staff / Service Rooms (laundry, linen, break room)', floor: '1', locations: 5, frequencyDays: 2, minutesPerClean: 10, startDate: d1 },
 
     // ── Floor 2 ──────────────────────────────────────────────────────
     { name: 'Floor 2 Hallway + Elevator Lobby', floor: '2', locations: 1, frequencyDays: 1, minutesPerClean: 60, startDate: d },
     { name: 'Floor 2 Guest Laundry / Vending / Ice', floor: '2', locations: 1, frequencyDays: 3, minutesPerClean: 15, startDate: d1 },
-    { name: 'Floor 2 Stairwells', floor: '2', locations: 2, frequencyDays: 7, minutesPerClean: 30, startDate: d3 },
     { name: 'Floor 2 Housekeeping/Staff Rooms', floor: '2', locations: 3, frequencyDays: 7, minutesPerClean: 15, startDate: d3 },
 
     // ── Floor 3 ──────────────────────────────────────────────────────
     { name: 'Floor 3 Hallway + Elevator Lobby', floor: '3', locations: 1, frequencyDays: 1, minutesPerClean: 60, startDate: d },
     { name: 'Floor 3 Guest Laundry / Vending / Ice', floor: '3', locations: 1, frequencyDays: 3, minutesPerClean: 15, startDate: d1 },
-    { name: 'Floor 3 Stairwells', floor: '3', locations: 2, frequencyDays: 7, minutesPerClean: 30, startDate: d3 },
     { name: 'Floor 3 Housekeeping/Staff Rooms', floor: '3', locations: 3, frequencyDays: 7, minutesPerClean: 15, startDate: d3 },
 
     // ── Floor 4 ──────────────────────────────────────────────────────
     { name: 'Floor 4 Hallway + Elevator Lobby', floor: '4', locations: 1, frequencyDays: 1, minutesPerClean: 60, startDate: d },
     { name: 'Floor 4 Guest Laundry / Vending / Ice', floor: '4', locations: 1, frequencyDays: 3, minutesPerClean: 15, startDate: d1 },
-    { name: 'Floor 4 Stairwells', floor: '4', locations: 2, frequencyDays: 7, minutesPerClean: 30, startDate: d3 },
     { name: 'Floor 4 Housekeeping/Staff Rooms', floor: '4', locations: 3, frequencyDays: 7, minutesPerClean: 15, startDate: d3 },
 
     // ── Exterior ──────────────────────────────────────────────────────
     { name: 'Parking Lot Garbage', floor: 'exterior', locations: 1, frequencyDays: 3, minutesPerClean: 45, startDate: d1 },
     { name: 'Front + Side Glass (Outside)', floor: 'exterior', locations: 1, frequencyDays: 3, minutesPerClean: 45, startDate: d1 },
+
+    // ── All Floors ───────────────────────────────────────────────────
+    { name: 'Stairwells (All Floors)', floor: 'all', locations: 8, frequencyDays: 7, minutesPerClean: 30, startDate: d3 },
   ];
 }
 
