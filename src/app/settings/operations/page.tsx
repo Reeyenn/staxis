@@ -158,6 +158,16 @@ function AreaRow({
   );
 }
 
+// ── Floor tab labels (short for tabs) ──────────────────────────────────────
+
+const FLOOR_TABS = [
+  { value: '1', label: 'F1' },
+  { value: '2', label: 'F2' },
+  { value: '3', label: 'F3' },
+  { value: '4', label: 'F4' },
+  { value: 'exterior', label: 'Ext' },
+];
+
 // ── Main page ──────────────────────────────────────────────────────────────
 
 export default function OperationsConfigPage() {
@@ -169,6 +179,7 @@ export default function OperationsConfigPage() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [activeFloor, setActiveFloor] = useState('1');
 
   const uid = user?.uid ?? '';
   const pid = activePropertyId ?? '';
@@ -204,7 +215,6 @@ export default function OperationsConfigPage() {
   const handleDelete = (idx: number) => {
     const area = areas[idx];
     setAreas(prev => prev.filter((_, i) => i !== idx));
-    // Delete from Firestore immediately
     if (uid && pid) deletePublicArea(uid, pid, area.id);
     setDirty(true);
   };
@@ -215,7 +225,7 @@ export default function OperationsConfigPage() {
     setAreas(prev => [...prev, {
       id,
       name: '',
-      floor: '1',
+      floor: activeFloor,
       locations: 1,
       frequencyDays: 1,
       minutesPerClean: 15,
@@ -228,7 +238,6 @@ export default function OperationsConfigPage() {
     if (!uid || !pid) return;
     setSaving(true);
     try {
-      // Write all areas to Firestore
       await Promise.all(areas.map(a => setPublicArea(uid, pid, a)));
       setSaved(true);
       setDirty(false);
@@ -238,13 +247,14 @@ export default function OperationsConfigPage() {
     }
   };
 
-  // Group areas by floor
-  const grouped = FLOORS.map(f => ({
-    ...f,
-    areas: areas
-      .map((a, idx) => ({ area: a, idx }))
-      .filter(({ area }) => area.floor === f.value),
-  })).filter(g => g.areas.length > 0);
+  // Count per floor for badges
+  const floorCounts: Record<string, number> = {};
+  for (const a of areas) floorCounts[a.floor] = (floorCounts[a.floor] || 0) + 1;
+
+  // Filtered areas for the active floor tab
+  const visibleAreas = areas
+    .map((a, idx) => ({ area: a, idx }))
+    .filter(({ area }) => area.floor === activeFloor);
 
   return (
     <AppLayout>
@@ -261,55 +271,77 @@ export default function OperationsConfigPage() {
           </h1>
         </div>
 
-        {/* Public Areas */}
-        <div style={{ marginBottom: '20px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
-            <p style={{ fontWeight: 700, fontSize: '16px', color: 'var(--text-primary)' }}>Public Areas</p>
-            <button
-              onClick={handleAdd}
-              style={{
-                display: 'flex', alignItems: 'center', gap: '4px',
-                padding: '6px 12px', borderRadius: '8px',
-                background: 'rgba(27,58,92,0.08)', border: '1px solid rgba(27,58,92,0.15)',
-                color: 'var(--navy)', cursor: 'pointer', fontSize: '13px', fontWeight: 600,
-              }}
-            >
-              <Plus size={14} /> Add
-            </button>
-          </div>
-          <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '16px' }}>
-            Configure the public areas your housekeeping team maintains. These feed directly into the staffing prediction model.
-          </p>
+        {/* Header + Add */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+          <p style={{ fontWeight: 700, fontSize: '16px', color: 'var(--text-primary)' }}>Public Areas</p>
+          <button
+            onClick={handleAdd}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '4px',
+              padding: '6px 12px', borderRadius: '8px',
+              background: 'rgba(27,58,92,0.08)', border: '1px solid rgba(27,58,92,0.15)',
+              color: 'var(--navy)', cursor: 'pointer', fontSize: '13px', fontWeight: 600,
+            }}
+          >
+            <Plus size={14} /> Add
+          </button>
         </div>
 
+        {/* Floor tabs */}
+        <div style={{
+          display: 'flex', gap: '4px', marginBottom: '16px',
+          background: 'rgba(0,0,0,0.03)', borderRadius: '10px', padding: '3px',
+        }}>
+          {FLOOR_TABS.map(f => {
+            const isActive = activeFloor === f.value;
+            const count = floorCounts[f.value] || 0;
+            return (
+              <button
+                key={f.value}
+                onClick={() => setActiveFloor(f.value)}
+                style={{
+                  flex: 1, padding: '8px 4px', borderRadius: '8px', border: 'none',
+                  background: isActive ? 'white' : 'transparent',
+                  boxShadow: isActive ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                  color: isActive ? 'var(--navy)' : 'var(--text-muted)',
+                  fontWeight: isActive ? 700 : 500, fontSize: '13px',
+                  cursor: 'pointer', display: 'flex', alignItems: 'center',
+                  justifyContent: 'center', gap: '4px', transition: 'all 0.15s',
+                }}
+              >
+                {f.label}
+                {count > 0 && (
+                  <span style={{
+                    fontSize: '10px', fontWeight: 700, minWidth: '16px', height: '16px',
+                    borderRadius: '8px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    background: isActive ? 'rgba(27,58,92,0.1)' : 'rgba(0,0,0,0.06)',
+                    color: isActive ? 'var(--navy)' : 'var(--text-muted)',
+                  }}>
+                    {count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Area list for active floor */}
         {loading ? (
           <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>Loading...</div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            {grouped.map(group => (
-              <div key={group.value}>
-                <p style={{
-                  fontSize: '12px', fontWeight: 700, color: 'var(--text-muted)',
-                  textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '8px',
-                }}>
-                  {group.label}
-                </p>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  {group.areas.map(({ area, idx }) => (
-                    <AreaRow
-                      key={area.id}
-                      area={area}
-                      onUpdate={updated => handleUpdate(idx, updated)}
-                      onDelete={() => handleDelete(idx)}
-                    />
-                  ))}
-                </div>
-              </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {visibleAreas.map(({ area, idx }) => (
+              <AreaRow
+                key={area.id}
+                area={area}
+                onUpdate={updated => handleUpdate(idx, updated)}
+                onDelete={() => handleDelete(idx)}
+              />
             ))}
 
-            {areas.length === 0 && (
-              <div className="card" style={{ padding: '32px', textAlign: 'center', color: 'var(--text-muted)' }}>
-                No public areas configured. Tap Add to create one.
+            {visibleAreas.length === 0 && (
+              <div className="card" style={{ padding: '28px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>
+                No areas on this floor. Tap Add to create one.
               </div>
             )}
           </div>
