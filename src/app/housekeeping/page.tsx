@@ -1022,6 +1022,7 @@ function PublicAreasSection() {
   const [dirty, setDirty] = useState(false);
   const [activeFloor, setActiveFloor] = useState('1');
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
 
   const uid = user?.uid ?? '';
   const pid = activePropertyId ?? '';
@@ -1063,10 +1064,14 @@ function PublicAreasSection() {
   };
 
   const handleDelete = (id: string) => {
+    const deleted = areas.find(a => a.id === id);
     setAreas(prev => prev.filter(a => a.id !== id));
     if (uid && pid) deletePublicArea(uid, pid, id);
     setDirty(true);
     setExpandedId(null);
+    const label = deleted?.name || 'Area';
+    setToast(`"${label}" deleted`);
+    setTimeout(() => setToast(null), 2500);
   };
 
   const handleAdd = () => {
@@ -1196,6 +1201,20 @@ function PublicAreasSection() {
       <button onClick={handleSave} disabled={saving || saved || !dirty} className={`btn btn-xl ${saved ? 'btn-green' : 'btn-primary'}`} style={{ width: '100%', justifyContent: 'center', opacity: (!dirty && !saved) ? 0.5 : 1 }}>
         {saved ? <><Check size={20} /> Saved!</> : saving ? 'Saving...' : 'Save Changes'}
       </button>
+
+      {/* Delete toast */}
+      {toast && (
+        <div style={{
+          position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)',
+          background: 'var(--navy)', color: '#fff', padding: '10px 20px',
+          borderRadius: '10px', fontSize: '13px', fontWeight: 600,
+          boxShadow: '0 4px 20px rgba(0,0,0,0.18)', zIndex: 9999,
+          animation: 'toastIn 0.25s ease-out',
+        }}>
+          {toast}
+        </div>
+      )}
+      <style>{`@keyframes toastIn { from { opacity: 0; transform: translateX(-50%) translateY(10px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }`}</style>
     </div>
   );
 }
