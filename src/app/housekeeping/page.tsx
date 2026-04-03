@@ -1023,6 +1023,10 @@ function PublicAreasSection() {
   const [activeFloor, setActiveFloor] = useState('1');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [newArea, setNewArea] = useState({ name: '', floor: '1', locations: 1, frequencyDays: 1, minutesPerClean: 15 });
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+  const highlightRef = useRef<HTMLDivElement | null>(null);
 
   const uid = user?.uid ?? '';
   const pid = activePropertyId ?? '';
@@ -1074,13 +1078,25 @@ function PublicAreasSection() {
     setTimeout(() => setToast(null), 2500);
   };
 
-  const handleAdd = () => {
+  const openAddModal = () => {
+    setNewArea({ name: '', floor: activeFloor, locations: 1, frequencyDays: 1, minutesPerClean: 15 });
+    setShowAddModal(true);
+  };
+
+  const confirmAdd = () => {
+    if (!newArea.name.trim()) return;
     const id = crypto.randomUUID();
     const today = new Date().toLocaleDateString('en-CA');
-    const newArea: PublicArea = { id, name: '', floor: activeFloor, locations: 1, frequencyDays: 1, minutesPerClean: 15, startDate: today };
-    setAreas(prev => [...prev, newArea]);
-    setExpandedId(id);
+    const full: PublicArea = { id, name: newArea.name.trim(), floor: newArea.floor, locations: newArea.locations, frequencyDays: newArea.frequencyDays, minutesPerClean: newArea.minutesPerClean, startDate: today };
+    setAreas(prev => [...prev, full]);
+    setActiveFloor(newArea.floor);
     setDirty(true);
+    setShowAddModal(false);
+    setHighlightId(id);
+    setTimeout(() => {
+      highlightRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 100);
+    setTimeout(() => setHighlightId(null), 2000);
   };
 
   const handleSave = async () => {
@@ -1105,7 +1121,7 @@ function PublicAreasSection() {
       {/* Header + Add */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <p style={{ fontWeight: 700, fontSize: '16px', color: 'var(--text-primary)' }}>Public Areas</p>
-        <button onClick={handleAdd} style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 12px', borderRadius: '8px', background: 'rgba(27,58,92,0.08)', border: '1px solid rgba(27,58,92,0.15)', color: 'var(--navy)', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}>
+        <button onClick={openAddModal} style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 12px', borderRadius: '8px', background: 'rgba(27,58,92,0.08)', border: '1px solid rgba(27,58,92,0.15)', color: 'var(--navy)', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}>
           <Plus size={14} /> Add
         </button>
       </div>
@@ -1142,9 +1158,10 @@ function PublicAreasSection() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
           {visible.map(area => {
             const isOpen = expandedId === area.id;
+            const isHighlighted = highlightId === area.id;
             const freqLabel = PA_FREQ.find(f => f.value === area.frequencyDays)?.label ?? `Every ${area.frequencyDays}d`;
             return (
-              <div key={area.id} className="card" style={{ padding: 0, overflow: 'hidden' }}>
+              <div key={area.id} ref={isHighlighted ? highlightRef : undefined} className="card" style={{ padding: 0, overflow: 'hidden', transition: 'box-shadow 0.3s, border-color 0.3s', ...(isHighlighted ? { boxShadow: '0 0 0 2px var(--amber), 0 4px 16px rgba(251,191,36,0.25)', borderColor: 'var(--amber)' } : {}) }}>
                 <button onClick={() => setExpandedId(isOpen ? null : area.id)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '12px', padding: '14px 16px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', color: 'var(--text-primary)' }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <p style={{ fontWeight: 600, fontSize: '14px', lineHeight: 1.3, marginBottom: '2px' }}>{area.name || 'Untitled'}</p>
@@ -1201,6 +1218,55 @@ function PublicAreasSection() {
       <button onClick={handleSave} disabled={saving || saved || !dirty} className={`btn btn-xl ${saved ? 'btn-green' : 'btn-primary'}`} style={{ width: '100%', justifyContent: 'center', opacity: (!dirty && !saved) ? 0.5 : 1 }}>
         {saved ? <><Check size={20} /> Saved!</> : saving ? 'Saving...' : 'Save Changes'}
       </button>
+
+      {/* Add Area Modal */}
+      {showAddModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 9998, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }} onClick={() => setShowAddModal(false)}>
+          <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-card)', borderRadius: '16px', padding: '24px', width: '100%', maxWidth: '400px', boxShadow: '0 20px 60px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+            <p style={{ fontWeight: 700, fontSize: '17px', color: 'var(--text-primary)' }}>Add Public Area</p>
+
+            <div>
+              <label className="label">Name</label>
+              <input className="input" placeholder="e.g. 3rd Floor Hallway" autoFocus value={newArea.name} onChange={e => setNewArea(p => ({ ...p, name: e.target.value }))} />
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+              <div>
+                <label className="label">Floor</label>
+                <select className="input" value={newArea.floor} onChange={e => setNewArea(p => ({ ...p, floor: e.target.value }))} style={{ width: '100%' }}>
+                  {PA_FLOORS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="label">Frequency</label>
+                <select className="input" value={newArea.frequencyDays} onChange={e => setNewArea(p => ({ ...p, frequencyDays: Number(e.target.value) }))} style={{ width: '100%' }}>
+                  {PA_FREQ.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+              <div>
+                <label className="label">Minutes per clean</label>
+                <input className="input" type="number" value={newArea.minutesPerClean} onChange={e => setNewArea(p => ({ ...p, minutesPerClean: Number(e.target.value) || 0 }))} />
+              </div>
+              <div>
+                <label className="label">Locations</label>
+                <input className="input" type="number" value={newArea.locations} onChange={e => setNewArea(p => ({ ...p, locations: Number(e.target.value) || 1 }))} />
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+              <button onClick={() => setShowAddModal(false)} style={{ flex: 1, padding: '12px', borderRadius: '10px', border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-muted)', fontWeight: 600, fontSize: '14px', cursor: 'pointer' }}>
+                Cancel
+              </button>
+              <button onClick={confirmAdd} disabled={!newArea.name.trim()} style={{ flex: 1, padding: '12px', borderRadius: '10px', border: 'none', background: 'var(--navy)', color: '#fff', fontWeight: 600, fontSize: '14px', cursor: 'pointer', opacity: newArea.name.trim() ? 1 : 0.5 }}>
+                Add Area
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Delete toast */}
       {toast && (
