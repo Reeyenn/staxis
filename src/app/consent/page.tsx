@@ -6,7 +6,7 @@ export default function ConsentPage() {
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>SMS Consent — Staxis</title>
+        <title>SMS Consent - Staxis</title>
         <style>{`
           * { box-sizing: border-box; margin: 0; padding: 0; }
           body {

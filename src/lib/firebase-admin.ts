@@ -11,7 +11,7 @@ if (!admin.apps.length) {
       credential: admin.credential.cert({ clientEmail, privateKey, projectId }),
     });
   } else {
-    console.warn('Firebase Admin SDK not configured — admin features will be unavailable.');
+    console.warn('Firebase Admin SDK not configured - admin features will be unavailable.');
   }
 }
 

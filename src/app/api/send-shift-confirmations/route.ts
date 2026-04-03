@@ -86,7 +86,7 @@ export async function POST(req: NextRequest) {
         const confirmUrl  = `${baseUrl}/confirm/${token}?uid=${uid}&pid=${pid}`;
         const firstName   = name.split(' ')[0];
 
-        // Availability check — mention room count so they know what to expect.
+        // Availability check - mention room count so they know what to expect.
         const roomCount  = rooms.length;
         const areaCount  = areas.length;
         const workSummary = language === 'es'

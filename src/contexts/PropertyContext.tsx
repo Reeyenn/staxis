@@ -59,7 +59,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   const [laundryConfig, setLaundryConfig] = useState<LaundryCategory[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Derived from properties list — no async needed, always in sync
+  // Derived from properties list - no async needed, always in sync
   const activeProperty = useMemo(
     () => properties.find(p => p.id === activePropertyId) ?? null,
     [properties, activePropertyId]
@@ -100,7 +100,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
 
   // Load active property data.
   // Staff is loaded via onSnapshot (real-time) so it updates when the network
-  // response arrives after a cache miss — preventing the intermittent "no staff"
+  // response arrives after a cache miss - preventing the intermittent "no staff"
   // bug caused by getDocs returning an empty cached snapshot.
   useEffect(() => {
     if (!user || !activePropertyId) {
@@ -144,7 +144,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         }
 
         // Migrate bad laundry defaults: if any category has minutesPerLoad >= 60,
-        // it was seeded with the old incorrect values — reset to fixed defaults.
+        // it was seeded with the old incorrect values - reset to fixed defaults.
         const laundryNeedsMigration = laundry.length === 0 || laundry.some(c => c.minutesPerLoad >= 60);
         if (laundryNeedsMigration) {
           const defaults = getDefaultLaundryCategories().map(c => ({ ...c, id: generateId() }));
@@ -155,7 +155,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         }
 
         // Migrate bad public area defaults: if all non-daily areas have today as startDate,
-        // they were seeded without staggering — reset to fixed defaults.
+        // they were seeded without staggering - reset to fixed defaults.
         const todayStr = format(new Date(), 'yyyy-MM-dd');
         const nonDailyAreas = areas.filter(a => a.frequencyDays > 1 && !a.onlyWhenRented);
         const areasNeedMigration = areas.length > 0 && nonDailyAreas.length > 0 &&

@@ -5,7 +5,7 @@ interface SmsEntry {
   phone: string;          // E.164 format, e.g. +15551234567
   name:  string;
   rooms: string[];
-  housekeeperId?: string; // Firestore staff document ID — used to build personal room link
+  housekeeperId?: string; // Firestore staff document ID - used to build personal room link
 }
 
 /** Normalise a phone number to E.164. Strips non-digits and prepends +1 for 10-digit US numbers. */

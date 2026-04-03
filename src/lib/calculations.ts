@@ -8,7 +8,7 @@ import type {
   StaffMember,
 } from '@/types';
 
-// ─── Public Area — is due today? ───────────────────────────────────────────
+// ─── Public Area - is due today? ───────────────────────────────────────────
 
 export function isAreaDueToday(area: PublicArea, today: Date): boolean {
   if (area.onlyWhenRented) return area.isRentedToday ?? false;
@@ -113,7 +113,7 @@ export function calcSchedule(
   const estimatedLaborCost =
     recommendedStaff * hourlyWage * (minutesPerHK / 60);
 
-  // Labor saved vs full roster — always compare against the total roster size,
+  // Labor saved vs full roster - always compare against the total roster size,
   // not against however many the manager happened to schedule today.
   // This represents "what you would have spent sending your full crew."
   const fullRoster = property.totalStaffOnRoster || form.scheduledStaff || recommendedStaff;
@@ -149,7 +149,7 @@ export function getRoomSortKey(type: string, priority: string): number {
   return SORT_ORDER[key] ?? 5;
 }
 
-// ─── Smart scheduling — predict from history ───────────────────────────────
+// ─── Smart scheduling - predict from history ───────────────────────────────
 
 export function predictTodayFromHistory(
   logs: Array<{ date: string; occupied: number; checkouts: number }>,

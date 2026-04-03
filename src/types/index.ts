@@ -51,7 +51,7 @@ export interface PublicArea {
   locations: number;
   frequencyDays: number;        // every X days
   minutesPerClean: number;
-  startDate: string;            // ISO date — used to calc cycle
+  startDate: string;            // ISO date - used to calc cycle
   onlyWhenRented?: boolean;     // for meeting room etc.
   isRentedToday?: boolean;
 }
@@ -267,7 +267,7 @@ export interface PreventiveTask {
 export type ConfirmationStatus = 'pending' | 'confirmed' | 'declined' | 'no_response';
 
 export interface ShiftConfirmation {
-  id: string;               // token — also the Firestore doc ID
+  id: string;               // token - also the Firestore doc ID
   uid: string;
   pid: string;
   staffId: string;

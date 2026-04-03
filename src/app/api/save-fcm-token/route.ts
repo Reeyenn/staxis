@@ -6,7 +6,7 @@ export async function POST(req: NextRequest) {
   if (!admin.apps.length) {
     console.error('save-fcm-token: Firebase Admin SDK not initialized');
     return NextResponse.json(
-      { error: 'Server not configured — token could not be saved' },
+      { error: 'Server not configured - token could not be saved' },
       { status: 503 }
     );
   }

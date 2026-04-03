@@ -91,7 +91,7 @@ export async function getStaff(uid: string, pid: string): Promise<StaffMember[]>
   return snap.docs.map(d => ({ id: d.id, ...d.data() } as StaffMember));
 }
 
-/** Real-time staff listener — fires immediately with cached data, then again
+/** Real-time staff listener - fires immediately with cached data, then again
  *  when the network response arrives. Use this instead of getStaff to avoid
  *  the race where the Firestore cache returns [] before server data resolves. */
 export function subscribeToStaff(
@@ -193,7 +193,7 @@ export async function addRoom(uid: string, pid: string, room: Omit<Room, 'id'>):
 }
 
 export async function updateRoom(uid: string, pid: string, rid: string, data: Partial<Room>) {
-  // Strip undefined — Firestore rejects undefined field values
+  // Strip undefined - Firestore rejects undefined field values
   const clean = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
   await updateDoc(roomDocRef(uid, pid, rid), clean);
 }
@@ -215,7 +215,7 @@ export async function getRoomsForDate(uid: string, pid: string, date: string): P
 }
 
 /**
- * Copy yesterday's rooms into today — reset all to 'dirty', clear timestamps & inspection data.
+ * Copy yesterday's rooms into today - reset all to 'dirty', clear timestamps & inspection data.
  * Returns the number of rooms carried over.
  */
 export async function carryOverRooms(uid: string, pid: string, fromDate: string, toDate: string): Promise<number> {
@@ -269,7 +269,7 @@ export async function addWorkOrder(
   pid: string,
   order: Omit<WorkOrder, 'id' | 'createdAt' | 'updatedAt'>
 ): Promise<string> {
-  // Firestore rejects undefined values — strip them before writing
+  // Firestore rejects undefined values - strip them before writing
   const clean = Object.fromEntries(
     Object.entries(order).filter(([, v]) => v !== undefined)
   );

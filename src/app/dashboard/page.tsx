@@ -172,7 +172,7 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* ── Stat cards — full-width row ── */}
+        {/* ── Stat cards - full-width row ── */}
         <div className="animate-in stagger-1" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
           <StatCard
             icon={<Users size={16} color="#16A34A" />}
@@ -185,7 +185,7 @@ export default function DashboardPage() {
             icon={<DollarSign size={16} color="#CA8A04" />}
             iconBg="rgba(202,138,4,0.08)"
             label={lang === 'es' ? 'Costo Estimado' : 'Est. Labor Cost'}
-            value={total > 0 ? `$${Math.round(total * 3.2)}` : '—'}
+            value={total > 0 ? `$${Math.round(total * 3.2)}` : '-'}
             sub={lang === 'es' ? 'hoy' : 'today'}
           />
           <StatCard
@@ -204,7 +204,7 @@ export default function DashboardPage() {
           />
         </div>
 
-        {/* ── Main content — two columns side by side ── */}
+        {/* ── Main content - two columns side by side ── */}
         <div className="animate-in stagger-2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', flex: 1, minHeight: 0 }}>
 
           {/* LEFT: Room status + grid */}
@@ -272,7 +272,7 @@ export default function DashboardPage() {
               }}>
                 <CircleDot size={24} color="var(--text-muted)" style={{ margin: '0 auto 8px' }} />
                 <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
-                  {lang === 'es' ? 'No hay confirmaciones aún — ve a Housekeeping › Schedule para enviar.' : 'No confirmations yet — go to Housekeeping › Schedule to send.'}
+                  {lang === 'es' ? 'No hay confirmaciones aún - ve a Housekeeping › Schedule para enviar.' : 'No confirmations yet - go to Housekeeping › Schedule to send.'}
                 </p>
               </div>
             ) : (

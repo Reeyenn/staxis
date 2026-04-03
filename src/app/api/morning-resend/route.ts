@@ -126,7 +126,7 @@ export async function POST(req: NextRequest) {
       .get();
 
     // If no rooms for shiftDate yet, fall back to the day before (scraper may
-    // not have run for that date yet — rooms are written on the day itself)
+    // not have run for that date yet - rooms are written on the day itself)
     let roomDocs = roomsSnap.docs.map(d => d.data() as RoomDoc);
     if (roomDocs.length === 0) {
       // Try yesterday's data as proxy for tomorrow's workload

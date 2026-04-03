@@ -51,7 +51,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             if (account.uid === firebaseUser.uid) {
               setUser(account);
             } else {
-              // UID mismatch — stale session, clear it
+              // UID mismatch - stale session, clear it
               localStorage.removeItem(ACCOUNT_KEY);
               await firebaseSignOut(auth);
               setUser(null);
@@ -61,12 +61,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setUser(null);
           }
         } else {
-          // Firebase session exists with no account info — sign out
+          // Firebase session exists with no account info - sign out
           await firebaseSignOut(auth);
           setUser(null);
         }
       } else {
-        // null or anonymous user — not a manager session
+        // null or anonymous user - not a manager session
         setUser(null);
       }
       setLoading(false);
@@ -102,7 +102,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         propertyAccess: account.propertyAccess,
       };
 
-      // Store account info BEFORE signing in — onAuthStateChanged will read it
+      // Store account info BEFORE signing in - onAuthStateChanged will read it
       localStorage.setItem(ACCOUNT_KEY, JSON.stringify(appUser));
 
       // Sign in with custom Firebase token (establishes Firebase session for Firestore rules)

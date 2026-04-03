@@ -68,7 +68,7 @@ export function Header() {
             {format(new Date(), 'EEEE, MMMM d')}
           </span>
 
-          {/* Language toggle — prominent for housekeeper adoption */}
+          {/* Language toggle - prominent for housekeeper adoption */}
           <button
             onClick={() => setLang(lang === 'en' ? 'es' : 'en')}
             style={{

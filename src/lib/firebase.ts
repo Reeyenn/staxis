@@ -34,7 +34,7 @@ export const db = (() => {
         }),
       });
     } catch {
-      // Firestore was already initialized (e.g. Next.js HMR) — reuse it.
+      // Firestore was already initialized (e.g. Next.js HMR) - reuse it.
       return getFirestore(app);
     }
   }

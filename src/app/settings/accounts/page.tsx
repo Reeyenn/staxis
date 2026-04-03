@@ -171,7 +171,7 @@ export default function AccountsPage() {
 
   const togglePropertyAccess = (pid: string) => {
     setForm(f => {
-      if (f.propertyAccess.includes('*')) return f; // admin access — skip
+      if (f.propertyAccess.includes('*')) return f; // admin access - skip
       const has = f.propertyAccess.includes(pid);
       return {
         ...f,

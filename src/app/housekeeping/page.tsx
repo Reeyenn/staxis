@@ -328,7 +328,7 @@ function ScheduleSection() {
   return (
     <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
-      {/* Header row — date picker + bell */}
+      {/* Header row - date picker + bell */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <button onClick={() => { setShiftDate(d => addDays(d, -1)); setSent(false); setSelected([]); }} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '4px 8px', cursor: 'pointer', color: 'var(--text-secondary)' }}>
@@ -936,7 +936,7 @@ function PerformanceSection() {
               {[
                 { label: t('roomsDone', lang),    value: `${todayDone}/${rooms.length}`, color: 'var(--green)' },
                 { label: t('housekeepers', lang), value: String(livePerfs.filter(p => p.done > 0).length), color: 'var(--amber)' },
-                { label: t('avgCleanTime', lang), value: todayTurnaround !== null ? `${todayTurnaround}m` : '—', color: 'var(--text-secondary)' },
+                { label: t('avgCleanTime', lang), value: todayTurnaround !== null ? `${todayTurnaround}m` : '-', color: 'var(--text-secondary)' },
               ].map(({ label, value, color }) => (
                 <div key={label} style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '16px 10px', textAlign: 'center' }}>
                   <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '1.35rem', color, lineHeight: 1, letterSpacing: '-0.03em' }}>{value}</div>
@@ -989,8 +989,8 @@ function PerformanceSection() {
                     </div>
                   )}
                   <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
-                    <StatPill label={t('avgCleanTime', lang)} value={p.avgCleanMins !== null ? `${p.avgCleanMins}m` : '—'} />
-                    <StatPill label={t('roomsPerHr', lang)} value={p.roomsPerHr !== null ? String(p.roomsPerHr) : '—'} highlight={p.roomsPerHr !== null} />
+                    <StatPill label={t('avgCleanTime', lang)} value={p.avgCleanMins !== null ? `${p.avgCleanMins}m` : '-'} />
+                    <StatPill label={t('roomsPerHr', lang)} value={p.roomsPerHr !== null ? String(p.roomsPerHr) : '-'} highlight={p.roomsPerHr !== null} />
                     <PaceBadge pace={p.pace} lang={lang} />
                   </div>
                 </div>
@@ -1034,8 +1034,8 @@ function PerformanceSection() {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '10px' }}>
                 {[
                   { label: t('roomsDone', lang),    value: String(historyPerfs.reduce((s, p) => s + p.totalDone, 0)), color: 'var(--green)' },
-                  { label: t('topPerformer', lang),  value: topHistoryPerf ? topHistoryPerf.name.split(' ')[0] : '—', color: 'var(--amber)' },
-                  { label: t('avgPerDay', lang),     value: historyPerfs.length > 0 ? String(Math.round(historyPerfs.reduce((s, p) => s + p.avgPerDay, 0) / historyPerfs.length * 10) / 10) : '—', color: 'var(--text-secondary)' },
+                  { label: t('topPerformer', lang),  value: topHistoryPerf ? topHistoryPerf.name.split(' ')[0] : '-', color: 'var(--amber)' },
+                  { label: t('avgPerDay', lang),     value: historyPerfs.length > 0 ? String(Math.round(historyPerfs.reduce((s, p) => s + p.avgPerDay, 0) / historyPerfs.length * 10) / 10) : '-', color: 'var(--text-secondary)' },
                 ].map(({ label, value, color }) => (
                   <div key={label} style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '16px 10px', textAlign: 'center' }}>
                     <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '1.25rem', color, lineHeight: 1, letterSpacing: '-0.03em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</div>
@@ -1065,7 +1065,7 @@ function PerformanceSection() {
                     </div>
                     <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                       <StatPill label={t('avgPerDay', lang)} value={`${p.avgPerDay}`} highlight={i === 0} />
-                      <StatPill label={t('avgCleanTime', lang)} value={p.avgCleanMins !== null ? `${p.avgCleanMins}m` : '—'} />
+                      <StatPill label={t('avgCleanTime', lang)} value={p.avgCleanMins !== null ? `${p.avgCleanMins}m` : '-'} />
                       <StatPill label={t('checkoutsShort', lang)} value={String(p.checkoutsDone)} />
                       <StatPill label={t('stayoversShort', lang)} value={String(p.stayoversDone)} />
                     </div>

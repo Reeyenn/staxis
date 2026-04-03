@@ -47,7 +47,7 @@ export default function PMSPage() {
     setTestStatus('testing');
     setTestMessage('');
 
-    // Simulate CUA test — in production this would call /api/pms/test
+    // Simulate CUA test - in production this would call /api/pms/test
     await new Promise(r => setTimeout(r, 2500));
 
     // For demo purposes, always succeed for known PMS systems
@@ -103,14 +103,14 @@ export default function PMSPage() {
                 Auto-pull data from your PMS
               </p>
               <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-                A Computer Use Agent logs into your PMS exactly like a human would — navigating the screens, reading your occupancy and checkout data, and feeding it directly into Staxis. <strong style={{ color: 'var(--amber)' }}>Zero manual entry.</strong>
+                A Computer Use Agent logs into your PMS exactly like a human would - navigating the screens, reading your occupancy and checkout data, and feeding it directly into Staxis. <strong style={{ color: 'var(--amber)' }}>Zero manual entry.</strong>
               </p>
             </div>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             {[
               'Syncs every 15 minutes during operating hours (6 AM – 10 PM)',
-              '"Tomorrow Lock" sync at 9 PM — sends you tomorrow\'s recommended schedule',
+              '"Tomorrow Lock" sync at 9 PM - sends you tomorrow\'s recommended schedule',
               'Morning confirmation sync at 5:30 AM for any overnight changes',
               'Push notification when occupancy changes by 5+ rooms',
             ].map(item => (
@@ -156,7 +156,7 @@ export default function PMSPage() {
           <div style={{ marginBottom: '16px' }}>
             <label className="label">PMS System</label>
             <select value={pmsType} onChange={e => setPmsType(e.target.value)} className="input">
-              <option value="">— Select your PMS —</option>
+              <option value="">- Select your PMS -</option>
               {PMS_SYSTEMS.map(pms => (
                 <option key={pms.value} value={pms.value}>{pms.label}</option>
               ))}
@@ -203,7 +203,7 @@ export default function PMSPage() {
           <div style={{ display: 'flex', gap: '8px', padding: '10px 12px', background: 'rgba(0,0,0,0.03)', borderRadius: '8px', marginTop: '12px' }}>
             <Shield size={14} color="var(--text-muted)" style={{ flexShrink: 0, marginTop: '1px' }} />
             <p style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
-              Your credentials are encrypted and stored securely in Firebase. They are only used by the Staxis sync agent to read occupancy data — never shared or sold.
+              Your credentials are encrypted and stored securely in Firebase. They are only used by the Staxis sync agent to read occupancy data - never shared or sold.
             </p>
           </div>
         </div>

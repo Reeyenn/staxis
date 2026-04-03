@@ -40,10 +40,10 @@ function HousekeeperInner() {
     if (!uid || !pid) { setStep('bad-link'); return; }
 
     // Sign in anonymously so Firestore security rules allow room reads/updates.
-    // Housekeepers don't have Google accounts — anonymous auth gives them a
+    // Housekeepers don't have Google accounts - anonymous auth gives them a
     // real Firebase auth token without requiring any login UI.
     signInAnonymously(auth).catch(() => {
-      // Non-fatal — staff-list API route uses firebase-admin (bypasses rules)
+      // Non-fatal - staff-list API route uses firebase-admin (bypasses rules)
       // and the [id] page will retry on its own useEffect.
     });
 
@@ -112,7 +112,7 @@ function HousekeeperInner() {
       alignItems: 'center', justifyContent: 'center',
       padding: '24px', fontFamily: 'var(--font-sans)',
     }}>
-      {/* Language toggle — critical for housekeepers */}
+      {/* Language toggle - critical for housekeepers */}
       <div style={{ position: 'fixed', top: '16px', right: '16px', zIndex: 50 }}>
         <button
           onClick={() => setLang(lang === 'en' ? 'es' : 'en')}

@@ -101,7 +101,7 @@ export async function POST(req: NextRequest) {
         const firstName = (staff.name as string ?? 'there').split(' ')[0];
         const dateLabel = formatShiftDate(shiftDate, lang);
 
-        // Build the message — Spanish if preference saved, English otherwise
+        // Build the message - Spanish if preference saved, English otherwise
         // Always include ESPAÑOL prompt unless they already speak Spanish
         let message: string;
         if (lang === 'es') {

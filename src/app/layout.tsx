@@ -6,7 +6,7 @@ import { PropertyProvider } from '@/contexts/PropertyContext';
 import { SyncProvider } from '@/contexts/SyncContext';
 
 export const metadata: Metadata = {
-  title: 'Staxis — Hotel Operations Platform',
+  title: 'Staxis - Hotel Operations Platform',
   description: 'AI-powered operations platform for limited-service hotel owners and managers',
 };
 

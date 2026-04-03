@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import admin from '@/lib/firebase-admin';
 
-// Public endpoint — returns scheduled staff for a given property so
+// Public endpoint - returns scheduled staff for a given property so
 // housekeepers can register their device without needing an account.
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);

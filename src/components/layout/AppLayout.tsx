@@ -19,7 +19,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
   /* ── Build the offline label with optional pending count ── */
   const offlineLabel = pendingCount > 0
-    ? `Offline — ${pendingCount} ${t('changesQueued', lang)}`
+    ? `Offline - ${pendingCount} ${t('changesQueued', lang)}`
     : t('offline', lang);
 
   // Register FCM service worker for push notifications

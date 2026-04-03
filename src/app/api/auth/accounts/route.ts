@@ -15,7 +15,7 @@ async function verifyAdmin(req: NextRequest) {
   return doc;
 }
 
-// GET /api/auth/accounts — list all accounts (admin only)
+// GET /api/auth/accounts - list all accounts (admin only)
 export async function GET(req: NextRequest) {
   const caller = await verifyAdmin(req);
   if (!caller) return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
@@ -37,7 +37,7 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ accounts });
 }
 
-// POST /api/auth/accounts — create account (admin only)
+// POST /api/auth/accounts - create account (admin only)
 export async function POST(req: NextRequest) {
   const caller = await verifyAdmin(req);
   if (!caller) return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
@@ -73,7 +73,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ accountId: docRef.id });
 }
 
-// PUT /api/auth/accounts — update account (admin only)
+// PUT /api/auth/accounts - update account (admin only)
 export async function PUT(req: NextRequest) {
   const caller = await verifyAdmin(req);
   if (!caller) return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
@@ -97,7 +97,7 @@ export async function PUT(req: NextRequest) {
   return NextResponse.json({ success: true });
 }
 
-// DELETE /api/auth/accounts?accountId=xxx — delete account (admin only)
+// DELETE /api/auth/accounts?accountId=xxx - delete account (admin only)
 export async function DELETE(req: NextRequest) {
   const caller = await verifyAdmin(req);
   if (!caller) return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });

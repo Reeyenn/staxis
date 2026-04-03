@@ -131,7 +131,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   };
 
   // ── Finish room (in_progress → clean) ─────────────────────────────────────
-  // Requires hold-to-confirm on the button — accidental taps are ignored.
+  // Requires hold-to-confirm on the button - accidental taps are ignored.
   const handleFinishRoom = async (room: RoomWithRef) => {
     setSavingRoomId(room.id);
     try {
@@ -569,7 +569,7 @@ function RoomCard({
   );
 }
 
-/* ── Start Button — single tap, no protection needed ── */
+/* ── Start Button - single tap, no protection needed ── */
 function StartButton({
   lang,
   isSaving,
@@ -608,7 +608,7 @@ function StartButton({
   );
 }
 
-/* ── Hold to Finish Button — press and hold 1.5s to confirm ──
+/* ── Hold to Finish Button - press and hold 1.5s to confirm ──
    Prevents accidental taps. A progress bar fills while holding.
    Release early = cancel. Complete = fires onFinish.            */
 function HoldToFinishButton({
@@ -686,7 +686,7 @@ function HoldToFinishButton({
         outline: '2px solid #86EFAC',
       }}
     >
-      {/* Fill bar — grows left to right as user holds */}
+      {/* Fill bar - grows left to right as user holds */}
       <div style={{
         position: 'absolute',
         inset: 0,

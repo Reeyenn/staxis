@@ -5,7 +5,7 @@ import { sendSms } from '@/lib/sms';
 /**
  * POST /api/sms-reply
  *
- * Textbelt reply webhook — receives raw SMS replies from housekeepers.
+ * Textbelt reply webhook - receives raw SMS replies from housekeepers.
  *
  * Supported replies:
  *   YES / SÍ / SI  → mark availability confirmed, send room assignment + personal link
@@ -94,7 +94,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (snap.empty) {
-      // No pending check — ignore (could be an old reply or spam)
+      // No pending check - ignore (could be an old reply or spam)
       return NextResponse.json({ ok: true });
     }
 
@@ -112,7 +112,7 @@ export async function POST(req: NextRequest) {
     const lang: 'en' | 'es' = checkData.language ?? 'en';
     const firstName = (staffName ?? 'there').split(' ')[0];
 
-    // ── ESPAÑOL — save preference and resend in Spanish ───────────────────
+    // ── ESPAÑOL - save preference and resend in Spanish ───────────────────
     if (ES_SET.has(reply)) {
       await db.collection('staffPrefs').doc(staffId).set(
         { language: 'es', updatedAt: admin.firestore.FieldValue.serverTimestamp() },
@@ -130,7 +130,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true });
     }
 
-    // ── ENGLISH — switch back to English ─────────────────────────────────
+    // ── ENGLISH - switch back to English ─────────────────────────────────
     if (EN_SET.has(reply)) {
       await db.collection('staffPrefs').doc(staffId).set(
         { language: 'en', updatedAt: admin.firestore.FieldValue.serverTimestamp() },
@@ -148,7 +148,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true });
     }
 
-    // ── YES — confirm and send room assignment ────────────────────────────
+    // ── YES - confirm and send room assignment ────────────────────────────
     if (YES_SET.has(reply)) {
       await checkDoc.ref.update({
         status: 'confirmed',
@@ -173,7 +173,7 @@ export async function POST(req: NextRequest) {
           assignedAreas = (scData.assignedAreas as string[] | undefined) ?? [];
         }
       } catch {
-        // Non-fatal — send confirmation without room list
+        // Non-fatal - send confirmation without room list
       }
 
       let confirmMsg: string;
@@ -208,7 +208,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true });
     }
 
-    // ── NO — acknowledge, notify manager, cascade ─────────────────────────
+    // ── NO - acknowledge, notify manager, cascade ─────────────────────────
     if (NO_SET.has(reply)) {
       await checkDoc.ref.update({
         status: 'declined',
@@ -282,7 +282,7 @@ export async function POST(req: NextRequest) {
         await notifRef.add({
           uid, pid,
           type: 'no_replacement',
-          message: `No more eligible staff to ask for ${shiftDate} — everyone has been contacted or is at their limit`,
+          message: `No more eligible staff to ask for ${shiftDate} - everyone has been contacted or is at their limit`,
           shiftDate,
           read: false,
           createdAt: admin.firestore.FieldValue.serverTimestamp(),

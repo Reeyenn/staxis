@@ -21,7 +21,7 @@ function formatShiftDate(dateStr: string, lang: 'en' | 'es'): string {
   return `${dayName} ${dateFormatted}`;
 }
 
-// GET — load confirmation data for the HK confirm page (no auth required)
+// GET - load confirmation data for the HK confirm page (no auth required)
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
@@ -57,7 +57,7 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// POST — handle HK yes/no response, with decline cascade
+// POST - handle HK yes/no response, with decline cascade
 export async function POST(req: NextRequest) {
   try {
     const { token, uid, pid, response } = await req.json() as {
@@ -84,7 +84,7 @@ export async function POST(req: NextRequest) {
 
     const data = snap.data()!;
 
-    // Already responded — idempotent
+    // Already responded - idempotent
     if (data.status !== 'pending') {
       return NextResponse.json({ ok: true, alreadyResponded: true });
     }
@@ -127,7 +127,7 @@ export async function POST(req: NextRequest) {
           await sendSms(phone164, followUp);
         } catch (smsErr) {
           console.error('Follow-up SMS failed:', smsErr);
-          // Non-fatal — confirmation is already saved
+          // Non-fatal - confirmation is already saved
         }
       }
 
@@ -153,7 +153,7 @@ export async function POST(req: NextRequest) {
         });
       }
     } else {
-      // Declined — notify manager and find cascade replacement
+      // Declined - notify manager and find cascade replacement
       await notifRef.add({
         uid, pid,
         type: 'decline',
@@ -214,7 +214,7 @@ export async function POST(req: NextRequest) {
         await notifRef.add({
           uid, pid,
           type: 'no_replacement',
-          message: `No replacement found for ${data.shiftDate} — all eligible staff are at their limit`,
+          message: `No replacement found for ${data.shiftDate} - all eligible staff are at their limit`,
           staffName: data.staffName,
           shiftDate: data.shiftDate,
           read: false,

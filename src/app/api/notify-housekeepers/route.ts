@@ -51,7 +51,7 @@ export async function POST(req: NextRequest) {
               renotify: true,
             },
             fcmOptions: {
-              // Absolute URL — relative URLs are rejected by the push service
+              // Absolute URL - relative URLs are rejected by the push service
               link: `${APP_URL}/rooms`,
             },
           },

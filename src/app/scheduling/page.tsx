@@ -387,7 +387,7 @@ export default function SchedulingPage() {
               {t('autoSelectCrew', lang)}
               {selected.length > 0 && (
                 <span style={{ marginLeft: '8px', color: 'var(--amber)' }}>
-                  — {selected.length} {t('crewSelectedCount', lang)}
+                  - {selected.length} {t('crewSelectedCount', lang)}
                 </span>
               )}
             </p>

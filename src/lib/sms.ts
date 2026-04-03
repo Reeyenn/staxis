@@ -1,5 +1,5 @@
 /**
- * Shared SMS utility — Twilio REST API
+ * Shared SMS utility - Twilio REST API
  *
  * Reads credentials from env:
  *   TWILIO_ACCOUNT_SID
@@ -8,7 +8,7 @@
  *
  * NOTE: The original local 10DLC number (+12816669887) is blocked by A2P carrier
  * filtering (Error 30034) until A2P Brand + Campaign registration is approved (~2-3 weeks).
- * Using a Toll-Free number bypasses this — unverified toll-free works at low volume
+ * Using a Toll-Free number bypasses this - unverified toll-free works at low volume
  * (<100 msg/day) with no registration required upfront.
  *
  * Long-term: submit Toll-Free Verification in Twilio console for full throughput.
