@@ -166,9 +166,6 @@ export default function DashboardPage() {
         {/* ── Page header ── */}
         <div className="animate-in" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div>
-            <p style={{ color: 'var(--text-muted)', fontSize: '12px', fontWeight: 500, marginBottom: '2px' }}>
-              {format(new Date(), 'EEEE, MMMM d')}
-            </p>
             <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '22px', color: 'var(--text-primary)', letterSpacing: '-0.02em', lineHeight: 1 }}>
               {t('dashboard', lang)}
             </h1>

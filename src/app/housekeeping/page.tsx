@@ -1165,9 +1165,6 @@ export default function HousekeepingPage() {
           <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '24px', color: 'var(--text-primary)', letterSpacing: '-0.02em', display: 'flex', alignItems: 'center', gap: '8px', margin: 0 }}>
             {t('housekeeping', lang)}
           </h1>
-          <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginTop: '2px' }}>
-            {lang === 'es' ? 'Gestiona las operaciones diarias de limpieza' : 'Manage daily housekeeping operations'}
-          </p>
         </div>
       </div>
 

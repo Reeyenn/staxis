@@ -7,6 +7,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import { ChevronDown, LogOut, Globe, LayoutGrid } from 'lucide-react';
+import { format } from 'date-fns';
 
 export function Header() {
   const { user, signOut } = useAuth();
@@ -61,6 +62,11 @@ export function Header() {
 
         {/* Right controls */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+
+          {/* Date */}
+          <span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)', marginRight: '4px' }}>
+            {format(new Date(), 'EEE, MMM d')}
+          </span>
 
           {/* Language toggle — prominent for housekeeper adoption */}
           <button
