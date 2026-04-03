@@ -334,16 +334,18 @@ export default function AccountsPage() {
         <div style={{
           position: 'fixed', inset: 0, zIndex: 60,
           background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(4px)',
-          display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          padding: '20px',
         }}
           onClick={e => { if (e.target === e.currentTarget) setShowForm(false); }}
         >
           <div style={{
             width: '100%', maxWidth: '480px',
             background: 'var(--bg-elevated)',
-            borderRadius: 'var(--radius-lg) var(--radius-lg) 0 0',
+            borderRadius: 'var(--radius-lg)',
             border: '1px solid var(--border-bright)',
-            padding: '24px 20px 32px',
+            padding: '24px 20px 28px',
+            maxHeight: '90vh', overflowY: 'auto',
             display: 'flex', flexDirection: 'column', gap: '16px',
           }}>
 
