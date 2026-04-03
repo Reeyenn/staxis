@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -1200,20 +1199,21 @@ function ImportSection() {
 // ══════════════════════════════════════════════════════════════════════════════
 
 export default function HousekeepingPage() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const tabParam = searchParams.get('tab') as TabKey | null;
-  const validTabs: TabKey[] = ['schedule', 'rooms', 'performance', 'import'];
-  const activeTab: TabKey = tabParam && validTabs.includes(tabParam) ? tabParam : 'schedule';
-
-  const setActiveTab = (tab: TabKey) => {
-    const params = new URLSearchParams(searchParams.toString());
-    params.set('tab', tab);
-    router.replace(`/housekeeping?${params.toString()}`, { scroll: false });
-  };
-
+  const [activeTab, setActiveTabState] = useState<TabKey>('schedule');
   const { lang } = useLang();
   const { activeProperty } = useProperty();
+
+  // Restore tab from localStorage on mount
+  useEffect(() => {
+    const saved = localStorage.getItem('hk-tab') as TabKey | null;
+    const valid: TabKey[] = ['schedule', 'rooms', 'performance', 'import'];
+    if (saved && valid.includes(saved)) setActiveTabState(saved);
+  }, []);
+
+  const setActiveTab = (tab: TabKey) => {
+    setActiveTabState(tab);
+    localStorage.setItem('hk-tab', tab);
+  };
 
   return (
     <AppLayout>
