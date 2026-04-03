@@ -303,14 +303,30 @@ function ScheduleSection() {
     });
   }, [uid, pid, shiftDate]);
 
-  // Fetch public areas (seed defaults if none exist)
+  // Fetch public areas (seed defaults if none exist, migrate stairwells)
   useEffect(() => {
     if (!uid || !pid) return;
-    getPublicAreas(uid, pid).then(async (areas) => {
-      if (areas.length > 0) {
-        setPublicAreas(areas);
+    getPublicAreas(uid, pid).then(async (fetched) => {
+      if (fetched.length > 0) {
+        // Migration: consolidate per-floor stairwells into one "all" entry
+        const stairwells = fetched.filter(a => a.name.toLowerCase().includes('stairwell'));
+        const rest = fetched.filter(a => !a.name.toLowerCase().includes('stairwell'));
+        const hasConsolidated = stairwells.some(a => a.floor === 'all');
+
+        if (stairwells.length > 1 && !hasConsolidated) {
+          for (const old of stairwells) await deletePublicArea(uid, pid, old.id);
+          const totalLocs = stairwells.reduce((s, a) => s + a.locations, 0);
+          const consolidated: PublicArea = {
+            id: crypto.randomUUID(), name: 'Stairwells (All Floors)', floor: 'all',
+            locations: totalLocs, frequencyDays: 7, minutesPerClean: 30,
+            startDate: stairwells[0]?.startDate ?? new Date().toLocaleDateString('en-CA'),
+          };
+          await setPublicArea(uid, pid, consolidated);
+          setPublicAreas([...rest, consolidated]);
+        } else {
+          setPublicAreas(fetched);
+        }
       } else {
-        // First time - seed default public areas with staggered start dates
         const defaults = getDefaultPublicAreas();
         const seeded: PublicArea[] = [];
         for (const area of defaults) {
@@ -1021,7 +1037,32 @@ function PublicAreasSection() {
     setLoading(true);
     getPublicAreas(uid, pid).then(async (fetched) => {
       if (fetched.length > 0) {
-        setAreas(fetched);
+        // Migration: consolidate per-floor stairwell entries into one "all" entry
+        const stairwellEntries = fetched.filter(a => a.name.toLowerCase().includes('stairwell'));
+        const nonStairEntries = fetched.filter(a => !a.name.toLowerCase().includes('stairwell'));
+        const hasConsolidated = stairwellEntries.some(a => a.floor === 'all');
+
+        if (stairwellEntries.length > 1 && !hasConsolidated) {
+          // Delete old per-floor stairwells
+          for (const old of stairwellEntries) {
+            await deletePublicArea(uid, pid, old.id);
+          }
+          // Add one consolidated entry
+          const totalLocs = stairwellEntries.reduce((s, a) => s + a.locations, 0);
+          const consolidated: PublicArea = {
+            id: crypto.randomUUID(),
+            name: 'Stairwells (All Floors)',
+            floor: 'all',
+            locations: totalLocs,
+            frequencyDays: 7,
+            minutesPerClean: 30,
+            startDate: stairwellEntries[0]?.startDate ?? new Date().toLocaleDateString('en-CA'),
+          };
+          await setPublicArea(uid, pid, consolidated);
+          setAreas([...nonStairEntries, consolidated]);
+        } else {
+          setAreas(fetched);
+        }
       } else {
         const defaults = getDefaultPublicAreas();
         const seeded: PublicArea[] = [];
