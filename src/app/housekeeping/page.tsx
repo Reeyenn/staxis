@@ -644,43 +644,67 @@ function RoomsSection() {
           <p style={{ color: 'var(--text-secondary)', fontSize: '15px', fontWeight: 500 }}>{rooms.length === 0 ? t('noRoomsTodayHkp', lang) : t('noRoomsFloor', lang)}</p>
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          {sorted.map(room => {
-            const info   = STATUS_INFO[room.status];
-            const action = ROOM_ACTION_COLOR[room.status];
-            const isDone = room.status === 'clean' || room.status === 'inspected';
-            return (
-              <div key={room.id} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '14px', background: info.bgColor, border: `1.5px solid ${info.borderColor}`, borderRadius: 'var(--radius-md)', opacity: room.status === 'inspected' ? 0.7 : 1 }}>
-                <div style={{ minWidth: '62px', height: '62px', borderRadius: '14px', background: info.color + '18', border: `2px solid ${info.color}40`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: room.number.length > 3 ? '18px' : '22px', color: info.color }}>{room.number}</span>
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: '15px', fontWeight: 700, color: info.color, marginBottom: '3px' }}>{info.label}</div>
-                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 500 }}>
-                    {room.type === 'checkout' ? t('checkout', lang) : room.type === 'stayover' ? t('stayover', lang) : t('vacant', lang)}
-                    {room.assignedName ? ` · ${room.assignedName}` : ''}
-                    {room.priority === 'vip' ? ' · ⭐ VIP' : ''}
-                    {room.isDnd ? ` · 🚫 ${t('dnd', lang)}` : ''}
-                  </div>
+        <>
+          {/* Legend */}
+          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+            {(['dirty', 'in_progress', 'clean', 'inspected'] as RoomStatus[]).map(s => (
+              <div key={s} style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <div style={{ width: '10px', height: '10px', borderRadius: '3px', background: STATUS_INFO[s].bgColor, border: `1.5px solid ${STATUS_INFO[s].borderColor}` }} />
+                <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)' }}>{STATUS_INFO[s].label.replace(' ✓', '')}</span>
+              </div>
+            ))}
+            <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginLeft: 'auto' }}>{lang === 'es' ? 'Toca para cambiar estado' : 'Tap to cycle status'}</span>
+          </div>
+
+          {/* Tile grid */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(68px, 1fr))', gap: '6px' }}>
+            {sorted.map(room => {
+              const info = STATUS_INFO[room.status];
+              const isDone = room.status === 'clean' || room.status === 'inspected';
+              return (
+                <button
+                  key={room.id}
+                  onClick={() => handleToggle(room)}
+                  disabled={room.status === 'inspected'}
+                  title={`Room ${room.number} · ${room.type ?? ''} · ${info.label}`}
+                  style={{
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                    gap: '3px', padding: '10px 4px',
+                    background: info.bgColor, border: `1.5px solid ${info.borderColor}`,
+                    borderRadius: '10px',
+                    cursor: room.status === 'inspected' ? 'default' : 'pointer',
+                    opacity: room.status === 'inspected' ? 0.55 : 1,
+                    transition: 'transform 0.1s',
+                    fontFamily: 'var(--font-sans)',
+                    position: 'relative',
+                  }}
+                >
+                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: room.number.length > 3 ? '12px' : '14px', color: info.color, lineHeight: 1 }}>
+                    {room.number}
+                  </span>
+                  <span style={{ fontSize: '9px', fontWeight: 600, color: info.color, opacity: 0.8, textAlign: 'center', lineHeight: 1.2 }}>
+                    {info.label.replace(' ✓', '')}
+                  </span>
+                  {(room.priority === 'vip' || room.isDnd || room.type === 'checkout') && (
+                    <div style={{ position: 'absolute', top: '3px', right: '3px', fontSize: '8px', lineHeight: 1 }}>
+                      {room.priority === 'vip' ? '⭐' : room.isDnd ? '🚫' : room.type === 'checkout' ? '🚪' : ''}
+                    </div>
+                  )}
                   {isDone && room.completedAt && (
-                    <div style={{ fontSize: '11px', color: '#22C55E', fontWeight: 600, marginTop: '2px' }}>
-                      {t('done', lang)} {format(
+                    <span style={{ fontSize: '8px', color: info.color, opacity: 0.7, lineHeight: 1 }}>
+                      {format(
                         typeof (room.completedAt as unknown as { toDate?: () => Date })?.toDate === 'function'
                           ? (room.completedAt as unknown as { toDate: () => Date }).toDate()
                           : new Date(room.completedAt as unknown as string | number),
-                        'h:mm a'
+                        'h:mm'
                       )}
-                    </div>
+                    </span>
                   )}
-                </div>
-                <button onClick={() => handleToggle(room)} disabled={room.status === 'inspected'}
-                  style={{ padding: '14px 18px', borderRadius: '12px', flexShrink: 0, background: action.bg, border: `2px solid ${action.border}`, color: action.color, fontWeight: 800, fontSize: '14px', cursor: room.status === 'inspected' ? 'default' : 'pointer', fontFamily: 'var(--font-sans)', whiteSpace: 'nowrap', minWidth: '80px', textAlign: 'center' }}>
-                  {ACTION_LABEL[room.status]}
                 </button>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        </>
       )}
     </div>
   );
