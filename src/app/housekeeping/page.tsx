@@ -328,8 +328,19 @@ function ScheduleSection() {
   return (
     <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
-      {/* Header row */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
+      {/* Header row — date picker + bell */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <button onClick={() => { setShiftDate(d => addDays(d, -1)); setSent(false); setSelected([]); }} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '4px 8px', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+            <ChevronLeft size={14} />
+          </button>
+          <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)' }}>
+            {formatDisplayDate(shiftDate, lang)}
+          </span>
+          <button onClick={() => { setShiftDate(d => addDays(d, 1)); setSent(false); setSelected([]); }} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '4px 8px', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+            <ChevronRight size={14} />
+          </button>
+        </div>
         <button
           onClick={() => setShowNotifPanel(v => !v)}
           style={{ position: 'relative', background: 'none', border: 'none', cursor: 'pointer', padding: '6px', color: unreadCount > 0 ? 'var(--amber)' : 'var(--text-muted)' }}
@@ -373,23 +384,6 @@ function ScheduleSection() {
         </div>
       )}
 
-      {/* Date selector */}
-      <div className="card" style={{ padding: '16px' }}>
-        <p style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: '10px' }}>
-          {t('selectShiftDate', lang)}
-        </p>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <button onClick={() => { setShiftDate(d => addDays(d, -1)); setSent(false); setSelected([]); }} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '6px 10px', cursor: 'pointer', color: 'var(--text-secondary)' }}>
-            <ChevronLeft size={16} />
-          </button>
-          <span style={{ flex: 1, textAlign: 'center', fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)' }}>
-            {formatDisplayDate(shiftDate, lang)}
-          </span>
-          <button onClick={() => { setShiftDate(d => addDays(d, 1)); setSent(false); setSelected([]); }} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '6px 10px', cursor: 'pointer', color: 'var(--text-secondary)' }}>
-            <ChevronRight size={16} />
-          </button>
-        </div>
-      </div>
 
       {/* Sent banner */}
       {sent && (
@@ -422,12 +416,8 @@ function ScheduleSection() {
       {/* Auto-select crew */}
       <div className="card" style={{ padding: '16px' }}>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
-          <p style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', margin: 0, textAlign: 'center' }}>
-            {t('autoSelectCrew', lang)}
-            {selected.length > 0 && <span style={{ marginLeft: '8px', color: 'var(--amber)' }}>— {selected.length} {t('crewSelectedCount', lang)}</span>}
-          </p>
           <button onClick={handleAutoSelect} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.3)', borderRadius: 'var(--radius-md)', color: 'var(--amber)', fontSize: '12px', fontWeight: 600, cursor: 'pointer', fontFamily: 'var(--font-sans)' }}>
-            <Zap size={12} />{t('autoSelectCrew', lang)}
+            <Zap size={12} />{t('autoSelectCrew', lang)}{selected.length > 0 && <span style={{ marginLeft: '4px', opacity: 0.8 }}>({selected.length})</span>}
           </button>
         </div>
 
