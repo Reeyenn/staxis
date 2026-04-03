@@ -642,10 +642,9 @@ function RoomsSection() {
                     <span style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)' }}>
                       Floor {floor}
                     </span>
-                    <span style={{ fontSize: '12px', color: 'var(--text-primary)', fontWeight: 800, fontFamily: 'var(--font-mono)' }}>
+                    <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '0.04em' }}>
                       {floorDone}/{floorRooms.length}
                     </span>
-                    <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 500 }}>done</span>
                     <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
                   </div>
                   {/* Tiles */}
