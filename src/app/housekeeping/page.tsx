@@ -718,7 +718,7 @@ function RoomsSection() {
                       <span style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🚪 Checkout</span>
                       <span style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🚫 DND</span>
                       <span style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🔒 {t('roomOccupied', lang)}</span>
-                      <span style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🔑 {t('available', lang)}</span>
+                      <span style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>💎 {t('available', lang)}</span>
                     </div>
                   )}
                   {/* Floor label */}
@@ -770,7 +770,7 @@ function RoomsSection() {
                           </span>
                           {(room.isDnd || room.type === 'checkout' || room.type === 'vacant' || room.type === 'stayover') && (
                             <div style={{ position: 'absolute', top: '3px', right: '4px', fontSize: '9px', lineHeight: 1 }}>
-                              {room.isDnd ? '🚫' : room.type === 'vacant' ? '🔑' : room.type === 'stayover' ? '🔒' : '🚪'}
+                              {room.isDnd ? '🚫' : room.type === 'vacant' ? '💎' : room.type === 'stayover' ? '🔒' : '🚪'}
                             </div>
                           )}
                         </button>
