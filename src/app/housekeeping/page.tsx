@@ -573,54 +573,53 @@ function ScheduleSection() {
                   display: 'flex', gap: '12px', alignItems: 'flex-start',
                 }}
               >
-                {/* Left: name + stats (fixed width) */}
-                <div style={{ width: '120px', flexShrink: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+                {/* Left: name + stats */}
+                <div style={{ width: '140px', flexShrink: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
                     <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: color, flexShrink: 0 }} />
                     <span style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                       {member.name}
                     </span>
                   </div>
-                  <div style={{ fontSize: '11px', color: 'var(--text-muted)', paddingLeft: '14px', lineHeight: 1.4 }}>
-                    {coCount > 0 && <span>{coCount}C</span>}
-                    {coCount > 0 && soCount > 0 && <span> · </span>}
-                    {soCount > 0 && <span>{soCount}S</span>}
-                    <span> · {timeLabel}</span>
-                  </div>
-                </div>
-
-                {/* Right: room pills + remove */}
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                    {memberRooms.map(room => (
-                      <button
-                        key={room.id}
-                        onPointerDown={e => onPillPointerDown(e, room)}
-                        onPointerMove={onPillPointerMove}
-                        onPointerUp={e => { onPillPointerUp(e); }}
-                        onClick={() => { if (!dragRef.current.active) setReassignRoom(room); }}
-                        style={{
-                          padding: '2px 6px 1px', lineHeight: 1,
-                          background: room.type === 'checkout' ? `${color}12` : 'var(--bg-elevated)',
-                          border: room.type === 'checkout' ? `1px solid ${color}25` : '1px solid var(--border)',
-                          borderRadius: '4px', cursor: 'grab',
-                          display: 'flex', flexDirection: 'column', alignItems: 'center',
-                          opacity: dragState?.roomId === room.id ? 0.3 : 1,
-                          touchAction: 'none',
-                        }}
-                      >
-                        <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '11px', color: 'var(--text-primary)' }}>{room.number}</span>
-                        <span style={{ fontSize: '7px', fontWeight: 700, color: room.type === 'checkout' ? color : 'var(--text-muted)', lineHeight: 1 }}>{room.type === 'checkout' ? 'C' : 'S'}</span>
-                      </button>
-                    ))}
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', paddingLeft: '14px', lineHeight: 1.6 }}>
+                    {coCount > 0 && <div>{coCount} {lang === 'es' ? 'salida' : 'checkout'}{coCount !== 1 ? 's' : ''}</div>}
+                    {soCount > 0 && <div>{soCount} {lang === 'es' ? 'continuación' : 'stayover'}{soCount !== 1 ? 's' : ''}</div>}
+                    <div style={{ marginTop: '2px' }}>{lang === 'es' ? 'Estimado' : 'Estimated'}: {timeLabel}</div>
                   </div>
                   <button onClick={() => toggleCrewMember(member.id)} style={{
                     background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'var(--font-sans)',
-                    fontSize: '11px', fontWeight: 600, color: 'var(--red)', padding: 0, alignSelf: 'flex-end',
-                    opacity: 0.7,
+                    fontSize: '11px', fontWeight: 600, color: 'var(--red)', padding: '6px 0 0 14px',
+                    opacity: 0.6,
                   }}>
                     {lang === 'es' ? 'Quitar' : 'Remove'}
                   </button>
+                </div>
+
+                {/* Right: room pills */}
+                <div style={{ flex: 1, display: 'flex', flexWrap: 'wrap', gap: '6px', alignContent: 'flex-start' }}>
+                  {memberRooms.map(room => (
+                    <button
+                      key={room.id}
+                      onPointerDown={e => onPillPointerDown(e, room)}
+                      onPointerMove={onPillPointerMove}
+                      onPointerUp={e => { onPillPointerUp(e); }}
+                      onClick={() => { if (!dragRef.current.active) setReassignRoom(room); }}
+                      style={{
+                        padding: '6px 10px 4px', lineHeight: 1,
+                        background: room.type === 'checkout' ? `${color}12` : 'var(--bg-elevated)',
+                        border: room.type === 'checkout' ? `1.5px solid ${color}30` : '1.5px solid var(--border)',
+                        borderRadius: '6px', cursor: 'grab',
+                        display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1px',
+                        opacity: dragState?.roomId === room.id ? 0.3 : 1,
+                        touchAction: 'none',
+                      }}
+                    >
+                      <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '13px', color: 'var(--text-primary)' }}>{room.number}</span>
+                      <span style={{ fontSize: '8px', fontWeight: 600, color: room.type === 'checkout' ? color : 'var(--text-muted)', letterSpacing: '0.02em' }}>
+                        {room.type === 'checkout' ? (lang === 'es' ? 'salida' : 'checkout') : (lang === 'es' ? 'cont.' : 'stayover')}
+                      </span>
+                    </button>
+                  ))}
                 </div>
               </div>
             );
