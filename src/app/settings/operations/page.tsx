@@ -3,9 +3,11 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
+import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { getPublicAreas, setPublicArea, deletePublicArea } from '@/lib/firestore';
 import { getDefaultPublicAreas } from '@/lib/defaults';
+import { t } from '@/lib/translations';
 import type { PublicArea } from '@/types';
 import Link from 'next/link';
 import { Wrench, Plus, Trash2, Check, ChevronDown, ChevronUp } from 'lucide-react';
@@ -65,6 +67,7 @@ function AreaRow({
   onUpdate: (updated: PublicArea) => void;
   onDelete: () => void;
 }) {
+  const { lang } = useLang();
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -93,13 +96,13 @@ function AreaRow({
       {expanded && (
         <div style={{ padding: '0 16px 16px', display: 'flex', flexDirection: 'column', gap: '12px', borderTop: '1px solid var(--border)' }}>
           <div style={{ paddingTop: '12px' }}>
-            <Field label="Name" value={area.name} onChange={v => onUpdate({ ...area, name: v })} />
+            <Field label={t('name', lang)} value={area.name} onChange={v => onUpdate({ ...area, name: v })} />
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
             <div>
               <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                Floor
+                {t('floor', lang)}
               </label>
               <select
                 value={area.floor}
@@ -112,7 +115,7 @@ function AreaRow({
             </div>
             <div>
               <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                Frequency
+                {t('frequency', lang)}
               </label>
               <select
                 value={area.frequencyDays}
@@ -127,14 +130,14 @@ function AreaRow({
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
             <Field
-              label="Minutes per clean"
+              label={t('minutesPerClean', lang)}
               value={area.minutesPerClean}
               onChange={v => onUpdate({ ...area, minutesPerClean: Number(v) || 0 })}
               type="number"
               suffix="min"
             />
             <Field
-              label="Locations"
+              label={t('locations', lang)}
               value={area.locations}
               onChange={v => onUpdate({ ...area, locations: Number(v) || 1 })}
               type="number"
@@ -150,7 +153,7 @@ function AreaRow({
               cursor: 'pointer', fontSize: '13px', fontWeight: 600,
             }}
           >
-            <Trash2 size={14} /> Remove Area
+            <Trash2 size={14} /> {t('delete', lang)}
           </button>
         </div>
       )}
@@ -173,6 +176,7 @@ const FLOOR_TABS = [
 export default function OperationsConfigPage() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
+  const { lang } = useLang();
 
   const [areas, setAreas] = useState<PublicArea[]>([]);
   const [loading, setLoading] = useState(true);
@@ -263,11 +267,11 @@ export default function OperationsConfigPage() {
         {/* Breadcrumb */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '24px' }}>
           <Link href="/settings" style={{ color: 'var(--text-muted)', textDecoration: 'none', fontSize: '14px' }}>
-            ← Settings
+            ← {t('settings', lang)}
           </Link>
           <span style={{ color: 'var(--text-muted)' }}>/</span>
           <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '20px', letterSpacing: '-0.02em', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Wrench size={18} color="var(--amber)" /> Operations Config
+            <Wrench size={18} color="var(--amber)" /> {t('operationsConfig', lang)}
           </h1>
         </div>
 
@@ -283,7 +287,7 @@ export default function OperationsConfigPage() {
               color: 'var(--navy)', cursor: 'pointer', fontSize: '13px', fontWeight: 600,
             }}
           >
-            <Plus size={14} /> Add
+            <Plus size={14} /> {t('addPublicArea', lang)}
           </button>
         </div>
 
@@ -341,7 +345,7 @@ export default function OperationsConfigPage() {
 
             {visibleAreas.length === 0 && (
               <div className="card" style={{ padding: '28px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>
-                No areas on this floor. Tap Add to create one.
+                {t('noAreasFloor', lang)}
               </div>
             )}
           </div>
@@ -357,7 +361,7 @@ export default function OperationsConfigPage() {
             opacity: (!dirty && !saved) ? 0.5 : 1,
           }}
         >
-          {saved ? <><Check size={20} /> Saved!</> : saving ? 'Saving...' : 'Save Changes'}
+          {saved ? <><Check size={20} /> {t('saved', lang)}</> : saving ? t('saving', lang) : t('saveChanges', lang)}
         </button>
 
       </div>

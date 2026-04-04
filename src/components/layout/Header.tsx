@@ -100,7 +100,7 @@ export function Header() {
                 }}
               >
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {activeProperty?.name ?? 'Property'}
+                  {activeProperty?.name ?? t('property', lang)}
                 </span>
                 <ChevronDown size={11} color="var(--text-muted)" />
               </button>
@@ -143,7 +143,7 @@ export function Header() {
                         }}
                       >
                         <LayoutGrid size={11} />
-                        All properties…
+                        {t('allProperties', lang)}
                       </button>
                     )}
                   </div>

@@ -4,11 +4,14 @@ import React, { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
+import { useLang } from '@/contexts/LanguageContext';
+import { t } from '@/lib/translations';
 import { Building2, LogOut } from 'lucide-react';
 
 export default function PropertySelectorPage() {
   const { user, loading: authLoading, signOut } = useAuth();
   const { properties, loading: propLoading, setActivePropertyId } = useProperty();
+  const { lang } = useLang();
   const router = useRouter();
 
   // Redirect unauthenticated users to sign-in
@@ -86,11 +89,11 @@ export default function PropertySelectorPage() {
             fontSize: '24px', letterSpacing: '-0.02em',
             color: 'var(--text-primary)', marginBottom: '8px',
           }}>
-            Select a Property
+            {t('selectProperty', lang)}
           </h1>
           {user && (
             <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>
-              Signed in as {user.username}
+              {t('signedInAs', lang)} {user.username}
             </p>
           )}
         </div>
@@ -110,10 +113,10 @@ export default function PropertySelectorPage() {
               color: 'var(--text-primary)', marginBottom: '8px',
               fontFamily: 'var(--font-sans)',
             }}>
-              No properties found
+              {t('noPropertiesFound', lang)}
             </p>
             <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
-              Your account doesn't have access to any properties yet. Contact your administrator to get access.
+              {t('noPropertiesDesc', lang)}
             </p>
           </div>
         ) : (
@@ -164,7 +167,7 @@ export default function PropertySelectorPage() {
                     {p.name}
                   </div>
                   <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                    {p.totalRooms} rooms
+                    {p.totalRooms} {t('rooms', lang)}
                   </div>
                 </div>
                 <div style={{
@@ -190,7 +193,7 @@ export default function PropertySelectorPage() {
             }}
           >
             <LogOut size={13} />
-            Sign out
+            {t('signOut', lang)}
           </button>
         </div>
 

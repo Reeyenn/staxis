@@ -6,6 +6,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { updateProperty, createProperty } from '@/lib/firestore';
+import { t } from '@/lib/translations';
 import { Building2, Plus, Check } from 'lucide-react';
 import Link from 'next/link';
 
@@ -103,17 +104,17 @@ export default function PropertySettingsPage() {
     <AppLayout>
       <div style={{ padding: '16px', maxWidth: '600px', margin: '0 auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '24px' }}>
-          <Link href="/settings" style={{ color: 'var(--text-muted)', textDecoration: 'none', fontSize: '14px' }}>← Settings</Link>
+          <Link href="/settings" style={{ color: 'var(--text-muted)', textDecoration: 'none', fontSize: '14px' }}>← {t('settings', lang)}</Link>
           <span style={{ color: 'var(--text-muted)' }}>/</span>
           <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '20px', letterSpacing: '-0.02em', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Building2 size={18} color="var(--amber)" /> Property
+            <Building2 size={18} color="var(--amber)" /> {t('property', lang)}
           </h1>
         </div>
 
         {/* Property switcher */}
         {properties.length > 1 && (
           <div className="card" style={{ padding: '16px', marginBottom: '20px' }}>
-            <p className="label" style={{ marginBottom: '10px' }}>Switch Property</p>
+            <p className="label" style={{ marginBottom: '10px' }}>{t('property', lang)}</p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
               {properties.map(p => (
                 <button
@@ -141,25 +142,25 @@ export default function PropertySettingsPage() {
         {/* Add property */}
         {showAddProperty ? (
           <div className="card" style={{ padding: '16px', marginBottom: '20px' }}>
-            <label className="label">New Property Name</label>
+            <label className="label">{t('createProperty', lang)}</label>
             <input type="text" value={newPropertyName} onChange={e => setNewPropertyName(e.target.value)} className="input" placeholder="e.g. Hampton Inn Austin" style={{ marginBottom: '12px' }} />
             <div style={{ display: 'flex', gap: '8px' }}>
-              <button onClick={() => setShowAddProperty(false)} className="btn btn-secondary" style={{ flex: 1, justifyContent: 'center' }}>Cancel</button>
-              <button onClick={handleAddProperty} disabled={!newPropertyName.trim()} className="btn btn-primary" style={{ flex: 1, justifyContent: 'center' }}>Add Property</button>
+              <button onClick={() => setShowAddProperty(false)} className="btn btn-secondary" style={{ flex: 1, justifyContent: 'center' }}>{t('cancel', lang)}</button>
+              <button onClick={handleAddProperty} disabled={!newPropertyName.trim()} className="btn btn-primary" style={{ flex: 1, justifyContent: 'center' }}>{t('createProperty', lang)}</button>
             </div>
           </div>
         ) : (
           <button onClick={() => setShowAddProperty(true)} className="btn btn-secondary" style={{ width: '100%', justifyContent: 'center', marginBottom: '20px' }}>
-            <Plus size={16} /> Add Another Property
+            <Plus size={16} /> {t('createProperty', lang)}
           </button>
         )}
 
         {/* Property form */}
         <div className="card" style={{ padding: '20px' }}>
-          <Field label="Property Name" field="name" form={form} setForm={setForm} />
-          <Field label="Total Rooms" field="totalRooms" type="number" form={form} setForm={setForm} />
+          <Field label={t('propertyNameLabel', lang)} field="name" form={form} setForm={setForm} />
+          <Field label={t('totalRoomsField', lang)} field="totalRooms" type="number" form={form} setForm={setForm} />
           <Field label="Average Occupied Per Night" field="avgOccupancy" type="number" suffix="rooms" form={form} setForm={setForm} />
-          <Field label="Housekeeping Staff on Roster" field="totalStaffOnRoster" type="number" suffix="people" form={form} setForm={setForm} />
+          <Field label={t('staffOnRosterField', lang)} field="totalStaffOnRoster" type="number" suffix="people" form={form} setForm={setForm} />
 
           <div className="divider" style={{ margin: '20px 0' }} />
           <p className="label" style={{ marginBottom: '14px' }}>Labor Settings</p>
@@ -182,7 +183,7 @@ export default function PropertySettingsPage() {
           className={`btn btn-xl ${saved ? 'btn-green' : 'btn-primary'}`}
           style={{ width: '100%', justifyContent: 'center', marginTop: '20px' }}
         >
-          {saved ? <><Check size={20} /> Saved!</> : saving ? 'Saving...' : 'Save Changes'}
+          {saved ? <><Check size={20} /> {t('saved', lang)}</> : saving ? t('saving', lang) : t('saveChanges', lang)}
         </button>
       </div>
     </AppLayout>

@@ -143,7 +143,39 @@ type TranslationKey =
   | 'daysWorkedLabel' | 'onVacation' | 'inactiveLabel' | 'maxDaysPerWeekLabel'
   | 'vacationDatesLabel' | 'vacationDatesHelp' | 'isActiveLabel'
   | 'eligibleLabel' | 'atLimitLabel' | 'noPhoneLabel' | 'sendingLabel' | 'crewSelectedCount'
-  | 'confirmDeclinedMsg' | 'replacementFoundMsg' | 'noReplacementMsg' | 'allConfirmedMsg';
+  | 'confirmDeclinedMsg' | 'replacementFoundMsg' | 'noReplacementMsg' | 'allConfirmedMsg'
+  // ── Housekeeping public areas & prediction ────────────────────────────────
+  | 'roomDataLoading' | 'noRoomDataYet' | 'pmsSync15Min'
+  | 'prepMinutes' | 'totalWorkload'
+  | 'frequency' | 'every' | 'days' | 'daily' | 'weekly' | 'custom'
+  | 'add' | 'minutesPerClean' | 'locations' | 'removeArea'
+  | 'noAreasFloor' | 'saveChanges' | 'saved' | 'saving'
+  | 'addPublicArea' | 'areaNamePlaceholder' | 'addAreaBtn' | 'deleted'
+  // ── Dashboard extras ──────────────────────────────────────────────────────
+  | 'staffTomorrow' | 'contacted' | 'estLaborCost'
+  | 'dirtyRooms' | 'needCleaning' | 'checkoutsToday'
+  | 'roomStatus' | 'noRoomsAssignedToday' | 'progress' | 'total'
+  | 'tomorrowsCrew' | 'noConfirmationsYet'
+  // ── Settings pages ────────────────────────────────────────────────────────
+  | 'operationsConfig' | 'operationsConfigDesc'
+  | 'propertySettings' | 'propertySettingsDesc'
+  | 'staffManagement' | 'staffManagementDesc'
+  | 'pmsConnectionDesc' | 'accountManagement' | 'accountManagementDesc'
+  | 'minutes' | 'hours' | 'perShift' | 'optional'
+  | 'createProperty' | 'deleteProperty' | 'dangerZone'
+  // ── Staff directory ───────────────────────────────────────────────────────
+  | 'staffDirectory' | 'department' | 'editStaff'
+  // ── Sign-in & auth ────────────────────────────────────────────────────────
+  | 'signInPrompt' | 'username' | 'password' | 'invalidCredentials'
+  // ── Property selector ─────────────────────────────────────────────────────
+  | 'selectProperty' | 'signedInAs' | 'noPropertiesFound' | 'noPropertiesDesc'
+  // ── Housekeeper app ───────────────────────────────────────────────────────
+  | 'loadingRooms' | 'allDone' | 'greatWorkToday'
+  | 'noRoomsAssigned' | 'checkBackSoon'
+  | 'describeIssue' | 'submit'
+  | 'keepHolding' | 'holdToFinish'
+  // ── Header ────────────────────────────────────────────────────────────────
+  | 'allProperties';
 
 const translations: Record<Language, Record<TranslationKey, string>> = {
   en: {
@@ -534,6 +566,86 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     replacementFoundMsg: 'Replacement found',
     noReplacementMsg: 'No replacement available',
     allConfirmedMsg: 'All confirmed',
+    // ── Housekeeping public areas & prediction ──
+    roomDataLoading: 'Loading room data...',
+    noRoomDataYet: 'No room data for this date yet',
+    pmsSync15Min: 'Room data syncs from the PMS every 15 minutes',
+    prepMinutes: 'Prep Time',
+    totalWorkload: 'Total Workload',
+    frequency: 'Frequency',
+    every: 'Every',
+    days: 'days',
+    daily: 'Daily',
+    weekly: 'Weekly',
+    custom: 'Custom',
+    add: 'Add',
+    minutesPerClean: 'Minutes per clean',
+    locations: 'Locations',
+    removeArea: 'Remove Area',
+    noAreasFloor: 'No areas on this floor. Tap Add to create one.',
+    saveChanges: 'Save Changes',
+    saved: 'Saved!',
+    saving: 'Saving...',
+    addPublicArea: 'Add Public Area',
+    areaNamePlaceholder: 'e.g. 3rd Floor Hallway',
+    addAreaBtn: 'Add Area',
+    deleted: 'deleted',
+    // ── Dashboard extras ──
+    staffTomorrow: 'Staff Tomorrow',
+    contacted: 'contacted',
+    estLaborCost: 'Est. Labor Cost',
+    dirtyRooms: 'Dirty Rooms',
+    needCleaning: 'need cleaning',
+    checkoutsToday: 'Checkouts Today',
+    roomStatus: 'Room Status',
+    noRoomsAssignedToday: 'No rooms assigned today.',
+    progress: 'Progress',
+    total: 'total',
+    tomorrowsCrew: "Tomorrow's Crew",
+    noConfirmationsYet: 'No confirmations yet - go to Housekeeping › Schedule to send.',
+    // ── Settings pages ──
+    operationsConfig: 'Operations Config',
+    operationsConfigDesc: 'Public areas, cleaning times, prep time',
+    propertySettings: 'Property Settings',
+    propertySettingsDesc: 'Hotel info, rooms, shift length',
+    staffManagement: 'Staff Management',
+    staffManagementDesc: 'Add and manage housekeepers',
+    pmsConnectionDesc: 'Sync room data from your PMS',
+    accountManagement: 'Account Management',
+    accountManagementDesc: 'Users, roles, access',
+    minutes: 'min',
+    hours: 'hrs',
+    perShift: 'per shift',
+    optional: 'optional',
+    createProperty: 'Create Property',
+    deleteProperty: 'Delete Property',
+    dangerZone: 'Danger Zone',
+    // ── Staff directory ──
+    staffDirectory: 'Staff Directory',
+    department: 'Department',
+    editStaff: 'Edit Staff',
+    // ── Sign-in & auth ──
+    signInPrompt: 'Sign in to your account',
+    username: 'Username',
+    password: 'Password',
+    invalidCredentials: 'Invalid username or password.',
+    // ── Property selector ──
+    selectProperty: 'Select a Property',
+    signedInAs: 'Signed in as',
+    noPropertiesFound: 'No properties found',
+    noPropertiesDesc: "Your account doesn't have access to any properties yet. Contact your administrator to get access.",
+    // ── Housekeeper app ──
+    loadingRooms: 'Loading your rooms…',
+    allDone: "You're all done!",
+    greatWorkToday: 'Great work today!',
+    noRoomsAssigned: 'No rooms assigned yet.',
+    checkBackSoon: 'Check back soon!',
+    describeIssue: 'Describe the issue...',
+    submit: 'Submit',
+    keepHolding: 'Keep holding…',
+    holdToFinish: 'Hold to Finish',
+    // ── Header ──
+    allProperties: 'All properties…',
   },
 
   es: {
@@ -924,6 +1036,86 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     replacementFoundMsg: 'Reemplazo encontrado',
     noReplacementMsg: 'Sin reemplazo disponible',
     allConfirmedMsg: 'Todas confirmadas',
+    // ── Housekeeping public areas & prediction ──
+    roomDataLoading: 'Cargando datos de habitaciones...',
+    noRoomDataYet: 'No hay datos de habitaciones para esta fecha',
+    pmsSync15Min: 'Los datos se sincronizan desde el PMS cada 15 minutos',
+    prepMinutes: 'Preparación',
+    totalWorkload: 'Carga Total',
+    frequency: 'Frecuencia',
+    every: 'Cada',
+    days: 'días',
+    daily: 'Diario',
+    weekly: 'Semanal',
+    custom: 'Personalizado',
+    add: 'Agregar',
+    minutesPerClean: 'Minutos por limpieza',
+    locations: 'Ubicaciones',
+    removeArea: 'Eliminar Área',
+    noAreasFloor: 'No hay áreas en este piso. Toca Agregar para crear una.',
+    saveChanges: 'Guardar Cambios',
+    saved: '¡Guardado!',
+    saving: 'Guardando...',
+    addPublicArea: 'Agregar Área Pública',
+    areaNamePlaceholder: 'p. ej., Pasillo del 3er Piso',
+    addAreaBtn: 'Agregar Área',
+    deleted: 'eliminado',
+    // ── Dashboard extras ──
+    staffTomorrow: 'Personal Mañana',
+    contacted: 'contactados',
+    estLaborCost: 'Costo Estimado',
+    dirtyRooms: 'Hab. Sucias',
+    needCleaning: 'pendientes',
+    checkoutsToday: 'Salidas Hoy',
+    roomStatus: 'Estado de Habitaciones',
+    noRoomsAssignedToday: 'No hay habitaciones asignadas hoy.',
+    progress: 'Progreso',
+    total: 'total',
+    tomorrowsCrew: 'Equipo de Mañana',
+    noConfirmationsYet: 'No hay confirmaciones aún — ve a Limpieza › Horario para enviar.',
+    // ── Settings pages ──
+    operationsConfig: 'Config. de Operaciones',
+    operationsConfigDesc: 'Áreas públicas, tiempos de limpieza, preparación',
+    propertySettings: 'Config. de Propiedad',
+    propertySettingsDesc: 'Info del hotel, habitaciones, turno',
+    staffManagement: 'Gestión de Personal',
+    staffManagementDesc: 'Agregar y administrar camareras',
+    pmsConnectionDesc: 'Sincronizar datos desde tu PMS',
+    accountManagement: 'Gestión de Cuentas',
+    accountManagementDesc: 'Usuarios, roles, acceso',
+    minutes: 'min',
+    hours: 'hrs',
+    perShift: 'por turno',
+    optional: 'opcional',
+    createProperty: 'Crear Propiedad',
+    deleteProperty: 'Eliminar Propiedad',
+    dangerZone: 'Zona de Peligro',
+    // ── Staff directory ──
+    staffDirectory: 'Directorio de Personal',
+    department: 'Departamento',
+    editStaff: 'Editar Personal',
+    // ── Sign-in & auth ──
+    signInPrompt: 'Inicia sesión en tu cuenta',
+    username: 'Nombre de usuario',
+    password: 'Contraseña',
+    invalidCredentials: 'Nombre de usuario o contraseña inválidos.',
+    // ── Property selector ──
+    selectProperty: 'Selecciona una Propiedad',
+    signedInAs: 'Sesión iniciada como',
+    noPropertiesFound: 'Sin propiedades encontradas',
+    noPropertiesDesc: 'Tu cuenta aún no tiene acceso a ninguna propiedad. Contacta a tu administrador.',
+    // ── Housekeeper app ──
+    loadingRooms: 'Cargando tus habitaciones…',
+    allDone: '¡Todo listo!',
+    greatWorkToday: '¡Buen trabajo hoy!',
+    noRoomsAssigned: 'Sin habitaciones asignadas.',
+    checkBackSoon: '¡Revisa pronto!',
+    describeIssue: 'Describe el problema...',
+    submit: 'Enviar',
+    keepHolding: 'Sigue presionando…',
+    holdToFinish: 'Mantén para terminar',
+    // ── Header ──
+    allProperties: 'Todas las propiedades…',
   },
 };
 

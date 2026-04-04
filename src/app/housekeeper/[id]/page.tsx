@@ -19,6 +19,7 @@ import type { Room, RoomStatus } from '@/types';
 import { format } from 'date-fns';
 import { CheckCircle, AlertTriangle } from 'lucide-react';
 import { useLang } from '@/contexts/LanguageContext';
+import { t } from '@/lib/translations';
 import type { Language } from '@/lib/translations';
 
 type RoomWithRef = Room & { _ref: DocumentReference };
@@ -180,7 +181,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
         background: '#F0FDF4', fontFamily: 'system-ui, -apple-system, sans-serif',
       }}>
         <p style={{ color: '#6B7280', fontSize: '16px' }}>
-          {lang === 'es' ? 'Cargando habitaciones…' : 'Loading your rooms…'}
+          {t('loadingRooms', lang)}
         </p>
       </div>
     );
@@ -271,7 +272,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
               <CheckCircle size={42} color="#16A34A" />
             </div>
             <h2 style={{ fontSize: '26px', fontWeight: 800, color: '#111827', marginBottom: '10px' }}>
-              {lang === 'es' ? '¡Todo listo!' : "You're all done!"}
+              {t('allDone', lang)}
             </h2>
             <p style={{ fontSize: '16px', color: '#4B5563', lineHeight: 1.5 }}>
               {lang === 'es'
@@ -286,8 +287,8 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
           }}>
             <p style={{ fontSize: '16px', color: '#6B7280', lineHeight: 1.8 }}>
               {lang === 'es'
-                ? <><strong>Sin habitaciones asignadas.</strong><br />¡Revisa pronto!</>
-                : <><strong>No rooms assigned yet.</strong><br />Check back soon!</>}
+                ? <><strong>{t('noRoomsAssigned', lang)}</strong><br />{t('checkBackSoon', lang)}</>
+                : <><strong>{t('noRoomsAssigned', lang)}</strong><br />{t('checkBackSoon', lang)}</>}
             </p>
           </div>
         ) : (
@@ -333,7 +334,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
             padding: '24px 16px calc(env(safe-area-inset-bottom, 0px) + 24px)',
           }}>
             <h3 style={{ fontSize: '20px', fontWeight: 700, color: '#111827', marginBottom: '4px' }}>
-              {lang === 'es' ? 'Reportar Problema' : 'Report Issue'}
+              {t('reportIssue', lang)}
             </h3>
             <p style={{ fontSize: '13px', color: '#6B7280', marginBottom: '16px' }}>
               {lang === 'es' ? 'Hab.' : 'Room'} {rooms.find(r => r.id === issueRoomId)?.number}
@@ -341,9 +342,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
             <textarea
               // eslint-disable-next-line jsx-a11y/no-autofocus
               autoFocus
-              placeholder={lang === 'es'
-                ? 'Describe el problema (ej. ducha rota, toallas faltantes, mantenimiento)'
-                : 'Describe the issue (e.g. broken shower, missing towels, maintenance needed)'}
+              placeholder={t('describeIssue', lang)}
               value={issueNote}
               onChange={e => setIssueNote(e.target.value)}
               rows={4}
@@ -366,7 +365,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
                   WebkitTapHighlightColor: 'transparent',
                 }}
               >
-                {lang === 'es' ? 'Cancelar' : 'Cancel'}
+                {t('cancel', lang)}
               </button>
               <button
                 onClick={handleSubmitIssue}
@@ -382,8 +381,8 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
                 }}
               >
                 {savingIssue
-                  ? (lang === 'es' ? 'Guardando…' : 'Saving…')
-                  : (lang === 'es' ? 'Enviar' : 'Submit')}
+                  ? t('savingDots', lang)
+                  : t('submit', lang)}
               </button>
             </div>
           </div>
@@ -453,7 +452,7 @@ function RoomCard({
           padding: '10px 14px', borderRadius: '10px',
           fontSize: '14px', fontWeight: 700, marginBottom: '12px',
         }}>
-          {lang === 'es' ? '🚫 No Molestar' : '🚫 Do Not Disturb'}
+          {lang === 'es' ? '🚫 No Molestar' : '🚫 ' + t('doNotDisturb', lang)}
         </div>
       )}
 
@@ -482,7 +481,7 @@ function RoomCard({
             color: isDone ? '#16A34A' : isInProgress ? '#D97706' : '#6B7280',
           }}>
             {isInProgress
-              ? (lang === 'es' ? '⟳ EN PROGRESO' : '⟳ IN PROGRESS')
+              ? (lang === 'es' ? '⟳ ' + t('inProgress', lang) : '⟳ ' + t('inProgress', lang))
               : typeLabel}
           </span>
           {room.priority === 'vip' && !isDone && !isInProgress && (
@@ -500,13 +499,13 @@ function RoomCard({
               background: '#FFF7ED', padding: '2px 7px', borderRadius: '5px',
               display: 'inline-block', width: 'fit-content',
             }}>
-              {lang === 'es' ? '⚡ Llegada Temprana' : '⚡ Early Check-in'}
+              ⚡ {t('earlyCheckin', lang)}
             </span>
           )}
           {/* Show startedAt time when in progress */}
           {isInProgress && room.startedAt && (
             <span style={{ fontSize: '11px', color: '#D97706', fontWeight: 600 }}>
-              {lang === 'es' ? 'Empezado ' : 'Started '}
+              {t('start', lang)}
               {format(firestoreToDate(room.startedAt), 'h:mm a')}
             </span>
           )}
@@ -552,7 +551,7 @@ function RoomCard({
         }}>
           <CheckCircle size={22} color="#16A34A" />
           <span style={{ fontSize: '18px', fontWeight: 800, color: '#16A34A' }}>
-            {lang === 'es' ? 'Listo ✓' : 'Done ✓'}
+            {t('done', lang)}
           </span>
           {room.completedAt && (
             <span style={{ fontSize: '13px', color: '#16A34A', opacity: 0.65, marginLeft: '2px' }}>
@@ -602,8 +601,8 @@ function StartButton({
       }}
     >
       {isSaving
-        ? (lang === 'es' ? 'Guardando…' : 'Saving…')
-        : (lang === 'es' ? '▶ Empezar' : '▶ Start')}
+        ? t('savingDots', lang)
+        : (lang === 'es' ? '▶ Empezar' : '▶ ' + t('start', lang))}
     </button>
   );
 }
@@ -659,10 +658,10 @@ function HoldToFinishButton({
 
   const isHolding = progress > 0;
   const label = isSaving
-    ? (lang === 'es' ? 'Guardando…' : 'Saving…')
+    ? t('savingDots', lang)
     : isHolding
-      ? (lang === 'es' ? 'Sigue presionando…' : 'Keep holding…')
-      : (lang === 'es' ? 'Mantén para terminar' : 'Hold to Finish');
+      ? t('keepHolding', lang)
+      : t('holdToFinish', lang);
 
   return (
     <button

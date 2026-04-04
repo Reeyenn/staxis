@@ -472,11 +472,11 @@ function ScheduleSection() {
       {/* Staffing Prediction */}
       <div className="card animate-in" style={{ padding: '16px' }}>
         {predictionLoading ? (
-          <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>Loading room data...</p>
+          <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>{t('roomDataLoading', lang)}</p>
         ) : totalRooms === 0 ? (
           <div style={{ textAlign: 'center', padding: '12px 0' }}>
-            <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>No room data for this date yet</p>
-            <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '4px 0 0', opacity: 0.7 }}>Room data syncs from the PMS every 15 minutes</p>
+            <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>{t('noRoomDataYet', lang)}</p>
+            <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '4px 0 0', opacity: 0.7 }}>{t('pmsSync15Min', lang)}</p>
           </div>
         ) : (
           <>
@@ -492,26 +492,26 @@ function ScheduleSection() {
             {/* Breakdown */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', background: 'rgba(0,0,0,0.02)', borderRadius: 'var(--radius-sm)' }}>
-                <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Room Minutes</span>
+                <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{t('roomMinutes', lang)}</span>
                 <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
                   {checkouts} CO x {coMins} + {stayovers} SO x {soMins} = {roomMinutes}m
                 </span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', background: 'rgba(0,0,0,0.02)', borderRadius: 'var(--radius-sm)' }}>
-                <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Prep Minutes</span>
+                <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{t('prepMinutes', lang)}</span>
                 <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
                   ({totalRooms} rooms + {totalPublicAreaActivities} areas) x {prepPerActivity} = {prepMinutes}m
                 </span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', background: 'rgba(0,0,0,0.02)', borderRadius: 'var(--radius-sm)' }}>
-                <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Public Area Minutes</span>
+                <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{t('publicAreaMinutes', lang)}</span>
                 <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
                   {areasDueToday.length} areas due = {publicAreaMinutes}m
                 </span>
               </div>
               <div style={{ height: '1px', background: 'var(--border)', margin: '2px 0' }} />
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px' }}>
-                <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>Total Workload</span>
+                <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>{t('totalWorkload', lang)}</span>
                 <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
                   {workloadMinutes}m / {shiftLen}m per shift = {cleaningStaff} cleaners + {LAUNDRY_STAFF} laundry
                 </span>
@@ -1012,10 +1012,11 @@ function freqLabel(days: number): string {
   return `Every ${days} days`;
 }
 
-function FrequencySlider({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+function FrequencySlider({ value, onChange, lang }: { value: number; onChange: (v: number) => void; lang?: 'en' | 'es' }) {
   const isCustom = value > SLIDER_MAX;
   const sliderVal = isCustom ? SLIDER_MAX + 1 : value;
   const pct = ((sliderVal - 1) / SLIDER_MAX) * 100;
+  const currentLang = lang ?? 'en';
 
   const handleSlider = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = Number(e.target.value);
@@ -1023,12 +1024,20 @@ function FrequencySlider({ value, onChange }: { value: number; onChange: (v: num
     else onChange(SLIDER_MAX + 1); // trigger custom mode with value just above max
   };
 
+  const getFreqLabel = (days: number): string => {
+    if (days === 1) return t('daily', currentLang);
+    if (days === 7) return t('weekly', currentLang);
+    const everyWord = currentLang === 'es' ? 'Cada' : 'Every';
+    const daysWord = currentLang === 'es' ? 'días' : 'days';
+    return `${everyWord} ${days} ${daysWord}`;
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <label className="label" style={{ margin: 0 }}>Frequency</label>
+        <label className="label" style={{ margin: 0 }}>{t('frequency', currentLang)}</label>
         <span style={{ fontSize: '13px', fontWeight: 700, color: isCustom ? 'var(--amber)' : 'var(--navy)' }}>
-          {isCustom ? 'Custom' : freqLabel(value)}
+          {isCustom ? t('custom', currentLang) : getFreqLabel(value)}
         </span>
       </div>
       <div style={{ position: 'relative', height: '28px', display: 'flex', alignItems: 'center' }}>
@@ -1056,12 +1065,12 @@ function FrequencySlider({ value, onChange }: { value: number; onChange: (v: num
       </div>
       {isCustom && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', animation: 'toastIn 0.2s ease-out' }}>
-          <span style={{ fontSize: '13px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Every</span>
+          <span style={{ fontSize: '13px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{t('every', currentLang)}</span>
           <input className="input" type="number" min={1} value={value > SLIDER_MAX ? value : ''} autoFocus
             onChange={e => { const v = Number(e.target.value); if (v >= 1) onChange(v); }}
             style={{ width: '70px', textAlign: 'center' }}
           />
-          <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>days</span>
+          <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>{t('days', currentLang)}</span>
         </div>
       )}
     </div>
@@ -1072,6 +1081,7 @@ function FrequencySlider({ value, onChange }: { value: number; onChange: (v: num
 function PublicAreasSection() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
+  const { lang } = useLang();
 
   const [areas, setAreas] = useState<PublicArea[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1138,7 +1148,7 @@ function PublicAreasSection() {
     setDirty(true);
     setExpandedId(null);
     const label = deleted?.name || 'Area';
-    setToast(`"${label}" deleted`);
+    setToast(`"${label}" ${t('deleted', lang)}`);
     setTimeout(() => setToast(null), 2500);
   };
 
@@ -1184,9 +1194,9 @@ function PublicAreasSection() {
 
       {/* Header + Add */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <p style={{ fontWeight: 700, fontSize: '16px', color: 'var(--text-primary)' }}>Public Areas</p>
+        <p style={{ fontWeight: 700, fontSize: '16px', color: 'var(--text-primary)' }}>{t('publicAreas', lang)}</p>
         <button onClick={openAddModal} style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 12px', borderRadius: '8px', background: 'rgba(27,58,92,0.08)', border: '1px solid rgba(27,58,92,0.15)', color: 'var(--navy)', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}>
-          <Plus size={14} /> Add
+          <Plus size={14} /> {t('add', lang)}
         </button>
       </div>
 
@@ -1217,7 +1227,7 @@ function PublicAreasSection() {
 
       {/* Area list */}
       {loading ? (
-        <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>Loading...</div>
+        <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>{t('loading', lang)}</div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
           {visible.map(area => {
@@ -1237,28 +1247,28 @@ function PublicAreasSection() {
                 {isOpen && (
                   <div style={{ padding: '0 16px 16px', display: 'flex', flexDirection: 'column', gap: '12px', borderTop: '1px solid var(--border)' }}>
                     <div style={{ paddingTop: '12px' }}>
-                      <label className="label">Name</label>
+                      <label className="label">{t('name', lang)}</label>
                       <input className="input" value={area.name} onChange={e => handleUpdate(area.id, { name: e.target.value })} />
                     </div>
                     <div>
-                      <label className="label">Floor</label>
+                      <label className="label">{t('floor', lang)}</label>
                       <select className="input" value={area.floor} onChange={e => handleUpdate(area.id, { floor: e.target.value })} style={{ width: '100%' }}>
                         {PA_FLOORS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
                       </select>
                     </div>
-                    <FrequencySlider value={area.frequencyDays} onChange={v => handleUpdate(area.id, { frequencyDays: v })} />
+                    <FrequencySlider value={area.frequencyDays} onChange={v => handleUpdate(area.id, { frequencyDays: v })} lang={lang} />
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
                       <div>
-                        <label className="label">Minutes per clean</label>
+                        <label className="label">{t('minutesPerClean', lang)}</label>
                         <input className="input" type="number" value={area.minutesPerClean} onChange={e => handleUpdate(area.id, { minutesPerClean: Number(e.target.value) || 0 })} />
                       </div>
                       <div>
-                        <label className="label">Locations</label>
+                        <label className="label">{t('locations', lang)}</label>
                         <input className="input" type="number" value={area.locations} onChange={e => handleUpdate(area.id, { locations: Number(e.target.value) || 1 })} />
                       </div>
                     </div>
                     <button onClick={() => handleDelete(area.id)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', padding: '10px', borderRadius: '8px', border: '1px solid rgba(220,38,38,0.2)', background: 'rgba(220,38,38,0.06)', color: '#dc2626', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}>
-                      <Trash2 size={14} /> Remove Area
+                      <Trash2 size={14} /> {t('removeArea', lang)}
                     </button>
                   </div>
                 )}
@@ -1266,53 +1276,53 @@ function PublicAreasSection() {
             );
           })}
           {visible.length === 0 && (
-            <div className="card" style={{ padding: '28px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>No areas on this floor. Tap Add to create one.</div>
+            <div className="card" style={{ padding: '28px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>{t('noAreasFloor', lang)}</div>
           )}
         </div>
       )}
 
       {/* Save */}
       <button onClick={handleSave} disabled={saving || saved || !dirty} className={`btn btn-xl ${saved ? 'btn-green' : 'btn-primary'}`} style={{ width: '100%', justifyContent: 'center', opacity: (!dirty && !saved) ? 0.5 : 1 }}>
-        {saved ? <><Check size={20} /> Saved!</> : saving ? 'Saving...' : 'Save Changes'}
+        {saved ? <><Check size={20} /> {t('saved', lang)}</> : saving ? t('saving', lang) : t('saveChanges', lang)}
       </button>
 
       {/* Add Area Modal */}
       {showAddModal && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 9998, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }} onClick={() => setShowAddModal(false)}>
           <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-card)', borderRadius: '16px', padding: '24px', width: '100%', maxWidth: '400px', boxShadow: '0 20px 60px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-            <p style={{ fontWeight: 700, fontSize: '17px', color: 'var(--text-primary)' }}>Add Public Area</p>
+            <p style={{ fontWeight: 700, fontSize: '17px', color: 'var(--text-primary)' }}>{t('addPublicArea', lang)}</p>
 
             <div>
-              <label className="label">Name</label>
-              <input className="input" placeholder="e.g. 3rd Floor Hallway" autoFocus value={newArea.name} onChange={e => setNewArea(p => ({ ...p, name: e.target.value }))} />
+              <label className="label">{t('name', lang)}</label>
+              <input className="input" placeholder={t('areaNamePlaceholder', lang)} autoFocus value={newArea.name} onChange={e => setNewArea(p => ({ ...p, name: e.target.value }))} />
             </div>
 
             <div>
-              <label className="label">Floor</label>
+              <label className="label">{t('floor', lang)}</label>
               <select className="input" value={newArea.floor} onChange={e => setNewArea(p => ({ ...p, floor: e.target.value }))} style={{ width: '100%' }}>
                 {PA_FLOORS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
               </select>
             </div>
 
-            <FrequencySlider value={newArea.frequencyDays} onChange={v => setNewArea(p => ({ ...p, frequencyDays: v }))} />
+            <FrequencySlider value={newArea.frequencyDays} onChange={v => setNewArea(p => ({ ...p, frequencyDays: v }))} lang={lang} />
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
               <div>
-                <label className="label">Minutes per clean</label>
+                <label className="label">{t('minutesPerClean', lang)}</label>
                 <input className="input" type="number" value={newArea.minutesPerClean} onChange={e => setNewArea(p => ({ ...p, minutesPerClean: Number(e.target.value) || 0 }))} />
               </div>
               <div>
-                <label className="label">Locations</label>
+                <label className="label">{t('locations', lang)}</label>
                 <input className="input" type="number" value={newArea.locations} onChange={e => setNewArea(p => ({ ...p, locations: Number(e.target.value) || 1 }))} />
               </div>
             </div>
 
             <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
               <button onClick={() => setShowAddModal(false)} style={{ flex: 1, padding: '12px', borderRadius: '10px', border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-muted)', fontWeight: 600, fontSize: '14px', cursor: 'pointer' }}>
-                Cancel
+                {t('cancel', lang)}
               </button>
               <button onClick={confirmAdd} disabled={!newArea.name.trim()} style={{ flex: 1, padding: '12px', borderRadius: '10px', border: 'none', background: 'var(--navy)', color: '#fff', fontWeight: 600, fontSize: '14px', cursor: 'pointer', opacity: newArea.name.trim() ? 1 : 0.5 }}>
-                Add Area
+                {t('addAreaBtn', lang)}
               </button>
             </div>
           </div>
@@ -1659,6 +1669,7 @@ export default function HousekeepingPage() {
         <div style={{ display: 'flex', gap: '0', borderBottom: '2px solid var(--border)' }}>
           {TABS.map(tab => {
             const isActive = activeTab === tab.key;
+            const tabLabelKey = tab.key === 'schedule' ? 'scheduling' : tab.key === 'rooms' ? 'rooms' : tab.key === 'areas' ? 'publicAreas' : tab.key === 'performance' ? 'performance' : 'roomImport';
             return (
               <button
                 key={tab.key}
@@ -1679,7 +1690,7 @@ export default function HousekeepingPage() {
                   transition: 'all 120ms',
                 }}
               >
-                {lang === 'es' ? tab.labelEs : tab.label}
+                {t(tabLabelKey, lang)}
               </button>
             );
           })}

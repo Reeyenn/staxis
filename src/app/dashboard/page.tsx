@@ -19,6 +19,7 @@ import {
 
 /* ── Room grid helper ── */
 function RoomGrid({ rooms }: { rooms: Room[] }) {
+  const { lang } = useLang();
   // Group by floor (first digit of room number, e.g. "101" → floor 1)
   const floors = new Map<string, Room[]>();
   [...rooms]
@@ -35,7 +36,7 @@ function RoomGrid({ rooms }: { rooms: Room[] }) {
         <div key={floor}>
           {floors.size > 1 && (
             <div style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: '6px' }}>
-              Floor {floor}
+              {t('floor', lang)} {floor}
             </div>
           )}
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
@@ -177,30 +178,30 @@ export default function DashboardPage() {
           <StatCard
             icon={<Users size={16} color="#16A34A" />}
             iconBg="rgba(22,163,74,0.08)"
-            label={lang === 'es' ? 'Equipo Mañana' : 'Staff Tomorrow'}
+            label={t('staffTomorrow', lang)}
             value={confirmedCount}
-            sub={`${tomorrowConfs.length} ${lang === 'es' ? 'contactados' : 'contacted'}`}
+            sub={`${tomorrowConfs.length} ${t('contacted', lang)}`}
           />
           <StatCard
             icon={<DollarSign size={16} color="#CA8A04" />}
             iconBg="rgba(202,138,4,0.08)"
-            label={lang === 'es' ? 'Costo Estimado' : 'Est. Labor Cost'}
+            label={t('estLaborCost', lang)}
             value={total > 0 ? `$${Math.round(total * 3.2)}` : '-'}
-            sub={lang === 'es' ? 'hoy' : 'today'}
+            sub={t('today', lang)}
           />
           <StatCard
             icon={<AlertTriangle size={16} color="#DC2626" />}
             iconBg="rgba(220,38,38,0.08)"
-            label={lang === 'es' ? 'Sucias' : 'Dirty Rooms'}
+            label={t('dirtyRooms', lang)}
             value={dirty}
-            sub={lang === 'es' ? 'pendientes' : 'need cleaning'}
+            sub={t('needCleaning', lang)}
           />
           <StatCard
             icon={<DoorOpen size={16} color="var(--navy)" />}
             iconBg="rgba(27,58,92,0.08)"
-            label={lang === 'es' ? 'Salidas Hoy' : 'Checkouts Today'}
+            label={t('checkoutsToday', lang)}
             value={checkouts}
-            sub={lang === 'es' ? 'habitaciones' : 'rooms'}
+            sub={t('rooms', lang)}
           />
         </div>
 
@@ -212,7 +213,7 @@ export default function DashboardPage() {
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
               <Sparkles size={14} color="var(--navy-light)" />
               <h2 style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)' }}>
-                {lang === 'es' ? 'Estado de Habitaciones' : 'Room Status'}
+                {t('roomStatus', lang)}
               </h2>
               <span style={{ marginLeft: 'auto', fontSize: '18px', fontFamily: 'var(--font-mono)', fontWeight: 700, color: pct === 100 ? 'var(--green)' : 'var(--navy-light)' }}>
                 {pct}%
@@ -223,7 +224,7 @@ export default function DashboardPage() {
             </div>
             {total === 0 ? (
               <div style={{ textAlign: 'center', padding: '24px 0', color: 'var(--text-muted)', fontSize: '13px', flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                {lang === 'es' ? 'No hay habitaciones asignadas hoy.' : 'No rooms assigned today.'}
+                {t('noRoomsAssignedToday', lang)}
               </div>
             ) : (
               <>
@@ -233,9 +234,9 @@ export default function DashboardPage() {
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '10px', paddingTop: '10px', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
                   <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                     {[
-                      { dot: '#86EFAC', bg: '#DCFCE7', label: lang === 'es' ? 'Limpia' : 'Clean', count: clean },
-                      { dot: '#FCD34D', bg: '#FEF9C3', label: lang === 'es' ? 'Progreso' : 'Progress', count: inProgress },
-                      { dot: '#FCA5A5', bg: '#FEE2E2', label: lang === 'es' ? 'Sucia' : 'Dirty', count: dirty },
+                      { dot: '#86EFAC', bg: '#DCFCE7', label: t('clean', lang), count: clean },
+                      { dot: '#FCD34D', bg: '#FEF9C3', label: t('progress', lang), count: inProgress },
+                      { dot: '#FCA5A5', bg: '#FEE2E2', label: t('dirty', lang), count: dirty },
                     ].map(({ dot, bg, label, count }) => (
                       <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                         <div style={{ width: '9px', height: '9px', borderRadius: '2px', background: bg, border: `1.5px solid ${dot}`, flexShrink: 0 }} />
@@ -245,7 +246,7 @@ export default function DashboardPage() {
                       </div>
                     ))}
                   </div>
-                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 500, flexShrink: 0 }}>{total} total</span>
+                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 500, flexShrink: 0 }}>{total} {t('total', lang)}</span>
                 </div>
               </>
             )}
@@ -256,7 +257,7 @@ export default function DashboardPage() {
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', flexShrink: 0 }}>
               <Users size={14} color="var(--navy-light)" />
               <h2 style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)' }}>
-                {lang === 'es' ? 'Equipo de Mañana' : "Tomorrow's Crew"}
+                {t('tomorrowsCrew', lang)}
               </h2>
               {tomorrowConfs.length > 0 && (
                 <span style={{ marginLeft: 'auto', fontSize: '12px', fontWeight: 600, color: 'var(--green)' }}>
@@ -272,7 +273,7 @@ export default function DashboardPage() {
               }}>
                 <CircleDot size={24} color="var(--text-muted)" style={{ margin: '0 auto 8px' }} />
                 <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
-                  {lang === 'es' ? 'No hay confirmaciones aún - ve a Housekeeping › Schedule para enviar.' : 'No confirmations yet - go to Housekeeping › Schedule to send.'}
+                  {t('noConfirmationsYet', lang)}
                 </p>
               </div>
             ) : (

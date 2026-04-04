@@ -183,7 +183,7 @@ export default function StaffPage() {
             }}
           >
             <ChevronLeft size={14} />
-            Settings
+            {t('settings', lang)}
           </button>
 
           {activeProperty && (
@@ -198,7 +198,7 @@ export default function StaffPage() {
               letterSpacing: '-0.02em', display: 'flex', alignItems: 'center', gap: '10px', margin: 0,
             }}>
               <Users size={20} color="var(--navy)" />
-              Staff Directory
+              {t('staffDirectory', lang)}
             </h1>
             <button
               onClick={openAdd}
@@ -210,7 +210,7 @@ export default function StaffPage() {
               }}
             >
               <Plus size={14} />
-              Add Staff
+              {t('addStaff', lang)}
             </button>
           </div>
         </div>
@@ -341,7 +341,7 @@ export default function StaffPage() {
                               background: 'rgba(251,191,36,0.15)', color: 'var(--amber)',
                               display: 'flex', alignItems: 'center', gap: '3px',
                             }}>
-                              <Star size={9} /> Senior
+                              <Star size={9} /> {t('senior', lang)}
                             </span>
                           )}
                         </div>
@@ -418,7 +418,7 @@ export default function StaffPage() {
         )}
 
         {/* Add/Edit Modal */}
-        <Modal isOpen={showModal} onClose={() => setShowModal(false)} title={editMember ? `Edit ${editMember.name}` : 'Add Staff Member'}>
+        <Modal isOpen={showModal} onClose={() => setShowModal(false)} title={editMember ? `${t('editStaff', lang)} ${editMember.name}` : t('addStaffMember', lang)}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
 
             {/* Name */}
@@ -430,7 +430,7 @@ export default function StaffPage() {
 
             {/* Department */}
             <div>
-              <label className="label">Department</label>
+              <label className="label">{t('department', lang)}</label>
               <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                 {DEPARTMENTS.map(d => (
                   <button key={d.key} onClick={() => setForm(f => ({ ...f, department: d.key }))} style={{

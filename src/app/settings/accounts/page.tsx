@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
+import { useLang } from '@/contexts/LanguageContext';
+import { t } from '@/lib/translations';
 import { Users, Plus, Trash2, Pencil, X, Check, ChevronLeft, Shield, User } from 'lucide-react';
 
 interface AccountRow {
@@ -35,6 +37,7 @@ const BLANK_FORM: FormState = {
 export default function AccountsPage() {
   const { user } = useAuth();
   const { properties } = useProperty();
+  const { lang } = useLang();
   const router = useRouter();
 
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
@@ -205,7 +208,7 @@ export default function AccountsPage() {
             }}
           >
             <ChevronLeft size={14} />
-            Settings
+            {t('settings', lang)}
           </button>
           <h1 style={{
             fontFamily: 'var(--font-sans)', fontWeight: 700,
@@ -214,7 +217,7 @@ export default function AccountsPage() {
             display: 'flex', alignItems: 'center', gap: '8px',
           }}>
             <Users size={18} color="var(--navy)" />
-            Accounts
+            {t('accountManagement', lang)}
           </h1>
           <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginTop: '4px' }}>
             Manage logins and property access for your team.
@@ -235,7 +238,7 @@ export default function AccountsPage() {
           }}
         >
           <Plus size={15} />
-          Add account
+          Add {t('accountManagement', lang)}
         </button>
 
         {/* List */}
@@ -355,7 +358,7 @@ export default function AccountsPage() {
                 fontFamily: 'var(--font-sans)', fontWeight: 700,
                 fontSize: '18px', color: 'var(--text-primary)',
               }}>
-                {editingId ? 'Edit account' : 'Add account'}
+                {editingId ? t('edit', lang) : 'Add'} {t('accountManagement', lang)}
               </h2>
               <button
                 onClick={() => setShowForm(false)}
@@ -371,7 +374,7 @@ export default function AccountsPage() {
 
             {/* Username */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <label style={labelStyle}>Username</label>
+              <label style={labelStyle}>{t('username', lang)}</label>
               <input
                 type="text"
                 value={form.username}
@@ -384,7 +387,7 @@ export default function AccountsPage() {
 
             {/* Display name */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <label style={labelStyle}>Display name</label>
+              <label style={labelStyle}>{t('name', lang)}</label>
               <input
                 type="text"
                 value={form.displayName}
@@ -396,7 +399,7 @@ export default function AccountsPage() {
 
             {/* Password */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <label style={labelStyle}>{editingId ? 'New password (leave blank to keep)' : 'Password'}</label>
+              <label style={labelStyle}>{editingId ? t('password', lang) : t('password', lang)}</label>
               <input
                 type="password"
                 value={form.password}
@@ -408,7 +411,7 @@ export default function AccountsPage() {
 
             {/* Role */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <label style={labelStyle}>Role</label>
+              <label style={labelStyle}>{t('type', lang)}</label>
               <div style={{ display: 'flex', gap: '8px' }}>
                 {(['admin', 'owner', 'staff'] as const).map(r => (
                   <button key={r} onClick={() => setForm(f => ({ ...f, role: r }))} style={{
@@ -428,7 +431,7 @@ export default function AccountsPage() {
 
             {/* Property access */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <label style={labelStyle}>Property access</label>
+              <label style={labelStyle}>{t('property', lang)}</label>
 
               {/* All properties toggle */}
               <button
@@ -493,7 +496,7 @@ export default function AccountsPage() {
             >
               {saving
                 ? <div className="spinner" style={{ width: '18px', height: '18px', borderTopColor: '#FFFFFF', borderColor: 'rgba(255,255,255,0.3)' }} />
-                : editingId ? 'Save changes' : 'Create account'
+                : editingId ? t('saveChanges', lang) : 'Create account'
               }
             </button>
           </div>

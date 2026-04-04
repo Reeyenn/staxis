@@ -3,9 +3,12 @@
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
+import { useLang } from '@/contexts/LanguageContext';
+import { t } from '@/lib/translations';
 
 export default function SignInPage() {
   const { user, loading, signIn } = useAuth();
+  const { lang } = useLang();
   const router = useRouter();
 
   const [username, setUsername] = useState('');
@@ -32,7 +35,7 @@ export default function SignInPage() {
       }
       // On success, onAuthStateChanged → redirect via useEffect above
     } catch {
-      setError('Invalid username or password.');
+      setError(t('invalidCredentials', lang));
       setSigning(false);
     }
   };
@@ -72,7 +75,7 @@ export default function SignInPage() {
           }}>
             Staxis
           </h1>
-          <p style={{ color: 'var(--text-muted)', fontSize: '14px' }}>Sign in to your account</p>
+          <p style={{ color: 'var(--text-muted)', fontSize: '14px' }}>{t('signInPrompt', lang)}</p>
         </div>
 
         {/* Form */}
@@ -84,7 +87,7 @@ export default function SignInPage() {
               color: 'var(--text-secondary)', textTransform: 'uppercase',
               fontFamily: 'var(--font-sans)',
             }}>
-              Username
+              {t('username', lang)}
             </label>
             <input
               type="text"
@@ -115,7 +118,7 @@ export default function SignInPage() {
               color: 'var(--text-secondary)', textTransform: 'uppercase',
               fontFamily: 'var(--font-sans)',
             }}>
-              Password
+              {t('password', lang)}
             </label>
             <input
               type="password"
@@ -170,7 +173,7 @@ export default function SignInPage() {
           >
             {signing
               ? <div className="spinner" style={{ width: '18px', height: '18px', borderTopColor: '#FFFFFF', borderColor: 'rgba(255,255,255,0.3)' }} />
-              : 'Sign in'
+              : t('signIn', lang)
             }
           </button>
 
