@@ -545,9 +545,6 @@ function ScheduleSection() {
                 <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.5)', fontWeight: 600 }}>{lang === 'es' ? 'Personal' : 'Staff needed'}</div>
               </div>
             </div>
-            <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.4)' }}>
-              {workloadMinutes}{lang === 'es' ? 'min' : 'min'} {lang === 'es' ? 'trabajo' : 'work'} · {coMins}m CO · {soMins}m SO · {prepPerRoom}m {lang === 'es' ? 'entre' : 'between'} · ⚙️
-            </div>
           </>
         )}
       </div>
