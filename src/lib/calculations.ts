@@ -186,11 +186,9 @@ export function predictTodayFromHistory(
 
 const CHECKOUT_MINS = 30;
 const STAYOVER_MINS = 15;
-const VIP_BONUS_MINS = 10; // suites / VIP rooms take longer
 
 export function getRoomMinutes(room: { type: string; priority: string }): number {
-  const base = room.type === 'checkout' ? CHECKOUT_MINS : STAYOVER_MINS;
-  return base + (room.priority === 'vip' ? VIP_BONUS_MINS : 0);
+  return room.type === 'checkout' ? CHECKOUT_MINS : STAYOVER_MINS;
 }
 
 // ─── Auto-assign rooms to staff ────────────────────────────────────────────

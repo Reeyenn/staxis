@@ -30,11 +30,10 @@ import {
 
 // ─── Tab config ──────────────────────────────────────────────────────────────
 
-type TabKey = 'rooms' | 'areas' | 'schedule' | 'performance';
+type TabKey = 'rooms' | 'schedule' | 'performance';
 
 const TABS: { key: TabKey; label: string; labelEs: string }[] = [
   { key: 'rooms',       label: 'Rooms',        labelEs: 'Habitaciones'   },
-  { key: 'areas',       label: 'Public Areas', labelEs: 'Areas Publicas' },
   { key: 'schedule',    label: 'Schedule',     labelEs: 'Horario'        },
   { key: 'performance', label: 'Performance',  labelEs: 'Rendimiento'    },
 ];
@@ -281,6 +280,7 @@ function ScheduleSection() {
   const [sent, setSent] = useState(false);
   const [showNotifPanel, setShowNotifPanel] = useState(false);
   const [showPredictionSettings, setShowPredictionSettings] = useState(false);
+  const [showPublicAreas, setShowPublicAreas] = useState(false);
   const [settingsForm, setSettingsForm] = useState({ checkoutMinutes: 30, stayoverMinutes: 20, prepMinutesPerActivity: 5 });
   const [savingSettings, setSavingSettings] = useState(false);
 
@@ -587,13 +587,13 @@ function ScheduleSection() {
             </div>
 
             <div>
-              <label className="label">{lang === 'es' ? 'Minutos de Prep por Actividad' : 'Prep Minutes per Activity'}</label>
+              <label className="label">{lang === 'es' ? 'Tiempo Entre Habitaciones' : 'Time Between Rooms'}</label>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <input className="input" type="number" min={0} value={settingsForm.prepMinutesPerActivity} onChange={e => setSettingsForm(p => ({ ...p, prepMinutesPerActivity: Number(e.target.value) || 0 }))} style={{ flex: 1, textAlign: 'center' }} />
                 <span style={{ fontSize: '13px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{t('minutes', lang)}</span>
               </div>
               <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '4px 0 0' }}>
-                {lang === 'es' ? 'Tiempo de preparación por cada habitación o área pública (traslado, cargar carrito, etc.)' : 'Prep time per room or public area task (travel, cart loading, etc.)'}
+                {lang === 'es' ? 'Tiempo de traslado entre cada habitación o área (cargar carrito, caminar, etc.)' : 'Travel and setup time between each room or area (cart loading, walking, etc.)'}
               </p>
             </div>
 
@@ -608,6 +608,24 @@ function ScheduleSection() {
           </div>
         </div>
       )}
+
+      {/* Public Areas button */}
+      <button onClick={() => setShowPublicAreas(true)} style={{
+        width: '100%', padding: '14px 16px',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        background: 'var(--bg-card)', border: '1px solid var(--border)',
+        borderRadius: 'var(--radius-lg)',
+        cursor: 'pointer', fontFamily: 'var(--font-sans)',
+      }}>
+        <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)' }}>
+          {lang === 'es' ? 'Áreas Comunes' : 'Public Areas'}
+        </span>
+        <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+          {areasDueToday.length} {lang === 'es' ? 'para hoy' : 'due today'} · {publicAreaMinutes}{t('minutes', lang)}
+        </span>
+      </button>
+
+      <PublicAreasModal show={showPublicAreas} onClose={() => setShowPublicAreas(false)} />
 
       {/* Sent banner */}
       {sent && (
@@ -1236,7 +1254,7 @@ function FrequencySlider({ value, onChange, lang }: { value: number; onChange: (
 }
 
 
-function PublicAreasSection() {
+function PublicAreasModal({ show, onClose }: { show: boolean; onClose: () => void }) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
@@ -1340,8 +1358,15 @@ function PublicAreasSection() {
     .map(f => ({ floor: f, label: paFloorLabel(f, lang), areas: areas.filter(a => a.floor === f) }))
     .filter(g => g.areas.length > 0);
 
+  if (!show) return null;
+
   return (
-    <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 9998, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', width: '100%', maxWidth: '500px', maxHeight: '85vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <p style={{ fontWeight: 700, fontSize: '17px', color: 'var(--text-primary)', margin: 0 }}>{lang === 'es' ? 'Áreas Comunes' : 'Public Areas'}</p>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '18px', padding: '4px' }}>✕</button>
+        </div>
 
       {/* Add button */}
       <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
@@ -1528,6 +1553,7 @@ function PublicAreasSection() {
         </div>
       )}
       <style>{`@keyframes toastIn { from { opacity: 0; transform: translateX(-50%) translateY(10px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }`}</style>
+      </div>
     </div>
   );
 }
@@ -1830,7 +1856,7 @@ export default function HousekeepingPage() {
   // Restore tab from localStorage on mount
   useEffect(() => {
     const saved = localStorage.getItem('hk-tab') as TabKey | null;
-    const valid: TabKey[] = ['rooms', 'areas', 'schedule', 'performance'];
+    const valid: TabKey[] = ['rooms', 'schedule', 'performance'];
     if (saved && valid.includes(saved)) setActiveTabState(saved);
   }, []);
 
@@ -1859,7 +1885,7 @@ export default function HousekeepingPage() {
         }}>
           {TABS.map(tab => {
             const isActive = activeTab === tab.key;
-            const tabLabelKey = tab.key === 'rooms' ? 'rooms' : tab.key === 'areas' ? 'publicAreas' : tab.key === 'schedule' ? 'scheduling' : 'performance';
+            const tabLabelKey = tab.key === 'rooms' ? 'rooms' : tab.key === 'schedule' ? 'scheduling' : 'performance';
             return (
               <button
                 key={tab.key}
@@ -1891,7 +1917,6 @@ export default function HousekeepingPage() {
       {/* ── Section content ── */}
       {activeTab === 'schedule'    && <ScheduleSection />}
       {activeTab === 'rooms'       && <RoomsSection />}
-      {activeTab === 'areas'       && <PublicAreasSection />}
       {activeTab === 'performance' && <PerformanceSection />}
     </AppLayout>
   );
