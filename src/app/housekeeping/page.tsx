@@ -583,7 +583,7 @@ function ScheduleSection() {
                     </span>
                   </div>
                   {/* 2x2 stats grid to the right of name */}
-                  <div style={{ display: 'grid', gridTemplateColumns: 'auto auto', gap: '1px 10px', fontSize: '12px', color: 'var(--text-muted)' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '80px 100px', gap: '1px 10px', fontSize: '12px', color: 'var(--text-muted)', width: '190px', flexShrink: 0 }}>
                     <div>{lang === 'es' ? 'Estimado' : 'Est'}: {timeLabel}</div>
                     <div>{coCount} {lang === 'es' ? 'Salida' : 'Checkout'}{coCount !== 1 ? 's' : ''}</div>
                     <button onClick={() => toggleCrewMember(member.id)} style={{
