@@ -1217,8 +1217,9 @@ function PublicAreasSection() {
                   return (
                     <div key={area.id} ref={isHighlighted ? highlightRef : undefined} className="card" style={{ padding: 0, overflow: 'hidden', transition: 'box-shadow 0.3s, border-color 0.3s', ...(isOpen ? { gridColumn: '1 / -1' } : {}), ...(isHighlighted ? { boxShadow: '0 0 0 2px var(--amber), 0 4px 16px rgba(251,191,36,0.25)', borderColor: 'var(--amber)' } : {}) }}>
                       <button onClick={() => setExpandedId(isOpen ? null : area.id)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', color: 'var(--text-primary)' }}>
-                        <p style={{ flex: 1, fontWeight: 600, fontSize: '13px', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{area.name || 'Untitled'}</p>
+                        <p style={{ fontWeight: 600, fontSize: '13px', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{area.name || 'Untitled'}</p>
                         <span style={{ fontSize: '11px', color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>{area.minutesPerClean}min · {fLabel}</span>
+                        <div style={{ flex: 1 }} />
                         {isOpen ? <ChevronUp size={14} color="var(--text-muted)" style={{ flexShrink: 0 }} /> : <ChevronDown size={14} color="var(--text-muted)" style={{ flexShrink: 0 }} />}
                       </button>
 
