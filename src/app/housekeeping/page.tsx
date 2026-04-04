@@ -1732,8 +1732,12 @@ export default function HousekeepingPage() {
       </div>
 
       {/* ── Sub-tab bar ── */}
-      <div style={{ padding: '16px 16px 0', position: 'sticky', top: 52, zIndex: 10, background: 'var(--bg)' }}>
-        <div style={{ display: 'flex', gap: '0', borderBottom: '2px solid var(--border)' }}>
+      <div style={{ padding: '12px 16px 0', position: 'sticky', top: 52, zIndex: 10, background: 'var(--bg)' }}>
+        <div style={{
+          display: 'flex', gap: '6px',
+          background: 'var(--bg-card)', border: '1px solid var(--border)',
+          borderRadius: 'var(--radius-lg)', padding: '4px',
+        }}>
           {TABS.map(tab => {
             const isActive = activeTab === tab.key;
             const tabLabelKey = tab.key === 'rooms' ? 'rooms' : tab.key === 'areas' ? 'publicAreas' : tab.key === 'schedule' ? 'scheduling' : 'performance';
@@ -1742,19 +1746,19 @@ export default function HousekeepingPage() {
                 key={tab.key}
                 onClick={() => setActiveTab(tab.key)}
                 style={{
-                  padding: '10px 20px',
-                  flexShrink: 0,
+                  flex: 1,
+                  padding: '10px 8px',
                   border: 'none',
-                  borderBottom: `2px solid ${isActive ? 'var(--navy-light)' : 'transparent'}`,
-                  marginBottom: '-2px',
-                  background: 'transparent',
-                  color: isActive ? 'var(--navy-light)' : 'var(--text-muted)',
-                  fontWeight: isActive ? 600 : 500,
-                  fontSize: '14px',
+                  borderRadius: 'var(--radius-md)',
+                  background: isActive ? 'var(--navy)' : 'transparent',
+                  color: isActive ? '#FFFFFF' : 'var(--text-muted)',
+                  fontWeight: isActive ? 700 : 600,
+                  fontSize: '13px',
                   cursor: 'pointer',
                   whiteSpace: 'nowrap',
                   fontFamily: 'var(--font-sans)',
                   transition: 'all 120ms',
+                  boxShadow: isActive ? '0 2px 8px rgba(27, 58, 92, 0.25)' : 'none',
                 }}
               >
                 {t(tabLabelKey, lang)}
