@@ -1256,9 +1256,8 @@ function PublicAreasSection() {
   return (
     <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
 
-      {/* Header + Add */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <p style={{ fontWeight: 700, fontSize: '16px', color: 'var(--text-primary)', margin: 0 }}>{t('publicAreas', lang)}</p>
+      {/* Add button */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
         <button onClick={openAddModal} style={{
           display: 'flex', alignItems: 'center', gap: '5px',
           padding: '6px 12px', borderRadius: 'var(--radius-full)',
@@ -1273,14 +1272,12 @@ function PublicAreasSection() {
       {loading ? (
         <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>{t('loading', lang)}</div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           {grouped.map(group => (
             <div key={group.floor}>
-              {/* Floor header */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--navy)' }}>{group.label}</span>
-                <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>{group.areas.length}</span>
-                <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
+              {/* Floor header — centered */}
+              <div style={{ textAlign: 'center', marginBottom: '6px' }}>
+                <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--navy)' }}>{group.label}</span>
               </div>
               {/* Area cards — 3 column grid */}
               <div style={{
