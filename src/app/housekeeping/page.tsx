@@ -284,8 +284,9 @@ function ScheduleSection() {
   const [crewOverride, setCrewOverride] = useState<string[]>([]); // manually toggled staff IDs
   const [hasAutoSelected, setHasAutoSelected] = useState(false);
 
-  // Pending move confirmation
-  const [pendingMove, setPendingMove] = useState<{ roomId: string; roomNumber: string; fromStaffId: string; toStaffId: string } | null>(null);
+  // Move toast notification
+  const [moveToast, setMoveToast] = useState<string | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Drag-and-drop state (pointer events — works for both mouse + touch)
   const [dragState, setDragState] = useState<{
@@ -407,11 +408,6 @@ function ScheduleSection() {
     });
   };
 
-  const confirmMove = () => {
-    if (!pendingMove) return;
-    setAssignments(prev => ({ ...prev, [pendingMove.roomId]: pendingMove.toStaffId }));
-    setPendingMove(null);
-  };
 
   const handleSend = async () => {
     if (!uid || !pid || selectedCrew.length === 0 || sending) return;
@@ -472,6 +468,12 @@ function ScheduleSection() {
     });
   }, [findDropTarget]);
 
+  const showMoveToast = useCallback((msg: string) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setMoveToast(msg);
+    toastTimer.current = setTimeout(() => setMoveToast(null), 2500);
+  }, []);
+
   const onPillPointerUp = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
     e.currentTarget.releasePointerCapture(e.pointerId);
     const d = dragRef.current;
@@ -480,7 +482,11 @@ function ScheduleSection() {
         if (prev?.dropTarget && prev.roomId) {
           const fromStaffId = assignments[prev.roomId];
           if (fromStaffId !== prev.dropTarget) {
-            setPendingMove({ roomId: prev.roomId, roomNumber: prev.roomNumber, fromStaffId, toStaffId: prev.dropTarget! });
+            setAssignments(a => ({ ...a, [prev.roomId]: prev.dropTarget! }));
+            // Show toast — we need staff names so we look them up from selectedCrew
+            const fromName = selectedCrew.find(s => s.id === fromStaffId)?.name ?? '?';
+            const toName = selectedCrew.find(s => s.id === prev.dropTarget)?.name ?? '?';
+            showMoveToast(`Moved ${prev.roomNumber} from ${fromName} to ${toName}`);
           }
         }
         return null;
@@ -489,7 +495,7 @@ function ScheduleSection() {
       setDragState(null);
     }
     dragRef.current = { roomId: null, roomNumber: '', roomType: '', startX: 0, startY: 0, active: false };
-  }, []);
+  }, [assignments, selectedCrew, showMoveToast]);
 
   return (
     <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -671,46 +677,19 @@ function ScheduleSection() {
         )
       )}
 
-      {/* ── Move confirmation popup ── */}
-      {pendingMove && (() => {
-        const fromName = selectedCrew.find(s => s.id === pendingMove.fromStaffId)?.name ?? '?';
-        const toName = selectedCrew.find(s => s.id === pendingMove.toStaffId)?.name ?? '?';
-        return (
-          <>
-            <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 9999 }} onClick={() => setPendingMove(null)} />
-            <div style={{
-              position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 10000,
-              background: 'var(--bg-card)', borderRadius: '16px', padding: '24px',
-              boxShadow: '0 8px 40px rgba(0,0,0,0.2)', width: '300px', textAlign: 'center',
-              animation: 'popIn 0.15s ease-out',
-            }}>
-              <p style={{ fontSize: '15px', fontWeight: 700, color: 'var(--text-primary)', margin: '0 0 8px' }}>
-                {lang === 'es' ? 'Mover Habitación' : 'Move Room'}
-              </p>
-              <p style={{ fontSize: '14px', color: 'var(--text-secondary)', margin: '0 0 20px', lineHeight: 1.5 }}>
-                {lang === 'es' ? 'Mover' : 'Move'} <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{pendingMove.roomNumber}</span> {lang === 'es' ? 'de' : 'from'} <strong>{fromName}</strong> {lang === 'es' ? 'a' : 'to'} <strong>{toName}</strong>?
-              </p>
-              <div style={{ display: 'flex', gap: '10px' }}>
-                <button onClick={() => setPendingMove(null)} style={{
-                  flex: 1, padding: '12px', borderRadius: '10px', border: '1.5px solid var(--border)',
-                  background: 'var(--bg-elevated)', cursor: 'pointer', fontFamily: 'var(--font-sans)',
-                  fontSize: '14px', fontWeight: 600, color: 'var(--text-secondary)',
-                }}>
-                  {lang === 'es' ? 'Cancelar' : 'Cancel'}
-                </button>
-                <button onClick={confirmMove} style={{
-                  flex: 1, padding: '12px', borderRadius: '10px', border: 'none',
-                  background: '#2563EB', cursor: 'pointer', fontFamily: 'var(--font-sans)',
-                  fontSize: '14px', fontWeight: 600, color: '#fff',
-                }}>
-                  {lang === 'es' ? 'Confirmar' : 'Confirm'}
-                </button>
-              </div>
-            </div>
-            <style>{`@keyframes popIn { from { transform: translate(-50%, -50%) scale(0.9); opacity: 0; } to { transform: translate(-50%, -50%) scale(1); opacity: 1; } }`}</style>
-          </>
-        );
-      })()}
+      {/* ── Move toast ── */}
+      {moveToast && (
+        <div style={{
+          position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)', zIndex: 10000,
+          background: '#1B3A5C', color: '#fff', padding: '10px 20px', borderRadius: '10px',
+          fontSize: '13px', fontWeight: 600, boxShadow: '0 4px 16px rgba(0,0,0,0.2)',
+          animation: 'toastIn 0.2s ease-out',
+          whiteSpace: 'nowrap',
+        }}>
+          {moveToast}
+        </div>
+      )}
+      <style>{`@keyframes toastIn { from { transform: translateX(-50%) translateY(10px); opacity: 0; } to { transform: translateX(-50%) translateY(0); opacity: 1; } }`}</style>
 
       {/* ── Add Staff bottom sheet ── */}
       {showAddStaff && (
