@@ -769,7 +769,7 @@ function RoomsSection() {
                             {info.label.replace(' ✓', '')}
                           </span>
                           {(room.isDnd || room.type === 'checkout' || room.type === 'vacant' || room.type === 'stayover') && (
-                            <div style={{ position: 'absolute', top: '3px', right: '4px', fontSize: '9px', lineHeight: 1 }}>
+                            <div style={{ position: 'absolute', top: '2px', right: '3px', fontSize: '12px', lineHeight: 1 }}>
                               {room.isDnd ? '🚫' : room.type === 'vacant' ? '💎' : room.type === 'stayover' ? '🔒' : '🚪'}
                             </div>
                           )}
