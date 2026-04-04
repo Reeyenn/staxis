@@ -283,13 +283,12 @@ function ScheduleSection() {
   const [crewOverride, setCrewOverride] = useState<string[]>([]); // manually toggled staff IDs
   const [hasAutoSelected, setHasAutoSelected] = useState(false);
 
-  // Drag-and-drop state
+  // Drag-and-drop state (pointer events — works for both mouse + touch)
   const [dragState, setDragState] = useState<{
     roomId: string; roomNumber: string; roomType: string;
     ghost: { x: number; y: number }; dropTarget: string | null;
   } | null>(null);
   const crewCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
-  const crewContainerRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{
     roomId: string | null; roomNumber: string; roomType: string;
     startX: number; startY: number; active: boolean;
@@ -430,9 +429,8 @@ function ScheduleSection() {
     return { rooms: staffRooms, mins };
   };
 
-  // ── Drag-and-drop: callback ref attaches native touch listeners ──
+  // ── Drag-and-drop via Pointer Events (mouse + touch) ──
   const DRAG_THRESHOLD = 8;
-  const boundContainerRef = useRef<HTMLDivElement | null>(null);
 
   const findDropTarget = useCallback((x: number, y: number): string | null => {
     for (const [staffId, el] of Object.entries(crewCardRefs.current)) {
@@ -443,76 +441,50 @@ function ScheduleSection() {
     return null;
   }, []);
 
-  const crewContainerCallback = useCallback((container: HTMLDivElement | null) => {
-    // Detach from old container if any
-    if (boundContainerRef.current && boundContainerRef.current !== container) {
-      const old = boundContainerRef.current;
-      old.removeEventListener('touchstart', (old as unknown as Record<string, EventListener>).__onTS!);
-      old.removeEventListener('touchmove', (old as unknown as Record<string, EventListener>).__onTM!);
-      old.removeEventListener('touchend', (old as unknown as Record<string, EventListener>).__onTE!);
-      boundContainerRef.current = null;
+  const onPillPointerDown = useCallback((e: React.PointerEvent<HTMLButtonElement>, room: Room) => {
+    // Capture pointer so all subsequent move/up events come to this element
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragRef.current = {
+      roomId: room.id, roomNumber: room.number, roomType: room.type,
+      startX: e.clientX, startY: e.clientY, active: false,
+    };
+  }, []);
+
+  const onPillPointerMove = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    const d = dragRef.current;
+    if (!d.roomId) return;
+    const dx = e.clientX - d.startX;
+    const dy = e.clientY - d.startY;
+    if (!d.active) {
+      if (Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) return;
+      d.active = true;
     }
-    if (!container) return;
-    if (boundContainerRef.current === container) return; // already bound
-    boundContainerRef.current = container;
-    crewContainerRef.current = container;
-
-    const onTouchStart = (e: TouchEvent) => {
-      const target = (e.target as HTMLElement).closest('[data-room-id]') as HTMLElement | null;
-      if (!target) return;
-      const roomId = target.getAttribute('data-room-id');
-      const roomNumber = target.getAttribute('data-room-number') || '';
-      const roomType = target.getAttribute('data-room-type') || '';
-      if (!roomId) return;
-      const touch = e.touches[0];
-      dragRef.current = { roomId, roomNumber, roomType, startX: touch.clientX, startY: touch.clientY, active: false };
-    };
-
-    const onTouchMove = (e: TouchEvent) => {
-      const d = dragRef.current;
-      if (!d.roomId) return;
-      const touch = e.touches[0];
-      const dx = touch.clientX - d.startX;
-      const dy = touch.clientY - d.startY;
-      if (!d.active) {
-        if (Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) return;
-        d.active = true;
-      }
-      e.preventDefault();
-      const dt = findDropTarget(touch.clientX, touch.clientY);
-      setDragState({
-        roomId: d.roomId, roomNumber: d.roomNumber, roomType: d.roomType,
-        ghost: { x: touch.clientX, y: touch.clientY }, dropTarget: dt,
-      });
-    };
-
-    const onTouchEnd = () => {
-      const d = dragRef.current;
-      if (d.active && d.roomId) {
-        setDragState(prev => {
-          if (prev?.dropTarget && prev.roomId) {
-            setAssignments(a => {
-              if (a[prev.roomId] === prev.dropTarget) return a;
-              return { ...a, [prev.roomId]: prev.dropTarget! };
-            });
-          }
-          return null;
-        });
-      } else {
-        setDragState(null);
-      }
-      dragRef.current = { roomId: null, roomNumber: '', roomType: '', startX: 0, startY: 0, active: false };
-    };
-
-    // Store refs for cleanup
-    (container as unknown as Record<string, EventListener>).__onTS = onTouchStart as unknown as EventListener;
-    (container as unknown as Record<string, EventListener>).__onTM = onTouchMove as unknown as EventListener;
-    (container as unknown as Record<string, EventListener>).__onTE = onTouchEnd as unknown as EventListener;
-
-    container.addEventListener('touchstart', onTouchStart, { passive: true });
-    container.addEventListener('touchmove', onTouchMove, { passive: false });
-    container.addEventListener('touchend', onTouchEnd, { passive: true });
+    e.preventDefault();
+    const dt = findDropTarget(e.clientX, e.clientY);
+    setDragState({
+      roomId: d.roomId, roomNumber: d.roomNumber, roomType: d.roomType,
+      ghost: { x: e.clientX, y: e.clientY }, dropTarget: dt,
+    });
   }, [findDropTarget]);
+
+  const onPillPointerUp = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    e.currentTarget.releasePointerCapture(e.pointerId);
+    const d = dragRef.current;
+    if (d.active && d.roomId) {
+      setDragState(prev => {
+        if (prev?.dropTarget && prev.roomId) {
+          setAssignments(a => {
+            if (a[prev.roomId] === prev.dropTarget) return a;
+            return { ...a, [prev.roomId]: prev.dropTarget! };
+          });
+        }
+        return null;
+      });
+    } else {
+      setDragState(null);
+    }
+    dragRef.current = { roomId: null, roomNumber: '', roomType: '', startX: 0, startY: 0, active: false };
+  }, []);
 
   return (
     <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -571,7 +543,7 @@ function ScheduleSection() {
 
       {/* ── STEP 2: Crew + Room Assignments (combined) ── */}
       {!predictionLoading && totalRooms > 0 && (
-        <div ref={crewContainerCallback} style={{ display: 'flex', flexDirection: 'column', gap: '10px', touchAction: 'pan-y' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
 
           {/* Each crew member with their rooms */}
           {selectedCrew.map((member, idx) => {
@@ -617,9 +589,9 @@ function ScheduleSection() {
                     {memberRooms.map(room => (
                       <button
                         key={room.id}
-                        data-room-id={room.id}
-                        data-room-number={room.number}
-                        data-room-type={room.type}
+                        onPointerDown={e => onPillPointerDown(e, room)}
+                        onPointerMove={onPillPointerMove}
+                        onPointerUp={e => { onPillPointerUp(e); }}
                         onClick={() => { if (!dragRef.current.active) setReassignRoom(room); }}
                         style={{
                           padding: '5px 10px', background: `${color}12`, border: `1.5px solid ${color}40`,
