@@ -712,7 +712,16 @@ function RoomsSection() {
               if (floorRooms.length === 0) return null;
               return (
                 <div key={floor}>
-                  {/* Floor label + legend on first floor */}
+                  {/* Legend — centered, shown once above first floor */}
+                  {floorIdx === 0 && (
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '16px', marginBottom: '14px' }}>
+                      <span style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🚪 Checkout</span>
+                      <span style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🚫 DND</span>
+                      <span style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🔒 {t('roomOccupied', lang)}</span>
+                      <span style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🔑 {t('available', lang)}</span>
+                    </div>
+                  )}
+                  {/* Floor label */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
                     <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>
                       Floor {floor}
@@ -721,14 +730,6 @@ function RoomsSection() {
                       {floorDone}/{floorRooms.length}
                     </span>
                     <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
-                    {floorIdx === 0 && (
-                      <>
-                        <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '3px', whiteSpace: 'nowrap' }}>🚪 Checkout</span>
-                        <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '3px', whiteSpace: 'nowrap' }}>🚫 DND</span>
-                        <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '3px', whiteSpace: 'nowrap' }}>🔒 {t('roomOccupied', lang)}</span>
-                        <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '3px', whiteSpace: 'nowrap' }}>🔑 {t('available', lang)}</span>
-                      </>
-                    )}
                   </div>
                   {/* Tiles */}
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
