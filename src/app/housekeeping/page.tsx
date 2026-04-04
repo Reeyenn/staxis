@@ -561,33 +561,32 @@ function ScheduleSection() {
                 ref={el => { crewCardRefs.current[member.id] = el; }}
                 data-crew-id={member.id}
                 style={{
-                  padding: '12px', background: isDropHover ? `${color}18` : 'var(--bg-card)',
+                  padding: '14px 12px', background: isDropHover ? `${color}18` : 'var(--bg-card)',
                   border: isDropHover ? `2px solid ${color}` : '1px solid var(--border)',
                   borderRadius: 'var(--radius-lg)',
                   transition: 'background 0.15s, border-color 0.15s',
-                  display: 'flex', flexDirection: 'column', gap: '8px',
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px',
                 }}
               >
                 {/* Staff header */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <div style={{ width: '28px', height: '28px', borderRadius: '7px', background: color, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 700, fontSize: '11px', flexShrink: 0 }}>
-                    {member.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)}
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <p style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)', margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{member.name}</p>
-                    <p style={{ fontSize: '10px', color: 'var(--text-muted)', margin: '1px 0 0' }}>
-                      {memberRooms.length} {lang === 'es' ? 'hab.' : 'rooms'} · {timeLabel}
-                    </p>
-                  </div>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px', position: 'relative' }}>
                   <button onClick={() => toggleCrewMember(member.id)} style={{
                     background: 'none', border: 'none', cursor: 'pointer', padding: '2px',
-                    color: 'var(--text-muted)', fontSize: '14px', lineHeight: 1,
+                    color: 'var(--text-muted)', fontSize: '13px', lineHeight: 1,
+                    position: 'absolute', top: 0, right: 0,
                   }}>✕</button>
+                  <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: color, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 700, fontSize: '12px', flexShrink: 0 }}>
+                    {member.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)}
+                  </div>
+                  <p style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)', margin: '2px 0 0', textAlign: 'center' }}>{member.name}</p>
+                  <p style={{ fontSize: '10px', color: 'var(--text-muted)', margin: 0 }}>
+                    {memberRooms.length} {lang === 'es' ? 'hab.' : 'rooms'} · {timeLabel}
+                  </p>
                 </div>
 
                 {/* Room pills — just numbers, draggable */}
                 {memberRooms.length > 0 && (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', justifyContent: 'center' }}>
                     {memberRooms.map(room => (
                       <button
                         key={room.id}
