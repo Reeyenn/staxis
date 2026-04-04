@@ -1256,10 +1256,59 @@ function PublicAreasSection() {
   return (
     <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
 
+      {/* Summary hero */}
+      {!loading && areas.length > 0 && (
+        <div style={{
+          padding: '24px 20px 20px',
+          background: 'linear-gradient(135deg, #1B3A5C 0%, #2563EB 100%)',
+          borderRadius: 'var(--radius-xl)',
+          boxShadow: '0 4px 24px rgba(27, 58, 92, 0.25), 0 1px 4px rgba(0,0,0,0.08)',
+          textAlign: 'center',
+        }}>
+          <span style={{
+            fontSize: '10px', fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase',
+            color: 'rgba(255,255,255,0.5)', display: 'block', marginBottom: '8px',
+          }}>
+            Public Areas
+          </span>
+          <div style={{
+            fontFamily: 'var(--font-mono)', fontSize: '48px', fontWeight: 800,
+            color: '#FFFFFF', lineHeight: 1, letterSpacing: '-0.03em',
+          }}>
+            {areas.length}
+          </div>
+          <span style={{ fontSize: '13px', fontWeight: 500, color: 'rgba(255,255,255,0.6)', display: 'block', margin: '4px 0 14px' }}>
+            Areas Tracked
+          </span>
+          <div style={{ display: 'flex', justifyContent: 'center', gap: '6px', flexWrap: 'wrap' }}>
+            {[
+              { label: 'Daily', value: areas.filter(a => a.frequencyDays === 1).length },
+              { label: 'Weekly', value: areas.filter(a => a.frequencyDays === 7).length },
+              { label: 'Other', value: areas.filter(a => a.frequencyDays !== 1 && a.frequencyDays !== 7).length },
+            ].filter(s => s.value > 0).map(({ label, value }) => (
+              <div key={label} style={{
+                padding: '5px 12px', borderRadius: 'var(--radius-full)',
+                background: 'rgba(255,255,255,0.12)',
+                border: '1px solid rgba(255,255,255,0.15)',
+                fontSize: '11px', fontWeight: 500, color: 'rgba(255,255,255,0.7)',
+                display: 'flex', alignItems: 'center', gap: '5px',
+              }}>
+                {label} <strong style={{ color: '#FFFFFF', fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{value}</strong>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Header + Add */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <p style={{ fontWeight: 700, fontSize: '16px', color: 'var(--text-primary)' }}>{t('publicAreas', lang)}</p>
-        <button onClick={openAddModal} style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 12px', borderRadius: '8px', background: 'rgba(27,58,92,0.08)', border: '1px solid rgba(27,58,92,0.15)', color: 'var(--navy)', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
+        <button onClick={openAddModal} style={{
+          display: 'flex', alignItems: 'center', gap: '6px',
+          padding: '8px 16px', borderRadius: 'var(--radius-full)',
+          background: 'var(--navy)', border: 'none',
+          color: '#FFFFFF', cursor: 'pointer', fontSize: '13px', fontWeight: 600,
+          boxShadow: '0 2px 8px rgba(27,58,92,0.25)',
+        }}>
           <Plus size={14} /> {t('add', lang)}
         </button>
       </div>
@@ -1268,27 +1317,81 @@ function PublicAreasSection() {
       {loading ? (
         <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>{t('loading', lang)}</div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {grouped.map(group => (
             <div key={group.floor}>
               {/* Floor header */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--navy)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{group.label}</span>
-                <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--text-muted)', background: 'rgba(0,0,0,0.05)', borderRadius: '6px', padding: '1px 5px' }}>{group.areas.length}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+                <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--navy)', letterSpacing: '0.02em' }}>{group.label}</span>
+                <span style={{
+                  fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)',
+                  fontFamily: 'var(--font-mono)',
+                }}>{group.areas.length}</span>
                 <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
               </div>
-              {/* Areas in 2-col grid */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px' }}>
+              {/* Area cards — full width, tappable, clear info */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 {group.areas.map(area => {
-                  const isOpen = expandedId === area.id;
                   const isHighlighted = highlightId === area.id;
                   const fLabel = freqLabel(area.frequencyDays);
+                  const dueToday = area.frequencyDays === 1 || (() => {
+                    if (!area.startDate) return false;
+                    const start = new Date(area.startDate + 'T00:00:00');
+                    const today = new Date(new Date().toLocaleDateString('en-CA') + 'T00:00:00');
+                    const diff = Math.floor((today.getTime() - start.getTime()) / 86400000);
+                    return diff >= 0 && diff % area.frequencyDays === 0;
+                  })();
                   return (
-                    <div key={area.id} ref={isHighlighted ? highlightRef : undefined} className="card" style={{ padding: 0, overflow: 'hidden', cursor: 'pointer', transition: 'box-shadow 0.3s, border-color 0.3s', ...(isHighlighted ? { boxShadow: '0 0 0 2px var(--amber), 0 4px 16px rgba(251,191,36,0.25)', borderColor: 'var(--amber)' } : {}) }} onClick={() => setExpandedId(area.id)}>
-                      <div style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px' }}>
-                        <p style={{ fontWeight: 600, fontSize: '15px', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{area.name || 'Untitled'}</p>
-                        <span style={{ fontSize: '11px', color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>{area.minutesPerClean}min · {fLabel}</span>
+                    <div
+                      key={area.id}
+                      ref={isHighlighted ? highlightRef : undefined}
+                      onClick={() => setExpandedId(area.id)}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: '12px',
+                        padding: '14px 16px',
+                        background: 'var(--bg-card)',
+                        border: `1px solid ${isHighlighted ? 'var(--amber)' : 'var(--border)'}`,
+                        borderRadius: 'var(--radius-lg)',
+                        cursor: 'pointer',
+                        boxShadow: isHighlighted
+                          ? '0 0 0 2px var(--amber), 0 4px 16px rgba(251,191,36,0.25)'
+                          : '0 1px 3px rgba(0,0,0,0.06)',
+                        transition: 'all 0.15s',
+                      }}
+                    >
+                      {/* Due indicator */}
+                      <div style={{
+                        width: '40px', height: '40px', borderRadius: '10px', flexShrink: 0,
+                        background: dueToday ? 'var(--navy)' : 'var(--bg-subtle)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: '12px', fontWeight: 700, fontFamily: 'var(--font-mono)',
+                        color: dueToday ? '#FFFFFF' : 'var(--text-muted)',
+                      }}>
+                        {area.minutesPerClean}m
                       </div>
+                      {/* Info */}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <p style={{
+                          fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)',
+                          margin: '0 0 2px',
+                          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                        }}>{area.name || 'Untitled'}</p>
+                        <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: 0 }}>
+                          {fLabel}{area.locations > 1 ? ` · ${area.locations} locations` : ''}
+                        </p>
+                      </div>
+                      {/* Due badge */}
+                      {dueToday && (
+                        <span style={{
+                          padding: '4px 10px', borderRadius: 'var(--radius-full)',
+                          background: 'rgba(34,197,94,0.10)', border: '1px solid rgba(34,197,94,0.25)',
+                          fontSize: '11px', fontWeight: 700, color: 'var(--green)',
+                          flexShrink: 0,
+                        }}>
+                          Due Today
+                        </span>
+                      )}
+                      <ChevronDown size={16} color="var(--text-muted)" style={{ flexShrink: 0 }} />
                     </div>
                   );
                 })}
@@ -1296,7 +1399,11 @@ function PublicAreasSection() {
             </div>
           ))}
           {areas.length === 0 && (
-            <div className="card" style={{ padding: '28px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>{t('noAreasFloor', lang)}</div>
+            <div style={{
+              padding: '40px', textAlign: 'center',
+              background: 'var(--bg-card)', border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-lg)', color: 'var(--text-muted)', fontSize: '13px',
+            }}>{t('noAreasFloor', lang)}</div>
           )}
         </div>
       )}
