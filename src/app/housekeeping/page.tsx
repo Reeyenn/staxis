@@ -582,8 +582,8 @@ function ScheduleSection() {
                     </span>
                   </div>
                   <div style={{ fontSize: '12px', color: 'var(--text-muted)', paddingLeft: '14px', lineHeight: 1.6 }}>
-                    {coCount > 0 && <div>{coCount} {lang === 'es' ? 'salida' : 'checkout'}{coCount !== 1 ? 's' : ''}</div>}
-                    {soCount > 0 && <div>{soCount} {lang === 'es' ? 'continuación' : 'stayover'}{soCount !== 1 ? 's' : ''}</div>}
+                    {coCount > 0 && <div>{coCount} {lang === 'es' ? 'Salida' : 'Checkout'}{coCount !== 1 ? 's' : ''}</div>}
+                    {soCount > 0 && <div>{soCount} {lang === 'es' ? 'Continuación' : 'Stayover'}{soCount !== 1 ? 's' : ''}</div>}
                     <div style={{ marginTop: '2px' }}>{lang === 'es' ? 'Estimado' : 'Estimated'}: {timeLabel}</div>
                   </div>
                   <button onClick={() => toggleCrewMember(member.id)} style={{
@@ -616,7 +616,7 @@ function ScheduleSection() {
                     >
                       <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '13px', color: 'var(--text-primary)' }}>{room.number}</span>
                       <span style={{ fontSize: '8px', fontWeight: 600, color: room.type === 'checkout' ? color : 'var(--text-muted)', letterSpacing: '0.02em' }}>
-                        {room.type === 'checkout' ? (lang === 'es' ? 'salida' : 'checkout') : (lang === 'es' ? 'cont.' : 'stayover')}
+                        {room.type === 'checkout' ? 'C' : 'S'}
                       </span>
                     </button>
                   ))}
