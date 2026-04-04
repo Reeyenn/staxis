@@ -269,6 +269,7 @@ function ScheduleSection() {
   const [sent, setSent] = useState(false);
   const [showPredictionSettings, setShowPredictionSettings] = useState(false);
   const [showPublicAreas, setShowPublicAreas] = useState(false);
+  const [showAddStaff, setShowAddStaff] = useState(false);
   const [settingsForm, setSettingsForm] = useState({ checkoutMinutes: 30, stayoverMinutes: 20, prepMinutesPerActivity: 5 });
   const [savingSettings, setSavingSettings] = useState(false);
 
@@ -613,23 +614,16 @@ function ScheduleSection() {
 
           {/* Add crew member button */}
           {eligiblePool.filter(s => !selectedCrew.find(c => c.id === s.id)).length > 0 && (
-            <details style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
-              <summary style={{ padding: '12px 14px', fontSize: '13px', fontWeight: 600, color: 'var(--text-muted)', cursor: 'pointer', listStyle: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <Plus size={14} /> {lang === 'es' ? 'Agregar personal' : 'Add staff'}
-              </summary>
-              <div style={{ padding: '0 14px 12px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                {eligiblePool.filter(s => !selectedCrew.find(c => c.id === s.id)).map(member => (
-                  <button key={member.id} onClick={() => toggleCrewMember(member.id)} style={{
-                    padding: '10px 12px', background: 'rgba(0,0,0,0.03)', border: '1px solid var(--border)',
-                    borderRadius: 'var(--radius-md)', cursor: 'pointer', fontFamily: 'var(--font-sans)',
-                    display: 'flex', alignItems: 'center', gap: '8px', width: '100%', textAlign: 'left',
-                  }}>
-                    <Plus size={12} color="var(--text-muted)" />
-                    <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>{member.name}</span>
-                  </button>
-                ))}
-              </div>
-            </details>
+            <button onClick={() => setShowAddStaff(true)} style={{
+              padding: '12px 14px', background: 'var(--bg-card)', border: '1px dashed var(--border)',
+              borderRadius: 'var(--radius-lg)', cursor: 'pointer', fontFamily: 'var(--font-sans)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', width: '100%',
+            }}>
+              <Plus size={14} color="var(--text-muted)" />
+              <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-muted)' }}>
+                {lang === 'es' ? 'Agregar personal' : 'Add staff'}
+              </span>
+            </button>
           )}
         </div>
       )}
@@ -690,6 +684,50 @@ function ScheduleSection() {
                 </button>
               );
             })}
+          </div>
+          <style>{`@keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }`}</style>
+        </>
+      )}
+
+      {/* ── Add Staff bottom sheet ── */}
+      {showAddStaff && (
+        <>
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 9997 }} onClick={() => setShowAddStaff(false)} />
+          <div style={{
+            position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 9998,
+            background: 'var(--bg-card)', borderRadius: '16px 16px 0 0',
+            boxShadow: '0 -4px 30px rgba(0,0,0,0.15)',
+            padding: '16px 16px 32px', display: 'flex', flexDirection: 'column', gap: '8px',
+            maxHeight: '60vh', overflowY: 'auto',
+            animation: 'slideUp 0.2s ease-out',
+          }}>
+            <div style={{ width: '40px', height: '4px', borderRadius: '2px', background: 'var(--border)', margin: '0 auto 4px' }} />
+            <p style={{ fontSize: '15px', fontWeight: 700, color: 'var(--text-primary)', margin: '0 0 4px' }}>
+              {lang === 'es' ? 'Agregar Personal' : 'Add Staff'}
+            </p>
+            {eligiblePool.filter(s => !selectedCrew.find(c => c.id === s.id)).map(member => (
+              <button key={member.id} onClick={() => { toggleCrewMember(member.id); setShowAddStaff(false); }} style={{
+                display: 'flex', alignItems: 'center', gap: '10px', padding: '12px 14px',
+                background: 'var(--bg-elevated)', border: '1.5px solid var(--border)',
+                borderRadius: '10px', cursor: 'pointer', fontFamily: 'var(--font-sans)', width: '100%',
+              }}>
+                <div style={{
+                  width: '32px', height: '32px', borderRadius: '8px', background: 'var(--navy)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  color: '#fff', fontWeight: 700, fontSize: '12px', flexShrink: 0,
+                }}>
+                  {member.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)}
+                </div>
+                <div style={{ flex: 1, textAlign: 'left' }}>
+                  <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)', display: 'block' }}>{member.name}</span>
+                  <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                    {member.isSenior ? (lang === 'es' ? 'Senior' : 'Senior') + ' · ' : ''}
+                    {member.daysWorkedThisWeek ?? 0}d {lang === 'es' ? 'esta semana' : 'this week'}
+                  </span>
+                </div>
+                <Plus size={16} color="var(--text-muted)" />
+              </button>
+            ))}
           </div>
           <style>{`@keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }`}</style>
         </>
