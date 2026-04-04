@@ -285,6 +285,9 @@ function ScheduleSection() {
   const [crewOverride, setCrewOverride] = useState<string[]>([]); // manually toggled staff IDs
   const [hasAutoSelected, setHasAutoSelected] = useState(false);
 
+  // Pending move confirmation
+  const [pendingMove, setPendingMove] = useState<{ roomId: string; roomNumber: string; fromStaffId: string; toStaffId: string } | null>(null);
+
   // Drag-and-drop state (pointer events — works for both mouse + touch)
   const [dragState, setDragState] = useState<{
     roomId: string; roomNumber: string; roomType: string;
@@ -406,8 +409,16 @@ function ScheduleSection() {
   };
 
   const handleReassign = (room: Room, newStaffId: string) => {
-    setAssignments(prev => ({ ...prev, [room.id]: newStaffId }));
+    const fromStaffId = assignments[room.id];
+    if (fromStaffId === newStaffId) { setReassignRoom(null); return; }
+    setPendingMove({ roomId: room.id, roomNumber: room.number, fromStaffId, toStaffId: newStaffId });
     setReassignRoom(null);
+  };
+
+  const confirmMove = () => {
+    if (!pendingMove) return;
+    setAssignments(prev => ({ ...prev, [pendingMove.roomId]: pendingMove.toStaffId }));
+    setPendingMove(null);
   };
 
   const handleSend = async () => {
@@ -475,10 +486,10 @@ function ScheduleSection() {
     if (d.active && d.roomId) {
       setDragState(prev => {
         if (prev?.dropTarget && prev.roomId) {
-          setAssignments(a => {
-            if (a[prev.roomId] === prev.dropTarget) return a;
-            return { ...a, [prev.roomId]: prev.dropTarget! };
-          });
+          const fromStaffId = assignments[prev.roomId];
+          if (fromStaffId !== prev.dropTarget) {
+            setPendingMove({ roomId: prev.roomId, roomNumber: prev.roomNumber, fromStaffId, toStaffId: prev.dropTarget! });
+          }
         }
         return null;
       });
@@ -705,6 +716,47 @@ function ScheduleSection() {
           <style>{`@keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }`}</style>
         </>
       )}
+
+      {/* ── Move confirmation popup ── */}
+      {pendingMove && (() => {
+        const fromName = selectedCrew.find(s => s.id === pendingMove.fromStaffId)?.name ?? '?';
+        const toName = selectedCrew.find(s => s.id === pendingMove.toStaffId)?.name ?? '?';
+        return (
+          <>
+            <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 9999 }} onClick={() => setPendingMove(null)} />
+            <div style={{
+              position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 10000,
+              background: 'var(--bg-card)', borderRadius: '16px', padding: '24px',
+              boxShadow: '0 8px 40px rgba(0,0,0,0.2)', width: '300px', textAlign: 'center',
+              animation: 'popIn 0.15s ease-out',
+            }}>
+              <p style={{ fontSize: '15px', fontWeight: 700, color: 'var(--text-primary)', margin: '0 0 8px' }}>
+                {lang === 'es' ? 'Mover Habitación' : 'Move Room'}
+              </p>
+              <p style={{ fontSize: '14px', color: 'var(--text-secondary)', margin: '0 0 20px', lineHeight: 1.5 }}>
+                {lang === 'es' ? 'Mover' : 'Move'} <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{pendingMove.roomNumber}</span> {lang === 'es' ? 'de' : 'from'} <strong>{fromName}</strong> {lang === 'es' ? 'a' : 'to'} <strong>{toName}</strong>?
+              </p>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button onClick={() => setPendingMove(null)} style={{
+                  flex: 1, padding: '12px', borderRadius: '10px', border: '1.5px solid var(--border)',
+                  background: 'var(--bg-elevated)', cursor: 'pointer', fontFamily: 'var(--font-sans)',
+                  fontSize: '14px', fontWeight: 600, color: 'var(--text-secondary)',
+                }}>
+                  {lang === 'es' ? 'Cancelar' : 'Cancel'}
+                </button>
+                <button onClick={confirmMove} style={{
+                  flex: 1, padding: '12px', borderRadius: '10px', border: 'none',
+                  background: '#2563EB', cursor: 'pointer', fontFamily: 'var(--font-sans)',
+                  fontSize: '14px', fontWeight: 600, color: '#fff',
+                }}>
+                  {lang === 'es' ? 'Confirmar' : 'Confirm'}
+                </button>
+              </div>
+            </div>
+            <style>{`@keyframes popIn { from { transform: translate(-50%, -50%) scale(0.9); opacity: 0; } to { transform: translate(-50%, -50%) scale(1); opacity: 1; } }`}</style>
+          </>
+        );
+      })()}
 
       {/* ── Add Staff bottom sheet ── */}
       {showAddStaff && (
