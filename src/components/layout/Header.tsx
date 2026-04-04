@@ -8,6 +8,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import { ChevronDown, LogOut, Globe, LayoutGrid } from 'lucide-react';
 import { format } from 'date-fns';
+import { es as esLocale } from 'date-fns/locale';
 
 export function Header() {
   const { user, signOut } = useAuth();
@@ -65,7 +66,7 @@ export function Header() {
 
           {/* Date */}
           <span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)', marginRight: '4px' }}>
-            {format(new Date(), 'EEEE, MMMM d')}
+            {format(new Date(), 'EEEE, MMMM d', lang === 'es' ? { locale: esLocale } : undefined)}
           </span>
 
           {/* Language toggle - prominent for housekeeper adoption */}

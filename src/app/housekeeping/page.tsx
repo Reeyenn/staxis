@@ -490,7 +490,7 @@ function ScheduleSection() {
               fontSize: '10px', fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase',
               color: 'rgba(255,255,255,0.5)', display: 'block', marginBottom: '6px',
             }}>
-              AI Staffing Prediction
+              {t('aiStaffingRec', lang)}
             </span>
             <div style={{
               fontFamily: 'var(--font-mono)', fontSize: '56px', fontWeight: 800,
@@ -503,16 +503,16 @@ function ScheduleSection() {
               fontSize: '13px', fontWeight: 500, color: 'rgba(255,255,255,0.7)',
               display: 'block', marginBottom: '20px',
             }}>
-              Recommended Staff
+              {t('recommendedHousekeepers', lang)}
             </span>
             <div style={{
               display: 'flex', justifyContent: 'center', gap: '6px',
               flexWrap: 'wrap',
             }}>
               {[
-                { label: 'Rooms', value: `${roomMinutes}m` },
-                { label: 'Prep', value: `${prepMinutes}m` },
-                { label: 'Public', value: `${publicAreaMinutes}m` },
+                { label: t('roomMinutes', lang), value: `${roomMinutes}${t('minutes', lang)}` },
+                { label: t('prepMinutes', lang), value: `${prepMinutes}${t('minutes', lang)}` },
+                { label: t('publicAreaMinutes', lang), value: `${publicAreaMinutes}${t('minutes', lang)}` },
               ].map(({ label, value }) => (
                 <div key={label} style={{
                   padding: '5px 12px', borderRadius: 'var(--radius-full)',
@@ -1075,20 +1075,19 @@ function StaffSection() {
 // PUBLIC AREAS SECTION
 // ══════════════════════════════════════════════════════════════════════════════
 
-const PA_FLOORS = [
-  { value: '1', label: 'Floor 1' },
-  { value: '2', label: 'Floor 2' },
-  { value: '3', label: 'Floor 3' },
-  { value: '4', label: 'Floor 4' },
-  { value: 'other', label: 'Other' },
-];
+function paFloorLabel(value: string, lang: 'en' | 'es'): string {
+  if (value === 'other') return lang === 'es' ? 'Otro' : 'Other';
+  return `${t('floor', lang)} ${value}`;
+}
+
+const PA_FLOOR_VALUES = ['1', '2', '3', '4', 'other'] as const;
 
 const SLIDER_MAX = 7;
 
-function freqLabel(days: number): string {
-  if (days === 1) return 'Daily';
-  if (days === 7) return 'Weekly';
-  return `Every ${days} days`;
+function freqLabel(days: number, lang: 'en' | 'es' = 'en'): string {
+  if (days === 1) return t('daily', lang);
+  if (days === 7) return t('weekly', lang);
+  return `${t('every', lang)} ${days} ${t('days', lang)}`;
 }
 
 function FrequencySlider({ value, onChange, lang }: { value: number; onChange: (v: number) => void; lang?: 'en' | 'es' }) {
@@ -1258,7 +1257,7 @@ function PublicAreasSection() {
   // Group areas by floor in display order
   const floorOrder = ['1', '2', '3', '4', 'other'];
   const grouped = floorOrder
-    .map(f => ({ floor: f, label: PA_FLOORS.find(pf => pf.value === f)?.label ?? f, areas: areas.filter(a => a.floor === f) }))
+    .map(f => ({ floor: f, label: paFloorLabel(f, lang), areas: areas.filter(a => a.floor === f) }))
     .filter(g => g.areas.length > 0);
 
   return (
@@ -1293,7 +1292,7 @@ function PublicAreasSection() {
               }}>
                 {group.areas.map((area) => {
                   const isHighlighted = highlightId === area.id;
-                  const fLabel = freqLabel(area.frequencyDays);
+                  const fLabel = freqLabel(area.frequencyDays, lang);
                   return (
                     <div
                       key={area.id}
@@ -1323,7 +1322,7 @@ function PublicAreasSection() {
                       }}>{area.name || 'Untitled'}</p>
                       {/* Time + Frequency on one line */}
                       <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.6)', fontWeight: 600 }}>
-                        {area.minutesPerClean}min · {fLabel}
+                        {area.minutesPerClean}{t('minutes', lang)} · {fLabel}
                       </span>
                     </div>
                   );
@@ -1360,7 +1359,7 @@ function PublicAreasSection() {
             <div>
               <label className="label">{t('floor', lang)}</label>
               <select className="input" value={newArea.floor} onChange={e => setNewArea(p => ({ ...p, floor: e.target.value }))} style={{ width: '100%' }}>
-                {PA_FLOORS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+                {PA_FLOOR_VALUES.map(v => <option key={v} value={v}>{paFloorLabel(v, lang)}</option>)}
               </select>
             </div>
 
@@ -1406,7 +1405,7 @@ function PublicAreasSection() {
               <div>
                 <label className="label">{t('floor', lang)}</label>
                 <select className="input" value={area.floor} onChange={e => handleUpdate(area.id, { floor: e.target.value })} style={{ width: '100%' }}>
-                  {PA_FLOORS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+                  {PA_FLOOR_VALUES.map(v => <option key={v} value={v}>{paFloorLabel(v, lang)}</option>)}
                 </select>
               </div>
 
