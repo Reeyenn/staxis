@@ -29,14 +29,13 @@ import {
 
 // ─── Tab config ──────────────────────────────────────────────────────────────
 
-type TabKey = 'schedule' | 'rooms' | 'areas' | 'performance' | 'import';
+type TabKey = 'rooms' | 'areas' | 'schedule' | 'performance';
 
 const TABS: { key: TabKey; label: string; labelEs: string }[] = [
-  { key: 'schedule',    label: 'Schedule',     labelEs: 'Horario'        },
   { key: 'rooms',       label: 'Rooms',        labelEs: 'Habitaciones'   },
   { key: 'areas',       label: 'Public Areas', labelEs: 'Areas Publicas' },
+  { key: 'schedule',    label: 'Schedule',     labelEs: 'Horario'        },
   { key: 'performance', label: 'Performance',  labelEs: 'Rendimiento'    },
-  { key: 'import',      label: 'Import',       labelEs: 'Importar'       },
 ];
 
 // ─── Schedule helpers ─────────────────────────────────────────────────────────
@@ -1619,14 +1618,14 @@ function ImportSection() {
 // ══════════════════════════════════════════════════════════════════════════════
 
 export default function HousekeepingPage() {
-  const [activeTab, setActiveTabState] = useState<TabKey>('schedule');
+  const [activeTab, setActiveTabState] = useState<TabKey>('rooms');
   const { lang } = useLang();
   const { activeProperty } = useProperty();
 
   // Restore tab from localStorage on mount
   useEffect(() => {
     const saved = localStorage.getItem('hk-tab') as TabKey | null;
-    const valid: TabKey[] = ['schedule', 'rooms', 'areas', 'performance', 'import'];
+    const valid: TabKey[] = ['rooms', 'areas', 'schedule', 'performance'];
     if (saved && valid.includes(saved)) setActiveTabState(saved);
   }, []);
 
@@ -1651,7 +1650,7 @@ export default function HousekeepingPage() {
         <div style={{ display: 'flex', gap: '0', borderBottom: '2px solid var(--border)' }}>
           {TABS.map(tab => {
             const isActive = activeTab === tab.key;
-            const tabLabelKey = tab.key === 'schedule' ? 'scheduling' : tab.key === 'rooms' ? 'rooms' : tab.key === 'areas' ? 'publicAreas' : tab.key === 'performance' ? 'performance' : 'roomImport';
+            const tabLabelKey = tab.key === 'rooms' ? 'rooms' : tab.key === 'areas' ? 'publicAreas' : tab.key === 'schedule' ? 'scheduling' : 'performance';
             return (
               <button
                 key={tab.key}
@@ -1684,7 +1683,6 @@ export default function HousekeepingPage() {
       {activeTab === 'rooms'       && <RoomsSection />}
       {activeTab === 'areas'       && <PublicAreasSection />}
       {activeTab === 'performance' && <PerformanceSection />}
-      {activeTab === 'import'      && <ImportSection />}
     </AppLayout>
   );
 }
