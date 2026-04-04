@@ -544,7 +544,7 @@ function ScheduleSection() {
 
       {/* ── STEP 2: Crew + Room Assignments (combined) ── */}
       {!predictionLoading && totalRooms > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '10px' }}>
 
           {/* Each crew member with their rooms */}
           {selectedCrew.map((member, idx) => {
@@ -561,32 +561,33 @@ function ScheduleSection() {
                 ref={el => { crewCardRefs.current[member.id] = el; }}
                 data-crew-id={member.id}
                 style={{
-                  padding: '14px', background: isDropHover ? `${color}18` : 'var(--bg-card)',
+                  padding: '12px', background: isDropHover ? `${color}18` : 'var(--bg-card)',
                   border: isDropHover ? `2px solid ${color}` : '1px solid var(--border)',
                   borderRadius: 'var(--radius-lg)',
                   transition: 'background 0.15s, border-color 0.15s',
+                  display: 'flex', flexDirection: 'column', gap: '8px',
                 }}
               >
                 {/* Staff header */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: memberRooms.length > 0 ? '10px' : 0 }}>
-                  <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: color, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 700, fontSize: '13px', flexShrink: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div style={{ width: '28px', height: '28px', borderRadius: '7px', background: color, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 700, fontSize: '11px', flexShrink: 0 }}>
                     {member.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)}
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <p style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>{member.name}</p>
-                    <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '2px 0 0' }}>
+                    <p style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)', margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{member.name}</p>
+                    <p style={{ fontSize: '10px', color: 'var(--text-muted)', margin: '1px 0 0' }}>
                       {memberRooms.length} {lang === 'es' ? 'hab.' : 'rooms'} · {timeLabel}
                     </p>
                   </div>
                   <button onClick={() => toggleCrewMember(member.id)} style={{
-                    background: 'none', border: 'none', cursor: 'pointer', padding: '4px',
-                    color: 'var(--text-muted)', fontSize: '16px',
+                    background: 'none', border: 'none', cursor: 'pointer', padding: '2px',
+                    color: 'var(--text-muted)', fontSize: '14px', lineHeight: 1,
                   }}>✕</button>
                 </div>
 
-                {/* Room pills — draggable via data attributes */}
+                {/* Room pills — just numbers, draggable */}
                 {memberRooms.length > 0 && (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
                     {memberRooms.map(room => (
                       <button
                         key={room.id}
@@ -595,15 +596,15 @@ function ScheduleSection() {
                         onPointerUp={e => { onPillPointerUp(e); }}
                         onClick={() => { if (!dragRef.current.active) setReassignRoom(room); }}
                         style={{
-                          padding: '5px 10px', background: `${color}12`, border: `1.5px solid ${color}40`,
-                          borderRadius: '6px', cursor: 'grab', fontFamily: 'var(--font-sans)',
-                          display: 'flex', alignItems: 'center', gap: '4px',
+                          padding: '4px 6px 3px', background: `${color}12`, border: `1px solid ${color}30`,
+                          borderRadius: '5px', cursor: 'grab',
+                          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0px',
                           opacity: dragState?.roomId === room.id ? 0.35 : 1,
-                          touchAction: 'none',
+                          touchAction: 'none', lineHeight: 1,
                         }}
                       >
-                        <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '12px', color: 'var(--text-primary)' }}>{room.number}</span>
-                        <span style={{ fontSize: '9px', fontWeight: 600, color: 'var(--text-muted)' }}>{room.type === 'checkout' ? 'CO' : 'SO'}</span>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '11px', color: 'var(--text-primary)' }}>{room.number}</span>
+                        <span style={{ fontSize: '7px', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.04em' }}>{room.type === 'checkout' ? 'C' : 'S'}</span>
                       </button>
                     ))}
                   </div>
@@ -789,11 +790,11 @@ function ScheduleSection() {
           border: '2px solid rgba(255,255,255,0.5)',
           borderRadius: '8px',
           boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
-          display: 'flex', alignItems: 'center', gap: '4px',
           transform: 'scale(1.15)',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', lineHeight: 1,
         }}>
           <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '13px', color: '#FFFFFF' }}>{dragState.roomNumber}</span>
-          <span style={{ fontSize: '9px', fontWeight: 700, color: 'rgba(255,255,255,0.6)' }}>{dragState.roomType === 'checkout' ? 'CO' : 'SO'}</span>
+          <span style={{ fontSize: '8px', fontWeight: 700, color: 'rgba(255,255,255,0.6)' }}>{dragState.roomType === 'checkout' ? 'C' : 'S'}</span>
         </div>
       )}
 
