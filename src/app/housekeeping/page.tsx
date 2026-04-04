@@ -483,33 +483,24 @@ function ScheduleSection() {
               Staffing Prediction
             </span>
 
-            <div style={{ display: 'flex', alignItems: 'stretch', gap: '12px' }}>
-              {/* Left: workload breakdown */}
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 10px', background: 'rgba(0,0,0,0.02)', borderRadius: 'var(--radius-sm)' }}>
-                  <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Room Cleaning</span>
-                  <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>=</span>
-                  <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{roomMinutes}m</span>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 10px', background: 'rgba(0,0,0,0.02)', borderRadius: 'var(--radius-sm)' }}>
-                  <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Prep Time</span>
-                  <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>=</span>
-                  <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{prepMinutes}m</span>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 10px', background: 'rgba(0,0,0,0.02)', borderRadius: 'var(--radius-sm)' }}>
-                  <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Public Areas</span>
-                  <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>=</span>
-                  <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{publicAreaMinutes}m</span>
-                </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Room Cleaning</span>
+                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>=</span>
+                <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{roomMinutes}m</span>
               </div>
-
-              {/* Right: recommended staff */}
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '12px 16px', background: 'rgba(27,58,92,0.08)', borderRadius: 'var(--radius-md)', minWidth: '100px' }}>
-                <span style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#1B3A5C', marginBottom: '4px', textAlign: 'center' }}>Recommended Staff</span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <span style={{ fontSize: '13px', fontWeight: 700, color: '#1B3A5C' }}>=</span>
-                  <span style={{ fontSize: '38px', fontWeight: 800, color: '#1B3A5C', fontFamily: 'var(--font-mono)', lineHeight: 1 }}>{recommendedStaff}</span>
-                </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Prep Time</span>
+                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>=</span>
+                <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{prepMinutes}m</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Public Areas</span>
+                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>=</span>
+                <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{publicAreaMinutes}m</span>
+              </div>
+              <div style={{ marginTop: '10px', textAlign: 'center' }}>
+                <span style={{ fontSize: '15px', fontWeight: 700, color: '#1B3A5C' }}>Recommended Staff = {recommendedStaff}</span>
               </div>
             </div>
           </>
