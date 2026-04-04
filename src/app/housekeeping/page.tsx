@@ -575,10 +575,10 @@ function ScheduleSection() {
               >
                 {/* Left: name + stats 2x2 grid side by side */}
                 <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  {/* Name */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  {/* Name — fixed width so stats columns align across rows */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', width: '120px', flexShrink: 0 }}>
                     <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: color, flexShrink: 0 }} />
-                    <span style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', whiteSpace: 'nowrap' }}>
+                    <span style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                       {member.name}
                     </span>
                   </div>
