@@ -1004,6 +1004,70 @@ const PA_FLOORS = [
   { value: 'other', label: 'Other' },
 ];
 
+const SLIDER_MAX = 7;
+
+function freqLabel(days: number): string {
+  if (days === 1) return 'Daily';
+  if (days === 7) return 'Weekly';
+  return `Every ${days} days`;
+}
+
+function FrequencySlider({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  const isCustom = value > SLIDER_MAX;
+  const sliderVal = isCustom ? SLIDER_MAX + 1 : value;
+  const pct = ((sliderVal - 1) / SLIDER_MAX) * 100;
+
+  const handleSlider = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = Number(e.target.value);
+    if (v <= SLIDER_MAX) onChange(v);
+    else onChange(SLIDER_MAX + 1); // trigger custom mode with value just above max
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <label className="label" style={{ margin: 0 }}>Frequency</label>
+        <span style={{ fontSize: '13px', fontWeight: 700, color: isCustom ? 'var(--amber)' : 'var(--navy)' }}>
+          {isCustom ? 'Custom' : freqLabel(value)}
+        </span>
+      </div>
+      <div style={{ position: 'relative', height: '28px', display: 'flex', alignItems: 'center' }}>
+        <div style={{ position: 'absolute', left: 0, right: 0, height: '6px', borderRadius: '3px', background: 'rgba(0,0,0,0.06)' }} />
+        <div style={{ position: 'absolute', left: 0, width: `${pct}%`, height: '6px', borderRadius: '3px', background: isCustom ? 'var(--amber)' : 'var(--navy)', transition: 'width 0.15s, background 0.15s' }} />
+        <input
+          type="range" min={1} max={SLIDER_MAX + 1} step={1} value={sliderVal}
+          onChange={handleSlider}
+          style={{ position: 'absolute', left: 0, right: 0, width: '100%', height: '28px', margin: 0, opacity: 0, cursor: 'pointer', zIndex: 2 }}
+        />
+        <div style={{
+          position: 'absolute', left: `${pct}%`, transform: 'translateX(-50%)',
+          width: '22px', height: '22px', borderRadius: '11px',
+          background: isCustom ? 'var(--amber)' : 'var(--navy)', border: '3px solid white',
+          boxShadow: '0 2px 6px rgba(0,0,0,0.2)', transition: 'left 0.15s, background 0.15s',
+          pointerEvents: 'none',
+        }} />
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', padding: '0 2px' }}>
+        {Array.from({ length: SLIDER_MAX + 1 }, (_, i) => i + 1).map(n => (
+          <span key={n} style={{ fontSize: '10px', color: 'var(--text-muted)', fontWeight: 500, width: '24px', textAlign: 'center' }}>
+            {n <= SLIDER_MAX ? n : '✎'}
+          </span>
+        ))}
+      </div>
+      {isCustom && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', animation: 'toastIn 0.2s ease-out' }}>
+          <span style={{ fontSize: '13px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Every</span>
+          <input className="input" type="number" min={1} value={value > SLIDER_MAX ? value : ''} autoFocus
+            onChange={e => { const v = Number(e.target.value); if (v >= 1) onChange(v); }}
+            style={{ width: '70px', textAlign: 'center' }}
+          />
+          <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>days</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 function PublicAreasSection() {
   const { user } = useAuth();
@@ -1159,13 +1223,13 @@ function PublicAreasSection() {
           {visible.map(area => {
             const isOpen = expandedId === area.id;
             const isHighlighted = highlightId === area.id;
-            const freqLabel = area.frequencyDays === 1 ? 'Daily' : `Every ${area.frequencyDays} days`;
+            const fLabel = freqLabel(area.frequencyDays);
             return (
               <div key={area.id} ref={isHighlighted ? highlightRef : undefined} className="card" style={{ padding: 0, overflow: 'hidden', transition: 'box-shadow 0.3s, border-color 0.3s', ...(isHighlighted ? { boxShadow: '0 0 0 2px var(--amber), 0 4px 16px rgba(251,191,36,0.25)', borderColor: 'var(--amber)' } : {}) }}>
                 <button onClick={() => setExpandedId(isOpen ? null : area.id)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '12px', padding: '14px 16px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', color: 'var(--text-primary)' }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <p style={{ fontWeight: 600, fontSize: '14px', lineHeight: 1.3, marginBottom: '2px' }}>{area.name || 'Untitled'}</p>
-                    <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{area.minutesPerClean}min · {area.locations} loc · {freqLabel}</p>
+                    <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{area.minutesPerClean}min · {area.locations} loc · {fLabel}</p>
                   </div>
                   {isOpen ? <ChevronUp size={16} color="var(--text-muted)" /> : <ChevronDown size={16} color="var(--text-muted)" />}
                 </button>
@@ -1176,18 +1240,13 @@ function PublicAreasSection() {
                       <label className="label">Name</label>
                       <input className="input" value={area.name} onChange={e => handleUpdate(area.id, { name: e.target.value })} />
                     </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-                      <div>
-                        <label className="label">Floor</label>
-                        <select className="input" value={area.floor} onChange={e => handleUpdate(area.id, { floor: e.target.value })} style={{ width: '100%' }}>
-                          {PA_FLOORS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="label">Every X days</label>
-                        <input className="input" type="number" min={1} value={area.frequencyDays} onChange={e => handleUpdate(area.id, { frequencyDays: Math.max(1, Number(e.target.value) || 1) })} />
-                      </div>
+                    <div>
+                      <label className="label">Floor</label>
+                      <select className="input" value={area.floor} onChange={e => handleUpdate(area.id, { floor: e.target.value })} style={{ width: '100%' }}>
+                        {PA_FLOORS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+                      </select>
                     </div>
+                    <FrequencySlider value={area.frequencyDays} onChange={v => handleUpdate(area.id, { frequencyDays: v })} />
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
                       <div>
                         <label className="label">Minutes per clean</label>
@@ -1228,18 +1287,14 @@ function PublicAreasSection() {
               <input className="input" placeholder="e.g. 3rd Floor Hallway" autoFocus value={newArea.name} onChange={e => setNewArea(p => ({ ...p, name: e.target.value }))} />
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-              <div>
-                <label className="label">Floor</label>
-                <select className="input" value={newArea.floor} onChange={e => setNewArea(p => ({ ...p, floor: e.target.value }))} style={{ width: '100%' }}>
-                  {PA_FLOORS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="label">Every X days</label>
-                <input className="input" type="number" min={1} value={newArea.frequencyDays} onChange={e => setNewArea(p => ({ ...p, frequencyDays: Math.max(1, Number(e.target.value) || 1) }))} />
-              </div>
+            <div>
+              <label className="label">Floor</label>
+              <select className="input" value={newArea.floor} onChange={e => setNewArea(p => ({ ...p, floor: e.target.value }))} style={{ width: '100%' }}>
+                {PA_FLOORS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+              </select>
             </div>
+
+            <FrequencySlider value={newArea.frequencyDays} onChange={v => setNewArea(p => ({ ...p, frequencyDays: v }))} />
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
               <div>
