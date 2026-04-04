@@ -1215,42 +1215,11 @@ function PublicAreasSection() {
                   const isHighlighted = highlightId === area.id;
                   const fLabel = freqLabel(area.frequencyDays);
                   return (
-                    <div key={area.id} ref={isHighlighted ? highlightRef : undefined} className="card" style={{ padding: 0, overflow: 'hidden', transition: 'box-shadow 0.3s, border-color 0.3s', ...(isOpen ? { gridColumn: '1 / -1' } : {}), ...(isHighlighted ? { boxShadow: '0 0 0 2px var(--amber), 0 4px 16px rgba(251,191,36,0.25)', borderColor: 'var(--amber)' } : {}) }}>
-                      <button onClick={() => setExpandedId(isOpen ? null : area.id)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', color: 'var(--text-primary)' }}>
+                    <div key={area.id} ref={isHighlighted ? highlightRef : undefined} className="card" style={{ padding: 0, overflow: 'hidden', cursor: 'pointer', transition: 'box-shadow 0.3s, border-color 0.3s', ...(isHighlighted ? { boxShadow: '0 0 0 2px var(--amber), 0 4px 16px rgba(251,191,36,0.25)', borderColor: 'var(--amber)' } : {}) }} onClick={() => setExpandedId(area.id)}>
+                      <div style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px' }}>
                         <p style={{ fontWeight: 600, fontSize: '15px', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{area.name || 'Untitled'}</p>
                         <span style={{ fontSize: '11px', color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>{area.minutesPerClean}min · {fLabel}</span>
-                        <div style={{ flex: 1 }} />
-                        {isOpen ? <ChevronUp size={14} color="var(--text-muted)" style={{ flexShrink: 0 }} /> : <ChevronDown size={14} color="var(--text-muted)" style={{ flexShrink: 0 }} />}
-                      </button>
-
-                      {isOpen && (
-                        <div style={{ padding: '0 12px 12px', display: 'flex', flexDirection: 'column', gap: '10px', borderTop: '1px solid var(--border)' }}>
-                          <div style={{ paddingTop: '10px' }}>
-                            <label className="label">{t('name', lang)}</label>
-                            <input className="input" value={area.name} onChange={e => handleUpdate(area.id, { name: e.target.value })} />
-                          </div>
-                          <div>
-                            <label className="label">{t('floor', lang)}</label>
-                            <select className="input" value={area.floor} onChange={e => handleUpdate(area.id, { floor: e.target.value })} style={{ width: '100%' }}>
-                              {PA_FLOORS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
-                            </select>
-                          </div>
-                          <FrequencySlider value={area.frequencyDays} onChange={v => handleUpdate(area.id, { frequencyDays: v })} lang={lang} />
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-                            <div>
-                              <label className="label">{t('minutesPerClean', lang)}</label>
-                              <input className="input" type="number" value={area.minutesPerClean} onChange={e => handleUpdate(area.id, { minutesPerClean: Number(e.target.value) || 0 })} />
-                            </div>
-                            <div>
-                              <label className="label">{t('locations', lang)}</label>
-                              <input className="input" type="number" value={area.locations} onChange={e => handleUpdate(area.id, { locations: Number(e.target.value) || 1 })} />
-                            </div>
-                          </div>
-                          <button onClick={() => handleDelete(area.id)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', padding: '8px', borderRadius: '8px', border: '1px solid rgba(220,38,38,0.2)', background: 'rgba(220,38,38,0.06)', color: '#dc2626', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}>
-                            <Trash2 size={13} /> {t('removeArea', lang)}
-                          </button>
-                        </div>
-                      )}
+                      </div>
                     </div>
                   );
                 })}
@@ -1310,6 +1279,53 @@ function PublicAreasSection() {
           </div>
         </div>
       )}
+
+      {/* Edit Area Modal */}
+      {expandedId && (() => {
+        const area = areas.find(a => a.id === expandedId);
+        if (!area) return null;
+        return (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 9998, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }} onClick={() => setExpandedId(null)}>
+            <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-card)', borderRadius: '16px', padding: '24px', width: '100%', maxWidth: '400px', boxShadow: '0 20px 60px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <p style={{ fontWeight: 700, fontSize: '17px', color: 'var(--text-primary)' }}>{area.name || 'Untitled'}</p>
+
+              <div>
+                <label className="label">{t('name', lang)}</label>
+                <input className="input" value={area.name} onChange={e => handleUpdate(area.id, { name: e.target.value })} />
+              </div>
+
+              <div>
+                <label className="label">{t('floor', lang)}</label>
+                <select className="input" value={area.floor} onChange={e => handleUpdate(area.id, { floor: e.target.value })} style={{ width: '100%' }}>
+                  {PA_FLOORS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+                </select>
+              </div>
+
+              <FrequencySlider value={area.frequencyDays} onChange={v => handleUpdate(area.id, { frequencyDays: v })} lang={lang} />
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                <div>
+                  <label className="label">{t('minutesPerClean', lang)}</label>
+                  <input className="input" type="number" value={area.minutesPerClean} onChange={e => handleUpdate(area.id, { minutesPerClean: Number(e.target.value) || 0 })} />
+                </div>
+                <div>
+                  <label className="label">{t('locations', lang)}</label>
+                  <input className="input" type="number" value={area.locations} onChange={e => handleUpdate(area.id, { locations: Number(e.target.value) || 1 })} />
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                <button onClick={() => { handleDelete(area.id); setExpandedId(null); }} style={{ flex: 1, padding: '12px', borderRadius: '10px', border: '1px solid rgba(220,38,38,0.2)', background: 'rgba(220,38,38,0.06)', color: '#dc2626', fontWeight: 600, fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                  <Trash2 size={14} /> {t('removeArea', lang)}
+                </button>
+                <button onClick={() => setExpandedId(null)} style={{ flex: 1, padding: '12px', borderRadius: '10px', border: 'none', background: 'var(--navy)', color: '#fff', fontWeight: 600, fontSize: '14px', cursor: 'pointer' }}>
+                  {t('done', lang)}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Delete toast */}
       {toast && (
