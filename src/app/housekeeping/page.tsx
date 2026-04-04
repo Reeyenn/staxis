@@ -846,6 +846,7 @@ function RoomsSection() {
   const [selectedStaffId, setSelectedStaffId] = useState<string | null>(null);
   const [assignments, setAssignments] = useState<Record<string, string>>({}); // roomId → staffId
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [actionRoom, setActionRoom] = useState<Room | null>(null); // room action popup
 
   useEffect(() => {
     if (!user || !activePropertyId) return;
@@ -897,6 +898,27 @@ function RoomsSection() {
     if (newStatus === 'clean')       updates.completedAt = new Date();
     if (!navigator.onLine) recordOfflineAction();
     await updateRoom(user.uid, activePropertyId, room.id, updates);
+  };
+
+  const handleDndToggle = async (room: Room) => {
+    if (!user || !activePropertyId) return;
+    if (!navigator.onLine) recordOfflineAction();
+    await updateRoom(user.uid, activePropertyId, room.id, { isDnd: !room.isDnd });
+    setActionRoom(null);
+    setToastMessage(room.isDnd
+      ? (lang === 'es' ? `${room.number}: DND quitado` : `${room.number}: DND removed`)
+      : (lang === 'es' ? `${room.number}: No Molestar` : `${room.number}: Do Not Disturb`)
+    );
+    setTimeout(() => setToastMessage(null), 2500);
+  };
+
+  const handleHelpRequest = async (room: Room) => {
+    if (!user || !activePropertyId) return;
+    if (!navigator.onLine) recordOfflineAction();
+    await updateRoom(user.uid, activePropertyId, room.id, { issueNote: `Help requested at ${new Date().toLocaleTimeString()}` });
+    setActionRoom(null);
+    setToastMessage(lang === 'es' ? `${room.number}: Ayuda solicitada` : `${room.number}: Help requested`);
+    setTimeout(() => setToastMessage(null), 2500);
   };
 
   // ─── Assignment Mode Handlers ──────────────────────────────────────────────
@@ -1063,6 +1085,86 @@ function RoomsSection() {
         </div>
       )}
 
+      {/* Room action popup */}
+      {actionRoom && (
+        <>
+          <div style={{ position: 'fixed', inset: 0, zIndex: 9997 }} onClick={() => setActionRoom(null)} />
+          <div style={{
+            position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 9998,
+            background: 'var(--bg-card)', borderRadius: '16px 16px 0 0',
+            boxShadow: '0 -4px 30px rgba(0,0,0,0.15)',
+            padding: '20px 16px 32px', display: 'flex', flexDirection: 'column', gap: '10px',
+            animation: 'slideUp 0.2s ease-out',
+          }}>
+            {/* Handle bar */}
+            <div style={{ width: '40px', height: '4px', borderRadius: '2px', background: 'var(--border)', margin: '0 auto 8px' }} />
+
+            {/* Room info header */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
+              <div>
+                <span style={{ fontSize: '20px', fontWeight: 800, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
+                  {actionRoom.number}
+                </span>
+                <span style={{ fontSize: '13px', color: 'var(--text-muted)', marginLeft: '10px' }}>
+                  {actionRoom.type === 'checkout' ? (lang === 'es' ? 'Salida' : 'Checkout') : actionRoom.type === 'stayover' ? (lang === 'es' ? 'Continuación' : 'Stayover') : actionRoom.type}
+                </span>
+              </div>
+              {actionRoom.isDnd && (
+                <span style={{ fontSize: '12px', fontWeight: 700, color: '#DC2626', background: 'rgba(220,38,38,0.08)', padding: '4px 10px', borderRadius: '6px' }}>
+                  🚫 DND
+                </span>
+              )}
+              {actionRoom.issueNote && (
+                <span style={{ fontSize: '12px', fontWeight: 700, color: '#EA580C', background: 'rgba(234,88,12,0.08)', padding: '4px 10px', borderRadius: '6px' }}>
+                  ⚠️ {lang === 'es' ? 'Ayuda' : 'Help'}
+                </span>
+              )}
+            </div>
+
+            {/* Status action — main button */}
+            <button onClick={() => { handleToggle(actionRoom); setActionRoom(null); }} disabled={actionRoom.status === 'inspected'} style={{
+              width: '100%', padding: '14px', borderRadius: '12px', border: 'none',
+              background: actionRoom.status === 'dirty' ? '#FBBF24' : actionRoom.status === 'in_progress' ? '#22C55E' : 'var(--bg-elevated)',
+              color: actionRoom.status === 'dirty' || actionRoom.status === 'in_progress' ? '#fff' : 'var(--text-primary)',
+              fontWeight: 700, fontSize: '15px', cursor: 'pointer', fontFamily: 'var(--font-sans)',
+            }}>
+              {actionRoom.status === 'dirty' ? (lang === 'es' ? '▶ Empezar Limpieza' : '▶ Start Cleaning')
+                : actionRoom.status === 'in_progress' ? (lang === 'es' ? '✓ Marcar Limpia' : '✓ Mark Clean')
+                : actionRoom.status === 'clean' ? (lang === 'es' ? '↩ Reiniciar' : '↩ Reset to Dirty')
+                : (lang === 'es' ? 'Bloqueada' : 'Locked')}
+            </button>
+
+            {/* Secondary actions row */}
+            <div style={{ display: 'flex', gap: '8px' }}>
+              {/* DND toggle */}
+              <button onClick={() => handleDndToggle(actionRoom)} style={{
+                flex: 1, padding: '12px', borderRadius: '10px',
+                border: `1.5px solid ${actionRoom.isDnd ? 'rgba(220,38,38,0.3)' : 'var(--border)'}`,
+                background: actionRoom.isDnd ? 'rgba(220,38,38,0.06)' : 'var(--bg-elevated)',
+                color: actionRoom.isDnd ? '#DC2626' : 'var(--text-secondary)',
+                fontWeight: 600, fontSize: '13px', cursor: 'pointer', fontFamily: 'var(--font-sans)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+              }}>
+                🚫 {actionRoom.isDnd ? (lang === 'es' ? 'Quitar DND' : 'Remove DND') : (lang === 'es' ? 'No Molestar' : 'Do Not Disturb')}
+              </button>
+
+              {/* Help request */}
+              <button onClick={() => handleHelpRequest(actionRoom)} style={{
+                flex: 1, padding: '12px', borderRadius: '10px',
+                border: `1.5px solid ${actionRoom.issueNote ? 'rgba(234,88,12,0.3)' : 'var(--border)'}`,
+                background: actionRoom.issueNote ? 'rgba(234,88,12,0.06)' : 'var(--bg-elevated)',
+                color: actionRoom.issueNote ? '#EA580C' : 'var(--text-secondary)',
+                fontWeight: 600, fontSize: '13px', cursor: 'pointer', fontFamily: 'var(--font-sans)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+              }}>
+                ⚠️ {lang === 'es' ? 'Pedir Ayuda' : 'Request Help'}
+              </button>
+            </div>
+          </div>
+          <style>{`@keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }`}</style>
+        </>
+      )}
+
       {/* Toast notification */}
       {toastMessage && (
         <div style={{
@@ -1143,7 +1245,7 @@ function RoomsSection() {
                       return (
                         <button
                           key={room.id}
-                          onClick={() => isAssignmentMode ? handleRoomClick(room) : handleToggle(room)}
+                          onClick={() => isAssignmentMode ? handleRoomClick(room) : setActionRoom(room)}
                           disabled={!isAssignmentMode && room.status === 'inspected'}
                           title={`Room ${room.number} · ${room.type ?? ''} · ${info.label}${completedTime ? ` done at ${completedTime}` : ''}${assignedStaff ? ` · Assigned to ${assignedStaff.name}` : ''}`}
                           style={{
