@@ -766,9 +766,9 @@ function RoomsSection() {
                           <span style={{ fontSize: '9px', fontWeight: 600, color: info.color, opacity: 0.85, textAlign: 'center', lineHeight: 1 }}>
                             {info.label.replace(' ✓', '')}
                           </span>
-                          {(room.isDnd || room.type === 'checkout') && (
+                          {(room.isDnd || room.type === 'checkout' || room.type === 'vacant') && (
                             <div style={{ position: 'absolute', top: '3px', right: '4px', fontSize: '9px', lineHeight: 1 }}>
-                              {room.isDnd ? '🚫' : '🚪'}
+                              {room.isDnd ? '🚫' : room.type === 'vacant' ? '✅' : '🚪'}
                             </div>
                           )}
                         </button>

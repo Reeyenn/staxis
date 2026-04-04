@@ -131,6 +131,7 @@ export default function DashboardPage() {
   const inProgress = rooms.filter(r => r.status === 'in_progress').length;
   const dirty      = rooms.filter(r => r.status === 'dirty').length;
   const checkouts  = rooms.filter(r => r.type === 'checkout').length;
+  const vacant     = rooms.filter(r => r.type === 'vacant').length;
   const total      = rooms.length;
   const pct        = total > 0 ? Math.round((clean / total) * 100) : 0;
 
@@ -199,9 +200,9 @@ export default function DashboardPage() {
           <StatCard
             icon={<DoorOpen size={16} color="var(--navy)" />}
             iconBg="rgba(27,58,92,0.08)"
-            label={t('checkoutsToday', lang)}
-            value={checkouts}
-            sub={t('rooms', lang)}
+            label={t('availableRooms', lang)}
+            value={vacant}
+            sub={`${total} ${t('total', lang)}`}
           />
         </div>
 
