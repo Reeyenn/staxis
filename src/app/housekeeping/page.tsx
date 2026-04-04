@@ -783,17 +783,19 @@ function RoomsSection() {
                 <div key={floor}>
                   {/* Legend — centered, shown once above first floor */}
                   {floorIdx === 0 && (
-                    <div style={{
-                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px', flexWrap: 'wrap',
-                      padding: '10px 16px', marginBottom: '14px',
-                      background: 'linear-gradient(135deg, #1B3A5C 0%, #2563EB 100%)',
-                      borderRadius: 'var(--radius-lg)',
-                      boxShadow: '0 2px 10px rgba(27, 58, 92, 0.20)',
-                    }}>
-                      <span style={{ fontSize: '13px', fontWeight: 700, color: '#FFFFFF', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🚪 Checkout</span>
-                      <span style={{ fontSize: '13px', fontWeight: 700, color: '#FFFFFF', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🚫 DND</span>
-                      <span style={{ fontSize: '13px', fontWeight: 700, color: '#FFFFFF', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🔒 {t('roomOccupied', lang)}</span>
-                      <span style={{ fontSize: '13px', fontWeight: 700, color: '#FFFFFF', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>💎 {t('available', lang)}</span>
+                    <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '14px' }}>
+                      <div style={{
+                        display: 'inline-flex', alignItems: 'center', gap: '12px',
+                        padding: '8px 16px',
+                        background: 'linear-gradient(135deg, #1B3A5C 0%, #2563EB 100%)',
+                        borderRadius: 'var(--radius-full)',
+                        boxShadow: '0 2px 10px rgba(27, 58, 92, 0.20)',
+                      }}>
+                        <span style={{ fontSize: '13px', fontWeight: 700, color: '#FFFFFF', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🚪 Checkout</span>
+                        <span style={{ fontSize: '13px', fontWeight: 700, color: '#FFFFFF', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🚫 DND</span>
+                        <span style={{ fontSize: '13px', fontWeight: 700, color: '#FFFFFF', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🔒 {t('roomOccupied', lang)}</span>
+                        <span style={{ fontSize: '13px', fontWeight: 700, color: '#FFFFFF', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>💎 {t('available', lang)}</span>
+                      </div>
                     </div>
                   )}
                   {/* Floor label */}
