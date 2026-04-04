@@ -589,9 +589,9 @@ function ScheduleSection() {
                     </span>
                   </div>
                   {/* 2x2 stats grid to the right of name */}
-                  <div style={{ display: 'grid', gridTemplateColumns: '80px 100px', gap: '1px 10px', fontSize: '12px', color: 'var(--text-muted)', width: '190px', flexShrink: 0 }}>
-                    <div>{lang === 'es' ? 'Estimado' : 'Est'}: {timeLabel}</div>
-                    <div>{coCount} {lang === 'es' ? 'Salida' : 'Checkout'}{coCount !== 1 ? 's' : ''}</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '80px 100px', gap: '1px 10px', fontSize: '12px', color: 'var(--text-secondary)', width: '190px', flexShrink: 0 }}>
+                    <div>{lang === 'es' ? 'Estimado' : 'Est'}: <strong style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{timeLabel}</strong></div>
+                    <div><strong style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{coCount}</strong> {lang === 'es' ? 'Salida' : 'Checkout'}{coCount !== 1 ? 's' : ''}</div>
                     <button onClick={() => toggleCrewMember(member.id)} style={{
                       background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'var(--font-sans)',
                       fontSize: '11px', fontWeight: 600, color: 'var(--red)', padding: '0', textAlign: 'left',
@@ -599,7 +599,7 @@ function ScheduleSection() {
                     }}>
                       {lang === 'es' ? 'Quitar' : 'Remove'}
                     </button>
-                    <div>{soCount} {lang === 'es' ? 'Continuación' : 'Stayover'}{soCount !== 1 ? 's' : ''}</div>
+                    <div><strong style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{soCount}</strong> {lang === 'es' ? 'Continuación' : 'Stayover'}{soCount !== 1 ? 's' : ''}</div>
                   </div>
                 </div>
 
