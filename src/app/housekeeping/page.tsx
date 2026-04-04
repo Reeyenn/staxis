@@ -1302,26 +1302,26 @@ function PublicAreasSection() {
                         display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
                         gap: '4px',
                         padding: '16px 10px',
-                        background: 'linear-gradient(135deg, #1B3A5C 0%, #2563EB 100%)',
-                        border: 'none',
+                        background: 'var(--bg-card)',
+                        border: '1px solid var(--border)',
                         borderRadius: 'var(--radius-lg)',
                         cursor: 'pointer',
                         boxShadow: isHighlighted
                           ? '0 0 0 2px var(--amber), 0 4px 16px rgba(251,191,36,0.25)'
-                          : '0 2px 10px rgba(27, 58, 92, 0.20)',
+                          : '0 1px 4px rgba(0,0,0,0.06)',
                         transition: 'all 0.15s',
                         textAlign: 'center',
                       }}
                     >
                       {/* Name */}
                       <p style={{
-                        fontWeight: 700, fontSize: '14px', color: '#FFFFFF',
+                        fontWeight: 700, fontSize: '14px', color: 'var(--text-primary)',
                         margin: 0, lineHeight: 1.3,
                         display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as const,
                         overflow: 'hidden',
                       }}>{area.name || 'Untitled'}</p>
                       {/* Time + Frequency on one line */}
-                      <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.6)', fontWeight: 600 }}>
+                      <span style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 600 }}>
                         {area.minutesPerClean}{t('minutes', lang)} · {fLabel}
                       </span>
                     </div>
