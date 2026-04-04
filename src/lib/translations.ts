@@ -177,7 +177,7 @@ type TranslationKey =
   // ── Header ────────────────────────────────────────────────────────────────
   | 'allProperties'
   // ── Room availability ─────────────────────────────────────────────────────
-  | 'availableRooms' | 'available' | 'occupied';
+  | 'availableRooms' | 'available' | 'roomOccupied';
 
 const translations: Record<Language, Record<TranslationKey, string>> = {
   en: {
@@ -651,7 +651,7 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     // ── Room availability ──
     availableRooms: 'Available Rooms',
     available: 'Available',
-    occupied: 'Occupied',
+    roomOccupied: 'Occupied',
   },
 
   es: {
@@ -1125,7 +1125,7 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     // ── Room availability ──
     availableRooms: 'Hab. Disponibles',
     available: 'Disponible',
-    occupied: 'Ocupada',
+    roomOccupied: 'Ocupada',
   },
 };
 
