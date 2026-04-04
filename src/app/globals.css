@@ -353,3 +353,40 @@ body {
 
 /* ── Safe area helpers ──────────────────────────────────────────────────────── */
 .safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
+
+/* ── Housekeeping mobile fixes ─────────────────────────────────────────────── */
+
+/* Hide header date on small screens */
+@media (max-width: 480px) {
+  .header-date { display: none !important; }
+}
+
+/* Tab bar: smaller text on mobile */
+@media (max-width: 480px) {
+  .hk-tab-btn { font-size: 11px !important; padding: 8px 4px !important; }
+}
+
+/* Room legend: wrap to 2x2 grid on mobile */
+@media (max-width: 480px) {
+  .room-legend {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr !important;
+    gap: 6px !important;
+  }
+  .room-legend > span { justify-content: center; }
+}
+
+/* Public area cards: 2 columns on mobile */
+@media (max-width: 480px) {
+  .pa-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+}
+
+/* Staffing prediction pills: stack vertically on very small screens */
+@media (max-width: 380px) {
+  .prediction-pills {
+    flex-direction: column !important;
+    align-items: center !important;
+  }
+}

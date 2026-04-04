@@ -65,7 +65,7 @@ export function Header() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
 
           {/* Date */}
-          <span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)', marginRight: '4px' }}>
+          <span className="header-date" style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)', marginRight: '4px' }}>
             {format(new Date(), 'EEEE, MMMM d', lang === 'es' ? { locale: esLocale } : undefined)}
           </span>
 

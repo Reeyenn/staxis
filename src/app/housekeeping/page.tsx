@@ -505,7 +505,7 @@ function ScheduleSection() {
             }}>
               {t('recommendedHousekeepers', lang)}
             </span>
-            <div style={{
+            <div className="prediction-pills" style={{
               display: 'flex', justifyContent: 'center', gap: '6px',
               flexWrap: 'wrap',
             }}>
@@ -784,24 +784,24 @@ function RoomsSection() {
                   {/* Legend — centered, shown once above first floor */}
                   {floorIdx === 0 && (
                     <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '14px' }}>
-                      <div style={{
+                      <div className="room-legend" style={{
                         display: 'inline-flex', alignItems: 'center', gap: '12px',
                         padding: '8px 16px',
                         background: 'linear-gradient(135deg, #1B3A5C 0%, #2563EB 100%)',
-                        borderRadius: 'var(--radius-full)',
+                        borderRadius: 'var(--radius-lg)',
                         boxShadow: '0 2px 10px rgba(27, 58, 92, 0.20)',
                       }}>
-                        <span style={{ fontSize: '13px', fontWeight: 700, color: '#FFFFFF', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🚪 Checkout</span>
-                        <span style={{ fontSize: '13px', fontWeight: 700, color: '#FFFFFF', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🚫 DND</span>
-                        <span style={{ fontSize: '13px', fontWeight: 700, color: '#FFFFFF', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🔒 {t('roomOccupied', lang)}</span>
-                        <span style={{ fontSize: '13px', fontWeight: 700, color: '#FFFFFF', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>💎 {t('available', lang)}</span>
+                        <span style={{ fontSize: '12px', fontWeight: 700, color: '#FFFFFF', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🚪 {t('checkout', lang)}</span>
+                        <span style={{ fontSize: '12px', fontWeight: 700, color: '#FFFFFF', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🚫 DND</span>
+                        <span style={{ fontSize: '12px', fontWeight: 700, color: '#FFFFFF', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🔒 {t('roomOccupied', lang)}</span>
+                        <span style={{ fontSize: '12px', fontWeight: 700, color: '#FFFFFF', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>💎 {t('available', lang)}</span>
                       </div>
                     </div>
                   )}
                   {/* Floor label */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
                     <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>
-                      Floor {floor}
+                      {t('floor', lang)} {floor}
                     </span>
                     <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
                       {floorDone}/{floorRooms.length}
@@ -1287,7 +1287,7 @@ function PublicAreasSection() {
                 <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--navy)' }}>{group.label}</span>
               </div>
               {/* Area cards — 3 column grid */}
-              <div style={{
+              <div className="pa-grid" style={{
                 display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px',
               }}>
                 {group.areas.map((area) => {
@@ -1783,6 +1783,7 @@ export default function HousekeepingPage() {
             return (
               <button
                 key={tab.key}
+                className="hk-tab-btn"
                 onClick={() => setActiveTab(tab.key)}
                 style={{
                   flex: 1,
