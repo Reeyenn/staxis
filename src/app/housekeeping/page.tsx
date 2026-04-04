@@ -469,29 +469,61 @@ function ScheduleSection() {
 
 
       {/* Staffing Prediction */}
-      <div className="card animate-in" style={{ padding: '16px' }}>
+      <div className="card animate-in" style={{
+        padding: '28px 20px 24px',
+        textAlign: 'center',
+        background: 'linear-gradient(135deg, #1B3A5C 0%, #2563EB 100%)',
+        border: 'none',
+        borderRadius: 'var(--radius-xl)',
+        boxShadow: '0 4px 24px rgba(27, 58, 92, 0.25), 0 1px 4px rgba(0,0,0,0.08)',
+      }}>
         {predictionLoading ? (
-          <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>{t('roomDataLoading', lang)}</p>
+          <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.6)', margin: 0 }}>{t('roomDataLoading', lang)}</p>
         ) : totalRooms === 0 ? (
-          <div style={{ textAlign: 'center', padding: '12px 0' }}>
-            <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>{t('noRoomDataYet', lang)}</p>
-            <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '4px 0 0', opacity: 0.7 }}>{t('pmsSync15Min', lang)}</p>
+          <div style={{ padding: '4px 0' }}>
+            <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.6)', margin: 0 }}>{t('noRoomDataYet', lang)}</p>
+            <p style={{ fontSize: '11px', color: 'rgba(255,255,255,0.4)', margin: '4px 0 0' }}>{t('pmsSync15Min', lang)}</p>
           </div>
         ) : (
           <>
-            <span style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', display: 'block', marginBottom: '14px' }}>
-              Staffing Prediction
+            <span style={{
+              fontSize: '10px', fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase',
+              color: 'rgba(255,255,255,0.5)', display: 'block', marginBottom: '6px',
+            }}>
+              AI Staffing Prediction
             </span>
-
-            <div style={{ display: 'flex', alignItems: 'center' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Room Cleaning = <strong style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{roomMinutes}m</strong></span>
-                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Prep Time = <strong style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{prepMinutes}m</strong></span>
-                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Public Areas = <strong style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{publicAreaMinutes}m</strong></span>
-              </div>
-              <div style={{ flex: 1, textAlign: 'center' }}>
-                <span style={{ fontSize: '18px', fontWeight: 800, color: '#1B3A5C' }}>Recommended Staff = {recommendedStaff}</span>
-              </div>
+            <div style={{
+              fontFamily: 'var(--font-mono)', fontSize: '56px', fontWeight: 800,
+              color: '#FFFFFF', lineHeight: 1, letterSpacing: '-0.03em',
+              marginBottom: '4px',
+            }}>
+              {recommendedStaff}
+            </div>
+            <span style={{
+              fontSize: '13px', fontWeight: 500, color: 'rgba(255,255,255,0.7)',
+              display: 'block', marginBottom: '20px',
+            }}>
+              recommended staff
+            </span>
+            <div style={{
+              display: 'flex', justifyContent: 'center', gap: '6px',
+              flexWrap: 'wrap',
+            }}>
+              {[
+                { label: 'Rooms', value: `${roomMinutes}m` },
+                { label: 'Prep', value: `${prepMinutes}m` },
+                { label: 'Public', value: `${publicAreaMinutes}m` },
+              ].map(({ label, value }) => (
+                <div key={label} style={{
+                  padding: '5px 12px', borderRadius: 'var(--radius-full)',
+                  background: 'rgba(255,255,255,0.12)',
+                  border: '1px solid rgba(255,255,255,0.15)',
+                  fontSize: '11px', fontWeight: 500, color: 'rgba(255,255,255,0.7)',
+                  display: 'flex', alignItems: 'center', gap: '5px',
+                }}>
+                  {label} <strong style={{ color: '#FFFFFF', fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{value}</strong>
+                </div>
+              ))}
             </div>
           </>
         )}
