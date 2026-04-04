@@ -483,24 +483,14 @@ function ScheduleSection() {
               Staffing Prediction
             </span>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Room Cleaning</span>
-                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>=</span>
-                <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{roomMinutes}m</span>
+            <div style={{ display: 'flex', alignItems: 'center' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Room Cleaning = <strong style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{roomMinutes}m</strong></span>
+                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Prep Time = <strong style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{prepMinutes}m</strong></span>
+                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Public Areas = <strong style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{publicAreaMinutes}m</strong></span>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Prep Time</span>
-                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>=</span>
-                <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{prepMinutes}m</span>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Public Areas</span>
-                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>=</span>
-                <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{publicAreaMinutes}m</span>
-              </div>
-              <div style={{ marginTop: '10px', textAlign: 'center' }}>
-                <span style={{ fontSize: '15px', fontWeight: 700, color: '#1B3A5C' }}>Recommended Staff = {recommendedStaff}</span>
+              <div style={{ flex: 1, textAlign: 'center' }}>
+                <span style={{ fontSize: '18px', fontWeight: 800, color: '#1B3A5C' }}>Recommended Staff = {recommendedStaff}</span>
               </div>
             </div>
           </>
