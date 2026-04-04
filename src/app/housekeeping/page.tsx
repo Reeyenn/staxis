@@ -503,7 +503,7 @@ function ScheduleSection() {
               fontSize: '13px', fontWeight: 500, color: 'rgba(255,255,255,0.7)',
               display: 'block', marginBottom: '20px',
             }}>
-              recommended staff
+              Recommended Staff
             </span>
             <div style={{
               display: 'flex', justifyContent: 'center', gap: '6px',
@@ -539,15 +539,36 @@ function ScheduleSection() {
 
       {/* Existing confirmations */}
       {confirmations.length > 0 && (
-        <div className="card" style={{ padding: '16px' }}>
-          <p style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: '12px' }}>
-            {t('crewForDate', lang)} {formatDisplayDate(shiftDate, lang)}
-          </p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <div style={{
+          padding: '20px',
+          background: 'linear-gradient(135deg, #1B3A5C 0%, #234B73 100%)',
+          border: 'none',
+          borderRadius: 'var(--radius-xl)',
+          boxShadow: '0 4px 24px rgba(27, 58, 92, 0.20), 0 1px 4px rgba(0,0,0,0.06)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
+            <Users size={14} color="rgba(255,255,255,0.5)" />
+            <p style={{ fontSize: '10px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.12em', color: 'rgba(255,255,255,0.5)', margin: 0 }}>
+              {t('crewForDate', lang)} {formatDisplayDate(shiftDate, lang)}
+            </p>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             {confirmations.map(conf => (
-              <div key={conf.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: 'rgba(0,0,0,0.02)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)' }}>
-                <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-primary)' }}>{conf.staffName}</span>
-                <span style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px', fontWeight: 600, color: STATUS_COLOR[conf.status] }}>
+              <div key={conf.id} style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '10px 14px',
+                background: 'rgba(255,255,255,0.08)',
+                border: '1px solid rgba(255,255,255,0.10)',
+                borderRadius: 'var(--radius-md)',
+              }}>
+                <span style={{ fontSize: '13px', fontWeight: 600, color: '#FFFFFF' }}>{conf.staffName}</span>
+                <span style={{
+                  display: 'flex', alignItems: 'center', gap: '5px',
+                  fontSize: '11px', fontWeight: 700,
+                  padding: '3px 10px', borderRadius: 'var(--radius-full)',
+                  background: conf.status === 'confirmed' ? 'rgba(34,197,94,0.20)' : conf.status === 'declined' ? 'rgba(239,68,68,0.20)' : 'rgba(251,191,36,0.20)',
+                  color: conf.status === 'confirmed' ? '#4ADE80' : conf.status === 'declined' ? '#FCA5A5' : '#FCD34D',
+                }}>
                   {STATUS_ICON[conf.status]}
                   {t(conf.status === 'pending' ? 'statusPending' : conf.status === 'confirmed' ? 'statusConfirmed' : conf.status === 'declined' ? 'statusDeclined' : 'statusNoResponse', lang)}
                 </span>
@@ -558,23 +579,43 @@ function ScheduleSection() {
       )}
 
       {/* Auto-select crew */}
-      <div className="card" style={{ padding: '16px' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
-          <button onClick={handleAutoSelect} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.3)', borderRadius: 'var(--radius-md)', color: 'var(--amber)', fontSize: '12px', fontWeight: 600, cursor: 'pointer', fontFamily: 'var(--font-sans)' }}>
-            <Zap size={12} />{t('autoSelectCrew', lang)}{selected.length > 0 && <span style={{ marginLeft: '4px', opacity: 0.8 }}>({selected.length})</span>}
+      <div style={{
+        padding: '20px',
+        background: 'linear-gradient(135deg, #1B3A5C 0%, #234B73 100%)',
+        border: 'none',
+        borderRadius: 'var(--radius-xl)',
+        boxShadow: '0 4px 24px rgba(27, 58, 92, 0.20), 0 1px 4px rgba(0,0,0,0.06)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Users size={14} color="rgba(255,255,255,0.5)" />
+            <span style={{ fontSize: '10px', fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.5)' }}>
+              Select Crew
+            </span>
+          </div>
+          <button onClick={handleAutoSelect} style={{
+            display: 'flex', alignItems: 'center', gap: '6px',
+            padding: '6px 14px',
+            background: 'rgba(251,191,36,0.15)',
+            border: '1px solid rgba(251,191,36,0.30)',
+            borderRadius: 'var(--radius-full)',
+            color: '#FCD34D', fontSize: '11px', fontWeight: 700,
+            cursor: 'pointer', fontFamily: 'var(--font-sans)',
+          }}>
+            <Zap size={11} />{t('autoSelectCrew', lang)}{selected.length > 0 && <span style={{ marginLeft: '4px', opacity: 0.8 }}>({selected.length})</span>}
           </button>
         </div>
 
         {!staffLoaded ? (
-          <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>{lang === 'es' ? 'Cargando…' : 'Loading…'}</p>
+          <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.5)', margin: 0 }}>{lang === 'es' ? 'Cargando…' : 'Loading…'}</p>
         ) : staff.filter(s => s.isActive !== false).length === 0 ? (
-          <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>{t('noEligibleStaff', lang)}</p>
+          <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.5)', margin: 0 }}>{t('noEligibleStaff', lang)}</p>
         ) : (
           <>
             {eligiblePool.length === 0 && alreadyInPool.size === 0 && (
-              <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '0 0 12px', lineHeight: 1.5 }}>{t('noEligibleStaff', lang)}</p>
+              <p style={{ fontSize: '12px', color: 'rgba(255,255,255,0.5)', margin: '0 0 12px', lineHeight: 1.5 }}>{t('noEligibleStaff', lang)}</p>
             )}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: '8px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: '6px' }}>
               {staff.filter(s => s.isActive !== false)
                 .sort((a, b) => {
                   const aIn = alreadyInPool.has(a.id); const bIn = alreadyInPool.has(b.id);
@@ -596,18 +637,27 @@ function ScheduleSection() {
                   const hrsAtLimit = hrs >= maxHrs;
                   return (
                     <div key={member.id} onClick={() => eligible && toggleSelected(member)}
-                      style={{ padding: '10px 12px', border: `1px solid ${inPool ? 'rgba(34,197,94,0.3)' : isSelected ? 'rgba(251,191,36,0.5)' : eligible ? 'var(--border)' : 'rgba(0,0,0,0.04)'}`, background: inPool ? 'rgba(34,197,94,0.05)' : isSelected ? 'rgba(251,191,36,0.07)' : 'rgba(0,0,0,0.02)', borderRadius: 'var(--radius-md)', cursor: eligible ? 'pointer' : 'default', display: 'flex', alignItems: 'center', gap: '10px', opacity: (!eligible && !inPool) ? 0.45 : 1, transition: 'all 0.15s' }}>
-                      <div style={{ width: '18px', height: '18px', borderRadius: '5px', border: `2px solid ${inPool ? 'var(--green)' : isSelected ? 'var(--amber)' : 'var(--border)'}`, background: inPool ? 'rgba(34,197,94,0.2)' : isSelected ? 'rgba(251,191,36,0.2)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                        {(inPool || isSelected) && <CheckCircle2 size={11} color={inPool ? 'var(--green)' : 'var(--amber)'} strokeWidth={2.5} />}
+                      style={{
+                        padding: '10px 14px',
+                        border: `1px solid ${inPool ? 'rgba(34,197,94,0.35)' : isSelected ? 'rgba(251,191,36,0.40)' : 'rgba(255,255,255,0.10)'}`,
+                        background: inPool ? 'rgba(34,197,94,0.12)' : isSelected ? 'rgba(251,191,36,0.12)' : 'rgba(255,255,255,0.06)',
+                        borderRadius: 'var(--radius-md)',
+                        cursor: eligible ? 'pointer' : 'default',
+                        display: 'flex', alignItems: 'center', gap: '10px',
+                        opacity: (!eligible && !inPool) ? 0.35 : 1,
+                        transition: 'all 0.15s',
+                      }}>
+                      <div style={{ width: '18px', height: '18px', borderRadius: '5px', border: `2px solid ${inPool ? 'rgba(34,197,94,0.7)' : isSelected ? 'rgba(251,191,36,0.7)' : 'rgba(255,255,255,0.25)'}`, background: inPool ? 'rgba(34,197,94,0.25)' : isSelected ? 'rgba(251,191,36,0.25)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                        {(inPool || isSelected) && <CheckCircle2 size={11} color={inPool ? '#4ADE80' : '#FCD34D'} strokeWidth={2.5} />}
                       </div>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <p style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', margin: '0 0 2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{member.name}</p>
-                        <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0 }}>
+                        <p style={{ fontSize: '13px', fontWeight: 600, color: '#FFFFFF', margin: '0 0 2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{member.name}</p>
+                        <p style={{ fontSize: '11px', color: 'rgba(255,255,255,0.45)', margin: 0 }}>
                           {inPool ? t('crewForDate', lang) : onVacation ? t('onVacation', lang) : isAtLimit ? t('atLimitLabel', lang) : eligible ? `${member.daysWorkedThisWeek ?? 0} ${t('daysWorkedLabel', lang)}` : t('inactiveLabel', lang)}
                         </p>
                       </div>
-                      {member.isSenior && <span style={{ fontSize: '9px', fontWeight: 700, color: 'var(--amber)', background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.2)', borderRadius: '4px', padding: '1px 5px', flexShrink: 0 }}>SR</span>}
-                      <span style={{ fontSize: '10px', fontFamily: 'var(--font-mono)', fontWeight: 600, color: hrsAtLimit ? 'var(--red)' : hrsNearLimit ? 'var(--amber)' : 'var(--text-muted)', background: hrsAtLimit ? 'rgba(239,68,68,0.07)' : hrsNearLimit ? 'rgba(251,191,36,0.07)' : 'rgba(0,0,0,0.04)', border: `1px solid ${hrsAtLimit ? 'rgba(239,68,68,0.2)' : hrsNearLimit ? 'rgba(251,191,36,0.2)' : 'var(--border)'}`, borderRadius: '4px', padding: '2px 6px', flexShrink: 0 }}>
+                      {member.isSenior && <span style={{ fontSize: '9px', fontWeight: 700, color: '#FCD34D', background: 'rgba(251,191,36,0.15)', border: '1px solid rgba(251,191,36,0.25)', borderRadius: '4px', padding: '1px 5px', flexShrink: 0 }}>SR</span>}
+                      <span style={{ fontSize: '10px', fontFamily: 'var(--font-mono)', fontWeight: 600, color: hrsAtLimit ? '#FCA5A5' : hrsNearLimit ? '#FCD34D' : 'rgba(255,255,255,0.5)', background: hrsAtLimit ? 'rgba(239,68,68,0.15)' : hrsNearLimit ? 'rgba(251,191,36,0.12)' : 'rgba(255,255,255,0.08)', border: `1px solid ${hrsAtLimit ? 'rgba(239,68,68,0.3)' : hrsNearLimit ? 'rgba(251,191,36,0.25)' : 'rgba(255,255,255,0.12)'}`, borderRadius: '4px', padding: '2px 6px', flexShrink: 0 }}>
                         {hrs}h
                       </span>
                     </div>
@@ -619,7 +669,17 @@ function ScheduleSection() {
 
         {selected.length > 0 && (
           <button onClick={handleSend} disabled={sending} className="animate-in"
-            style={{ marginTop: '16px', width: '100%', padding: '14px', background: sending ? 'rgba(37,99,235,0.4)' : 'var(--navy-light)', color: sending ? 'rgba(255,255,255,0.5)' : '#FFFFFF', border: 'none', borderRadius: 'var(--radius-md)', fontWeight: 700, fontSize: '14px', cursor: sending ? 'not-allowed' : 'pointer', fontFamily: 'var(--font-sans)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+            style={{
+              marginTop: '16px', width: '100%', padding: '14px',
+              background: sending ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.95)',
+              color: sending ? 'rgba(255,255,255,0.5)' : '#1B3A5C',
+              border: 'none', borderRadius: 'var(--radius-md)',
+              fontWeight: 700, fontSize: '14px',
+              cursor: sending ? 'not-allowed' : 'pointer',
+              fontFamily: 'var(--font-sans)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+              boxShadow: sending ? 'none' : '0 2px 12px rgba(0,0,0,0.15)',
+            }}>
             <Send size={14} />
             {sending ? t('sendingLabel', lang) : `${t('sendConfirmations', lang)} (${selected.length})`}
           </button>
