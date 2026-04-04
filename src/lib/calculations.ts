@@ -208,36 +208,45 @@ export function autoAssignRooms(
   const coMins = config?.checkoutMinutes ?? 30;
   const soMins = config?.stayoverMinutes ?? 20;
   const prepMins = config?.prepMinutesPerRoom ?? 5;
-  const shiftCap = config?.shiftMinutes ?? 480; // 8 hours
+  const shiftCap = config?.shiftMinutes ?? 420; // 7 hours max
 
   const available = staff.filter(s => s.scheduledToday);
   if (available.length === 0) return {};
 
   const assignments: Record<string, string> = {};
-  const staffLoad: Record<string, { minutes: number; floor: string }> = {};
-  available.forEach(s => { staffLoad[s.id] = { minutes: 0, floor: '' }; });
+  const staffLoad: Record<string, { minutes: number; floors: Set<string> }> = {};
+  available.forEach(s => { staffLoad[s.id] = { minutes: 0, floors: new Set() }; });
 
-  // Sort: checkouts first (heavier), then stayovers
-  const sortedRooms = [...rooms].sort((a, b) => getRoomSortKey(a.type, a.priority) - getRoomSortKey(b.type, b.priority));
+  // Sort by floor first (proximity), then checkouts before stayovers, then room number
+  const sortedRooms = [...rooms].sort((a, b) => {
+    const floorA = a.number.length >= 3 ? a.number[0] : '1';
+    const floorB = b.number.length >= 3 ? b.number[0] : '1';
+    if (floorA !== floorB) return floorA.localeCompare(floorB);
+    const typeOrder = getRoomSortKey(a.type, a.priority) - getRoomSortKey(b.type, b.priority);
+    if (typeOrder !== 0) return typeOrder;
+    return a.number.localeCompare(b.number);
+  });
 
   for (const room of sortedRooms) {
     const floor = room.number.length >= 3 ? room.number[0] : '1';
     const roomTime = (room.type === 'checkout' ? coMins : soMins) + prepMins;
 
-    // Find least-loaded staff who still has capacity, prefer same floor
+    // Find staff who still have capacity
     const withCapacity = available.filter(s => staffLoad[s.id].minutes + roomTime <= shiftCap);
-    const pool = withCapacity.length > 0 ? withCapacity : available; // if everyone is full, still assign
+    const pool = withCapacity.length > 0 ? withCapacity : available; // safety fallback
 
-    const sameFloor = pool.filter(s => staffLoad[s.id].floor === floor);
+    // Prefer someone already on this floor
+    const sameFloor = pool.filter(s => staffLoad[s.id].floors.has(floor));
+
+    // From candidates, pick the MOST loaded (fill up before moving to next person)
     const candidates = sameFloor.length > 0 ? sameFloor : pool;
-
-    const leastLoaded = candidates.reduce((min, s) =>
-      staffLoad[s.id].minutes < staffLoad[min.id].minutes ? s : min
+    const mostLoaded = candidates.reduce((best, s) =>
+      staffLoad[s.id].minutes > staffLoad[best.id].minutes ? s : best
     );
 
-    assignments[room.id] = leastLoaded.id;
-    staffLoad[leastLoaded.id].minutes += roomTime;
-    if (!staffLoad[leastLoaded.id].floor) staffLoad[leastLoaded.id].floor = floor;
+    assignments[room.id] = mostLoaded.id;
+    staffLoad[mostLoaded.id].minutes += roomTime;
+    staffLoad[mostLoaded.id].floors.add(floor);
   }
 
   return assignments;
