@@ -91,6 +91,7 @@ export default function InventoryPage() {
   const [counting, setCounting] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [lowStockAlert, setLowStockAlert] = useState<InventoryItem[] | null>(null);
 
   const seededRef = useRef(false);
 
@@ -187,7 +188,21 @@ export default function InventoryPage() {
         items={items}
         uid={user.uid}
         pid={activePropertyId}
-        onDone={() => { setCounting(false); showToast('Inventory count saved ✓'); }}
+        onDone={(updatedCounts) => {
+          setCounting(false);
+          // Check which items are now below target
+          const lowItems = items.filter(item => {
+            const newCount = updatedCounts[item.id] ?? item.currentStock;
+            return newCount < item.parLevel && newCount >= 0;
+          }).map(item => ({ ...item, currentStock: updatedCounts[item.id] ?? item.currentStock }));
+          if (lowItems.length > 0) {
+            setLowStockAlert(lowItems);
+            // TODO: Twilio SMS — when verified, call API route to text owner
+            // e.g. fetch('/api/alerts/low-stock', { method: 'POST', body: JSON.stringify({ items: lowItems }) })
+          } else {
+            showToast('Inventory count saved ✓');
+          }
+        }}
         onCancel={() => setCounting(false)}
       />
     );
@@ -336,6 +351,92 @@ export default function InventoryPage() {
         onAdded={() => showToast('Item added ✓')}
       />
 
+      {/* Low Stock Alert */}
+      {lowStockAlert && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 100,
+          background: 'rgba(0,0,0,0.5)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          padding: '20px',
+        }}
+          onClick={() => { setLowStockAlert(null); showToast('Inventory count saved ✓'); }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: 'var(--surface, #fff)', borderRadius: 'var(--radius-lg)',
+              width: '100%', maxWidth: '400px', maxHeight: '80vh', overflow: 'hidden',
+              boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+              display: 'flex', flexDirection: 'column',
+            }}
+          >
+            {/* Alert header */}
+            <div style={{
+              padding: '16px 20px', background: 'linear-gradient(135deg, #dc2626, #ef4444)',
+              color: '#fff', display: 'flex', alignItems: 'center', gap: '10px',
+            }}>
+              <AlertTriangle size={22} />
+              <div>
+                <div style={{ fontWeight: 700, fontSize: '16px' }}>Running Low</div>
+                <div style={{ fontSize: '12px', opacity: 0.9 }}>
+                  {lowStockAlert.length} item{lowStockAlert.length !== 1 ? 's' : ''} below target
+                </div>
+              </div>
+            </div>
+
+            {/* Item list */}
+            <div style={{ overflow: 'auto', flex: 1 }}>
+              {lowStockAlert.map(item => {
+                const status = stockStatus(item.currentStock, item.parLevel);
+                const pct = item.parLevel > 0 ? Math.round((item.currentStock / item.parLevel) * 100) : 0;
+                return (
+                  <div key={item.id} style={{
+                    display: 'flex', alignItems: 'center', gap: '10px',
+                    padding: '10px 20px', borderBottom: '1px solid var(--border)',
+                  }}>
+                    <span style={{
+                      width: '8px', height: '8px', borderRadius: '50%',
+                      background: STATUS_COLORS[status], flexShrink: 0,
+                    }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: '13px', color: 'var(--text-primary)' }}>
+                        {item.name}
+                      </div>
+                      <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                        {item.category} · {item.unit}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                      <div style={{
+                        fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '14px',
+                        color: STATUS_COLORS[status],
+                      }}>
+                        {item.currentStock} <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: '11px' }}>/ {item.parLevel}</span>
+                      </div>
+                      <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>{pct}%</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Dismiss button */}
+            <div style={{ padding: '14px 20px', borderTop: '1px solid var(--border)' }}>
+              <button
+                onClick={() => { setLowStockAlert(null); showToast('Inventory count saved ✓'); }}
+                style={{
+                  width: '100%', padding: '12px', borderRadius: 'var(--radius-md)',
+                  background: 'var(--navy, #1b3a5c)', color: '#fff', border: 'none',
+                  fontSize: '14px', fontWeight: 700, cursor: 'pointer',
+                }}
+              >
+                Got It
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Toast */}
       {toast && (
         <div style={{
@@ -360,7 +461,7 @@ function CountMode({
   items: InventoryItem[];
   uid: string;
   pid: string;
-  onDone: () => void;
+  onDone: (updatedCounts: Record<string, number>) => void;
   onCancel: () => void;
 }) {
   const sorted = useMemo(() => [...items].sort((a, b) => a.name.localeCompare(b.name)), [items]);
@@ -375,16 +476,18 @@ function CountMode({
   const handleSave = async () => {
     setSaving(true);
     try {
+      const finalCounts: Record<string, number> = {};
       await Promise.all(
         sorted.map(item => {
           const val = parseInt(counts[item.id] ?? '0') || 0;
+          finalCounts[item.id] = val;
           if (val !== item.currentStock) {
             return updateInventoryItem(uid, pid, item.id, { currentStock: val });
           }
           return Promise.resolve();
         })
       );
-      onDone();
+      onDone(finalCounts);
     } catch {
       setSaving(false);
     }
