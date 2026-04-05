@@ -6,6 +6,9 @@ import type {
   ScheduleResult,
   MorningSetupForm,
   StaffMember,
+  DeepCleanConfig,
+  DeepCleanRecord,
+  Room,
 } from '@/types';
 
 // ─── Public Area - is due today? ───────────────────────────────────────────
@@ -313,4 +316,56 @@ export function calcROI(totalSaved: number, monthlyPrice: number, monthsUsed: nu
   const totalPaid = monthlyPrice * monthsUsed;
   if (totalPaid === 0) return 0;
   return totalSaved / totalPaid;
+}
+
+// ─── Deep Cleaning helpers ────────────────────────────────────────────────
+
+/** Returns how many days since a room's last deep clean (Infinity if never) */
+export function daysSinceDeepClean(roomNumber: string, records: DeepCleanRecord[], today: Date = new Date()): number {
+  const rec = records.find(r => r.roomNumber === roomNumber);
+  if (!rec) return Infinity;
+  return differenceInDays(today, parseISO(rec.lastDeepClean));
+}
+
+/** Returns rooms that are overdue for deep cleaning */
+export function getOverdueRooms(
+  allRoomNumbers: string[],
+  records: DeepCleanRecord[],
+  config: DeepCleanConfig,
+  today: Date = new Date()
+): { roomNumber: string; daysSince: number }[] {
+  return allRoomNumbers
+    .map(num => ({ roomNumber: num, daysSince: daysSinceDeepClean(num, records, today) }))
+    .filter(r => r.daysSince >= config.frequencyDays)
+    .sort((a, b) => b.daysSince - a.daysSince); // most overdue first
+}
+
+/** Calculate freed minutes from DND rooms that can be used for deep cleaning */
+export function calcDndFreedMinutes(
+  rooms: Array<{ isDnd?: boolean; type: string }>,
+  property: Property
+): number {
+  return rooms
+    .filter(r => r.isDnd)
+    .reduce((sum, r) => {
+      const mins = r.type === 'checkout' ? property.checkoutMinutes : property.stayoverMinutes;
+      return sum + mins;
+    }, 0);
+}
+
+/** Suggest how many deep cleans can fit into available free time */
+export function suggestDeepCleans(
+  freedMinutes: number,
+  slackMinutes: number,
+  config: DeepCleanConfig,
+  overdueCount: number
+): { count: number; source: string; minutes: number } {
+  const availableMinutes = freedMinutes + Math.max(0, slackMinutes);
+  const possibleRooms = Math.floor(availableMinutes / config.minutesPerRoom);
+  const count = Math.min(possibleRooms, overdueCount); // don't suggest more than overdue
+  return {
+    count,
+    source: freedMinutes > 0 ? 'dnd' : 'slack',
+    minutes: count * config.minutesPerRoom,
+  };
 }

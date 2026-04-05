@@ -32,6 +32,8 @@ import type {
   GuestRequest,
   ShiftConfirmation,
   ManagerNotification,
+  DeepCleanConfig,
+  DeepCleanRecord,
 } from '@/types';
 
 // ─── Path helpers ──────────────────────────────────────────────────────────
@@ -527,4 +529,54 @@ export async function markAllNotificationsRead(uid: string, pid: string) {
     query(managerNotificationsRef(uid, pid), where('read', '==', false))
   );
   await Promise.all(snap.docs.map(d => updateDoc(d.ref, { read: true })));
+}
+
+// ─── Deep Cleaning Config & Records ───────────────────────────────────────
+
+export const deepCleanConfigRef = (uid: string, pid: string) =>
+  doc(db, 'users', uid, 'properties', pid, 'config', 'deepClean');
+
+export const deepCleanRecordsRef = (uid: string, pid: string) =>
+  collection(db, 'users', uid, 'properties', pid, 'deepCleanRecords');
+
+export const deepCleanRecordDocRef = (uid: string, pid: string, rid: string) =>
+  doc(db, 'users', uid, 'properties', pid, 'deepCleanRecords', rid);
+
+const DEFAULT_DEEP_CLEAN_CONFIG: DeepCleanConfig = {
+  frequencyDays: 90,
+  minutesPerRoom: 60,
+  targetPerWeek: 5,
+};
+
+export async function getDeepCleanConfig(uid: string, pid: string): Promise<DeepCleanConfig> {
+  const snap = await getDoc(deepCleanConfigRef(uid, pid));
+  if (!snap.exists()) return { ...DEFAULT_DEEP_CLEAN_CONFIG };
+  return snap.data() as DeepCleanConfig;
+}
+
+export async function setDeepCleanConfig(uid: string, pid: string, config: DeepCleanConfig) {
+  await setDoc(deepCleanConfigRef(uid, pid), config);
+}
+
+export async function getDeepCleanRecords(uid: string, pid: string): Promise<DeepCleanRecord[]> {
+  const snap = await getDocs(deepCleanRecordsRef(uid, pid));
+  return snap.docs.map(d => ({ id: d.id, ...d.data() } as DeepCleanRecord));
+}
+
+export async function setDeepCleanRecord(uid: string, pid: string, record: DeepCleanRecord) {
+  await setDoc(deepCleanRecordDocRef(uid, pid, record.id), record);
+}
+
+export async function markRoomDeepCleaned(
+  uid: string, pid: string, roomNumber: string, cleanedBy?: string, notes?: string
+) {
+  const today = new Date().toLocaleDateString('en-CA');
+  const record: DeepCleanRecord = {
+    id: roomNumber,
+    roomNumber,
+    lastDeepClean: today,
+    ...(cleanedBy ? { cleanedBy } : {}),
+    ...(notes ? { notes } : {}),
+  };
+  await setDoc(deepCleanRecordDocRef(uid, pid, roomNumber), record);
 }

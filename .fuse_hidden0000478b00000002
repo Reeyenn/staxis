@@ -1,0 +1,26 @@
+[debug] [2026-04-05T04:49:02.776Z] ----------------------------------------------------------------------
+[debug] [2026-04-05T04:49:02.777Z] Command:       /usr/bin/node /sessions/quirky-vibrant-edison/.npm/_npx/7750544ccf494d8b/node_modules/.bin/firebase deploy --only firestore:rules --token 
+[debug] [2026-04-05T04:49:02.777Z] CLI Version:   15.13.0
+[debug] [2026-04-05T04:49:02.777Z] Platform:      linux
+[debug] [2026-04-05T04:49:02.778Z] Node Version:  v22.22.0
+[debug] [2026-04-05T04:49:02.778Z] Time:          Sat Apr 04 2026 23:49:02 GMT-0500 (Central Daylight Time)
+[debug] [2026-04-05T04:49:02.778Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-04-05T04:49:02.779Z] >>> [apiv2][query] GET https://firebase-public.firebaseio.com/cli.json [none]
+[debug] [2026-04-05T04:49:03.178Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-04-05T04:49:03.190Z] <<< [apiv2][status] GET https://firebase-public.firebaseio.com/cli.json 403
+[debug] [2026-04-05T04:49:03.190Z] <<< [apiv2][body] GET https://firebase-public.firebaseio.com/cli.json "Connection blocked by network allowlist"
+[warn] ⚠  Unable to fetch the CLI MOTD and remote config. This is not a fatal error, but may indicate an issue with your network connection. 
+[debug] [2026-04-05T04:49:03.191Z] Failed to fetch MOTD FirebaseError: Unable to parse JSON: SyntaxError: Unexpected token 'C', "Connection"... is not valid JSON
+[debug] [2026-04-05T04:49:03.193Z] Error: Could not load the default credentials. Browse to https://cloud.google.com/docs/authentication/getting-started for more information.
+    at GoogleAuth.getApplicationDefaultAsync (/sessions/quirky-vibrant-edison/.npm/_npx/7750544ccf494d8b/node_modules/google-auth-library/build/src/auth/googleauth.js:287:15)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async GoogleAuth._GoogleAuth_determineClient (/sessions/quirky-vibrant-edison/.npm/_npx/7750544ccf494d8b/node_modules/google-auth-library/build/src/auth/googleauth.js:834:32)
+    at async GoogleAuth.getClient (/sessions/quirky-vibrant-edison/.npm/_npx/7750544ccf494d8b/node_modules/google-auth-library/build/src/auth/googleauth.js:698:20)
+    at async GoogleAuth.getAccessToken (/sessions/quirky-vibrant-edison/.npm/_npx/7750544ccf494d8b/node_modules/google-auth-library/build/src/auth/googleauth.js:722:24)
+    at async autoAuth (/sessions/quirky-vibrant-edison/.npm/_npx/7750544ccf494d8b/node_modules/firebase-tools/lib/requireAuth.js:28:19)
+    at async requireAuth (/sessions/quirky-vibrant-edison/.npm/_npx/7750544ccf494d8b/node_modules/firebase-tools/lib/requireAuth.js:90:20)
+    at async requirePermissions (/sessions/quirky-vibrant-edison/.npm/_npx/7750544ccf494d8b/node_modules/firebase-tools/lib/requirePermissions.js:17:5)
+    at async /sessions/quirky-vibrant-edison/.npm/_npx/7750544ccf494d8b/node_modules/firebase-tools/lib/command.js:264:17
+[error] 
+[error] Error: Failed to authenticate, have you run firebase login?

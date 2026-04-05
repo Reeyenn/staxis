@@ -7,18 +7,22 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import { AppLayout } from '@/components/layout/AppLayout';
-import { subscribeToRooms, subscribeToShiftConfirmations } from '@/lib/firestore';
+import {
+  subscribeToRooms, subscribeToShiftConfirmations,
+  getDeepCleanConfig, getDeepCleanRecords,
+} from '@/lib/firestore';
+import { getOverdueRooms, calcDndFreedMinutes, suggestDeepCleans } from '@/lib/calculations';
 import { todayStr } from '@/lib/utils';
-import type { Room, ShiftConfirmation, ConfirmationStatus } from '@/types';
+import type { Room, ShiftConfirmation, ConfirmationStatus, DeepCleanConfig, DeepCleanRecord } from '@/types';
 import { format } from 'date-fns';
 import {
   CheckCircle2, XCircle, Clock, AlertTriangle,
   Users, DollarSign,
-  Sparkles, CircleDot, DoorOpen,
+  Sparkles, CircleDot, DoorOpen, Zap,
 } from 'lucide-react';
 
 /* ── Room grid helper ── */
-function RoomGrid({ rooms }: { rooms: Room[] }) {
+function RoomGrid({ rooms, overdueSet }: { rooms: Room[]; overdueSet?: Set<string> }) {
   const { lang } = useLang();
   // Group by floor (first digit of room number, e.g. "101" → floor 1)
   const floors = new Map<string, Room[]>();
@@ -77,6 +81,15 @@ function RoomGrid({ rooms }: { rooms: Room[] }) {
                       border: '1px solid white',
                     }} />
                   )}
+                  {/* Orange dot for deep-clean overdue */}
+                  {overdueSet?.has(room.number) && (
+                    <div style={{
+                      position: 'absolute', top: '2px', left: '2px',
+                      width: '5px', height: '5px', borderRadius: '50%',
+                      background: '#f59e0b',
+                      border: '1px solid white',
+                    }} />
+                  )}
                 </div>
               );
             })}
@@ -109,6 +122,8 @@ export default function DashboardPage() {
 
   const [rooms, setRooms] = useState<Room[]>([]);
   const [tomorrowConfs, setTomorrowConfs] = useState<ShiftConfirmation[]>([]);
+  const [dcConfig, setDcConfig] = useState<DeepCleanConfig | null>(null);
+  const [dcRecords, setDcRecords] = useState<DeepCleanRecord[]>([]);
 
   const tomorrow = addDays(todayStr(), 1);
 
@@ -127,6 +142,18 @@ export default function DashboardPage() {
     return subscribeToShiftConfirmations(user.uid, activePropertyId, tomorrow, setTomorrowConfs);
   }, [user, activePropertyId, tomorrow]);
 
+  // Load deep clean config + records
+  useEffect(() => {
+    if (!user || !activePropertyId) return;
+    Promise.all([
+      getDeepCleanConfig(user.uid, activePropertyId),
+      getDeepCleanRecords(user.uid, activePropertyId),
+    ]).then(([config, records]) => {
+      setDcConfig(config);
+      setDcRecords(records);
+    });
+  }, [user, activePropertyId]);
+
   const clean      = rooms.filter(r => r.status === 'clean' || r.status === 'inspected').length;
   const inProgress = rooms.filter(r => r.status === 'in_progress').length;
   const dirty      = rooms.filter(r => r.status === 'dirty').length;
@@ -136,6 +163,17 @@ export default function DashboardPage() {
   const pct        = total > 0 ? Math.round((clean / total) * 100) : 0;
 
   const confirmedCount = tomorrowConfs.filter(c => c.status === 'confirmed').length;
+
+  // Deep clean insights
+  const overdueRooms = dcConfig && dcRecords.length > 0
+    ? getOverdueRooms(dcRecords.map(r => r.roomNumber), dcRecords, dcConfig)
+    : [];
+  const dndFreedMins = activeProperty
+    ? calcDndFreedMinutes(rooms, activeProperty)
+    : 0;
+  const dcSuggestion = dcConfig && overdueRooms.length > 0
+    ? suggestDeepCleans(dndFreedMins, 0, dcConfig, overdueRooms.length)
+    : null;
 
   if (authLoading || propLoading) {
     return (
@@ -206,6 +244,54 @@ export default function DashboardPage() {
           />
         </div>
 
+        {/* ── Deep Clean Insight Banner ── */}
+        {overdueRooms.length > 0 && (
+          <div
+            className="animate-in stagger-2 card"
+            style={{
+              padding: '14px 18px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '14px',
+              background: 'linear-gradient(135deg, rgba(245,158,11,0.06) 0%, rgba(220,38,38,0.04) 100%)',
+              border: '1px solid rgba(245,158,11,0.2)',
+            }}
+          >
+            <div style={{
+              width: '40px', height: '40px', borderRadius: '10px',
+              background: 'rgba(245,158,11,0.12)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+            }}>
+              <Zap size={18} color="#f59e0b" />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <p style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '2px' }}>
+                {overdueRooms.length} room{overdueRooms.length !== 1 ? 's' : ''} overdue for deep cleaning
+              </p>
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                {dndFreedMins > 0
+                  ? `${dndFreedMins} min freed from DND rooms today.`
+                  : 'No DND rooms freeing time today.'}
+                {dcSuggestion && dcSuggestion.count > 0
+                  ? ` You could fit ${dcSuggestion.count} deep clean${dcSuggestion.count !== 1 ? 's' : ''} (${dcSuggestion.minutes} min).`
+                  : ''}
+              </p>
+            </div>
+            <div style={{
+              display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0,
+              padding: '6px 14px', borderRadius: '8px',
+              background: 'rgba(220,38,38,0.08)',
+            }}>
+              <span style={{ fontSize: '20px', fontWeight: 700, fontFamily: 'var(--font-mono)', color: '#dc2626', lineHeight: 1 }}>
+                {overdueRooms.length}
+              </span>
+              <span style={{ fontSize: '10px', fontWeight: 600, color: '#dc2626', textTransform: 'uppercase' }}>
+                overdue
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* ── Main content - two columns side by side ── */}
         <div className="animate-in stagger-2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', flex: 1, minHeight: 0 }}>
 
@@ -230,7 +316,7 @@ export default function DashboardPage() {
             ) : (
               <>
                 <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
-                  <RoomGrid rooms={rooms} />
+                  <RoomGrid rooms={rooms} overdueSet={new Set(overdueRooms.map(r => r.roomNumber))} />
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '10px', paddingTop: '10px', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
                   <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>

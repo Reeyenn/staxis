@@ -60,6 +60,24 @@ export interface PublicArea {
   isRentedToday?: boolean;
 }
 
+// ─── Deep Cleaning Config ─────────────────────────────────────────────────
+
+export interface DeepCleanConfig {
+  frequencyDays: number;          // how often each room needs deep cleaning (default 90)
+  minutesPerRoom: number;         // time for one deep clean (default 60)
+  targetPerWeek: number;          // ideal rooms to deep clean per week (default 5)
+}
+
+// ─── Deep Clean Room Record ───────────────────────────────────────────────
+
+export interface DeepCleanRecord {
+  id: string;                     // same as room number for easy lookup
+  roomNumber: string;
+  lastDeepClean: string;          // ISO date YYYY-MM-DD
+  cleanedBy?: string;             // staff name
+  notes?: string;
+}
+
 // ─── Laundry Config ────────────────────────────────────────────────────────
 
 export interface LaundryCategory {
