@@ -830,10 +830,21 @@ function ScheduleSection() {
           }}>
             {eligiblePool.filter(s => !selectedCrew.find(c => c.id === s.id)).map(s => (
               <button key={s.id} onClick={() => {
+                const oldId = swapOpenFor!;
+                // Transfer all room assignments from old person to new person
+                setAssignments(a => {
+                  const updated = { ...a };
+                  for (const [roomId, staffId] of Object.entries(updated)) {
+                    if (staffId === oldId) updated[roomId] = s.id;
+                  }
+                  return updated;
+                });
                 setCrewOverride(prev => {
                   const current = prev.length > 0 ? prev : selectedCrew.map(c => c.id);
-                  return current.map(id => id === swapOpenFor ? s.id : id);
+                  return current.map(id => id === oldId ? s.id : id);
                 });
+                const oldName = selectedCrew.find(c => c.id === oldId)?.name ?? '?';
+                showMoveToast(`Replaced ${oldName} with ${s.name}`);
                 setSwapOpenFor(null);
               }} style={{
                 display: 'block', width: '100%', padding: '8px 12px', border: 'none', borderRadius: '8px',
