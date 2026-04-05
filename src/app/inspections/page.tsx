@@ -509,30 +509,17 @@ function EditInspectionModal({ inspection, onClose, onSave, onMarkComplete, onDe
 
         {/* Actions */}
         <div style={{ padding: '0 20px 16px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          {/* Save if changed */}
-          {hasChanges && (
-            <button
-              onClick={() => onSave({ name: name.trim(), dueMonth, frequencyMonths: freq, notes: notes.trim() || undefined })}
-              style={{
-                width: '100%', padding: '12px', borderRadius: 'var(--radius-md)',
-                background: 'var(--navy, #1b3a5c)', color: '#fff', border: 'none',
-                fontSize: '14px', fontWeight: 700, cursor: 'pointer',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
-              }}
-            >
-              <Check size={16} />
-              Save Changes
-            </button>
-          )}
-
-          {/* Mark complete */}
+          {/* Mark as Inspected — always the primary action, also saves pending changes */}
           <button
-            onClick={onMarkComplete}
+            onClick={() => {
+              if (hasChanges) {
+                onSave({ name: name.trim(), dueMonth, frequencyMonths: freq, notes: notes.trim() || undefined });
+              }
+              onMarkComplete();
+            }}
             style={{
               width: '100%', padding: '12px', borderRadius: 'var(--radius-md)',
-              background: hasChanges ? 'rgba(34,197,94,0.08)' : 'var(--navy, #1b3a5c)',
-              color: hasChanges ? '#22c55e' : '#fff',
-              border: hasChanges ? '1px solid rgba(34,197,94,0.3)' : 'none',
+              background: 'var(--navy, #1b3a5c)', color: '#fff', border: 'none',
               fontSize: '14px', fontWeight: 700, cursor: 'pointer',
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
             }}
@@ -540,6 +527,23 @@ function EditInspectionModal({ inspection, onClose, onSave, onMarkComplete, onDe
             <ClipboardCheck size={16} />
             Mark as Inspected
           </button>
+
+          {/* Save without marking — only shows when edits were made */}
+          {hasChanges && (
+            <button
+              onClick={() => onSave({ name: name.trim(), dueMonth, frequencyMonths: freq, notes: notes.trim() || undefined })}
+              style={{
+                width: '100%', padding: '10px', borderRadius: 'var(--radius-md)',
+                background: 'transparent', color: 'var(--navy, #1b3a5c)',
+                border: '1px solid var(--border)',
+                fontSize: '13px', fontWeight: 600, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+              }}
+            >
+              <Check size={14} />
+              Save Changes Only
+            </button>
+          )}
 
           {/* Delete + Cancel row */}
           <div style={{ display: 'flex', gap: '8px' }}>
