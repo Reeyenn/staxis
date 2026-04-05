@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -2259,7 +2260,15 @@ function ImportSection() {
 export default function HousekeepingPage() {
   const [activeTab, setActiveTabState] = useState<TabKey>('rooms');
   const { lang } = useLang();
-  const { activeProperty } = useProperty();
+  const { user, loading: authLoading } = useAuth();
+  const { activeProperty, activePropertyId, loading: propLoading } = useProperty();
+  const router = useRouter();
+
+  // Auth guard — redirect if not logged in or no property
+  useEffect(() => {
+    if (!authLoading && !propLoading && !user) router.replace('/signin');
+    if (!authLoading && !propLoading && user && !activePropertyId) router.replace('/onboarding');
+  }, [user, authLoading, propLoading, activePropertyId, router]);
 
   // Restore tab from localStorage on mount
   useEffect(() => {
@@ -2272,6 +2281,14 @@ export default function HousekeepingPage() {
     setActiveTabState(tab);
     localStorage.setItem('hk-tab', tab);
   };
+
+  if (authLoading || propLoading) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)' }}>
+        <div className="spinner" style={{ width: '32px', height: '32px' }} />
+      </div>
+    );
+  }
 
   return (
     <AppLayout>
