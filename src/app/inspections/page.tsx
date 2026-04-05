@@ -304,21 +304,26 @@ export default function InspectionsPage() {
 
 // ─── Frequency Slider ────────────────────────────────────────────────────────
 
-const FREQ_STOPS = [1, 2, 3, 6, 12, 24];
+// Stops: 1mo, 3mo, 6mo, 12mo (Annual), then Custom at the end
+const FREQ_STOPS = [1, 3, 6, 12]; // last slider position = custom
+const SLIDER_LABELS = ['1mo', '3mo', '6mo', '1yr', 'Custom'];
 
-function freqLabel(months: number): string {
+function freqLabel(months: number, isCustom: boolean): string {
+  if (isCustom) return 'Custom';
   if (months === 1) return 'Monthly';
-  if (months === 2) return 'Every 2 months';
   if (months === 3) return 'Quarterly';
   if (months === 6) return 'Every 6 months';
   if (months === 12) return 'Annual';
-  if (months === 24) return 'Every 2 years';
   return `Every ${months}mo`;
 }
 
 function FrequencySlider({ value, onChange }: { value: number; onChange: (v: number) => void }) {
-  const idx = FREQ_STOPS.indexOf(value);
-  const sliderIdx = idx >= 0 ? idx : 4; // default to 12 if not found
+  const presetIdx = FREQ_STOPS.indexOf(value);
+  const [isCustom, setIsCustom] = useState(presetIdx === -1);
+  const [customValue, setCustomValue] = useState(String(presetIdx === -1 ? value : 18));
+  const sliderIdx = isCustom ? FREQ_STOPS.length : (presetIdx >= 0 ? presetIdx : FREQ_STOPS.length);
+  const maxIdx = FREQ_STOPS.length; // 0-4: 0=1mo, 1=3mo, 2=6mo, 3=12mo, 4=custom
+  const fillPct = (sliderIdx / maxIdx) * 100;
 
   return (
     <div>
@@ -329,37 +334,81 @@ function FrequencySlider({ value, onChange }: { value: number; onChange: (v: num
           Frequency
         </span>
         <span style={{ fontSize: '15px', fontWeight: 700, color: 'var(--navy, #1b3a5c)' }}>
-          {freqLabel(value)}
+          {isCustom ? `Every ${value} months` : freqLabel(value, false)}
         </span>
       </div>
       <input
         type="range"
         min={0}
-        max={FREQ_STOPS.length - 1}
+        max={maxIdx}
         step={1}
         value={sliderIdx}
-        onChange={e => onChange(FREQ_STOPS[parseInt(e.target.value)])}
+        onChange={e => {
+          const i = parseInt(e.target.value);
+          if (i < FREQ_STOPS.length) {
+            setIsCustom(false);
+            onChange(FREQ_STOPS[i]);
+          } else {
+            setIsCustom(true);
+            onChange(parseInt(customValue) || 18);
+          }
+        }}
         style={{
           width: '100%', height: '6px', borderRadius: '99px',
           appearance: 'none', WebkitAppearance: 'none',
-          background: `linear-gradient(to right, var(--navy, #1b3a5c) ${(sliderIdx / (FREQ_STOPS.length - 1)) * 100}%, rgba(0,0,0,0.1) ${(sliderIdx / (FREQ_STOPS.length - 1)) * 100}%)`,
+          background: `linear-gradient(to right, var(--navy, #1b3a5c) ${fillPct}%, rgba(0,0,0,0.1) ${fillPct}%)`,
           outline: 'none', cursor: 'pointer',
         }}
       />
       <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '6px' }}>
-        {FREQ_STOPS.map(s => (
+        {SLIDER_LABELS.map((label, i) => (
           <span
-            key={s}
-            onClick={() => onChange(s)}
+            key={label}
+            onClick={() => {
+              if (i < FREQ_STOPS.length) { setIsCustom(false); onChange(FREQ_STOPS[i]); }
+              else { setIsCustom(true); onChange(parseInt(customValue) || 18); }
+            }}
             style={{
-              fontSize: '10px', color: s === value ? 'var(--navy, #1b3a5c)' : 'var(--text-muted)',
-              fontWeight: s === value ? 700 : 400, cursor: 'pointer', minWidth: '20px', textAlign: 'center',
+              fontSize: '10px',
+              color: i === sliderIdx ? 'var(--navy, #1b3a5c)' : 'var(--text-muted)',
+              fontWeight: i === sliderIdx ? 700 : 400,
+              cursor: 'pointer', minWidth: '20px', textAlign: 'center',
             }}
           >
-            {s}
+            {label}
           </span>
         ))}
       </div>
+
+      {/* Custom input */}
+      {isCustom && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px',
+          padding: '10px 12px', borderRadius: 'var(--radius-md)',
+          border: '1.5px solid var(--border)', background: 'var(--bg)',
+        }}>
+          <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Every</span>
+          <input
+            type="number"
+            min="1"
+            max="120"
+            value={customValue}
+            onChange={e => {
+              setCustomValue(e.target.value);
+              const v = parseInt(e.target.value);
+              if (v && v > 0) onChange(v);
+            }}
+            autoFocus
+            style={{
+              width: '60px', padding: '6px 8px', borderRadius: '6px',
+              border: '2px solid var(--navy, #1b3a5c)', background: 'var(--bg)',
+              fontSize: '16px', fontWeight: 700, fontFamily: 'var(--font-mono)',
+              textAlign: 'center', color: 'var(--navy, #1b3a5c)', outline: 'none',
+            }}
+          />
+          <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>months</span>
+        </div>
+      )}
     </div>
   );
 }
