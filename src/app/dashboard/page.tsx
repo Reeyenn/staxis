@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
@@ -185,6 +185,25 @@ export default function DashboardPage() {
     ? suggestDeepCleans(dndFreedMins, 0, dcConfig, overdueRooms.length)
     : null;
 
+  const avgTurnover = useMemo(() => {
+    const toMs = (v: unknown): number | null => {
+      if (!v) return null;
+      if (typeof (v as { toDate?: () => Date }).toDate === 'function') return (v as { toDate: () => Date }).toDate().getTime();
+      const d = new Date(v as string | number | Date);
+      return isNaN(d.getTime()) ? null : d.getTime();
+    };
+    const timed = rooms
+      .filter(r => r.startedAt && r.completedAt)
+      .map(r => {
+        const s = toMs(r.startedAt);
+        const e = toMs(r.completedAt);
+        if (!s || !e) return 0;
+        return (e - s) / 60000;
+      })
+      .filter(m => m > 0 && m < 480);
+    return timed.length > 0 ? Math.round(timed.reduce((a, b) => a + b, 0) / timed.length) : null;
+  }, [rooms]);
+
   if (authLoading || propLoading) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)' }}>
@@ -223,7 +242,7 @@ export default function DashboardPage() {
         </div>
 
         {/* ── Stat cards - full-width row ── */}
-        <div className="animate-in stagger-1" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '10px' }}>
+        <div className="animate-in stagger-1" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
           <StatCard
             icon={<Users size={16} color="#16A34A" />}
             iconBg="rgba(22,163,74,0.08)"
@@ -251,6 +270,13 @@ export default function DashboardPage() {
             label={t('availableRooms', lang)}
             value={vacant}
             sub={`${total} ${t('total', lang)}`}
+          />
+          <StatCard
+            icon={<Clock size={16} color="var(--navy)" />}
+            iconBg="rgba(27,58,92,0.08)"
+            label={t('avgTurnover', lang)}
+            value={avgTurnover !== null ? `${avgTurnover}m` : '—'}
+            sub={avgTurnover !== null ? `${rooms.filter(r => r.completedAt).length} ${t('roomsCleaned', lang)}` : t('noDataYet', lang)}
           />
           <StatCard
             icon={<Wrench size={16} color={urgentOrders.length > 0 ? '#DC2626' : 'var(--navy)'} />}

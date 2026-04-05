@@ -26,15 +26,17 @@ import {
   Calendar, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, CheckCircle2, Clock,
   AlertTriangle, Users, Send, Zap, BedDouble, Plus, Pencil, Trash2, Star, Check,
   Trophy, TrendingUp, TrendingDown, Minus, Upload, Settings,
+  Search, XCircle,
 } from 'lucide-react';
 
 // ─── Tab config ──────────────────────────────────────────────────────────────
 
-type TabKey = 'rooms' | 'schedule' | 'performance';
+type TabKey = 'rooms' | 'schedule' | 'inspect' | 'performance';
 
 const TABS: { key: TabKey; label: string; labelEs: string }[] = [
   { key: 'rooms',       label: 'Rooms',        labelEs: 'Habitaciones'   },
   { key: 'schedule',    label: 'Schedule',     labelEs: 'Horario'        },
+  { key: 'inspect',     label: 'Inspect',      labelEs: 'Inspeccionar'   },
   { key: 'performance', label: 'Performance',  labelEs: 'Rendimiento'    },
 ];
 
@@ -1968,6 +1970,268 @@ function PublicAreasModal({ show, onClose }: { show: boolean; onClose: () => voi
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// INSPECT SECTION
+// ══════════════════════════════════════════════════════════════════════════════
+
+function InspectSection() {
+  const { user } = useAuth();
+  const { activePropertyId } = useProperty();
+  const { lang } = useLang();
+
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [rejectingId, setRejectingId] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const [toast, setToast] = useState<string | null>(null);
+  const [showInspected, setShowInspected] = useState(false);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const uid = user?.uid ?? '';
+  const pid = activePropertyId ?? '';
+
+  useEffect(() => {
+    if (!uid || !pid) return;
+    return subscribeToRooms(uid, pid, todayStr(), setRooms);
+  }, [uid, pid]);
+
+  useEffect(() => {
+    return () => { if (toastTimer.current) clearTimeout(toastTimer.current); };
+  }, []);
+
+  const cleanRooms = useMemo(() => rooms.filter(r => r.status === 'clean'), [rooms]);
+  const inspectedRooms = useMemo(() => rooms.filter(r => r.status === 'inspected'), [rooms]);
+  const totalToInspect = cleanRooms.length + inspectedRooms.length;
+  const pct = totalToInspect > 0 ? Math.round((inspectedRooms.length / totalToInspect) * 100) : 0;
+
+  const showToast = (msg: string) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast(msg);
+    toastTimer.current = setTimeout(() => setToast(null), 2500);
+  };
+
+  const handleApprove = async (room: Room) => {
+    if (!uid || !pid) return;
+    await updateRoom(uid, pid, room.id, {
+      status: 'inspected',
+      inspectedBy: user?.displayName ?? '',
+      inspectedAt: new Date(),
+    });
+    showToast(`${lang === 'es' ? 'Hab.' : 'Room'} ${room.number} ${lang === 'es' ? 'aprobada' : 'approved'} ✓`);
+  };
+
+  const handleReject = async (room: Room) => {
+    if (!uid || !pid) return;
+    await updateRoom(uid, pid, room.id, {
+      status: 'dirty',
+      issueNote: rejectReason || undefined,
+      inspectedBy: '',
+      inspectedAt: null,
+      startedAt: null,
+      completedAt: null,
+    });
+    setRejectingId(null);
+    setRejectReason('');
+    showToast(`${lang === 'es' ? 'Hab.' : 'Room'} ${room.number} ${t('roomRejected', lang)}`);
+  };
+
+  const getCleanMinutes = (room: Room): number | null => {
+    const s = toDate(room.startedAt);
+    const e = toDate(room.completedAt);
+    if (!s || !e) return null;
+    const mins = Math.round((e.getTime() - s.getTime()) / 60000);
+    return mins > 0 && mins < 480 ? mins : null;
+  };
+
+  return (
+    <div style={{ padding: '20px 16px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+      <div className="animate-in">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Search size={16} color="var(--navy)" />
+            <h2 style={{ fontSize: '17px', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+              {t('inspection', lang)}
+            </h2>
+          </div>
+          <span style={{ fontSize: '14px', fontWeight: 600, color: pct === 100 ? 'var(--green)' : 'var(--text-secondary)' }}>
+            {inspectedRooms.length} / {totalToInspect} {t('inspected', lang).toLowerCase()}
+          </span>
+        </div>
+        {totalToInspect > 0 && (
+          <div role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label={`${pct}% inspected`} style={{ height: '6px', background: '#E5E7EB', borderRadius: '99px', overflow: 'hidden' }}>
+            <div style={{
+              height: '100%', borderRadius: '99px',
+              transition: 'width 600ms cubic-bezier(0.4,0,0.2,1)',
+              width: `${pct}%`,
+              background: pct === 100 ? 'var(--green)' : 'var(--navy)',
+            }} />
+          </div>
+        )}
+      </div>
+
+      {cleanRooms.length === 0 ? (
+        <div className="animate-in stagger-1" style={{
+          textAlign: 'center', padding: '48px 20px',
+          background: 'var(--bg-card)', border: '1px solid var(--border)',
+          borderRadius: 'var(--radius-lg)',
+        }}>
+          <CheckCircle2 size={36} color="var(--green)" style={{ margin: '0 auto 12px' }} />
+          <p style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px' }}>
+            {t('allCaughtUp', lang)}
+          </p>
+        </div>
+      ) : (
+        cleanRooms.map((room, i) => {
+          const cleanMins = getCleanMinutes(room);
+          const isRejecting = rejectingId === room.id;
+          const typeBadge = room.type === 'checkout'
+            ? { label: lang === 'es' ? 'SAL' : 'CO', bg: 'rgba(220,38,38,0.08)', color: '#DC2626' }
+            : room.type === 'stayover'
+            ? { label: lang === 'es' ? 'CON' : 'SO', bg: 'rgba(37,99,235,0.08)', color: '#2563EB' }
+            : { label: lang === 'es' ? 'VAC' : 'VAC', bg: 'rgba(156,163,175,0.08)', color: '#9CA3AF' };
+          return (
+            <div key={room.id} className={`card animate-in stagger-${Math.min(i + 1, 4)}`} style={{ padding: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '20px', color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
+                      {room.number}
+                    </span>
+                    <span style={{
+                      padding: '2px 8px', borderRadius: 'var(--radius-full)',
+                      background: typeBadge.bg, color: typeBadge.color,
+                      fontSize: '11px', fontWeight: 700,
+                    }}>
+                      {typeBadge.label}
+                    </span>
+                  </div>
+                  <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '3px' }}>
+                    {t('cleanedBy', lang)} {room.assignedName || '—'}
+                  </p>
+                </div>
+                {cleanMins !== null && (
+                  <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '18px', color: 'var(--text-secondary)' }}>
+                      {cleanMins}m
+                    </span>
+                    <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '1px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                      {t('cleanTime', lang)}
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {!isRejecting ? (
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    onClick={() => handleApprove(room)}
+                    style={{
+                      flex: 1, padding: '12px', borderRadius: '10px', border: 'none',
+                      background: '#16A34A', color: '#fff', fontWeight: 700, fontSize: '14px',
+                      cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                      minHeight: '48px',
+                    }}
+                  >
+                    <Check size={16} /> {t('approve', lang)}
+                  </button>
+                  <button
+                    onClick={() => { setRejectingId(room.id); setRejectReason(''); }}
+                    style={{
+                      flex: 1, padding: '12px', borderRadius: '10px',
+                      border: '2px solid #DC2626', background: 'transparent',
+                      color: '#DC2626', fontWeight: 700, fontSize: '14px',
+                      cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                      minHeight: '48px',
+                    }}
+                  >
+                    <XCircle size={16} /> {t('reject', lang)}
+                  </button>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input
+                    autoFocus
+                    value={rejectReason}
+                    onChange={e => setRejectReason(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') handleReject(room); }}
+                    placeholder={t('rejectReason', lang)}
+                    style={{
+                      flex: 1, padding: '12px 14px', borderRadius: '10px',
+                      border: '1px solid var(--border)', background: 'var(--bg)',
+                      fontSize: '14px', color: 'var(--text-primary)',
+                      fontFamily: 'var(--font-sans)', outline: 'none', minHeight: '48px',
+                    }}
+                  />
+                  <button
+                    onClick={() => handleReject(room)}
+                    style={{
+                      padding: '12px 20px', borderRadius: '10px', border: 'none',
+                      background: '#DC2626', color: '#fff', fontWeight: 700, fontSize: '14px',
+                      cursor: 'pointer', flexShrink: 0, minHeight: '48px',
+                    }}
+                  >
+                    {t('sendBack', lang)}
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })
+      )}
+
+      {inspectedRooms.length > 0 && (
+        <div className="animate-in stagger-3">
+          <button
+            onClick={() => setShowInspected(!showInspected)}
+            aria-expanded={showInspected}
+            style={{
+              width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '12px 16px', background: 'var(--bg-card)', border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-lg)', cursor: 'pointer', fontFamily: 'var(--font-sans)',
+            }}
+          >
+            <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)' }}>
+              {t('alreadyInspected', lang)} ({inspectedRooms.length})
+            </span>
+            {showInspected ? <ChevronUp size={16} color="var(--text-muted)" /> : <ChevronDown size={16} color="var(--text-muted)" />}
+          </button>
+          {showInspected && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '8px' }}>
+              {inspectedRooms.map(room => (
+                <div key={room.id} style={{
+                  display: 'flex', alignItems: 'center', gap: '10px',
+                  padding: '10px 14px', background: 'var(--bg-card)',
+                  border: '1px solid var(--border)', borderRadius: 'var(--radius-md)',
+                }}>
+                  <CheckCircle2 size={16} color="var(--green)" />
+                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '14px', color: 'var(--text-primary)' }}>
+                    {room.number}
+                  </span>
+                  <span style={{ fontSize: '12px', color: 'var(--text-muted)', flex: 1 }}>
+                    {t('inspectedBy', lang)} {room.inspectedBy || '—'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {toast && (
+        <div style={{
+          position: 'fixed', bottom: '90px', left: '50%', transform: 'translateX(-50%)',
+          background: 'var(--navy)', color: '#fff', padding: '10px 20px',
+          borderRadius: '10px', fontSize: '13px', fontWeight: 600,
+          boxShadow: '0 4px 20px rgba(0,0,0,0.18)', zIndex: 9999,
+          animation: 'toastIn 0.25s ease-out', whiteSpace: 'nowrap',
+        }}>
+          {toast}
+        </div>
+      )}
+      <style>{`@keyframes toastIn { from { opacity: 0; transform: translateX(-50%) translateY(10px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }`}</style>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // PERFORMANCE SECTION
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -2129,6 +2393,8 @@ function PerformanceSection() {
         </>
       )}
 
+      {view === 'live' && <LeaderboardCard rooms={rooms} lang={lang} />}
+
       {/* HISTORY VIEW */}
       {(view === '7d' || view === '14d') && (
         <>
@@ -2193,6 +2459,91 @@ function PerformanceSection() {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+function LeaderboardCard({ rooms, lang }: { rooms: Room[]; lang: 'en' | 'es' }) {
+  const { activeProperty } = useProperty();
+  const checkoutMins = activeProperty?.checkoutMinutes || 30;
+
+  const staffStats = useMemo(() => {
+    const map = new Map<string, { name: string; cleaned: number; totalMinutes: number; inspected: number }>();
+    rooms
+      .filter(r => r.assignedTo && (r.status === 'clean' || r.status === 'inspected' || r.status === 'in_progress'))
+      .forEach(room => {
+        const entry = map.get(room.assignedTo!) ?? { name: room.assignedName ?? 'Unknown', cleaned: 0, totalMinutes: 0, inspected: 0 };
+        if (room.status === 'clean' || room.status === 'inspected') {
+          entry.cleaned++;
+          const s = toDate(room.startedAt);
+          const e = toDate(room.completedAt);
+          if (s && e) {
+            const mins = (e.getTime() - s.getTime()) / 60000;
+            if (mins > 0 && mins < 480) entry.totalMinutes += mins;
+          }
+        }
+        if (room.status === 'inspected') entry.inspected++;
+        map.set(room.assignedTo!, entry);
+      });
+    return Array.from(map.values())
+      .map(s => ({ ...s, avgMinutes: s.cleaned > 0 ? Math.round(s.totalMinutes / s.cleaned) : 0 }))
+      .sort((a, b) => b.cleaned - a.cleaned);
+  }, [rooms]);
+
+  if (staffStats.length === 0) {
+    return (
+      <div className="card animate-in stagger-3" style={{ padding: '20px', textAlign: 'center' }}>
+        <p style={{ fontSize: '13px', color: 'var(--text-muted)', fontWeight: 500 }}>
+          {t('noRoomsCompleted', lang)}
+        </p>
+      </div>
+    );
+  }
+
+  const getAvgColor = (avg: number) => {
+    if (avg <= checkoutMins) return '#22c55e';
+    if (avg <= checkoutMins * 1.5) return '#f59e0b';
+    return '#dc2626';
+  };
+
+  return (
+    <div className="card animate-in stagger-3" style={{ padding: '16px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
+        <Trophy size={16} color="var(--amber)" />
+        <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>
+          {t('leaderboard', lang)}
+        </span>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        {staffStats.map((s, i) => (
+          <div key={s.name} style={{
+            display: 'flex', alignItems: 'center', gap: '10px',
+            padding: '10px 12px', background: i === 0 ? 'rgba(251,191,36,0.06)' : 'rgba(0,0,0,0.02)',
+            borderRadius: 'var(--radius-md)', border: i === 0 ? '1px solid rgba(251,191,36,0.2)' : '1px solid var(--border)',
+          }}>
+            <span style={{
+              fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '13px',
+              color: i === 0 ? '#D97706' : 'var(--text-muted)', width: '24px', textAlign: 'center', flexShrink: 0,
+            }}>
+              {i === 0 ? '🏆' : `#${i + 1}`}
+            </span>
+            <span style={{ flex: 1, fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {s.name}
+            </span>
+            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', flexShrink: 0 }}>
+              {s.cleaned} {t('roomsCleaned', lang)}
+            </span>
+            {s.avgMinutes > 0 && (
+              <span style={{
+                fontFamily: 'var(--font-mono)', fontSize: '12px', fontWeight: 700,
+                color: getAvgColor(s.avgMinutes), flexShrink: 0,
+              }}>
+                {s.avgMinutes}m {t('avgTime', lang)}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -2273,7 +2624,7 @@ export default function HousekeepingPage() {
   // Restore tab from localStorage on mount
   useEffect(() => {
     const saved = localStorage.getItem('hk-tab') as TabKey | null;
-    const valid: TabKey[] = ['rooms', 'schedule', 'performance'];
+    const valid: TabKey[] = ['rooms', 'schedule', 'inspect', 'performance'];
     if (saved && valid.includes(saved)) setActiveTabState(saved);
   }, []);
 
@@ -2310,7 +2661,7 @@ export default function HousekeepingPage() {
         }}>
           {TABS.map(tab => {
             const isActive = activeTab === tab.key;
-            const tabLabelKey = tab.key === 'rooms' ? 'rooms' : tab.key === 'schedule' ? 'scheduling' : 'performance';
+            const tabLabelKey = tab.key === 'rooms' ? 'rooms' : tab.key === 'schedule' ? 'scheduling' : tab.key === 'inspect' ? 'inspect' : 'performance';
             return (
               <button
                 key={tab.key}
@@ -2342,6 +2693,7 @@ export default function HousekeepingPage() {
       {/* ── Section content ── */}
       {activeTab === 'schedule'    && <ScheduleSection />}
       {activeTab === 'rooms'       && <RoomsSection />}
+      {activeTab === 'inspect'     && <InspectSection />}
       {activeTab === 'performance' && <PerformanceSection />}
     </AppLayout>
   );

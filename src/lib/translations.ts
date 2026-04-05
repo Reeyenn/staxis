@@ -186,7 +186,11 @@ type TranslationKey =
   | 'startWork' | 'assignedTo' | 'workOrderSubmitted' | 'openWorkOrders'
   | 'allRoutine' | 'preventiveMaintenance' | 'lastCompleted' | 'never'
   | 'dueToday' | 'addTask' | 'taskName' | 'frequencyDays'
-  | 'noWorkOrders' | 'noPreventiveTasks' | 'justNow';
+  | 'noWorkOrders' | 'noPreventiveTasks' | 'justNow'
+  | 'inspect' | 'inspection' | 'approve' | 'reject' | 'rejectReason'
+  | 'roomApproved' | 'roomRejected' | 'allCaughtUp' | 'alreadyInspected'
+  | 'roomsCleaned' | 'avgTime' | 'noRoomsCompleted' | 'avgTurnover'
+  | 'noDataYet' | 'cleanedBy' | 'cleanTime' | 'sendBack';
 
 const translations: Record<Language, Record<TranslationKey, string>> = {
   en: {
@@ -695,6 +699,23 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     noWorkOrders: 'No work orders yet',
     noPreventiveTasks: 'No preventive tasks yet',
     justNow: 'just now',
+    inspect: 'Inspect',
+    inspection: 'Inspection',
+    approve: 'Approve',
+    reject: 'Reject',
+    rejectReason: 'Reason for rejection',
+    roomApproved: 'Room approved',
+    roomRejected: 'Sent back for re-clean',
+    allCaughtUp: 'All caught up — no rooms waiting for inspection',
+    alreadyInspected: 'Already Inspected',
+    roomsCleaned: 'rooms',
+    avgTime: 'avg',
+    noRoomsCompleted: 'No rooms completed yet today',
+    avgTurnover: 'Avg Turnover',
+    noDataYet: 'no data yet',
+    cleanedBy: 'Cleaned by',
+    cleanTime: 'Clean time',
+    sendBack: 'Send Back',
   },
 
   es: {
@@ -1203,6 +1224,23 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     noWorkOrders: 'Sin órdenes de trabajo',
     noPreventiveTasks: 'Sin tareas preventivas',
     justNow: 'ahora mismo',
+    inspect: 'Inspeccionar',
+    inspection: 'Inspección',
+    approve: 'Aprobar',
+    reject: 'Rechazar',
+    rejectReason: 'Razón del rechazo',
+    roomApproved: 'Habitación aprobada',
+    roomRejected: 'Enviada para re-limpieza',
+    allCaughtUp: 'Todo al día — no hay habitaciones pendientes',
+    alreadyInspected: 'Ya Inspeccionadas',
+    roomsCleaned: 'habitaciones',
+    avgTime: 'prom',
+    noRoomsCompleted: 'Sin habitaciones completadas hoy',
+    avgTurnover: 'Tiempo Promedio',
+    noDataYet: 'sin datos aún',
+    cleanedBy: 'Limpiada por',
+    cleanTime: 'Tiempo de limpieza',
+    sendBack: 'Devolver',
   },
 };
 
