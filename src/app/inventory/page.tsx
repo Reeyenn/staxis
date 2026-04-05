@@ -261,8 +261,27 @@ export default function InventoryPage() {
   useEffect(() => {
     if (!user || !activePropertyId) return;
     let isFirst = true;
+    // Map old categories to new ones (one-time migration)
+    const OLD_TO_NEW: Record<string, InventoryCategory> = {
+      linens: 'housekeeping', towels: 'housekeeping', amenities: 'housekeeping',
+      cleaning: 'housekeeping', other: 'housekeeping',
+    };
+    let migrated = false;
     const unsub = subscribeToInventory(user.uid, activePropertyId, (snapshot) => {
-      setItems(snapshot);
+      // Migrate items with old category values (runs once per mount)
+      if (!migrated) {
+        migrated = true;
+        snapshot.forEach(item => {
+          const mapped = OLD_TO_NEW[item.category];
+          if (mapped) {
+            updateInventoryItem(user.uid, activePropertyId, item.id, { category: mapped });
+          }
+        });
+      }
+      setItems(snapshot.map(item => {
+        const mapped = OLD_TO_NEW[item.category];
+        return mapped ? { ...item, category: mapped } : item;
+      }));
       // Seed defaults on first empty snapshot (seededRef prevents Strict Mode double-fire)
       if (isFirst && snapshot.length === 0 && !seededRef.current) {
         seededRef.current = true;
