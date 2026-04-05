@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
@@ -10,15 +10,16 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import {
   subscribeToRooms, subscribeToShiftConfirmations,
   getDeepCleanConfig, getDeepCleanRecords,
+  subscribeToInventory,
 } from '@/lib/firestore';
+import { computePredictions } from '@/lib/inventory-predictions';
 import { getOverdueRooms, calcDndFreedMinutes, suggestDeepCleans } from '@/lib/calculations';
 import { todayStr } from '@/lib/utils';
-import type { Room, ShiftConfirmation, ConfirmationStatus, DeepCleanConfig, DeepCleanRecord } from '@/types';
-import { format } from 'date-fns';
+import type { Room, ShiftConfirmation, ConfirmationStatus, DeepCleanConfig, DeepCleanRecord, InventoryItem } from '@/types';
 import {
   CheckCircle2, XCircle, Clock, AlertTriangle,
   Users, DollarSign,
-  Sparkles, CircleDot, DoorOpen, Zap,
+  Sparkles, CircleDot, DoorOpen, Zap, Package,
 } from 'lucide-react';
 
 /* ── Room grid helper ── */
@@ -124,6 +125,7 @@ export default function DashboardPage() {
   const [tomorrowConfs, setTomorrowConfs] = useState<ShiftConfirmation[]>([]);
   const [dcConfig, setDcConfig] = useState<DeepCleanConfig | null>(null);
   const [dcRecords, setDcRecords] = useState<DeepCleanRecord[]>([]);
+  const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
 
   const tomorrow = addDays(todayStr(), 1);
 
@@ -153,6 +155,16 @@ export default function DashboardPage() {
       setDcRecords(records);
     });
   }, [user, activePropertyId]);
+
+  // Subscribe to inventory
+  useEffect(() => {
+    if (!user || !activePropertyId) return;
+    return subscribeToInventory(user.uid, activePropertyId, setInventoryItems);
+  }, [user, activePropertyId]);
+
+  const inventoryPredictions = useMemo(() => computePredictions(inventoryItems, []), [inventoryItems]);
+  const criticalInventory = useMemo(() => inventoryPredictions.filter(p => p.reorderUrgency === 'critical').length, [inventoryPredictions]);
+  const belowParCount = useMemo(() => inventoryItems.filter(i => i.currentStock < i.parLevel).length, [inventoryItems]);
 
   const clean      = rooms.filter(r => r.status === 'clean' || r.status === 'inspected').length;
   const inProgress = rooms.filter(r => r.status === 'in_progress').length;
@@ -243,6 +255,23 @@ export default function DashboardPage() {
             sub={`${total} ${t('total', lang)}`}
           />
         </div>
+
+        {/* ── Inventory alert ── */}
+        {(criticalInventory > 0 || belowParCount > 0) && (
+          <div
+            className="animate-in stagger-1"
+            onClick={() => router.push('/inventory')}
+            style={{ cursor: 'pointer' }}
+          >
+            <StatCard
+              icon={<Package size={16} color={criticalInventory > 0 ? '#DC2626' : 'var(--navy)'} />}
+              iconBg={criticalInventory > 0 ? 'rgba(220,38,38,0.08)' : 'rgba(27,58,92,0.08)'}
+              label={t('inventoryLabel', lang)}
+              value={criticalInventory > 0 ? `${criticalInventory} ${t('criticallyLow', lang).toLowerCase()}` : t('allStocked', lang)}
+              sub={`${belowParCount} ${t('belowPar', lang).toLowerCase()}`}
+            />
+          </div>
+        )}
 
         {/* ── Deep Clean Insight Banner ── */}
         {overdueRooms.length > 0 && (

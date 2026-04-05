@@ -131,6 +131,12 @@ export interface InventoryItem {
   unit: string;                 // "sets", "units", "bottles", etc.
   notes?: string;
   updatedAt: Date | null;
+  // Usage prediction fields
+  usagePerCheckout?: number;    // how many of this item used per checkout room
+  usagePerStayover?: number;    // how many used per stayover room
+  reorderLeadDays?: number;     // days before empty to trigger reorder (default 3)
+  vendorName?: string;          // supplier name
+  lastOrderedAt?: Date | null;  // when last ordered
 }
 
 // ─── Shift Handoff Log ─────────────────────────────────────────────────────
