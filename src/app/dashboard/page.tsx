@@ -10,14 +10,15 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import {
   subscribeToRooms, subscribeToShiftConfirmations,
   getDeepCleanConfig, getDeepCleanRecords,
+  subscribeToWorkOrders,
 } from '@/lib/firestore';
 import { getOverdueRooms, calcDndFreedMinutes, suggestDeepCleans } from '@/lib/calculations';
 import { todayStr } from '@/lib/utils';
-import type { Room, ShiftConfirmation, ConfirmationStatus, DeepCleanConfig, DeepCleanRecord } from '@/types';
+import type { Room, ShiftConfirmation, ConfirmationStatus, DeepCleanConfig, DeepCleanRecord, WorkOrder } from '@/types';
 import { format } from 'date-fns';
 import {
   CheckCircle2, XCircle, Clock, AlertTriangle,
-  Users, DollarSign,
+  Users, DollarSign, Wrench,
   Sparkles, CircleDot, DoorOpen, Zap,
 } from 'lucide-react';
 
@@ -124,6 +125,7 @@ export default function DashboardPage() {
   const [tomorrowConfs, setTomorrowConfs] = useState<ShiftConfirmation[]>([]);
   const [dcConfig, setDcConfig] = useState<DeepCleanConfig | null>(null);
   const [dcRecords, setDcRecords] = useState<DeepCleanRecord[]>([]);
+  const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
 
   const tomorrow = addDays(todayStr(), 1);
 
@@ -153,6 +155,14 @@ export default function DashboardPage() {
       setDcRecords(records);
     });
   }, [user, activePropertyId]);
+
+  useEffect(() => {
+    if (!user || !activePropertyId) return;
+    return subscribeToWorkOrders(user.uid, activePropertyId, setWorkOrders);
+  }, [user, activePropertyId]);
+
+  const openOrders = workOrders.filter(o => o.status !== 'resolved');
+  const urgentOrders = openOrders.filter(o => o.severity === 'urgent');
 
   const clean      = rooms.filter(r => r.status === 'clean' || r.status === 'inspected').length;
   const inProgress = rooms.filter(r => r.status === 'in_progress').length;
@@ -213,7 +223,7 @@ export default function DashboardPage() {
         </div>
 
         {/* ── Stat cards - full-width row ── */}
-        <div className="animate-in stagger-1" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
+        <div className="animate-in stagger-1" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '10px' }}>
           <StatCard
             icon={<Users size={16} color="#16A34A" />}
             iconBg="rgba(22,163,74,0.08)"
@@ -241,6 +251,13 @@ export default function DashboardPage() {
             label={t('availableRooms', lang)}
             value={vacant}
             sub={`${total} ${t('total', lang)}`}
+          />
+          <StatCard
+            icon={<Wrench size={16} color={urgentOrders.length > 0 ? '#DC2626' : 'var(--navy)'} />}
+            iconBg={urgentOrders.length > 0 ? 'rgba(220,38,38,0.08)' : 'rgba(27,58,92,0.08)'}
+            label={t('openWorkOrders', lang)}
+            value={openOrders.length}
+            sub={urgentOrders.length > 0 ? `${urgentOrders.length} urgent` : t('allRoutine', lang)}
           />
         </div>
 

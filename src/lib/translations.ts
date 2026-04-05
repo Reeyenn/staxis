@@ -178,7 +178,15 @@ type TranslationKey =
   // ── Header ────────────────────────────────────────────────────────────────
   | 'allProperties'
   // ── Room availability ─────────────────────────────────────────────────────
-  | 'availableRooms' | 'available' | 'roomOccupied';
+  | 'availableRooms' | 'available' | 'roomOccupied'
+  // ── Maintenance page ──────────────────────────────────────────────────────
+  | 'preventive' | 'allFilter' | 'openFilter' | 'urgentFilter' | 'resolvedFilter'
+  | 'submitWorkOrder' | 'severityLow' | 'severityMedium' | 'severityUrgent'
+  | 'statusSubmitted' | 'statusAssigned' | 'statusInProgress' | 'statusResolved'
+  | 'startWork' | 'assignedTo' | 'workOrderSubmitted' | 'openWorkOrders'
+  | 'allRoutine' | 'preventiveMaintenance' | 'lastCompleted' | 'never'
+  | 'dueToday' | 'addTask' | 'taskName' | 'frequencyDays'
+  | 'noWorkOrders' | 'noPreventiveTasks' | 'justNow';
 
 const translations: Record<Language, Record<TranslationKey, string>> = {
   en: {
@@ -658,6 +666,35 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     availableRooms: 'Available Rooms',
     available: 'Available',
     roomOccupied: 'Occupied',
+    // ── Maintenance page ──
+    preventive: 'Preventive',
+    allFilter: 'All',
+    openFilter: 'Open',
+    urgentFilter: 'Urgent',
+    resolvedFilter: 'Resolved',
+    submitWorkOrder: 'Submit Work Order',
+    severityLow: 'Low',
+    severityMedium: 'Medium',
+    severityUrgent: 'Urgent',
+    statusSubmitted: 'New',
+    statusAssigned: 'Assigned',
+    statusInProgress: 'In Progress',
+    statusResolved: 'Resolved',
+    startWork: 'Start Work',
+    assignedTo: 'Assigned to',
+    workOrderSubmitted: 'Work order submitted',
+    openWorkOrders: 'Open Work Orders',
+    allRoutine: 'all routine',
+    preventiveMaintenance: 'Preventive Maintenance',
+    lastCompleted: 'Last completed',
+    never: 'Never',
+    dueToday: 'Due today',
+    addTask: 'Add Task',
+    taskName: 'Task name',
+    frequencyDays: 'Frequency (days)',
+    noWorkOrders: 'No work orders yet',
+    noPreventiveTasks: 'No preventive tasks yet',
+    justNow: 'just now',
   },
 
   es: {
@@ -1137,6 +1174,35 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     availableRooms: 'Hab. Disponibles',
     available: 'Disponible',
     roomOccupied: 'Ocupada',
+    // ── Maintenance page ──
+    preventive: 'Preventivo',
+    allFilter: 'Todos',
+    openFilter: 'Abiertos',
+    urgentFilter: 'Urgentes',
+    resolvedFilter: 'Resueltos',
+    submitWorkOrder: 'Enviar Orden',
+    severityLow: 'Baja',
+    severityMedium: 'Media',
+    severityUrgent: 'Urgente',
+    statusSubmitted: 'Nueva',
+    statusAssigned: 'Asignada',
+    statusInProgress: 'En Progreso',
+    statusResolved: 'Resuelta',
+    startWork: 'Iniciar',
+    assignedTo: 'Asignada a',
+    workOrderSubmitted: 'Orden de trabajo enviada',
+    openWorkOrders: 'Órdenes Abiertas',
+    allRoutine: 'todo rutina',
+    preventiveMaintenance: 'Mantenimiento Preventivo',
+    lastCompleted: 'Último completado',
+    never: 'Nunca',
+    dueToday: 'Vence hoy',
+    addTask: 'Agregar Tarea',
+    taskName: 'Nombre de la tarea',
+    frequencyDays: 'Frecuencia (días)',
+    noWorkOrders: 'Sin órdenes de trabajo',
+    noPreventiveTasks: 'Sin tareas preventivas',
+    justNow: 'ahora mismo',
   },
 };
 

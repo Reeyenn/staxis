@@ -57,3 +57,17 @@ export const FLOOR_LABELS_ES: Record<string, string> = {
 export function getFloorLabel(floor: string, lang: 'en' | 'es' = 'en'): string {
   return lang === 'es' ? FLOOR_LABELS_ES[floor] ?? floor : FLOOR_LABELS[floor] ?? floor;
 }
+
+export function timeAgo(date: Date | null | undefined): string {
+  if (!date) return '';
+  const now = Date.now();
+  const d = date instanceof Date ? date.getTime() : new Date(date as unknown as string).getTime();
+  const seconds = Math.floor((now - d) / 1000);
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
