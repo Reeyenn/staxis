@@ -47,19 +47,6 @@ export function BottomNav() {
                 minHeight: '52px',
               }}
             >
-              {/* Active indicator dot */}
-              {isActive && (
-                <div style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: '50%',
-                  transform: 'translateX(-50%)',
-                  width: '4px',
-                  height: '2px',
-                  borderRadius: '0 0 2px 2px',
-                  background: 'var(--navy)',
-                }} />
-              )}
 
               <Icon
                 size={22}
