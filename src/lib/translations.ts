@@ -100,6 +100,7 @@ type TranslationKey =
   | 'priorityOrder' | 'vipCheckout' | 'earlyCheckout' | 'standardCheckout' | 'vipStayover' | 'standardStayover'
   // Housekeeper room view & ops-wall
   | 'doNotDisturb' | 'dnd' | 'needsCleaning' | 'startCleaning' | 'markDone'
+  | 'markDnd' | 'removeDnd' | 'needHelp' | 'helpSentMsg' | 'helpAlertSent'
   // Guest requests
   | 'pending' | 'doneToday' | 'assign' | 'unassigned'
   // Ops-wall
@@ -434,6 +435,11 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     // Housekeeper room view & ops-wall
     doNotDisturb: 'Do Not Disturb',
     dnd: 'DND',
+    markDnd: 'Mark DND',
+    removeDnd: 'Remove DND',
+    needHelp: 'Need Help',
+    helpSentMsg: 'Help request sent!',
+    helpAlertSent: 'Help Alert Sent',
     needsCleaning: 'Needs Cleaning',
     startCleaning: 'Start Cleaning',
     markDone: 'Mark Done',
@@ -908,6 +914,11 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     // Housekeeper room view & ops-wall
     doNotDisturb: 'No Molestar',
     dnd: 'NM',
+    markDnd: 'Marcar NM',
+    removeDnd: 'Quitar NM',
+    needHelp: 'Necesito Ayuda',
+    helpSentMsg: '¡Solicitud de ayuda enviada!',
+    helpAlertSent: 'Alerta Enviada',
     needsCleaning: 'Necesita Limpieza',
     startCleaning: 'Iniciar Limpieza',
     markDone: 'Marcar Listo',

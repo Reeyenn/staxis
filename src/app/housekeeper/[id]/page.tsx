@@ -58,6 +58,9 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   const [issueRoomId, setIssueRoomId] = useState<string | null>(null);
   const [issueNote, setIssueNote] = useState('');
   const [savingIssue, setSavingIssue] = useState(false);
+  const [savingDnd, setSavingDnd] = useState<string | null>(null);
+  const [helpSent, setHelpSent] = useState<Set<string>>(new Set());
+  const [savingHelp, setSavingHelp] = useState<string | null>(null);
 
   // Load saved language preference from staffPrefs on mount so the page
   // auto-displays in Spanish for HKs who replied ESPAÑOL to a text.
@@ -149,6 +152,40 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       console.error('[housekeeper] finish room error:', err);
     } finally {
       setSavingRoomId(null);
+    }
+  };
+
+  // ── Toggle DND on a room ────────────────────────────────────────────────────
+  const handleToggleDnd = async (room: RoomWithRef) => {
+    setSavingDnd(room.id);
+    try {
+      const newDnd = !room.isDnd;
+      await updateDoc(room._ref, {
+        isDnd: newDnd,
+        ...(newDnd ? { dndNote: `Marked DND by housekeeper at ${new Date().toLocaleTimeString()}` } : { dndNote: '' }),
+      });
+    } catch (err) {
+      console.error('[housekeeper] toggle DND error:', err);
+    } finally {
+      setSavingDnd(null);
+    }
+  };
+
+  // ── Need Help - alert Maria ───────────────────────────────────────────────
+  const handleNeedHelp = async (room: RoomWithRef) => {
+    if (helpSent.has(room.id)) return; // already sent for this room
+    setSavingHelp(room.id);
+    try {
+      await updateDoc(room._ref, {
+        helpRequested: true,
+        helpRequestedAt: Timestamp.now(),
+        helpRequestedBy: housekeeperId,
+      });
+      setHelpSent(prev => new Set(prev).add(room.id));
+    } catch (err) {
+      console.error('[housekeeper] help request error:', err);
+    } finally {
+      setSavingHelp(null);
     }
   };
 
@@ -299,12 +336,17 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
               lang={lang}
               index={idx + 1}
               isSaving={savingRoomId === room.id}
+              isSavingDnd={savingDnd === room.id}
+              isSavingHelp={savingHelp === room.id}
+              helpAlreadySent={helpSent.has(room.id)}
               onStart={() => handleStartRoom(room)}
               onFinish={() => handleFinishRoom(room)}
               onReportIssue={() => {
                 setIssueRoomId(room.id);
                 setIssueNote((room as Room & { issueNote?: string }).issueNote ?? '');
               }}
+              onToggleDnd={() => handleToggleDnd(room)}
+              onNeedHelp={() => handleNeedHelp(room)}
             />
           ))
         )}
@@ -404,17 +446,27 @@ function RoomCard({
   lang,
   index,
   isSaving,
+  isSavingDnd,
+  isSavingHelp,
+  helpAlreadySent,
   onStart,
   onFinish,
   onReportIssue,
+  onToggleDnd,
+  onNeedHelp,
 }: {
   room: RoomWithRef;
   lang: Language;
   index: number;
   isSaving: boolean;
+  isSavingDnd: boolean;
+  isSavingHelp: boolean;
+  helpAlreadySent: boolean;
   onStart: () => void;
   onFinish: () => void;
   onReportIssue: () => void;
+  onToggleDnd: () => void;
+  onNeedHelp: () => void;
 }) {
   const isDone = room.status === 'clean' || room.status === 'inspected';
   const isInProgress = room.status === 'in_progress';
@@ -511,21 +563,47 @@ function RoomCard({
           )}
         </div>
 
-        <button
-          onClick={onReportIssue}
-          style={{
-            width: '40px', height: '40px',
-            border: '1.5px solid #E5E7EB',
-            borderRadius: '10px', background: 'transparent',
-            cursor: 'pointer', flexShrink: 0,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            opacity: 0.6,
-            WebkitTapHighlightColor: 'transparent',
-          }}
-          aria-label={lang === 'es' ? 'Reportar problema' : 'Report issue'}
-        >
-          <AlertTriangle size={17} color="#6B7280" />
-        </button>
+        <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+          {/* DND toggle button */}
+          {!isDone && (
+            <button
+              onClick={onToggleDnd}
+              disabled={isSavingDnd}
+              style={{
+                width: '40px', height: '40px',
+                border: `1.5px solid ${room.isDnd ? '#F59E0B' : '#E5E7EB'}`,
+                borderRadius: '10px',
+                background: room.isDnd ? '#FEF3C7' : 'transparent',
+                cursor: isSavingDnd ? 'not-allowed' : 'pointer',
+                flexShrink: 0,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                opacity: isSavingDnd ? 0.4 : room.isDnd ? 1 : 0.6,
+                WebkitTapHighlightColor: 'transparent',
+                transition: 'all 150ms ease',
+              }}
+              aria-label={room.isDnd ? t('removeDnd', lang) : t('markDnd', lang)}
+            >
+              <span style={{ fontSize: '16px', lineHeight: 1 }}>🚫</span>
+            </button>
+          )}
+
+          {/* Report issue button */}
+          <button
+            onClick={onReportIssue}
+            style={{
+              width: '40px', height: '40px',
+              border: '1.5px solid #E5E7EB',
+              borderRadius: '10px', background: 'transparent',
+              cursor: 'pointer', flexShrink: 0,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              opacity: 0.6,
+              WebkitTapHighlightColor: 'transparent',
+            }}
+            aria-label={lang === 'es' ? 'Reportar problema' : 'Report issue'}
+          >
+            <AlertTriangle size={17} color="#6B7280" />
+          </button>
+        </div>
       </div>
 
       {/* Issue note */}
@@ -563,6 +641,40 @@ function RoomCard({
         <HoldToFinishButton lang={lang} isSaving={isSaving} onFinish={onFinish} />
       ) : (
         <StartButton lang={lang} isSaving={isSaving} onStart={onStart} />
+      )}
+
+      {/* ── Need Help button — visible when in progress ── */}
+      {isInProgress && (
+        <button
+          onClick={onNeedHelp}
+          disabled={isSavingHelp || helpAlreadySent}
+          style={{
+            width: '100%', height: '48px', marginTop: '8px',
+            border: helpAlreadySent ? '2px solid #86EFAC' : '2px solid #FCA5A5',
+            borderRadius: '12px',
+            background: helpAlreadySent ? '#F0FDF4' : isSavingHelp ? '#FEE2E2' : '#FEF2F2',
+            color: helpAlreadySent ? '#16A34A' : '#DC2626',
+            fontSize: '16px', fontWeight: 700,
+            cursor: isSavingHelp || helpAlreadySent ? 'not-allowed' : 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+            WebkitTapHighlightColor: 'transparent',
+            transition: 'all 150ms ease',
+          }}
+        >
+          {helpAlreadySent ? (
+            <>
+              <CheckCircle size={18} color="#16A34A" />
+              {t('helpAlertSent', lang)}
+            </>
+          ) : isSavingHelp ? (
+            t('savingDots', lang)
+          ) : (
+            <>
+              <span style={{ fontSize: '18px' }}>🆘</span>
+              {t('needHelp', lang)}
+            </>
+          )}
+        </button>
       )}
     </div>
   );
