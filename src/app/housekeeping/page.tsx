@@ -407,25 +407,32 @@ function ScheduleSection() {
     return eligiblePool;
   }, [crewOverride, eligiblePool, recommendedStaff, totalRooms, staff]);
 
-  // Auto-assign rooms when crew or rooms change
+  // Auto-assign: full assign on first load, then only assign unassigned rooms on crew changes
   const manuallyAdded = useRef<Set<string>>(new Set());
+  const hasInitialAssign = useRef(false);
   useEffect(() => {
-    if (assignableRooms.length === 0 || selectedCrew.length === 0) { setAssignments({}); return; }
-    const fakeScheduled = selectedCrew.map(s => ({ ...s, scheduledToday: true }));
-    const auto = autoAssignRooms(assignableRooms, fakeScheduled, {
-      checkoutMinutes: coMins, stayoverMinutes: soMins, prepMinutesPerRoom: prepPerRoom, shiftMinutes: shiftLen,
-    });
-    setAssignments(auto);
+    if (assignableRooms.length === 0 || selectedCrew.length === 0) { setAssignments({}); hasInitialAssign.current = false; return; }
 
-    // Only auto-remove staff with 0 rooms if they weren't manually added
-    const assignedStaffIds = new Set(Object.values(auto));
-    const emptyStaff = selectedCrew.filter(s => !assignedStaffIds.has(s.id) && !manuallyAdded.current.has(s.id));
-    if (emptyStaff.length > 0) {
-      setCrewOverride(prev => {
-        const current = prev.length > 0 ? prev : selectedCrew.map(s => s.id);
-        return current.filter(id => assignedStaffIds.has(id) || manuallyAdded.current.has(id));
+    if (!hasInitialAssign.current) {
+      // First time: full auto-assign
+      const fakeScheduled = selectedCrew.map(s => ({ ...s, scheduledToday: true }));
+      const auto = autoAssignRooms(assignableRooms, fakeScheduled, {
+        checkoutMinutes: coMins, stayoverMinutes: soMins, prepMinutesPerRoom: prepPerRoom, shiftMinutes: shiftLen,
       });
+      setAssignments(auto);
+      hasInitialAssign.current = true;
+
+      // Auto-remove staff with 0 rooms (unless manually added)
+      const assignedStaffIds = new Set(Object.values(auto));
+      const emptyStaff = selectedCrew.filter(s => !assignedStaffIds.has(s.id) && !manuallyAdded.current.has(s.id));
+      if (emptyStaff.length > 0) {
+        setCrewOverride(prev => {
+          const current = prev.length > 0 ? prev : selectedCrew.map(s => s.id);
+          return current.filter(id => assignedStaffIds.has(id) || manuallyAdded.current.has(id));
+        });
+      }
     }
+    // On subsequent crew changes, don't re-assign — let unassigned rooms stay unassigned
   }, [selectedCrew, assignableRooms, coMins, soMins, prepPerRoom, shiftLen]);
 
   const toggleCrewMember = (memberId: string) => {
@@ -433,6 +440,14 @@ function ScheduleSection() {
       const current = prev.length > 0 ? prev : selectedCrew.map(s => s.id);
       if (current.includes(memberId)) {
         manuallyAdded.current.delete(memberId);
+        // Unassign this person's rooms (move to unassigned pool)
+        setAssignments(a => {
+          const updated = { ...a };
+          for (const [roomId, staffId] of Object.entries(updated)) {
+            if (staffId === memberId) delete updated[roomId];
+          }
+          return updated;
+        });
         return current.filter(id => id !== memberId);
       } else {
         manuallyAdded.current.add(memberId);
@@ -463,10 +478,23 @@ function ScheduleSection() {
     return { rooms: staffRooms, mins };
   };
 
+  // Unassigned rooms (not assigned to any current crew member)
+  const unassignedRooms = useMemo(() => {
+    const crewIds = new Set(selectedCrew.map(s => s.id));
+    return assignableRooms.filter(r => !assignments[r.id] || !crewIds.has(assignments[r.id]));
+  }, [assignableRooms, assignments, selectedCrew]);
+
+  const unassignedRef = useRef<HTMLDivElement | null>(null);
+
   // ── Drag-and-drop via Pointer Events (mouse + touch) ──
   const DRAG_THRESHOLD = 8;
 
   const findDropTarget = useCallback((x: number, y: number): string | null => {
+    // Check unassigned box first
+    if (unassignedRef.current) {
+      const r = unassignedRef.current.getBoundingClientRect();
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return '__unassigned__';
+    }
     for (const [staffId, el] of Object.entries(crewCardRefs.current)) {
       if (!el) continue;
       const r = el.getBoundingClientRect();
@@ -514,10 +542,16 @@ function ScheduleSection() {
       setDragState(prev => {
         if (prev?.dropTarget && prev.roomId) {
           const fromStaffId = assignments[prev.roomId];
-          if (fromStaffId !== prev.dropTarget) {
+          if (prev.dropTarget === '__unassigned__') {
+            // Move to unassigned
+            if (fromStaffId) {
+              setAssignments(a => { const updated = { ...a }; delete updated[prev.roomId]; return updated; });
+              const fromName = selectedCrew.find(s => s.id === fromStaffId)?.name ?? '?';
+              showMoveToast(`Moved ${prev.roomNumber} from ${fromName} to Unassigned`);
+            }
+          } else if (fromStaffId !== prev.dropTarget) {
             setAssignments(a => ({ ...a, [prev.roomId]: prev.dropTarget! }));
-            // Show toast — we need staff names so we look them up from selectedCrew
-            const fromName = selectedCrew.find(s => s.id === fromStaffId)?.name ?? '?';
+            const fromName = fromStaffId ? (selectedCrew.find(s => s.id === fromStaffId)?.name ?? '?') : 'Unassigned';
             const toName = selectedCrew.find(s => s.id === prev.dropTarget)?.name ?? '?';
             showMoveToast(`Moved ${prev.roomNumber} from ${fromName} to ${toName}`);
           }
@@ -581,6 +615,55 @@ function ScheduleSection() {
           </>
         )}
       </div>
+
+      {/* ── Unassigned rooms box ── */}
+      {!predictionLoading && totalRooms > 0 && (
+        <div
+          ref={unassignedRef}
+          style={{
+            background: dragState?.dropTarget === '__unassigned__' ? 'rgba(37,99,235,0.06)' : 'var(--bg-card)',
+            border: dragState?.dropTarget === '__unassigned__' ? '2px dashed #2563EB' : '1.5px dashed var(--border)',
+            borderRadius: '14px', padding: '12px 16px',
+            transition: 'all 0.15s',
+            minHeight: '48px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: unassignedRooms.length > 0 ? '10px' : '0' }}>
+            <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-secondary)' }}>
+              {lang === 'es' ? 'Sin asignar' : 'Unassigned'}
+            </span>
+            <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+              {unassignedRooms.length} {lang === 'es' ? 'habitaciones' : 'rooms'}
+            </span>
+          </div>
+          {unassignedRooms.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+              {unassignedRooms.map(room => (
+                <button
+                  key={room.id}
+                  onPointerDown={e => onPillPointerDown(e, room)}
+                  onPointerMove={onPillPointerMove}
+                  onPointerUp={e => { onPillPointerUp(e); }}
+                  style={{
+                    padding: '6px 10px 4px', lineHeight: 1,
+                    background: room.type === 'checkout' ? '#FEF2F2' : '#F0F9FF',
+                    border: room.type === 'checkout' ? '1.5px solid #FECACA' : '1.5px solid #BAE6FD',
+                    borderRadius: '6px', cursor: 'grab',
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1px',
+                    opacity: dragState?.roomId === room.id ? 0.3 : 1,
+                    touchAction: 'none',
+                  }}
+                >
+                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '13px', color: 'var(--text-primary)' }}>{room.number}</span>
+                  <span style={{ fontSize: '8px', fontWeight: 600, color: room.type === 'checkout' ? '#DC2626' : '#0284C7', letterSpacing: '0.02em' }}>
+                    {room.type === 'checkout' ? 'C' : 'S'}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── STEP 2: Crew list ── */}
       {!predictionLoading && totalRooms > 0 && (
