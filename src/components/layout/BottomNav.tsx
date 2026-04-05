@@ -5,13 +5,14 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
-import { LayoutDashboard, BedDouble, Wrench, Settings } from 'lucide-react';
+import { LayoutDashboard, BedDouble, Wrench, Package, Settings } from 'lucide-react';
 
 const navItems = [
-  { href: '/dashboard',    icon: LayoutDashboard, key: 'dashboard'    as const },
-  { href: '/housekeeping', icon: BedDouble,        key: 'housekeeping' as const },
-  { href: '/maintenance',  icon: Wrench,           key: 'maintenance'  as const },
-  { href: '/settings',     icon: Settings,         key: 'settings'     as const },
+  { href: '/dashboard',    icon: LayoutDashboard, key: 'dashboard'        as const },
+  { href: '/housekeeping', icon: BedDouble,        key: 'housekeeping'     as const },
+  { href: '/maintenance',  icon: Wrench,           key: 'maintenance'      as const },
+  { href: '/inventory',    icon: Package,           key: 'inventoryTracking' as const },
+  { href: '/settings',     icon: Settings,         key: 'settings'         as const },
 ];
 
 export function BottomNav() {
