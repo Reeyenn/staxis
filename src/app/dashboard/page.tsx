@@ -449,46 +449,54 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* ── Est. Labor Cost (by department) ── */}
-        <div className="animate-in stagger-1">
-          <p style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: '8px' }}>
-            {t('estLaborCost', lang)}
-          </p>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
-            {(() => {
-              const wage = activeProperty?.hourlyWage || 12;
-              const hkStaff = rooms.length > 0 ? Math.ceil(rooms.length / 15) : 1;
-              const hkCost = Math.round(hkStaff * wage * 8);
-              const fdCost = Math.round(2 * wage * 8); // typically 2 front desk per shift
-              const mtCost = Math.round(1 * wage * 8); // typically 1 maintenance
-              return (
-                <>
-                  <StatCard
-                    icon={<DollarSign size={16} color="#0891b2" />}
-                    iconBg="rgba(8,145,178,0.08)"
-                    label={t('frontDeskLabor', lang)}
-                    value={`$${fdCost}`}
-                    sub={t('today', lang)}
-                  />
-                  <StatCard
-                    icon={<DollarSign size={16} color="#CA8A04" />}
-                    iconBg="rgba(202,138,4,0.08)"
-                    label={t('housekeepingLabor', lang)}
-                    value={`$${hkCost}`}
-                    sub={`${hkStaff} staff`}
-                  />
-                  <StatCard
-                    icon={<DollarSign size={16} color="#6b7280" />}
-                    iconBg="rgba(107,114,128,0.08)"
-                    label={t('maintenanceLabor', lang)}
-                    value={`$${mtCost}`}
-                    sub={t('today', lang)}
-                  />
-                </>
-              );
-            })()}
-          </div>
-        </div>
+        {/* ── Est. Labor Cost (single card, 3 depts + total) ── */}
+        {(() => {
+          const wage = activeProperty?.hourlyWage || 12;
+          const hkStaff = rooms.length > 0 ? Math.ceil(rooms.length / 15) : 1;
+          const hkCost = Math.round(hkStaff * wage * 8);
+          const fdCost = Math.round(2 * wage * 8);
+          const mtCost = Math.round(1 * wage * 8);
+          const totalCost = fdCost + hkCost + mtCost;
+          const depts = [
+            { label: t('frontDeskLabor', lang), cost: fdCost, color: '#0891b2', staffLabel: '2 staff' },
+            { label: t('housekeepingLabor', lang), cost: hkCost, color: '#CA8A04', staffLabel: `${hkStaff} staff` },
+            { label: t('maintenanceLabor', lang), cost: mtCost, color: '#6b7280', staffLabel: '1 staff' },
+          ];
+          return (
+            <div className="animate-in stagger-1 card" style={{ padding: '16px 18px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
+                <div style={{ width: '36px', height: '36px', borderRadius: '10px', background: 'rgba(202,138,4,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <DollarSign size={16} color="#CA8A04" />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <p style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)' }}>{t('estLaborCost', lang)}</p>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '22px', lineHeight: 1, letterSpacing: '-0.03em', color: 'var(--text-primary)' }}>
+                    ${totalCost}
+                  </div>
+                  <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>{t('today', lang)}</p>
+                </div>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {depts.map(dept => (
+                  <div key={dept.label} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', borderRadius: 'var(--radius-md)', background: 'rgba(0,0,0,0.02)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: dept.color, flexShrink: 0 }} />
+                      <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-primary)' }}>{dept.label}</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{dept.staffLabel}</span>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '14px', color: 'var(--text-primary)', minWidth: '50px', textAlign: 'right' }}>
+                        ${dept.cost}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
 
         {/* ── Deep Clean Insight Banner ── */}
         {overdueRooms.length > 0 && (
