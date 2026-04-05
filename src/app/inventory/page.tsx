@@ -266,19 +266,29 @@ export default function InventoryPage() {
       linens: 'housekeeping', towels: 'housekeeping', amenities: 'housekeeping',
       cleaning: 'housekeeping', other: 'housekeeping',
     };
+    // Items that should be in specific categories based on name
+    const NAME_CATEGORY: Record<string, InventoryCategory> = {
+      'Coffee Pods': 'breakfast',
+      'Light Bulbs (LED)': 'maintenance',
+      'HVAC Filters': 'maintenance',
+    };
     let migrated = false;
     const unsub = subscribeToInventory(user.uid, activePropertyId, (snapshot) => {
       // Migrate items with old category values (runs once per mount)
       if (!migrated) {
         migrated = true;
         snapshot.forEach(item => {
+          const nameOverride = NAME_CATEGORY[item.name];
           const mapped = OLD_TO_NEW[item.category];
-          if (mapped) {
-            updateInventoryItem(user.uid, activePropertyId, item.id, { category: mapped });
+          const newCat = nameOverride && item.category !== nameOverride ? nameOverride : mapped;
+          if (newCat) {
+            updateInventoryItem(user.uid, activePropertyId, item.id, { category: newCat });
           }
         });
       }
       setItems(snapshot.map(item => {
+        const nameOverride = NAME_CATEGORY[item.name];
+        if (nameOverride && item.category !== nameOverride) return { ...item, category: nameOverride };
         const mapped = OLD_TO_NEW[item.category];
         return mapped ? { ...item, category: mapped } : item;
       }));
