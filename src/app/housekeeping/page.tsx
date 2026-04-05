@@ -711,7 +711,7 @@ function ScheduleSection() {
                         overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left',
                       }}
                     >
-                      {member.name} <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>▾</span>
+                      {member.name}
                     </button>
                   </div>
                   {/* 2x2 stats grid to the right of name */}
