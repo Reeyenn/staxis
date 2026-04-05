@@ -39,39 +39,62 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser && !firebaseUser.isAnonymous) {
-        const stored = typeof window !== 'undefined'
-          ? localStorage.getItem(ACCOUNT_KEY)
-          : null;
+    let resolved = false;
 
-        if (stored) {
-          try {
-            const account = JSON.parse(stored) as AppUser;
-            if (account.uid === firebaseUser.uid) {
-              setUser(account);
-            } else {
-              // UID mismatch - stale session, clear it
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      resolved = true;
+      try {
+        if (firebaseUser && !firebaseUser.isAnonymous) {
+          const stored = typeof window !== 'undefined'
+            ? localStorage.getItem(ACCOUNT_KEY)
+            : null;
+
+          if (stored) {
+            try {
+              const account = JSON.parse(stored) as AppUser;
+              if (account.uid === firebaseUser.uid) {
+                setUser(account);
+              } else {
+                // UID mismatch - stale session, clear it
+                localStorage.removeItem(ACCOUNT_KEY);
+                await firebaseSignOut(auth);
+                setUser(null);
+              }
+            } catch {
               localStorage.removeItem(ACCOUNT_KEY);
-              await firebaseSignOut(auth);
               setUser(null);
             }
-          } catch {
-            localStorage.removeItem(ACCOUNT_KEY);
+          } else {
+            // Firebase session exists with no account info - sign out
+            await firebaseSignOut(auth);
             setUser(null);
           }
         } else {
-          // Firebase session exists with no account info - sign out
-          await firebaseSignOut(auth);
+          // null or anonymous user - not a manager session
           setUser(null);
         }
-      } else {
-        // null or anonymous user - not a manager session
+      } catch (err) {
+        console.error('AuthContext: onAuthStateChanged error', err);
         setUser(null);
       }
       setLoading(false);
     });
-    return unsubscribe;
+
+    // Safety timeout: if onAuthStateChanged never fires (e.g. broken IndexedDB,
+    // Firebase SDK hang), force loading to false after 4 seconds so the sign-in
+    // form is still usable.
+    const timeout = setTimeout(() => {
+      if (!resolved) {
+        console.warn('AuthContext: onAuthStateChanged did not fire within 4s — forcing loading=false');
+        setUser(null);
+        setLoading(false);
+      }
+    }, 4000);
+
+    return () => {
+      unsubscribe();
+      clearTimeout(timeout);
+    };
   }, []);
 
   const signIn = async (username: string, password: string): Promise<string | null> => {

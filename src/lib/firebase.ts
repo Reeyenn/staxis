@@ -25,6 +25,7 @@ export const auth = getAuth(app);
 // read and write room data without an internet connection. Writes are queued
 // locally and automatically synced when the connection returns.
 // On the server (SSR/API routes) we fall back to in-memory storage.
+// Falls back gracefully if persistent cache fails (e.g. corrupted IndexedDB).
 export const db = (() => {
   if (typeof window !== 'undefined') {
     try {
@@ -33,8 +34,10 @@ export const db = (() => {
           tabManager: persistentMultipleTabManager(),
         }),
       });
-    } catch {
-      // Firestore was already initialized (e.g. Next.js HMR) - reuse it.
+    } catch (e) {
+      // Firestore was already initialized (e.g. Next.js HMR), or persistent
+      // cache setup failed (corrupted IndexedDB) - reuse default instance.
+      console.warn('Firestore: falling back to default instance', e);
       return getFirestore(app);
     }
   }
