@@ -862,13 +862,13 @@ function AddItemModal({ isOpen, onClose, uid, pid, lang, onAdded }: {
       <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
         <div>
           <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
-            {t('name', lang)} *
+            Item Name *
           </label>
           <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Bath Towels" style={inputStyle} />
         </div>
         <div>
           <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
-            {t('type', lang)}
+            Category
           </label>
           <select value={category} onChange={e => setCategory(e.target.value as InventoryCategory)} style={{ ...inputStyle, cursor: 'pointer' }}>
             <option value="housekeeping">{t('housekeepingCategory', lang)}</option>
@@ -879,42 +879,22 @@ function AddItemModal({ isOpen, onClose, uid, pid, lang, onAdded }: {
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
           <div>
             <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
-              {t('currentStock', lang)}
+              In Stock
             </label>
             <input type="number" min="0" value={stock} onChange={e => setStock(e.target.value)} style={inputStyle} />
           </div>
           <div>
             <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
-              {t('parLevel', lang)}
+              Target Stock
             </label>
             <input type="number" min="0" value={parLevel} onChange={e => setParLevel(e.target.value)} style={inputStyle} />
           </div>
           <div>
             <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
-              {t('unitLabel', lang)}
+              Unit
             </label>
             <input value={unit} onChange={e => setUnit(e.target.value)} placeholder="units" style={inputStyle} />
           </div>
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-          <div>
-            <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
-              {t('usagePerCheckout', lang)}
-            </label>
-            <input type="number" step="0.1" min="0" value={usageCheckout} onChange={e => setUsageCheckout(e.target.value)} style={inputStyle} />
-          </div>
-          <div>
-            <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
-              {t('usagePerStayover', lang)}
-            </label>
-            <input type="number" step="0.1" min="0" value={usageStayover} onChange={e => setUsageStayover(e.target.value)} style={inputStyle} />
-          </div>
-        </div>
-        <div>
-          <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
-            {t('vendor', lang)} ({t('optional', lang)})
-          </label>
-          <input value={vendor} onChange={e => setVendor(e.target.value)} placeholder="e.g. HD Supply" style={inputStyle} />
         </div>
         <button
           onClick={handleSubmit}
