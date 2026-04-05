@@ -179,6 +179,20 @@ type TranslationKey =
   | 'allProperties'
   // ── Room availability ─────────────────────────────────────────────────────
   | 'availableRooms' | 'available' | 'roomOccupied'
+  // ── Inventory tracking ────────────────────────────────────────────────────
+  | 'inventoryTracking' | 'parLevel' | 'currentStock' | 'belowPar' | 'atPar'
+  | 'criticallyLow' | 'addItem' | 'itemAdded' | 'noInventoryItems'
+  | 'allCategories' | 'linens' | 'towelsCategory' | 'amenitiesCategory'
+  | 'cleaningCategory' | 'maintenanceCategory' | 'otherCategory'
+  | 'unitLabel' | 'stockUpdated' | 'allStocked'
+  | 'overview' | 'reorderList' | 'usageSettings'
+  | 'burningPerDay' | 'emptyInDays' | 'orderNow' | 'orderSoon'
+  | 'suggestedOrder' | 'copyReorderList' | 'copiedToClipboard'
+  | 'usagePerCheckout' | 'usagePerStayover' | 'reorderLeadDays'
+  | 'vendor' | 'configureUsageRates' | 'needsOrderingNow'
+  | 'allStockedUp' | 'covers2Weeks' | 'avgCheckoutsPerDay' | 'setUsageRates'
+  | 'totalItems' | 'pastReorderWindow' | 'criticalOrderToday' | 'empty'
+  | 'usageSettingsDesc'
   // ── Maintenance page ──────────────────────────────────────────────────────
   | 'preventive' | 'allFilter' | 'openFilter' | 'urgentFilter' | 'resolvedFilter'
   | 'submitWorkOrder' | 'severityLow' | 'severityMedium' | 'severityUrgent'
@@ -670,6 +684,51 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     availableRooms: 'Available Rooms',
     available: 'Available',
     roomOccupied: 'Occupied',
+    // ── Inventory tracking ──
+    inventoryTracking: 'Inventory',
+    parLevel: 'Par Level',
+    currentStock: 'Current Stock',
+    belowPar: 'Below Par',
+    atPar: 'At Par',
+    criticallyLow: 'Critically Low',
+    addItem: 'Add Item',
+    itemAdded: 'Item added',
+    noInventoryItems: 'No inventory items yet',
+    allCategories: 'All',
+    linens: 'Linens',
+    towelsCategory: 'Towels',
+    amenitiesCategory: 'Amenities',
+    cleaningCategory: 'Cleaning',
+    maintenanceCategory: 'Maintenance',
+    otherCategory: 'Other',
+    unitLabel: 'Unit',
+    stockUpdated: 'Stock updated',
+    allStocked: 'All stocked',
+    overview: 'Overview',
+    reorderList: 'Reorder List',
+    usageSettings: 'Usage Settings',
+    burningPerDay: 'Using ~{0}/day',
+    emptyInDays: 'Empty in {0} days',
+    orderNow: 'ORDER NOW',
+    orderSoon: 'Order soon',
+    suggestedOrder: 'Suggested order',
+    copyReorderList: 'Copy Reorder List',
+    copiedToClipboard: 'Copied to clipboard',
+    usagePerCheckout: 'Per checkout room',
+    usagePerStayover: 'Per stayover room',
+    reorderLeadDays: 'Reorder lead days',
+    vendor: 'Vendor',
+    configureUsageRates: 'Set usage rates for predictions',
+    needsOrderingNow: 'items need ordering NOW',
+    allStockedUp: 'All stocked up — nothing needs ordering',
+    covers2Weeks: 'covers 2 weeks',
+    avgCheckoutsPerDay: 'Avg Checkouts/day',
+    setUsageRates: 'Set usage rates →',
+    totalItems: 'Total Items',
+    pastReorderWindow: 'already past reorder window',
+    criticalOrderToday: 'CRITICAL — order today',
+    empty: 'Empty',
+    usageSettingsDesc: 'Set how many of each item are used per checkout and stayover room. The system uses these rates combined with your daily room counts to predict when you\'ll run out.',
     // ── Maintenance page ──
     preventive: 'Preventive',
     allFilter: 'All',
@@ -1195,6 +1254,51 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     availableRooms: 'Hab. Disponibles',
     available: 'Disponible',
     roomOccupied: 'Ocupada',
+    // ── Inventory tracking ──
+    inventoryTracking: 'Inventario',
+    parLevel: 'Nivel Mínimo',
+    currentStock: 'Stock Actual',
+    belowPar: 'Bajo Mínimo',
+    atPar: 'En Nivel',
+    criticallyLow: 'Críticamente Bajo',
+    addItem: 'Agregar Artículo',
+    itemAdded: 'Artículo agregado',
+    noInventoryItems: 'Sin artículos de inventario',
+    allCategories: 'Todos',
+    linens: 'Sábanas',
+    towelsCategory: 'Toallas',
+    amenitiesCategory: 'Amenidades',
+    cleaningCategory: 'Limpieza',
+    maintenanceCategory: 'Mantenimiento',
+    otherCategory: 'Otro',
+    unitLabel: 'Unidad',
+    stockUpdated: 'Stock actualizado',
+    allStocked: 'Todo abastecido',
+    overview: 'Resumen',
+    reorderList: 'Lista de Pedidos',
+    usageSettings: 'Configuración de Uso',
+    burningPerDay: 'Consumo ~{0}/día',
+    emptyInDays: 'Vacío en {0} días',
+    orderNow: 'PEDIR AHORA',
+    orderSoon: 'Pedir pronto',
+    suggestedOrder: 'Pedido sugerido',
+    copyReorderList: 'Copiar Lista',
+    copiedToClipboard: 'Copiado al portapapeles',
+    usagePerCheckout: 'Por habitación checkout',
+    usagePerStayover: 'Por habitación stayover',
+    reorderLeadDays: 'Días de anticipación',
+    vendor: 'Proveedor',
+    configureUsageRates: 'Configure tasas de uso',
+    needsOrderingNow: 'artículos necesitan pedido YA',
+    allStockedUp: 'Todo abastecido',
+    covers2Weeks: 'cubre 2 semanas',
+    avgCheckoutsPerDay: 'Promedio Checkouts/día',
+    setUsageRates: 'Configurar tasas →',
+    totalItems: 'Artículos',
+    pastReorderWindow: 'ya pasó la ventana de pedido',
+    criticalOrderToday: 'CRÍTICO — pedir hoy',
+    empty: 'Vacío',
+    usageSettingsDesc: 'Configure cuánto de cada artículo se usa por tipo de habitación. El sistema usa estas tasas junto con los conteos diarios para predecir cuándo se agotarán.',
     // ── Maintenance page ──
     preventive: 'Preventivo',
     allFilter: 'Todos',
