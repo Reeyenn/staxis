@@ -182,8 +182,7 @@ type TranslationKey =
   // ── Inventory tracking ────────────────────────────────────────────────────
   | 'inventoryTracking' | 'parLevel' | 'currentStock' | 'belowPar' | 'atPar'
   | 'criticallyLow' | 'addItem' | 'itemAdded' | 'noInventoryItems'
-  | 'allCategories' | 'linens' | 'towelsCategory' | 'amenitiesCategory'
-  | 'cleaningCategory' | 'maintenanceCategory' | 'otherCategory'
+  | 'allCategories' | 'housekeepingCategory' | 'maintenanceCategory' | 'breakfastFbCategory'
   | 'unitLabel' | 'stockUpdated' | 'allStocked'
   | 'overview' | 'reorderList' | 'usageSettings'
   | 'burningPerDay' | 'emptyInDays' | 'orderNow' | 'orderSoon'
@@ -695,12 +694,9 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     itemAdded: 'Item added',
     noInventoryItems: 'No inventory items yet',
     allCategories: 'All',
-    linens: 'Linens',
-    towelsCategory: 'Towels',
-    amenitiesCategory: 'Amenities',
-    cleaningCategory: 'Cleaning',
+    housekeepingCategory: 'Housekeeping',
     maintenanceCategory: 'Maintenance',
-    otherCategory: 'Other',
+    breakfastFbCategory: 'Breakfast/F&B',
     unitLabel: 'Unit',
     stockUpdated: 'Stock updated',
     allStocked: 'All stocked',
@@ -1265,12 +1261,9 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     itemAdded: 'Artículo agregado',
     noInventoryItems: 'Sin artículos de inventario',
     allCategories: 'Todos',
-    linens: 'Sábanas',
-    towelsCategory: 'Toallas',
-    amenitiesCategory: 'Amenidades',
-    cleaningCategory: 'Limpieza',
+    housekeepingCategory: 'Limpieza',
     maintenanceCategory: 'Mantenimiento',
-    otherCategory: 'Otro',
+    breakfastFbCategory: 'Desayuno/Alimentos',
     unitLabel: 'Unidad',
     stockUpdated: 'Stock actualizado',
     allStocked: 'Todo abastecido',

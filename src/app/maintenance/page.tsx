@@ -374,129 +374,182 @@ export default function MaintenancePage() {
                 </p>
               </div>
             ) : (
-              filteredOrders.map(order => {
-                const isExpanded = expandedId === order.id;
-                const sev = SEVERITY_STYLE[order.severity];
-                const stat = STATUS_STYLE[order.status];
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                {filteredOrders.map(order => {
+                  const isExpanded = expandedId === order.id;
+                  const sev = SEVERITY_STYLE[order.severity];
+                  const stat = STATUS_STYLE[order.status];
 
-                return (
-                  <div
-                    key={order.id}
-                    className="card"
-                    style={{ padding: '14px 16px', cursor: 'pointer', transition: 'box-shadow 150ms' }}
-                    onClick={() => setExpandedId(isExpanded ? null : order.id)}
-                  >
-                    {/* Top row: severity + time */}
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-                      <span style={{
-                        fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em',
-                        padding: '3px 8px', borderRadius: 'var(--radius-full)',
-                        background: sev.bg, color: sev.color,
-                      }}>
-                        {sevLabel(order.severity)}
-                      </span>
-                      <span style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                        <Clock size={11} />
-                        {timeAgo(toJsDate(order.createdAt))}
-                      </span>
-                    </div>
-
-                    {/* Room number */}
-                    {order.roomNumber && (
-                      <p style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '15px', color: 'var(--text-primary)', marginBottom: '4px' }}>
-                        {lang === 'es' ? 'Hab' : 'Room'} {order.roomNumber}
-                      </p>
-                    )}
-
-                    {/* Description */}
-                    <p style={{
-                      fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.4, marginBottom: '10px',
-                      ...(isExpanded ? {} : { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as const, overflow: 'hidden' }),
-                    }}>
-                      {order.description}
-                    </p>
-
-                    {/* Bottom row: assignee + status */}
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                      <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                        {order.assignedName ? `${t('assignedTo', lang)}: ${order.assignedName}` : t('unassigned', lang)}
-                      </span>
-                      <span style={{
-                        fontSize: '11px', fontWeight: 600,
-                        padding: '3px 10px', borderRadius: 'var(--radius-full)',
-                        background: stat.bg, color: stat.color,
-                      }}>
-                        {statusLabel(order.status)}
-                      </span>
-                    </div>
-
-                    {/* Expand chevron */}
-                    <div style={{ display: 'flex', justifyContent: 'center', marginTop: '6px' }}>
-                      {isExpanded ? <ChevronUp size={14} color="var(--text-muted)" /> : <ChevronDown size={14} color="var(--text-muted)" />}
-                    </div>
-
-                    {/* Expanded details */}
-                    {isExpanded && (
-                      <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: '10px' }}
-                        onClick={e => e.stopPropagation()}
+                  return (
+                    <div key={order.id}>
+                      {/* Compact row */}
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          padding: '8px 12px',
+                          borderBottom: '1px solid var(--border)',
+                          cursor: 'pointer',
+                          transition: 'background 150ms',
+                          background: isExpanded ? 'rgba(0, 0, 0, 0.02)' : 'transparent',
+                          minHeight: '52px',
+                        }}
+                        onClick={() => setExpandedId(isExpanded ? null : order.id)}
                       >
-                        {order.notes && (
-                          <p style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                            <strong>{t('workOrderNotes', lang)}:</strong> {order.notes}
-                          </p>
-                        )}
-                        {order.submittedByName && (
-                          <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                            {t('submittedBy', lang)}: {order.submittedByName}
-                          </p>
-                        )}
-                        <div style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                          {order.createdAt && <span>Created: {formatShortDate(toJsDate(order.createdAt))}</span>}
-                          {order.updatedAt && <span>Updated: {formatShortDate(toJsDate(order.updatedAt))}</span>}
-                          {order.resolvedAt && <span>Resolved: {formatShortDate(toJsDate(order.resolvedAt))}</span>}
+                        {/* Severity badge - small colored dot */}
+                        <div
+                          style={{
+                            width: '8px',
+                            height: '8px',
+                            borderRadius: '50%',
+                            background: sev.bg,
+                            flexShrink: 0,
+                          }}
+                          title={sevLabel(order.severity)}
+                        />
+
+                        {/* Room number + description */}
+                        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                          <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+                            {order.roomNumber && (
+                              <span style={{
+                                fontFamily: 'var(--font-mono)',
+                                fontWeight: 700,
+                                fontSize: '13px',
+                                color: 'var(--text-primary)',
+                                flexShrink: 0,
+                              }}>
+                                {lang === 'es' ? 'Hab' : 'Room'} {order.roomNumber}
+                              </span>
+                            )}
+                            <p style={{
+                              fontSize: '12px',
+                              color: 'var(--text-muted)',
+                              lineHeight: 1.3,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                              margin: 0,
+                            }}>
+                              {order.description}
+                            </p>
+                          </div>
+                          {order.assignedName && (
+                            <span style={{
+                              fontSize: '11px',
+                              color: 'var(--text-muted)',
+                            }}>
+                              {order.assignedName}
+                            </span>
+                          )}
                         </div>
 
-                        {/* Action buttons */}
-                        {order.status === 'submitted' && (
-                          <div style={{ position: 'relative' }}>
-                            <button
-                              onClick={() => setAssigningId(assigningId === order.id ? null : order.id)}
-                              className="btn"
-                              style={{
-                                width: '100%', padding: '10px', fontSize: '13px', fontWeight: 600,
-                                background: 'var(--navy)', color: '#fff', border: 'none',
-                                borderRadius: 'var(--radius-md)', cursor: 'pointer',
-                                minHeight: '44px',
-                              }}
-                            >
-                              {t('assign', lang)}
-                            </button>
-                            {assigningId === order.id && (
-                              <div style={{
-                                marginTop: '6px', borderRadius: 'var(--radius-md)',
-                                border: '1px solid var(--border)', background: 'var(--bg-card)',
-                                maxHeight: '180px', overflowY: 'auto',
-                              }}>
-                                {assignableStaff.length === 0 ? (
-                                  <p style={{ padding: '12px', fontSize: '12px', color: 'var(--text-muted)', textAlign: 'center' }}>
-                                    {t('noStaff', lang)}
-                                  </p>
-                                ) : (
-                                  assignableStaff.map(member => (
-                                    <button
-                                      key={member.id}
-                                      onClick={() => handleAssign(order, member)}
-                                      style={{
-                                        width: '100%', padding: '10px 14px', border: 'none',
-                                        background: 'transparent', cursor: 'pointer',
-                                        textAlign: 'left', fontSize: '13px', color: 'var(--text-primary)',
-                                        borderBottom: '1px solid var(--border)',
-                                        minHeight: '44px',
-                                      }}
-                                    >
-                                      {member.name}
-                                      {member.department && (
-                                        <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginLeft: '8px' }}>
+                        {/* Status badge */}
+                        <span style={{
+                          fontSize: '11px',
+                          fontWeight: 600,
+                          padding: '2px 8px',
+                          borderRadius: 'var(--radius-full)',
+                          background: stat.bg,
+                          color: stat.color,
+                          flexShrink: 0,
+                          whiteSpace: 'nowrap',
+                        }}>
+                          {statusLabel(order.status)}
+                        </span>
+
+                        {/* Time */}
+                        <span style={{
+                          fontSize: '11px',
+                          color: 'var(--text-muted)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '3px',
+                          flexShrink: 0,
+                          whiteSpace: 'nowrap',
+                        }}>
+                          <Clock size={10} />
+                          {timeAgo(toJsDate(order.createdAt))}
+                        </span>
+
+                        {/* Expand chevron */}
+                        <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>
+                          {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                        </span>
+                      </div>
+
+                      {/* Expanded details - separate row */}
+                      {isExpanded && (
+                        <div
+                          style={{
+                            padding: '12px',
+                            paddingLeft: '24px',
+                            borderBottom: '1px solid var(--border)',
+                            background: 'rgba(0, 0, 0, 0.02)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '10px',
+                          }}
+                          onClick={e => e.stopPropagation()}
+                        >
+                          {order.notes && (
+                            <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: 0 }}>
+                              <strong>{t('workOrderNotes', lang)}:</strong> {order.notes}
+                            </p>
+                          )}
+                          {order.submittedByName && (
+                            <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: 0 }}>
+                              {t('submittedBy', lang)}: {order.submittedByName}
+                            </p>
+                          )}
+                          <div style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                            {order.createdAt && <span>Created: {formatShortDate(toJsDate(order.createdAt))}</span>}
+                            {order.updatedAt && <span>Updated: {formatShortDate(toJsDate(order.updatedAt))}</span>}
+                            {order.resolvedAt && <span>Resolved: {formatShortDate(toJsDate(order.resolvedAt))}</span>}
+                          </div>
+
+                          {/* Action buttons */}
+                          {order.status === 'submitted' && (
+                            <div style={{ position: 'relative' }}>
+                              <button
+                                onClick={() => setAssigningId(assigningId === order.id ? null : order.id)}
+                                className="btn"
+                                style={{
+                                  width: '100%', padding: '10px', fontSize: '13px', fontWeight: 600,
+                                  background: 'var(--navy)', color: '#fff', border: 'none',
+                                  borderRadius: 'var(--radius-md)', cursor: 'pointer',
+                                  minHeight: '44px',
+                                }}
+                              >
+                                {t('assign', lang)}
+                              </button>
+                              {assigningId === order.id && (
+                                <div style={{
+                                  marginTop: '6px', borderRadius: 'var(--radius-md)',
+                                  border: '1px solid var(--border)', background: 'var(--bg-card)',
+                                  maxHeight: '180px', overflowY: 'auto',
+                                }}>
+                                  {assignableStaff.length === 0 ? (
+                                    <p style={{ padding: '12px', fontSize: '12px', color: 'var(--text-muted)', textAlign: 'center' }}>
+                                      {t('noStaff', lang)}
+                                    </p>
+                                  ) : (
+                                    assignableStaff.map(member => (
+                                      <button
+                                        key={member.id}
+                                        onClick={() => handleAssign(order, member)}
+                                        style={{
+                                          width: '100%', padding: '10px 14px', border: 'none',
+                                          background: 'transparent', cursor: 'pointer',
+                                          textAlign: 'left', fontSize: '13px', color: 'var(--text-primary)',
+                                          borderBottom: '1px solid var(--border)',
+                                          minHeight: '44px',
+                                        }}
+                                      >
+                                        {member.name}
+                                        {member.department && (
+                                          <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginLeft: '8px' }}>
                                           {member.department}
                                         </span>
                                       )}
@@ -539,9 +592,10 @@ export default function MaintenancePage() {
                         )}
                       </div>
                     )}
-                  </div>
-                );
-              })
+                    </div>
+                  );
+                })}
+              </div>
             )}
           </div>
         ) : (

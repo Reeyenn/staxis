@@ -30,14 +30,11 @@ const TABS: { key: TabKey; icon: React.ReactNode; labelKey: 'overview' | 'reorde
   { key: 'settings', icon: <Settings2 size={14} />, labelKey: 'usageSettings' },
 ];
 
-const CATEGORIES: { key: InventoryCategory | 'all'; labelKey: 'allCategories' | 'linens' | 'towelsCategory' | 'amenitiesCategory' | 'cleaningCategory' | 'maintenanceCategory' | 'otherCategory' }[] = [
+const CATEGORIES: { key: InventoryCategory | 'all'; labelKey: 'allCategories' | 'housekeepingCategory' | 'maintenanceCategory' | 'breakfastFbCategory' }[] = [
   { key: 'all', labelKey: 'allCategories' },
-  { key: 'linens', labelKey: 'linens' },
-  { key: 'towels', labelKey: 'towelsCategory' },
-  { key: 'amenities', labelKey: 'amenitiesCategory' },
-  { key: 'cleaning', labelKey: 'cleaningCategory' },
+  { key: 'housekeeping', labelKey: 'housekeepingCategory' },
   { key: 'maintenance', labelKey: 'maintenanceCategory' },
-  { key: 'other', labelKey: 'otherCategory' },
+  { key: 'breakfast', labelKey: 'breakfastFbCategory' },
 ];
 
 const URGENCY_COLORS: Record<ItemPrediction['reorderUrgency'], string> = {
@@ -48,20 +45,19 @@ const URGENCY_COLORS: Record<ItemPrediction['reorderUrgency'], string> = {
 };
 
 const DEFAULTS: Omit<InventoryItem, 'id' | 'updatedAt' | 'propertyId'>[] = [
-  { name: 'King Sheets', category: 'linens', currentStock: 0, parLevel: 80, unit: 'sets', usagePerCheckout: 1, usagePerStayover: 0, reorderLeadDays: 5, vendorName: '' },
-  { name: 'Queen Sheets', category: 'linens', currentStock: 0, parLevel: 120, unit: 'sets', usagePerCheckout: 1, usagePerStayover: 0, reorderLeadDays: 5, vendorName: '' },
-  { name: 'Pillowcases', category: 'linens', currentStock: 0, parLevel: 200, unit: 'units', usagePerCheckout: 2, usagePerStayover: 0, reorderLeadDays: 5, vendorName: '' },
-  { name: 'Bath Towels', category: 'towels', currentStock: 0, parLevel: 200, unit: 'units', usagePerCheckout: 3, usagePerStayover: 0.5, reorderLeadDays: 3, vendorName: '' },
-  { name: 'Hand Towels', category: 'towels', currentStock: 0, parLevel: 200, unit: 'units', usagePerCheckout: 2, usagePerStayover: 0.3, reorderLeadDays: 3, vendorName: '' },
-  { name: 'Washcloths', category: 'towels', currentStock: 0, parLevel: 200, unit: 'units', usagePerCheckout: 2, usagePerStayover: 0.3, reorderLeadDays: 3, vendorName: '' },
-  { name: 'Bath Mats', category: 'towels', currentStock: 0, parLevel: 100, unit: 'units', usagePerCheckout: 1, usagePerStayover: 0, reorderLeadDays: 3, vendorName: '' },
-  { name: 'Shampoo', category: 'amenities', currentStock: 0, parLevel: 150, unit: 'bottles', usagePerCheckout: 1, usagePerStayover: 0.3, reorderLeadDays: 3, vendorName: '' },
-  { name: 'Conditioner', category: 'amenities', currentStock: 0, parLevel: 150, unit: 'bottles', usagePerCheckout: 1, usagePerStayover: 0.2, reorderLeadDays: 3, vendorName: '' },
-  { name: 'Body Wash', category: 'amenities', currentStock: 0, parLevel: 150, unit: 'bottles', usagePerCheckout: 1, usagePerStayover: 0.3, reorderLeadDays: 3, vendorName: '' },
-  { name: 'Coffee Pods', category: 'amenities', currentStock: 0, parLevel: 200, unit: 'pods', usagePerCheckout: 2, usagePerStayover: 1, reorderLeadDays: 3, vendorName: '' },
-  { name: 'All-Purpose Cleaner', category: 'cleaning', currentStock: 0, parLevel: 24, unit: 'bottles', usagePerCheckout: 0.02, usagePerStayover: 0.01, reorderLeadDays: 5, vendorName: '' },
-  { name: 'Glass Cleaner', category: 'cleaning', currentStock: 0, parLevel: 12, unit: 'bottles', usagePerCheckout: 0.01, usagePerStayover: 0.005, reorderLeadDays: 5, vendorName: '' },
-  { name: 'Trash Liners (Large)', category: 'cleaning', currentStock: 0, parLevel: 500, unit: 'bags', usagePerCheckout: 2, usagePerStayover: 1, reorderLeadDays: 3, vendorName: '' },
+  { name: 'King Sheets', category: 'housekeeping', currentStock: 0, parLevel: 80, unit: 'sets', usagePerCheckout: 1, usagePerStayover: 0, reorderLeadDays: 5, vendorName: '' },
+  { name: 'Queen Sheets', category: 'housekeeping', currentStock: 0, parLevel: 120, unit: 'sets', usagePerCheckout: 1, usagePerStayover: 0, reorderLeadDays: 5, vendorName: '' },
+  { name: 'Bath Towels', category: 'housekeeping', currentStock: 0, parLevel: 200, unit: 'units', usagePerCheckout: 3, usagePerStayover: 0.5, reorderLeadDays: 3, vendorName: '' },
+  { name: 'Hand Towels', category: 'housekeeping', currentStock: 0, parLevel: 200, unit: 'units', usagePerCheckout: 2, usagePerStayover: 0.3, reorderLeadDays: 3, vendorName: '' },
+  { name: 'Washcloths', category: 'housekeeping', currentStock: 0, parLevel: 200, unit: 'units', usagePerCheckout: 2, usagePerStayover: 0.3, reorderLeadDays: 3, vendorName: '' },
+  { name: 'Bath Mats', category: 'housekeeping', currentStock: 0, parLevel: 100, unit: 'units', usagePerCheckout: 1, usagePerStayover: 0, reorderLeadDays: 3, vendorName: '' },
+  { name: 'Shampoo', category: 'housekeeping', currentStock: 0, parLevel: 150, unit: 'bottles', usagePerCheckout: 1, usagePerStayover: 0.3, reorderLeadDays: 3, vendorName: '' },
+  { name: 'Conditioner', category: 'housekeeping', currentStock: 0, parLevel: 150, unit: 'bottles', usagePerCheckout: 1, usagePerStayover: 0.2, reorderLeadDays: 3, vendorName: '' },
+  { name: 'Body Wash', category: 'housekeeping', currentStock: 0, parLevel: 150, unit: 'bottles', usagePerCheckout: 1, usagePerStayover: 0.3, reorderLeadDays: 3, vendorName: '' },
+  { name: 'All-Purpose Cleaner', category: 'housekeeping', currentStock: 0, parLevel: 24, unit: 'bottles', usagePerCheckout: 0.02, usagePerStayover: 0.01, reorderLeadDays: 5, vendorName: '' },
+  { name: 'Glass Cleaner', category: 'housekeeping', currentStock: 0, parLevel: 12, unit: 'bottles', usagePerCheckout: 0.01, usagePerStayover: 0.005, reorderLeadDays: 5, vendorName: '' },
+  { name: 'Trash Liners (Large)', category: 'housekeeping', currentStock: 0, parLevel: 500, unit: 'bags', usagePerCheckout: 2, usagePerStayover: 1, reorderLeadDays: 3, vendorName: '' },
+  { name: 'Coffee Pods', category: 'breakfast', currentStock: 0, parLevel: 200, unit: 'pods', usagePerCheckout: 2, usagePerStayover: 1, reorderLeadDays: 3, vendorName: '' },
   { name: 'Light Bulbs (LED)', category: 'maintenance', currentStock: 0, parLevel: 50, unit: 'bulbs', usagePerCheckout: 0, usagePerStayover: 0, reorderLeadDays: 7, vendorName: '' },
   { name: 'HVAC Filters', category: 'maintenance', currentStock: 0, parLevel: 10, unit: 'filters', usagePerCheckout: 0, usagePerStayover: 0, reorderLeadDays: 14, vendorName: '' },
 ];
@@ -137,138 +133,98 @@ function ItemCard({
   const hasBurnRate = dailyBurnRate > 0;
 
   const categoryLabel = {
-    linens: t('linens', lang),
-    towels: t('towelsCategory', lang),
-    amenities: t('amenitiesCategory', lang),
-    cleaning: t('cleaningCategory', lang),
+    housekeeping: t('housekeepingCategory', lang),
     maintenance: t('maintenanceCategory', lang),
-    other: t('otherCategory', lang),
+    breakfast: t('breakfastFbCategory', lang),
   }[item.category];
 
   return (
     <div
-      className="card"
       style={{
-        padding: '16px 16px 14px',
-        borderLeft: `3px solid ${color}`,
-        display: 'flex', flexDirection: 'column', gap: '10px',
+        display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px',
+        borderBottom: '1px solid var(--border)',
+        minHeight: '48px',
       }}
     >
-      {/* Header row */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
-          <span style={{
-            width: '8px', height: '8px', borderRadius: '50%',
-            background: color, flexShrink: 0,
-          }} />
-          <span style={{
-            fontWeight: 700, fontSize: '14px', color: 'var(--text-primary)',
-            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          }}>
-            {item.name}
-          </span>
-        </div>
+      {/* Name + category badge */}
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
         <span style={{
-          fontSize: '10px', fontWeight: 600, textTransform: 'uppercase',
-          letterSpacing: '0.04em', color: 'var(--text-muted)',
-          padding: '2px 8px', background: 'rgba(0,0,0,0.04)', borderRadius: 'var(--radius-full)',
-          flexShrink: 0,
+          width: '6px', height: '6px', borderRadius: '50%',
+          background: color, flexShrink: 0,
+        }} />
+        <span style={{
+          fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>
+          {item.name}
+        </span>
+        <span style={{
+          fontSize: '9px', fontWeight: 700, textTransform: 'uppercase',
+          letterSpacing: '0.06em', color: 'var(--text-muted)',
+          padding: '1px 6px', background: 'rgba(0,0,0,0.06)', borderRadius: 'var(--radius-full)',
+          flexShrink: 0, whiteSpace: 'nowrap',
         }}>
           {categoryLabel}
         </span>
       </div>
 
-      {/* Stock bar */}
-      <div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-          <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-            {t('currentStock', lang)}: <strong>{item.currentStock}</strong> / {item.parLevel} {item.unit}
-          </span>
-        </div>
-        <ProgressBar value={item.currentStock} max={item.parLevel} color={color} label={`${item.name} stock: ${item.currentStock} of ${item.parLevel}`} />
+      {/* Stock fraction */}
+      <span style={{ fontSize: '11px', fontWeight: 600, fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', whiteSpace: 'nowrap', minWidth: '50px', textAlign: 'right' }}>
+        {item.currentStock}/{item.parLevel}
+      </span>
+
+      {/* Thin progress bar */}
+      <div style={{ width: '60px', height: '4px', background: 'rgba(0,0,0,0.08)', borderRadius: '99px', overflow: 'hidden', flexShrink: 0 }}>
+        <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: '99px', transition: 'width 400ms ease' }} />
       </div>
 
-      {/* Burn rate info */}
-      {hasBurnRate ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-          <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-            🔥 {t('burningPerDay', lang).replace('{0}', String(dailyBurnRate))}
-            {daysUntilEmpty !== null && (
-              <span style={{ marginLeft: '8px' }}>
-                · {daysUntilEmpty <= 0
-                  ? <strong style={{ color: '#dc2626' }}>{t('orderNow', lang)}</strong>
-                  : t('emptyInDays', lang).replace('{0}', String(daysUntilEmpty))
-                }
-              </span>
-            )}
-          </span>
-          {reorderUrgency === 'critical' && (
-            <span style={{ fontSize: '11px', fontWeight: 600, color: '#dc2626' }}>
-              ⚠️ {t('orderNow', lang)} — {t('pastReorderWindow', lang)}
-            </span>
-          )}
-          {reorderUrgency === 'soon' && (
-            <span style={{ fontSize: '11px', fontWeight: 600, color: '#f59e0b' }}>
-              {t('orderSoon', lang)}
-            </span>
-          )}
-        </div>
-      ) : (
-        <button
-          onClick={onGoSettings}
-          style={{
-            fontSize: '12px', color: 'var(--navy)', fontWeight: 500,
-            background: 'none', border: 'none', cursor: 'pointer',
-            padding: 0, textAlign: 'left',
-          }}
-        >
-          {t('setUsageRates', lang)}
-        </button>
+      {/* Burn rate inline */}
+      {hasBurnRate && (
+        <span style={{ fontSize: '11px', color: 'var(--text-secondary)', whiteSpace: 'nowrap', minWidth: '80px' }}>
+          {reorderUrgency === 'critical' && <span style={{ color: '#dc2626', fontWeight: 600 }}>⚠️ Critical</span>}
+          {reorderUrgency === 'soon' && <span style={{ color: '#f59e0b', fontWeight: 600 }}>Soon</span>}
+          {reorderUrgency === 'ok' && <span>OK</span>}
+        </span>
       )}
 
-      {/* Vendor + actions */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: '4px', borderTop: '1px solid var(--border)' }}>
-        <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-          {item.vendorName ? `${t('vendor', lang)}: ${item.vendorName}` : ''}
-        </span>
-        <div style={{ display: 'flex', gap: '4px' }}>
-          <button
-            onClick={onDecrement}
-            aria-label={`Decrease ${item.name} stock`}
-            style={{
-              width: '44px', height: '44px', borderRadius: 'var(--radius-md)',
-              border: '1.5px solid var(--border)', background: 'var(--bg)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              cursor: 'pointer', color: 'var(--text-secondary)',
-            }}
-          >
-            <Minus size={14} />
-          </button>
-          <button
-            onClick={onIncrement}
-            aria-label={`Increase ${item.name} stock`}
-            style={{
-              width: '44px', height: '44px', borderRadius: 'var(--radius-md)',
-              border: '1.5px solid var(--border)', background: 'var(--bg)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              cursor: 'pointer', color: 'var(--text-secondary)',
-            }}
-          >
-            <Plus size={14} />
-          </button>
-          <button
-            onClick={onEdit}
-            aria-label={`Edit ${item.name}`}
-            style={{
-              width: '44px', height: '44px', borderRadius: 'var(--radius-md)',
-              border: '1.5px solid var(--border)', background: 'var(--bg)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              cursor: 'pointer', color: 'var(--text-secondary)',
-            }}
-          >
-            <Pencil size={14} />
-          </button>
-        </div>
+      {/* Action buttons */}
+      <div style={{ display: 'flex', gap: '2px', flexShrink: 0 }}>
+        <button
+          onClick={onDecrement}
+          aria-label={`Decrease ${item.name} stock`}
+          style={{
+            width: '32px', height: '32px', borderRadius: 'var(--radius-md)',
+            border: '1px solid var(--border)', background: 'var(--bg)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer', color: 'var(--text-secondary)', padding: 0,
+          }}
+        >
+          <Minus size={12} />
+        </button>
+        <button
+          onClick={onIncrement}
+          aria-label={`Increase ${item.name} stock`}
+          style={{
+            width: '32px', height: '32px', borderRadius: 'var(--radius-md)',
+            border: '1px solid var(--border)', background: 'var(--bg)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer', color: 'var(--text-secondary)', padding: 0,
+          }}
+        >
+          <Plus size={12} />
+        </button>
+        <button
+          onClick={onEdit}
+          aria-label={`Edit ${item.name}`}
+          style={{
+            width: '32px', height: '32px', borderRadius: 'var(--radius-md)',
+            border: '1px solid var(--border)', background: 'var(--bg)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer', color: 'var(--text-secondary)', padding: 0,
+          }}
+        >
+          <Pencil size={12} />
+        </button>
       </div>
     </div>
   );
@@ -562,7 +518,7 @@ export default function InventoryPage() {
             </div>
 
             {/* Item cards */}
-            <div className="animate-in stagger-2" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <div className="animate-in stagger-2" style={{ display: 'flex', flexDirection: 'column', gap: 0, borderRadius: 'var(--radius-lg)', border: '1px solid var(--border)', overflow: 'hidden' }}>
               {sortedPredictions.length === 0 ? (
                 <div className="card" style={{ padding: '32px', textAlign: 'center' }}>
                   <Package size={28} color="var(--text-muted)" style={{ margin: '0 auto 8px' }} />
@@ -600,7 +556,7 @@ export default function InventoryPage() {
                 {t('copyReorderList', lang)}
               </button>
             )}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 0, borderRadius: 'var(--radius-lg)', border: '1px solid var(--border)', overflow: 'hidden' }}>
               {reorderItems.length === 0 ? (
                 <div className="card" style={{ padding: '40px 20px', textAlign: 'center' }}>
                   <Check size={32} color="var(--green)" style={{ margin: '0 auto 12px' }} />
@@ -620,59 +576,42 @@ export default function InventoryPage() {
                   return (
                     <div
                       key={item.id}
-                      className="card"
                       style={{
-                        padding: '16px',
+                        display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px',
+                        borderBottom: '1px solid var(--border)',
                         borderLeft: `3px solid ${color}`,
-                        display: 'flex', flexDirection: 'column', gap: '8px',
+                        minHeight: '52px',
                       }}
                     >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      {/* Item name and details */}
+                      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '2px' }}>
                         <span style={{
-                          fontSize: '10px', fontWeight: 700, textTransform: 'uppercase',
-                          letterSpacing: '0.06em',
-                          color, padding: '3px 8px', borderRadius: 'var(--radius-full)',
-                          background: `${color}12`,
+                          fontWeight: 600, fontSize: '13px', color: 'var(--text-primary)',
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                         }}>
-                          {reorderUrgency === 'critical'
-                            ? t('criticalOrderToday', lang)
-                            : t('orderSoon', lang)
-                          }
-                        </span>
-                      </div>
-                      <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)' }}>
-                        {item.name}
-                        {item.vendorName && (
-                          <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: '13px' }}>
-                            {' — '}{item.vendorName}
-                          </span>
-                        )}
-                      </div>
-                      <div style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'flex', flexWrap: 'wrap', gap: '6px 16px' }}>
-                        <span>{t('currentStock', lang)}: <strong>{item.currentStock}</strong> {item.unit}</span>
-                        <span>{t('parLevel', lang)}: <strong>{item.parLevel}</strong> {item.unit}</span>
-                      </div>
-                      {dailyBurnRate > 0 && (
-                        <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                          🔥 {t('burningPerDay', lang).replace('{0}', String(dailyBurnRate))}
-                          {daysUntilEmpty !== null && (
-                            <span>
-                              {' · '}{daysUntilEmpty <= 0
-                                ? <strong style={{ color: '#dc2626' }}>{t('empty', lang)}</strong>
-                                : t('emptyInDays', lang).replace('{0}', String(daysUntilEmpty))
-                              }
+                          {item.name}
+                          {item.vendorName && (
+                            <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: '11px', marginLeft: '4px' }}>
+                              ({item.vendorName})
                             </span>
                           )}
+                        </span>
+                        <div style={{ fontSize: '11px', color: 'var(--text-secondary)', display: 'flex', gap: '12px' }}>
+                          <span>{item.currentStock}/{item.parLevel}</span>
+                          {reorderUrgency === 'critical'
+                            ? <span style={{ color: '#dc2626', fontWeight: 600 }}>Critical</span>
+                            : <span style={{ color: '#f59e0b', fontWeight: 600 }}>Soon</span>
+                          }
                         </div>
-                      )}
-                      <div style={{
-                        fontSize: '13px', fontWeight: 600, color: 'var(--navy)',
-                        padding: '8px 12px', background: 'rgba(27,58,92,0.06)',
-                        borderRadius: 'var(--radius-md)',
-                      }}>
-                        {t('suggestedOrder', lang)}: <strong>{qty} {item.unit}</strong>
-                        <span style={{ fontWeight: 400, color: 'var(--text-muted)', marginLeft: '4px' }}>
-                          ({t('covers2Weeks', lang)})
+                      </div>
+
+                      {/* Suggested order */}
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '1px', whiteSpace: 'nowrap' }}>
+                        <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                          Order {qty}
+                        </span>
+                        <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
+                          {item.unit}
                         </span>
                       </div>
                     </div>
@@ -895,7 +834,7 @@ function AddItemModal({ isOpen, onClose, uid, pid, lang, onAdded }: {
   onAdded: () => void;
 }) {
   const [name, setName] = useState('');
-  const [category, setCategory] = useState<InventoryCategory>('linens');
+  const [category, setCategory] = useState<InventoryCategory>('housekeeping');
   const [stock, setStock] = useState('0');
   const [parLevel, setParLevel] = useState('100');
   const [unit, setUnit] = useState('units');
@@ -950,12 +889,9 @@ function AddItemModal({ isOpen, onClose, uid, pid, lang, onAdded }: {
             {t('type', lang)}
           </label>
           <select value={category} onChange={e => setCategory(e.target.value as InventoryCategory)} style={{ ...inputStyle, cursor: 'pointer' }}>
-            <option value="linens">{t('linens', lang)}</option>
-            <option value="towels">{t('towelsCategory', lang)}</option>
-            <option value="amenities">{t('amenitiesCategory', lang)}</option>
-            <option value="cleaning">{t('cleaningCategory', lang)}</option>
+            <option value="housekeeping">{t('housekeepingCategory', lang)}</option>
             <option value="maintenance">{t('maintenanceCategory', lang)}</option>
-            <option value="other">{t('otherCategory', lang)}</option>
+            <option value="breakfast">{t('breakfastFbCategory', lang)}</option>
           </select>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>

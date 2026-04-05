@@ -119,7 +119,7 @@ export interface Room {
 
 // ─── Inventory / Supply Tracking ───────────────────────────────────────────
 
-export type InventoryCategory = 'linens' | 'towels' | 'amenities' | 'cleaning' | 'maintenance' | 'other';
+export type InventoryCategory = 'housekeeping' | 'maintenance' | 'breakfast';
 
 export interface InventoryItem {
   id: string;
