@@ -25,6 +25,8 @@ export interface Property {
 
 export type StaffDepartment = 'housekeeping' | 'front_desk' | 'maintenance' | 'other';
 
+export type SchedulePriority = 'priority' | 'normal' | 'excluded';
+
 export interface StaffMember {
   id: string;
   name: string;
@@ -41,6 +43,7 @@ export interface StaffMember {
   vacationDates?: string[];     // YYYY-MM-DD strings
   isActive?: boolean;           // default true (undefined = active)
   fcmToken?: string;            // FCM device token for push notifications
+  schedulePriority?: SchedulePriority; // 'priority' = auto-selected first, 'normal' = backup, 'excluded' = never auto-selected
 }
 
 // ─── Public Areas ──────────────────────────────────────────────────────────

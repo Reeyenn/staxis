@@ -23,7 +23,7 @@ import { format, subDays } from 'date-fns';
 import {
   Calendar, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, CheckCircle2, Clock,
   AlertTriangle, Users, Send, Zap, BedDouble, Plus, Pencil, Trash2, Star, Check,
-  Trophy, TrendingUp, TrendingDown, Minus, Upload,
+  Trophy, TrendingUp, TrendingDown, Minus, Upload, Settings,
 } from 'lucide-react';
 
 // ─── Tab config ──────────────────────────────────────────────────────────────
@@ -58,16 +58,27 @@ function formatDisplayDate(dateStr: string, lang: 'en' | 'es'): string {
 
 function isEligible(s: StaffMember, date: string): boolean {
   if (s.isActive === false) return false;
+  if (s.schedulePriority === 'excluded') return false;
   if (s.vacationDates?.includes(date)) return false;
   const maxHrs = s.maxWeeklyHours ?? 40;
   if ((s.weeklyHours ?? 0) >= maxHrs) return false;
   return true;
 }
 
+const PRIORITY_ORDER = { priority: 0, normal: 1, excluded: 2 } as const;
+
 function autoSelectEligible(staff: StaffMember[], date: string, alreadyInPool: Set<string>): StaffMember[] {
   return staff
     .filter(s => isEligible(s, date) && !alreadyInPool.has(s.id))
     .sort((a, b) => {
+      // Priority staff first, then normal
+      const aPri = PRIORITY_ORDER[a.schedulePriority ?? 'normal'];
+      const bPri = PRIORITY_ORDER[b.schedulePriority ?? 'normal'];
+      if (aPri !== bPri) return aPri - bPri;
+      // Fewer hours worked this week = prefer (stay under 40h)
+      const aHrs = a.weeklyHours ?? 0;
+      const bHrs = b.weeklyHours ?? 0;
+      if (aHrs !== bHrs) return aHrs - bHrs;
       const aDays = a.daysWorkedThisWeek ?? 0;
       const bDays = b.daysWorkedThisWeek ?? 0;
       if (aDays !== bDays) return aDays - bDays;
@@ -283,9 +294,11 @@ function ScheduleSection() {
   const [assignments, setAssignments] = useState<Record<string, string>>({});
   const [crewOverride, setCrewOverride] = useState<string[]>([]); // manually toggled staff IDs
   const [hasAutoSelected, setHasAutoSelected] = useState(false);
+  const [showPrioritySettings, setShowPrioritySettings] = useState(false);
 
   // Swap dropdown
-  const [swapOpenFor, setSwapOpenFor] = useState<string | null>(null); // staff ID whose dropdown is open
+  const [swapOpenFor, setSwapOpenFor] = useState<string | null>(null);
+  const [swapAnchor, setSwapAnchor] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
 
   // Move toast notification
   const [moveToast, setMoveToast] = useState<string | null>(null);
@@ -394,7 +407,8 @@ function ScheduleSection() {
     return eligiblePool;
   }, [crewOverride, eligiblePool, recommendedStaff, totalRooms, staff]);
 
-  // Auto-assign rooms when crew or rooms change, then remove empty staff
+  // Auto-assign rooms when crew or rooms change
+  const manuallyAdded = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (assignableRooms.length === 0 || selectedCrew.length === 0) { setAssignments({}); return; }
     const fakeScheduled = selectedCrew.map(s => ({ ...s, scheduledToday: true }));
@@ -403,13 +417,13 @@ function ScheduleSection() {
     });
     setAssignments(auto);
 
-    // Remove staff who ended up with 0 rooms (they don't need to come in)
+    // Only auto-remove staff with 0 rooms if they weren't manually added
     const assignedStaffIds = new Set(Object.values(auto));
-    const emptyStaff = selectedCrew.filter(s => !assignedStaffIds.has(s.id));
+    const emptyStaff = selectedCrew.filter(s => !assignedStaffIds.has(s.id) && !manuallyAdded.current.has(s.id));
     if (emptyStaff.length > 0) {
       setCrewOverride(prev => {
         const current = prev.length > 0 ? prev : selectedCrew.map(s => s.id);
-        return current.filter(id => assignedStaffIds.has(id));
+        return current.filter(id => assignedStaffIds.has(id) || manuallyAdded.current.has(id));
       });
     }
   }, [selectedCrew, assignableRooms, coMins, soMins, prepPerRoom, shiftLen]);
@@ -417,7 +431,13 @@ function ScheduleSection() {
   const toggleCrewMember = (memberId: string) => {
     setCrewOverride(prev => {
       const current = prev.length > 0 ? prev : selectedCrew.map(s => s.id);
-      return current.includes(memberId) ? current.filter(id => id !== memberId) : [...current, memberId];
+      if (current.includes(memberId)) {
+        manuallyAdded.current.delete(memberId);
+        return current.filter(id => id !== memberId);
+      } else {
+        manuallyAdded.current.add(memberId);
+        return [...current, memberId];
+      }
     });
   };
 
@@ -595,10 +615,14 @@ function ScheduleSection() {
                 {/* Left: name + stats 2x2 grid side by side */}
                 <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: '10px' }}>
                   {/* Name — fixed width, clickable to swap */}
-                  <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '6px', width: '120px', flexShrink: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', width: '120px', flexShrink: 0 }}>
                     <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: color, flexShrink: 0 }} />
                     <button
-                      onClick={() => setSwapOpenFor(prev => prev === member.id ? null : member.id)}
+                      onClick={(e) => {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setSwapAnchor({ top: rect.bottom + 4, left: rect.left });
+                        setSwapOpenFor(prev => prev === member.id ? null : member.id);
+                      }}
                       style={{
                         background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'var(--font-sans)',
                         fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', whiteSpace: 'nowrap',
@@ -607,41 +631,6 @@ function ScheduleSection() {
                     >
                       {member.name} <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>▾</span>
                     </button>
-                    {swapOpenFor === member.id && (
-                      <>
-                        <div style={{ position: 'fixed', inset: 0, zIndex: 99 }} onClick={() => setSwapOpenFor(null)} />
-                        <div style={{
-                          position: 'absolute', top: '100%', left: 0, zIndex: 100, marginTop: '4px',
-                          background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: '10px',
-                          boxShadow: '0 4px 20px rgba(0,0,0,0.15)', padding: '4px', minWidth: '160px',
-                        }}>
-                          {eligiblePool.filter(s => !selectedCrew.find(c => c.id === s.id)).map(s => (
-                            <button key={s.id} onClick={() => {
-                              // Swap: replace this member with s in crewOverride
-                              setCrewOverride(prev => {
-                                const current = prev.length > 0 ? prev : selectedCrew.map(c => c.id);
-                                return current.map(id => id === member.id ? s.id : id);
-                              });
-                              setSwapOpenFor(null);
-                            }} style={{
-                              display: 'block', width: '100%', padding: '8px 12px', border: 'none', borderRadius: '8px',
-                              background: 'transparent', cursor: 'pointer', fontFamily: 'var(--font-sans)',
-                              fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', textAlign: 'left',
-                            }}
-                              onMouseEnter={e => { (e.target as HTMLElement).style.background = 'var(--bg-elevated)'; }}
-                              onMouseLeave={e => { (e.target as HTMLElement).style.background = 'transparent'; }}
-                            >
-                              {s.name}
-                            </button>
-                          ))}
-                          {eligiblePool.filter(s => !selectedCrew.find(c => c.id === s.id)).length === 0 && (
-                            <div style={{ padding: '8px 12px', fontSize: '12px', color: 'var(--text-muted)' }}>
-                              {lang === 'es' ? 'Sin personal disponible' : 'No available staff'}
-                            </div>
-                          )}
-                        </div>
-                      </>
-                    )}
                   </div>
                   {/* 2x2 stats grid to the right of name */}
                   <div style={{ display: 'grid', gridTemplateColumns: '80px 100px', gap: '1px 10px', fontSize: '12px', color: 'var(--text-secondary)', width: '190px', flexShrink: 0 }}>
@@ -688,20 +677,24 @@ function ScheduleSection() {
           })}
 
           {/* Add staff row */}
-          {eligiblePool.filter(s => !selectedCrew.find(c => c.id === s.id)).length > 0 && (
-            <div
-              onClick={() => setShowAddStaff(true)}
-              style={{
-                padding: '12px 16px', display: 'flex', alignItems: 'center', gap: '12px',
-                cursor: 'pointer', borderTop: '1px solid var(--border)',
-              }}
-            >
-              <Plus size={14} color="var(--text-muted)" />
+          {/* Bottom row: Add staff + Settings */}
+          <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: '16px', borderTop: '1px solid var(--border)' }}>
+            {eligiblePool.filter(s => !selectedCrew.find(c => c.id === s.id)).length > 0 && (
+              <div onClick={() => setShowAddStaff(true)} style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <Plus size={14} color="var(--text-muted)" />
+                <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-muted)' }}>
+                  {lang === 'es' ? 'Agregar personal' : 'Add staff'}
+                </span>
+              </div>
+            )}
+            <div style={{ flex: 1 }} />
+            <div onClick={() => setShowPrioritySettings(true)} style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+              <Settings size={14} color="var(--text-muted)" />
               <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-muted)' }}>
-                {lang === 'es' ? 'Agregar personal' : 'Add staff'}
+                {lang === 'es' ? 'Prioridad' : 'Priority'}
               </span>
             </div>
-          )}
+          </div>
         </div>
       )}
 
@@ -744,6 +737,100 @@ function ScheduleSection() {
         </div>
       )}
       <style>{`@keyframes toastIn { from { transform: translateX(-50%) translateY(10px); opacity: 0; } to { transform: translateX(-50%) translateY(0); opacity: 1; } }`}</style>
+
+      {/* ── Swap dropdown (rendered outside card to avoid overflow clip) ── */}
+      {swapOpenFor && (
+        <>
+          <div style={{ position: 'fixed', inset: 0, zIndex: 9990 }} onClick={() => setSwapOpenFor(null)} />
+          <div style={{
+            position: 'fixed', top: swapAnchor.top, left: swapAnchor.left, zIndex: 9991,
+            background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: '10px',
+            boxShadow: '0 4px 20px rgba(0,0,0,0.15)', padding: '4px', minWidth: '160px',
+          }}>
+            {eligiblePool.filter(s => !selectedCrew.find(c => c.id === s.id)).map(s => (
+              <button key={s.id} onClick={() => {
+                setCrewOverride(prev => {
+                  const current = prev.length > 0 ? prev : selectedCrew.map(c => c.id);
+                  return current.map(id => id === swapOpenFor ? s.id : id);
+                });
+                setSwapOpenFor(null);
+              }} style={{
+                display: 'block', width: '100%', padding: '8px 12px', border: 'none', borderRadius: '8px',
+                background: 'transparent', cursor: 'pointer', fontFamily: 'var(--font-sans)',
+                fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', textAlign: 'left',
+              }}
+                onMouseEnter={e => { (e.target as HTMLElement).style.background = 'var(--bg-elevated)'; }}
+                onMouseLeave={e => { (e.target as HTMLElement).style.background = 'transparent'; }}
+              >
+                {s.name}
+              </button>
+            ))}
+            {eligiblePool.filter(s => !selectedCrew.find(c => c.id === s.id)).length === 0 && (
+              <div style={{ padding: '8px 12px', fontSize: '12px', color: 'var(--text-muted)' }}>
+                {lang === 'es' ? 'Sin personal disponible' : 'No available staff'}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* ── Staff Priority Settings popup ── */}
+      {showPrioritySettings && uid && pid && (
+        <>
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 9997 }} onClick={() => setShowPrioritySettings(false)} />
+          <div style={{
+            position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 9998,
+            background: 'var(--bg-card)', borderRadius: '16px', padding: '20px',
+            boxShadow: '0 8px 40px rgba(0,0,0,0.2)', width: '340px', maxHeight: '80vh', overflowY: 'auto',
+            animation: 'popIn 0.15s ease-out',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <p style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+                {lang === 'es' ? 'Prioridad del Personal' : 'Staff Priority'}
+              </p>
+              <button onClick={() => setShowPrioritySettings(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '18px', color: 'var(--text-muted)' }}>✕</button>
+            </div>
+            <div style={{ display: 'flex', gap: '6px', marginBottom: '14px', fontSize: '11px', color: 'var(--text-muted)' }}>
+              <span style={{ padding: '3px 8px', background: '#DBEAFE', color: '#1D4ED8', borderRadius: '6px', fontWeight: 600 }}>Priority</span>
+              <span>{lang === 'es' ? '= primera selección' : '= picked first'}</span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {staff.filter(s => s.isActive !== false && (s.department === 'housekeeping' || !s.department)).map(s => {
+                const pri = s.schedulePriority ?? 'normal';
+                return (
+                  <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 12px', background: 'var(--bg-elevated)', borderRadius: '10px' }}>
+                    <span style={{ flex: 1, fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)' }}>{s.name}</span>
+                    <div style={{ display: 'flex', gap: '4px' }}>
+                      {(['priority', 'normal', 'excluded'] as const).map(level => (
+                        <button key={level} onClick={async () => {
+                          await updateStaffMember(uid!, pid!, s.id, { schedulePriority: level } as Partial<StaffMember>);
+                        }} style={{
+                          padding: '4px 10px', borderRadius: '6px', border: 'none', cursor: 'pointer',
+                          fontFamily: 'var(--font-sans)', fontSize: '11px', fontWeight: 600,
+                          background: pri === level
+                            ? level === 'priority' ? '#DBEAFE' : level === 'normal' ? '#F3F4F6' : '#FEE2E2'
+                            : 'transparent',
+                          color: pri === level
+                            ? level === 'priority' ? '#1D4ED8' : level === 'normal' ? '#374151' : '#DC2626'
+                            : 'var(--text-muted)',
+                        }}>
+                          {level === 'priority' ? (lang === 'es' ? 'Prior.' : 'Priority') : level === 'normal' ? 'Normal' : (lang === 'es' ? 'Excluir' : 'Exclude')}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '14px 0 0', lineHeight: 1.5 }}>
+              {lang === 'es'
+                ? 'Prioridad = seleccionado automáticamente primero. Normal = respaldo. Excluir = nunca seleccionado automáticamente.'
+                : 'Priority = auto-selected first. Normal = backup when needed. Exclude = never auto-selected.'}
+            </p>
+          </div>
+          <style>{`@keyframes popIn { from { transform: translate(-50%, -50%) scale(0.9); opacity: 0; } to { transform: translate(-50%, -50%) scale(1); opacity: 1; } }`}</style>
+        </>
+      )}
 
       {/* ── Add Staff popup ── */}
       {showAddStaff && (
