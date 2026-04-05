@@ -302,65 +302,64 @@ export default function InspectionsPage() {
   );
 }
 
-// ─── Frequency Picker ────────────────────────────────────────────────────────
+// ─── Frequency Slider ────────────────────────────────────────────────────────
 
-const FREQ_PRESETS = [
-  { value: 12, label: 'Every year (Annual)' },
-  { value: 6, label: 'Every 6 months' },
-  { value: 3, label: 'Every 3 months (Quarterly)' },
-  { value: 1, label: 'Every month' },
-  { value: 24, label: 'Every 2 years' },
-];
+const FREQ_STOPS = [1, 2, 3, 6, 12, 24];
 
-function FrequencyPicker({ value, onChange, inputStyle }: {
-  value: number;
-  onChange: (v: number) => void;
-  inputStyle: React.CSSProperties;
-}) {
-  const isPreset = FREQ_PRESETS.some(p => p.value === value);
-  const [isCustom, setIsCustom] = useState(!isPreset);
-  const [customValue, setCustomValue] = useState(String(value));
+function freqLabel(months: number): string {
+  if (months === 1) return 'Monthly';
+  if (months === 2) return 'Every 2 months';
+  if (months === 3) return 'Quarterly';
+  if (months === 6) return 'Every 6 months';
+  if (months === 12) return 'Annual';
+  if (months === 24) return 'Every 2 years';
+  return `Every ${months}mo`;
+}
+
+function FrequencySlider({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  const idx = FREQ_STOPS.indexOf(value);
+  const sliderIdx = idx >= 0 ? idx : 4; // default to 12 if not found
 
   return (
     <div>
-      <label style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
-        Frequency
-      </label>
-      <select
-        value={isCustom ? 'custom' : String(value)}
-        onChange={e => {
-          if (e.target.value === 'custom') {
-            setIsCustom(true);
-          } else {
-            setIsCustom(false);
-            onChange(parseInt(e.target.value));
-          }
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px',
+      }}>
+        <span style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>
+          Frequency
+        </span>
+        <span style={{ fontSize: '15px', fontWeight: 700, color: 'var(--navy, #1b3a5c)' }}>
+          {freqLabel(value)}
+        </span>
+      </div>
+      <input
+        type="range"
+        min={0}
+        max={FREQ_STOPS.length - 1}
+        step={1}
+        value={sliderIdx}
+        onChange={e => onChange(FREQ_STOPS[parseInt(e.target.value)])}
+        style={{
+          width: '100%', height: '6px', borderRadius: '99px',
+          appearance: 'none', WebkitAppearance: 'none',
+          background: `linear-gradient(to right, var(--navy, #1b3a5c) ${(sliderIdx / (FREQ_STOPS.length - 1)) * 100}%, rgba(0,0,0,0.1) ${(sliderIdx / (FREQ_STOPS.length - 1)) * 100}%)`,
+          outline: 'none', cursor: 'pointer',
         }}
-        style={{ ...inputStyle, cursor: 'pointer' }}
-      >
-        {FREQ_PRESETS.map(p => (
-          <option key={p.value} value={String(p.value)}>{p.label}</option>
-        ))}
-        <option value="custom">Custom...</option>
-      </select>
-      {isCustom && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '8px' }}>
-          <span style={{ fontSize: '13px', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>Every</span>
-          <input
-            type="number"
-            min="1"
-            max="120"
-            value={customValue}
-            onChange={e => {
-              setCustomValue(e.target.value);
-              const v = parseInt(e.target.value);
-              if (v && v > 0) onChange(v);
+      />
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '6px' }}>
+        {FREQ_STOPS.map(s => (
+          <span
+            key={s}
+            onClick={() => onChange(s)}
+            style={{
+              fontSize: '10px', color: s === value ? 'var(--navy, #1b3a5c)' : 'var(--text-muted)',
+              fontWeight: s === value ? 700 : 400, cursor: 'pointer', minWidth: '20px', textAlign: 'center',
             }}
-            style={{ ...inputStyle, width: '70px', textAlign: 'center', fontWeight: 700 }}
-          />
-          <span style={{ fontSize: '13px', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>months</span>
-        </div>
-      )}
+          >
+            {s}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }
@@ -443,7 +442,7 @@ function EditInspectionModal({ inspection, onClose, onSave, onMarkComplete, onDe
           </div>
 
           {/* Frequency slider */}
-          <FrequencyPicker value={freq} onChange={setFreq} inputStyle={inputStyle} />
+          <FrequencySlider value={freq} onChange={setFreq} />
 
           {/* Notes */}
           <div>
