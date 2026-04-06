@@ -21,12 +21,12 @@ import {
   Users, DollarSign, Wrench,
   Sparkles, CircleDot, DoorOpen, Zap,
   BedDouble, Ban, Percent, TrendingUp, LogIn, Hotel, CalendarCheck,
+  ChevronRight,
 } from 'lucide-react';
 
 /* ── Room grid helper ── */
 function RoomGrid({ rooms, overdueSet }: { rooms: Room[]; overdueSet?: Set<string> }) {
   const { lang } = useLang();
-  // Group by floor (first digit of room number, e.g. "101" → floor 1)
   const floors = new Map<string, Room[]>();
   [...rooms]
     .sort((a, b) => parseInt(a.number, 10) - parseInt(b.number, 10))
@@ -74,7 +74,6 @@ function RoomGrid({ rooms, overdueSet }: { rooms: Room[]; overdueSet?: Set<strin
                   }}
                 >
                   {room.number}
-                  {/* Red dot for checkout rooms that are dirty */}
                   {isDirty && room.type === 'checkout' && (
                     <div style={{
                       position: 'absolute', top: '2px', right: '2px',
@@ -83,7 +82,6 @@ function RoomGrid({ rooms, overdueSet }: { rooms: Room[]; overdueSet?: Set<strin
                       border: '1px solid white',
                     }} />
                   )}
-                  {/* Orange dot for deep-clean overdue */}
                   {overdueSet?.has(room.number) && (
                     <div style={{
                       position: 'absolute', top: '2px', left: '2px',
@@ -128,7 +126,6 @@ export default function DashboardPage() {
   const [dcRecords, setDcRecords] = useState<DeepCleanRecord[]>([]);
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
 
-  // Editable dashboard fields (persisted in memory per session — user inputs these)
   const [arrivals, setArrivals] = useState(0);
   const [inHouseGuests, setInHouseGuests] = useState(0);
   const [reservationCount, setReservationCount] = useState(0);
@@ -152,7 +149,6 @@ export default function DashboardPage() {
     return subscribeToShiftConfirmations(user.uid, activePropertyId, tomorrow, setTomorrowConfs);
   }, [user, activePropertyId, tomorrow]);
 
-  // Load deep clean config + records
   useEffect(() => {
     if (!user || !activePropertyId) return;
     Promise.all([
@@ -182,15 +178,13 @@ export default function DashboardPage() {
   const total      = rooms.length;
   const pct        = total > 0 ? Math.round((clean / total) * 100) : 0;
 
-  // Occupancy & revenue
   const totalPropertyRooms = activeProperty?.totalRooms || 74;
-  const rentedRooms = checkouts + stayovers; // rooms currently occupied
+  const rentedRooms = checkouts + stayovers;
   const occupancyPct = totalPropertyRooms > 0 ? Math.round((rentedRooms / totalPropertyRooms) * 100) : 0;
   const revpar = totalPropertyRooms > 0 && adr > 0 ? Math.round((adr * rentedRooms) / totalPropertyRooms) : 0;
 
   const confirmedCount = tomorrowConfs.filter(c => c.status === 'confirmed').length;
 
-  // Deep clean insights
   const overdueRooms = dcConfig && dcRecords.length > 0
     ? getOverdueRooms(dcRecords.map(r => r.roomNumber), dcRecords, dcConfig)
     : [];
@@ -228,332 +222,164 @@ export default function DashboardPage() {
     );
   }
 
-  /* ── Stat card helper ── */
-  const StatCard = ({ icon, iconBg, label, value, sub }: { icon: React.ReactNode; iconBg: string; label: string; value: string | number; sub?: string }) => (
-    <div className="card" style={{ padding: '14px 16px', display: 'flex', alignItems: 'center', gap: '14px' }}>
-      <div style={{ width: '40px', height: '40px', borderRadius: '10px', background: iconBg, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-        {icon}
-      </div>
-      <div>
-        <p style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)', marginBottom: '2px' }}>{label}</p>
-        <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '22px', lineHeight: 1, letterSpacing: '-0.03em', color: 'var(--text-primary)' }}>
-          {value}
-        </div>
-        {sub && <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>{sub}</p>}
-      </div>
-    </div>
-  );
-
-  /* ── Editable stat card — tap to edit value ── */
-  const EditableStatCard = ({ icon, iconBg, label, value, onChange, editing, fieldKey, setEditing, sub, prefix }: {
-    icon: React.ReactNode; iconBg: string; label: string; value: number;
-    onChange: (v: number) => void; editing: string | null; fieldKey: string;
-    setEditing: (k: string | null) => void; sub?: string; prefix?: string;
+  /* ── Inline editable number ── */
+  const InlineEdit = ({ value, onChange, fieldKey, prefix }: {
+    value: number; onChange: (v: number) => void; fieldKey: string; prefix?: string;
   }) => {
-    const isEditing = editing === fieldKey;
+    const isEditing = editingField === fieldKey;
+    if (isEditing) {
+      return (
+        <input
+          type="number"
+          autoFocus
+          value={value || ''}
+          onChange={e => onChange(parseInt(e.target.value) || 0)}
+          onBlur={() => setEditingField(null)}
+          onKeyDown={e => { if (e.key === 'Enter') setEditingField(null); }}
+          style={{
+            width: '64px', fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '15px',
+            border: '2px solid var(--navy)', borderRadius: '6px', padding: '2px 6px',
+            background: 'var(--bg)', color: 'var(--text-primary)', outline: 'none',
+          }}
+        />
+      );
+    }
     return (
-      <div
-        className="card"
-        onClick={() => { if (!isEditing) setEditing(fieldKey); }}
-        style={{ padding: '14px 16px', display: 'flex', alignItems: 'center', gap: '14px', cursor: isEditing ? 'default' : 'pointer', transition: 'box-shadow 150ms' }}
+      <span
+        onClick={(e) => { e.stopPropagation(); setEditingField(fieldKey); }}
+        style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '15px', color: 'var(--text-primary)', cursor: 'pointer', borderBottom: '1px dashed var(--border)' }}
       >
-        <div style={{ width: '40px', height: '40px', borderRadius: '10px', background: iconBg, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-          {icon}
-        </div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <p style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)', marginBottom: '2px' }}>{label}</p>
-          {isEditing ? (
-            <input
-              type="number"
-              autoFocus
-              value={value || ''}
-              onChange={e => onChange(parseInt(e.target.value) || 0)}
-              onBlur={() => setEditing(null)}
-              onKeyDown={e => { if (e.key === 'Enter') setEditing(null); }}
-              style={{
-                width: '80px', fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '20px',
-                border: '2px solid var(--navy)', borderRadius: '6px', padding: '2px 6px',
-                background: 'var(--bg)', color: 'var(--text-primary)', outline: 'none',
-              }}
-            />
-          ) : (
-            <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '22px', lineHeight: 1, letterSpacing: '-0.03em', color: 'var(--text-primary)' }}>
-              {value > 0 ? `${prefix || ''}${value}` : '—'}
-              <span style={{ fontSize: '10px', fontWeight: 400, color: 'var(--text-muted)', marginLeft: '4px' }}>✎</span>
-            </div>
-          )}
-          {sub && <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>{sub}</p>}
-        </div>
-      </div>
+        {value > 0 ? `${prefix || ''}${value}` : '—'}
+      </span>
     );
   };
 
+  /* ── Labor cost calculation ── */
+  const wage = activeProperty?.hourlyWage || 12;
+  const hkStaff = rooms.length > 0 ? Math.ceil(rooms.length / 15) : 1;
+  const hkCost = Math.round(hkStaff * wage * 8);
+  const fdCost = Math.round(2 * wage * 8);
+  const mtCost = Math.round(1 * wage * 8);
+  const totalCost = fdCost + hkCost + mtCost;
+
   return (
     <AppLayout>
-      <div style={{ padding: '16px 20px 20px', display: 'flex', flexDirection: 'column', gap: '14px', height: '100%' }}>
+      <div style={{ padding: '20px 24px 24px', display: 'flex', flexDirection: 'column', gap: '20px', height: '100%' }}>
 
         {/* ── Page header ── */}
-        <div className="animate-in" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div>
-            <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '22px', color: 'var(--text-primary)', letterSpacing: '-0.02em', lineHeight: 1 }}>
-              {t('dashboard', lang)}
-            </h1>
-          </div>
+        <div className="animate-in">
+          <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '22px', color: 'var(--text-primary)', letterSpacing: '-0.02em', lineHeight: 1 }}>
+            {t('dashboard', lang)}
+          </h1>
         </div>
 
-        {/* ── Occupancy & Guests ── */}
-        <div className="animate-in stagger-1">
-          <p style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: '8px' }}>
-            {t('occupancy', lang)} & {lang === 'es' ? 'Huéspedes' : 'Guests'}
-          </p>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
-            {/* Occupancy % — big hero card */}
-            <div className="card" style={{ padding: '14px 16px', display: 'flex', alignItems: 'center', gap: '14px' }}>
-              <div style={{ width: '40px', height: '40px', borderRadius: '10px', background: 'rgba(27,58,92,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                <Percent size={16} color="var(--navy)" />
+        {/* ════════════════════════════════════════════════════════════
+            HERO ROW — The 3 numbers that matter most at a glance
+            ════════════════════════════════════════════════════════════ */}
+        <div className="animate-in stagger-1" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px' }}>
+
+          {/* Occupancy — the big one */}
+          <div className="card" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: 'rgba(27,58,92,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Percent size={15} color="var(--navy)" />
               </div>
-              <div>
-                <p style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)', marginBottom: '2px' }}>{t('occupancy', lang)}</p>
-                <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '22px', lineHeight: 1, letterSpacing: '-0.03em', color: occupancyPct >= 80 ? '#16A34A' : occupancyPct >= 50 ? 'var(--navy)' : '#d97706' }}>
-                  {occupancyPct}%
-                </div>
-                <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>{rentedRooms}/{totalPropertyRooms} rooms</p>
-              </div>
+              <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-muted)' }}>{t('occupancy', lang)}</span>
             </div>
-            {/* Rented rooms */}
-            <StatCard
-              icon={<BedDouble size={16} color="var(--navy)" />}
-              iconBg="rgba(27,58,92,0.08)"
-              label={t('rented', lang)}
-              value={rentedRooms}
-              sub={`${vacant} ${t('availableRooms', lang).toLowerCase()}`}
-            />
-            {/* Arrivals (editable) */}
-            <EditableStatCard
-              icon={<LogIn size={16} color="#7c3aed" />}
-              iconBg="rgba(124,58,237,0.08)"
-              label={t('arrivals', lang)}
-              value={arrivals}
-              onChange={setArrivals}
-              editing={editingField}
-              fieldKey="arrivals"
-              setEditing={setEditingField}
-              sub={t('today', lang)}
-            />
-            {/* Reservations (editable) */}
-            <EditableStatCard
-              icon={<CalendarCheck size={16} color="#0891b2" />}
-              iconBg="rgba(8,145,178,0.08)"
-              label={t('reservations', lang)}
-              value={reservationCount}
-              onChange={setReservationCount}
-              editing={editingField}
-              fieldKey="reservations"
-              setEditing={setEditingField}
-              sub={t('today', lang)}
-            />
-            {/* In-House (editable) */}
-            <EditableStatCard
-              icon={<Hotel size={16} color="#16A34A" />}
-              iconBg="rgba(22,163,74,0.08)"
-              label={t('inHouse', lang)}
-              value={inHouseGuests}
-              onChange={setInHouseGuests}
-              editing={editingField}
-              fieldKey="inHouse"
-              setEditing={setEditingField}
-              sub={lang === 'es' ? 'huéspedes' : 'guests'}
-            />
-            {/* Blocked rooms */}
-            <StatCard
-              icon={<Ban size={16} color={blockedRooms > 0 ? '#DC2626' : 'var(--text-muted)'} />}
-              iconBg={blockedRooms > 0 ? 'rgba(220,38,38,0.08)' : 'rgba(0,0,0,0.04)'}
-              label={t('blockedRooms', lang)}
-              value={blockedRooms}
-              sub={lang === 'es' ? 'mantenimiento' : 'maintenance'}
-            />
-          </div>
-        </div>
-
-        {/* ── Revenue ── */}
-        <div className="animate-in stagger-1">
-          <p style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: '8px' }}>
-            {lang === 'es' ? 'Ingresos' : 'Revenue'}
-          </p>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '10px' }}>
-            {/* ADR (editable) */}
-            <EditableStatCard
-              icon={<DollarSign size={16} color="#CA8A04" />}
-              iconBg="rgba(202,138,4,0.08)"
-              label={t('adr', lang)}
-              value={adr}
-              onChange={setAdr}
-              editing={editingField}
-              fieldKey="adr"
-              setEditing={setEditingField}
-              sub={t('perNight', lang)}
-              prefix="$"
-            />
-            {/* RevPAR (calculated) */}
-            <StatCard
-              icon={<TrendingUp size={16} color="#16A34A" />}
-              iconBg="rgba(22,163,74,0.08)"
-              label={t('revpar', lang)}
-              value={adr > 0 ? `$${revpar}` : '—'}
-              sub={t('perAvailRoom', lang)}
-            />
-          </div>
-        </div>
-
-        {/* ── Operations ── */}
-        <div className="animate-in stagger-1">
-          <p style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: '8px' }}>
-            {lang === 'es' ? 'Operaciones' : 'Operations'}
-          </p>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
-            <StatCard
-              icon={<Users size={16} color="#16A34A" />}
-              iconBg="rgba(22,163,74,0.08)"
-              label={t('staffTomorrow', lang)}
-              value={confirmedCount}
-              sub={`${tomorrowConfs.length} ${t('contacted', lang)}`}
-            />
-            <StatCard
-              icon={<AlertTriangle size={16} color="#DC2626" />}
-              iconBg="rgba(220,38,38,0.08)"
-              label={t('dirtyRooms', lang)}
-              value={dirty}
-              sub={t('needCleaning', lang)}
-            />
-            <StatCard
-              icon={<Clock size={16} color="var(--navy)" />}
-              iconBg="rgba(27,58,92,0.08)"
-              label={t('avgTurnover', lang)}
-              value={avgTurnover !== null ? `${avgTurnover}m` : '—'}
-              sub={avgTurnover !== null ? `${rooms.filter(r => r.completedAt).length} ${t('roomsCleaned', lang)}` : t('noDataYet', lang)}
-            />
-            <StatCard
-              icon={<Wrench size={16} color={urgentOrders.length > 0 ? '#DC2626' : 'var(--navy)'} />}
-              iconBg={urgentOrders.length > 0 ? 'rgba(220,38,38,0.08)' : 'rgba(27,58,92,0.08)'}
-              label={t('openWorkOrders', lang)}
-              value={openOrders.length}
-              sub={urgentOrders.length > 0 ? `${urgentOrders.length} urgent` : t('allRoutine', lang)}
-            />
-            <StatCard
-              icon={<DoorOpen size={16} color="var(--navy)" />}
-              iconBg="rgba(27,58,92,0.08)"
-              label={t('availableRooms', lang)}
-              value={vacant}
-              sub={`${totalPropertyRooms} ${t('total', lang)}`}
-            />
-          </div>
-        </div>
-
-        {/* ── Est. Labor Cost (single card, 3 depts + total) ── */}
-        {(() => {
-          const wage = activeProperty?.hourlyWage || 12;
-          const hkStaff = rooms.length > 0 ? Math.ceil(rooms.length / 15) : 1;
-          const hkCost = Math.round(hkStaff * wage * 8);
-          const fdCost = Math.round(2 * wage * 8);
-          const mtCost = Math.round(1 * wage * 8);
-          const totalCost = fdCost + hkCost + mtCost;
-          const depts = [
-            { label: t('frontDeskLabor', lang), cost: fdCost, color: '#0891b2', staffLabel: '2 staff' },
-            { label: t('housekeepingLabor', lang), cost: hkCost, color: '#CA8A04', staffLabel: `${hkStaff} staff` },
-            { label: t('maintenanceLabor', lang), cost: mtCost, color: '#6b7280', staffLabel: '1 staff' },
-          ];
-          return (
-            <div className="animate-in stagger-1 card" style={{ padding: '16px 18px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
-                <div style={{ width: '36px', height: '36px', borderRadius: '10px', background: 'rgba(202,138,4,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                  <DollarSign size={16} color="#CA8A04" />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <p style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)' }}>{t('estLaborCost', lang)}</p>
-                </div>
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '22px', lineHeight: 1, letterSpacing: '-0.03em', color: 'var(--text-primary)' }}>
-                    ${totalCost}
-                  </div>
-                  <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>{t('today', lang)}</p>
-                </div>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                {depts.map(dept => (
-                  <div key={dept.label} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', borderRadius: 'var(--radius-md)', background: 'rgba(0,0,0,0.02)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: dept.color, flexShrink: 0 }} />
-                      <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-primary)' }}>{dept.label}</span>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{dept.staffLabel}</span>
-                      <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '14px', color: 'var(--text-primary)', minWidth: '50px', textAlign: 'right' }}>
-                        ${dept.cost}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '36px', lineHeight: 1, letterSpacing: '-0.04em', color: occupancyPct >= 80 ? '#16A34A' : occupancyPct >= 50 ? 'var(--navy)' : '#d97706' }}>
+              {occupancyPct}<span style={{ fontSize: '22px', fontWeight: 600 }}>%</span>
             </div>
-          );
-        })()}
+            <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: 0 }}>
+              {rentedRooms} of {totalPropertyRooms} rooms occupied
+            </p>
+          </div>
 
-        {/* ── Deep Clean Insight Banner ── */}
+          {/* Dirty Rooms — action needed */}
+          <div className="card" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: dirty > 0 ? 'rgba(220,38,38,0.08)' : 'rgba(22,163,74,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <AlertTriangle size={15} color={dirty > 0 ? '#DC2626' : '#16A34A'} />
+              </div>
+              <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-muted)' }}>{t('dirtyRooms', lang)}</span>
+            </div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '36px', lineHeight: 1, letterSpacing: '-0.04em', color: dirty > 0 ? '#DC2626' : '#16A34A' }}>
+              {dirty}
+            </div>
+            <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: 0 }}>
+              {clean} {t('clean', lang).toLowerCase()} · {inProgress} {t('progress', lang).toLowerCase()}
+            </p>
+          </div>
+
+          {/* Staff Tomorrow */}
+          <div className="card" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: 'rgba(22,163,74,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Users size={15} color="#16A34A" />
+              </div>
+              <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-muted)' }}>{t('staffTomorrow', lang)}</span>
+            </div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '36px', lineHeight: 1, letterSpacing: '-0.04em', color: confirmedCount > 0 ? '#16A34A' : 'var(--text-muted)' }}>
+              {confirmedCount}
+            </div>
+            <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: 0 }}>
+              {tomorrowConfs.length > 0 ? `${tomorrowConfs.length} ${t('contacted', lang)}` : lang === 'es' ? 'ninguno contactado' : 'none contacted'}
+            </p>
+          </div>
+        </div>
+
+        {/* ════════════════════════════════════════════════════════════
+            DEEP CLEAN ALERT — only shows when rooms are overdue
+            ════════════════════════════════════════════════════════════ */}
         {overdueRooms.length > 0 && (
           <div
-            className="animate-in stagger-2 card"
+            className="animate-in stagger-1"
             style={{
               padding: '14px 18px',
               display: 'flex',
               alignItems: 'center',
               gap: '14px',
+              borderRadius: 'var(--radius-lg)',
               background: 'linear-gradient(135deg, rgba(245,158,11,0.06) 0%, rgba(220,38,38,0.04) 100%)',
               border: '1px solid rgba(245,158,11,0.2)',
             }}
           >
             <div style={{
-              width: '40px', height: '40px', borderRadius: '10px',
+              width: '36px', height: '36px', borderRadius: '8px',
               background: 'rgba(245,158,11,0.12)',
               display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
             }}>
-              <Zap size={18} color="#f59e0b" />
+              <Zap size={16} color="#f59e0b" />
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <p style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '2px' }}>
+              <p style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '1px' }}>
                 {overdueRooms.length} room{overdueRooms.length !== 1 ? 's' : ''} overdue for deep cleaning
               </p>
-              <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                {dndFreedMins > 0
-                  ? `${dndFreedMins} min freed from DND rooms today.`
-                  : 'No DND rooms freeing time today.'}
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: 0 }}>
+                {dndFreedMins > 0 ? `${dndFreedMins} min freed from DND rooms.` : ''}
                 {dcSuggestion && dcSuggestion.count > 0
-                  ? ` You could fit ${dcSuggestion.count} deep clean${dcSuggestion.count !== 1 ? 's' : ''} (${dcSuggestion.minutes} min).`
+                  ? ` Could fit ${dcSuggestion.count} deep clean${dcSuggestion.count !== 1 ? 's' : ''}.`
                   : ''}
               </p>
-            </div>
-            <div style={{
-              display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0,
-              padding: '6px 14px', borderRadius: '8px',
-              background: 'rgba(220,38,38,0.08)',
-            }}>
-              <span style={{ fontSize: '20px', fontWeight: 700, fontFamily: 'var(--font-mono)', color: '#dc2626', lineHeight: 1 }}>
-                {overdueRooms.length}
-              </span>
-              <span style={{ fontSize: '10px', fontWeight: 600, color: '#dc2626', textTransform: 'uppercase' }}>
-                overdue
-              </span>
             </div>
           </div>
         )}
 
-        {/* ── Main content - two columns side by side ── */}
+        {/* ════════════════════════════════════════════════════════════
+            MAIN CONTENT — Room Grid + Tomorrow's Crew side by side
+            ════════════════════════════════════════════════════════════ */}
         <div className="animate-in stagger-2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', flex: 1, minHeight: 0 }}>
 
           {/* LEFT: Room status + grid */}
-          <div className="card" onClick={() => { localStorage.setItem('hk-tab', 'rooms'); router.push('/housekeeping'); }} style={{ padding: '18px', display: 'flex', flexDirection: 'column', overflow: 'hidden', cursor: 'pointer', transition: 'box-shadow 150ms', }} onMouseEnter={e => (e.currentTarget.style.boxShadow = '0 0 0 2px var(--navy-light)')} onMouseLeave={e => (e.currentTarget.style.boxShadow = '')}>
+          <div
+            className="card"
+            onClick={() => { localStorage.setItem('hk-tab', 'rooms'); router.push('/housekeeping'); }}
+            style={{ padding: '18px', display: 'flex', flexDirection: 'column', overflow: 'hidden', cursor: 'pointer', transition: 'box-shadow 150ms' }}
+            onMouseEnter={e => (e.currentTarget.style.boxShadow = '0 0 0 2px var(--navy-light)')}
+            onMouseLeave={e => (e.currentTarget.style.boxShadow = '')}
+          >
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
               <Sparkles size={14} color="var(--navy-light)" />
-              <h2 style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)' }}>
+              <h2 style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
                 {t('roomStatus', lang)}
               </h2>
               <span style={{ marginLeft: 'auto', fontSize: '18px', fontFamily: 'var(--font-mono)', fontWeight: 700, color: pct === 100 ? 'var(--green)' : 'var(--navy-light)' }}>
@@ -594,10 +420,16 @@ export default function DashboardPage() {
           </div>
 
           {/* RIGHT: Tomorrow's crew */}
-          <div className="card" onClick={() => { localStorage.setItem('hk-tab', 'schedule'); router.push('/housekeeping'); }} style={{ padding: '18px', display: 'flex', flexDirection: 'column', overflow: 'hidden', cursor: 'pointer', transition: 'box-shadow 150ms' }} onMouseEnter={e => (e.currentTarget.style.boxShadow = '0 0 0 2px var(--navy-light)')} onMouseLeave={e => (e.currentTarget.style.boxShadow = '')}>
+          <div
+            className="card"
+            onClick={() => { localStorage.setItem('hk-tab', 'schedule'); router.push('/housekeeping'); }}
+            style={{ padding: '18px', display: 'flex', flexDirection: 'column', overflow: 'hidden', cursor: 'pointer', transition: 'box-shadow 150ms' }}
+            onMouseEnter={e => (e.currentTarget.style.boxShadow = '0 0 0 2px var(--navy-light)')}
+            onMouseLeave={e => (e.currentTarget.style.boxShadow = '')}
+          >
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', flexShrink: 0 }}>
               <Users size={14} color="var(--navy-light)" />
-              <h2 style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)' }}>
+              <h2 style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
                 {t('tomorrowsCrew', lang)}
               </h2>
               {tomorrowConfs.length > 0 && (
@@ -610,10 +442,11 @@ export default function DashboardPage() {
             {tomorrowConfs.length === 0 ? (
               <div style={{
                 padding: '32px 16px', textAlign: 'center', borderRadius: 'var(--radius-md)',
-                background: 'rgba(0,0,0,0.02)', border: '1px dashed var(--border)',
+                background: 'rgba(0,0,0,0.02)', border: '1px dashed var(--border)', flex: 1,
+                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
               }}>
-                <CircleDot size={24} color="var(--text-muted)" style={{ margin: '0 auto 8px' }} />
-                <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                <CircleDot size={24} color="var(--text-muted)" style={{ marginBottom: '8px' }} />
+                <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: 1.5, margin: 0 }}>
                   {t('noConfirmationsYet', lang)}
                 </p>
               </div>
@@ -656,8 +489,118 @@ export default function DashboardPage() {
               </div>
             )}
           </div>
+        </div>
 
-        </div>{/* end two-column grid */}
+        {/* ════════════════════════════════════════════════════════════
+            DETAILS — Secondary stats in a compact, single card
+            ════════════════════════════════════════════════════════════ */}
+        <div className="animate-in stagger-3 card" style={{ padding: '18px 20px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0', borderBottom: '1px solid var(--border)', paddingBottom: '14px', marginBottom: '14px' }}>
+
+            {/* Guests section */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <p style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', margin: 0 }}>
+                {lang === 'es' ? 'Huéspedes' : 'Guests'}
+              </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingRight: '16px' }}>
+                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{t('arrivals', lang)}</span>
+                  <InlineEdit value={arrivals} onChange={setArrivals} fieldKey="arrivals" />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingRight: '16px' }}>
+                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{t('reservations', lang)}</span>
+                  <InlineEdit value={reservationCount} onChange={setReservationCount} fieldKey="reservations" />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingRight: '16px' }}>
+                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{t('inHouse', lang)}</span>
+                  <InlineEdit value={inHouseGuests} onChange={setInHouseGuests} fieldKey="inHouse" />
+                </div>
+              </div>
+            </div>
+
+            {/* Revenue section */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', borderLeft: '1px solid var(--border)', paddingLeft: '16px' }}>
+              <p style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', margin: 0 }}>
+                {lang === 'es' ? 'Ingresos' : 'Revenue'}
+              </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingRight: '16px' }}>
+                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{t('adr', lang)}</span>
+                  <InlineEdit value={adr} onChange={setAdr} fieldKey="adr" prefix="$" />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingRight: '16px' }}>
+                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{t('revpar', lang)}</span>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '15px', color: 'var(--text-primary)' }}>
+                    {adr > 0 ? `$${revpar}` : '—'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Operations section */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', borderLeft: '1px solid var(--border)', paddingLeft: '16px' }}>
+              <p style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', margin: 0 }}>
+                {lang === 'es' ? 'Operaciones' : 'Operations'}
+              </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingRight: '16px' }}>
+                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{t('avgTurnover', lang)}</span>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '15px', color: 'var(--text-primary)' }}>
+                    {avgTurnover !== null ? `${avgTurnover}m` : '—'}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingRight: '16px' }}>
+                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{t('openWorkOrders', lang)}</span>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '15px', color: urgentOrders.length > 0 ? '#DC2626' : 'var(--text-primary)' }}>
+                    {openOrders.length}
+                    {urgentOrders.length > 0 && <span style={{ fontSize: '10px', color: '#DC2626', marginLeft: '4px' }}>!</span>}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingRight: '16px' }}>
+                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{t('blockedRooms', lang)}</span>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '15px', color: blockedRooms > 0 ? '#DC2626' : 'var(--text-primary)' }}>
+                    {blockedRooms}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Labor cost section */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', borderLeft: '1px solid var(--border)', paddingLeft: '16px' }}>
+              <p style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', margin: 0 }}>
+                {t('estLaborCost', lang)}
+              </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{t('frontDeskLabor', lang)}</span>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: '13px', color: 'var(--text-secondary)' }}>${fdCost}</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{t('housekeepingLabor', lang)}</span>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: '13px', color: 'var(--text-secondary)' }}>${hkCost}</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: '4px', borderTop: '1px solid var(--border)' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>{t('total', lang)}</span>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '15px', color: 'var(--text-primary)' }}>${totalCost}</span>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          {/* Available rooms footer */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <DoorOpen size={14} color="var(--text-muted)" />
+              <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                {t('availableRooms', lang)}
+              </span>
+            </div>
+            <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '15px', color: 'var(--navy)' }}>
+              {vacant} <span style={{ fontSize: '11px', fontWeight: 400, color: 'var(--text-muted)' }}>/ {totalPropertyRooms}</span>
+            </span>
+          </div>
+        </div>
 
       </div>
     </AppLayout>
