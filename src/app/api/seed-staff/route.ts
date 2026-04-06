@@ -39,10 +39,12 @@ export async function POST(req: NextRequest) {
     .collection('properties').doc(pid)
     .collection('staff');
 
-  // Check if staff already exists
+  // Clear existing staff first
   const existing = await staffCol.get();
   if (existing.size > 0) {
-    return NextResponse.json({ error: `Staff already seeded (${existing.size} members exist). Delete them first if you want to re-seed.` }, { status: 409 });
+    const deleteBatch = admin.firestore().batch();
+    existing.docs.forEach(d => deleteBatch.delete(d.ref));
+    await deleteBatch.commit();
   }
 
   const batch = admin.firestore().batch();
