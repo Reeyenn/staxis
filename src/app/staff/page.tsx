@@ -456,7 +456,7 @@ export default function StaffPage() {
               })}
             </div>
 
-            {/* Staff cards */}
+            {/* Staff list */}
             {displayStaff.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '48px 16px' }}>
                 <Users size={40} color="var(--text-muted)" style={{ margin: '0 auto 12px' }} />
@@ -465,75 +465,68 @@ export default function StaffPage() {
                 </p>
               </div>
             ) : (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '12px' }}>
+              <div className="card" style={{ overflow: 'hidden' }}>
                 {displayStaff.map((member, idx) => {
                   const dept = deptConfig(member.department);
-                  const utilizationPct = Math.round((member.weeklyHours / member.maxWeeklyHours) * 100);
                   const nearMax = member.weeklyHours >= member.maxWeeklyHours - 4;
-                  const atOrOverMax = member.weeklyHours >= member.maxWeeklyHours;
                   return (
-                    <div key={member.id} className="animate-in" style={{ animationDelay: `${idx * 40}ms` }}>
-                      <div className="card" style={{
-                        padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px', height: '100%',
-                        borderColor: nearMax ? 'rgba(251,191,36,0.3)' : 'var(--border)',
-                        background: nearMax ? 'rgba(251,191,36,0.04)' : 'var(--bg-card)',
+                    <div
+                      key={member.id}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: '12px',
+                        padding: '12px 16px',
+                        borderBottom: idx < displayStaff.length - 1 ? '1px solid var(--border)' : 'none',
                         opacity: member.isActive === false ? 0.5 : 1,
-                      }}>
-                        {/* Avatar + name + badges */}
-                        <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
-                          <div style={{ width: '38px', height: '38px', borderRadius: 'var(--radius-md)', background: 'var(--navy)', color: '#FFFFFF', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: '14px', flexShrink: 0 }}>
-                            {initials(member.name)}
-                          </div>
-                          <div style={{ flex: 1 }}>
-                            <p style={{ fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)', margin: '0 0 4px' }}>{member.name}</p>
-                            <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
-                              <span style={{ fontSize: '10px', fontWeight: 600, letterSpacing: '0.03em', padding: '2px 7px', borderRadius: '10px', textTransform: 'uppercase', background: dept.bg, color: dept.color, border: `1px solid ${dept.border}` }}>{dept.label}</span>
-                              <span className="chip" style={{ fontSize: '10px', padding: '2px 7px', background: member.language === 'es' ? 'rgba(34,197,94,0.15)' : 'rgba(59,130,246,0.15)', color: member.language === 'es' ? 'var(--green)' : 'var(--blue)' }}>{member.language === 'es' ? 'ES' : 'EN'}</span>
-                              {member.isSenior && (
-                                <span className="chip" style={{ fontSize: '10px', padding: '2px 7px', background: 'rgba(251,191,36,0.15)', color: 'var(--amber)', display: 'flex', alignItems: 'center', gap: '3px' }}>
-                                  <Star size={9} /> {t('senior', lang)}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
+                        background: nearMax ? 'rgba(251,191,36,0.04)' : 'transparent',
+                      }}
+                    >
+                      {/* Avatar */}
+                      <div style={{ width: '34px', height: '34px', borderRadius: '8px', background: 'var(--navy)', color: '#FFFFFF', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: '12px', flexShrink: 0 }}>
+                        {initials(member.name)}
+                      </div>
 
-                        {/* Hours bar */}
-                        <div>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: 'var(--text-muted)', marginBottom: '6px' }}>
-                            <span>{member.weeklyHours}h / {member.maxWeeklyHours}h</span>
-                            <span style={{ color: atOrOverMax ? 'var(--red)' : nearMax ? 'var(--amber)' : 'var(--text-muted)' }}>
-                              {Math.max(0, member.maxWeeklyHours - member.weeklyHours)}{t('hoursLeftLabel', lang)}
-                            </span>
-                          </div>
-                          <div style={{ height: '4px', background: 'rgba(0,0,0,0.05)', borderRadius: '2px', overflow: 'hidden' }}>
-                            <div style={{ width: `${Math.min(utilizationPct, 100)}%`, height: '100%', borderRadius: '2px', background: utilizationPct > 100 ? 'var(--red)' : utilizationPct > 90 ? 'var(--amber)' : 'var(--green)' }} />
-                          </div>
+                      {/* Name + department */}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{ fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{member.name}</span>
+                          {member.isSenior && <Star size={11} color="var(--amber)" fill="var(--amber)" />}
                         </div>
-
-                        {/* Scheduled toggle */}
-                        <div onClick={() => toggleScheduledToday(member)} style={{
-                          display: 'flex', alignItems: 'center', gap: '8px', padding: '10px',
-                          background: member.scheduledToday ? 'rgba(34,197,94,0.08)' : 'rgba(0,0,0,0.03)',
-                          border: '1px solid ' + (member.scheduledToday ? 'rgba(34,197,94,0.2)' : 'var(--border)'),
-                          borderRadius: 'var(--radius-md)', cursor: 'pointer',
-                        }}>
-                          <Clock size={14} color={member.scheduledToday ? 'var(--green)' : 'var(--text-muted)'} />
-                          <span style={{ flex: 1, fontSize: '13px', fontWeight: 500, color: member.scheduledToday ? 'var(--green)' : 'var(--text-secondary)' }}>
-                            {member.scheduledToday ? t('scheduledTodayStatus', lang) : t('notScheduled', lang)}
-                          </span>
-                        </div>
-
-                        {/* Edit / Delete */}
-                        <div style={{ display: 'flex', gap: '8px' }}>
-                          <button onClick={() => openEdit(member)} style={{ flex: 1, padding: '8px 12px', background: 'rgba(0,0,0,0.05)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', color: 'var(--text-primary)', fontWeight: 500, fontSize: '13px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', fontFamily: 'var(--font-sans)' }}>
-                            <Pencil size={12} /> {t('edit', lang)}
-                          </button>
-                          <button onClick={() => handleDelete(member)} style={{ padding: '8px 12px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 'var(--radius-md)', color: 'var(--red)', fontWeight: 500, fontSize: '13px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--font-sans)' }}>
-                            <Trash2 size={12} />
-                          </button>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' }}>
+                          <span style={{ fontSize: '11px', fontWeight: 600, color: dept.color }}>{dept.label}</span>
+                          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>·</span>
+                          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{member.language === 'es' ? 'ES' : 'EN'}</span>
+                          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>·</span>
+                          <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: nearMax ? 'var(--amber)' : 'var(--text-muted)' }}>{member.weeklyHours}h/{member.maxWeeklyHours}h</span>
                         </div>
                       </div>
+
+                      {/* Scheduled indicator */}
+                      <div
+                        onClick={(e) => { e.stopPropagation(); toggleScheduledToday(member); }}
+                        style={{
+                          width: '28px', height: '28px', borderRadius: '6px',
+                          background: member.scheduledToday ? 'rgba(34,197,94,0.12)' : 'rgba(0,0,0,0.04)',
+                          border: `1px solid ${member.scheduledToday ? 'rgba(34,197,94,0.3)' : 'var(--border)'}`,
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          cursor: 'pointer', flexShrink: 0,
+                        }}
+                        title={member.scheduledToday ? 'Scheduled today' : 'Not scheduled'}
+                      >
+                        <Clock size={13} color={member.scheduledToday ? 'var(--green)' : 'var(--text-muted)'} />
+                      </div>
+
+                      {/* Edit */}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); openEdit(member); }}
+                        style={{
+                          width: '28px', height: '28px', borderRadius: '6px',
+                          background: 'rgba(0,0,0,0.04)', border: '1px solid var(--border)',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          cursor: 'pointer', flexShrink: 0,
+                        }}
+                      >
+                        <Pencil size={12} color="var(--text-muted)" />
+                      </button>
                     </div>
                   );
                 })}
