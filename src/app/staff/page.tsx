@@ -504,28 +504,29 @@ export default function StaffPage() {
                       <div
                         onClick={(e) => { e.stopPropagation(); toggleScheduledToday(member); }}
                         style={{
-                          padding: '4px 10px', borderRadius: '6px',
+                          padding: '6px 14px', borderRadius: '8px',
                           background: member.scheduledToday ? 'rgba(34,197,94,0.12)' : 'rgba(0,0,0,0.04)',
                           border: `1px solid ${member.scheduledToday ? 'rgba(34,197,94,0.3)' : 'var(--border)'}`,
                           cursor: 'pointer', flexShrink: 0,
-                          fontSize: '11px', fontWeight: 600,
+                          fontSize: '13px', fontWeight: 600,
                           color: member.scheduledToday ? 'var(--green)' : 'var(--text-muted)',
+                          display: 'flex', alignItems: 'center', gap: '4px',
                         }}
                       >
-                        {member.scheduledToday ? 'Scheduled' : 'Schedule'}
+                        {member.scheduledToday ? 'Scheduled ✓' : 'Schedule ›'}
                       </div>
 
                       {/* Edit */}
                       <button
                         onClick={(e) => { e.stopPropagation(); openEdit(member); }}
                         style={{
-                          padding: '4px 10px', borderRadius: '6px',
+                          padding: '6px 14px', borderRadius: '8px',
                           background: 'rgba(0,0,0,0.04)', border: '1px solid var(--border)',
                           cursor: 'pointer', flexShrink: 0,
-                          fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)',
+                          fontSize: '13px', fontWeight: 600, color: 'var(--text-muted)',
                         }}
                       >
-                        Edit
+                        Edit ›
                       </button>
                     </div>
                   );
