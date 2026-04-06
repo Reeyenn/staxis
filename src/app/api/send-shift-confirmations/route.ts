@@ -49,6 +49,10 @@ export async function POST(req: NextRequest) {
 
     const db = admin.firestore();
 
+    // Fetch hotel name from property doc
+    const propSnap = await db.collection('users').doc(uid).collection('properties').doc(pid).get();
+    const hotelName = propSnap.data()?.name || 'Your Hotel';
+
     const results = await Promise.allSettled(
       staff.map(async ({ staffId, name, phone, language, assignedRooms, assignedAreas }) => {
         const token = randomUUID();
@@ -94,8 +98,8 @@ export async function POST(req: NextRequest) {
           : `${roomCount} room${roomCount !== 1 ? 's' : ''}${areaCount > 0 ? ` + ${areaCount} area${areaCount !== 1 ? 's' : ''}` : ''}`;
 
         const message = language === 'es'
-          ? `Hola ${firstName} 👋 ¿Puedes venir mañana (${dateLabel})? Tendrías ${workSummary}. Confirma: ${confirmUrl} – Comfort Suites`
-          : `Hi ${firstName} 👋 Can you come in tomorrow (${dateLabel})? You'd have ${workSummary}. Confirm: ${confirmUrl} – Comfort Suites`;
+          ? `Hola ${firstName} 👋 ¿Puedes venir mañana (${dateLabel})? Tendrías ${workSummary}. Confirma: ${confirmUrl} – ${hotelName}`
+          : `Hi ${firstName} 👋 Can you come in tomorrow (${dateLabel})? You'd have ${workSummary}. Confirm: ${confirmUrl} – ${hotelName}`;
 
         await sendSms(phone164, message);
 

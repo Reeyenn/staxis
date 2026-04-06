@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import admin from '@/lib/firebase-admin';
 import { sendSms } from '@/lib/sms';
 
 interface SmsEntry {
@@ -20,9 +21,30 @@ function toE164(raw: string): string | null {
 
 export async function POST(req: NextRequest) {
   try {
-    const entries: SmsEntry[] = await req.json();
+    const reqBody = await req.json();
+
+    // Handle both array format and object format with uid/pid
+    let entries: SmsEntry[];
+    let uid: string | undefined;
+    let pid: string | undefined;
+
+    if (Array.isArray(reqBody)) {
+      entries = reqBody;
+    } else {
+      entries = reqBody.entries ?? [];
+      uid = reqBody.uid;
+      pid = reqBody.pid;
+    }
+
     if (!Array.isArray(entries) || entries.length === 0) {
       return NextResponse.json({ error: 'No entries provided' }, { status: 400 });
+    }
+
+    let hotelName = 'Your Hotel';
+    if (uid && pid) {
+      const db = admin.firestore();
+      const propSnap = await db.collection('users').doc(uid).collection('properties').doc(pid).get();
+      hotelName = propSnap.data()?.name || 'Your Hotel';
     }
 
     const results = await Promise.allSettled(
@@ -37,7 +59,7 @@ export async function POST(req: NextRequest) {
         const link = housekeeperId
           ? ` View your rooms: https://hotelops-ai.vercel.app/housekeeper/${housekeeperId}`
           : '';
-        const message = `Hi ${name.split(' ')[0]}, your rooms for today: ${roomList}.${link} – Comfort Suites`;
+        const message = `Hi ${name.split(' ')[0]}, your rooms for today: ${roomList}.${link} – ${hotelName}`;
 
         return sendSms(e164, message);
       })

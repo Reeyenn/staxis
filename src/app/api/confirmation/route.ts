@@ -72,6 +72,10 @@ export async function POST(req: NextRequest) {
     }
 
     const db = admin.firestore();
+
+    // Fetch hotel name from property doc
+    const propSnap = await db.collection('users').doc(uid).collection('properties').doc(pid).get();
+    const hotelName = propSnap.data()?.name || 'Your Hotel';
     const confirmRef = db
       .collection('users').doc(uid)
       .collection('properties').doc(pid)
@@ -115,13 +119,13 @@ export async function POST(req: NextRequest) {
           if (rooms.length > 0) followUp += `\nHabitaciones: ${rooms.join(', ')}`;
           if (areas.length > 0) followUp += `\nÁreas: ${areas.join(', ')}`;
           if (hkUrl)            followUp += `\nTu enlace: ${hkUrl}`;
-          followUp += `\n– Comfort Suites`;
+          followUp += `\n– ${hotelName}`;
         } else {
           followUp = `✅ Confirmed, ${firstName}! Here's your assignment for tomorrow:`;
           if (rooms.length > 0) followUp += `\nRooms: ${rooms.join(', ')}`;
           if (areas.length > 0) followUp += `\nAreas: ${areas.join(', ')}`;
           if (hkUrl)            followUp += `\nYour link: ${hkUrl}`;
-          followUp += `\n– Comfort Suites`;
+          followUp += `\n– ${hotelName}`;
         }
         try {
           await sendSms(phone164, followUp);
@@ -233,8 +237,8 @@ export async function POST(req: NextRequest) {
           const firstName = (replacement.name as string).split(' ')[0];
 
           const message = lang === 'es'
-            ? `Hola ${firstName}, estás programada para el ${dateLabel}. Confirma aquí: ${confirmUrl} – Comfort Suites`
-            : `Hi ${firstName}, you're scheduled for ${dateLabel}. Confirm: ${confirmUrl} – Comfort Suites`;
+            ? `Hola ${firstName}, estás programada para el ${dateLabel}. Confirma aquí: ${confirmUrl} – ${hotelName}`
+            : `Hi ${firstName}, you're scheduled for ${dateLabel}. Confirm: ${confirmUrl} – ${hotelName}`;
 
           await db
             .collection('users').doc(uid)

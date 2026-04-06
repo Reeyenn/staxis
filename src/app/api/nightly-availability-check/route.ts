@@ -52,6 +52,11 @@ export async function POST(req: NextRequest) {
     }
 
     const db = admin.firestore();
+
+    // Fetch hotel name from property doc
+    const propSnap = await db.collection('users').doc(uid).collection('properties').doc(pid).get();
+    const hotelName = propSnap.data()?.name || 'Your Hotel';
+
     // Load all active staff with phone numbers
     const staffSnap = await db
       .collection('users').doc(uid)
@@ -105,9 +110,9 @@ export async function POST(req: NextRequest) {
         // Always include ESPAÑOL prompt unless they already speak Spanish
         let message: string;
         if (lang === 'es') {
-          message = `Hola ${firstName}! ¿Puedes venir mañana (${dateLabel})?\nResponde SÍ o NO.\n\nFor English, reply ENGLISH\n– Comfort Suites`;
+          message = `Hola ${firstName}! ¿Puedes venir mañana (${dateLabel})?\nResponde SÍ o NO.\n\nFor English, reply ENGLISH\n– ${hotelName}`;
         } else {
-          message = `Hi ${firstName}! Can you come in tomorrow (${dateLabel})?\nReply YES or NO.\n\nPara español, responde ESPAÑOL\n– Comfort Suites`;
+          message = `Hi ${firstName}! Can you come in tomorrow (${dateLabel})?\nReply YES or NO.\n\nPara español, responde ESPAÑOL\n– ${hotelName}`;
         }
 
         // Store the check doc so sms-reply can look it up by phone
