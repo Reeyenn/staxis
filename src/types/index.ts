@@ -113,6 +113,7 @@ export interface Room {
   inspectedAt?: Date | null;    // timestamp of inspection sign-off
   isDnd?: boolean;              // Do Not Disturb flag
   dndNote?: string;             // optional DND note
+  helpRequested?: boolean;      // housekeeper tapped "Need Help" — shows SOS badge on Maria's view
   checklist?: Record<string, boolean>; // cleaning checklist item completion
   photoUrl?: string;            // issue photo URL
 }

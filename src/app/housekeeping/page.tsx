@@ -14,7 +14,7 @@ import {
   addStaffMember, updateStaffMember, deleteStaffMember,
   getRoomsForDate, getPublicAreas, setPublicArea, deletePublicArea,
   updateProperty,
-  getDeepCleanConfig, getDeepCleanRecords,
+  getDeepCleanConfig, getDeepCleanRecords, markRoomDeepCleaned,
 } from '@/lib/firestore';
 import { getPublicAreasDueToday, calcPublicAreaMinutes, autoAssignRooms, getOverdueRooms, calcDndFreedMinutes, suggestDeepCleans } from '@/lib/calculations';
 import { getDefaultPublicAreas } from '@/lib/defaults';
@@ -31,12 +31,12 @@ import {
 
 // ─── Tab config ──────────────────────────────────────────────────────────────
 
-type TabKey = 'rooms' | 'schedule' | 'inspect' | 'performance';
+type TabKey = 'rooms' | 'schedule' | 'deepclean' | 'performance';
 
 const TABS: { key: TabKey; label: string; labelEs: string }[] = [
   { key: 'rooms',       label: 'Rooms',        labelEs: 'Habitaciones'   },
   { key: 'schedule',    label: 'Schedule',     labelEs: 'Horario'        },
-  { key: 'inspect',     label: 'Inspect',      labelEs: 'Inspeccionar'   },
+  { key: 'deepclean',   label: 'Deep Clean',   labelEs: 'Limpieza Prof.' },
   { key: 'performance', label: 'Performance',  labelEs: 'Rendimiento'    },
 ];
 
@@ -1068,7 +1068,7 @@ const ROOM_ACTION_COLOR: Record<RoomStatus, { bg: string; border: string; color:
 
 function RoomsSection() {
   const { user }                                           = useAuth();
-  const { activePropertyId, activeProperty }               = useProperty();
+  const { activePropertyId, activeProperty, staff }        = useProperty();
   const { lang }                                           = useLang();
   const { recordOfflineAction }                            = useSyncContext();
 
@@ -1076,6 +1076,10 @@ function RoomsSection() {
   const [loading, setLoading] = useState(true);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [actionRoom, setActionRoom] = useState<Room | null>(null); // room action popup
+  const [nowMs, setNowMs] = useState(Date.now());
+
+  // Help request badge tracking — rooms where helpRequested is true
+  const [backupRoom, setBackupRoom] = useState<Room | null>(null); // room needing backup staff picker
 
   useEffect(() => {
     if (!user || !activePropertyId) return;
@@ -1085,6 +1089,12 @@ function RoomsSection() {
     });
     return unsub;
   }, [user, activePropertyId]);
+
+  // Live timer refresh every 15 seconds
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 15_000);
+    return () => clearInterval(id);
+  }, []);
 
   const floors = [...new Set(rooms.map(r => getFloor(r.number)))].sort((a, b) => {
     if (a === 'G') return -1; if (b === 'G') return 1;
@@ -1121,31 +1131,53 @@ function RoomsSection() {
     await updateRoom(user.uid, activePropertyId, room.id, updates);
   };
 
-  const handleDndToggle = async (room: Room) => {
+  // Send backup handler — assign a backup person to a room
+  const handleSendBackup = async (room: Room, backupStaffId: string, backupStaffName: string) => {
     if (!user || !activePropertyId) return;
     if (!navigator.onLine) recordOfflineAction();
-    await updateRoom(user.uid, activePropertyId, room.id, { isDnd: !room.isDnd });
-    setActionRoom(null);
-    setToastMessage(room.isDnd
-      ? (lang === 'es' ? `${room.number}: DND quitado` : `${room.number}: DND removed`)
-      : (lang === 'es' ? `${room.number}: No Molestar` : `${room.number}: Do Not Disturb`)
-    );
+    // Clear help request and assign backup
+    await updateRoom(user.uid, activePropertyId, room.id, {
+      helpRequested: false,
+      issueNote: `Backup sent: ${backupStaffName} at ${new Date().toLocaleTimeString()}`,
+    });
+    // Send SMS to the backup person
+    try {
+      await fetch('/api/help-request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uid: user.uid, pid: activePropertyId,
+          staffName: backupStaffName,
+          roomNumber: room.number,
+          language: 'en',
+        }),
+      });
+    } catch (e) { /* SMS failure is non-blocking */ }
+    setBackupRoom(null);
+    setToastMessage(lang === 'es' ? `${backupStaffName} enviado a ${room.number}` : `${backupStaffName} sent to Room ${room.number}`);
     setTimeout(() => setToastMessage(null), 2500);
   };
 
-  const handleHelpRequest = async (room: Room) => {
-    if (!user || !activePropertyId) return;
-    if (!navigator.onLine) recordOfflineAction();
-    await updateRoom(user.uid, activePropertyId, room.id, { issueNote: `Help requested at ${new Date().toLocaleTimeString()}` });
-    setActionRoom(null);
-    setToastMessage(lang === 'es' ? `${room.number}: Ayuda solicitada` : `${room.number}: Help requested`);
-    setTimeout(() => setToastMessage(null), 2500);
+  // Helper: get elapsed minutes for an in-progress room
+  const getElapsedMins = (room: Room): number | null => {
+    if (room.status !== 'in_progress') return null;
+    const s = toDate(room.startedAt);
+    if (!s) return null;
+    return Math.round((nowMs - s.getTime()) / 60_000);
+  };
+
+  // Helper: check if room is over time
+  const isOverTime = (room: Room): boolean => {
+    const elapsed = getElapsedMins(room);
+    if (elapsed === null) return false;
+    const limit = room.type === 'checkout' ? (activeProperty?.checkoutMinutes ?? 30) : (activeProperty?.stayoverMinutes ?? 20);
+    return elapsed > limit;
   };
 
   return (
     <div style={{ padding: '20px 16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
-      {/* Room action popup */}
+      {/* Room action popup — simple status cycling only */}
       {actionRoom && (
         <>
           <div style={{ position: 'fixed', inset: 0, zIndex: 9997 }} onClick={() => setActionRoom(null)} />
@@ -1174,14 +1206,16 @@ function RoomsSection() {
                   🚫 DND
                 </span>
               )}
-              {actionRoom.issueNote && (
-                <span style={{ fontSize: '12px', fontWeight: 700, color: '#EA580C', background: 'rgba(234,88,12,0.08)', padding: '4px 10px', borderRadius: '6px' }}>
-                  ⚠️ {lang === 'es' ? 'Ayuda' : 'Help'}
-                </span>
-              )}
             </div>
 
-            {/* Status action — main button */}
+            {/* Assigned housekeeper if any */}
+            {actionRoom.assignedName && (
+              <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                {lang === 'es' ? 'Asignado a:' : 'Assigned to:'} <strong>{actionRoom.assignedName}</strong>
+              </div>
+            )}
+
+            {/* Status action — main button: dirty → in_progress → clean → dirty */}
             <button onClick={() => { handleToggle(actionRoom); setActionRoom(null); }} disabled={actionRoom.status === 'inspected'} style={{
               width: '100%', padding: '14px', borderRadius: '12px', border: 'none',
               background: actionRoom.status === 'dirty' ? '#FBBF24' : actionRoom.status === 'in_progress' ? '#22C55E' : 'var(--bg-elevated)',
@@ -1193,37 +1227,50 @@ function RoomsSection() {
                 : actionRoom.status === 'clean' ? (lang === 'es' ? '↩ Reiniciar' : '↩ Reset to Dirty')
                 : (lang === 'es' ? 'Bloqueada' : 'Locked')}
             </button>
-
-            {/* Secondary actions row */}
-            <div style={{ display: 'flex', gap: '8px' }}>
-              {/* DND toggle */}
-              <button onClick={() => handleDndToggle(actionRoom)} style={{
-                flex: 1, padding: '12px', borderRadius: '10px',
-                border: `1.5px solid ${actionRoom.isDnd ? 'rgba(220,38,38,0.3)' : 'var(--border)'}`,
-                background: actionRoom.isDnd ? 'rgba(220,38,38,0.06)' : 'var(--bg-elevated)',
-                color: actionRoom.isDnd ? '#DC2626' : 'var(--text-secondary)',
-                fontWeight: 600, fontSize: '13px', cursor: 'pointer', fontFamily: 'var(--font-sans)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-              }}>
-                🚫 {actionRoom.isDnd ? (lang === 'es' ? 'Quitar DND' : 'Remove DND') : (lang === 'es' ? 'No Molestar' : 'Do Not Disturb')}
-              </button>
-
-              {/* Help request */}
-              <button onClick={() => handleHelpRequest(actionRoom)} style={{
-                flex: 1, padding: '12px', borderRadius: '10px',
-                border: `1.5px solid ${actionRoom.issueNote ? 'rgba(234,88,12,0.3)' : 'var(--border)'}`,
-                background: actionRoom.issueNote ? 'rgba(234,88,12,0.06)' : 'var(--bg-elevated)',
-                color: actionRoom.issueNote ? '#EA580C' : 'var(--text-secondary)',
-                fontWeight: 600, fontSize: '13px', cursor: 'pointer', fontFamily: 'var(--font-sans)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-              }}>
-                ⚠️ {lang === 'es' ? 'Pedir Ayuda' : 'Request Help'}
-              </button>
-            </div>
           </div>
           <style>{`@keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }`}</style>
         </>
       )}
+
+      {/* Backup staff picker popup */}
+      {backupRoom && (
+        <>
+          <div style={{ position: 'fixed', inset: 0, zIndex: 9997, background: 'rgba(0,0,0,0.4)' }} onClick={() => setBackupRoom(null)} />
+          <div style={{
+            position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 9998,
+            background: 'var(--bg-card)', borderRadius: '16px 16px 0 0',
+            boxShadow: '0 -4px 30px rgba(0,0,0,0.15)',
+            padding: '20px 16px 32px', display: 'flex', flexDirection: 'column', gap: '12px',
+            animation: 'slideUp 0.2s ease-out', maxHeight: '60vh', overflowY: 'auto',
+          }}>
+            <div style={{ width: '40px', height: '4px', borderRadius: '2px', background: 'var(--border)', margin: '0 auto 4px' }} />
+            <p style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+              {lang === 'es' ? `Enviar ayuda a ${backupRoom.number}` : `Send backup to Room ${backupRoom.number}`}
+            </p>
+            <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>
+              {lang === 'es' ? 'Selecciona quién enviar:' : 'Select who to send:'}
+            </p>
+            {staff.filter(s => s.isActive !== false && s.id !== backupRoom.assignedTo).map(s => (
+              <button key={s.id} onClick={() => handleSendBackup(backupRoom, s.id, s.name)} style={{
+                display: 'flex', alignItems: 'center', gap: '12px', padding: '14px 16px',
+                background: 'var(--bg-elevated)', border: '1.5px solid var(--border)', borderRadius: '12px',
+                cursor: 'pointer', fontFamily: 'var(--font-sans)', width: '100%',
+              }}>
+                <div style={{
+                  width: '36px', height: '36px', borderRadius: '10px',
+                  background: 'var(--navy)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontWeight: 700, fontSize: '13px', flexShrink: 0,
+                }}>
+                  {s.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)}
+                </div>
+                <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)' }}>{s.name}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
+      <style>{`@keyframes helpPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(249,115,22,0.4); } 50% { box-shadow: 0 0 0 6px rgba(249,115,22,0); } }`}</style>
 
       {/* Toast notification */}
       {toastMessage && (
@@ -1289,6 +1336,9 @@ function RoomsSection() {
                     {floorRooms.map(room => {
                       const info = STATUS_INFO[room.status];
                       const assignedName = room.assignedName || null;
+                      const elapsed = getElapsedMins(room);
+                      const overTime = isOverTime(room);
+                      const hasHelp = room.helpRequested === true;
 
                       return (
                         <button
@@ -1297,17 +1347,18 @@ function RoomsSection() {
                           disabled={room.status === 'inspected'}
                           title={`Room ${room.number} · ${room.type ?? ''} · ${info.label}${assignedName ? ` · ${assignedName}` : ''}`}
                           style={{
-                            width: '72px', height: '72px', flexShrink: 0,
+                            width: '72px', height: hasHelp ? '82px' : '72px', flexShrink: 0,
                             display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                            gap: '4px',
-                            background: info.bgColor,
-                            border: `1.5px solid ${info.borderColor}`,
+                            gap: '2px',
+                            background: hasHelp ? 'rgba(249,115,22,0.12)' : info.bgColor,
+                            border: hasHelp ? '2px solid rgba(249,115,22,0.6)' : `1.5px solid ${info.borderColor}`,
                             borderRadius: '10px',
                             cursor: room.status === 'inspected' ? 'default' : 'pointer',
                             opacity: room.status === 'inspected' ? 0.55 : 1,
                             transition: 'all 0.1s',
                             fontFamily: 'var(--font-sans)',
                             position: 'relative', overflow: 'hidden',
+                            animation: hasHelp ? 'helpPulse 2s ease-in-out infinite' : undefined,
                           }}
                         >
                           <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '17px', color: 'var(--text-primary)', lineHeight: 1 }}>
@@ -1316,12 +1367,35 @@ function RoomsSection() {
                           <span style={{ fontSize: '10px', fontWeight: 800, color: info.color, textAlign: 'center', lineHeight: 1 }}>
                             {info.label.replace(' ✓', '')}
                           </span>
+                          {/* Timer for in-progress rooms */}
+                          {elapsed !== null && (
+                            <span style={{
+                              fontSize: '9px', fontWeight: 700, fontFamily: 'var(--font-mono)',
+                              color: overTime ? '#DC2626' : 'var(--text-muted)',
+                              lineHeight: 1,
+                            }}>
+                              {elapsed}m{overTime ? ' !' : ''}
+                            </span>
+                          )}
                           {(room.isDnd || room.type === 'checkout' || room.type === 'vacant' || room.type === 'stayover') && (
                             <div style={{ position: 'absolute', top: '2px', right: '3px', fontSize: '12px', lineHeight: 1 }}>
                               {room.isDnd ? '🚫' : room.type === 'vacant' ? '💎' : room.type === 'stayover' ? '🔒' : '🚪'}
                             </div>
                           )}
-                          {assignedName && (
+                          {/* Help request badge — pulsing orange */}
+                          {hasHelp && (
+                            <div
+                              onClick={(e) => { e.stopPropagation(); setBackupRoom(room); }}
+                              style={{
+                                position: 'absolute', top: '2px', left: '2px', fontSize: '10px', lineHeight: 1,
+                                background: '#F97316', color: '#fff', borderRadius: '4px', padding: '2px 4px', fontWeight: 800,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              SOS
+                            </div>
+                          )}
+                          {assignedName && !hasHelp && (
                             <div style={{
                               position: 'absolute', bottom: '2px', left: '50%', transform: 'translateX(-50%)',
                               fontSize: '8px', fontWeight: 700, color: 'var(--text-muted)',
@@ -1970,37 +2044,52 @@ function PublicAreasModal({ show, onClose }: { show: boolean; onClose: () => voi
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// INSPECT SECTION
+// DEEP CLEAN SECTION (replaces Inspect)
 // ══════════════════════════════════════════════════════════════════════════════
 
-function InspectSection() {
+function DeepCleanSection() {
   const { user } = useAuth();
-  const { activePropertyId } = useProperty();
+  const { activePropertyId, activeProperty } = useProperty();
   const { lang } = useLang();
 
-  const [rooms, setRooms] = useState<Room[]>([]);
-  const [rejectingId, setRejectingId] = useState<string | null>(null);
-  const [rejectReason, setRejectReason] = useState('');
+  const [config, setConfigState] = useState<{ frequencyDays: number; minutesPerRoom: number; targetPerWeek: number } | null>(null);
+  const [records, setRecords] = useState<Record<string, { lastCleaned: string; cleanedBy?: string }>>({});
   const [toast, setToast] = useState<string | null>(null);
-  const [showInspected, setShowInspected] = useState(false);
+  const [marking, setMarking] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const uid = user?.uid ?? '';
   const pid = activePropertyId ?? '';
+  const totalRooms = activeProperty?.totalRooms ?? 74;
+
+  // Generate all room numbers (assumes 100-series format)
+  const allRoomNumbers = useMemo(() => {
+    const rooms: string[] = [];
+    // Comfort Suites pattern: floors 2-4 with rooms 01-26ish
+    for (let floor = 2; floor <= 4; floor++) {
+      for (let room = 1; room <= 26; room++) {
+        rooms.push(`${floor}${room.toString().padStart(2, '0')}`);
+      }
+    }
+    // Trim to total rooms if needed
+    return rooms.slice(0, totalRooms);
+  }, [totalRooms]);
 
   useEffect(() => {
     if (!uid || !pid) return;
-    return subscribeToRooms(uid, pid, todayStr(), setRooms);
+    getDeepCleanConfig(uid, pid).then(c => setConfigState(c));
+    getDeepCleanRecords(uid, pid).then(r => {
+      const map: Record<string, { lastCleaned: string; cleanedBy?: string }> = {};
+      for (const rec of r) {
+        map[rec.roomNumber] = { lastCleaned: rec.lastDeepClean, cleanedBy: rec.cleanedBy };
+      }
+      setRecords(map);
+    });
   }, [uid, pid]);
 
   useEffect(() => {
     return () => { if (toastTimer.current) clearTimeout(toastTimer.current); };
   }, []);
-
-  const cleanRooms = useMemo(() => rooms.filter(r => r.status === 'clean'), [rooms]);
-  const inspectedRooms = useMemo(() => rooms.filter(r => r.status === 'inspected'), [rooms]);
-  const totalToInspect = cleanRooms.length + inspectedRooms.length;
-  const pct = totalToInspect > 0 ? Math.round((inspectedRooms.length / totalToInspect) * 100) : 0;
 
   const showToast = (msg: string) => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
@@ -2008,210 +2097,156 @@ function InspectSection() {
     toastTimer.current = setTimeout(() => setToast(null), 2500);
   };
 
-  const handleApprove = async (room: Room) => {
+  const handleMarkCleaned = async (roomNumber: string) => {
     if (!uid || !pid) return;
-    await updateRoom(uid, pid, room.id, {
-      status: 'inspected',
-      inspectedBy: user?.displayName ?? '',
-      inspectedAt: new Date(),
-    });
-    showToast(`${lang === 'es' ? 'Hab.' : 'Room'} ${room.number} ${lang === 'es' ? 'aprobada' : 'approved'} ✓`);
+    setMarking(roomNumber);
+    try {
+      await markRoomDeepCleaned(uid, pid, roomNumber, user?.displayName ?? 'Manager');
+      setRecords(prev => ({
+        ...prev,
+        [roomNumber]: { lastCleaned: todayStr(), cleanedBy: user?.displayName ?? 'Manager' },
+      }));
+      showToast(lang === 'es' ? `${roomNumber}: Limpieza profunda completada` : `${roomNumber}: Deep clean done`);
+    } finally { setMarking(null); }
   };
 
-  const handleReject = async (room: Room) => {
-    if (!uid || !pid) return;
-    await updateRoom(uid, pid, room.id, {
-      status: 'dirty',
-      issueNote: rejectReason || undefined,
-      inspectedBy: '',
-      inspectedAt: null,
-      startedAt: null,
-      completedAt: null,
-    });
-    setRejectingId(null);
-    setRejectReason('');
-    showToast(`${lang === 'es' ? 'Hab.' : 'Room'} ${room.number} ${t('roomRejected', lang)}`);
-  };
+  const freq = config?.frequencyDays ?? 90;
+  const today = new Date();
 
-  const getCleanMinutes = (room: Room): number | null => {
-    const s = toDate(room.startedAt);
-    const e = toDate(room.completedAt);
-    if (!s || !e) return null;
-    const mins = Math.round((e.getTime() - s.getTime()) / 60000);
-    return mins > 0 && mins < 480 ? mins : null;
-  };
+  // Build overdue list sorted by days overdue (most overdue first)
+  const overdueRooms = useMemo(() => {
+    return allRoomNumbers.map(num => {
+      const rec = records[num];
+      if (!rec) return { roomNumber: num, daysOverdue: Infinity, lastCleaned: null as string | null, cleanedBy: undefined as string | undefined };
+      const last = new Date(rec.lastCleaned);
+      const days = Math.floor((today.getTime() - last.getTime()) / 86_400_000);
+      return { roomNumber: num, daysOverdue: days - freq, lastCleaned: rec.lastCleaned, cleanedBy: rec.cleanedBy };
+    })
+    .filter(r => r.daysOverdue > 0 || r.lastCleaned === null)
+    .sort((a, b) => b.daysOverdue - a.daysOverdue);
+  }, [allRoomNumbers, records, freq, today]);
+
+  // Recently completed (last 14 days)
+  const recentlyDone = useMemo(() => {
+    return allRoomNumbers
+      .filter(num => {
+        const rec = records[num];
+        if (!rec) return false;
+        const days = Math.floor((today.getTime() - new Date(rec.lastCleaned).getTime()) / 86_400_000);
+        return days <= 14;
+      })
+      .map(num => ({ roomNumber: num, ...records[num] }))
+      .sort((a, b) => new Date(b.lastCleaned).getTime() - new Date(a.lastCleaned).getTime());
+  }, [allRoomNumbers, records, today]);
+
+  const totalOverdue = overdueRooms.length;
+  const pct = allRoomNumbers.length > 0 ? Math.round(((allRoomNumbers.length - totalOverdue) / allRoomNumbers.length) * 100) : 0;
 
   return (
     <div style={{ padding: '20px 16px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+      {/* Header */}
       <div className="animate-in">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Search size={16} color="var(--navy)" />
+            <Zap size={16} color="var(--navy)" />
             <h2 style={{ fontSize: '17px', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
-              {t('inspection', lang)}
+              {lang === 'es' ? 'Limpieza Profunda' : 'Deep Clean'}
             </h2>
           </div>
-          <span style={{ fontSize: '14px', fontWeight: 600, color: pct === 100 ? 'var(--green)' : 'var(--text-secondary)' }}>
-            {inspectedRooms.length} / {totalToInspect} {t('inspected', lang).toLowerCase()}
+          <span style={{ fontSize: '14px', fontWeight: 600, color: totalOverdue === 0 ? 'var(--green)' : 'var(--red)' }}>
+            {totalOverdue} {lang === 'es' ? 'pendientes' : 'overdue'}
           </span>
         </div>
-        {totalToInspect > 0 && (
-          <div role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label={`${pct}% inspected`} style={{ height: '6px', background: '#E5E7EB', borderRadius: '99px', overflow: 'hidden' }}>
-            <div style={{
-              height: '100%', borderRadius: '99px',
-              transition: 'width 600ms cubic-bezier(0.4,0,0.2,1)',
-              width: `${pct}%`,
-              background: pct === 100 ? 'var(--green)' : 'var(--navy)',
-            }} />
-          </div>
-        )}
+        <div style={{ height: '6px', background: '#E5E7EB', borderRadius: '99px', overflow: 'hidden' }}>
+          <div style={{
+            height: '100%', borderRadius: '99px',
+            transition: 'width 600ms cubic-bezier(0.4,0,0.2,1)',
+            width: `${pct}%`,
+            background: pct === 100 ? 'var(--green)' : 'var(--navy)',
+          }} />
+        </div>
+        <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px' }}>
+          {lang === 'es' ? `Ciclo: cada ${freq} días` : `Cycle: every ${freq} days`}
+        </p>
       </div>
 
-      {cleanRooms.length === 0 ? (
+      {/* Overdue rooms list */}
+      {overdueRooms.length === 0 ? (
         <div className="animate-in stagger-1" style={{
           textAlign: 'center', padding: '48px 20px',
-          background: 'var(--bg-card)', border: '1px solid var(--border)',
-          borderRadius: 'var(--radius-lg)',
+          background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)',
         }}>
           <CheckCircle2 size={36} color="var(--green)" style={{ margin: '0 auto 12px' }} />
           <p style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px' }}>
-            {t('allCaughtUp', lang)}
+            {lang === 'es' ? 'Todas las habitaciones al día' : 'All rooms up to date'}
           </p>
         </div>
       ) : (
-        cleanRooms.map((room, i) => {
-          const cleanMins = getCleanMinutes(room);
-          const isRejecting = rejectingId === room.id;
-          const typeBadge = room.type === 'checkout'
-            ? { label: lang === 'es' ? 'SAL' : 'CO', bg: 'rgba(220,38,38,0.08)', color: '#DC2626' }
-            : room.type === 'stayover'
-            ? { label: lang === 'es' ? 'CON' : 'SO', bg: 'rgba(37,99,235,0.08)', color: '#2563EB' }
-            : { label: lang === 'es' ? 'VAC' : 'VAC', bg: 'rgba(156,163,175,0.08)', color: '#9CA3AF' };
-          return (
-            <div key={room.id} className={`card animate-in stagger-${Math.min(i + 1, 4)}`} style={{ padding: '16px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '20px', color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
-                      {room.number}
-                    </span>
-                    <span style={{
-                      padding: '2px 8px', borderRadius: 'var(--radius-full)',
-                      background: typeBadge.bg, color: typeBadge.color,
-                      fontSize: '11px', fontWeight: 700,
-                    }}>
-                      {typeBadge.label}
-                    </span>
-                  </div>
-                  <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '3px' }}>
-                    {t('cleanedBy', lang)} {room.assignedName || '—'}
-                  </p>
+        overdueRooms.map((room, i) => (
+          <div key={room.roomNumber} className={`card animate-in stagger-${Math.min(i + 1, 4)}`} style={{ padding: '16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '20px', color: 'var(--text-primary)' }}>
+                    {room.roomNumber}
+                  </span>
+                  <span style={{
+                    padding: '2px 8px', borderRadius: '100px', fontSize: '11px', fontWeight: 700,
+                    background: room.daysOverdue === Infinity ? 'rgba(220,38,38,0.1)' : room.daysOverdue > 30 ? 'rgba(220,38,38,0.1)' : 'rgba(251,191,36,0.1)',
+                    color: room.daysOverdue === Infinity ? '#DC2626' : room.daysOverdue > 30 ? '#DC2626' : '#D97706',
+                  }}>
+                    {room.daysOverdue === Infinity
+                      ? (lang === 'es' ? 'Nunca limpiado' : 'Never cleaned')
+                      : `${room.daysOverdue}d ${lang === 'es' ? 'atrasado' : 'overdue'}`}
+                  </span>
                 </div>
-                {cleanMins !== null && (
-                  <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '18px', color: 'var(--text-secondary)' }}>
-                      {cleanMins}m
-                    </span>
-                    <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '1px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                      {t('cleanTime', lang)}
-                    </p>
-                  </div>
+                {room.lastCleaned && (
+                  <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '3px' }}>
+                    {lang === 'es' ? 'Última:' : 'Last:'} {room.lastCleaned}{room.cleanedBy ? ` · ${room.cleanedBy}` : ''}
+                  </p>
                 )}
               </div>
-
-              {!isRejecting ? (
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <button
-                    onClick={() => handleApprove(room)}
-                    style={{
-                      flex: 1, padding: '12px', borderRadius: '10px', border: 'none',
-                      background: '#16A34A', color: '#fff', fontWeight: 700, fontSize: '14px',
-                      cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-                      minHeight: '48px',
-                    }}
-                  >
-                    <Check size={16} /> {t('approve', lang)}
-                  </button>
-                  <button
-                    onClick={() => { setRejectingId(room.id); setRejectReason(''); }}
-                    style={{
-                      flex: 1, padding: '12px', borderRadius: '10px',
-                      border: '2px solid #DC2626', background: 'transparent',
-                      color: '#DC2626', fontWeight: 700, fontSize: '14px',
-                      cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-                      minHeight: '48px',
-                    }}
-                  >
-                    <XCircle size={16} /> {t('reject', lang)}
-                  </button>
-                </div>
-              ) : (
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <input
-                    autoFocus
-                    value={rejectReason}
-                    onChange={e => setRejectReason(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter') handleReject(room); }}
-                    placeholder={t('rejectReason', lang)}
-                    style={{
-                      flex: 1, padding: '12px 14px', borderRadius: '10px',
-                      border: '1px solid var(--border)', background: 'var(--bg)',
-                      fontSize: '14px', color: 'var(--text-primary)',
-                      fontFamily: 'var(--font-sans)', outline: 'none', minHeight: '48px',
-                    }}
-                  />
-                  <button
-                    onClick={() => handleReject(room)}
-                    style={{
-                      padding: '12px 20px', borderRadius: '10px', border: 'none',
-                      background: '#DC2626', color: '#fff', fontWeight: 700, fontSize: '14px',
-                      cursor: 'pointer', flexShrink: 0, minHeight: '48px',
-                    }}
-                  >
-                    {t('sendBack', lang)}
-                  </button>
-                </div>
-              )}
+              <button
+                onClick={() => handleMarkCleaned(room.roomNumber)}
+                disabled={marking === room.roomNumber}
+                style={{
+                  padding: '10px 16px', borderRadius: '10px', border: 'none',
+                  background: '#16A34A', color: '#fff', fontWeight: 700, fontSize: '13px',
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
+                  opacity: marking === room.roomNumber ? 0.6 : 1,
+                  flexShrink: 0,
+                }}
+              >
+                <Check size={14} /> {lang === 'es' ? 'Hecho' : 'Done'}
+              </button>
             </div>
-          );
-        })
+          </div>
+        ))
       )}
 
-      {inspectedRooms.length > 0 && (
+      {/* Recently completed */}
+      {recentlyDone.length > 0 && (
         <div className="animate-in stagger-3">
-          <button
-            onClick={() => setShowInspected(!showInspected)}
-            aria-expanded={showInspected}
-            style={{
-              width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              padding: '12px 16px', background: 'var(--bg-card)', border: '1px solid var(--border)',
-              borderRadius: 'var(--radius-lg)', cursor: 'pointer', fontFamily: 'var(--font-sans)',
-            }}
-          >
-            <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)' }}>
-              {t('alreadyInspected', lang)} ({inspectedRooms.length})
-            </span>
-            {showInspected ? <ChevronUp size={16} color="var(--text-muted)" /> : <ChevronDown size={16} color="var(--text-muted)" />}
-          </button>
-          {showInspected && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '8px' }}>
-              {inspectedRooms.map(room => (
-                <div key={room.id} style={{
-                  display: 'flex', alignItems: 'center', gap: '10px',
-                  padding: '10px 14px', background: 'var(--bg-card)',
-                  border: '1px solid var(--border)', borderRadius: 'var(--radius-md)',
-                }}>
-                  <CheckCircle2 size={16} color="var(--green)" />
-                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '14px', color: 'var(--text-primary)' }}>
-                    {room.number}
-                  </span>
-                  <span style={{ fontSize: '12px', color: 'var(--text-muted)', flex: 1 }}>
-                    {t('inspectedBy', lang)} {room.inspectedBy || '—'}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
+          <p style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '8px' }}>
+            {lang === 'es' ? 'Completadas recientemente' : 'Recently Completed'}
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {recentlyDone.map(room => (
+              <div key={room.roomNumber} style={{
+                display: 'flex', alignItems: 'center', gap: '10px',
+                padding: '10px 14px', background: 'var(--bg-card)',
+                border: '1px solid var(--border)', borderRadius: 'var(--radius-md)',
+              }}>
+                <CheckCircle2 size={16} color="var(--green)" />
+                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '14px', color: 'var(--text-primary)' }}>
+                  {room.roomNumber}
+                </span>
+                <span style={{ fontSize: '12px', color: 'var(--text-muted)', flex: 1 }}>
+                  {room.lastCleaned}{room.cleanedBy ? ` · ${room.cleanedBy}` : ''}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -2235,7 +2270,9 @@ function InspectSection() {
 // PERFORMANCE SECTION
 // ══════════════════════════════════════════════════════════════════════════════
 
-type ViewMode = 'live' | '7d' | '14d';
+type ViewMode = 'live' | '7d' | '14d' | '30d' | '3mo' | '1yr' | 'all';
+
+const VIEW_DAYS: Record<ViewMode, number> = { live: 0, '7d': 7, '14d': 14, '30d': 30, '3mo': 90, '1yr': 365, all: 730 };
 
 function PerformanceSection() {
   const { user } = useAuth();
@@ -2271,8 +2308,8 @@ function PerformanceSection() {
   }, [user, activePropertyId]);
 
   useEffect(() => {
-    if (view === '7d') loadHistory(7);
-    else if (view === '14d') loadHistory(14);
+    const days = VIEW_DAYS[view];
+    if (days > 0) loadHistory(days);
   }, [view, loadHistory]);
 
   const livePerfs    = buildLive(rooms, coMins, soMins, nowMs);
@@ -2290,20 +2327,24 @@ function PerformanceSection() {
 
   const scheduledToday  = staff.filter(s => s.scheduledToday);
   const unassignedToday = scheduledToday.filter(s => !livePerfs.find(p => p.staffId === s.id));
-  const viewDays        = view === '7d' ? 7 : 14;
+  const viewDays        = VIEW_DAYS[view] || 14;
   const topHistoryPerf  = historyPerfs[0];
 
   return (
     <div style={{ padding: '20px 16px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
 
       {/* View toggle */}
-      <div style={{ display: 'flex', gap: '8px' }}>
+      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
         {([
-          { key: 'live' as ViewMode, label: t('liveToday', lang) },
-          { key: '7d'  as ViewMode, label: t('last7Days', lang) },
-          { key: '14d' as ViewMode, label: t('last14Days', lang) },
+          { key: 'live' as ViewMode, label: lang === 'es' ? 'En Vivo' : 'Live' },
+          { key: '7d'  as ViewMode, label: '7d' },
+          { key: '14d' as ViewMode, label: '14d' },
+          { key: '30d' as ViewMode, label: '30d' },
+          { key: '3mo' as ViewMode, label: '3mo' },
+          { key: '1yr' as ViewMode, label: '1yr' },
+          { key: 'all' as ViewMode, label: lang === 'es' ? 'Todo' : 'All' },
         ]).map(({ key, label }) => (
-          <button key={key} onClick={() => setView(key)} className={`chip${view === key ? ' chip-active' : ''}`} style={{ height: '30px', paddingLeft: '14px', paddingRight: '14px', cursor: 'pointer' }}>
+          <button key={key} onClick={() => setView(key)} className={`chip${view === key ? ' chip-active' : ''}`} style={{ height: '30px', paddingLeft: '10px', paddingRight: '10px', cursor: 'pointer', fontSize: '12px' }}>
             {label}
           </button>
         ))}
@@ -2396,7 +2437,7 @@ function PerformanceSection() {
       {view === 'live' && <LeaderboardCard rooms={rooms} lang={lang} />}
 
       {/* HISTORY VIEW */}
-      {(view === '7d' || view === '14d') && (
+      {view !== 'live' && (
         <>
           {historyLoading ? (
             <div style={{ display: 'flex', justifyContent: 'center', padding: '40px 0' }}>
@@ -2624,7 +2665,7 @@ export default function HousekeepingPage() {
   // Restore tab from localStorage on mount
   useEffect(() => {
     const saved = localStorage.getItem('hk-tab') as TabKey | null;
-    const valid: TabKey[] = ['rooms', 'schedule', 'inspect', 'performance'];
+    const valid: TabKey[] = ['rooms', 'schedule', 'deepclean', 'performance'];
     if (saved && valid.includes(saved)) setActiveTabState(saved);
   }, []);
 
@@ -2661,7 +2702,8 @@ export default function HousekeepingPage() {
         }}>
           {TABS.map(tab => {
             const isActive = activeTab === tab.key;
-            const tabLabelKey = tab.key === 'rooms' ? 'rooms' : tab.key === 'schedule' ? 'scheduling' : tab.key === 'inspect' ? 'inspect' : 'performance';
+            const tabLabel = tab.key === 'deepclean' ? (lang === 'es' ? tab.labelEs : tab.label) : undefined;
+            const tabLabelKey = tab.key === 'rooms' ? 'rooms' : tab.key === 'schedule' ? 'scheduling' : tab.key === 'deepclean' ? undefined : 'performance';
             return (
               <button
                 key={tab.key}
@@ -2683,7 +2725,7 @@ export default function HousekeepingPage() {
                   boxShadow: isActive ? '0 2px 8px rgba(27, 58, 92, 0.25)' : 'none',
                 }}
               >
-                {t(tabLabelKey, lang)}
+                {tabLabel ?? (tabLabelKey ? t(tabLabelKey, lang) : '')}
               </button>
             );
           })}
@@ -2693,7 +2735,7 @@ export default function HousekeepingPage() {
       {/* ── Section content ── */}
       {activeTab === 'schedule'    && <ScheduleSection />}
       {activeTab === 'rooms'       && <RoomsSection />}
-      {activeTab === 'inspect'     && <InspectSection />}
+      {activeTab === 'deepclean'   && <DeepCleanSection />}
       {activeTab === 'performance' && <PerformanceSection />}
     </AppLayout>
   );

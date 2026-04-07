@@ -595,6 +595,32 @@ export default function DashboardPage() {
           </div>
         )}
 
+        {/* Quick action buttons — Front Desk + ROI */}
+        <div style={{ display: 'flex', gap: '10px', margin: '0 16px 16px' }}>
+          <button onClick={() => router.push('/front-desk')} style={{
+            flex: 1, padding: '12px 16px', borderRadius: '12px',
+            background: 'var(--bg-card)', border: '1.5px solid var(--border)',
+            cursor: 'pointer', fontFamily: 'var(--font-sans)',
+            display: 'flex', alignItems: 'center', gap: '8px',
+          }}>
+            <span style={{ fontSize: '16px' }}>🖥</span>
+            <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>
+              {lang === 'es' ? 'Recepción' : 'Front Desk'}
+            </span>
+          </button>
+          <button onClick={() => router.push('/roi')} style={{
+            flex: 1, padding: '12px 16px', borderRadius: '12px',
+            background: 'var(--bg-card)', border: '1.5px solid var(--border)',
+            cursor: 'pointer', fontFamily: 'var(--font-sans)',
+            display: 'flex', alignItems: 'center', gap: '8px',
+          }}>
+            <DollarSign size={16} color="var(--green)" />
+            <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>
+              {lang === 'es' ? 'Ver ROI' : 'View ROI'}
+            </span>
+          </button>
+        </div>
+
       </div>
     </AppLayout>
   );
