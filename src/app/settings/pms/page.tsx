@@ -127,8 +127,8 @@ export default function PMSPage() {
           <div
             style={{
               padding: '14px 16px',
-              background: 'rgba(34,197,94,0.08)',
-              border: '1px solid rgba(34,197,94,0.25)',
+              background: 'var(--green-dim)',
+              border: '1px solid var(--green-border, rgba(34,197,94,0.25))',
               borderRadius: '10px',
               marginBottom: '20px',
               display: 'flex',
@@ -136,10 +136,10 @@ export default function PMSPage() {
               gap: '10px',
             }}
           >
-            <CheckCircle size={18} color="#22c55e" />
+            <CheckCircle size={18} color="var(--green)" />
             <div>
-              <p style={{ fontWeight: 600, fontSize: '14px', color: '#22c55e' }}>Connected</p>
-              <p style={{ fontSize: '12px', color: 'rgba(34,197,94,0.7)' }}>
+              <p style={{ fontWeight: 600, fontSize: '14px', color: 'var(--green)' }}>Connected</p>
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
                 {PMS_SYSTEMS.find(p => p.value === activeProperty.pmsType)?.label ?? activeProperty.pmsType}
                 {activeProperty.lastSyncedAt && (() => {
                   const ts = activeProperty.lastSyncedAt as any;
@@ -213,8 +213,8 @@ export default function PMSPage() {
           <div
             style={{
               padding: '14px 16px',
-              background: testStatus === 'success' ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
-              border: `1px solid ${testStatus === 'success' ? 'rgba(34,197,94,0.25)' : 'rgba(239,68,68,0.25)'}`,
+              background: testStatus === 'success' ? 'var(--green-dim)' : 'var(--red-dim)',
+              border: `1px solid ${testStatus === 'success' ? 'var(--green-border, rgba(34,197,94,0.25))' : 'var(--red-border, rgba(239,68,68,0.25))'}`,
               borderRadius: '10px',
               marginBottom: '14px',
               display: 'flex',
@@ -222,8 +222,8 @@ export default function PMSPage() {
               alignItems: 'flex-start',
             }}
           >
-            {testStatus === 'success' ? <CheckCircle size={16} color="#22c55e" style={{ flexShrink: 0, marginTop: '1px' }} /> : <AlertCircle size={16} color="#ef4444" style={{ flexShrink: 0, marginTop: '1px' }} />}
-            <p style={{ fontSize: '13px', color: testStatus === 'success' ? '#22c55e' : '#ef4444', lineHeight: 1.5 }}>
+            {testStatus === 'success' ? <CheckCircle size={16} color="var(--green)" style={{ flexShrink: 0, marginTop: '1px' }} /> : <AlertCircle size={16} color="var(--red)" style={{ flexShrink: 0, marginTop: '1px' }} />}
+            <p style={{ fontSize: '13px', color: testStatus === 'success' ? 'var(--green)' : 'var(--red)', lineHeight: 1.5 }}>
               {testMessage}
             </p>
           </div>

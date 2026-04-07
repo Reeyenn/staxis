@@ -153,8 +153,8 @@ function AreaRow({
             onClick={onDelete}
             style={{
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-              padding: '10px', borderRadius: '8px', border: '1px solid rgba(220,38,38,0.2)',
-              background: 'rgba(220,38,38,0.06)', color: '#dc2626',
+              padding: '10px', borderRadius: '8px', border: '1px solid var(--red-border, rgba(220,38,38,0.2))',
+              background: 'var(--red-dim)', color: 'var(--red)',
               cursor: 'pointer', fontSize: '13px', fontWeight: 600,
             }}
           >
@@ -558,7 +558,7 @@ export default function OperationsConfigPage() {
                           display: 'flex',
                           alignItems: 'center',
                           gap: '12px',
-                          borderLeft: overdue ? '3px solid #dc2626' : warning ? '3px solid #f59e0b' : '3px solid #22c55e',
+                          borderLeft: overdue ? '3px solid var(--red)' : warning ? '3px solid var(--amber)' : '3px solid var(--green)',
                         }}
                       >
                         <div style={{ fontWeight: 700, fontSize: '15px', minWidth: '48px', color: 'var(--text-primary)' }}>
@@ -578,22 +578,22 @@ export default function OperationsConfigPage() {
                           {overdue ? (
                             <span style={{
                               display: 'inline-flex', alignItems: 'center', gap: '4px',
-                              fontSize: '12px', fontWeight: 700, color: '#dc2626',
-                              background: 'rgba(220,38,38,0.08)', padding: '3px 8px', borderRadius: '6px',
+                              fontSize: '12px', fontWeight: 700, color: 'var(--red)',
+                              background: 'var(--red-dim)', padding: '3px 8px', borderRadius: '6px',
                             }}>
                               <AlertTriangle size={12} /> {rec.daysSince}d overdue
                             </span>
                           ) : warning ? (
                             <span style={{
-                              fontSize: '12px', fontWeight: 600, color: '#f59e0b',
-                              background: 'rgba(245,158,11,0.08)', padding: '3px 8px', borderRadius: '6px',
+                              fontSize: '12px', fontWeight: 600, color: 'var(--amber)',
+                              background: 'var(--amber-dim)', padding: '3px 8px', borderRadius: '6px',
                             }}>
                               {rec.daysSince}d ago
                             </span>
                           ) : (
                             <span style={{
-                              fontSize: '12px', fontWeight: 600, color: '#22c55e',
-                              background: 'rgba(34,197,94,0.08)', padding: '3px 8px', borderRadius: '6px',
+                              fontSize: '12px', fontWeight: 600, color: 'var(--green)',
+                              background: 'var(--green-dim)', padding: '3px 8px', borderRadius: '6px',
                             }}>
                               {rec.daysSince}d ago
                             </span>

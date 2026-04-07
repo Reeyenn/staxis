@@ -131,10 +131,10 @@ function LaundryInner() {
       <div style={{ marginBottom: '32px', textAlign: 'center' }}>
         <div style={{
           width: '56px', height: '56px', borderRadius: '16px',
-          background: '#DBEAFE', border: '1px solid #93C5FD',
+          background: 'var(--blue-dim, #DBEAFE)', border: '1px solid var(--blue-border, #93C5FD)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 12px',
         }}>
-          <Droplet size={28} color="#3B82F6" />
+          <Droplet size={28} color="var(--navy)" />
         </div>
         <p style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>
           Staxis
@@ -146,7 +146,7 @@ function LaundryInner() {
         <div style={{ textAlign: 'center' }}>
           <div style={{
             width: '32px', height: '32px', border: '4px solid var(--border)',
-            borderTopColor: '#3B82F6', borderRadius: '50%',
+            borderTopColor: 'var(--navy)', borderRadius: '50%',
             animation: 'spin 0.8s linear infinite', margin: '0 auto 12px',
           }} />
           <p style={{ color: 'var(--text-muted)', fontSize: '14px' }}>{t('loading', lang)}</p>
@@ -157,7 +157,7 @@ function LaundryInner() {
       {/* Bad link */}
       {step === 'bad-link' && (
         <div style={{ textAlign: 'center', maxWidth: '320px' }}>
-          <AlertCircle size={40} color="#EF4444" style={{ marginBottom: '12px' }} />
+          <AlertCircle size={40} color="var(--red)" style={{ marginBottom: '12px' }} />
           <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: 1.6 }}>
             {t('badLink', lang)}
           </p>
@@ -182,12 +182,12 @@ function LaundryInner() {
             {staff.map(member => (
               <button key={member.id} onClick={() => setSelectedId(member.id)} style={{
                 padding: '14px 16px',
-                background: selectedId === member.id ? '#DBEAFE' : 'var(--bg)',
-                border: `1.5px solid ${selectedId === member.id ? '#93C5FD' : 'var(--border)'}`,
+                background: selectedId === member.id ? 'var(--blue-dim, #DBEAFE)' : 'var(--bg)',
+                border: `1.5px solid ${selectedId === member.id ? 'var(--blue-border, #93C5FD)' : 'var(--border)'}`,
                 borderRadius: 'var(--radius-md)', textAlign: 'left', cursor: 'pointer',
                 transition: 'all 120ms', fontFamily: 'var(--font-sans)',
               }}>
-                <span style={{ fontSize: '15px', fontWeight: 600, color: selectedId === member.id ? '#3B82F6' : 'var(--text-primary)' }}>
+                <span style={{ fontSize: '15px', fontWeight: 600, color: selectedId === member.id ? 'var(--navy)' : 'var(--text-primary)' }}>
                   {member.name}{member.isSenior ? ' ⭐' : ''}
                 </span>
               </button>
@@ -196,7 +196,7 @@ function LaundryInner() {
 
           <button onClick={handleSetup} disabled={!selectedId} style={{
             width: '100%', height: '48px',
-            background: selectedId ? '#3B82F6' : 'var(--border)',
+            background: selectedId ? 'var(--navy)' : 'var(--border)',
             color: selectedId ? '#FFFFFF' : 'var(--text-muted)',
             border: 'none', borderRadius: 'var(--radius-md)',
             fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: '15px',
@@ -257,7 +257,7 @@ function LaundryInner() {
           </p>
           <button onClick={() => setStep('select')} style={{
             marginTop: '20px', padding: '10px 24px',
-            background: '#3B82F6', color: '#FFFFFF', border: 'none',
+            background: 'var(--navy)', color: '#FFFFFF', border: 'none',
             borderRadius: 'var(--radius-md)', fontFamily: 'var(--font-sans)', fontWeight: 600, cursor: 'pointer',
           }}>{t('tryAgain', lang)}</button>
         </div>
@@ -270,12 +270,12 @@ function LaundryInner() {
           background: 'var(--bg-card)', border: '1px solid var(--border)',
           borderRadius: 'var(--radius-lg)', padding: '32px 24px',
         }}>
-          <AlertCircle size={40} color="#EF4444" style={{ marginBottom: '16px' }} />
+          <AlertCircle size={40} color="var(--red)" style={{ marginBottom: '16px' }} />
           <h2 style={{ fontSize: '18px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>{t('somethingWentWrong', lang)}</h2>
           <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>{errorMsg}</p>
           <button onClick={() => { setStep('loading'); }} style={{
             marginTop: '20px', padding: '10px 24px',
-            background: '#3B82F6', color: '#FFFFFF', border: 'none',
+            background: 'var(--navy)', color: '#FFFFFF', border: 'none',
             borderRadius: 'var(--radius-md)', fontFamily: 'var(--font-sans)', fontWeight: 600, cursor: 'pointer',
           }}>{t('tryAgain', lang)}</button>
         </div>
