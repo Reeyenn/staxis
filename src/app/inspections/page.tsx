@@ -142,28 +142,45 @@ export default function InspectionsPage() {
   }
 
   const handleMarkComplete = async (inspection: Inspection) => {
-    const today = new Date().toISOString().split('T')[0];
-    const nextDue = inspection.dueMonth
-      ? addMonths(inspection.dueMonth, inspection.frequencyMonths)
-      : addMonths(currentYM(), inspection.frequencyMonths);
-    await updateInspection(user.uid, activePropertyId, inspection.id, {
-      lastInspectedDate: today,
-      dueMonth: nextDue,
-    });
-    setEditModal(null);
-    showToast(`${inspection.name} marked complete — next due ${formatMonth(nextDue)}`);
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const nextDue = inspection.dueMonth
+        ? addMonths(inspection.dueMonth, inspection.frequencyMonths)
+        : addMonths(currentYM(), inspection.frequencyMonths);
+      await updateInspection(user.uid, activePropertyId, inspection.id, {
+        lastInspectedDate: today,
+        dueMonth: nextDue,
+      });
+      setEditModal(null);
+      showToast(lang === 'es'
+        ? `${inspection.name} completada — próxima: ${formatMonth(nextDue)}`
+        : `${inspection.name} marked complete — next due ${formatMonth(nextDue)}`);
+    } catch (error) {
+      console.error('Error marking inspection complete:', error);
+      showToast(lang === 'es' ? 'Error al marcar la inspección' : 'Error marking inspection complete');
+    }
   };
 
   const handleSaveEdit = async (id: string, updates: Partial<Inspection>) => {
-    await updateInspection(user.uid, activePropertyId, id, updates);
-    setEditModal(null);
-    showToast('Inspection updated');
+    try {
+      await updateInspection(user.uid, activePropertyId, id, updates);
+      setEditModal(null);
+      showToast(lang === 'es' ? 'Inspección actualizada' : 'Inspection updated');
+    } catch (error) {
+      console.error('Error updating inspection:', error);
+      showToast(lang === 'es' ? 'Error al actualizar' : 'Error updating inspection');
+    }
   };
 
   const handleDelete = async (id: string) => {
-    await deleteInspection(user.uid, activePropertyId, id);
-    setEditModal(null);
-    showToast('Inspection removed');
+    try {
+      await deleteInspection(user.uid, activePropertyId, id);
+      setEditModal(null);
+      showToast(lang === 'es' ? 'Inspección eliminada' : 'Inspection removed');
+    } catch (error) {
+      console.error('Error deleting inspection:', error);
+      showToast(lang === 'es' ? 'Error al eliminar' : 'Error removing inspection');
+    }
   };
 
   return (

@@ -62,10 +62,14 @@ export default function FrontDeskPage() {
         type: 'checkout'
       });
       setSelectedRoom(null);
-      setToast(`Room ${selectedRoom.number} marked as Early Checkout`);
+      setToast(lang === 'es'
+        ? `Habitación ${selectedRoom.number} marcada como Salida Anticipada`
+        : `Room ${selectedRoom.number} marked as Early Checkout`);
       setTimeout(() => setToast(null), 2500);
     } catch (error) {
       console.error('Error marking early checkout:', error);
+      setToast(lang === 'es' ? 'Error al procesar' : 'Error processing request');
+      setTimeout(() => setToast(null), 2500);
     } finally {
       setProcessing(false);
     }
@@ -79,10 +83,14 @@ export default function FrontDeskPage() {
         type: 'stayover'
       });
       setSelectedRoom(null);
-      setToast(`Room ${selectedRoom.number} marked as Extension`);
+      setToast(lang === 'es'
+        ? `Habitación ${selectedRoom.number} marcada como Extensión`
+        : `Room ${selectedRoom.number} marked as Extension`);
       setTimeout(() => setToast(null), 2500);
     } catch (error) {
       console.error('Error marking extension:', error);
+      setToast(lang === 'es' ? 'Error al procesar' : 'Error processing request');
+      setTimeout(() => setToast(null), 2500);
     } finally {
       setProcessing(false);
     }

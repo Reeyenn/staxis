@@ -61,10 +61,18 @@ export default function StaffPage() {
     }
   };
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = async (id: string, name: string) => {
     if (!user || !activePropertyId) return;
-    await deleteStaffMember(user.uid, activePropertyId, id);
-    await refreshStaff();
+    const msg = lang === 'es'
+      ? `¿Estás seguro de que quieres eliminar a ${name}?`
+      : `Are you sure you want to remove ${name}?`;
+    if (!confirm(msg)) return;
+    try {
+      await deleteStaffMember(user.uid, activePropertyId, id);
+      await refreshStaff();
+    } catch (error) {
+      console.error('Error deleting staff member:', error);
+    }
   };
 
   const handleToggle = async (member: StaffMember, field: 'scheduledToday' | 'isSenior') => {
@@ -184,7 +192,7 @@ export default function StaffPage() {
                     {/* Toggles & actions */}
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px' }}>
                       <button onClick={() => openEdit(member)} className="btn btn-secondary btn-sm">{lang === 'es' ? 'Editar' : 'Edit'}</button>
-                      <button onClick={() => handleDelete(member.id)} className="btn btn-danger btn-sm" style={{ padding: '6px 10px' }} aria-label={lang === 'es' ? `Eliminar ${member.name}` : `Delete ${member.name}`}>
+                      <button onClick={() => handleDelete(member.id, member.name)} className="btn btn-danger btn-sm" style={{ padding: '6px 10px' }} aria-label={lang === 'es' ? `Eliminar ${member.name}` : `Delete ${member.name}`}>
                         <Trash2 size={13} />
                       </button>
                     </div>
