@@ -564,13 +564,13 @@ function ScheduleSection() {
             if (fromStaffId) {
               setAssignments(a => { const updated = { ...a }; delete updated[prev.roomId]; return updated; });
               const fromName = selectedCrew.find(s => s.id === fromStaffId)?.name ?? '?';
-              showMoveToast(`Moved ${prev.roomNumber} from ${fromName} to Unassigned`);
+              showMoveToast(lang === 'es' ? `${prev.roomNumber} movida de ${fromName} a Sin Asignar` : `Moved ${prev.roomNumber} from ${fromName} to Unassigned`);
             }
           } else if (fromStaffId !== prev.dropTarget) {
             setAssignments(a => ({ ...a, [prev.roomId]: prev.dropTarget! }));
-            const fromName = fromStaffId ? (selectedCrew.find(s => s.id === fromStaffId)?.name ?? '?') : 'Unassigned';
+            const fromName = fromStaffId ? (selectedCrew.find(s => s.id === fromStaffId)?.name ?? '?') : (lang === 'es' ? 'Sin Asignar' : 'Unassigned');
             const toName = selectedCrew.find(s => s.id === prev.dropTarget)?.name ?? '?';
-            showMoveToast(`Moved ${prev.roomNumber} from ${fromName} to ${toName}`);
+            showMoveToast(lang === 'es' ? `${prev.roomNumber} movida de ${fromName} a ${toName}` : `Moved ${prev.roomNumber} from ${fromName} to ${toName}`);
           }
         }
         return null;
@@ -877,7 +877,7 @@ function ScheduleSection() {
                   return current.map(id => id === oldId ? s.id : id);
                 });
                 const oldName = selectedCrew.find(c => c.id === oldId)?.name ?? '?';
-                showMoveToast(`Replaced ${oldName} with ${s.name}`);
+                showMoveToast(lang === 'es' ? `${oldName} reemplazado por ${s.name}` : `Replaced ${oldName} with ${s.name}`);
                 setSwapOpenFor(null);
               }} style={{
                 display: 'block', width: '100%', padding: '8px 12px', border: 'none', borderRadius: '8px',
@@ -1943,7 +1943,7 @@ function PublicAreasModal({ show, onClose }: { show: boolean; onClose: () => voi
                         margin: 0, lineHeight: 1.3,
                         display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as const,
                         overflow: 'hidden',
-                      }}>{areaDisplayName(area.name, lang) || 'Untitled'}</p>
+                      }}>{areaDisplayName(area.name, lang) || (lang === 'es' ? 'Sin Título' : 'Untitled')}</p>
                       {/* Time + Frequency on one line */}
                       <span style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 600 }}>
                         {area.minutesPerClean}{t('minutes', lang)} · {fLabel}
@@ -2019,7 +2019,7 @@ function PublicAreasModal({ show, onClose }: { show: boolean; onClose: () => voi
         return (
           <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 9998, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }} onClick={() => setExpandedId(null)}>
             <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-card)', borderRadius: '16px', padding: '24px', width: '100%', maxWidth: '400px', boxShadow: '0 20px 60px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              <p style={{ fontWeight: 700, fontSize: '17px', color: 'var(--text-primary)' }}>{areaDisplayName(area.name, lang) || 'Untitled'}</p>
+              <p style={{ fontWeight: 700, fontSize: '17px', color: 'var(--text-primary)' }}>{areaDisplayName(area.name, lang) || (lang === 'es' ? 'Sin Título' : 'Untitled')}</p>
 
               <div>
                 <label className="label">{t('name', lang)}</label>
@@ -2191,7 +2191,7 @@ function DeepCleanSection() {
             {totalOverdue} {lang === 'es' ? 'pendientes' : 'overdue'}
           </span>
         </div>
-        <div style={{ height: '6px', background: '#E5E7EB', borderRadius: '99px', overflow: 'hidden' }}>
+        <div style={{ height: '6px', background: 'var(--border)', borderRadius: '99px', overflow: 'hidden' }}>
           <div style={{
             height: '100%', borderRadius: '99px',
             transition: 'width 600ms cubic-bezier(0.4,0,0.2,1)',
@@ -2226,8 +2226,8 @@ function DeepCleanSection() {
                   </span>
                   <span style={{
                     padding: '2px 8px', borderRadius: '100px', fontSize: '11px', fontWeight: 700,
-                    background: room.daysOverdue === Infinity ? 'rgba(220,38,38,0.1)' : room.daysOverdue > 30 ? 'rgba(220,38,38,0.1)' : 'rgba(251,191,36,0.1)',
-                    color: room.daysOverdue === Infinity ? '#DC2626' : room.daysOverdue > 30 ? '#DC2626' : '#D97706',
+                    background: room.daysOverdue === Infinity ? 'var(--red-dim)' : room.daysOverdue > 30 ? 'var(--red-dim)' : 'var(--amber-dim)',
+                    color: room.daysOverdue === Infinity ? 'var(--red)' : room.daysOverdue > 30 ? 'var(--red)' : 'var(--amber)',
                   }}>
                     {room.daysOverdue === Infinity
                       ? (lang === 'es' ? 'Nunca limpiado' : 'Never cleaned')
@@ -2245,7 +2245,7 @@ function DeepCleanSection() {
                 disabled={marking === room.roomNumber}
                 style={{
                   padding: '10px 16px', borderRadius: '10px', border: 'none',
-                  background: '#16A34A', color: '#fff', fontWeight: 700, fontSize: '13px',
+                  background: 'var(--green)', color: '#fff', fontWeight: 700, fontSize: '13px',
                   cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
                   opacity: marking === room.roomNumber ? 0.6 : 1,
                   flexShrink: 0,
@@ -2603,7 +2603,7 @@ function LeaderboardCard({ rooms, lang }: { rooms: Room[]; lang: 'en' | 'es' }) 
           }}>
             <span style={{
               fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '13px',
-              color: i === 0 ? '#D97706' : 'var(--text-muted)', width: '24px', textAlign: 'center', flexShrink: 0,
+              color: i === 0 ? 'var(--amber)' : 'var(--text-muted)', width: '24px', textAlign: 'center', flexShrink: 0,
             }}>
               {i === 0 ? '🏆' : `#${i + 1}`}
             </span>
