@@ -718,8 +718,41 @@ export async function markRoomDeepCleaned(
     id: roomNumber,
     roomNumber,
     lastDeepClean: today,
+    status: 'completed',
+    completedAt: today,
     ...(cleanedBy ? { cleanedBy } : {}),
     ...(notes ? { notes } : {}),
   };
   await setDoc(deepCleanRecordDocRef(uid, pid, roomNumber), record);
+}
+
+export async function assignRoomDeepClean(
+  uid: string, pid: string, roomNumber: string, team: string[]
+) {
+  const today = new Date().toLocaleDateString('en-CA');
+  const existing = await getDoc(deepCleanRecordDocRef(uid, pid, roomNumber));
+  const prev = existing.exists() ? (existing.data() as DeepCleanRecord) : null;
+  const record: DeepCleanRecord = {
+    id: roomNumber,
+    roomNumber,
+    lastDeepClean: prev?.lastDeepClean ?? '',
+    cleanedByTeam: team,
+    status: 'in_progress',
+    assignedAt: today,
+  };
+  await setDoc(deepCleanRecordDocRef(uid, pid, roomNumber), record, { merge: true });
+}
+
+export async function completeRoomDeepClean(
+  uid: string, pid: string, roomNumber: string, team: string[]
+) {
+  const today = new Date().toLocaleDateString('en-CA');
+  const record: Partial<DeepCleanRecord> = {
+    lastDeepClean: today,
+    cleanedByTeam: team,
+    cleanedBy: team.join(', '),
+    status: 'completed',
+    completedAt: today,
+  };
+  await setDoc(deepCleanRecordDocRef(uid, pid, roomNumber), record, { merge: true });
 }

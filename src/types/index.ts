@@ -74,8 +74,12 @@ export interface DeepCleanRecord {
   id: string;                     // same as room number for easy lookup
   roomNumber: string;
   lastDeepClean: string;          // ISO date YYYY-MM-DD
-  cleanedBy?: string;             // staff name
+  cleanedBy?: string;             // staff name (legacy single)
+  cleanedByTeam?: string[];       // staff names (multi-staff)
   notes?: string;
+  status?: 'in_progress' | 'completed'; // in-progress or done
+  assignedAt?: string;            // ISO date when team was assigned
+  completedAt?: string;           // ISO date when marked done
 }
 
 // ─── Laundry Config ────────────────────────────────────────────────────────

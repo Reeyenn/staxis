@@ -14,13 +14,14 @@ import {
   addStaffMember, updateStaffMember, deleteStaffMember,
   getRoomsForDate, getPublicAreas, setPublicArea, deletePublicArea,
   updateProperty,
-  getDeepCleanConfig, getDeepCleanRecords, markRoomDeepCleaned,
+  getDeepCleanConfig, setDeepCleanConfig, getDeepCleanRecords,
+  markRoomDeepCleaned, assignRoomDeepClean, completeRoomDeepClean,
 } from '@/lib/firestore';
 import { getPublicAreasDueToday, calcPublicAreaMinutes, autoAssignRooms, getOverdueRooms, calcDndFreedMinutes, suggestDeepCleans } from '@/lib/calculations';
 import { getDefaultPublicAreas } from '@/lib/defaults';
 import type { PublicArea } from '@/types';
 import { todayStr } from '@/lib/utils';
-import type { Room, RoomStatus, StaffMember } from '@/types';
+import type { Room, RoomStatus, StaffMember, DeepCleanRecord, DeepCleanConfig } from '@/types';
 import { format, subDays } from 'date-fns';
 import {
   Calendar, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, CheckCircle2, Clock,
@@ -2083,102 +2084,250 @@ function PublicAreasModal({ show, onClose }: { show: boolean; onClose: () => voi
 
 function DeepCleanSection() {
   const { user } = useAuth();
-  const { activePropertyId, activeProperty } = useProperty();
+  const { activePropertyId, activeProperty, staff } = useProperty();
   const { lang } = useLang();
 
-  const [config, setConfigState] = useState<{ frequencyDays: number; minutesPerRoom: number; targetPerWeek: number } | null>(null);
-  const [records, setRecords] = useState<Record<string, { lastCleaned: string; cleanedBy?: string }>>({});
+  const [config, setConfigState] = useState<DeepCleanConfig | null>(null);
+  const [records, setRecords] = useState<Record<string, DeepCleanRecord>>({});
+  const [todayRooms, setTodayRooms] = useState<Room[]>([]);
   const [toast, setToast] = useState<string | null>(null);
-  const [marking, setMarking] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [showCycleModal, setShowCycleModal] = useState(false);
+  const [showBreakdown, setShowBreakdown] = useState(false);
+  const [assignRoom, setAssignRoom] = useState<string | null>(null);
+  const [selectedTeam, setSelectedTeam] = useState<string[]>([]);
+  const [completeRoom, setCompleteRoom] = useState<string | null>(null);
+  const [collapsedFloors, setCollapsedFloors] = useState<Set<number>>(new Set());
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const uid = user?.uid ?? '';
   const pid = activePropertyId ?? '';
   const totalRooms = activeProperty?.totalRooms ?? 74;
+  const today = new Date();
+  const dayOfWeek = today.getDay(); // 0=Sun, 1=Mon
 
-  // Generate all room numbers (assumes 100-series format)
+  // All room numbers
   const allRoomNumbers = useMemo(() => {
     const rooms: string[] = [];
-    // Comfort Suites pattern: floors 2-4 with rooms 01-26ish
-    for (let floor = 2; floor <= 4; floor++) {
+    for (let floor = 1; floor <= 4; floor++) {
       for (let room = 1; room <= 26; room++) {
         rooms.push(`${floor}${room.toString().padStart(2, '0')}`);
       }
     }
-    // Trim to total rooms if needed
     return rooms.slice(0, totalRooms);
   }, [totalRooms]);
 
+  const getFloor = (num: string) => parseInt(num.charAt(0));
+
+  // Load data
   useEffect(() => {
     if (!uid || !pid) return;
-    getDeepCleanConfig(uid, pid).then(c => setConfigState(c)).catch(err => console.error('Error fetching deep clean config:', err));
+    getDeepCleanConfig(uid, pid).then(c => setConfigState(c)).catch(() => {});
     getDeepCleanRecords(uid, pid).then(r => {
-      const map: Record<string, { lastCleaned: string; cleanedBy?: string }> = {};
-      for (const rec of r) {
-        map[rec.roomNumber] = { lastCleaned: rec.lastDeepClean, cleanedBy: rec.cleanedBy };
-      }
+      const map: Record<string, DeepCleanRecord> = {};
+      for (const rec of r) map[rec.roomNumber] = rec;
       setRecords(map);
-    }).catch(err => console.error('Error fetching deep clean records:', err));
+    }).catch(() => {});
+    // Subscribe to today's rooms for occupancy data
+    const unsub = subscribeToRooms(uid, pid, todayStr(), setTodayRooms);
+    return unsub;
   }, [uid, pid]);
 
-  useEffect(() => {
-    return () => { if (toastTimer.current) clearTimeout(toastTimer.current); };
-  }, []);
+  useEffect(() => { return () => { if (toastTimer.current) clearTimeout(toastTimer.current); }; }, []);
 
   const showToast = (msg: string) => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
     setToast(msg);
-    toastTimer.current = setTimeout(() => setToast(null), 2500);
-  };
-
-  const handleMarkCleaned = async (roomNumber: string) => {
-    if (!uid || !pid) return;
-    setMarking(roomNumber);
-    try {
-      await markRoomDeepCleaned(uid, pid, roomNumber, user?.displayName ?? 'Manager');
-      setRecords(prev => ({
-        ...prev,
-        [roomNumber]: { lastCleaned: todayStr(), cleanedBy: user?.displayName ?? 'Manager' },
-      }));
-      showToast(lang === 'es' ? `${roomNumber}: Limpieza profunda completada` : `${roomNumber}: Deep clean done`);
-    } finally { setMarking(null); }
+    toastTimer.current = setTimeout(() => setToast(null), 3000);
   };
 
   const freq = config?.frequencyDays ?? 90;
-  const today = new Date();
 
-  // Build overdue list sorted by days overdue (most overdue first)
-  const overdueRooms = useMemo(() => {
+  // ─── Room status helpers ──────────────────────────────────────────────────
+  type RoomInfo = { roomNumber: string; daysSince: number; lastCleaned: string | null; cleanedBy: string | null; team: string[]; status: 'overdue' | 'approaching' | 'ok' | 'never'; inProgress: boolean; };
+
+  const allRoomInfo = useMemo((): RoomInfo[] => {
     return allRoomNumbers.map(num => {
       const rec = records[num];
-      if (!rec) return { roomNumber: num, daysOverdue: Infinity, lastCleaned: null as string | null, cleanedBy: undefined as string | undefined };
-      const last = new Date(rec.lastCleaned);
+      if (!rec || !rec.lastDeepClean) {
+        return { roomNumber: num, daysSince: Infinity, lastCleaned: null, cleanedBy: null, team: rec?.cleanedByTeam ?? [], status: 'never' as const, inProgress: rec?.status === 'in_progress' };
+      }
+      const last = new Date(rec.lastDeepClean);
       const days = Math.floor((today.getTime() - last.getTime()) / 86_400_000);
-      return { roomNumber: num, daysOverdue: days - freq, lastCleaned: rec.lastCleaned, cleanedBy: rec.cleanedBy };
-    })
-    .filter(r => r.daysOverdue > 0 || r.lastCleaned === null)
-    .sort((a, b) => b.daysOverdue - a.daysOverdue);
+      const daysLeft = freq - days;
+      let status: 'overdue' | 'approaching' | 'ok' | 'never' = 'ok';
+      if (days >= freq) status = 'overdue';
+      else if (daysLeft <= 14) status = 'approaching';
+      return {
+        roomNumber: num, daysSince: days,
+        lastCleaned: rec.lastDeepClean,
+        cleanedBy: rec.cleanedByTeam?.join(', ') ?? rec.cleanedBy ?? null,
+        team: rec.cleanedByTeam ?? [],
+        status, inProgress: rec.status === 'in_progress',
+      };
+    });
   }, [allRoomNumbers, records, freq, today]);
 
-  // Recently completed (last 14 days)
-  const recentlyDone = useMemo(() => {
-    return allRoomNumbers
-      .filter(num => {
-        const rec = records[num];
-        if (!rec) return false;
-        const days = Math.floor((today.getTime() - new Date(rec.lastCleaned).getTime()) / 86_400_000);
-        return days <= 14;
-      })
-      .map(num => ({ roomNumber: num, ...records[num] }))
-      .sort((a, b) => new Date(b.lastCleaned).getTime() - new Date(a.lastCleaned).getTime());
-  }, [allRoomNumbers, records, today]);
+  const overdueRooms = useMemo(() =>
+    allRoomInfo.filter(r => r.status === 'overdue' || r.status === 'never')
+      .sort((a, b) => (b.daysSince === Infinity ? 99999 : b.daysSince) - (a.daysSince === Infinity ? 99999 : a.daysSince)),
+    [allRoomInfo]);
+
+  const inProgressRooms = useMemo(() => allRoomInfo.filter(r => r.inProgress), [allRoomInfo]);
+
+  const recentlyDone = useMemo(() =>
+    allRoomInfo.filter(r => r.lastCleaned && r.daysSince <= 14 && !r.inProgress)
+      .sort((a, b) => a.daysSince - b.daysSince).slice(0, 10),
+    [allRoomInfo]);
 
   const totalOverdue = overdueRooms.length;
   const pct = allRoomNumbers.length > 0 ? Math.round(((allRoomNumbers.length - totalOverdue) / allRoomNumbers.length) * 100) : 0;
 
+  // ─── Floor breakdown ──────────────────────────────────────────────────────
+  const floorBreakdown = useMemo(() => {
+    const floors: Record<number, number> = {};
+    overdueRooms.forEach(r => {
+      const f = getFloor(r.roomNumber);
+      floors[f] = (floors[f] ?? 0) + 1;
+    });
+    return Object.entries(floors).sort(([a], [b]) => Number(a) - Number(b)).map(([f, c]) => ({ floor: Number(f), count: c }));
+  }, [overdueRooms]);
+
+  // ─── Today's Suggestion ───────────────────────────────────────────────────
+  const dndCount = todayRooms.filter(r => r.isDnd).length;
+  const checkoutCount = todayRooms.filter(r => r.type === 'checkout').length;
+  const totalOccupied = todayRooms.length;
+  const isLightDay = dayOfWeek === 1 || checkoutCount < 25 || dndCount >= 5; // Monday or light checkout or many DNDs
+
+  // Find floors with lightest workload
+  const floorLoad = useMemo(() => {
+    const loads: Record<number, number> = {};
+    todayRooms.forEach(r => {
+      const f = getFloor(r.number);
+      if (r.type === 'checkout') loads[f] = (loads[f] ?? 0) + 2;
+      else if (r.type === 'stayover' && !r.isDnd) loads[f] = (loads[f] ?? 0) + 1;
+    });
+    return loads;
+  }, [todayRooms]);
+
+  const suggestedRooms = useMemo(() => {
+    if (!isLightDay) return [];
+    // Pick 2-4 most overdue rooms, preferring lighter floors
+    const sorted = [...overdueRooms].sort((a, b) => {
+      const floorA = getFloor(a.roomNumber);
+      const floorB = getFloor(b.roomNumber);
+      const loadA = floorLoad[floorA] ?? 0;
+      const loadB = floorLoad[floorB] ?? 0;
+      if (loadA !== loadB) return loadA - loadB; // lighter floor first
+      return (b.daysSince === Infinity ? 99999 : b.daysSince) - (a.daysSince === Infinity ? 99999 : a.daysSince);
+    });
+    return sorted.filter(r => !r.inProgress).slice(0, 3);
+  }, [isLightDay, overdueRooms, floorLoad]);
+
+  // Staff who finished their rooms today
+  const availableStaff = useMemo(() => {
+    const hkStaff = staff.filter(s => (!s.department || s.department === 'housekeeping') && s.isActive !== false);
+    const assignedRooms = todayRooms.filter(r => r.assignedTo && (r.status === 'clean' || r.status === 'inspected'));
+    const staffDoneIds = new Set<string>();
+    hkStaff.forEach(s => {
+      const myRooms = todayRooms.filter(r => r.assignedTo === s.id);
+      if (myRooms.length > 0 && myRooms.every(r => r.status === 'clean' || r.status === 'inspected')) {
+        staffDoneIds.add(s.id);
+      }
+    });
+    return hkStaff.map(s => ({ ...s, doneForDay: staffDoneIds.has(s.id) }))
+      .sort((a, b) => (a.doneForDay === b.doneForDay ? 0 : a.doneForDay ? -1 : 1));
+  }, [staff, todayRooms]);
+
+  // ─── Handlers ─────────────────────────────────────────────────────────────
+  const handleAssignTeam = async (roomNumber: string) => {
+    if (!uid || !pid || selectedTeam.length === 0) return;
+    setSaving(true);
+    try {
+      const teamNames = selectedTeam.map(id => staff.find(s => s.id === id)?.name ?? id);
+      await assignRoomDeepClean(uid, pid, roomNumber, teamNames);
+      setRecords(prev => ({
+        ...prev,
+        [roomNumber]: { ...prev[roomNumber], id: roomNumber, roomNumber, lastDeepClean: prev[roomNumber]?.lastDeepClean ?? '', cleanedByTeam: teamNames, status: 'in_progress', assignedAt: todayStr() },
+      }));
+      setAssignRoom(null);
+      setSelectedTeam([]);
+      showToast(lang === 'es' ? `${roomNumber}: Equipo asignado` : `${roomNumber}: Team assigned`);
+    } finally { setSaving(false); }
+  };
+
+  const handleComplete = async (roomNumber: string) => {
+    if (!uid || !pid) return;
+    setSaving(true);
+    try {
+      const rec = records[roomNumber];
+      const team = rec?.cleanedByTeam ?? [user?.displayName ?? 'Manager'];
+      await completeRoomDeepClean(uid, pid, roomNumber, team);
+      setRecords(prev => ({
+        ...prev,
+        [roomNumber]: { ...prev[roomNumber], id: roomNumber, roomNumber, lastDeepClean: todayStr(), cleanedByTeam: team, cleanedBy: team.join(', '), status: 'completed', completedAt: todayStr() },
+      }));
+      setCompleteRoom(null);
+      showToast(lang === 'es' ? `${roomNumber}: ¡Limpieza profunda completada!` : `${roomNumber}: Deep clean complete!`);
+    } finally { setSaving(false); }
+  };
+
+  const handleAcceptSuggestion = () => {
+    if (suggestedRooms.length > 0) {
+      setAssignRoom(suggestedRooms[0].roomNumber);
+    }
+  };
+
+  const handleSaveCycle = async (days: number) => {
+    if (!uid || !pid) return;
+    const newConfig = { ...(config ?? { frequencyDays: 90, minutesPerRoom: 60, targetPerWeek: 5 }), frequencyDays: days };
+    await setDeepCleanConfig(uid, pid, newConfig);
+    setConfigState(newConfig);
+    setShowCycleModal(false);
+    showToast(lang === 'es' ? `Ciclo actualizado: ${days} días` : `Cycle updated: ${days} days`);
+  };
+
+  const toggleFloor = (floor: number) => {
+    setCollapsedFloors(prev => {
+      const next = new Set(prev);
+      if (next.has(floor)) next.delete(floor); else next.add(floor);
+      return next;
+    });
+  };
+
+  // Group overdue by floor
+  const overdueByFloor = useMemo(() => {
+    const floors = new Map<number, RoomInfo[]>();
+    overdueRooms.forEach(r => {
+      const f = getFloor(r.roomNumber);
+      if (!floors.has(f)) floors.set(f, []);
+      floors.get(f)!.push(r);
+    });
+    return [...floors.entries()].sort(([a], [b]) => a - b);
+  }, [overdueRooms]);
+
+  // ─── Status badge color helper ────────────────────────────────────────────
+  const statusColor = (r: RoomInfo) => {
+    if (r.inProgress) return { bg: 'rgba(245,158,11,0.1)', color: 'var(--amber)' };
+    if (r.status === 'never') return { bg: 'var(--red-dim, rgba(220,38,38,0.08))', color: 'var(--red)' };
+    if (r.status === 'overdue') return { bg: 'var(--red-dim, rgba(220,38,38,0.08))', color: 'var(--red)' };
+    if (r.status === 'approaching') return { bg: 'rgba(245,158,11,0.1)', color: 'var(--amber)' };
+    return { bg: 'rgba(0,0,0,0.04)', color: 'var(--text-muted)' };
+  };
+
+  const statusLabel = (r: RoomInfo) => {
+    if (r.inProgress) return lang === 'es' ? 'En progreso' : 'In Progress';
+    if (r.status === 'never') return lang === 'es' ? 'Nunca limpiado' : 'Never cleaned';
+    if (r.daysSince === Infinity) return lang === 'es' ? 'Nunca limpiado' : 'Never cleaned';
+    if (r.status === 'overdue') return `${r.daysSince - freq}d ${lang === 'es' ? 'atrasado' : 'overdue'}`;
+    return `${r.daysSince}d ${lang === 'es' ? 'atrás' : 'ago'}`;
+  };
+
+  // ─── RENDER ───────────────────────────────────────────────────────────────
   return (
-    <div style={{ padding: '20px 16px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-      {/* Header */}
+    <div style={{ padding: '20px 16px', display: 'flex', flexDirection: 'column', gap: '14px', paddingBottom: '100px' }}>
+
+      {/* ── Header ── */}
       <div className="animate-in">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -2187,10 +2336,32 @@ function DeepCleanSection() {
               {lang === 'es' ? 'Limpieza Profunda' : 'Deep Clean'}
             </h2>
           </div>
-          <span style={{ fontSize: '14px', fontWeight: 600, color: totalOverdue === 0 ? 'var(--green)' : 'var(--red)' }}>
+          {/* Tappable overdue counter */}
+          <button
+            onClick={() => setShowBreakdown(!showBreakdown)}
+            style={{
+              fontSize: '14px', fontWeight: 700, color: totalOverdue === 0 ? 'var(--green)' : 'var(--red)',
+              background: 'none', border: 'none', cursor: 'pointer', padding: '4px 8px',
+              display: 'flex', alignItems: 'center', gap: '4px', minHeight: '44px',
+            }}
+          >
             {totalOverdue} {lang === 'es' ? 'pendientes' : 'overdue'}
-          </span>
+            <ChevronDown size={14} style={{ transform: showBreakdown ? 'rotate(180deg)' : 'none', transition: 'transform 150ms' }} />
+          </button>
         </div>
+
+        {/* Floor breakdown dropdown */}
+        {showBreakdown && floorBreakdown.length > 0 && (
+          <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '10px 14px', marginBottom: '8px', display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+            {floorBreakdown.map(({ floor, count }) => (
+              <span key={floor} style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', padding: '4px 10px', background: 'var(--bg-elevated, rgba(0,0,0,0.04))', borderRadius: '8px' }}>
+                {lang === 'es' ? `Piso ${floor}` : `Floor ${floor}`}: <span style={{ color: 'var(--red)' }}>{count}</span>
+              </span>
+            ))}
+          </div>
+        )}
+
+        {/* Progress bar */}
         <div style={{ height: '6px', background: 'var(--border)', borderRadius: '99px', overflow: 'hidden' }}>
           <div style={{
             height: '100%', borderRadius: '99px',
@@ -2199,68 +2370,230 @@ function DeepCleanSection() {
             background: pct === 100 ? 'var(--green)' : 'var(--navy)',
           }} />
         </div>
-        <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px' }}>
+
+        {/* Cycle config (tappable) */}
+        <button
+          onClick={() => setShowCycleModal(true)}
+          style={{
+            fontSize: '12px', color: 'var(--text-muted)', marginTop: '6px',
+            background: 'none', border: 'none', cursor: 'pointer', padding: '4px 0',
+            display: 'flex', alignItems: 'center', gap: '4px', minHeight: '44px',
+          }}
+        >
+          <Settings size={12} />
           {lang === 'es' ? `Ciclo: cada ${freq} días` : `Cycle: every ${freq} days`}
-        </p>
+        </button>
       </div>
 
-      {/* Overdue rooms list */}
-      {overdueRooms.length === 0 ? (
-        <div className="animate-in stagger-1" style={{
+      {/* ── Today's Suggestion ── */}
+      <div className="animate-in stagger-1" style={{
+        padding: '16px', borderRadius: 'var(--radius-lg)',
+        background: isLightDay ? 'linear-gradient(135deg, var(--navy, #1b3a5c), var(--navy-light, #2a5a8c))' : 'var(--bg-card)',
+        border: isLightDay ? 'none' : '1px solid var(--border)',
+        color: isLightDay ? '#fff' : 'var(--text-primary)',
+      }}>
+        {isLightDay ? (
+          <>
+            <p style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', opacity: 0.8, margin: '0 0 6px' }}>
+              {lang === 'es' ? 'Sugerencia para hoy' : "Today's Suggestion"}
+            </p>
+            <p style={{ fontSize: '18px', fontWeight: 700, margin: '0 0 8px' }}>
+              {suggestedRooms.length} {lang === 'es' ? 'habitaciones' : 'rooms'}
+            </p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '12px' }}>
+              {suggestedRooms.map(r => (
+                <span key={r.roomNumber} style={{
+                  fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '15px',
+                  padding: '4px 12px', background: 'rgba(255,255,255,0.2)', borderRadius: '8px',
+                }}>
+                  {r.roomNumber}
+                </span>
+              ))}
+            </div>
+            <p style={{ fontSize: '12px', opacity: 0.8, margin: '0 0 12px' }}>
+              {dndCount > 0 && (lang === 'es' ? `${dndCount} DND liberan tiempo` : `${dndCount} DND rooms free up time`)}
+              {dndCount > 0 && checkoutCount < 25 && ' · '}
+              {checkoutCount < 25 && (lang === 'es' ? `Solo ${checkoutCount} checkouts` : `Only ${checkoutCount} checkouts`)}
+              {dayOfWeek === 1 && (dndCount > 0 || checkoutCount < 25 ? ' · ' : '') + (lang === 'es' ? 'Lunes — día más ligero' : 'Monday — lightest day')}
+            </p>
+            {suggestedRooms.length > 0 && (
+              <button
+                onClick={handleAcceptSuggestion}
+                style={{
+                  padding: '12px 20px', borderRadius: 'var(--radius-md)',
+                  background: '#fff', color: 'var(--navy, #1b3a5c)', border: 'none',
+                  fontWeight: 700, fontSize: '14px', cursor: 'pointer',
+                  minHeight: '48px', width: '100%',
+                }}
+              >
+                {lang === 'es' ? 'Asignar equipo' : 'Assign Team'}
+              </button>
+            )}
+          </>
+        ) : (
+          <>
+            <p style={{ fontSize: '14px', fontWeight: 600, margin: '0 0 4px' }}>
+              {lang === 'es' ? 'Hoy se ve ocupado' : 'Today looks busy'}
+            </p>
+            <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: 0 }}>
+              {lang === 'es'
+                ? `${checkoutCount} checkouts. Limpieza profunda no recomendada. Próximo día ligero: Lunes.`
+                : `${checkoutCount} checkouts. Deep cleaning not recommended. Next light day: Monday.`}
+            </p>
+          </>
+        )}
+      </div>
+
+      {/* ── In Progress ── */}
+      {inProgressRooms.length > 0 && (
+        <div className="animate-in stagger-2">
+          <p style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'var(--amber)', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <Clock size={12} /> {lang === 'es' ? 'En progreso' : 'In Progress'}
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {inProgressRooms.map(r => (
+              <div key={r.roomNumber} style={{
+                padding: '14px 16px', background: 'var(--bg-card)', border: '2px solid var(--amber)',
+                borderRadius: 'var(--radius-lg)', display: 'flex', alignItems: 'center', gap: '12px',
+              }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '20px', color: 'var(--text-primary)' }}>
+                      {r.roomNumber}
+                    </span>
+                    <span style={{ padding: '2px 8px', borderRadius: '100px', fontSize: '11px', fontWeight: 700, background: 'rgba(245,158,11,0.1)', color: 'var(--amber)' }}>
+                      {lang === 'es' ? 'En progreso' : 'In Progress'}
+                    </span>
+                  </div>
+                  {r.team.length > 0 && (
+                    <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '3px' }}>
+                      {r.team.join(', ')}
+                    </p>
+                  )}
+                </div>
+                <button
+                  onClick={() => setCompleteRoom(r.roomNumber)}
+                  style={{
+                    padding: '12px 18px', borderRadius: '10px', border: 'none',
+                    background: 'var(--green)', color: '#fff', fontWeight: 700, fontSize: '14px',
+                    cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
+                    flexShrink: 0, minHeight: '48px',
+                  }}
+                >
+                  <Check size={16} /> {lang === 'es' ? 'Hecho' : 'Done'}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Overdue Rooms by Floor ── */}
+      {overdueByFloor.length === 0 ? (
+        <div className="animate-in stagger-2" style={{
           textAlign: 'center', padding: '48px 20px',
           background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)',
         }}>
           <CheckCircle2 size={36} color="var(--green)" style={{ margin: '0 auto 12px' }} />
-          <p style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px' }}>
+          <p style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)' }}>
             {lang === 'es' ? 'Todas las habitaciones al día' : 'All rooms up to date'}
           </p>
         </div>
       ) : (
-        overdueRooms.map((room, i) => (
-          <div key={room.roomNumber} className={`card animate-in stagger-${Math.min(i + 1, 4)}`} style={{ padding: '16px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '20px', color: 'var(--text-primary)' }}>
-                    {room.roomNumber}
-                  </span>
-                  <span style={{
-                    padding: '2px 8px', borderRadius: '100px', fontSize: '11px', fontWeight: 700,
-                    background: room.daysOverdue === Infinity ? 'var(--red-dim)' : room.daysOverdue > 30 ? 'var(--red-dim)' : 'var(--amber-dim)',
-                    color: room.daysOverdue === Infinity ? 'var(--red)' : room.daysOverdue > 30 ? 'var(--red)' : 'var(--amber)',
-                  }}>
-                    {room.daysOverdue === Infinity
-                      ? (lang === 'es' ? 'Nunca limpiado' : 'Never cleaned')
-                      : `${room.daysOverdue}d ${lang === 'es' ? 'atrasado' : 'overdue'}`}
-                  </span>
-                </div>
-                {room.lastCleaned && (
-                  <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '3px' }}>
-                    {lang === 'es' ? 'Última:' : 'Last:'} {room.lastCleaned}{room.cleanedBy ? ` · ${room.cleanedBy}` : ''}
-                  </p>
-                )}
-              </div>
+        overdueByFloor.map(([floor, rooms]) => {
+          const isCollapsed = collapsedFloors.has(floor);
+          return (
+            <div key={floor} className="animate-in">
+              {/* Floor header */}
               <button
-                onClick={() => handleMarkCleaned(room.roomNumber)}
-                disabled={marking === room.roomNumber}
+                onClick={() => toggleFloor(floor)}
                 style={{
-                  padding: '10px 16px', borderRadius: '10px', border: 'none',
-                  background: 'var(--green)', color: '#fff', fontWeight: 700, fontSize: '13px',
-                  cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
-                  opacity: marking === room.roomNumber ? 0.6 : 1,
-                  flexShrink: 0,
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  width: '100%', padding: '12px 14px', background: 'var(--bg-card)',
+                  border: '1px solid var(--border)', borderRadius: isCollapsed ? 'var(--radius-md)' : 'var(--radius-md) var(--radius-md) 0 0',
+                  cursor: 'pointer', minHeight: '48px',
                 }}
               >
-                <Check size={14} /> {lang === 'es' ? 'Hecho' : 'Done'}
+                <span style={{ fontWeight: 700, fontSize: '14px', color: 'var(--text-primary)' }}>
+                  {lang === 'es' ? `Piso ${floor}` : `Floor ${floor}`}
+                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--red)', padding: '2px 8px', background: 'var(--red-dim, rgba(220,38,38,0.08))', borderRadius: '99px' }}>
+                    {rooms.length}
+                  </span>
+                  {isCollapsed ? <ChevronRight size={16} color="var(--text-muted)" /> : <ChevronDown size={16} color="var(--text-muted)" />}
+                </div>
               </button>
+
+              {/* Room cards */}
+              {!isCollapsed && (
+                <div style={{ border: '1px solid var(--border)', borderTop: 'none', borderRadius: '0 0 var(--radius-md) var(--radius-md)', overflow: 'hidden' }}>
+                  {rooms.map(room => {
+                    const sc = statusColor(room);
+                    return (
+                      <div key={room.roomNumber} style={{
+                        display: 'flex', alignItems: 'center', gap: '12px',
+                        padding: '14px 16px', borderBottom: '1px solid var(--border)',
+                        background: room.inProgress ? 'rgba(245,158,11,0.04)' : undefined,
+                      }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '18px', color: 'var(--text-primary)' }}>
+                              {room.roomNumber}
+                            </span>
+                            <span style={{ padding: '2px 8px', borderRadius: '100px', fontSize: '11px', fontWeight: 700, background: sc.bg, color: sc.color }}>
+                              {statusLabel(room)}
+                            </span>
+                          </div>
+                          {room.lastCleaned && (
+                            <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '3px' }}>
+                              {lang === 'es' ? 'Última:' : 'Last:'} {room.daysSince}d {lang === 'es' ? 'atrás' : 'ago'}{room.cleanedBy ? ` · ${room.cleanedBy}` : ''}
+                            </p>
+                          )}
+                          {room.inProgress && room.team.length > 0 && (
+                            <p style={{ fontSize: '12px', color: 'var(--amber)', marginTop: '2px' }}>
+                              {room.team.join(', ')}
+                            </p>
+                          )}
+                        </div>
+                        {room.inProgress ? (
+                          <button
+                            onClick={() => setCompleteRoom(room.roomNumber)}
+                            style={{
+                              padding: '10px 16px', borderRadius: '10px', border: 'none',
+                              background: 'var(--green)', color: '#fff', fontWeight: 700, fontSize: '13px',
+                              cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
+                              flexShrink: 0, minHeight: '48px',
+                            }}
+                          >
+                            <Check size={14} /> {lang === 'es' ? 'Hecho' : 'Done'}
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => { setAssignRoom(room.roomNumber); setSelectedTeam([]); }}
+                            style={{
+                              padding: '10px 16px', borderRadius: '10px', border: 'none',
+                              background: 'var(--navy)', color: '#fff', fontWeight: 700, fontSize: '13px',
+                              cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
+                              flexShrink: 0, minHeight: '48px',
+                            }}
+                          >
+                            <Users size={14} /> {lang === 'es' ? 'Asignar' : 'Assign'}
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
-          </div>
-        ))
+          );
+        })
       )}
 
-      {/* Recently completed */}
+      {/* ── Recently Completed ── */}
       {recentlyDone.length > 0 && (
-        <div className="animate-in stagger-3">
+        <div className="animate-in">
           <p style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '8px' }}>
             {lang === 'es' ? 'Completadas recientemente' : 'Recently Completed'}
           </p>
@@ -2268,15 +2601,16 @@ function DeepCleanSection() {
             {recentlyDone.map(room => (
               <div key={room.roomNumber} style={{
                 display: 'flex', alignItems: 'center', gap: '10px',
-                padding: '10px 14px', background: 'var(--bg-card)',
-                border: '1px solid var(--border)', borderRadius: 'var(--radius-md)',
+                padding: '12px 14px', background: 'var(--bg-card)',
+                border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', minHeight: '48px',
               }}>
                 <CheckCircle2 size={16} color="var(--green)" />
-                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '14px', color: 'var(--text-primary)' }}>
+                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '15px', color: 'var(--text-primary)' }}>
                   {room.roomNumber}
                 </span>
                 <span style={{ fontSize: '12px', color: 'var(--text-muted)', flex: 1 }}>
-                  {room.lastCleaned}{room.cleanedBy ? ` · ${room.cleanedBy}` : ''}
+                  {room.daysSince === 0 ? (lang === 'es' ? 'Hoy' : 'Today') : `${room.daysSince}d ${lang === 'es' ? 'atrás' : 'ago'}`}
+                  {room.cleanedBy ? ` · ${room.cleanedBy}` : ''}
                 </span>
               </div>
             ))}
@@ -2284,11 +2618,169 @@ function DeepCleanSection() {
         </div>
       )}
 
+      {/* ── Assign Team Modal ── */}
+      {assignRoom && (
+        <>
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 9997 }} onClick={() => { setAssignRoom(null); setSelectedTeam([]); }} />
+          <div style={{
+            position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 9998,
+            background: 'var(--bg-card)', borderRadius: '16px', boxShadow: '0 8px 40px rgba(0,0,0,0.2)',
+            padding: '20px', width: '340px', maxWidth: 'calc(100vw - 40px)', maxHeight: '80vh', overflowY: 'auto',
+          }}>
+            <p style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text-primary)', margin: '0 0 4px' }}>
+              {lang === 'es' ? `Asignar equipo — ${assignRoom}` : `Assign Team — ${assignRoom}`}
+            </p>
+            <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '0 0 14px' }}>
+              {lang === 'es' ? 'Selecciona 2-3 personas' : 'Select 2-3 people'}
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '14px' }}>
+              {availableStaff.map(s => {
+                const isSelected = selectedTeam.includes(s.id);
+                return (
+                  <button
+                    key={s.id}
+                    onClick={() => {
+                      setSelectedTeam(prev =>
+                        prev.includes(s.id) ? prev.filter(id => id !== s.id) : [...prev, s.id]
+                      );
+                    }}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: '10px',
+                      padding: '12px 14px', borderRadius: '10px',
+                      border: isSelected ? '2px solid var(--navy)' : '1.5px solid var(--border)',
+                      background: isSelected ? 'rgba(37,99,235,0.06)' : 'var(--bg)',
+                      cursor: 'pointer', minHeight: '48px', textAlign: 'left',
+                    }}
+                  >
+                    <div style={{
+                      width: '36px', height: '36px', borderRadius: '10px',
+                      background: isSelected ? 'var(--navy)' : 'var(--bg-elevated)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      color: isSelected ? '#fff' : 'var(--text-muted)', fontWeight: 700, fontSize: '13px', flexShrink: 0,
+                    }}>
+                      {isSelected ? <Check size={16} /> : s.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)}
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)' }}>{s.name}</div>
+                      {s.doneForDay && (
+                        <div style={{ fontSize: '11px', color: 'var(--green)', fontWeight: 600 }}>
+                          {lang === 'es' ? 'Terminó sus habitaciones' : 'Finished rooms'}
+                        </div>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              onClick={() => handleAssignTeam(assignRoom)}
+              disabled={selectedTeam.length === 0 || saving}
+              style={{
+                width: '100%', padding: '14px', borderRadius: 'var(--radius-md)',
+                background: selectedTeam.length > 0 ? 'var(--navy)' : 'var(--border)',
+                color: '#fff', border: 'none', fontWeight: 700, fontSize: '15px',
+                cursor: selectedTeam.length > 0 ? 'pointer' : 'not-allowed',
+                minHeight: '52px', opacity: saving ? 0.6 : 1,
+              }}
+            >
+              {saving
+                ? '...'
+                : `${lang === 'es' ? 'Confirmar' : 'Confirm'} (${selectedTeam.length} ${lang === 'es' ? 'seleccionados' : 'selected'})`
+              }
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* ── Complete Confirmation Modal ── */}
+      {completeRoom && (
+        <>
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 9997 }} onClick={() => setCompleteRoom(null)} />
+          <div style={{
+            position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 9998,
+            background: 'var(--bg-card)', borderRadius: '16px', boxShadow: '0 8px 40px rgba(0,0,0,0.2)',
+            padding: '24px', width: '320px', maxWidth: 'calc(100vw - 40px)', textAlign: 'center',
+          }}>
+            <CheckCircle2 size={40} color="var(--green)" style={{ margin: '0 auto 12px' }} />
+            <p style={{ fontSize: '17px', fontWeight: 700, color: 'var(--text-primary)', margin: '0 0 4px' }}>
+              {lang === 'es' ? `¿Completar ${completeRoom}?` : `Complete ${completeRoom}?`}
+            </p>
+            {records[completeRoom]?.cleanedByTeam && (
+              <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: '0 0 16px' }}>
+                {lang === 'es' ? 'Equipo:' : 'Team:'} {records[completeRoom].cleanedByTeam!.join(', ')}
+              </p>
+            )}
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button
+                onClick={() => setCompleteRoom(null)}
+                style={{
+                  flex: 1, padding: '14px', borderRadius: 'var(--radius-md)',
+                  border: '1px solid var(--border)', background: 'transparent',
+                  color: 'var(--text-secondary)', fontWeight: 600, fontSize: '14px',
+                  cursor: 'pointer', minHeight: '48px',
+                }}
+              >
+                {lang === 'es' ? 'Cancelar' : 'Cancel'}
+              </button>
+              <button
+                onClick={() => handleComplete(completeRoom)}
+                disabled={saving}
+                style={{
+                  flex: 1, padding: '14px', borderRadius: 'var(--radius-md)',
+                  background: 'var(--green)', color: '#fff', border: 'none',
+                  fontWeight: 700, fontSize: '14px', cursor: 'pointer',
+                  minHeight: '48px', opacity: saving ? 0.6 : 1,
+                }}
+              >
+                <Check size={16} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />
+                {saving ? '...' : (lang === 'es' ? '¡Hecho!' : 'Done!')}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ── Cycle Config Modal ── */}
+      {showCycleModal && (
+        <>
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 9997 }} onClick={() => setShowCycleModal(false)} />
+          <div style={{
+            position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 9998,
+            background: 'var(--bg-card)', borderRadius: '16px', boxShadow: '0 8px 40px rgba(0,0,0,0.2)',
+            padding: '20px', width: '300px', maxWidth: 'calc(100vw - 40px)',
+          }}>
+            <p style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text-primary)', margin: '0 0 14px' }}>
+              {lang === 'es' ? 'Ciclo de limpieza' : 'Deep Clean Cycle'}
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {[30, 45, 60, 90, 120].map(days => (
+                <button
+                  key={days}
+                  onClick={() => handleSaveCycle(days)}
+                  style={{
+                    padding: '14px', borderRadius: 'var(--radius-md)',
+                    border: freq === days ? '2px solid var(--navy)' : '1.5px solid var(--border)',
+                    background: freq === days ? 'rgba(37,99,235,0.06)' : 'var(--bg)',
+                    fontWeight: freq === days ? 700 : 500, fontSize: '14px',
+                    color: freq === days ? 'var(--navy)' : 'var(--text-primary)',
+                    cursor: 'pointer', minHeight: '48px', textAlign: 'left',
+                  }}
+                >
+                  {lang === 'es' ? `Cada ${days} días` : `Every ${days} days`}
+                  {freq === days && ' ✓'}
+                </button>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Toast */}
       {toast && (
         <div style={{
           position: 'fixed', bottom: '90px', left: '50%', transform: 'translateX(-50%)',
-          background: 'var(--navy)', color: '#fff', padding: '10px 20px',
-          borderRadius: '10px', fontSize: '13px', fontWeight: 600,
+          background: 'var(--navy)', color: '#fff', padding: '12px 20px',
+          borderRadius: '10px', fontSize: '14px', fontWeight: 600,
           boxShadow: '0 4px 20px rgba(0,0,0,0.18)', zIndex: 9999,
           animation: 'toastIn 0.25s ease-out', whiteSpace: 'nowrap',
         }}>
