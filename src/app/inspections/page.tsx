@@ -101,7 +101,8 @@ export default function InspectionsPage() {
       if (isFirst && items.length === 0 && !seeded) {
         setSeeded(true);
         DEFAULT_INSPECTIONS.forEach(def => {
-          addInspection(user.uid, activePropertyId, { ...def, propertyId: activePropertyId });
+          addInspection(user.uid, activePropertyId, { ...def, propertyId: activePropertyId })
+            .catch(err => console.error('[inspections] seed default failed:', err));
         });
       }
       isFirst = false;

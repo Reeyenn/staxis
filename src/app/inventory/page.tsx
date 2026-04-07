@@ -129,7 +129,8 @@ export default function InventoryPage() {
           const mapped = OLD_TO_NEW[item.category];
           const newCat = nameOverride && item.category !== nameOverride ? nameOverride : mapped;
           if (newCat) {
-            updateInventoryItem(user.uid, activePropertyId, item.id, { category: newCat });
+            updateInventoryItem(user.uid, activePropertyId, item.id, { category: newCat })
+              .catch(err => console.error('[inventory] migration failed:', err));
           }
         });
       }
@@ -142,7 +143,8 @@ export default function InventoryPage() {
       if (isFirst && snapshot.length === 0 && !seededRef.current) {
         seededRef.current = true;
         DEFAULTS.forEach(def => {
-          addInventoryItem(user.uid, activePropertyId, { ...def, propertyId: activePropertyId });
+          addInventoryItem(user.uid, activePropertyId, { ...def, propertyId: activePropertyId })
+            .catch(err => console.error('[inventory] seed default failed:', err));
         });
       }
       isFirst = false;

@@ -300,12 +300,17 @@ export default function StaffPage() {
 
   const handleDelete = (member: StaffMember) => {
     if (window.confirm(lang === 'es' ? `¿Eliminar a ${member.name}?` : `Delete ${member.name}?`)) {
-      if (uid && pid) deleteStaffMember(uid, pid, member.id);
+      if (uid && pid) deleteStaffMember(uid, pid, member.id)
+        .catch(err => console.error('[staff] delete failed:', err));
     }
   };
 
   const toggleScheduledToday = async (member: StaffMember) => {
-    if (uid && pid) await updateStaffMember(uid, pid, member.id, { scheduledToday: !member.scheduledToday });
+    try {
+      if (uid && pid) await updateStaffMember(uid, pid, member.id, { scheduledToday: !member.scheduledToday });
+    } catch (err) {
+      console.error('[staff] toggle schedule failed:', err);
+    }
   };
 
   /* ── Schedule handlers ── */
@@ -333,6 +338,8 @@ export default function StaffPage() {
       });
       setSent(true);
       setSelected([]);
+    } catch (err) {
+      console.error('[staff] send confirmations failed:', err);
     } finally { setSending(false); }
   };
 
@@ -548,7 +555,7 @@ export default function StaffPage() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                   <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>{t('notificationsTitle', lang)}</span>
                   {unreadCount > 0 && (
-                    <button onClick={() => { if (uid && pid) markAllNotificationsRead(uid, pid); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '11px', color: 'var(--amber)', fontWeight: 600, padding: 0 }}>
+                    <button onClick={() => { if (uid && pid) markAllNotificationsRead(uid, pid).catch(err => console.error('[staff] mark all read failed:', err)); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '11px', color: 'var(--amber)', fontWeight: 600, padding: 0 }}>
                       {t('markAllRead', lang)}
                     </button>
                   )}
@@ -558,7 +565,7 @@ export default function StaffPage() {
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                     {notifications.slice(0, 10).map(n => (
-                      <div key={n.id} onClick={() => { if (!n.read && uid && pid) markNotificationRead(uid, pid, n.id); }} style={{
+                      <div key={n.id} onClick={() => { if (!n.read && uid && pid) markNotificationRead(uid, pid, n.id).catch(err => console.error('[staff] mark read failed:', err)); }} style={{
                         display: 'flex', alignItems: 'flex-start', gap: '10px', padding: '10px 12px',
                         background: n.read ? 'transparent' : 'rgba(251,191,36,0.05)',
                         border: `1px solid ${n.read ? 'var(--border)' : 'rgba(251,191,36,0.2)'}`,

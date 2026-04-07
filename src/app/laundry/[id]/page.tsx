@@ -9,6 +9,7 @@ import { getPublicAreas, getLaundryConfig, subscribeToRooms } from '@/lib/firest
 import { isAreaDueToday, calcLaundryMinutes } from '@/lib/calculations';
 import type { PublicArea, LaundryCategory, Room } from '@/types';
 import { format } from 'date-fns';
+import { es as esLocale } from 'date-fns/locale';
 import { CheckCircle, Globe } from 'lucide-react';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
@@ -181,7 +182,7 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
               {lang === 'es' ? `Hola, ${firstName}` : `Hi, ${firstName}`}
             </h1>
             <p style={{ fontSize: '13px', opacity: 0.7, fontWeight: 500 }}>
-              {format(new Date(), 'EEEE, MMMM d')}
+              {format(new Date(), 'EEEE, MMMM d', { locale: lang === 'es' ? esLocale : undefined })}
             </p>
           </div>
 

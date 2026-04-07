@@ -345,7 +345,7 @@ export default function OperationsConfigPage() {
 
         {/* Header + Add */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-          <p style={{ fontWeight: 700, fontSize: '16px', color: 'var(--text-primary)' }}>Public Areas</p>
+          <p style={{ fontWeight: 700, fontSize: '16px', color: 'var(--text-primary)' }}>{lang === 'es' ? 'Áreas Públicas' : 'Public Areas'}</p>
           <button
             onClick={handleAdd}
             style={{
@@ -399,7 +399,7 @@ export default function OperationsConfigPage() {
 
         {/* Area list for active floor */}
         {loading ? (
-          <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>Loading...</div>
+          <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>{lang === 'es' ? 'Cargando...' : 'Loading...'}</div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             {visibleAreas.map(({ area, idx }) => (
@@ -436,39 +436,41 @@ export default function OperationsConfigPage() {
         <div style={{ marginTop: '40px', borderTop: '2px solid var(--border)', paddingTop: '28px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
             <Sparkles size={18} color="var(--amber)" />
-            <p style={{ fontWeight: 700, fontSize: '16px', color: 'var(--text-primary)' }}>Deep Cleaning</p>
+            <p style={{ fontWeight: 700, fontSize: '16px', color: 'var(--text-primary)' }}>{lang === 'es' ? 'Limpieza Profunda' : 'Deep Cleaning'}</p>
           </div>
 
           {dcLoading ? (
-            <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>Loading...</div>
+            <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>{lang === 'es' ? 'Cargando...' : 'Loading...'}</div>
           ) : (
             <>
               {/* Config fields */}
               <div className="card" style={{ padding: '16px', marginBottom: '16px' }}>
                 <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '14px' }}>
-                  Set how often each room needs a deep clean and how long it takes. The system will flag overdue rooms and suggest deep cleans on light days.
+                  {lang === 'es'
+                    ? 'Configura cada cuánto tiempo necesita limpieza profunda cada habitación y cuánto tarda. El sistema marcará las habitaciones vencidas y sugerirá limpiezas profundas en días ligeros.'
+                    : 'Set how often each room needs a deep clean and how long it takes. The system will flag overdue rooms and suggest deep cleans on light days.'}
                 </p>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
                   <Field
-                    label="Frequency"
+                    label={lang === 'es' ? 'Frecuencia' : 'Frequency'}
                     value={dcConfig.frequencyDays}
                     onChange={v => { setDcConfig(c => ({ ...c, frequencyDays: Number(v) || 90 })); setDcDirty(true); }}
                     type="number"
-                    suffix="days"
+                    suffix={lang === 'es' ? 'días' : 'days'}
                   />
                   <Field
-                    label="Time / Room"
+                    label={lang === 'es' ? 'Tiempo / Hab.' : 'Time / Room'}
                     value={dcConfig.minutesPerRoom}
                     onChange={v => { setDcConfig(c => ({ ...c, minutesPerRoom: Number(v) || 60 })); setDcDirty(true); }}
                     type="number"
                     suffix="min"
                   />
                   <Field
-                    label="Target / Week"
+                    label={lang === 'es' ? 'Meta / Semana' : 'Target / Week'}
                     value={dcConfig.targetPerWeek}
                     onChange={v => { setDcConfig(c => ({ ...c, targetPerWeek: Number(v) || 5 })); setDcDirty(true); }}
                     type="number"
-                    suffix="rooms"
+                    suffix={lang === 'es' ? 'hab.' : 'rooms'}
                   />
                 </div>
 
@@ -483,14 +485,14 @@ export default function OperationsConfigPage() {
                     opacity: (!dcDirty && !dcSaved) ? 0.5 : 1,
                   }}
                 >
-                  {dcSaved ? <><Check size={16} /> Saved</> : dcSaving ? 'Saving...' : 'Save Deep Clean Settings'}
+                  {dcSaved ? <><Check size={16} /> {lang === 'es' ? 'Guardado' : 'Saved'}</> : dcSaving ? (lang === 'es' ? 'Guardando...' : 'Saving...') : (lang === 'es' ? 'Guardar Config. Limpieza Prof.' : 'Save Deep Clean Settings')}
                 </button>
               </div>
 
               {/* Mark room as deep cleaned */}
               <div className="card" style={{ padding: '16px', marginBottom: '16px' }}>
                 <p style={{ fontWeight: 600, fontSize: '14px', marginBottom: '10px', color: 'var(--text-primary)' }}>
-                  Mark Room as Deep Cleaned
+                  {lang === 'es' ? 'Marcar Habitación como Limpieza Profunda' : 'Mark Room as Deep Cleaned'}
                 </p>
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end' }}>
                   <div style={{ flex: 1 }}>
@@ -533,16 +535,16 @@ export default function OperationsConfigPage() {
               {/* Deep clean records list */}
               <div style={{ marginBottom: '8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <p style={{ fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)' }}>
-                  Room Tracker
+                  {lang === 'es' ? 'Seguimiento de Habitaciones' : 'Room Tracker'}
                 </p>
                 <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                  {dcRecords.length} room{dcRecords.length !== 1 ? 's' : ''} tracked
+                  {dcRecords.length} {lang === 'es' ? (dcRecords.length !== 1 ? 'habitaciones' : 'habitación') : (dcRecords.length !== 1 ? 'rooms' : 'room')} {lang === 'es' ? 'rastreadas' : 'tracked'}
                 </p>
               </div>
 
               {dcSorted.length === 0 ? (
                 <div className="card" style={{ padding: '28px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>
-                  No deep clean records yet. Mark a room above to start tracking.
+                  {lang === 'es' ? 'Aún no hay registros de limpieza profunda. Marca una habitación arriba para comenzar.' : 'No deep clean records yet. Mark a room above to start tracking.'}
                 </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
@@ -581,21 +583,21 @@ export default function OperationsConfigPage() {
                               fontSize: '12px', fontWeight: 700, color: 'var(--red)',
                               background: 'var(--red-dim)', padding: '3px 8px', borderRadius: '6px',
                             }}>
-                              <AlertTriangle size={12} /> {rec.daysSince}d overdue
+                              <AlertTriangle size={12} /> {rec.daysSince}{lang === 'es' ? 'd vencido' : 'd overdue'}
                             </span>
                           ) : warning ? (
                             <span style={{
                               fontSize: '12px', fontWeight: 600, color: 'var(--amber)',
                               background: 'var(--amber-dim)', padding: '3px 8px', borderRadius: '6px',
                             }}>
-                              {rec.daysSince}d ago
+                              {lang === 'es' ? `hace ${rec.daysSince}d` : `${rec.daysSince}d ago`}
                             </span>
                           ) : (
                             <span style={{
                               fontSize: '12px', fontWeight: 600, color: 'var(--green)',
                               background: 'var(--green-dim)', padding: '3px 8px', borderRadius: '6px',
                             }}>
-                              {rec.daysSince}d ago
+                              {lang === 'es' ? `hace ${rec.daysSince}d` : `${rec.daysSince}d ago`}
                             </span>
                           )}
                         </div>
