@@ -109,7 +109,7 @@ export default function ROIPage() {
             onClick={() => router.back()}
             className="p-2 rounded-lg transition-colors"
             style={{ color: 'var(--text-primary)', backgroundColor: 'var(--bg)' }}
-            aria-label="Go back"
+            aria-label={lang === 'es' ? 'Volver' : 'Go back'}
           >
             <ChevronLeft size={24} />
           </button>

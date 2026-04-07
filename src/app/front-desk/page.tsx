@@ -40,7 +40,7 @@ export default function FrontDeskPage() {
           <div className="text-center">
             <div className="animate-spin w-8 h-8 border-4 rounded-full mb-3 mx-auto" style={{ borderColor: 'var(--border)', borderTopColor: 'var(--navy)' }} />
             <div className="text-sm font-medium" style={{ color: 'var(--text-muted)' }}>
-              Loading rooms...
+              {lang === 'es' ? 'Cargando habitaciones...' : 'Loading rooms...'}
             </div>
           </div>
         </div>
@@ -111,7 +111,7 @@ export default function FrontDeskPage() {
             onClick={() => router.back()}
             className="p-2 rounded-lg transition-colors"
             style={{ color: 'var(--text-primary)', backgroundColor: 'var(--bg)' }}
-            aria-label="Go back"
+            aria-label={lang === 'es' ? 'Volver' : 'Go back'}
           >
             <ChevronLeft size={24} />
           </button>
@@ -296,7 +296,7 @@ function RoomDetailSheet({
         {/* Room Details */}
         <div className="space-y-3 mb-6">
           <DetailRow label={lang === 'es' ? 'Estado' : 'Status'} value={getStatusLabel(room.status, lang)} />
-          <DetailRow label={lang === 'es' ? 'Tipo' : 'Type'} value={room.type === 'checkout' ? 'Checkout' : room.type === 'stayover' ? (lang === 'es' ? 'Continuación' : 'Stayover') : (lang === 'es' ? 'Vacía' : 'Vacant')} />
+          <DetailRow label={lang === 'es' ? 'Tipo' : 'Type'} value={room.type === 'checkout' ? (lang === 'es' ? 'Salida' : 'Checkout') : room.type === 'stayover' ? (lang === 'es' ? 'Continuación' : 'Stayover') : (lang === 'es' ? 'Vacía' : 'Vacant')} />
           {room.assignedName && <DetailRow label={lang === 'es' ? 'Asignada' : 'Assigned'} value={room.assignedName} />}
           {room.isDnd && <DetailRow label={lang === 'es' ? 'Estado' : 'Status'} value={lang === 'es' ? 'No Molestar' : 'Do Not Disturb'} highlight />}
         </div>
