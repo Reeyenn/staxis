@@ -38,22 +38,22 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       {/* ── Status banner ── */}
       {showBanner && (
         <div style={{
-          borderBottom: '1px solid ' + (showSyncing ? 'rgba(251,191,36,0.3)' : 'rgba(239,68,68,0.3)'),
-          background:   showSyncing ? 'rgba(251,191,36,0.10)' : 'rgba(239,68,68,0.12)',
+          borderBottom: '1px solid ' + (showSyncing ? 'var(--amber-border, rgba(251,191,36,0.3))' : 'var(--red-border, rgba(239,68,68,0.3))'),
+          background:   showSyncing ? 'var(--amber-dim)' : 'var(--red-dim)',
           padding: '8px 16px',
           display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
         }}>
           {showSyncing ? (
             <>
-              <RefreshCw size={14} color="#D97706" style={{ animation: 'spin 1s linear infinite' }} />
-              <span style={{ fontSize: '12px', fontWeight: 600, color: '#D97706' }}>
+              <RefreshCw size={14} color="var(--amber)" style={{ animation: 'spin 1s linear infinite' }} />
+              <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--amber)' }}>
                 {t('syncingChanges', lang)}
               </span>
             </>
           ) : (
             <>
-              <WifiOff size={14} color="#EF4444" />
-              <span style={{ fontSize: '12px', fontWeight: 600, color: '#EF4444' }}>
+              <WifiOff size={14} color="var(--red)" />
+              <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--red)' }}>
                 {offlineLabel}
               </span>
             </>
