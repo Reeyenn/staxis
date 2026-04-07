@@ -2725,6 +2725,7 @@ function DeepCleanSection() {
                               }}
                             >
                               <Check size={14} />
+                              {lang === 'es' ? 'Listo' : 'Done'}
                             </button>
                           ) : (room.status === 'overdue' || room.status === 'never') ? (
                             <button
@@ -2737,6 +2738,7 @@ function DeepCleanSection() {
                               }}
                             >
                               <Users size={14} />
+                              {lang === 'es' ? 'Asignar' : 'Assign'}
                             </button>
                           ) : (
                             <div style={{ width: '44px', height: '44px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
