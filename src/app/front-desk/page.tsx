@@ -242,7 +242,7 @@ function RoomCard({ room, onSelect }: RoomCardProps) {
       </div>
       {isAvailable && (
         <div className="mt-2 text-xs font-semibold text-center py-1 px-2 rounded-full" style={{ backgroundColor: 'var(--green)', color: 'white' }}>
-          Ready
+          {lang === 'es' ? 'Lista' : 'Ready'}
         </div>
       )}
     </button>

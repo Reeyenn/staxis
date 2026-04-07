@@ -223,9 +223,9 @@ function buildHistory(roomsByDate: Room[][]): HKHistory[] {
 function PaceBadge({ pace, lang }: { pace: HKLive['pace']; lang: 'en' | 'es' }) {
   if (pace === 'not_started') return null;
   const config = {
-    ahead:    { bg: 'rgba(34,197,94,0.12)',  border: 'rgba(34,197,94,0.35)',  color: '#16A34A', icon: <TrendingUp size={11} />,   label: t('ahead', lang) },
-    on_pace:  { bg: 'rgba(251,191,36,0.12)', border: 'rgba(251,191,36,0.35)', color: '#D97706', icon: <Minus size={11} />,        label: t('onPace', lang) },
-    behind:   { bg: 'rgba(239,68,68,0.12)',  border: 'rgba(239,68,68,0.35)',  color: '#DC2626', icon: <TrendingDown size={11} />, label: t('behindPace', lang) },
+    ahead:    { bg: 'var(--green-dim)',  border: 'var(--green-border, rgba(34,197,94,0.35))',  color: 'var(--green)', icon: <TrendingUp size={11} />,   label: t('ahead', lang) },
+    on_pace:  { bg: 'var(--amber-dim)', border: 'var(--amber-border)', color: 'var(--amber)', icon: <Minus size={11} />,        label: t('onPace', lang) },
+    behind:   { bg: 'var(--red-dim)',  border: 'var(--red-border, rgba(239,68,68,0.35))',  color: 'var(--red)', icon: <TrendingDown size={11} />, label: t('behindPace', lang) },
   }[pace];
   return (
     <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '3px 8px', borderRadius: '100px', background: config.bg, border: `1px solid ${config.border}`, color: config.color, fontSize: '11px', fontWeight: 700 }}>
@@ -235,7 +235,7 @@ function PaceBadge({ pace, lang }: { pace: HKLive['pace']; lang: 'en' | 'es' }) 
 }
 
 function RankBadge({ rank }: { rank: number }) {
-  const s = ({ 1: { bg: 'rgba(251,191,36,0.18)', color: '#D97706' }, 2: { bg: 'rgba(156,163,175,0.18)', color: '#9CA3AF' }, 3: { bg: 'rgba(180,120,60,0.18)', color: '#B4783C' } } as Record<number, { bg: string; color: string }>)[rank] ?? { bg: 'rgba(0,0,0,0.05)', color: 'var(--text-muted)' };
+  const s = ({ 1: { bg: 'rgba(251,191,36,0.18)', color: 'var(--amber)' }, 2: { bg: 'rgba(156,163,175,0.18)', color: 'var(--text-muted)' }, 3: { bg: 'rgba(180,120,60,0.18)', color: 'var(--bronze, #B4783C)' } } as Record<number, { bg: string; color: string }>)[rank] ?? { bg: 'rgba(0,0,0,0.05)', color: 'var(--text-muted)' };
   return (
     <div style={{ width: '26px', height: '26px', borderRadius: '8px', background: s.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '12px', color: s.color, flexShrink: 0 }}>
       {rank === 1 ? '🏆' : `#${rank}`}
@@ -332,6 +332,9 @@ function ScheduleSection() {
     getRoomsForDate(uid, pid, shiftDate).then(rooms => {
       setShiftRooms(rooms);
       setPredictionLoading(false);
+    }).catch(err => {
+      console.error('Error fetching rooms for date:', err);
+      setPredictionLoading(false);
     });
   }, [uid, pid, shiftDate]);
 
@@ -354,6 +357,8 @@ function ScheduleSection() {
       if (fetched.length === 0) setPublicAreas(await seedDefaults());
       else if (needsReseed(fetched)) { for (const a of fetched) await deletePublicArea(uid, pid, a.id); setPublicAreas(await seedDefaults()); }
       else setPublicAreas(fetched);
+    }).catch(err => {
+      console.error('Error fetching public areas:', err);
     });
   }, [uid, pid]);
 
@@ -595,7 +600,7 @@ function ScheduleSection() {
       {/* ── STEP 1: Prediction ── */}
       <div className="card animate-in" onClick={() => setShowPredictionSettings(true)} style={{
         padding: '24px 20px 20px', textAlign: 'center',
-        background: 'linear-gradient(135deg, #1B3A5C 0%, #2563EB 100%)',
+        background: 'linear-gradient(135deg, var(--navy) 0%, var(--navy-light, #2563EB) 100%)',
         border: 'none', borderRadius: 'var(--radius-xl)',
         boxShadow: '0 4px 24px rgba(27, 58, 92, 0.25)', cursor: 'pointer',
       }}>
@@ -610,17 +615,17 @@ function ScheduleSection() {
           <>
             <div style={{ display: 'flex', justifyContent: 'center', gap: '16px', marginBottom: '14px' }}>
               <div>
-                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '28px', fontWeight: 800, color: '#FFFFFF' }}>{checkouts}</div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '28px', fontWeight: 800, color: '#fff' }}>{checkouts}</div>
                 <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.5)', fontWeight: 600 }}>{lang === 'es' ? 'Salidas' : 'Checkouts'}</div>
               </div>
               <div style={{ width: '1px', background: 'rgba(255,255,255,0.15)' }} />
               <div>
-                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '28px', fontWeight: 800, color: '#FFFFFF' }}>{stayovers}</div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '28px', fontWeight: 800, color: '#fff' }}>{stayovers}</div>
                 <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.5)', fontWeight: 600 }}>{lang === 'es' ? 'Continuación' : 'Stayovers'}</div>
               </div>
               <div style={{ width: '1px', background: 'rgba(255,255,255,0.15)' }} />
               <div>
-                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '28px', fontWeight: 800, color: '#FCD34D' }}>{recommendedStaff}</div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '28px', fontWeight: 800, color: 'var(--amber-light, #FCD34D)' }}>{recommendedStaff}</div>
                 <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.5)', fontWeight: 600 }}>{lang === 'es' ? 'Personal' : 'Staff needed'}</div>
               </div>
             </div>
@@ -634,7 +639,7 @@ function ScheduleSection() {
           ref={unassignedRef}
           style={{
             background: dragState?.dropTarget === '__unassigned__' ? 'rgba(37,99,235,0.06)' : 'var(--bg-card)',
-            border: dragState?.dropTarget === '__unassigned__' ? '2px dashed #2563EB' : '1.5px dashed var(--border)',
+            border: dragState?.dropTarget === '__unassigned__' ? '2px dashed var(--navy)' : '1.5px dashed var(--border)',
             borderRadius: '14px', padding: '12px 16px',
             transition: 'all 0.15s',
             minHeight: '48px',
@@ -668,8 +673,8 @@ function ScheduleSection() {
                   onPointerUp={e => { onPillPointerUp(e); }}
                   style={{
                     padding: '6px 10px 4px', lineHeight: 1,
-                    background: room.type === 'checkout' ? '#FEF2F2' : '#F0F9FF',
-                    border: room.type === 'checkout' ? '1.5px solid #FECACA' : '1.5px solid #BAE6FD',
+                    background: room.type === 'checkout' ? 'var(--red-dim)' : 'var(--blue-dim, #F0F9FF)',
+                    border: room.type === 'checkout' ? '1.5px solid var(--red-border, #FECACA)' : '1.5px solid var(--blue-border, #BAE6FD)',
                     borderRadius: '6px', cursor: 'grab',
                     display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1px',
                     opacity: dragState?.roomId === room.id ? 0.3 : 1,
@@ -677,7 +682,7 @@ function ScheduleSection() {
                   }}
                 >
                   <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '13px', color: 'var(--text-primary)' }}>{room.number}</span>
-                  <span style={{ fontSize: '8px', fontWeight: 600, color: room.type === 'checkout' ? '#DC2626' : '#0284C7', letterSpacing: '0.02em' }}>
+                  <span style={{ fontSize: '8px', fontWeight: 600, color: room.type === 'checkout' ? 'var(--red)' : 'var(--navy)', letterSpacing: '0.02em' }}>
                     {room.type === 'checkout' ? 'C' : 'S'}
                   </span>
                 </button>
@@ -739,7 +744,7 @@ function ScheduleSection() {
                   {/* 2x2 stats grid to the right of name */}
                   <div style={{ display: 'grid', gridTemplateColumns: '80px 100px', gap: '1px 10px', fontSize: '12px', color: 'var(--text-secondary)', width: '190px', flexShrink: 0 }}>
                     <div>{lang === 'es' ? 'Estimado' : 'Est'}: <strong style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{timeLabel}</strong></div>
-                    <div style={{ color: '#DC2626' }}><strong style={{ fontWeight: 700 }}>{coCount}</strong> {lang === 'es' ? 'Salida' : 'Checkout'}{coCount !== 1 ? 's' : ''}</div>
+                    <div style={{ color: 'var(--red)' }}><strong style={{ fontWeight: 700 }}>{coCount}</strong> {lang === 'es' ? 'Salida' : 'Checkout'}{coCount !== 1 ? 's' : ''}</div>
                     <button onClick={() => {
                       const roomCount = Object.values(assignments).filter(sid => sid === member.id).length;
                       const msg = lang === 'es'
@@ -753,7 +758,7 @@ function ScheduleSection() {
                     }}>
                       {lang === 'es' ? 'Quitar' : 'Remove'}
                     </button>
-                    <div style={{ color: '#0284C7' }}><strong style={{ fontWeight: 700 }}>{soCount}</strong> {lang === 'es' ? 'Continuación' : 'Stayover'}{soCount !== 1 ? 's' : ''}</div>
+                    <div style={{ color: 'var(--navy)' }}><strong style={{ fontWeight: 700 }}>{soCount}</strong> {lang === 'es' ? 'Continuación' : 'Stayover'}{soCount !== 1 ? 's' : ''}</div>
                   </div>
                 </div>
 
@@ -767,8 +772,8 @@ function ScheduleSection() {
                       onPointerUp={e => { onPillPointerUp(e); }}
                       style={{
                         padding: '6px 10px 4px', lineHeight: 1,
-                        background: room.type === 'checkout' ? '#FEF2F2' : '#F0F9FF',
-                        border: room.type === 'checkout' ? '1.5px solid #FECACA' : '1.5px solid #BAE6FD',
+                        background: room.type === 'checkout' ? 'var(--red-dim)' : 'var(--blue-dim, #F0F9FF)',
+                        border: room.type === 'checkout' ? '1.5px solid var(--red-border, #FECACA)' : '1.5px solid var(--blue-border, #BAE6FD)',
                         borderRadius: '6px', cursor: 'grab',
                         display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1px',
                         opacity: dragState?.roomId === room.id ? 0.3 : 1,
@@ -776,7 +781,7 @@ function ScheduleSection() {
                       }}
                     >
                       <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '13px', color: 'var(--text-primary)' }}>{room.number}</span>
-                      <span style={{ fontSize: '8px', fontWeight: 600, color: room.type === 'checkout' ? '#DC2626' : '#0284C7', letterSpacing: '0.02em' }}>
+                      <span style={{ fontSize: '8px', fontWeight: 600, color: room.type === 'checkout' ? 'var(--red)' : 'var(--navy)', letterSpacing: '0.02em' }}>
                         {room.type === 'checkout' ? 'C' : 'S'}
                       </span>
                     </button>
@@ -818,8 +823,8 @@ function ScheduleSection() {
           <div style={{ display: 'flex', justifyContent: 'center' }}>
             <button onClick={handleSend} disabled={sending} style={{
               padding: '12px 28px',
-              background: sending ? 'var(--bg-input)' : 'linear-gradient(135deg, #1B3A5C 0%, #2563EB 100%)',
-              color: sending ? 'var(--text-muted)' : '#FFFFFF',
+              background: sending ? 'var(--bg-input)' : 'linear-gradient(135deg, var(--navy) 0%, var(--navy-light, #2563EB) 100%)',
+              color: sending ? 'var(--text-muted)' : '#fff',
               border: 'none', borderRadius: '12px',
               fontWeight: 700, fontSize: '15px', cursor: sending ? 'not-allowed' : 'pointer',
               fontFamily: 'var(--font-sans)',
@@ -837,7 +842,7 @@ function ScheduleSection() {
       {moveToast && (
         <div style={{
           position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)', zIndex: 10000,
-          background: 'linear-gradient(135deg, #1B3A5C 0%, #2563EB 100%)', color: '#fff', padding: '10px 20px', borderRadius: '10px',
+          background: 'linear-gradient(135deg, var(--navy) 0%, var(--navy-light, #2563EB) 100%)', color: '#fff', padding: '10px 20px', borderRadius: '10px',
           fontSize: '13px', fontWeight: 600, boxShadow: '0 4px 16px rgba(0,0,0,0.2)',
           animation: 'toastIn 0.2s ease-out',
           whiteSpace: 'nowrap',
@@ -911,7 +916,7 @@ function ScheduleSection() {
               <button onClick={() => setShowPrioritySettings(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '18px', color: 'var(--text-muted)' }}>✕</button>
             </div>
             <div style={{ display: 'flex', gap: '6px', marginBottom: '14px', fontSize: '11px', color: 'var(--text-muted)' }}>
-              <span style={{ padding: '3px 8px', background: '#DBEAFE', color: '#1D4ED8', borderRadius: '6px', fontWeight: 600 }}>Priority</span>
+              <span style={{ padding: '3px 8px', background: 'var(--blue-dim, #DBEAFE)', color: 'var(--navy)', borderRadius: '6px', fontWeight: 600 }}>{lang === 'es' ? 'Prioridad' : 'Priority'}</span>
               <span>{lang === 'es' ? '= primera selección' : '= picked first'}</span>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -928,10 +933,10 @@ function ScheduleSection() {
                           padding: '4px 10px', borderRadius: '6px', border: 'none', cursor: 'pointer',
                           fontFamily: 'var(--font-sans)', fontSize: '11px', fontWeight: 600,
                           background: pri === level
-                            ? level === 'priority' ? '#DBEAFE' : level === 'normal' ? '#F3F4F6' : '#FEE2E2'
+                            ? level === 'priority' ? 'var(--blue-dim, #DBEAFE)' : level === 'normal' ? 'var(--bg-elevated, #F3F4F6)' : 'var(--red-dim)'
                             : 'transparent',
                           color: pri === level
-                            ? level === 'priority' ? '#1D4ED8' : level === 'normal' ? '#374151' : '#DC2626'
+                            ? level === 'priority' ? 'var(--navy)' : level === 'normal' ? 'var(--text-secondary)' : 'var(--red)'
                             : 'var(--text-muted)',
                         }}>
                           {level === 'priority' ? (lang === 'es' ? 'Prior.' : 'Priority') : level === 'normal' ? 'Normal' : (lang === 'es' ? 'Excluir' : 'Exclude')}
@@ -975,7 +980,7 @@ function ScheduleSection() {
                 }}>
                   <div style={{
                     width: '40px', height: '40px', borderRadius: '10px',
-                    background: 'linear-gradient(135deg, #1B3A5C 0%, #2563EB 100%)',
+                    background: 'linear-gradient(135deg, var(--navy) 0%, var(--navy-light, #2563EB) 100%)',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     color: '#fff', fontWeight: 700, fontSize: '14px',
                   }}>
@@ -1054,7 +1059,7 @@ function ScheduleSection() {
           transform: 'scale(1.15)',
           display: 'flex', flexDirection: 'column', alignItems: 'center', lineHeight: 1,
         }}>
-          <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '13px', color: '#FFFFFF' }}>{dragState.roomNumber}</span>
+          <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '13px', color: '#fff' }}>{dragState.roomNumber}</span>
           <span style={{ fontSize: '8px', fontWeight: 700, color: 'rgba(255,255,255,0.6)' }}>{dragState.roomType === 'checkout' ? 'C' : 'S'}</span>
         </div>
       )}
@@ -1076,10 +1081,10 @@ function getFloor(roomNumber: string): string {
 }
 
 const ROOM_ACTION_COLOR: Record<RoomStatus, { bg: string; border: string; color: string }> = {
-  dirty:       { bg: 'rgba(251,191,36,0.15)',  border: 'rgba(251,191,36,0.5)',  color: '#D97706' },
-  in_progress: { bg: 'rgba(34,197,94,0.15)',   border: 'rgba(34,197,94,0.5)',   color: '#16A34A' },
-  clean:       { bg: 'rgba(239,68,68,0.10)',   border: 'rgba(239,68,68,0.35)',  color: '#DC2626' },
-  inspected:   { bg: 'rgba(139,92,246,0.10)',  border: 'rgba(139,92,246,0.3)',  color: '#7C3AED' },
+  dirty:       { bg: 'rgba(251,191,36,0.15)',  border: 'rgba(251,191,36,0.5)',  color: 'var(--amber)' },
+  in_progress: { bg: 'rgba(34,197,94,0.15)',   border: 'rgba(34,197,94,0.5)',   color: 'var(--green)' },
+  clean:       { bg: 'rgba(239,68,68,0.10)',   border: 'rgba(239,68,68,0.35)',  color: 'var(--red)' },
+  inspected:   { bg: 'rgba(139,92,246,0.10)',  border: 'rgba(139,92,246,0.3)',  color: 'var(--purple, #7C3AED)' },
 };
 
 function RoomsSection() {
@@ -1124,10 +1129,10 @@ function RoomsSection() {
   const pct        = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
 
   const STATUS_INFO: Record<RoomStatus, { label: string; color: string; bgColor: string; borderColor: string }> = {
-    dirty:       { label: t('dirty', lang),          color: '#EF4444', bgColor: 'rgba(239,68,68,0.08)',   borderColor: 'rgba(239,68,68,0.25)'   },
-    in_progress: { label: t('cleaning', lang),       color: '#FBBF24', bgColor: 'rgba(251,191,36,0.08)',  borderColor: 'rgba(251,191,36,0.25)'  },
-    clean:       { label: t('clean', lang) + ' ✓',  color: '#22C55E', bgColor: 'rgba(34,197,94,0.08)',   borderColor: 'rgba(34,197,94,0.25)'   },
-    inspected:   { label: t('approved', lang),       color: '#8B5CF6', bgColor: 'rgba(139,92,246,0.08)',  borderColor: 'rgba(139,92,246,0.25)'  },
+    dirty:       { label: t('dirty', lang),          color: 'var(--red)', bgColor: 'var(--red-dim)',   borderColor: 'var(--red-border, rgba(239,68,68,0.25))'   },
+    in_progress: { label: t('cleaning', lang),       color: 'var(--amber)', bgColor: 'var(--amber-dim)',  borderColor: 'var(--amber-border)'  },
+    clean:       { label: t('clean', lang) + ' ✓',  color: 'var(--green)', bgColor: 'var(--green-dim)',   borderColor: 'var(--green-border, rgba(34,197,94,0.25))'   },
+    inspected:   { label: t('approved', lang),       color: 'var(--purple, #8B5CF6)', bgColor: 'rgba(139,92,246,0.08)',  borderColor: 'rgba(139,92,246,0.25)'  },
   };
 
   const ACTION_LABEL: Record<RoomStatus, string> = {
@@ -1218,7 +1223,7 @@ function RoomsSection() {
                 </span>
               </div>
               {actionRoom.isDnd && (
-                <span style={{ fontSize: '12px', fontWeight: 700, color: '#DC2626', background: 'rgba(220,38,38,0.08)', padding: '4px 10px', borderRadius: '6px' }}>
+                <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--red)', background: 'rgba(220,38,38,0.08)', padding: '4px 10px', borderRadius: '6px' }}>
                   🚫 DND
                 </span>
               )}
@@ -1234,7 +1239,7 @@ function RoomsSection() {
             {/* Status action — main button: dirty → in_progress → clean → dirty */}
             <button onClick={() => { handleToggle(actionRoom); setActionRoom(null); }} disabled={actionRoom.status === 'inspected'} style={{
               width: '100%', padding: '14px', borderRadius: '12px', border: 'none',
-              background: actionRoom.status === 'dirty' ? '#FBBF24' : actionRoom.status === 'in_progress' ? '#22C55E' : 'var(--bg-elevated)',
+              background: actionRoom.status === 'dirty' ? 'var(--amber)' : actionRoom.status === 'in_progress' ? 'var(--green)' : 'var(--bg-elevated)',
               color: actionRoom.status === 'dirty' || actionRoom.status === 'in_progress' ? '#fff' : 'var(--text-primary)',
               fontWeight: 700, fontSize: '15px', cursor: 'pointer', fontFamily: 'var(--font-sans)',
             }}>
@@ -1292,7 +1297,7 @@ function RoomsSection() {
       {toastMessage && (
         <div style={{
           position: 'fixed', bottom: '20px', right: '20px',
-          background: '#10B981', color: '#FFFFFF',
+          background: 'var(--green)', color: '#fff',
           padding: '12px 16px', borderRadius: 'var(--radius-md)',
           fontSize: '14px', fontWeight: 500,
           boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
@@ -1317,14 +1322,14 @@ function RoomsSection() {
             <div className="room-legend" style={{
               display: 'inline-flex', alignItems: 'center', gap: '12px',
               padding: '8px 16px',
-              background: 'linear-gradient(135deg, #1B3A5C 0%, #2563EB 100%)',
+              background: 'linear-gradient(135deg, var(--navy) 0%, var(--navy-light, #2563EB) 100%)',
               borderRadius: 'var(--radius-lg)',
               boxShadow: '0 2px 10px rgba(27, 58, 92, 0.20)',
             }}>
-              <span style={{ fontSize: '12px', fontWeight: 700, color: '#FFFFFF', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🚪 {t('checkout', lang)}</span>
-              <span style={{ fontSize: '12px', fontWeight: 700, color: '#FFFFFF', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🚫 DND</span>
-              <span style={{ fontSize: '12px', fontWeight: 700, color: '#FFFFFF', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🔒 {t('roomOccupied', lang)}</span>
-              <span style={{ fontSize: '12px', fontWeight: 700, color: '#FFFFFF', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>💎 {t('available', lang)}</span>
+              <span style={{ fontSize: '12px', fontWeight: 700, color: '#fff', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🚪 {t('checkout', lang)}</span>
+              <span style={{ fontSize: '12px', fontWeight: 700, color: '#fff', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🚫 DND</span>
+              <span style={{ fontSize: '12px', fontWeight: 700, color: '#fff', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>🔒 {t('roomOccupied', lang)}</span>
+              <span style={{ fontSize: '12px', fontWeight: 700, color: '#fff', display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>💎 {t('available', lang)}</span>
             </div>
           </div>
 
@@ -1385,7 +1390,7 @@ function RoomsSection() {
                           {elapsed !== null && (
                             <span style={{
                               fontSize: '11px', fontWeight: 800, fontFamily: 'var(--font-mono)',
-                              color: overTime ? '#DC2626' : 'var(--text-muted)',
+                              color: overTime ? 'var(--red)' : 'var(--text-muted)',
                               lineHeight: 1,
                             }}>
                               {elapsed}m{overTime ? ' !' : ''}
@@ -1402,7 +1407,7 @@ function RoomsSection() {
                               onClick={(e) => { e.stopPropagation(); setBackupRoom(room); }}
                               style={{
                                 position: 'absolute', top: '2px', left: '2px', fontSize: '10px', lineHeight: 1,
-                                background: '#F97316', color: '#fff', borderRadius: '4px', padding: '2px 4px', fontWeight: 800,
+                                background: 'var(--orange, #F97316)', color: '#fff', borderRadius: '4px', padding: '2px 4px', fontWeight: 800,
                                 cursor: 'pointer',
                               }}
                             >
@@ -1469,10 +1474,15 @@ function StaffSection() {
     } finally { setSaving(false); }
   };
 
-  const handleDelete = (member: StaffMember) => {
+  const handleDelete = async (member: StaffMember) => {
     if (window.confirm(lang === 'es' ? `¿Eliminar a ${member.name}?` : `Delete ${member.name}?`)) {
       if (!user || !activePropertyId) return;
-      deleteStaffMember(user.uid, activePropertyId, member.id);
+      try {
+        await deleteStaffMember(user.uid, activePropertyId, member.id);
+      } catch (err) {
+        console.error('Error deleting staff member:', err);
+        alert(lang === 'es' ? 'Error al eliminar personal' : 'Error deleting staff member');
+      }
     }
   };
 
@@ -1499,7 +1509,7 @@ function StaffSection() {
         <h2 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '20px', letterSpacing: '-0.02em', display: 'flex', alignItems: 'center', gap: '10px', margin: 0 }}>
           <Users size={18} color="var(--navy)" />{t('staffRosterTitle', lang)}
         </h2>
-        <button onClick={openAdd} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 14px', background: 'var(--navy-light)', color: '#FFFFFF', border: 'none', borderRadius: 'var(--radius-md)', fontWeight: 600, fontSize: '13px', cursor: 'pointer', fontFamily: 'var(--font-sans)' }}>
+        <button onClick={openAdd} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 14px', background: 'var(--navy-light)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', fontWeight: 600, fontSize: '13px', cursor: 'pointer', fontFamily: 'var(--font-sans)' }}>
           <Plus size={14} />{t('addStaff', lang)}
         </button>
       </div>
@@ -1544,7 +1554,7 @@ function StaffSection() {
               <div key={member.id} className="animate-in" style={{ animationDelay: `${idx * 50}ms` }}>
                 <div className="card" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px', height: '100%', borderColor: nearMax ? 'rgba(251,191,36,0.3)' : 'var(--border)', background: nearMax ? 'rgba(251,191,36,0.04)' : 'var(--bg-card)' }}>
                   <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
-                    <div style={{ width: '38px', height: '38px', borderRadius: 'var(--radius-md)', background: 'var(--navy)', color: '#FFFFFF', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: '14px', flexShrink: 0 }}>{staffInitials(member.name)}</div>
+                    <div style={{ width: '38px', height: '38px', borderRadius: 'var(--radius-md)', background: 'var(--navy)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: '14px', flexShrink: 0 }}>{staffInitials(member.name)}</div>
                     <div style={{ flex: 1 }}>
                       <p style={{ fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)', margin: '0 0 4px' }}>{member.name}</p>
                       <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
@@ -1629,7 +1639,7 @@ function StaffSection() {
           </div>
           <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
             <button onClick={() => setShowModal(false)} style={{ flex: 1, padding: '10px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', borderRadius: 'var(--radius-md)', fontWeight: 500, fontSize: '13px', cursor: 'pointer', fontFamily: 'var(--font-sans)' }}>{t('cancel', lang)}</button>
-            <button onClick={handleSave} disabled={saving || !form.name.trim()} style={{ flex: 1, padding: '10px', background: saving || !form.name.trim() ? 'rgba(37,99,235,0.4)' : 'var(--navy-light)', color: saving || !form.name.trim() ? 'rgba(255,255,255,0.5)' : '#FFFFFF', border: 'none', borderRadius: 'var(--radius-md)', fontWeight: 600, fontSize: '13px', cursor: saving || !form.name.trim() ? 'not-allowed' : 'pointer', fontFamily: 'var(--font-sans)' }}>
+            <button onClick={handleSave} disabled={saving || !form.name.trim()} style={{ flex: 1, padding: '10px', background: saving || !form.name.trim() ? 'rgba(37,99,235,0.4)' : 'var(--navy-light)', color: saving || !form.name.trim() ? 'rgba(255,255,255,0.5)' : '#fff', border: 'none', borderRadius: 'var(--radius-md)', fontWeight: 600, fontSize: '13px', cursor: saving || !form.name.trim() ? 'not-allowed' : 'pointer', fontFamily: 'var(--font-sans)' }}>
               {saving ? t('savingDots', lang) : editMember ? t('update', lang) : t('addStaff', lang)}
             </button>
           </div>
@@ -1809,10 +1819,14 @@ function PublicAreasModal({ show, onClose }: { show: boolean; onClose: () => voi
     setDirty(true);
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     const deleted = areas.find(a => a.id === id);
     setAreas(prev => prev.filter(a => a.id !== id));
-    if (uid && pid) deletePublicArea(uid, pid, id);
+    try {
+      if (uid && pid) await deletePublicArea(uid, pid, id);
+    } catch (err) {
+      console.error('Error deleting public area:', err);
+    }
     setDirty(true);
     setExpandedId(null);
     const label = deleted ? areaDisplayName(deleted.name, lang) : 'Area';
@@ -1873,7 +1887,7 @@ function PublicAreasModal({ show, onClose }: { show: boolean; onClose: () => voi
           display: 'flex', alignItems: 'center', gap: '5px',
           padding: '6px 12px', borderRadius: 'var(--radius-full)',
           background: 'var(--navy)', border: 'none',
-          color: '#FFFFFF', cursor: 'pointer', fontSize: '12px', fontWeight: 600,
+          color: '#fff', cursor: 'pointer', fontSize: '12px', fontWeight: 600,
         }}>
           <Plus size={12} /> {t('add', lang)}
         </button>
@@ -2027,7 +2041,7 @@ function PublicAreasModal({ show, onClose }: { show: boolean; onClose: () => voi
               </div>
 
               <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
-                <button onClick={() => { handleDelete(area.id); setExpandedId(null); }} style={{ flex: 1, padding: '12px', borderRadius: '10px', border: '1px solid rgba(220,38,38,0.2)', background: 'rgba(220,38,38,0.06)', color: '#dc2626', fontWeight: 600, fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                <button onClick={() => { handleDelete(area.id); setExpandedId(null); }} style={{ flex: 1, padding: '12px', borderRadius: '10px', border: '1px solid rgba(220,38,38,0.2)', background: 'rgba(220,38,38,0.06)', color: 'var(--red)', fontWeight: 600, fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
                   <Trash2 size={14} /> {t('removeArea', lang)}
                 </button>
                 <button onClick={() => setExpandedId(null)} style={{ flex: 1, padding: '12px', borderRadius: '10px', border: 'none', background: 'var(--navy)', color: '#fff', fontWeight: 600, fontSize: '14px', cursor: 'pointer' }}>
@@ -2091,14 +2105,14 @@ function DeepCleanSection() {
 
   useEffect(() => {
     if (!uid || !pid) return;
-    getDeepCleanConfig(uid, pid).then(c => setConfigState(c));
+    getDeepCleanConfig(uid, pid).then(c => setConfigState(c)).catch(err => console.error('Error fetching deep clean config:', err));
     getDeepCleanRecords(uid, pid).then(r => {
       const map: Record<string, { lastCleaned: string; cleanedBy?: string }> = {};
       for (const rec of r) {
         map[rec.roomNumber] = { lastCleaned: rec.lastDeepClean, cleanedBy: rec.cleanedBy };
       }
       setRecords(map);
-    });
+    }).catch(err => console.error('Error fetching deep clean records:', err));
   }, [uid, pid]);
 
   useEffect(() => {
@@ -2315,10 +2329,15 @@ function PerformanceSection() {
   const loadHistory = useCallback(async (days: number) => {
     if (!user || !activePropertyId) return;
     setHistoryLoading(true);
-    const dates = Array.from({ length: days }, (_, i) => format(subDays(new Date(), i + 1), 'yyyy-MM-dd'));
-    const results = await Promise.all(dates.map(d => getRoomsForDate(user.uid, activePropertyId, d)));
-    setHistoryRooms(results);
-    setHistoryLoading(false);
+    try {
+      const dates = Array.from({ length: days }, (_, i) => format(subDays(new Date(), i + 1), 'yyyy-MM-dd'));
+      const results = await Promise.all(dates.map(d => getRoomsForDate(user.uid, activePropertyId, d)));
+      setHistoryRooms(results);
+    } catch (err) {
+      console.error('Error loading performance history:', err);
+    } finally {
+      setHistoryLoading(false);
+    }
   }, [user, activePropertyId]);
 
   useEffect(() => {
@@ -2415,12 +2434,12 @@ function PerformanceSection() {
                   {p.totalAssigned > 0 && (
                     <div style={{ marginBottom: '10px' }}>
                       <div style={{ height: '6px', borderRadius: '3px', background: 'var(--border)', overflow: 'hidden', display: 'flex' }}>
-                        <div style={{ width: `${(p.checkoutsDone / p.totalAssigned) * 100}%`, background: '#22C55E', transition: 'width 400ms ease' }} />
-                        <div style={{ width: `${(p.stayoversDone / p.totalAssigned) * 100}%`, background: '#34D399', transition: 'width 400ms ease' }} />
+                        <div style={{ width: `${(p.checkoutsDone / p.totalAssigned) * 100}%`, background: 'var(--green)', transition: 'width 400ms ease' }} />
+                        <div style={{ width: `${(p.stayoversDone / p.totalAssigned) * 100}%`, background: 'var(--green-light, #34D399)', transition: 'width 400ms ease' }} />
                       </div>
                       <div style={{ display: 'flex', gap: '10px', marginTop: '5px' }}>
-                        <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}><span style={{ color: '#22C55E', fontWeight: 600 }}>{t('checkoutsShort', lang)}</span> {p.checkoutsDone}/{p.checkoutsAssigned}</span>
-                        <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}><span style={{ color: '#34D399', fontWeight: 600 }}>{t('stayoversShort', lang)}</span> {p.stayoversDone}/{p.stayoversAssigned}</span>
+                        <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}><span style={{ color: 'var(--green)', fontWeight: 600 }}>{t('checkoutsShort', lang)}</span> {p.checkoutsDone}/{p.checkoutsAssigned}</span>
+                        <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}><span style={{ color: 'var(--green-light, #34D399)', fontWeight: 600 }}>{t('stayoversShort', lang)}</span> {p.stayoversDone}/{p.stayoversAssigned}</span>
                       </div>
                     </div>
                   )}
@@ -2556,9 +2575,9 @@ function LeaderboardCard({ rooms, lang }: { rooms: Room[]; lang: 'en' | 'es' }) 
   }
 
   const getAvgColor = (avg: number) => {
-    if (avg <= checkoutMins) return '#22c55e';
-    if (avg <= checkoutMins * 1.5) return '#f59e0b';
-    return '#dc2626';
+    if (avg <= checkoutMins) return 'var(--green)';
+    if (avg <= checkoutMins * 1.5) return 'var(--amber)';
+    return 'var(--red)';
   };
 
   return (

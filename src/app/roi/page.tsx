@@ -58,7 +58,7 @@ export default function ROIPage() {
           <div className="text-center">
             <div className="animate-spin w-8 h-8 border-4 rounded-full mb-3 mx-auto" style={{ borderColor: 'var(--border)', borderTopColor: 'var(--green)' }} />
             <div className="text-sm font-medium" style={{ color: 'var(--text-muted)' }}>
-              Loading ROI data...
+              {lang === 'es' ? 'Cargando datos ROI...' : 'Loading ROI data...'}
             </div>
           </div>
         </div>
@@ -167,7 +167,7 @@ export default function ROIPage() {
                   />
                   <YAxis
                     tick={{ fill: 'var(--text-muted)', fontSize: 12 }}
-                    label={{ value: 'Cost ($)', angle: -90, position: 'insideLeft', style: { fill: 'var(--text-muted)' } }}
+                    label={{ value: lang === 'es' ? 'Costo ($)' : 'Cost ($)', angle: -90, position: 'insideLeft', style: { fill: 'var(--text-muted)' } }}
                   />
                   <Tooltip
                     contentStyle={{
@@ -184,7 +184,7 @@ export default function ROIPage() {
                     stroke="var(--red)"
                     dot={{ r: 3, fill: 'var(--red)' }}
                     strokeWidth={2}
-                    name="Labor Cost"
+                    name={lang === 'es' ? 'Costo Laboral' : 'Labor Cost'}
                   />
                 </LineChart>
               </ResponsiveContainer>
@@ -212,7 +212,7 @@ export default function ROIPage() {
                   />
                   <YAxis
                     tick={{ fill: 'var(--text-muted)', fontSize: 12 }}
-                    label={{ value: 'Staff Count', angle: -90, position: 'insideLeft', style: { fill: 'var(--text-muted)' } }}
+                    label={{ value: lang === 'es' ? 'Cantidad de Personal' : 'Staff Count', angle: -90, position: 'insideLeft', style: { fill: 'var(--text-muted)' } }}
                   />
                   <Tooltip
                     contentStyle={{
@@ -230,7 +230,7 @@ export default function ROIPage() {
                     stroke="var(--green)"
                     dot={false}
                     strokeWidth={2}
-                    name="Recommended"
+                    name={lang === 'es' ? 'Recomendado' : 'Recommended'}
                   />
                   <Line
                     type="monotone"
@@ -238,7 +238,7 @@ export default function ROIPage() {
                     stroke="var(--navy)"
                     dot={false}
                     strokeWidth={2}
-                    name="Actual"
+                    name={lang === 'es' ? 'Real' : 'Actual'}
                   />
                 </LineChart>
               </ResponsiveContainer>
@@ -255,10 +255,12 @@ export default function ROIPage() {
               }}
             >
               <p className="text-lg font-semibold mb-2" style={{ color: 'var(--text-secondary)' }}>
-                No data yet
+                {lang === 'es' ? 'Sin datos aún' : 'No data yet'}
               </p>
               <p style={{ color: 'var(--text-muted)' }}>
-                ROI tracking starts after your first daily schedule. Run Morning Setup from the Dashboard to begin.
+                {lang === 'es'
+                  ? 'El seguimiento de ROI comienza después de tu primer horario diario. Ejecuta la Configuración Matutina desde el Panel para comenzar.'
+                  : 'ROI tracking starts after your first daily schedule. Run Morning Setup from the Dashboard to begin.'}
               </p>
             </div>
           )}

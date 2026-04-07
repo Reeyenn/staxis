@@ -254,12 +254,12 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
 
   return (
     <div style={{
-      minHeight: '100dvh', background: '#F0FDF4',
-      fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
+      minHeight: '100dvh', background: 'var(--green-bg, #F0FDF4)',
+      fontFamily: 'var(--font-sans, system-ui, -apple-system, BlinkMacSystemFont, sans-serif)',
     }}>
 
       {/* ── Header ── */}
-      <div style={{ background: '#166534', padding: '20px 16px 28px', color: 'white' }}>
+      <div style={{ background: 'var(--green-dark, #166534)', padding: '20px 16px 28px', color: 'white' }}>
         <p style={{
           fontSize: '11px', fontWeight: 600, letterSpacing: '0.08em',
           textTransform: 'uppercase', opacity: 0.55, marginBottom: '6px',
@@ -312,7 +312,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
             }}>
               <div style={{
                 height: '100%', width: `${progressPct}%`,
-                background: progressPct === 100 ? '#4ADE80' : '#86EFAC',
+                background: progressPct === 100 ? 'var(--green)' : 'var(--green-light, #86EFAC)',
                 borderRadius: '99px',
                 transition: 'width 500ms cubic-bezier(0.4,0,0.2,1)',
               }} />
@@ -331,15 +331,15 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
           }}>
             <div style={{
               width: '84px', height: '84px', borderRadius: '50%',
-              background: '#DCFCE7', display: 'flex', alignItems: 'center',
+              background: 'var(--green-dim)', display: 'flex', alignItems: 'center',
               justifyContent: 'center', margin: '0 auto 20px',
             }}>
-              <CheckCircle size={42} color="#16A34A" />
+              <CheckCircle size={42} color="var(--green)" />
             </div>
-            <h2 style={{ fontSize: '26px', fontWeight: 800, color: '#111827', marginBottom: '10px' }}>
+            <h2 style={{ fontSize: '26px', fontWeight: 800, color: 'var(--text-primary)', marginBottom: '10px' }}>
               {t('allDone', lang)}
             </h2>
-            <p style={{ fontSize: '16px', color: '#4B5563', lineHeight: 1.5 }}>
+            <p style={{ fontSize: '16px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
               {lang === 'es'
                 ? `¡Buen trabajo hoy, ${firstName}! 🎉`
                 : `Great work today, ${firstName}! 🎉`}
@@ -350,7 +350,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
             textAlign: 'center', padding: '64px 24px', background: 'white',
             borderRadius: '20px', boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
           }}>
-            <p style={{ fontSize: '16px', color: '#6B7280', lineHeight: 1.8 }}>
+            <p style={{ fontSize: '16px', color: 'var(--text-muted)', lineHeight: 1.8 }}>
               {lang === 'es'
                 ? <><strong>{t('noRoomsAssigned', lang)}</strong><br />{t('checkBackSoon', lang)}</>
                 : <><strong>{t('noRoomsAssigned', lang)}</strong><br />{t('checkBackSoon', lang)}</>}
@@ -403,10 +403,10 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
             borderRadius: '20px 20px 0 0',
             padding: '24px 16px calc(env(safe-area-inset-bottom, 0px) + 24px)',
           }}>
-            <h3 style={{ fontSize: '20px', fontWeight: 700, color: '#111827', marginBottom: '4px' }}>
+            <h3 style={{ fontSize: '20px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '4px' }}>
               {t('reportIssue', lang)}
             </h3>
-            <p style={{ fontSize: '13px', color: '#6B7280', marginBottom: '16px' }}>
+            <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '16px' }}>
               {lang === 'es' ? 'Hab.' : 'Room'} {rooms.find(r => r.id === issueRoomId)?.number}
             </p>
             <textarea
@@ -418,20 +418,20 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
               rows={4}
               style={{
                 width: '100%', padding: '14px', boxSizing: 'border-box',
-                border: '1.5px solid #D1D5DB', borderRadius: '12px',
+                border: '1.5px solid var(--border)', borderRadius: '12px',
                 fontSize: '16px', fontFamily: 'inherit',
                 resize: 'none', outline: 'none', lineHeight: 1.5,
               }}
-              onFocus={e => { e.target.style.borderColor = '#166534'; }}
-              onBlur={e => { e.target.style.borderColor = '#D1D5DB'; }}
+              onFocus={e => { e.target.style.borderColor = 'var(--green-dark, #166534)'; }}
+              onBlur={e => { e.target.style.borderColor = 'var(--border)'; }}
             />
             <div style={{ display: 'flex', gap: '10px', marginTop: '14px' }}>
               <button
                 onClick={() => { setIssueRoomId(null); setIssueNote(''); }}
                 style={{
-                  flex: 1, height: '56px', background: '#F3F4F6', border: 'none',
+                  flex: 1, height: '56px', background: 'var(--bg-elevated, #F3F4F6)', border: 'none',
                   borderRadius: '12px', fontSize: '17px', fontWeight: 600,
-                  color: '#374151', cursor: 'pointer',
+                  color: 'var(--text-secondary)', cursor: 'pointer',
                   WebkitTapHighlightColor: 'transparent',
                 }}
               >
@@ -444,8 +444,8 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
                   flex: 1, height: '56px', border: 'none', borderRadius: '12px',
                   fontSize: '17px', fontWeight: 600,
                   cursor: !issueNote.trim() || savingIssue ? 'not-allowed' : 'pointer',
-                  background: !issueNote.trim() || savingIssue ? '#D1D5DB' : '#166534',
-                  color: !issueNote.trim() || savingIssue ? '#9CA3AF' : 'white',
+                  background: !issueNote.trim() || savingIssue ? 'var(--border)' : 'var(--green-dark, #166534)',
+                  color: !issueNote.trim() || savingIssue ? 'var(--text-muted)' : 'white',
                   transition: 'background 150ms ease',
                   WebkitTapHighlightColor: 'transparent',
                 }}
@@ -505,14 +505,14 @@ function RoomCard({
     : (lang === 'es' ? 'VACANTE' : 'VACANT');
 
   const accentColor =
-    isDone ? '#16A34A'
-    : isInProgress ? '#D97706'
-    : room.priority === 'vip' ? '#DC2626'
-    : room.priority === 'early' ? '#EA580C'
-    : '#D1D5DB';
+    isDone ? 'var(--green)'
+    : isInProgress ? 'var(--amber)'
+    : room.priority === 'vip' ? 'var(--red)'
+    : room.priority === 'early' ? 'var(--orange, #EA580C)'
+    : 'var(--border)';
 
-  const cardBg = isDone ? '#F0FDF4' : isInProgress ? '#FFFBEB' : 'white';
-  const cardBorder = isDone ? '#86EFAC' : isInProgress ? '#FCD34D' : '#E5E7EB';
+  const cardBg = isDone ? 'var(--green-bg, #F0FDF4)' : isInProgress ? 'var(--amber-bg, #FFFBEB)' : 'white';
+  const cardBorder = isDone ? 'var(--green-light, #86EFAC)' : isInProgress ? 'var(--amber-light, #FCD34D)' : 'var(--border-light, #E5E7EB)';
 
   return (
     <div style={{
@@ -528,7 +528,7 @@ function RoomCard({
       {/* DND banner */}
       {room.isDnd && (
         <div style={{
-          background: '#FCD34D', color: '#78350F',
+          background: 'var(--amber-light, #FCD34D)', color: 'var(--amber-dark, #78350F)',
           padding: '10px 14px', borderRadius: '10px',
           fontSize: '14px', fontWeight: 700, marginBottom: '12px',
         }}>
@@ -540,7 +540,7 @@ function RoomCard({
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
         <span style={{
           fontSize: '13px', fontWeight: 700,
-          color: isDone ? '#16A34A' : isInProgress ? '#D97706' : '#9CA3AF',
+          color: isDone ? 'var(--green)' : isInProgress ? 'var(--amber)' : 'var(--text-muted)',
           minWidth: '18px', lineHeight: 1, flexShrink: 0,
         }}>
           {index}.
@@ -548,7 +548,7 @@ function RoomCard({
 
         <span style={{
           fontFamily: 'ui-monospace, monospace', fontWeight: 800, fontSize: '34px',
-          color: isDone ? '#16A34A' : isInProgress ? '#92400E' : '#111827',
+          color: isDone ? 'var(--green)' : isInProgress ? 'var(--amber-dark, #92400E)' : 'var(--text-primary)',
           letterSpacing: '-0.02em', lineHeight: 1,
         }}>
           {room.number}
@@ -558,7 +558,7 @@ function RoomCard({
           <span style={{
             fontSize: '11px', fontWeight: 700, textTransform: 'uppercase',
             letterSpacing: '0.07em',
-            color: isDone ? '#16A34A' : isInProgress ? '#D97706' : '#6B7280',
+            color: isDone ? 'var(--green)' : isInProgress ? 'var(--amber)' : 'var(--text-secondary)',
           }}>
             {isInProgress
               ? (lang === 'es' ? '⟳ ' + t('inProgress', lang) : '⟳ ' + t('inProgress', lang))
@@ -566,8 +566,8 @@ function RoomCard({
           </span>
           {room.priority === 'vip' && !isDone && !isInProgress && (
             <span style={{
-              fontSize: '11px', fontWeight: 700, color: '#DC2626',
-              background: '#FEE2E2', padding: '2px 7px', borderRadius: '5px',
+              fontSize: '11px', fontWeight: 700, color: 'var(--red)',
+              background: 'var(--red-dim)', padding: '2px 7px', borderRadius: '5px',
               display: 'inline-block', width: 'fit-content',
             }}>
               ★ VIP
@@ -575,8 +575,8 @@ function RoomCard({
           )}
           {room.priority === 'early' && !isDone && !isInProgress && (
             <span style={{
-              fontSize: '11px', fontWeight: 700, color: '#EA580C',
-              background: '#FFF7ED', padding: '2px 7px', borderRadius: '5px',
+              fontSize: '11px', fontWeight: 700, color: 'var(--orange, #EA580C)',
+              background: 'var(--orange-dim, #FFF7ED)', padding: '2px 7px', borderRadius: '5px',
               display: 'inline-block', width: 'fit-content',
             }}>
               ⚡ {t('earlyCheckin', lang)}
@@ -584,7 +584,7 @@ function RoomCard({
           )}
           {/* Show startedAt time when in progress */}
           {isInProgress && room.startedAt && (
-            <span style={{ fontSize: '11px', color: '#D97706', fontWeight: 600 }}>
+            <span style={{ fontSize: '11px', color: 'var(--amber)', fontWeight: 600 }}>
               {t('start', lang)}
               {format(firestoreToDate(room.startedAt), 'h:mm a')}
             </span>
@@ -599,9 +599,9 @@ function RoomCard({
               disabled={isSavingDnd}
               style={{
                 width: '40px', height: '40px',
-                border: `1.5px solid ${room.isDnd ? '#F59E0B' : '#E5E7EB'}`,
+                border: `1.5px solid ${room.isDnd ? 'var(--amber)' : 'var(--border-light, #E5E7EB)'}`,
                 borderRadius: '10px',
-                background: room.isDnd ? '#FEF3C7' : 'transparent',
+                background: room.isDnd ? 'var(--amber-dim)' : 'transparent',
                 cursor: isSavingDnd ? 'not-allowed' : 'pointer',
                 flexShrink: 0,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -620,7 +620,7 @@ function RoomCard({
             onClick={onReportIssue}
             style={{
               width: '40px', height: '40px',
-              border: '1.5px solid #E5E7EB',
+              border: '1.5px solid var(--border-light, #E5E7EB)',
               borderRadius: '10px', background: 'transparent',
               cursor: 'pointer', flexShrink: 0,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -629,7 +629,7 @@ function RoomCard({
             }}
             aria-label={lang === 'es' ? 'Reportar problema' : 'Report issue'}
           >
-            <AlertTriangle size={17} color="#6B7280" />
+            <AlertTriangle size={17} color="var(--text-muted)" />
           </button>
         </div>
       </div>
@@ -638,11 +638,11 @@ function RoomCard({
       {(room as Room & { issueNote?: string }).issueNote && (
         <div style={{
           display: 'flex', gap: '6px', alignItems: 'flex-start',
-          padding: '9px 11px', background: '#FEF3C7', borderRadius: '10px',
+          padding: '9px 11px', background: 'var(--amber-dim)', borderRadius: '10px',
           marginBottom: '12px',
         }}>
-          <AlertTriangle size={13} color="#D97706" style={{ flexShrink: 0, marginTop: '2px' }} />
-          <span style={{ fontSize: '13px', color: '#92400E', lineHeight: 1.4 }}>
+          <AlertTriangle size={13} color="var(--amber)" style={{ flexShrink: 0, marginTop: '2px' }} />
+          <span style={{ fontSize: '13px', color: 'var(--amber-dark, #92400E)', lineHeight: 1.4 }}>
             {(room as Room & { issueNote?: string }).issueNote}
           </span>
         </div>
@@ -652,15 +652,15 @@ function RoomCard({
       {isDone ? (
         <div style={{
           height: '56px', borderRadius: '14px',
-          background: '#DCFCE7',
+          background: 'var(--green-dim)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px',
         }}>
-          <CheckCircle size={22} color="#16A34A" />
-          <span style={{ fontSize: '18px', fontWeight: 800, color: '#16A34A' }}>
+          <CheckCircle size={22} color="var(--green)" />
+          <span style={{ fontSize: '18px', fontWeight: 800, color: 'var(--green)' }}>
             {t('done', lang)}
           </span>
           {room.completedAt && (
-            <span style={{ fontSize: '13px', color: '#16A34A', opacity: 0.65, marginLeft: '2px' }}>
+            <span style={{ fontSize: '13px', color: 'var(--green)', opacity: 0.65, marginLeft: '2px' }}>
               {format(firestoreToDate(room.completedAt), 'h:mm a')}
             </span>
           )}
@@ -678,10 +678,10 @@ function RoomCard({
           disabled={isSavingHelp || helpAlreadySent}
           style={{
             width: '100%', height: '48px', marginTop: '8px',
-            border: helpAlreadySent ? '2px solid #86EFAC' : '2px solid #FCA5A5',
+            border: helpAlreadySent ? '2px solid var(--green-light, #86EFAC)' : '2px solid var(--red-light, #FCA5A5)',
             borderRadius: '12px',
-            background: helpAlreadySent ? '#F0FDF4' : isSavingHelp ? '#FEE2E2' : '#FEF2F2',
-            color: helpAlreadySent ? '#16A34A' : '#DC2626',
+            background: helpAlreadySent ? 'var(--green-bg, #F0FDF4)' : isSavingHelp ? 'var(--red-dim)' : 'var(--red-dim)',
+            color: helpAlreadySent ? 'var(--green)' : 'var(--red)',
             fontSize: '16px', fontWeight: 700,
             cursor: isSavingHelp || helpAlreadySent ? 'not-allowed' : 'pointer',
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
@@ -691,7 +691,7 @@ function RoomCard({
         >
           {helpAlreadySent ? (
             <>
-              <CheckCircle size={18} color="#16A34A" />
+              <CheckCircle size={18} color="var(--green)" />
               {t('helpAlertSent', lang)}
             </>
           ) : isSavingHelp ? (
@@ -729,8 +729,8 @@ function StartButton({
       onPointerLeave={() => setPressed(false)}
       style={{
         width: '100%', height: '68px', border: 'none', borderRadius: '14px',
-        background: isSaving ? '#D1D5DB' : pressed ? '#1D4ED8' : '#2563EB',
-        color: isSaving ? '#9CA3AF' : 'white',
+        background: isSaving ? 'var(--border)' : pressed ? 'var(--navy)' : 'var(--navy-light, #2563EB)',
+        color: isSaving ? 'var(--text-muted)' : 'white',
         fontSize: '20px', fontWeight: 800,
         cursor: isSaving ? 'not-allowed' : 'pointer',
         letterSpacing: '-0.01em',
@@ -813,8 +813,8 @@ function HoldToFinishButton({
       style={{
         position: 'relative',
         width: '100%', height: '68px', border: 'none', borderRadius: '14px',
-        background: '#D1FAE5',
-        color: '#166534',
+        background: 'var(--green-dim)',
+        color: 'var(--green-dark, #166534)',
         fontSize: '18px', fontWeight: 800,
         cursor: isSaving ? 'not-allowed' : 'pointer',
         letterSpacing: '-0.01em',
@@ -822,14 +822,14 @@ function HoldToFinishButton({
         WebkitTapHighlightColor: 'transparent',
         userSelect: 'none',
         // Subtle border to distinguish from the done state
-        outline: '2px solid #86EFAC',
+        outline: '2px solid var(--green-light, #86EFAC)',
       }}
     >
       {/* Fill bar - grows left to right as user holds */}
       <div style={{
         position: 'absolute',
         inset: 0,
-        background: '#16A34A',
+        background: 'var(--green)',
         transformOrigin: 'left center',
         transform: `scaleX(${progress / 100})`,
         transition: progress === 0 ? 'transform 200ms ease' : 'none',
@@ -840,7 +840,7 @@ function HoldToFinishButton({
       <span style={{
         position: 'relative',
         zIndex: 1,
-        color: progress > 50 ? 'white' : '#166534',
+        color: progress > 50 ? 'white' : 'var(--green-dark, #166534)',
         transition: 'color 150ms ease',
         pointerEvents: 'none',
       }}>

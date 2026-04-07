@@ -144,8 +144,8 @@ export default function SignInPage() {
           {error && (
             <p style={{
               fontSize: '13px', color: 'var(--red)',
-              background: 'rgba(239,68,68,0.08)',
-              border: '1px solid rgba(239,68,68,0.2)',
+              background: 'var(--red-dim)',
+              border: '1px solid var(--red-border, rgba(239,68,68,0.2))',
               borderRadius: 'var(--radius-sm)',
               padding: '10px 12px',
               margin: 0,
