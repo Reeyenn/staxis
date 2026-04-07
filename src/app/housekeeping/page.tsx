@@ -2103,6 +2103,8 @@ function DeepCleanSection() {
   const [backfillDate, setBackfillDate] = useState('');
   const [editRoom, setEditRoom] = useState<string | null>(null);
   const [editDate, setEditDate] = useState('');
+  const [showAddRooms, setShowAddRooms] = useState(false);
+  const [addRoomsFloor, setAddRoomsFloor] = useState<number | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const uid = user?.uid ?? '';
@@ -2355,6 +2357,65 @@ function DeepCleanSection() {
     return [...floors.entries()].sort(([a], [b]) => a - b);
   }, [overdueRooms]);
 
+  // Group ALL rooms by floor (for Add Rooms modal)
+  const allRoomsByFloor = useMemo(() => {
+    const floors = new Map<number, RoomInfo[]>();
+    allRoomInfo.forEach(r => {
+      const f = getFloor(r.roomNumber);
+      if (!floors.has(f)) floors.set(f, []);
+      floors.get(f)!.push(r);
+    });
+    return [...floors.entries()].sort(([a], [b]) => a - b);
+  }, [allRoomInfo]);
+
+  // Floor summary for the Add Rooms picker
+  const floorSummary = useMemo(() => {
+    return allRoomsByFloor.map(([floor, rooms]) => {
+      const overdue = rooms.filter(r => r.status === 'overdue' || r.status === 'never').length;
+      const approaching = rooms.filter(r => r.status === 'approaching').length;
+      const ok = rooms.filter(r => r.status === 'ok' && !r.inProgress).length;
+      const inProg = rooms.filter(r => r.inProgress).length;
+      // Worst status description
+      let desc = '';
+      let descEs = '';
+      let descColor = 'var(--text-muted)';
+      if (overdue > 0) {
+        desc = `${overdue} overdue`;
+        descEs = `${overdue} pendientes`;
+        descColor = 'var(--red)';
+      } else if (approaching > 0) {
+        desc = `${approaching} due soon`;
+        descEs = `${approaching} por vencer`;
+        descColor = 'var(--amber)';
+      } else if (inProg > 0) {
+        desc = `${inProg} in progress`;
+        descEs = `${inProg} en progreso`;
+        descColor = 'var(--amber)';
+      } else {
+        desc = 'All on track';
+        descEs = 'Todo al día';
+        descColor = 'var(--green)';
+      }
+      return { floor, total: rooms.length, overdue, approaching, ok, inProg, desc, descEs, descColor };
+    });
+  }, [allRoomsByFloor]);
+
+  // Status description for individual room in the modal
+  const roomStatusDesc = (r: RoomInfo): { text: string; textEs: string; color: string } => {
+    if (r.inProgress) return { text: 'In progress', textEs: 'En progreso', color: 'var(--amber)' };
+    if (r.status === 'never') return { text: 'Never cleaned', textEs: 'Nunca limpiado', color: 'var(--red)' };
+    if (r.status === 'overdue') {
+      const dOver = r.daysSince - freq;
+      return { text: `${dOver}d overdue`, textEs: `${dOver}d atrasado`, color: 'var(--red)' };
+    }
+    if (r.status === 'approaching') {
+      const dLeft = freq - r.daysSince;
+      return { text: `Due in ${dLeft}d`, textEs: `Vence en ${dLeft}d`, color: 'var(--amber)' };
+    }
+    const dLeft = freq - r.daysSince;
+    return { text: `Clean in ${dLeft}d`, textEs: `Limpio en ${dLeft}d`, color: 'var(--green)' };
+  };
+
   // ─── Status badge color helper ────────────────────────────────────────────
   const statusColor = (r: RoomInfo) => {
     if (r.inProgress) return { bg: 'rgba(245,158,11,0.1)', color: 'var(--amber)' };
@@ -2600,105 +2661,150 @@ function DeepCleanSection() {
         </div>
       )}
 
-      {/* ── Overdue Rooms by Floor ── */}
-      {overdueByFloor.length === 0 ? (
-        <div className="animate-in stagger-2" style={{
-          textAlign: 'center', padding: '48px 20px',
-          background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)',
-        }}>
-          <CheckCircle2 size={36} color="var(--green)" style={{ margin: '0 auto 12px' }} />
-          <p style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)' }}>
-            {lang === 'es' ? 'Todas las habitaciones al día' : 'All rooms up to date'}
-          </p>
-        </div>
-      ) : (
-        overdueByFloor.map(([floor, rooms]) => {
-          const isCollapsed = collapsedFloors.has(floor);
-          return (
-            <div key={floor} className="animate-in">
-              {/* Floor header */}
-              <button
-                onClick={() => toggleFloor(floor)}
-                style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                  width: '100%', padding: '12px 14px', background: 'var(--bg-card)',
-                  border: '1px solid var(--border)', borderRadius: isCollapsed ? 'var(--radius-md)' : 'var(--radius-md) var(--radius-md) 0 0',
-                  cursor: 'pointer', minHeight: '48px',
-                }}
-              >
-                <span style={{ fontWeight: 700, fontSize: '14px', color: 'var(--text-primary)' }}>
-                  {lang === 'es' ? `Piso ${floor}` : `Floor ${floor}`}
-                </span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--red)', padding: '2px 8px', background: 'var(--red-dim, rgba(220,38,38,0.08))', borderRadius: '99px' }}>
-                    {rooms.length}
-                  </span>
-                  {isCollapsed ? <ChevronRight size={16} color="var(--text-muted)" /> : <ChevronDown size={16} color="var(--text-muted)" />}
-                </div>
-              </button>
+      {/* ── Add Rooms Button ── */}
+      <button
+        onClick={() => { setShowAddRooms(true); setAddRoomsFloor(null); }}
+        className="animate-in stagger-2"
+        style={{
+          width: '100%', padding: '16px', borderRadius: 'var(--radius-lg)',
+          border: '2px dashed var(--border)', background: 'var(--bg-card)',
+          cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+          minHeight: '56px', fontSize: '15px', fontWeight: 700, color: 'var(--navy)',
+        }}
+      >
+        <Plus size={18} /> {lang === 'es' ? 'Agregar habitaciones' : 'Add Rooms'}
+      </button>
 
-              {/* Room cards */}
-              {!isCollapsed && (
-                <div style={{ border: '1px solid var(--border)', borderTop: 'none', borderRadius: '0 0 var(--radius-md) var(--radius-md)', overflow: 'hidden' }}>
-                  {rooms.map(room => {
+      {/* ── Add Rooms Modal ── */}
+      {showAddRooms && (
+        <>
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 9997 }} onClick={() => { setShowAddRooms(false); setAddRoomsFloor(null); }} />
+          <div style={{
+            position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 9998,
+            background: 'var(--bg-card)', borderRadius: '16px', boxShadow: '0 8px 40px rgba(0,0,0,0.2)',
+            padding: '0', width: '380px', maxWidth: 'calc(100vw - 32px)', maxHeight: '85vh',
+            display: 'flex', flexDirection: 'column', overflow: 'hidden',
+          }}>
+            {/* Modal header */}
+            <div style={{ padding: '18px 20px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              {addRoomsFloor !== null ? (
+                <button
+                  onClick={() => setAddRoomsFloor(null)}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', padding: '0', minHeight: '44px' }}
+                >
+                  <ChevronLeft size={18} color="var(--navy)" />
+                  <span style={{ fontSize: '17px', fontWeight: 700, color: 'var(--text-primary)' }}>
+                    {lang === 'es' ? `Piso ${addRoomsFloor}` : `Floor ${addRoomsFloor}`}
+                  </span>
+                </button>
+              ) : (
+                <span style={{ fontSize: '17px', fontWeight: 700, color: 'var(--text-primary)' }}>
+                  {lang === 'es' ? 'Seleccionar piso' : 'Select Floor'}
+                </span>
+              )}
+              <button
+                onClick={() => { setShowAddRooms(false); setAddRoomsFloor(null); }}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '8px', minHeight: '44px', display: 'flex', alignItems: 'center' }}
+              >
+                <XCircle size={20} color="var(--text-muted)" />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div style={{ overflowY: 'auto', flex: 1 }}>
+              {addRoomsFloor === null ? (
+                /* Floor list */
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  {floorSummary.map(fs => (
+                    <button
+                      key={fs.floor}
+                      onClick={() => setAddRoomsFloor(fs.floor)}
+                      style={{
+                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                        padding: '16px 20px', borderBottom: '1px solid var(--border)',
+                        background: 'none', border: 'none', borderBottomStyle: 'solid',
+                        cursor: 'pointer', minHeight: '64px', textAlign: 'left', width: '100%',
+                      }}
+                    >
+                      <div>
+                        <div style={{ fontWeight: 700, fontSize: '16px', color: 'var(--text-primary)' }}>
+                          {lang === 'es' ? `Piso ${fs.floor}` : `Floor ${fs.floor}`}
+                        </div>
+                        <div style={{ fontSize: '13px', color: fs.descColor, fontWeight: 600, marginTop: '2px' }}>
+                          {lang === 'es' ? fs.descEs : fs.desc}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                          {fs.total} {lang === 'es' ? 'hab.' : 'rooms'}
+                        </span>
+                        <ChevronRight size={16} color="var(--text-muted)" />
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                /* Room list for selected floor */
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  {(allRoomsByFloor.find(([f]) => f === addRoomsFloor)?.[1] ?? []).map(room => {
+                    const desc = roomStatusDesc(room);
                     const sc = statusColor(room);
                     return (
                       <div key={room.roomNumber} style={{
                         display: 'flex', alignItems: 'center', gap: '12px',
-                        padding: '14px 16px', borderBottom: '1px solid var(--border)',
+                        padding: '14px 20px', borderBottom: '1px solid var(--border)',
                         background: room.inProgress ? 'rgba(245,158,11,0.04)' : undefined,
                       }}>
                         <div style={{ flex: 1 }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '18px', color: 'var(--text-primary)' }}>
+                            <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '17px', color: 'var(--text-primary)' }}>
                               {room.roomNumber}
                             </span>
-                            <span style={{ padding: '2px 8px', borderRadius: '100px', fontSize: '11px', fontWeight: 700, background: sc.bg, color: sc.color }}>
-                              {statusLabel(room)}
+                            <span style={{ fontSize: '13px', fontWeight: 600, color: desc.color }}>
+                              {lang === 'es' ? desc.textEs : desc.text}
                             </span>
                           </div>
                           {room.lastCleaned && (
-                            <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '3px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px', display: 'flex', alignItems: 'center', gap: '4px' }}>
                               {lang === 'es' ? 'Última:' : 'Last:'} {room.daysSince}d {lang === 'es' ? 'atrás' : 'ago'}{room.cleanedBy ? ` · ${room.cleanedBy}` : ''}
                               <button
                                 onClick={(e) => { e.stopPropagation(); setEditRoom(room.roomNumber); setEditDate(room.lastCleaned!); }}
                                 style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px', color: 'var(--text-muted)', display: 'inline-flex' }}
-                                aria-label="Edit date"
                               >
-                                <Pencil size={12} />
+                                <Pencil size={11} />
                               </button>
                             </p>
                           )}
                           {room.inProgress && room.team.length > 0 && (
-                            <p style={{ fontSize: '12px', color: 'var(--amber)', marginTop: '2px' }}>
-                              {room.team.join(', ')}
-                            </p>
+                            <p style={{ fontSize: '11px', color: 'var(--amber)', marginTop: '2px' }}>{room.team.join(', ')}</p>
                           )}
                         </div>
                         {room.inProgress ? (
                           <button
-                            onClick={() => setCompleteRoom(room.roomNumber)}
+                            onClick={() => { setCompleteRoom(room.roomNumber); setShowAddRooms(false); }}
                             style={{
-                              padding: '10px 16px', borderRadius: '10px', border: 'none',
+                              padding: '10px 14px', borderRadius: '10px', border: 'none',
                               background: 'var(--green)', color: '#fff', fontWeight: 700, fontSize: '13px',
-                              cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
-                              flexShrink: 0, minHeight: '48px',
+                              cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px',
+                              flexShrink: 0, minHeight: '44px',
                             }}
                           >
                             <Check size={14} /> {lang === 'es' ? 'Hecho' : 'Done'}
                           </button>
-                        ) : (
+                        ) : (room.status === 'overdue' || room.status === 'never') ? (
                           <button
-                            onClick={() => { setAssignRoom(room.roomNumber); setSelectedTeam([]); }}
+                            onClick={() => { setAssignRoom(room.roomNumber); setSelectedTeam([]); setShowAddRooms(false); }}
                             style={{
-                              padding: '10px 16px', borderRadius: '10px', border: 'none',
+                              padding: '10px 14px', borderRadius: '10px', border: 'none',
                               background: 'var(--navy)', color: '#fff', fontWeight: 700, fontSize: '13px',
-                              cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
-                              flexShrink: 0, minHeight: '48px',
+                              cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px',
+                              flexShrink: 0, minHeight: '44px',
                             }}
                           >
                             <Users size={14} /> {lang === 'es' ? 'Asignar' : 'Assign'}
                           </button>
+                        ) : (
+                          <span style={{ fontSize: '11px', color: 'var(--text-muted)', flexShrink: 0 }}>✓</span>
                         )}
                       </div>
                     );
@@ -2706,8 +2812,8 @@ function DeepCleanSection() {
                 </div>
               )}
             </div>
-          );
-        })
+          </div>
+        </>
       )}
 
       {/* ── Recently Completed ── */}
