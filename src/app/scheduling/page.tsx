@@ -154,13 +154,19 @@ export default function SchedulingPage() {
           language: s.language,
         }));
 
-      await fetch('/api/send-shift-confirmations', {
+      const res = await fetch('/api/send-shift-confirmations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ uid, pid, shiftDate, baseUrl, staff: staffPayload }),
       });
+      if (!res.ok) throw new Error('Failed to send confirmations');
       setSent(true);
       setSelected([]);
+    } catch (error) {
+      console.error('Error sending shift confirmations:', error);
+      alert(lang === 'es'
+        ? 'Error al enviar confirmaciones. Verifica tu conexión e intenta de nuevo.'
+        : 'Error sending confirmations. Check your connection and try again.');
     } finally {
       setSending(false);
     }

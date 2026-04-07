@@ -182,8 +182,11 @@ export default function DashboardPage() {
 
   if (authLoading || propLoading) {
     return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)' }}>
-        <div className="spinner" style={{ width: '32px', height: '32px' }} />
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '12px', background: 'var(--bg)' }}>
+        <div className="animate-spin" style={{ width: '32px', height: '32px', border: '4px solid var(--border)', borderTopColor: 'var(--navy)', borderRadius: '50%' }} />
+        <p style={{ color: 'var(--text-muted)', fontSize: '14px' }}>
+          {lang === 'es' ? 'Cargando panel...' : 'Loading dashboard...'}
+        </p>
       </div>
     );
   }
@@ -256,7 +259,9 @@ export default function DashboardPage() {
               {occupancyPct}<span style={{ fontSize: '22px', fontWeight: 600 }}>%</span>
             </div>
             <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: 0 }}>
-              {rentedRooms} of {totalPropertyRooms} rooms occupied
+              {lang === 'es'
+                ? `${rentedRooms} de ${totalPropertyRooms} habitaciones ocupadas`
+                : `${rentedRooms} of ${totalPropertyRooms} rooms occupied`}
             </p>
           </div>
 
