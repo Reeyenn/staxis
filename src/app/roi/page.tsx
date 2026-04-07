@@ -56,8 +56,9 @@ export default function ROIPage() {
       <AppLayout>
         <div className="flex items-center justify-center h-screen">
           <div className="text-center">
-            <div className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>
-              {t('loading', lang)}
+            <div className="animate-spin w-8 h-8 border-4 rounded-full mb-3 mx-auto" style={{ borderColor: 'var(--border)', borderTopColor: 'var(--green)' }} />
+            <div className="text-sm font-medium" style={{ color: 'var(--text-muted)' }}>
+              Loading ROI data...
             </div>
           </div>
         </div>
@@ -180,8 +181,9 @@ export default function ROIPage() {
                     type="monotone"
                     dataKey="laborCost"
                     stroke="var(--red)"
-                    dot={false}
+                    dot={{ r: 3, fill: 'var(--red)' }}
                     strokeWidth={2}
+                    name="Labor Cost"
                   />
                 </LineChart>
               </ResponsiveContainer>
@@ -251,8 +253,11 @@ export default function ROIPage() {
                 backgroundColor: 'var(--bg-card)'
               }}
             >
+              <p className="text-lg font-semibold mb-2" style={{ color: 'var(--text-secondary)' }}>
+                No data yet
+              </p>
               <p style={{ color: 'var(--text-muted)' }}>
-                No daily logs recorded yet. Check back after recording your first day.
+                ROI tracking starts after your first daily schedule. Run Morning Setup from the Dashboard to begin.
               </p>
             </div>
           )}

@@ -21,6 +21,7 @@ export default function FrontDeskPage() {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
   const [processing, setProcessing] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
 
   useEffect(() => {
     if (!authLoading && !propLoading && !user) router.replace('/signin');
@@ -37,8 +38,9 @@ export default function FrontDeskPage() {
       <AppLayout>
         <div className="flex items-center justify-center h-screen">
           <div className="text-center">
-            <div className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>
-              {t('loading', lang)}
+            <div className="animate-spin w-8 h-8 border-4 rounded-full mb-3 mx-auto" style={{ borderColor: 'var(--border)', borderTopColor: 'var(--navy)' }} />
+            <div className="text-sm font-medium" style={{ color: 'var(--text-muted)' }}>
+              Loading rooms...
             </div>
           </div>
         </div>
@@ -60,6 +62,8 @@ export default function FrontDeskPage() {
         type: 'checkout'
       });
       setSelectedRoom(null);
+      setToast(`Room ${selectedRoom.number} marked as Early Checkout`);
+      setTimeout(() => setToast(null), 2500);
     } catch (error) {
       console.error('Error marking early checkout:', error);
     } finally {
@@ -75,6 +79,8 @@ export default function FrontDeskPage() {
         type: 'stayover'
       });
       setSelectedRoom(null);
+      setToast(`Room ${selectedRoom.number} marked as Extension`);
+      setTimeout(() => setToast(null), 2500);
     } catch (error) {
       console.error('Error marking extension:', error);
     } finally {
@@ -137,6 +143,21 @@ export default function FrontDeskPage() {
             </div>
           ))}
         </div>
+
+        {/* Success Toast */}
+        {toast && (
+          <div
+            className="fixed top-20 left-1/2 z-50 px-5 py-3 rounded-lg shadow-lg font-semibold text-sm"
+            style={{
+              transform: 'translateX(-50%)',
+              backgroundColor: 'var(--green)',
+              color: 'white',
+              animation: 'fadeIn 0.2s ease-out',
+            }}
+          >
+            {toast}
+          </div>
+        )}
 
         {/* Bottom Sheet - Room Details Popup */}
         {selectedRoom && (
@@ -274,31 +295,41 @@ function RoomDetailSheet({
         {/* Action Buttons */}
         <div className="space-y-3">
           {room.type === 'stayover' && (
-            <button
-              onClick={onEarlyCheckout}
-              disabled={processing}
-              className="w-full py-3 rounded-lg font-semibold transition-colors disabled:opacity-50"
-              style={{
-                backgroundColor: 'var(--amber)',
-                color: 'white'
-              }}
-            >
-              {processing ? 'Processing...' : 'Mark Early Checkout'}
-            </button>
+            <>
+              <p className="text-xs text-center" style={{ color: 'var(--text-muted)' }}>
+                Guest checking out early? This changes the room to a full checkout clean.
+              </p>
+              <button
+                onClick={onEarlyCheckout}
+                disabled={processing}
+                className="w-full py-3 rounded-lg font-semibold transition-colors disabled:opacity-50"
+                style={{
+                  backgroundColor: 'var(--amber)',
+                  color: 'white'
+                }}
+              >
+                {processing ? 'Processing...' : 'Mark Early Checkout'}
+              </button>
+            </>
           )}
 
           {room.type === 'checkout' && (
-            <button
-              onClick={onExtension}
-              disabled={processing}
-              className="w-full py-3 rounded-lg font-semibold transition-colors disabled:opacity-50"
-              style={{
-                backgroundColor: 'var(--navy)',
-                color: 'white'
-              }}
-            >
-              {processing ? 'Processing...' : 'Mark Extension'}
-            </button>
+            <>
+              <p className="text-xs text-center" style={{ color: 'var(--text-muted)' }}>
+                Guest extending their stay? This changes the room to a stayover refresh.
+              </p>
+              <button
+                onClick={onExtension}
+                disabled={processing}
+                className="w-full py-3 rounded-lg font-semibold transition-colors disabled:opacity-50"
+                style={{
+                  backgroundColor: 'var(--navy)',
+                  color: 'white'
+                }}
+              >
+                {processing ? 'Processing...' : 'Mark Extension'}
+              </button>
+            </>
           )}
 
           <button

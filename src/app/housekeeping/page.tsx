@@ -246,8 +246,8 @@ function RankBadge({ rank }: { rank: number }) {
 function StatPill({ label, value, highlight = false }: { label: string; value: string; highlight?: boolean }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '5px 10px', borderRadius: '100px', background: highlight ? 'var(--amber-dim)' : 'rgba(0,0,0,0.04)', border: `1px solid ${highlight ? 'var(--amber-border)' : 'var(--border)'}` }}>
-      <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 500 }}>{label}</span>
-      <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', fontWeight: 700, color: highlight ? 'var(--amber)' : 'var(--text-secondary)' }}>{value}</span>
+      <span style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 500 }}>{label}</span>
+      <span style={{ fontFamily: 'var(--font-mono)', fontSize: '13px', fontWeight: 700, color: highlight ? 'var(--amber)' : 'var(--text-secondary)' }}>{value}</span>
     </div>
   );
 }
@@ -1370,7 +1370,7 @@ function RoomsSection() {
                           {/* Timer for in-progress rooms */}
                           {elapsed !== null && (
                             <span style={{
-                              fontSize: '9px', fontWeight: 700, fontFamily: 'var(--font-mono)',
+                              fontSize: '11px', fontWeight: 800, fontFamily: 'var(--font-mono)',
                               color: overTime ? '#DC2626' : 'var(--text-muted)',
                               lineHeight: 1,
                             }}>
@@ -1398,7 +1398,7 @@ function RoomsSection() {
                           {assignedName && !hasHelp && (
                             <div style={{
                               position: 'absolute', bottom: '2px', left: '50%', transform: 'translateX(-50%)',
-                              fontSize: '8px', fontWeight: 700, color: 'var(--text-muted)',
+                              fontSize: '9px', fontWeight: 700, color: 'var(--text-muted)',
                               maxWidth: '64px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                             }}>
                               {assignedName.split(' ')[0]}
