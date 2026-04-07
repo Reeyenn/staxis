@@ -383,6 +383,7 @@ function FrequencySlider({ value, onChange }: { value: number; onChange: (v: num
         max={maxIdx}
         step={1}
         value={sliderIdx}
+        aria-label="Inspection frequency"
         onChange={e => {
           const i = parseInt(e.target.value);
           if (i < FREQ_STOPS.length) {
@@ -433,6 +434,7 @@ function FrequencySlider({ value, onChange }: { value: number; onChange: (v: num
             min="1"
             max="120"
             value={customValue}
+            aria-label="Custom frequency in months"
             onChange={e => {
               setCustomValue(e.target.value);
               const v = parseInt(e.target.value);

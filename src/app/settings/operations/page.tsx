@@ -399,7 +399,7 @@ export default function OperationsConfigPage() {
 
         {/* Area list for active floor */}
         {loading ? (
-          <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>{lang === 'es' ? 'Cargando...' : 'Loading...'}</div>
+          <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}><div className="animate-spin" style={{ width: '24px', height: '24px', border: '3px solid var(--border)', borderTopColor: 'var(--amber)', borderRadius: '50%' }} />{lang === 'es' ? 'Cargando...' : 'Loading...'}</div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             {visibleAreas.map(({ area, idx }) => (
@@ -440,7 +440,7 @@ export default function OperationsConfigPage() {
           </div>
 
           {dcLoading ? (
-            <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>{lang === 'es' ? 'Cargando...' : 'Loading...'}</div>
+            <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}><div className="animate-spin" style={{ width: '24px', height: '24px', border: '3px solid var(--border)', borderTopColor: 'var(--amber)', borderRadius: '50%' }} />{lang === 'es' ? 'Cargando...' : 'Loading...'}</div>
           ) : (
             <>
               {/* Config fields */}
