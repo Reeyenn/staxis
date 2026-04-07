@@ -965,17 +965,17 @@ function ScheduleSection() {
             position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 9998,
             background: 'var(--bg-card)', borderRadius: '16px',
             boxShadow: '0 8px 40px rgba(0,0,0,0.2)',
-            padding: '20px', width: '320px', maxHeight: '70vh', overflowY: 'auto',
+            padding: '20px', width: '520px', maxWidth: 'calc(100vw - 40px)', maxHeight: '70vh', overflowY: 'auto',
             animation: 'popIn 0.15s ease-out',
           }}>
             <p style={{ fontSize: '15px', fontWeight: 700, color: 'var(--text-primary)', margin: '0 0 12px' }}>
               {lang === 'es' ? 'Agregar Personal' : 'Add Staff'}
             </p>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px' }}>
               {eligiblePool.filter(s => !selectedCrew.find(c => c.id === s.id)).map(member => (
                 <button key={member.id} onClick={() => { toggleCrewMember(member.id); setShowAddStaff(false); }} style={{
                   display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px',
-                  padding: '14px 8px', background: 'var(--bg-elevated)', border: '1.5px solid var(--border)',
+                  padding: '12px 6px', background: 'var(--bg-elevated)', border: '1.5px solid var(--border)',
                   borderRadius: '12px', cursor: 'pointer', fontFamily: 'var(--font-sans)',
                 }}>
                   <div style={{
