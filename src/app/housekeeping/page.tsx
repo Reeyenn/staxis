@@ -2605,7 +2605,8 @@ function DeepCleanSection() {
         <>
           <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 9997 }} onClick={() => { setShowAddRooms(false); setAddRoomsFloor(null); }} />
           <div style={{
-            position: 'fixed', top: '20px', left: '10px', right: '10px', bottom: '20px', zIndex: 9998,
+            position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 9998,
+            width: '420px', maxWidth: 'calc(100vw - 40px)', maxHeight: '70vh',
             background: 'var(--bg-card)', borderRadius: '16px', boxShadow: '0 8px 40px rgba(0,0,0,0.2)',
             padding: '0', display: 'flex', flexDirection: 'column', overflow: 'hidden',
           }}>
@@ -2645,24 +2646,24 @@ function DeepCleanSection() {
                       onClick={() => setAddRoomsFloor(fs.floor)}
                       style={{
                         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                        padding: '22px 24px', borderBottom: '1px solid var(--border)',
+                        padding: '16px 20px', borderBottom: '1px solid var(--border)',
                         background: 'none', border: 'none', borderBottomStyle: 'solid',
-                        cursor: 'pointer', minHeight: '80px', textAlign: 'left', width: '100%',
+                        cursor: 'pointer', minHeight: '60px', textAlign: 'left', width: '100%',
                       }}
                     >
                       <div>
-                        <div style={{ fontWeight: 700, fontSize: '20px', color: 'var(--text-primary)' }}>
+                        <div style={{ fontWeight: 700, fontSize: '16px', color: 'var(--text-primary)' }}>
                           {lang === 'es' ? `Piso ${fs.floor}` : `Floor ${fs.floor}`}
                         </div>
-                        <div style={{ fontSize: '15px', color: fs.descColor, fontWeight: 600, marginTop: '4px' }}>
+                        <div style={{ fontSize: '13px', color: fs.descColor, fontWeight: 600, marginTop: '2px' }}>
                           {lang === 'es' ? fs.descEs : fs.desc}
                         </div>
                       </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <span style={{ fontSize: '14px', color: 'var(--text-muted)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
                           {fs.total} {lang === 'es' ? 'hab.' : 'rooms'}
                         </span>
-                        <ChevronRight size={20} color="var(--text-muted)" />
+                        <ChevronRight size={16} color="var(--text-muted)" />
                       </div>
                     </button>
                   ))}
