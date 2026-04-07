@@ -2472,20 +2472,21 @@ function DeepCleanSection() {
             <p style={{ fontSize: '18px', fontWeight: 700, margin: '0 0 10px' }}>
               {suggestedRooms.length} {lang === 'es' ? 'habitaciones' : 'rooms'}
             </p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '12px' }}>
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', overflowX: 'auto', paddingBottom: '4px' }}>
               {suggestedRooms.map(r => {
                 const reason = r.daysSince === Infinity
                   ? (lang === 'es' ? 'Nunca limpiado' : 'Never cleaned')
                   : `${r.daysSince - freq}d ${lang === 'es' ? 'atrasado' : 'overdue'}`;
                 return (
                   <div key={r.roomNumber} style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    padding: '8px 12px', background: 'rgba(255,255,255,0.12)', borderRadius: '10px',
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px',
+                    padding: '10px 14px', background: 'rgba(255,255,255,0.15)', borderRadius: '12px',
+                    minWidth: '80px', flexShrink: 0,
                   }}>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '16px' }}>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '20px' }}>
                       {r.roomNumber}
                     </span>
-                    <span style={{ fontSize: '12px', fontWeight: 600, opacity: 0.85 }}>
+                    <span style={{ fontSize: '11px', fontWeight: 600, opacity: 0.8, textAlign: 'center', lineHeight: 1.2 }}>
                       {reason}
                     </span>
                   </div>
