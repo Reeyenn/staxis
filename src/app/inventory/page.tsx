@@ -309,29 +309,26 @@ export default function InventoryPage() {
               const pct = item.parLevel > 0 ? Math.min(100, Math.round((item.currentStock / item.parLevel) * 100)) : 0;
               return (
                 <div key={item.id} style={{
-                  display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 10px',
+                  display: 'flex', flexDirection: 'column', gap: '4px', padding: '12px 14px',
                   borderBottom: '1px solid var(--border)', borderRight: '1px solid var(--border)',
-                  minHeight: '44px',
+                  minHeight: '56px', justifyContent: 'center',
                 }}>
-                  {/* Status dot */}
-                  <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: STATUS_COLORS[status], flexShrink: 0 }} />
-
-                  {/* Name + time */}
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: '12px', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {/* Name + Count on same line */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: STATUS_COLORS[status], flexShrink: 0 }} />
+                    <div style={{ fontWeight: 700, fontSize: '15px', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {item.name}
                     </div>
-                    <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '1px' }}>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '16px', color: STATUS_COLORS[status], marginLeft: 'auto', flexShrink: 0 }}>
+                      {item.currentStock}
+                    </span>
+                  </div>
+                  {/* Time + par level */}
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingLeft: '14px' }}>
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
                       {timeAgo(item.updatedAt)}
                     </div>
-                  </div>
-
-                  {/* Count / Target */}
-                  <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                    <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '13px', color: STATUS_COLORS[status] }}>
-                      {item.currentStock}
-                    </div>
-                    <div style={{ fontSize: '9px', color: 'var(--text-muted)' }}>
+                    <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
                       / {item.parLevel}
                     </div>
                   </div>

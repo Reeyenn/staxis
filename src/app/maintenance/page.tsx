@@ -982,14 +982,15 @@ export default function MaintenancePage() {
           style={{
             position: 'fixed', inset: 0, zIndex: 50,
             background: 'rgba(0,0,0,0.4)',
-            display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: '20px',
           }}
           onClick={e => { if (e.target === e.currentTarget) setShowCreateModal(false); }}
         >
           <div style={{
-            width: '100%', maxWidth: '500px',
-            background: 'var(--bg-card)', borderRadius: '16px 16px 0 0',
-            padding: '20px 20px calc(20px + env(safe-area-inset-bottom))',
+            width: '100%', maxWidth: '500px', maxHeight: '90vh', overflowY: 'auto',
+            background: 'var(--bg-card)', borderRadius: '16px',
+            padding: '20px',
             display: 'flex', flexDirection: 'column', gap: '16px',
           }}>
             {/* Header */}
