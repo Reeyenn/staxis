@@ -586,13 +586,13 @@ function ScheduleSection() {
 
       {/* ── Date picker ── */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
-        <button onClick={() => { setShiftDate(d => addDays(d, -1)); setSent(false); setCrewOverride([]); }} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '6px 10px', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+        <button onClick={() => { setShiftDate(d => addDays(d, -1)); setSent(false); setCrewOverride([]); }} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '6px 10px', cursor: 'pointer', color: 'var(--text-secondary)' }} aria-label={lang === 'es' ? 'Día anterior' : 'Previous day'}>
           <ChevronLeft size={16} />
         </button>
         <span style={{ fontSize: '15px', fontWeight: 700, color: 'var(--text-primary)' }}>
           {formatDisplayDate(shiftDate, lang)}
         </span>
-        <button onClick={() => { setShiftDate(d => addDays(d, 1)); setSent(false); setCrewOverride([]); }} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '6px 10px', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+        <button onClick={() => { setShiftDate(d => addDays(d, 1)); setSent(false); setCrewOverride([]); }} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '6px 10px', cursor: 'pointer', color: 'var(--text-secondary)' }} aria-label={lang === 'es' ? 'Día siguiente' : 'Next day'}>
           <ChevronRight size={16} />
         </button>
       </div>
@@ -913,7 +913,7 @@ function ScheduleSection() {
               <p style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
                 {lang === 'es' ? 'Prioridad del Personal' : 'Staff Priority'}
               </p>
-              <button onClick={() => setShowPrioritySettings(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '18px', color: 'var(--text-muted)' }}>✕</button>
+              <button onClick={() => setShowPrioritySettings(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '18px', color: 'var(--text-muted)' }} aria-label={lang === 'es' ? 'Cerrar' : 'Close'}>✕</button>
             </div>
             <div style={{ display: 'flex', gap: '6px', marginBottom: '14px', fontSize: '11px', color: 'var(--text-muted)' }}>
               <span style={{ padding: '3px 8px', background: 'var(--blue-dim, #DBEAFE)', color: 'var(--navy)', borderRadius: '6px', fontWeight: 600 }}>{lang === 'es' ? 'Prioridad' : 'Priority'}</span>
@@ -1309,7 +1309,10 @@ function RoomsSection() {
       )}
 
       {loading ? (
-        <p style={{ color: 'var(--text-muted)', fontSize: '14px', textAlign: 'center', padding: '48px 0' }}>{t('loading', lang)}</p>
+        <div style={{ textAlign: 'center', padding: '48px 0' }}>
+          <div className="animate-spin" style={{ width: '28px', height: '28px', border: '3px solid var(--border)', borderTopColor: 'var(--amber)', borderRadius: '50%', margin: '0 auto 12px' }} />
+          <p style={{ color: 'var(--text-muted)', fontSize: '14px', margin: 0 }}>{t('loading', lang)}</p>
+        </div>
       ) : sorted.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '52px 20px', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)' }}>
           <p style={{ fontSize: '32px', marginBottom: '12px' }}>🛏️</p>
@@ -1580,7 +1583,7 @@ function StaffSection() {
                     <button onClick={() => openEdit(member)} style={{ flex: 1, padding: '8px 12px', background: 'rgba(0,0,0,0.05)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', color: 'var(--text-primary)', fontWeight: 500, fontSize: '13px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', fontFamily: 'var(--font-sans)' }}>
                       <Pencil size={12} />{t('edit', lang)}
                     </button>
-                    <button onClick={() => handleDelete(member)} style={{ padding: '8px 12px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 'var(--radius-md)', color: 'var(--red)', fontWeight: 500, fontSize: '13px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--font-sans)' }}>
+                    <button onClick={() => handleDelete(member)} aria-label={lang === 'es' ? `Eliminar a ${member.name}` : `Delete ${member.name}`} style={{ padding: '8px 12px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 'var(--radius-md)', color: 'var(--red)', fontWeight: 500, fontSize: '13px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--font-sans)' }}>
                       <Trash2 size={12} />
                     </button>
                   </div>
@@ -1878,7 +1881,7 @@ function PublicAreasModal({ show, onClose }: { show: boolean; onClose: () => voi
       <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-card)', borderRadius: '16px', padding: '24px', width: '100%', maxWidth: '85vw', maxHeight: '90vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <p style={{ fontWeight: 700, fontSize: '17px', color: 'var(--text-primary)', margin: 0 }}>{lang === 'es' ? 'Áreas Comunes' : 'Public Areas'}</p>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '18px', padding: '4px' }}>✕</button>
+          <button onClick={onClose} aria-label={lang === 'es' ? 'Cerrar' : 'Close'} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '18px', padding: '4px' }}>✕</button>
         </div>
 
       {/* Add button */}
@@ -1895,7 +1898,10 @@ function PublicAreasModal({ show, onClose }: { show: boolean; onClose: () => voi
 
       {/* Area list grouped by floor */}
       {loading ? (
-        <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>{t('loading', lang)}</div>
+        <div style={{ textAlign: 'center', padding: '40px' }}>
+          <div className="animate-spin" style={{ width: '28px', height: '28px', border: '3px solid var(--border)', borderTopColor: 'var(--amber)', borderRadius: '50%', margin: '0 auto 12px' }} />
+          <p style={{ color: 'var(--text-muted)', fontSize: '14px', margin: 0 }}>{t('loading', lang)}</p>
+        </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           {grouped.map(group => (

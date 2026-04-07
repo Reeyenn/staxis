@@ -309,6 +309,7 @@ export default function SchedulingPage() {
             <button
               onClick={() => { setShiftDate(d => addDays(d, -1)); setSent(false); setSelected([]); }}
               style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '6px 10px', cursor: 'pointer', color: 'var(--text-secondary)' }}
+              aria-label={lang === 'es' ? 'Día anterior' : 'Previous day'}
             >
               <ChevronLeft size={16} />
             </button>
@@ -318,6 +319,7 @@ export default function SchedulingPage() {
             <button
               onClick={() => { setShiftDate(d => addDays(d, 1)); setSent(false); setSelected([]); }}
               style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '6px 10px', cursor: 'pointer', color: 'var(--text-secondary)' }}
+              aria-label={lang === 'es' ? 'Día siguiente' : 'Next day'}
             >
               <ChevronRight size={16} />
             </button>

@@ -997,7 +997,7 @@ export default function MaintenancePage() {
               <h2 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '18px', color: 'var(--text-primary)' }}>
                 {t('newWorkOrder', lang)}
               </h2>
-              <button onClick={() => setShowCreateModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}>
+              <button onClick={() => setShowCreateModal(false)} aria-label={lang === 'es' ? 'Cerrar' : 'Close'} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}>
                 <X size={20} color="var(--text-muted)" />
               </button>
             </div>
@@ -1142,7 +1142,7 @@ export default function MaintenancePage() {
               <h2 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '18px', color: 'var(--text-primary)' }}>
                 {t('addTask', lang)}
               </h2>
-              <button onClick={() => setShowTaskModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}>
+              <button onClick={() => setShowTaskModal(false)} aria-label={lang === 'es' ? 'Cerrar' : 'Close'} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}>
                 <X size={20} color="var(--text-muted)" />
               </button>
             </div>
@@ -1221,7 +1221,7 @@ export default function MaintenancePage() {
               <h2 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '18px', color: 'var(--text-primary)' }}>
                 {t('addLandscapingTask', lang)}
               </h2>
-              <button onClick={() => setShowLsModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}>
+              <button onClick={() => setShowLsModal(false)} aria-label={lang === 'es' ? 'Cerrar' : 'Close'} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}>
                 <X size={20} color="var(--text-muted)" />
               </button>
             </div>

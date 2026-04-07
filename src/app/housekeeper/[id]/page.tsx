@@ -18,6 +18,7 @@ import { db, auth } from '@/lib/firebase';
 import { todayStr } from '@/lib/utils';
 import type { Room, RoomStatus } from '@/types';
 import { format } from 'date-fns';
+import { es as esLocale } from 'date-fns/locale';
 import { CheckCircle, AlertTriangle } from 'lucide-react';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
@@ -237,7 +238,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       <div style={{
         minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center',
         flexDirection: 'column', gap: '12px',
-        background: 'var(--bg)', fontFamily: 'system-ui, -apple-system, sans-serif',
+        background: 'var(--bg)', fontFamily: 'var(--font-sans, system-ui, -apple-system, sans-serif)',
       }}>
         <div style={{
           width: '32px', height: '32px', border: '4px solid var(--border)',
@@ -273,7 +274,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
               {lang === 'es' ? `Hola, ${firstName}` : `Hi, ${firstName}`}
             </h1>
             <p style={{ fontSize: '13px', opacity: 0.7, fontWeight: 500 }}>
-              {format(new Date(), 'EEEE, MMMM d')}
+              {format(new Date(), 'EEEE, MMMM d', { locale: lang === 'es' ? esLocale : undefined })}
             </p>
           </div>
 
