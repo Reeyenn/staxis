@@ -11,19 +11,20 @@ import {
   subscribeToRooms,
   getDeepCleanConfig, getDeepCleanRecords,
   subscribeToWorkOrders,
+  subscribeToHandoffLogs,
 } from '@/lib/firestore';
 import { getOverdueRooms, calcDndFreedMinutes, suggestDeepCleans } from '@/lib/calculations';
 import { todayStr } from '@/lib/utils';
-import type { Room, DeepCleanConfig, DeepCleanRecord, WorkOrder } from '@/types';
+import type { Room, DeepCleanConfig, DeepCleanRecord, WorkOrder, HandoffEntry } from '@/types';
 import {
   Clock, AlertTriangle,
   DollarSign, Wrench,
-  Zap, Percent,
+  Zap, Percent, User,
 } from 'lucide-react';
 
 export default function DashboardPage() {
   const { user, loading: authLoading } = useAuth();
-  const { activeProperty, activePropertyId, loading: propLoading } = useProperty();
+  const { activeProperty, activePropertyId, staff, loading: propLoading } = useProperty();
   const { lang } = useLang();
   const router = useRouter();
 
@@ -31,6 +32,7 @@ export default function DashboardPage() {
   const [dcConfig, setDcConfig] = useState<DeepCleanConfig | null>(null);
   const [dcRecords, setDcRecords] = useState<DeepCleanRecord[]>([]);
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
+  const [handoffs, setHandoffs] = useState<HandoffEntry[]>([]);
 
   const [arrivals, setArrivals] = useState(0);
   const [inHouseGuests, setInHouseGuests] = useState(0);
@@ -64,6 +66,11 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!user || !activePropertyId) return;
     return subscribeToWorkOrders(user.uid, activePropertyId, setWorkOrders);
+  }, [user, activePropertyId]);
+
+  useEffect(() => {
+    if (!user || !activePropertyId) return;
+    return subscribeToHandoffLogs(user.uid, activePropertyId, setHandoffs);
   }, [user, activePropertyId]);
 
   const openOrders = workOrders.filter(o => o.status !== 'resolved');
@@ -113,6 +120,65 @@ export default function DashboardPage() {
       .filter(m => m > 0 && m < 480);
     return timed.length > 0 ? Math.round(timed.reduce((a, b) => a + b, 0) / timed.length) : null;
   }, [rooms]);
+
+  /* ── Room grid grouped by floor ── */
+  const floorMap = useMemo(() => {
+    const map = new Map<string, Room[]>();
+    rooms.forEach(r => {
+      const num = parseInt(r.number);
+      const floor = isNaN(num) ? 'G' : num < 100 ? 'G' : String(Math.floor(num / 100));
+      if (!map.has(floor)) map.set(floor, []);
+      map.get(floor)!.push(r);
+    });
+    const sorted = [...map.entries()].sort((a, b) => {
+      if (a[0] === 'G') return -1;
+      if (b[0] === 'G') return 1;
+      return parseInt(a[0]) - parseInt(b[0]);
+    });
+    return sorted;
+  }, [rooms]);
+
+  const STATUS_DOT: Record<string, string> = {
+    dirty: '#DC2626', in_progress: '#F59E0B', clean: '#16A34A', inspected: '#7C3AED',
+  };
+
+  /* ── Housekeeper activity: who's cleaning what right now ── */
+  const hkActivity = useMemo(() => {
+    const assigned = new Map<string, { name: string; active: Room | null; done: number; total: number }>();
+    rooms.forEach(r => {
+      if (!r.assignedTo) return;
+      if (!assigned.has(r.assignedTo)) {
+        const s = staff.find(s => s.id === r.assignedTo);
+        assigned.set(r.assignedTo, { name: s?.name || r.assignedName || r.assignedTo, active: null, done: 0, total: 0 });
+      }
+      const entry = assigned.get(r.assignedTo)!;
+      entry.total++;
+      if (r.status === 'clean' || r.status === 'inspected') entry.done++;
+      if (r.status === 'in_progress') entry.active = r;
+    });
+    return [...assigned.values()].sort((a, b) => {
+      if (a.active && !b.active) return -1;
+      if (!a.active && b.active) return 1;
+      return a.name.localeCompare(b.name);
+    });
+  }, [rooms, staff]);
+
+  /* ── Morning briefing data ── */
+  const recentHandoffs = useMemo(() => {
+    const now = new Date();
+    const cutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    return handoffs
+      .filter(h => {
+        if (!h.createdAt) return false;
+        const d = h.createdAt instanceof Date ? h.createdAt : (h.createdAt as any).toDate?.() || new Date(h.createdAt as any);
+        return d >= cutoff;
+      })
+      .sort((a, b) => {
+        const da = a.createdAt instanceof Date ? a.createdAt : (a.createdAt as any).toDate?.() || new Date(a.createdAt as any);
+        const db = b.createdAt instanceof Date ? b.createdAt : (b.createdAt as any).toDate?.() || new Date(b.createdAt as any);
+        return db.getTime() - da.getTime();
+      });
+  }, [handoffs]);
 
   if (authLoading || propLoading) {
     return (
@@ -356,6 +422,178 @@ export default function DashboardPage() {
 
           </div>
         </div>
+
+        {/* ════════════════════════════════════════════════════════════
+            ROOM GRID — Compact floor-by-floor status at a glance
+            ════════════════════════════════════════════════════════════ */}
+        {rooms.length > 0 && (
+          <div className="animate-in stagger-4 card" style={{ padding: '16px 18px' }}>
+            <p style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', margin: '0 0 12px' }}>
+              {lang === 'es' ? 'Habitaciones por Piso' : 'Rooms by Floor'}
+            </p>
+            {floorMap.map(([floor, floorRooms]) => (
+              <div key={floor} style={{ marginBottom: '10px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                  <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-secondary)', minWidth: '20px' }}>
+                    {floor === 'G' ? 'G' : `F${floor}`}
+                  </span>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                    {floorRooms.sort((a, b) => parseInt(a.number) - parseInt(b.number)).map(r => (
+                      <div
+                        key={r.id}
+                        title={`${r.number} — ${r.status}${r.assignedName ? ` (${r.assignedName})` : ''}`}
+                        style={{
+                          width: '32px', height: '24px', borderRadius: '4px',
+                          background: STATUS_DOT[r.status] || '#94a3b8',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontSize: '9px', fontWeight: 700, color: '#fff',
+                          opacity: r.isDnd ? 0.4 : 1,
+                        }}
+                      >
+                        {r.number}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ))}
+            <div style={{ display: 'flex', gap: '12px', marginTop: '8px', borderTop: '1px solid var(--border)', paddingTop: '8px' }}>
+              {[
+                { label: lang === 'es' ? 'Sucia' : 'Dirty', color: '#DC2626' },
+                { label: lang === 'es' ? 'Limpiando' : 'Cleaning', color: '#F59E0B' },
+                { label: lang === 'es' ? 'Limpia' : 'Clean', color: '#16A34A' },
+                { label: lang === 'es' ? 'Inspeccionada' : 'Inspected', color: '#7C3AED' },
+              ].map(l => (
+                <div key={l.label} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <div style={{ width: '8px', height: '8px', borderRadius: '2px', background: l.color }} />
+                  <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>{l.label}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ════════════════════════════════════════════════════════════
+            CREW TRACKER — Who's cleaning what right now
+            ════════════════════════════════════════════════════════════ */}
+        {hkActivity.length > 0 && (
+          <div className="animate-in stagger-5 card" style={{ padding: '16px 18px' }}>
+            <p style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', margin: '0 0 10px' }}>
+              {lang === 'es' ? 'Equipo Ahora' : 'Crew Right Now'}
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
+              {hkActivity.map((hk, i) => (
+                <div
+                  key={i}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '10px',
+                    padding: '8px 0',
+                    borderBottom: i < hkActivity.length - 1 ? '1px solid var(--border)' : 'none',
+                  }}
+                >
+                  {/* Status dot */}
+                  <div style={{
+                    width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0,
+                    background: hk.active ? '#F59E0B' : hk.done === hk.total ? '#16A34A' : '#94a3b8',
+                    boxShadow: hk.active ? '0 0 0 3px rgba(245,158,11,0.2)' : 'none',
+                  }} />
+                  {/* Name */}
+                  <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {hk.name.split(' ')[0]}
+                  </span>
+                  {/* What they're doing */}
+                  <span style={{ fontSize: '12px', color: hk.active ? '#D97706' : 'var(--text-muted)', fontWeight: hk.active ? 600 : 400, flexShrink: 0 }}>
+                    {hk.active
+                      ? `${lang === 'es' ? 'Rm' : 'Rm'} ${hk.active.number}`
+                      : hk.done === hk.total
+                        ? (lang === 'es' ? 'Terminó' : 'Done')
+                        : (lang === 'es' ? 'Libre' : 'Idle')
+                    }
+                  </span>
+                  {/* Progress */}
+                  <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--text-muted)', flexShrink: 0 }}>
+                    {hk.done}/{hk.total}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ════════════════════════════════════════════════════════════
+            MORNING BRIEFING — Overnight notes + pending maintenance
+            ════════════════════════════════════════════════════════════ */}
+        {(recentHandoffs.length > 0 || urgentOrders.length > 0 || openOrders.length > 0) && (
+          <div className="animate-in stagger-6 card" style={{ padding: '16px 18px' }}>
+            <p style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', margin: '0 0 10px' }}>
+              {lang === 'es' ? 'Resumen de Hoy' : "Today's Briefing"}
+            </p>
+
+            {/* Overnight handoff notes */}
+            {recentHandoffs.length > 0 && (
+              <div style={{ marginBottom: '12px' }}>
+                <p style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', margin: '0 0 6px' }}>
+                  {lang === 'es' ? '📋 Notas del Turno' : '📋 Shift Notes'}
+                </p>
+                {recentHandoffs.slice(0, 3).map(h => (
+                  <div key={h.id} style={{ padding: '6px 10px', marginBottom: '4px', borderRadius: '6px', background: 'rgba(0,0,0,0.03)', fontSize: '12px', color: 'var(--text-primary)', lineHeight: 1.4 }}>
+                    <span style={{ fontWeight: 600, color: 'var(--text-muted)', fontSize: '10px', textTransform: 'uppercase' }}>
+                      {h.shiftType} · {h.author}
+                    </span>
+                    <br />
+                    {h.notes.length > 120 ? h.notes.slice(0, 120) + '…' : h.notes}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Pending maintenance */}
+            {openOrders.length > 0 && (
+              <div style={{ marginBottom: '12px' }}>
+                <p style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', margin: '0 0 6px' }}>
+                  {lang === 'es' ? '🔧 Mantenimiento Pendiente' : '🔧 Pending Maintenance'}
+                </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                  {openOrders.slice(0, 5).map(o => (
+                    <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', padding: '4px 0' }}>
+                      <div style={{
+                        width: '6px', height: '6px', borderRadius: '50%', flexShrink: 0,
+                        background: o.severity === 'urgent' ? '#DC2626' : o.severity === 'medium' ? '#F59E0B' : '#94a3b8',
+                      }} />
+                      <span style={{ fontWeight: 600, color: 'var(--text-primary)', minWidth: '40px' }}>Rm {o.roomNumber}</span>
+                      <span style={{ color: 'var(--text-muted)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {o.description.length > 60 ? o.description.slice(0, 60) + '…' : o.description}
+                      </span>
+                      {o.severity === 'urgent' && (
+                        <span style={{ fontSize: '10px', fontWeight: 700, color: '#DC2626', flexShrink: 0 }}>URGENT</span>
+                      )}
+                    </div>
+                  ))}
+                  {openOrders.length > 5 && (
+                    <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '2px 0 0' }}>
+                      +{openOrders.length - 5} {lang === 'es' ? 'más' : 'more'}
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Today's assignments summary */}
+            {rooms.length > 0 && (
+              <div>
+                <p style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', margin: '0 0 6px' }}>
+                  {lang === 'es' ? '📌 Asignaciones de Hoy' : "📌 Today's Assignments"}
+                </p>
+                <div style={{ display: 'flex', gap: '16px', fontSize: '12px', color: 'var(--text-muted)' }}>
+                  <span><strong style={{ color: 'var(--text-primary)' }}>{checkouts}</strong> {lang === 'es' ? 'salidas' : 'checkouts'}</span>
+                  <span><strong style={{ color: 'var(--text-primary)' }}>{stayovers}</strong> {lang === 'es' ? 'ocupadas' : 'stayovers'}</span>
+                  <span><strong style={{ color: 'var(--text-primary)' }}>{hkActivity.length}</strong> {lang === 'es' ? 'en equipo' : 'on crew'}</span>
+                  <span><strong style={{ color: dirty > 0 ? '#DC2626' : '#16A34A' }}>{dirty}</strong> {lang === 'es' ? 'pendientes' : 'remaining'}</span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
       </div>
     </AppLayout>
