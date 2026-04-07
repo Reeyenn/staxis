@@ -278,7 +278,7 @@ export default function InventoryPage() {
                 whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '6px',
               }}
             >
-              {cat.label}
+              {lang === 'es' ? cat.labelEs : cat.label}
               <span style={{
                 fontSize: '11px', fontWeight: 700,
                 opacity: activeCategory === cat.key ? 0.8 : 0.5,
@@ -297,7 +297,9 @@ export default function InventoryPage() {
           {sortedItems.length === 0 ? (
             <div style={{ gridColumn: '1 / -1', padding: '40px', textAlign: 'center' }}>
               <Package size={28} color="var(--text-muted)" style={{ margin: '0 auto 8px' }} />
-              <p style={{ fontSize: '14px', color: 'var(--text-muted)' }}>No items in this category</p>
+              <p style={{ fontSize: '14px', color: 'var(--text-muted)' }}>
+                {lang === 'es' ? 'No hay artículos en esta categoría' : 'No items in this category'}
+              </p>
             </div>
           ) : (
             sortedItems.map(item => {

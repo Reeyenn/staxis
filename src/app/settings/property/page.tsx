@@ -123,8 +123,8 @@ export default function PropertySettingsPage() {
                   style={{
                     padding: '10px 14px',
                     borderRadius: '8px',
-                    border: `1px solid ${p.id === activePropertyId ? 'rgba(212,144,64,0.4)' : 'var(--border)'}`,
-                    background: p.id === activePropertyId ? 'rgba(212,144,64,0.08)' : 'transparent',
+                    border: `1px solid ${p.id === activePropertyId ? 'var(--amber-border, rgba(212,144,64,0.4))' : 'var(--border)'}`,
+                    background: p.id === activePropertyId ? 'var(--amber-dim, rgba(212,144,64,0.08))' : 'transparent',
                     color: p.id === activePropertyId ? 'var(--amber)' : 'var(--text-primary)',
                     cursor: 'pointer',
                     textAlign: 'left',
@@ -159,21 +159,21 @@ export default function PropertySettingsPage() {
         <div className="card" style={{ padding: '20px' }}>
           <Field label={t('propertyNameLabel', lang)} field="name" form={form} setForm={setForm} />
           <Field label={t('totalRoomsField', lang)} field="totalRooms" type="number" form={form} setForm={setForm} />
-          <Field label="Average Occupied Per Night" field="avgOccupancy" type="number" suffix="rooms" form={form} setForm={setForm} />
-          <Field label={t('staffOnRosterField', lang)} field="totalStaffOnRoster" type="number" suffix="people" form={form} setForm={setForm} />
+          <Field label={lang === 'es' ? 'Promedio de Ocupación por Noche' : 'Average Occupied Per Night'} field="avgOccupancy" type="number" suffix={lang === 'es' ? 'hab.' : 'rooms'} form={form} setForm={setForm} />
+          <Field label={t('staffOnRosterField', lang)} field="totalStaffOnRoster" type="number" suffix={lang === 'es' ? 'personas' : 'people'} form={form} setForm={setForm} />
 
           <div className="divider" style={{ margin: '20px 0' }} />
-          <p className="label" style={{ marginBottom: '14px' }}>Labor Settings</p>
+          <p className="label" style={{ marginBottom: '14px' }}>{lang === 'es' ? 'Configuración Laboral' : 'Labor Settings'}</p>
 
-          <Field label="Housekeeper Hourly Wage" field="hourlyWage" type="number" suffix="$/hr" form={form} setForm={setForm} />
+          <Field label={lang === 'es' ? 'Salario por Hora' : 'Housekeeper Hourly Wage'} field="hourlyWage" type="number" suffix="$/hr" form={form} setForm={setForm} />
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-            <Field label="Checkout Minutes" field="checkoutMinutes" type="number" suffix="min" form={form} setForm={setForm} />
-            <Field label="Stayover Minutes" field="stayoverMinutes" type="number" suffix="min" form={form} setForm={setForm} />
+            <Field label={lang === 'es' ? 'Min. Checkout' : 'Checkout Minutes'} field="checkoutMinutes" type="number" suffix="min" form={form} setForm={setForm} />
+            <Field label={lang === 'es' ? 'Min. Stayover' : 'Stayover Minutes'} field="stayoverMinutes" type="number" suffix="min" form={form} setForm={setForm} />
           </div>
-          <Field label="Prep Time Per Activity" field="prepMinutesPerActivity" type="number" suffix="min" form={form} setForm={setForm} />
+          <Field label={lang === 'es' ? 'Tiempo de Preparación' : 'Prep Time Per Activity'} field="prepMinutesPerActivity" type="number" suffix="min" form={form} setForm={setForm} />
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-            <Field label="Shift Length" field="shiftMinutes" type="number" suffix="min" form={form} setForm={setForm} />
-            <Field label="Weekly Budget" field="weeklyBudget" type="number" suffix="$" form={form} setForm={setForm} />
+            <Field label={lang === 'es' ? 'Duración del Turno' : 'Shift Length'} field="shiftMinutes" type="number" suffix="min" form={form} setForm={setForm} />
+            <Field label={lang === 'es' ? 'Presupuesto Semanal' : 'Weekly Budget'} field="weeklyBudget" type="number" suffix="$" form={form} setForm={setForm} />
           </div>
         </div>
 

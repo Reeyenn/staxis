@@ -17,8 +17,8 @@ export default function SettingsPage() {
   const sections = [
     { href:'/settings/property', icon:Building2, label:t('property', lang),         desc:t('propertySettingsDesc', lang)              },
     { href:'/settings/operations', icon:Wrench, label:t('operationsConfig', lang), desc:t('operationsConfigDesc', lang)            },
-    { href:'/settings/pms',      icon:Wifi,      label:t('pmsConnection', lang),  desc:'Auto-sync data from your property management system'},
-    { href:'/staff',             icon:Users,     label:t('staffDirectory', lang), desc:'View and manage all hotel staff by department'      },
+    { href:'/settings/pms',      icon:Wifi,      label:t('pmsConnection', lang),  desc: lang === 'es' ? 'Sincronización automática con tu sistema de gestión hotelera' : 'Auto-sync data from your property management system'},
+    { href:'/staff',             icon:Users,     label:t('staffDirectory', lang), desc: lang === 'es' ? 'Ver y gestionar todo el personal del hotel por departamento' : 'View and manage all hotel staff by department'      },
     ...(user?.role === 'admin'
       ? [{ href:'/settings/accounts', icon:Users, label:t('accountManagement', lang), desc:t('accountManagementDesc', lang) }]
       : []),
