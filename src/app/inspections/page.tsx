@@ -294,7 +294,7 @@ export default function InspectionsPage() {
       {/* FAB */}
       <button
         onClick={() => setShowAddModal(true)}
-        aria-label="Add Inspection"
+        aria-label={lang === 'es' ? 'Agregar inspección' : 'Add inspection'}
         style={{
           position: 'fixed', bottom: '80px', right: '20px', zIndex: 30,
           width: '52px', height: '52px', borderRadius: '50%',

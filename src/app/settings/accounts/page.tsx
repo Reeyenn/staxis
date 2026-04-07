@@ -302,6 +302,7 @@ export default function AccountsPage() {
                 <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
                   <button
                     onClick={() => openEdit(acct)}
+                    aria-label={lang === 'es' ? `Editar ${acct.displayName}` : `Edit ${acct.displayName}`}
                     style={{
                       width: '32px', height: '32px', borderRadius: 'var(--radius-sm)',
                       background: 'transparent', border: '1px solid var(--border)',
@@ -314,9 +315,10 @@ export default function AccountsPage() {
                   {acct.accountId !== user.accountId && (
                     <button
                       onClick={() => handleDelete(acct.accountId)}
+                      aria-label={lang === 'es' ? `Eliminar ${acct.displayName}` : `Delete ${acct.displayName}`}
                       style={{
                         width: '32px', height: '32px', borderRadius: 'var(--radius-sm)',
-                        background: 'transparent', border: '1px solid rgba(239,68,68,0.3)',
+                        background: 'transparent', border: '1px solid var(--red-border, rgba(239,68,68,0.3))',
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
                         cursor: 'pointer', color: 'var(--red)',
                       }}
@@ -362,6 +364,7 @@ export default function AccountsPage() {
               </h2>
               <button
                 onClick={() => setShowForm(false)}
+                aria-label={lang === 'es' ? 'Cerrar' : 'Close'}
                 style={{
                   background: 'transparent', border: 'none',
                   color: 'var(--text-muted)', cursor: 'pointer',
@@ -474,8 +477,8 @@ export default function AccountsPage() {
             {formError && (
               <p style={{
                 fontSize: '13px', color: 'var(--red)',
-                background: 'rgba(239,68,68,0.08)',
-                border: '1px solid rgba(239,68,68,0.2)',
+                background: 'var(--red-dim)',
+                border: '1px solid var(--red-border, rgba(239,68,68,0.25))',
                 borderRadius: 'var(--radius-sm)', padding: '10px 12px',
               }}>
                 {formError}
