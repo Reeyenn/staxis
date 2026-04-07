@@ -2585,21 +2585,6 @@ function DeepCleanSection() {
         <Plus size={18} /> {lang === 'es' ? 'Agregar habitaciones' : 'Add Rooms'}
       </button>
 
-      {/* Cycle config (tappable) — below Add Rooms */}
-      <button
-        onClick={() => setShowCycleModal(true)}
-        className="animate-in stagger-2"
-        style={{
-          fontSize: '13px', color: 'var(--text-muted)', marginTop: '-6px',
-          background: 'none', border: 'none', cursor: 'pointer', padding: '4px 0',
-          display: 'flex', alignItems: 'center', gap: '6px', minHeight: '44px',
-          alignSelf: 'center',
-        }}
-      >
-        <Settings size={14} />
-        {lang === 'es' ? `Ciclo: cada ${freq} días` : `Cycle: every ${freq} days`}
-      </button>
-
       {/* ── Add Rooms Modal ── */}
       {showAddRooms && (
         <>
@@ -2667,6 +2652,18 @@ function DeepCleanSection() {
                       </div>
                     </button>
                   ))}
+                  <button
+                    onClick={() => setShowCycleModal(true)}
+                    style={{
+                      fontSize: '13px', color: 'var(--text-muted)', marginTop: '4px',
+                      background: 'none', border: 'none', cursor: 'pointer', padding: '14px 0',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                      minHeight: '44px', width: '100%',
+                    }}
+                  >
+                    <Settings size={14} />
+                    {lang === 'es' ? `Ciclo: cada ${freq} días` : `Cycle: every ${freq} days`}
+                  </button>
                 </div>
               ) : (
                 /* Room list for selected floor */
