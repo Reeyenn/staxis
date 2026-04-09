@@ -557,13 +557,13 @@ function RoomCard({
 
   const accentColor =
     isDone ? 'var(--green)'
-    : isInProgress ? 'var(--amber)'
+    : isInProgress ? 'var(--navy-light, #2563EB)'
     : room.priority === 'vip' ? 'var(--red)'
     : room.priority === 'early' ? 'var(--orange, #EA580C)'
     : 'var(--border)';
 
-  const cardBg = isDone ? 'var(--green-bg, #F0FDF4)' : isInProgress ? 'var(--amber-bg, #FFFBEB)' : 'white';
-  const cardBorder = isDone ? 'var(--green-light, #86EFAC)' : isInProgress ? 'var(--amber-light, #FCD34D)' : 'var(--border-light, #E5E7EB)';
+  const cardBg = isDone ? 'var(--green-bg, #F0FDF4)' : isInProgress ? 'var(--blue-dim, #EFF6FF)' : 'white';
+  const cardBorder = isDone ? 'var(--green-light, #86EFAC)' : isInProgress ? 'var(--blue-light, #93C5FD)' : 'var(--border-light, #E5E7EB)';
 
   return (
     <div style={{
@@ -579,9 +579,10 @@ function RoomCard({
       {/* DND banner — only show when in-progress, dirty+DND uses the action area instead */}
       {room.isDnd && isInProgress && (
         <div style={{
-          background: 'var(--amber-light, #FCD34D)', color: 'var(--amber-dark, #78350F)',
+          background: 'var(--amber-dim, #FFFBEB)', color: 'var(--amber-dark, #78350F)',
           padding: '10px 14px', borderRadius: '10px',
           fontSize: '14px', fontWeight: 700, marginBottom: '12px',
+          border: '1.5px solid var(--amber-light, #FCD34D)',
         }}>
           {lang === 'es' ? '🚫 No Molestar' : '🚫 ' + t('doNotDisturb', lang)}
         </div>
@@ -591,7 +592,7 @@ function RoomCard({
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
         <span style={{
           fontSize: '13px', fontWeight: 700,
-          color: isDone ? 'var(--green)' : isInProgress ? 'var(--amber)' : 'var(--text-muted)',
+          color: isDone ? 'var(--green)' : isInProgress ? 'var(--navy-light, #2563EB)' : 'var(--text-muted)',
           minWidth: '18px', lineHeight: 1, flexShrink: 0,
         }}>
           {index}.
@@ -599,7 +600,7 @@ function RoomCard({
 
         <span style={{
           fontFamily: 'ui-monospace, monospace', fontWeight: 800, fontSize: '34px',
-          color: isDone ? 'var(--green)' : isInProgress ? 'var(--amber-dark, #92400E)' : 'var(--text-primary)',
+          color: isDone ? 'var(--green)' : isInProgress ? 'var(--navy-light, #2563EB)' : 'var(--text-primary)',
           letterSpacing: '-0.02em', lineHeight: 1,
         }}>
           {room.number}
@@ -609,7 +610,7 @@ function RoomCard({
           <span style={{
             fontSize: '11px', fontWeight: 700, textTransform: 'uppercase',
             letterSpacing: '0.07em',
-            color: isDone ? 'var(--green)' : isInProgress ? 'var(--amber)' : 'var(--text-secondary)',
+            color: isDone ? 'var(--green)' : isInProgress ? 'var(--navy-light, #2563EB)' : 'var(--text-secondary)',
           }}>
             {isInProgress
               ? (lang === 'es' ? '⟳ ' + t('inProgress', lang) : '⟳ ' + t('inProgress', lang))
@@ -635,7 +636,7 @@ function RoomCard({
           )}
           {/* Show startedAt time when in progress */}
           {isInProgress && room.startedAt && (
-            <span style={{ fontSize: '11px', color: 'var(--amber)', fontWeight: 600 }}>
+            <span style={{ fontSize: '11px', color: 'var(--navy-light, #2563EB)', fontWeight: 600 }}>
               {t('start', lang)}
               {format(firestoreToDate(room.startedAt), 'h:mm a')}
             </span>

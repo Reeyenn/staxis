@@ -1200,59 +1200,7 @@ function RoomsSection() {
     <div style={{ padding: '20px 16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
       {/* Room action popup — simple status cycling only */}
-      {actionRoom && (
-        <>
-          <div style={{ position: 'fixed', inset: 0, zIndex: 9997 }} onClick={() => setActionRoom(null)} />
-          <div style={{
-            position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 9998,
-            background: 'var(--bg-card)', borderRadius: '16px 16px 0 0',
-            boxShadow: '0 -4px 30px rgba(0,0,0,0.15)',
-            padding: '20px 16px 32px', display: 'flex', flexDirection: 'column', gap: '10px',
-            animation: 'slideUp 0.2s ease-out',
-          }}>
-            {/* Handle bar */}
-            <div style={{ width: '40px', height: '4px', borderRadius: '2px', background: 'var(--border)', margin: '0 auto 8px' }} />
-
-            {/* Room info header */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
-              <div>
-                <span style={{ fontSize: '20px', fontWeight: 800, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
-                  {actionRoom.number}
-                </span>
-                <span style={{ fontSize: '13px', color: 'var(--text-muted)', marginLeft: '10px' }}>
-                  {actionRoom.type === 'checkout' ? (lang === 'es' ? 'Salida' : 'Checkout') : actionRoom.type === 'stayover' ? (lang === 'es' ? 'Continuación' : 'Stayover') : actionRoom.type}
-                </span>
-              </div>
-              {actionRoom.isDnd && (
-                <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--red)', background: 'rgba(220,38,38,0.08)', padding: '4px 10px', borderRadius: '6px' }}>
-                  🚫 DND
-                </span>
-              )}
-            </div>
-
-            {/* Assigned housekeeper if any */}
-            {actionRoom.assignedName && (
-              <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
-                {lang === 'es' ? 'Asignado a:' : 'Assigned to:'} <strong>{actionRoom.assignedName}</strong>
-              </div>
-            )}
-
-            {/* Status action — main button: dirty → in_progress → clean → dirty */}
-            <button onClick={() => { handleToggle(actionRoom); setActionRoom(null); }} disabled={actionRoom.status === 'inspected'} style={{
-              width: '100%', padding: '14px', borderRadius: '12px', border: 'none',
-              background: actionRoom.status === 'dirty' ? 'var(--amber)' : actionRoom.status === 'in_progress' ? 'var(--green)' : 'var(--bg-elevated)',
-              color: actionRoom.status === 'dirty' || actionRoom.status === 'in_progress' ? '#fff' : 'var(--text-primary)',
-              fontWeight: 700, fontSize: '15px', cursor: 'pointer', fontFamily: 'var(--font-sans)',
-            }}>
-              {actionRoom.status === 'dirty' ? (lang === 'es' ? '▶ Empezar Limpieza' : '▶ Start Cleaning')
-                : actionRoom.status === 'in_progress' ? (lang === 'es' ? '✓ Marcar Limpia' : '✓ Mark Clean')
-                : actionRoom.status === 'clean' ? (lang === 'es' ? '↩ Reiniciar' : '↩ Reset to Dirty')
-                : (lang === 'es' ? 'Bloqueada' : 'Locked')}
-            </button>
-          </div>
-          <style>{`@keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }`}</style>
-        </>
-      )}
+      {/* Bottom sheet removed — rooms now auto-progress on click */}
 
       {/* Backup staff picker popup */}
       {backupRoom && (
@@ -1366,7 +1314,7 @@ function RoomsSection() {
                       return (
                         <button
                           key={room.id}
-                          onClick={() => setActionRoom(room)}
+                          onClick={() => handleToggle(room)}
                           disabled={room.status === 'inspected'}
                           title={`Room ${room.number} · ${room.type ?? ''} · ${info.label}${assignedName ? ` · ${assignedName}` : ''}`}
                           style={{
