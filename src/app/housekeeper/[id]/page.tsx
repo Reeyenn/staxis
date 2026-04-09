@@ -647,20 +647,28 @@ function RoomCard({
               onClick={onToggleDnd}
               disabled={isSavingDnd}
               style={{
-                width: '40px', height: '40px',
+                height: '36px',
+                padding: '0 10px',
                 border: `1.5px solid ${room.isDnd ? 'var(--amber)' : 'var(--border-light, #E5E7EB)'}`,
                 borderRadius: '10px',
                 background: room.isDnd ? 'var(--amber-dim)' : 'transparent',
                 cursor: isSavingDnd ? 'not-allowed' : 'pointer',
                 flexShrink: 0,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px',
                 opacity: isSavingDnd ? 0.4 : room.isDnd ? 1 : 0.6,
                 WebkitTapHighlightColor: 'transparent',
                 transition: 'all 150ms ease',
               }}
               aria-label={room.isDnd ? t('removeDnd', lang) : t('markDnd', lang)}
             >
-              <span style={{ fontSize: '16px', lineHeight: 1 }}>🚫</span>
+              <span style={{ fontSize: '13px', lineHeight: 1 }}>🚫</span>
+              <span style={{
+                fontSize: '11px', fontWeight: 700,
+                color: room.isDnd ? 'var(--amber-dark, #78350F)' : 'var(--text-muted)',
+                whiteSpace: 'nowrap',
+              }}>
+                {lang === 'es' ? 'DND' : 'DND'}
+              </span>
             </button>
           )}
 
@@ -668,17 +676,25 @@ function RoomCard({
           <button
             onClick={onReportIssue}
             style={{
-              width: '40px', height: '40px',
+              height: '36px',
+              padding: '0 10px',
               border: '1.5px solid var(--border-light, #E5E7EB)',
               borderRadius: '10px', background: 'transparent',
               cursor: 'pointer', flexShrink: 0,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px',
               opacity: 0.6,
               WebkitTapHighlightColor: 'transparent',
             }}
             aria-label={lang === 'es' ? 'Reportar problema' : 'Report issue'}
           >
-            <AlertTriangle size={17} color="var(--text-muted)" />
+            <AlertTriangle size={14} color="var(--text-muted)" />
+            <span style={{
+              fontSize: '11px', fontWeight: 700,
+              color: 'var(--text-muted)',
+              whiteSpace: 'nowrap',
+            }}>
+              {lang === 'es' ? 'Problema' : 'Issue'}
+            </span>
           </button>
         </div>
       </div>
