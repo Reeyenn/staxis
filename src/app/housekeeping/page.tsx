@@ -2093,6 +2093,7 @@ function DeepCleanSection() {
   const [toast, setToast] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [showCycleModal, setShowCycleModal] = useState(false);
+  const [customCycleDays, setCustomCycleDays] = useState('');
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [assignRoom, setAssignRoom] = useState<string | null>(null);
   const [selectedTeam, setSelectedTeam] = useState<string[]>([]);
@@ -3010,23 +3011,69 @@ function DeepCleanSection() {
               {lang === 'es' ? 'Ciclo de limpieza' : 'Deep Clean Cycle'}
             </p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              {[30, 45, 60, 90, 120].map(days => (
-                <button
-                  key={days}
-                  onClick={() => handleSaveCycle(days)}
+              {[30, 60, 90, 120].map(days => {
+                const isSelected = freq === days;
+                return (
+                  <button
+                    key={days}
+                    onClick={() => { setCustomCycleDays(''); handleSaveCycle(days); }}
+                    style={{
+                      padding: '14px', borderRadius: 'var(--radius-md)',
+                      border: isSelected ? '2px solid var(--navy)' : '1.5px solid var(--border)',
+                      background: isSelected ? 'rgba(37,99,235,0.06)' : 'var(--bg)',
+                      fontWeight: isSelected ? 700 : 500, fontSize: '14px',
+                      color: isSelected ? 'var(--navy)' : 'var(--text-primary)',
+                      cursor: 'pointer', minHeight: '48px', textAlign: 'left',
+                    }}
+                  >
+                    {lang === 'es' ? `Cada ${days} días` : `Every ${days} days`}
+                    {isSelected && ' ✓'}
+                  </button>
+                );
+              })}
+              {/* Custom option */}
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: '8px',
+                padding: '10px 14px', borderRadius: 'var(--radius-md)',
+                border: (freq && ![30, 60, 90, 120].includes(freq)) ? '2px solid var(--navy)' : '1.5px solid var(--border)',
+                background: (freq && ![30, 60, 90, 120].includes(freq)) ? 'rgba(37,99,235,0.06)' : 'var(--bg)',
+                minHeight: '48px',
+              }}>
+                <span style={{ fontSize: '14px', fontWeight: 500, color: 'var(--text-primary)', whiteSpace: 'nowrap' }}>
+                  {lang === 'es' ? 'Personalizado:' : 'Custom:'}
+                </span>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min="1"
+                  max="365"
+                  placeholder={lang === 'es' ? 'días' : 'days'}
+                  value={customCycleDays}
+                  onChange={e => setCustomCycleDays(e.target.value)}
                   style={{
-                    padding: '14px', borderRadius: 'var(--radius-md)',
-                    border: freq === days ? '2px solid var(--navy)' : '1.5px solid var(--border)',
-                    background: freq === days ? 'rgba(37,99,235,0.06)' : 'var(--bg)',
-                    fontWeight: freq === days ? 700 : 500, fontSize: '14px',
-                    color: freq === days ? 'var(--navy)' : 'var(--text-primary)',
-                    cursor: 'pointer', minHeight: '48px', textAlign: 'left',
+                    flex: 1, padding: '8px 10px', borderRadius: '8px',
+                    border: '1.5px solid var(--border)', background: 'var(--bg)',
+                    fontSize: '14px', color: 'var(--text-primary)',
+                    outline: 'none', minWidth: 0,
+                  }}
+                />
+                <button
+                  onClick={() => {
+                    const n = parseInt(customCycleDays, 10);
+                    if (n && n > 0 && n <= 365) handleSaveCycle(n);
+                  }}
+                  disabled={!customCycleDays || parseInt(customCycleDays, 10) <= 0}
+                  style={{
+                    padding: '8px 14px', borderRadius: '8px',
+                    background: customCycleDays && parseInt(customCycleDays, 10) > 0 ? 'var(--navy)' : 'var(--border)',
+                    color: '#fff', fontWeight: 600, fontSize: '13px',
+                    border: 'none', cursor: customCycleDays && parseInt(customCycleDays, 10) > 0 ? 'pointer' : 'default',
+                    opacity: customCycleDays && parseInt(customCycleDays, 10) > 0 ? 1 : 0.5,
                   }}
                 >
-                  {lang === 'es' ? `Cada ${days} días` : `Every ${days} days`}
-                  {freq === days && ' ✓'}
+                  {lang === 'es' ? 'Fijar' : 'Set'}
                 </button>
-              ))}
+              </div>
             </div>
           </div>
         </>
