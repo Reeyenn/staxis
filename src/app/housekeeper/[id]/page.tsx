@@ -678,7 +678,6 @@ function RoomCard({
           height: '56px', borderRadius: '14px',
           background: 'var(--green-dim)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px',
-          position: 'relative',
         }}>
           <CheckCircle size={22} color="var(--green)" />
           <span style={{ fontSize: '18px', fontWeight: 800, color: 'var(--green)' }}>
@@ -689,22 +688,22 @@ function RoomCard({
               {format(firestoreToDate(room.completedAt), 'h:mm a')}
             </span>
           )}
+          <span style={{ color: 'var(--green)', opacity: 0.3, fontSize: '14px', margin: '0 2px' }}>·</span>
           <button
             onClick={onReset}
             disabled={isResetting}
             style={{
-              position: 'absolute',
-              right: '12px',
               background: 'none',
-              border: '1.5px solid var(--green-light, #86EFAC)',
-              borderRadius: '8px',
-              padding: '4px 10px',
-              fontSize: '12px',
+              border: 'none',
+              padding: '4px 6px',
+              fontSize: '13px',
               fontWeight: 600,
               color: 'var(--green)',
               cursor: isResetting ? 'not-allowed' : 'pointer',
-              opacity: isResetting ? 0.4 : 0.7,
+              opacity: isResetting ? 0.4 : 0.55,
               WebkitTapHighlightColor: 'transparent',
+              textDecoration: 'underline',
+              textUnderlineOffset: '2px',
               transition: 'opacity 150ms ease',
             }}
           >
