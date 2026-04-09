@@ -575,8 +575,8 @@ function RoomCard({
       boxShadow: isDone ? 'none' : '0 1px 6px rgba(0,0,0,0.07)',
     }}>
 
-      {/* DND banner */}
-      {room.isDnd && (
+      {/* DND banner — only show when in-progress, dirty+DND uses the action area instead */}
+      {room.isDnd && isInProgress && (
         <div style={{
           background: 'var(--amber-light, #FCD34D)', color: 'var(--amber-dark, #78350F)',
           padding: '10px 14px', borderRadius: '10px',
@@ -642,8 +642,8 @@ function RoomCard({
         </div>
 
         <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
-          {/* DND toggle button */}
-          {!isDone && (
+          {/* DND toggle button — hide when dirty+DND since action area handles it */}
+          {!isDone && !(room.isDnd && !isInProgress) && (
             <button
               onClick={onToggleDnd}
               disabled={isSavingDnd}
@@ -778,6 +778,35 @@ function RoomCard({
           <div style={{ flex: 1 }}>
             <CompleteButton lang={lang} isSaving={isSaving} onFinish={onFinish} />
           </div>
+        </div>
+      ) : room.isDnd ? (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px',
+          height: '68px', borderRadius: '14px',
+          background: 'var(--amber-dim, #FFFBEB)',
+          border: '2px solid var(--amber-light, #FCD34D)',
+        }}>
+          <span style={{ fontSize: '20px' }}>🚫</span>
+          <span style={{ fontSize: '17px', fontWeight: 700, color: 'var(--amber-dark, #78350F)' }}>
+            {lang === 'es' ? 'No Molestar' : 'Do Not Disturb'}
+          </span>
+          <span style={{ color: 'var(--amber-light)', margin: '0 2px' }}>·</span>
+          <button
+            onClick={onToggleDnd}
+            disabled={isSavingDnd}
+            style={{
+              background: 'none', border: 'none',
+              fontSize: '14px', fontWeight: 600,
+              color: 'var(--amber-dark, #78350F)',
+              cursor: isSavingDnd ? 'not-allowed' : 'pointer',
+              opacity: isSavingDnd ? 0.4 : 0.7,
+              textDecoration: 'underline', textUnderlineOffset: '2px',
+              WebkitTapHighlightColor: 'transparent',
+              padding: '4px 6px',
+            }}
+          >
+            {isSavingDnd ? '...' : (lang === 'es' ? 'Quitar' : 'Undo')}
+          </button>
         </div>
       ) : (
         <StartButton lang={lang} isSaving={isSaving} onStart={onStart} />
