@@ -579,10 +579,10 @@ function RoomCard({
       {/* DND banner — only show when in-progress, dirty+DND uses the action area instead */}
       {room.isDnd && isInProgress && (
         <div style={{
-          background: 'var(--amber-dim, #FFFBEB)', color: 'var(--amber-dark, #78350F)',
+          background: 'var(--gray-dim, #F3F4F6)', color: 'var(--text-secondary, #4B5563)',
           padding: '10px 14px', borderRadius: '10px',
           fontSize: '14px', fontWeight: 700, marginBottom: '12px',
-          border: '1.5px solid var(--amber-light, #FCD34D)',
+          border: '1.5px solid var(--border-light, #E5E7EB)',
         }}>
           {lang === 'es' ? '🚫 No Molestar' : '🚫 ' + t('doNotDisturb', lang)}
         </div>
@@ -644,21 +644,21 @@ function RoomCard({
         </div>
 
         <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
-          {/* DND toggle button — hide when dirty+DND since action area handles it */}
-          {!isDone && !(room.isDnd && !isInProgress) && (
+          {/* DND toggle button — hide when done, when dirty+DND (action area handles it), and when in-progress (can't DND a started room) */}
+          {!isDone && !isInProgress && !room.isDnd && (
             <button
               onClick={onToggleDnd}
               disabled={isSavingDnd}
               style={{
                 height: '36px',
                 padding: '0 10px',
-                border: `1.5px solid ${room.isDnd ? 'var(--amber)' : 'var(--border-light, #E5E7EB)'}`,
+                border: `1.5px solid var(--border-light, #E5E7EB)`,
                 borderRadius: '10px',
-                background: room.isDnd ? 'var(--amber-dim)' : 'transparent',
+                background: 'transparent',
                 cursor: isSavingDnd ? 'not-allowed' : 'pointer',
                 flexShrink: 0,
                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px',
-                opacity: isSavingDnd ? 0.4 : room.isDnd ? 1 : 0.6,
+                opacity: isSavingDnd ? 0.4 : 0.6,
                 WebkitTapHighlightColor: 'transparent',
                 transition: 'all 150ms ease',
               }}
@@ -667,7 +667,7 @@ function RoomCard({
               <span style={{ fontSize: '13px', lineHeight: 1 }}>🚫</span>
               <span style={{
                 fontSize: '11px', fontWeight: 700,
-                color: room.isDnd ? 'var(--amber-dark, #78350F)' : 'var(--text-muted)',
+                color: 'var(--text-muted)',
                 whiteSpace: 'nowrap',
               }}>
                 {lang === 'es' ? 'DND' : 'DND'}
@@ -706,11 +706,11 @@ function RoomCard({
       {(room as Room & { issueNote?: string }).issueNote && (
         <div style={{
           display: 'flex', gap: '6px', alignItems: 'flex-start',
-          padding: '9px 11px', background: 'var(--amber-dim)', borderRadius: '10px',
-          marginBottom: '12px',
+          padding: '9px 11px', background: 'var(--red-dim, #FEF2F2)', borderRadius: '10px',
+          marginBottom: '12px', border: '1px solid var(--red-light, #FECACA)',
         }}>
-          <AlertTriangle size={13} color="var(--amber)" style={{ flexShrink: 0, marginTop: '2px' }} />
-          <span style={{ fontSize: '13px', color: 'var(--amber-dark, #92400E)', lineHeight: 1.4 }}>
+          <AlertTriangle size={13} color="var(--red, #DC2626)" style={{ flexShrink: 0, marginTop: '2px' }} />
+          <span style={{ fontSize: '13px', color: 'var(--red-dark, #991B1B)', lineHeight: 1.4 }}>
             {(room as Room & { issueNote?: string }).issueNote}
           </span>
         </div>
@@ -785,21 +785,21 @@ function RoomCard({
         <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px',
           height: '68px', borderRadius: '14px',
-          background: 'var(--amber-dim, #FFFBEB)',
-          border: '2px solid var(--amber-light, #FCD34D)',
+          background: 'var(--gray-dim, #F3F4F6)',
+          border: '2px solid var(--border-light, #E5E7EB)',
         }}>
           <span style={{ fontSize: '20px' }}>🚫</span>
-          <span style={{ fontSize: '17px', fontWeight: 700, color: 'var(--amber-dark, #78350F)' }}>
+          <span style={{ fontSize: '17px', fontWeight: 700, color: 'var(--text-secondary, #4B5563)' }}>
             {lang === 'es' ? 'No Molestar' : 'Do Not Disturb'}
           </span>
-          <span style={{ color: 'var(--amber-light)', margin: '0 2px' }}>·</span>
+          <span style={{ color: 'var(--border-light, #E5E7EB)', margin: '0 2px' }}>·</span>
           <button
             onClick={onToggleDnd}
             disabled={isSavingDnd}
             style={{
               background: 'none', border: 'none',
               fontSize: '14px', fontWeight: 600,
-              color: 'var(--amber-dark, #78350F)',
+              color: 'var(--text-secondary, #4B5563)',
               cursor: isSavingDnd ? 'not-allowed' : 'pointer',
               opacity: isSavingDnd ? 0.4 : 0.7,
               textDecoration: 'underline', textUnderlineOffset: '2px',
