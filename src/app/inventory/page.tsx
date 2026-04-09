@@ -198,7 +198,7 @@ export default function InventoryPage() {
   // ─── MAIN VIEW ─────────────────────────────────────────────────────────────
   return (
     <AppLayout>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', paddingBottom: '100px', alignItems: 'center' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', padding: '16px 14px 100px', alignItems: 'center' }}>
         <h1 style={{ fontSize: '22px', fontWeight: 700, color: 'var(--text-primary)', margin: 0, alignSelf: 'flex-start' }}>
           {lang === 'es' ? 'Inventario' : 'Inventory'}
         </h1>
@@ -264,8 +264,8 @@ export default function InventoryPage() {
           ))}
         </div>
 
-        {/* Item grid — 3 columns */}
-        <div style={{
+        {/* Item grid — 3 columns on desktop, 1 on mobile */}
+        <div className="inv-grid" style={{
           display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', width: '100%',
           borderRadius: 'var(--radius-lg)', border: '1px solid var(--border)', overflow: 'hidden',
         }}>

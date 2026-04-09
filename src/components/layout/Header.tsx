@@ -40,8 +40,8 @@ export function Header() {
     }}>
       <div style={{
         maxWidth: '1280px', margin: '0 auto',
-        padding: '0 20px', height: '52px',
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px',
+        padding: '0 16px', height: '48px',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px',
       }}>
 
         {/* Logo */}
@@ -64,47 +64,48 @@ export function Header() {
         {/* Right controls */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
 
-          {/* Date */}
-          <span className="header-date" style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)', marginRight: '4px' }}>
+          {/* Date — hidden on small screens via CSS class */}
+          <span className="header-date" style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)', marginRight: '2px' }}>
             {format(new Date(), 'EEEE, MMMM d', lang === 'es' ? { locale: esLocale } : undefined)}
           </span>
 
-          {/* Language toggle - prominent for housekeeper adoption */}
+          {/* Language toggle */}
           <button
             onClick={() => setLang(lang === 'en' ? 'es' : 'en')}
             style={{
-              display: 'flex', alignItems: 'center', gap: '5px',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
               background: lang === 'es' ? 'rgba(212,144,64,0.12)' : 'transparent',
               border: `1px solid ${lang === 'es' ? 'var(--amber-border)' : 'var(--border)'}`,
-              borderRadius: 'var(--radius-sm)', padding: '5px 10px',
+              borderRadius: '8px',
+              width: '36px', height: '32px',
               color: lang === 'es' ? 'var(--amber)' : 'var(--text-muted)',
-              fontSize: '12px', fontWeight: 700,
+              fontSize: '11px', fontWeight: 700,
               letterSpacing: '0.04em', cursor: 'pointer', fontFamily: 'var(--font-sans)',
               transition: 'all 150ms',
+              flexShrink: 0,
             }}
           >
-            <Globe size={11} />
             {lang === 'en' ? 'ES' : 'EN'}
           </button>
 
-          {/* Property selector */}
+          {/* Property selector — compact on mobile */}
           {properties.length > 0 && (
-            <div style={{ position: 'relative' }}>
+            <div style={{ position: 'relative', minWidth: 0, flexShrink: 1 }}>
               <button
                 className="header-property-btn"
                 onClick={() => setShowPropMenu(v => !v)}
                 style={{
                   background: 'var(--bg-card)', border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius-md)', padding: '5px 12px',
-                  color: 'var(--text-primary)', fontSize: '13px', fontWeight: 500,
+                  borderRadius: '8px', padding: '4px 10px', height: '32px',
+                  color: 'var(--text-primary)', fontSize: '12px', fontWeight: 500,
                   cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px',
-                  maxWidth: '200px', fontFamily: 'var(--font-sans)', flexShrink: 1, minWidth: 0,
+                  maxWidth: '160px', fontFamily: 'var(--font-sans)', flexShrink: 1, minWidth: 0,
                 }}
               >
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {activeProperty?.name ?? t('property', lang)}
                 </span>
-                <ChevronDown size={11} color="var(--text-muted)" />
+                <ChevronDown size={10} color="var(--text-muted)" style={{ flexShrink: 0 }} />
               </button>
 
               {showPropMenu && (

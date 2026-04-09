@@ -233,7 +233,7 @@ export default function DashboardPage() {
 
   return (
     <AppLayout>
-      <div style={{ padding: '20px 24px 24px', display: 'flex', flexDirection: 'column', gap: '20px', height: '100%' }}>
+      <div className="dash-page-content" style={{ padding: '20px 24px 24px', display: 'flex', flexDirection: 'column', gap: '20px', height: '100%' }}>
 
         {/* ── Page header ── */}
         <div className="animate-in">
@@ -245,7 +245,7 @@ export default function DashboardPage() {
         {/* ════════════════════════════════════════════════════════════
             HERO ROW — The 3 numbers that matter most at a glance
             ════════════════════════════════════════════════════════════ */}
-        <div className="animate-in stagger-1" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px' }}>
+        <div className="animate-in stagger-1 dash-hero-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px' }}>
 
           {/* Occupancy — the big one */}
           <div className="card" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -342,7 +342,7 @@ export default function DashboardPage() {
             DETAILS — Secondary stats in a compact, single card
             ════════════════════════════════════════════════════════════ */}
         <div className="animate-in stagger-3 card" style={{ padding: '18px 20px' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0', borderBottom: '1px solid var(--border)', paddingBottom: '14px', marginBottom: '14px' }}>
+          <div className="dash-details-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0', borderBottom: '1px solid var(--border)', paddingBottom: '14px', marginBottom: '14px' }}>
 
             {/* Guests section */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>

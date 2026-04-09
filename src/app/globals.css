@@ -357,9 +357,9 @@ body {
 /* ── Housekeeping mobile fixes ─────────────────────────────────────────────── */
 
 /* Hide header date on small screens, shrink property selector */
-@media (max-width: 480px) {
+@media (max-width: 600px) {
   .header-date { display: none !important; }
-  .header-property-btn { max-width: 120px !important; }
+  .header-property-btn { max-width: 120px !important; font-size: 11px !important; }
 }
 
 /* Tab bar: smaller text on mobile */
@@ -389,5 +389,81 @@ body {
   .prediction-pills {
     flex-direction: column !important;
     align-items: center !important;
+  }
+}
+
+/* ── Mobile responsive utilities (390px target) ──────────────────────────── */
+
+/* Dashboard: hero cards stack to 1 col on mobile */
+@media (max-width: 600px) {
+  .dash-hero-grid {
+    grid-template-columns: 1fr !important;
+    gap: 10px !important;
+  }
+  .dash-hero-grid .card {
+    padding: 16px !important;
+  }
+  .dash-hero-grid .card .hero-number {
+    font-size: 28px !important;
+  }
+  /* Dashboard: 4-column details → 2 columns on mobile */
+  .dash-details-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 0 !important;
+  }
+  .dash-details-grid > div {
+    padding: 12px !important;
+    border-left: none !important;
+  }
+  .dash-details-grid > div:nth-child(odd) {
+    border-right: 1px solid var(--border) !important;
+  }
+  .dash-details-grid > div:nth-child(n+3) {
+    border-top: 1px solid var(--border) !important;
+  }
+  /* Dashboard page padding */
+  .dash-page-content {
+    padding: 16px 14px 20px !important;
+    gap: 14px !important;
+  }
+}
+
+/* Inventory: single column on mobile */
+@media (max-width: 600px) {
+  .inv-grid {
+    grid-template-columns: 1fr !important;
+  }
+  .inv-grid > div {
+    border-right: none !important;
+  }
+}
+
+/* Staff: stat cards responsive */
+@media (max-width: 600px) {
+  .staff-stats-grid {
+    gap: 8px !important;
+  }
+  .staff-stats-grid .stat-number {
+    font-size: 24px !important;
+  }
+  .staff-list-row {
+    flex-wrap: wrap !important;
+    gap: 6px !important;
+    padding: 10px 12px !important;
+  }
+  .staff-list-buttons {
+    margin-left: auto !important;
+  }
+}
+
+/* Inspections: larger touch targets */
+@media (max-width: 600px) {
+  .inspection-row {
+    padding: 14px 12px !important;
+    min-height: 64px !important;
+  }
+  .inspection-row .set-date-btn {
+    min-height: 36px !important;
+    padding: 6px 12px !important;
   }
 }
