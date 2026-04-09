@@ -140,6 +140,21 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
     }
   };
 
+  // ── Stop room (in_progress → dirty, clear startedAt) ──────────────────────
+  const handleStopRoom = async (room: RoomWithRef) => {
+    setSavingRoomId(room.id);
+    try {
+      await updateDoc(room._ref, {
+        status: 'dirty' as RoomStatus,
+        startedAt: null,
+      });
+    } catch (err) {
+      console.error('[housekeeper] stop room error:', err);
+    } finally {
+      setSavingRoomId(null);
+    }
+  };
+
   // ── Finish room (in_progress → clean) ─────────────────────────────────────
   // Requires hold-to-confirm on the button - accidental taps are ignored.
   const handleFinishRoom = async (room: RoomWithRef) => {
@@ -387,6 +402,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
               helpAlreadySent={helpSent.has(room.id)}
               onStart={() => handleStartRoom(room)}
               onFinish={() => handleFinishRoom(room)}
+              onStop={() => handleStopRoom(room)}
               onReset={() => handleResetRoom(room)}
               isResetting={resettingRoomId === room.id}
               onReportIssue={() => {
@@ -499,6 +515,7 @@ function RoomCard({
   helpAlreadySent,
   onStart,
   onFinish,
+  onStop,
   onReset,
   isResetting,
   onReportIssue,
@@ -514,6 +531,7 @@ function RoomCard({
   helpAlreadySent: boolean;
   onStart: () => void;
   onFinish: () => void;
+  onStop: () => void;
   onReset: () => void;
   isResetting: boolean;
   onReportIssue: () => void;
@@ -713,7 +731,30 @@ function RoomCard({
           </button>
         </div>
       ) : isInProgress ? (
-        <HoldToFinishButton lang={lang} isSaving={isSaving} onFinish={onFinish} />
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button
+            onClick={onStop}
+            disabled={isSaving}
+            style={{
+              width: '68px', height: '68px', flexShrink: 0,
+              border: '2px solid var(--border-light, #E5E7EB)',
+              borderRadius: '14px',
+              background: 'white',
+              color: 'var(--text-secondary)',
+              fontSize: '13px', fontWeight: 700,
+              cursor: isSaving ? 'not-allowed' : 'pointer',
+              opacity: isSaving ? 0.4 : 1,
+              WebkitTapHighlightColor: 'transparent',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              transition: 'all 150ms ease',
+            }}
+          >
+            {lang === 'es' ? 'Parar' : 'Stop'}
+          </button>
+          <div style={{ flex: 1 }}>
+            <HoldToFinishButton lang={lang} isSaving={isSaving} onFinish={onFinish} />
+          </div>
+        </div>
       ) : (
         <StartButton lang={lang} isSaving={isSaving} onStart={onStart} />
       )}
