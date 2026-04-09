@@ -364,28 +364,31 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       {/* ── Room list ── */}
       <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
 
-        {allDone ? (
+        {allDone && (
           <div style={{
-            textAlign: 'center', padding: '64px 24px', background: 'white',
+            textAlign: 'center', padding: '32px 24px', background: 'white',
             borderRadius: '20px', boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+            marginBottom: '4px',
           }}>
             <div style={{
-              width: '84px', height: '84px', borderRadius: '50%',
+              width: '64px', height: '64px', borderRadius: '50%',
               background: 'var(--green-dim)', display: 'flex', alignItems: 'center',
-              justifyContent: 'center', margin: '0 auto 20px',
+              justifyContent: 'center', margin: '0 auto 14px',
             }}>
-              <CheckCircle size={42} color="var(--green)" />
+              <CheckCircle size={32} color="var(--green)" />
             </div>
-            <h2 style={{ fontSize: '26px', fontWeight: 800, color: 'var(--text-primary)', marginBottom: '10px' }}>
+            <h2 style={{ fontSize: '22px', fontWeight: 800, color: 'var(--text-primary)', marginBottom: '6px' }}>
               {t('allDone', lang)}
             </h2>
-            <p style={{ fontSize: '16px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+            <p style={{ fontSize: '14px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
               {lang === 'es'
                 ? `¡Buen trabajo hoy, ${firstName}! 🎉`
                 : `Great work today, ${firstName}! 🎉`}
             </p>
           </div>
-        ) : total === 0 ? (
+        )}
+
+        {total === 0 ? (
           <div style={{
             textAlign: 'center', padding: '64px 24px', background: 'white',
             borderRadius: '20px', boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
