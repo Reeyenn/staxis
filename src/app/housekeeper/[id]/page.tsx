@@ -291,7 +291,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       fontFamily: 'var(--font-sans, system-ui, -apple-system, BlinkMacSystemFont, sans-serif)',
     }}>
     <div style={{
-      maxWidth: '480px',
+      maxWidth: '768px',
       margin: '0 auto',
       minHeight: '100dvh',
       background: 'var(--green-bg, #F0FDF4)',
