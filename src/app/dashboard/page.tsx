@@ -121,27 +121,6 @@ export default function DashboardPage() {
     return timed.length > 0 ? Math.round(timed.reduce((a, b) => a + b, 0) / timed.length) : null;
   }, [rooms]);
 
-  /* ── Room grid grouped by floor ── */
-  const floorMap = useMemo(() => {
-    const map = new Map<string, Room[]>();
-    rooms.forEach(r => {
-      const num = parseInt(r.number);
-      const floor = isNaN(num) ? 'G' : num < 100 ? 'G' : String(Math.floor(num / 100));
-      if (!map.has(floor)) map.set(floor, []);
-      map.get(floor)!.push(r);
-    });
-    const sorted = [...map.entries()].sort((a, b) => {
-      if (a[0] === 'G') return -1;
-      if (b[0] === 'G') return 1;
-      return parseInt(a[0]) - parseInt(b[0]);
-    });
-    return sorted;
-  }, [rooms]);
-
-  const STATUS_DOT: Record<string, string> = {
-    dirty: 'var(--red)', in_progress: 'var(--amber)', clean: 'var(--green)', inspected: 'var(--purple, #7C3AED)',
-  };
-
   /* ── Housekeeper activity: who's cleaning what right now ── */
   const hkActivity = useMemo(() => {
     const assigned = new Map<string, { name: string; active: Room | null; done: number; total: number }>();
@@ -429,56 +408,6 @@ export default function DashboardPage() {
 
           </div>
         </div>
-
-        {/* ════════════════════════════════════════════════════════════
-            ROOM GRID — Compact floor-by-floor status at a glance
-            ════════════════════════════════════════════════════════════ */}
-        {rooms.length > 0 && (
-          <div className="animate-in stagger-4 card" style={{ padding: '16px 18px' }}>
-            <p style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', margin: '0 0 12px' }}>
-              {lang === 'es' ? 'Habitaciones por Piso' : 'Rooms by Floor'}
-            </p>
-            {floorMap.map(([floor, floorRooms]) => (
-              <div key={floor} style={{ marginBottom: '10px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                  <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-secondary)', minWidth: '20px' }}>
-                    {floor === 'G' ? 'G' : `F${floor}`}
-                  </span>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                    {floorRooms.sort((a, b) => parseInt(a.number) - parseInt(b.number)).map(r => (
-                      <div
-                        key={r.id}
-                        title={`${r.number} — ${r.status}${r.assignedName ? ` (${r.assignedName})` : ''}`}
-                        style={{
-                          width: '32px', height: '24px', borderRadius: '4px',
-                          background: STATUS_DOT[r.status] || 'var(--text-muted)',
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          fontSize: '9px', fontWeight: 700, color: '#fff',
-                          opacity: r.isDnd ? 0.4 : 1,
-                        }}
-                      >
-                        {r.number}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            ))}
-            <div style={{ display: 'flex', gap: '12px', marginTop: '8px', borderTop: '1px solid var(--border)', paddingTop: '8px' }}>
-              {[
-                { label: lang === 'es' ? 'Sucia' : 'Dirty', color: 'var(--red)' },
-                { label: lang === 'es' ? 'Limpiando' : 'Cleaning', color: 'var(--amber)' },
-                { label: lang === 'es' ? 'Limpia' : 'Clean', color: 'var(--green)' },
-                { label: lang === 'es' ? 'Inspeccionada' : 'Inspected', color: 'var(--purple, #7C3AED)' },
-              ].map(l => (
-                <div key={l.label} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <div style={{ width: '8px', height: '8px', borderRadius: '2px', background: l.color }} />
-                  <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>{l.label}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
 
         {/* ════════════════════════════════════════════════════════════
             CREW TRACKER — Who's cleaning what right now
