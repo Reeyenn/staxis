@@ -437,9 +437,11 @@ function EditInspectionModal({ inspection, onClose, onSave, onMarkComplete, onDe
   const [dueMonth, setDueMonth] = useState(inspection.dueMonth || currentYM());
   const [freq, setFreq] = useState(inspection.frequencyMonths);
   const [notes, setNotes] = useState(inspection.notes || '');
+  const [lastInspected, setLastInspected] = useState(inspection.lastInspectedDate || '');
 
   const hasChanges = name !== inspection.name || dueMonth !== (inspection.dueMonth || currentYM())
-    || freq !== inspection.frequencyMonths || notes !== (inspection.notes || '');
+    || freq !== inspection.frequencyMonths || notes !== (inspection.notes || '')
+    || lastInspected !== (inspection.lastInspectedDate || '');
 
   const status = getStatus(inspection.dueMonth);
   const cfg = STATUS_CONFIG[status];
@@ -492,6 +494,18 @@ function EditInspectionModal({ inspection, onClose, onSave, onMarkComplete, onDe
 
           <div>
             <label style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+              Last Inspected
+            </label>
+            <input
+              type="date"
+              value={lastInspected}
+              onChange={e => setLastInspected(e.target.value)}
+              style={inputStyle}
+            />
+          </div>
+
+          <div>
+            <label style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
               Due Month
             </label>
             <input type="month" value={dueMonth} onChange={e => setDueMonth(e.target.value)} style={inputStyle} />
@@ -516,7 +530,7 @@ function EditInspectionModal({ inspection, onClose, onSave, onMarkComplete, onDe
           <button
             onClick={() => {
               if (hasChanges) {
-                onSave({ name: name.trim(), dueMonth, frequencyMonths: freq, notes: notes.trim() || undefined });
+                onSave({ name: name.trim(), dueMonth, frequencyMonths: freq, notes: notes.trim() || undefined, ...(lastInspected ? { lastInspectedDate: lastInspected } : {}) });
               }
               onMarkComplete();
             }}
@@ -533,7 +547,7 @@ function EditInspectionModal({ inspection, onClose, onSave, onMarkComplete, onDe
 
           {hasChanges && (
             <button
-              onClick={() => onSave({ name: name.trim(), dueMonth, frequencyMonths: freq, notes: notes.trim() || undefined })}
+              onClick={() => onSave({ name: name.trim(), dueMonth, frequencyMonths: freq, notes: notes.trim() || undefined, ...(lastInspected ? { lastInspectedDate: lastInspected } : {}) })}
               style={{
                 width: '100%', padding: '10px', borderRadius: 'var(--radius-md)',
                 background: 'transparent', color: 'var(--navy, #1b3a5c)',
