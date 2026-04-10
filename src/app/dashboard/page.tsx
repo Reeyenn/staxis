@@ -523,8 +523,6 @@ export default function DashboardPage() {
                 <div style={{ display: 'flex', gap: '16px', fontSize: '12px', color: 'var(--text-muted)' }}>
                   <span><strong style={{ color: 'var(--text-primary)' }}>{checkouts}</strong> {lang === 'es' ? 'salidas' : 'checkouts'}</span>
                   <span><strong style={{ color: 'var(--text-primary)' }}>{stayovers}</strong> {lang === 'es' ? 'ocupadas' : 'stayovers'}</span>
-                  <span><strong style={{ color: 'var(--text-primary)' }}>{hkActivity.length}</strong> {lang === 'es' ? 'en equipo' : 'on crew'}</span>
-                  <span><strong style={{ color: dirty > 0 ? 'var(--red)' : 'var(--green)' }}>{dirty}</strong> {lang === 'es' ? 'pendientes' : 'remaining'}</span>
                 </div>
               </div>
             )}
