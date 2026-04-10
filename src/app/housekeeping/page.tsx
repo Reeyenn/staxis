@@ -1269,8 +1269,8 @@ function RoomsSection() {
         </div>
       ) : (
         <>
-          {/* Legend — sticky at top, always visible */}
-          <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '14px', position: 'sticky', top: '60px', zIndex: 10 }}>
+          {/* Legend */}
+          <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '14px' }}>
             <div className="room-legend" style={{
               display: 'inline-flex', alignItems: 'center', gap: '12px',
               padding: '8px 16px',
