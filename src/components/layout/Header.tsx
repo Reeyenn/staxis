@@ -6,7 +6,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
-import { ChevronDown, LogOut, Globe, LayoutGrid } from 'lucide-react';
+import { ChevronDown, LogOut, Globe, LayoutGrid, Settings } from 'lucide-react';
 import { format } from 'date-fns';
 import { es as esLocale } from 'date-fns/locale';
 
@@ -191,6 +191,21 @@ export function Header() {
                         {user.role ? user.role.charAt(0).toUpperCase() + user.role.slice(1) : ''}
                       </div>
                     </div>
+                    <button
+                      onClick={() => { setShowUserMenu(false); router.push('/settings'); }}
+                      style={{
+                        width: '100%', padding: '10px 14px',
+                        display: 'flex', alignItems: 'center', gap: '8px',
+                        background: 'transparent', border: 'none',
+                        borderBottom: '1px solid var(--border)',
+                        color: 'var(--text-primary)', fontSize: '13px',
+                        cursor: 'pointer', fontFamily: 'var(--font-sans)',
+                        textAlign: 'left',
+                      }}
+                    >
+                      <Settings size={13} />
+                      {t('settings', lang)}
+                    </button>
                     <button
                       onClick={() => { signOut(); setShowUserMenu(false); }}
                       style={{
