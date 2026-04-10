@@ -5,14 +5,13 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
-import { LayoutDashboard, BedDouble, Wrench, Package, ClipboardCheck, Users } from 'lucide-react';
+import { LayoutDashboard, BedDouble, Wrench, Package, Users } from 'lucide-react';
 
 const navItems = [
   { href: '/dashboard',    icon: LayoutDashboard, key: 'dashboard'        as const },
   { href: '/housekeeping', icon: BedDouble,        key: 'housekeeping'     as const },
   { href: '/maintenance',  icon: Wrench,           key: 'maintenance'      as const },
   { href: '/inventory',    icon: Package,           key: 'inventoryTracking' as const },
-  { href: '/inspections',  icon: ClipboardCheck,    key: 'inspections'      as const },
   { href: '/staff',        icon: Users,             key: 'staff'            as const },
 ];
 

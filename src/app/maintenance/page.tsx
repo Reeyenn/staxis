@@ -16,7 +16,7 @@ import {
 import type { WorkOrder, WorkOrderSeverity, WorkOrderStatus, PreventiveTask, StaffMember, LandscapingTask, LandscapingSeason } from '@/types';
 import {
   Plus, X, Trash2, Wrench, CheckCircle2, Clock, ChevronDown, ChevronUp,
-  TreePine, Leaf, Sun, Snowflake, Flower2,
+  TreePine, Leaf, Sun, Snowflake, Flower2, ClipboardCheck, ChevronRight,
 } from 'lucide-react';
 
 // ─── Tab config ──────────────────────────────────────────────────────────────
@@ -685,6 +685,34 @@ export default function MaintenancePage() {
         ) : activeTab === 'preventive' ? (
           /* ── Preventive Maintenance Tab ── */
           <div className="animate-in stagger-2" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+
+            {/* Inspections shortcut */}
+            <button
+              onClick={() => router.push('/inspections')}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '12px',
+                padding: '14px 16px', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)',
+                background: 'var(--bg-card)', cursor: 'pointer',
+                textAlign: 'left', width: '100%', minHeight: '56px',
+              }}
+            >
+              <div style={{
+                width: '36px', height: '36px', borderRadius: '8px',
+                background: 'var(--navy-dim, rgba(27,58,92,0.08))',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              }}>
+                <ClipboardCheck size={18} color="var(--navy)" />
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.2 }}>
+                  {t('inspections', lang)}
+                </div>
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px', lineHeight: 1.2 }}>
+                  {lang === 'es' ? 'Inspecciones y listas de verificación' : 'Room inspections & checklists'}
+                </div>
+              </div>
+              <ChevronRight size={16} color="var(--text-muted)" style={{ flexShrink: 0 }} />
+            </button>
 
             {/* Add task button */}
             <button
