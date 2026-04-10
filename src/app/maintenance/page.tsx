@@ -102,7 +102,20 @@ export default function MaintenancePage() {
   const { lang } = useLang();
   const router = useRouter();
 
-  const [activeTab, setActiveTab] = useState<TabKey>('workOrders');
+  const [activeTab, setActiveTabState] = useState<TabKey>(() => {
+    // Initial read from URL (?tab=preventive) so refresh keeps the tab.
+    if (typeof window === 'undefined') return 'workOrders';
+    const p = new URLSearchParams(window.location.search).get('tab');
+    if (p === 'preventive' || p === 'landscaping' || p === 'workOrders') return p;
+    return 'workOrders';
+  });
+  const setActiveTab = useCallback((tab: TabKey) => {
+    setActiveTabState(tab);
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    url.searchParams.set('tab', tab);
+    window.history.replaceState({}, '', url.toString());
+  }, []);
   const [orders, setOrders] = useState<WorkOrder[]>([]);
   const [filter, setFilter] = useState<FilterKey>('all');
   const [expandedId, setExpandedId] = useState<string | null>(null);
