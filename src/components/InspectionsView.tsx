@@ -116,26 +116,6 @@ export function InspectionsView() {
 
   if (!user || !activePropertyId) return null;
 
-  const handleMarkComplete = async (inspection: Inspection) => {
-    try {
-      const today = new Date().toISOString().split('T')[0];
-      const nextDue = inspection.dueMonth
-        ? addMonths(inspection.dueMonth, inspection.frequencyMonths)
-        : addMonths(currentYM(), inspection.frequencyMonths);
-      await updateInspection(user.uid, activePropertyId, inspection.id, {
-        lastInspectedDate: today,
-        dueMonth: nextDue,
-      });
-      setEditModal(null);
-      showToast(lang === 'es'
-        ? `${inspection.name} completada — próxima: ${formatMonth(nextDue)}`
-        : `${inspection.name} marked complete — next due ${formatMonth(nextDue)}`);
-    } catch (error) {
-      console.error('Error marking inspection complete:', error);
-      showToast(lang === 'es' ? 'Error al marcar la inspección' : 'Error marking inspection complete');
-    }
-  };
-
   const handleSaveEdit = async (id: string, updates: Partial<Inspection>) => {
     try {
       await updateInspection(user.uid, activePropertyId, id, updates);
@@ -292,7 +272,6 @@ export function InspectionsView() {
           inspection={editModal}
           onClose={() => setEditModal(null)}
           onSave={(updates) => handleSaveEdit(editModal.id, updates)}
-          onMarkComplete={() => handleMarkComplete(editModal)}
           onDelete={() => handleDelete(editModal.id)}
         />
       )}
@@ -426,11 +405,10 @@ function FrequencySlider({ value, onChange }: { value: number; onChange: (v: num
 
 // ─── Edit Inspection Modal ──────────────────────────────────────────────────
 
-function EditInspectionModal({ inspection, onClose, onSave, onMarkComplete, onDelete }: {
+function EditInspectionModal({ inspection, onClose, onSave, onDelete }: {
   inspection: Inspection;
   onClose: () => void;
   onSave: (updates: Partial<Inspection>) => void;
-  onMarkComplete: () => void;
   onDelete: () => void;
 }) {
   const [name, setName] = useState(inspection.name);
@@ -508,12 +486,30 @@ function EditInspectionModal({ inspection, onClose, onSave, onMarkComplete, onDe
             <label style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
               Last Inspected
             </label>
-            <input
-              type="date"
-              value={lastInspected}
-              onChange={e => { setLastInspected(e.target.value); setDueMonthTouched(false); }}
-              style={inputStyle}
-            />
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'stretch' }}>
+              <input
+                type="date"
+                value={lastInspected}
+                onChange={e => { setLastInspected(e.target.value); setDueMonthTouched(false); }}
+                style={{ ...inputStyle, flex: 1 }}
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  const today = new Date().toISOString().split('T')[0];
+                  setLastInspected(today);
+                  setDueMonthTouched(false);
+                }}
+                style={{
+                  padding: '0 14px', borderRadius: 'var(--radius-md)',
+                  background: 'var(--navy, #1b3a5c)', color: '#fff', border: 'none',
+                  fontSize: '12px', fontWeight: 700, cursor: 'pointer',
+                  whiteSpace: 'nowrap', flexShrink: 0,
+                }}
+              >
+                Today
+              </button>
+            </div>
           </div>
 
           <FrequencySlider value={freq} onChange={(v) => { setFreq(v); setDueMonthTouched(false); }} />
@@ -549,38 +545,19 @@ function EditInspectionModal({ inspection, onClose, onSave, onMarkComplete, onDe
 
         <div style={{ padding: '0 20px 16px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
           <button
-            onClick={() => {
-              if (hasChanges) {
-                onSave({ name: name.trim(), dueMonth, frequencyMonths: freq, notes: notes.trim() || undefined, ...(lastInspected ? { lastInspectedDate: lastInspected } : {}) });
-              }
-              onMarkComplete();
-            }}
+            onClick={() => onSave({ name: name.trim(), dueMonth, frequencyMonths: freq, notes: notes.trim() || undefined, ...(lastInspected ? { lastInspectedDate: lastInspected } : {}) })}
+            disabled={!hasChanges}
             style={{
               width: '100%', padding: '12px', borderRadius: 'var(--radius-md)',
               background: 'var(--navy, #1b3a5c)', color: '#fff', border: 'none',
-              fontSize: '14px', fontWeight: 700, cursor: 'pointer',
+              fontSize: '14px', fontWeight: 700, cursor: hasChanges ? 'pointer' : 'not-allowed',
+              opacity: hasChanges ? 1 : 0.5,
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
             }}
           >
-            <ClipboardCheck size={16} />
-            Mark as Inspected
+            <Check size={16} />
+            Save Changes
           </button>
-
-          {hasChanges && (
-            <button
-              onClick={() => onSave({ name: name.trim(), dueMonth, frequencyMonths: freq, notes: notes.trim() || undefined, ...(lastInspected ? { lastInspectedDate: lastInspected } : {}) })}
-              style={{
-                width: '100%', padding: '10px', borderRadius: 'var(--radius-md)',
-                background: 'transparent', color: 'var(--navy, #1b3a5c)',
-                border: '1px solid var(--border)',
-                fontSize: '13px', fontWeight: 600, cursor: 'pointer',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-              }}
-            >
-              <Check size={14} />
-              Save Changes Only
-            </button>
-          )}
 
           <div style={{ display: 'flex', gap: '8px' }}>
             <button
