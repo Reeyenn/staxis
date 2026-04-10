@@ -459,18 +459,24 @@ function EditInspectionModal({ inspection, onClose, onSave, onDelete }: {
         }}
       >
         <div style={{
-          padding: '12px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          background: cfg.bg, borderBottom: '1px solid var(--border)',
+          padding: '14px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          borderBottom: '1px solid var(--border)',
         }}>
-          <span style={{ fontSize: '12px', fontWeight: 600, color: cfg.color, display: 'flex', alignItems: 'center', gap: '6px' }}>
-            {React.createElement(cfg.icon, { size: 14 })}
-            {cfg.label}
-          </span>
-          {inspection.lastInspectedDate && (
-            <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-              Last: {inspection.lastInspectedDate}
-            </span>
-          )}
+          <h2 style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+            Edit Inspection
+          </h2>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            style={{
+              width: '28px', height: '28px', borderRadius: '6px',
+              border: '1px solid var(--border)', background: 'var(--bg)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              cursor: 'pointer', color: 'var(--text-muted)',
+            }}
+          >
+            <X size={14} />
+          </button>
         </div>
 
         <div style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
@@ -482,15 +488,22 @@ function EditInspectionModal({ inspection, onClose, onSave, onDelete }: {
           </div>
 
           <div>
-            <label style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+            <label style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+              <span style={{
+                width: '8px', height: '8px', borderRadius: '99px',
+                background: cfg.color, flexShrink: 0,
+              }} />
               Last Inspected
+              <span style={{ fontWeight: 500, textTransform: 'none', letterSpacing: 0, color: cfg.color }}>
+                · {cfg.label}
+              </span>
             </label>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'stretch' }}>
               <input
                 type="date"
                 value={lastInspected}
                 onChange={e => { setLastInspected(e.target.value); setDueMonthTouched(false); }}
-                style={{ ...inputStyle, flex: 1 }}
+                style={{ ...inputStyle, flex: 1, borderLeftWidth: '4px', borderLeftColor: cfg.color }}
               />
               <button
                 type="button"
