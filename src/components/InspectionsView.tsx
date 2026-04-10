@@ -589,7 +589,19 @@ function AddInspectionModal({ isOpen, onClose, uid, pid, onAdded }: {
   const [name, setName] = useState('');
   const [dueMonth, setDueMonth] = useState(currentYM());
   const [freq, setFreq] = useState(12);
+  const [lastInspected, setLastInspected] = useState('');
+  const [dueMonthTouched, setDueMonthTouched] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  // When "last inspected" is provided, auto-compute the next due month
+  // from lastInspected + frequency (unless user has manually edited dueMonth).
+  useEffect(() => {
+    if (!lastInspected || dueMonthTouched) return;
+    const [y, m] = lastInspected.split('-').map(Number);
+    if (!y || !m) return;
+    const lastYM = `${y}-${String(m).padStart(2, '0')}`;
+    setDueMonth(addMonths(lastYM, freq));
+  }, [lastInspected, freq, dueMonthTouched]);
 
   const handleSubmit = async () => {
     if (!name.trim() || saving) return;
@@ -600,10 +612,15 @@ function AddInspectionModal({ isOpen, onClose, uid, pid, onAdded }: {
         name: name.trim(),
         dueMonth,
         frequencyMonths: freq,
+        ...(lastInspected ? { lastInspectedDate: lastInspected } : {}),
       });
       onAdded();
       onClose();
-      setName(''); setDueMonth(currentYM()); setFreq(12);
+      setName('');
+      setDueMonth(currentYM());
+      setFreq(12);
+      setLastInspected('');
+      setDueMonthTouched(false);
     } finally {
       setSaving(false);
     }
@@ -626,9 +643,28 @@ function AddInspectionModal({ isOpen, onClose, uid, pid, onAdded }: {
         </div>
         <div>
           <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+            Last Inspected <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(optional)</span>
+          </label>
+          <input
+            type="date"
+            value={lastInspected}
+            onChange={e => setLastInspected(e.target.value)}
+            style={inputStyle}
+          />
+          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px', lineHeight: 1.4 }}>
+            When was this last done? Leave blank if unknown — we&apos;ll use it to auto-set the next due date.
+          </div>
+        </div>
+        <div>
+          <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
             Due Month
           </label>
-          <input type="month" value={dueMonth} onChange={e => setDueMonth(e.target.value)} style={inputStyle} />
+          <input
+            type="month"
+            value={dueMonth}
+            onChange={e => { setDueMonth(e.target.value); setDueMonthTouched(true); }}
+            style={inputStyle}
+          />
         </div>
         <FrequencySlider value={freq} onChange={setFreq} />
         <button
