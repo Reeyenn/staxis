@@ -2425,7 +2425,7 @@ function DeepCleanSection() {
             <p style={{ fontSize: '18px', fontWeight: 700, margin: '0 0 10px' }}>
               {suggestedRooms.length} {lang === 'es' ? 'habitaciones' : 'rooms'}
             </p>
-            <div style={{ display: 'flex', gap: '10px', marginBottom: '12px', overflowX: 'auto', paddingBottom: '4px' }}>
+            <div className="scroll-pills" style={{ display: 'flex', gap: '10px', marginBottom: '12px', overflowX: 'auto', paddingBottom: '4px', touchAction: 'pan-x', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none' }}>
               {suggestedRooms.map(r => {
                 const reason = r.daysSince === Infinity
                   ? (lang === 'es' ? 'Nunca limpiado' : 'Never cleaned')

@@ -69,9 +69,9 @@ export function BottomNav() {
               />
 
               <span style={{
-                fontSize: '9px',
+                fontSize: '10px',
                 fontWeight: isActive ? 700 : 500,
-                letterSpacing: '0.02em',
+                letterSpacing: '0.01em',
                 textTransform: 'uppercase',
                 color: isActive ? 'var(--navy)' : 'var(--text-muted)',
                 transition: 'color 150ms',

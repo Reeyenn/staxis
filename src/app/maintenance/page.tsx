@@ -455,7 +455,7 @@ export default function MaintenancePage() {
           <div className="animate-in stagger-2" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
 
             {/* Filter pills */}
-            <div style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '2px' }}>
+            <div className="scroll-pills" style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '2px', touchAction: 'pan-x', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none' }}>
               {([
                 { key: 'all' as FilterKey, label: t('allFilter', lang) },
                 { key: 'open' as FilterKey, label: t('openFilter', lang) },
@@ -789,7 +789,7 @@ export default function MaintenancePage() {
           <div className="animate-in stagger-2" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
 
             {/* Season filter pills */}
-            <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '2px' }}>
+            <div className="scroll-pills" style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '2px', touchAction: 'pan-x', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none' }}>
               {([
                 { key: 'all' as SeasonFilterKey, label: lang === 'es' ? 'Todos' : 'All' },
                 ...(['year-round', 'spring', 'summer', 'fall', 'winter'] as LandscapingSeason[]).map(s => ({

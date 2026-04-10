@@ -359,7 +359,7 @@ body {
 /* Hide header date on small screens, shrink property selector */
 @media (max-width: 600px) {
   .header-date { display: none !important; }
-  .header-property-btn { max-width: 120px !important; font-size: 11px !important; }
+  .header-property-btn { max-width: 180px !important; font-size: 12px !important; }
 }
 
 /* Tab bar: smaller text on mobile */
@@ -510,11 +510,14 @@ body {
   }
 }
 
-/* ── Inventory category filter pills: horizontal scroll on mobile ── */
-.inv-filters::-webkit-scrollbar {
+/* ── Horizontal pill scrollers: clean scroll on mobile ── */
+.inv-filters::-webkit-scrollbar,
+.scroll-pills::-webkit-scrollbar {
   display: none;
 }
-.inv-filters > button {
+.inv-filters > button,
+.scroll-pills > button,
+.scroll-pills > * {
   flex-shrink: 0 !important;
 }
 @media (max-width: 600px) {

@@ -455,7 +455,7 @@ export default function StaffPage() {
             )}
 
             {/* Department filter */}
-            <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '4px', marginBottom: '16px' }}>
+            <div className="scroll-pills" style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '4px', marginBottom: '16px', touchAction: 'pan-x', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none' }}>
               {filterTabs.map(tab => {
                 const isActive = deptFilter === tab.key;
                 const count = counts[tab.key] ?? 0;
@@ -541,10 +541,10 @@ export default function StaffPage() {
 
                       {/* Edit */}
                       <button
-                        className="staff-list-buttons"
+                        className="staff-list-buttons staff-edit-btn"
                         onClick={(e) => { e.stopPropagation(); openEdit(member); }}
                         style={{
-                          padding: '6px 10px', borderRadius: '8px',
+                          padding: '8px 12px', borderRadius: '8px', minHeight: '36px',
                           background: 'rgba(0,0,0,0.04)', border: '1px solid var(--border)',
                           cursor: 'pointer', flexShrink: 0,
                           fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)',
