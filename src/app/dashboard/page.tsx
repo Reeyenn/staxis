@@ -224,10 +224,10 @@ export default function DashboardPage() {
         {/* ════════════════════════════════════════════════════════════
             HERO ROW — The 3 numbers that matter most at a glance
             ════════════════════════════════════════════════════════════ */}
-        <div className="animate-in stagger-1 dash-hero-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
+        <div className="animate-in stagger-1 card dash-hero-grid" style={{ padding: '14px 18px', display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0' }}>
 
           {/* Occupancy — the big one */}
-          <div className="card" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', paddingRight: '16px' }}>
             <span style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>{t('occupancy', lang)}</span>
             <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '32px', lineHeight: 1, letterSpacing: '-0.04em', color: occupancyPct >= 80 ? 'var(--green)' : occupancyPct >= 50 ? 'var(--navy)' : 'var(--amber)' }}>
               {occupancyPct}%
@@ -238,7 +238,7 @@ export default function DashboardPage() {
           </div>
 
           {/* Dirty Rooms — action needed */}
-          <div className="card" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', borderLeft: '1px solid var(--border)', paddingLeft: '18px', paddingRight: '16px' }}>
             <span style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>{t('dirtyRooms', lang)}</span>
             <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '32px', lineHeight: 1, letterSpacing: '-0.04em', color: dirty > 0 ? 'var(--red)' : 'var(--green)' }}>
               {dirty}
@@ -249,7 +249,7 @@ export default function DashboardPage() {
           </div>
 
           {/* Est. Labor Cost */}
-          <div className="card" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', borderLeft: '1px solid var(--border)', paddingLeft: '18px' }}>
             <span style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>{t('estLaborCost', lang)}</span>
             <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '32px', lineHeight: 1, letterSpacing: '-0.04em', color: 'var(--navy)' }}>
               ${totalCost}
