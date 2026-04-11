@@ -147,10 +147,9 @@ export default function ConsentPage() {
           {/* How consent is collected */}
           <div className="section">
             <p className="section-title">How Consent Is Collected</p>
-            <span className="badge">Opt-In Type: Verbal</span>
+            <span className="badge">Opt-In Type: Verbal (In-Person)</span>
             <div className="section-body">
-              <p>Today, the head housekeeper at each property manually texts every housekeeper every night from her own phone to tell them whether to come in the next day. Staxis replaces that manual texting with an automated message sent from the Staxis number instead.</p>
-              <p>Before a housekeeper's phone number is added to Staxis, the head housekeeper or manager tells her in person that the nightly "can you work tomorrow" text will now come from Staxis instead of from the manager's personal phone, and asks for her permission to put her number into the system. The phone number is only added after the employee verbally agrees.</p>
+              <p>Before any phone number is added to Staxis, the Staxis founder goes to the hotel property in person, stands with the head housekeeper, and asks each housekeeper one at a time — face to face — whether she is okay with receiving the nightly scheduling text from Staxis. The phone number is only entered into the system after the housekeeper says yes. If she says no, her number is never added and she continues to be scheduled the way she was before.</p>
             </div>
           </div>
 
@@ -158,39 +157,36 @@ export default function ConsentPage() {
           <div className="section">
             <p className="section-title">Verbal Consent Script (Word-for-Word)</p>
             <div className="section-body">
-              <p>This is what the head housekeeper or property manager says to each housekeeper in person before adding her phone number to Staxis. It is delivered in English or Spanish depending on what the employee speaks.</p>
+              <p>This is what is said, in person, to each housekeeper before her number is added:</p>
               <div className="example-box">
-                <p className="example-label">Verbatim Script (English)</p>
+                <p className="example-label">Verbatim — Spoken to Each Housekeeper</p>
                 <p>
-                  "Starting next week, instead of me texting you at night to ask if you can work
-                  tomorrow, you're going to get a text from a system we use called Staxis. It
-                  comes from the number 855-514-1450. It's the same thing I do now — it just asks
-                  if you can work tomorrow, yes or no, and you text back YES or NO.
+                  "Hey, I'm Reeyen — I built a scheduling tool called Staxis that the hotel is
+                  going to start using. Right now Maria texts you every night from her own phone
+                  to tell you if you're working tomorrow. With Staxis, you'll get that same text,
+                  but it'll come from the Staxis number — 855-514-1450 — instead of from Maria.
                 </p>
                 <p>
-                  If you say yes, in the morning you'll get a second text with the rooms you're
-                  assigned to for the day. That's all the texts you'll ever get from it — just
-                  those two. No ads, no other messages.
+                  It asks one thing: can you work tomorrow, yes or no. You text back YES or NO. If
+                  you say yes, in the morning you get one more text with the rooms you're cleaning
+                  that day. That's it — two texts max per day, nothing else. No ads, no spam.
                 </p>
                 <p>
-                  If you ever want to stop getting them, you just text back STOP and they'll stop.
-                  Is that okay with you? Can I put your number in?"
+                  If you ever want it to stop, text back STOP and it stops. Is it okay with you if
+                  I add your number so you start getting these instead of Maria texting you?"
                 </p>
                 <p style={{ marginTop: '10px', color: '#6b7280', fontStyle: 'italic' }}>
-                  [Head housekeeper waits for verbal yes, then adds the employee's number to Staxis.]
+                  [Wait for the housekeeper to say yes, then add her number to Staxis. If she
+                  says no, do not add her number.]
                 </p>
               </div>
               <p style={{ marginTop: '14px' }}>
-                Example in practice at Comfort Suites Beaumont, TX (79-room limited-service hotel):
-                the head housekeeper, Maria, walks through the script with each housekeeper on her
-                team during the morning shift handoff. She knows every housekeeper by name and has
-                worked with most of them for years. Anyone who doesn't want to receive the texts
-                continues to be scheduled the old way (Maria texts them personally from her own
-                phone) and their number is never added to Staxis.
-              </p>
-              <p>
-                The date and name of the person who obtained consent is recorded in the employee's
-                Staxis profile at the time the phone number is added.
+                <strong>What actually happened at Comfort Suites Beaumont, TX:</strong> In April
+                2026, the Staxis founder visited the property, walked through the hotel with head
+                housekeeper Maria, and asked every housekeeper on the roster this question in
+                person. Every housekeeper said yes. Their phone numbers were then added to Staxis
+                one by one, with Maria present to confirm. This is the first and only property
+                currently using Staxis.
               </p>
             </div>
           </div>
