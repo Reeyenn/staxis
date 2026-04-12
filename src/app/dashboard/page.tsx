@@ -160,6 +160,33 @@ export default function DashboardPage() {
       });
   }, [handoffs]);
 
+  /* ── Briefing items: combine handoffs + work orders into a timeline ── */
+  const briefingItems = useMemo(() => {
+    const items: { id: string; time: Date; dotClass: string; text: string }[] = [];
+
+    recentHandoffs.slice(0, 3).forEach(h => {
+      const d = h.createdAt instanceof Date ? h.createdAt : (h.createdAt as any).toDate?.() || new Date(h.createdAt as any);
+      items.push({
+        id: `h-${h.id}`,
+        time: d,
+        dotClass: 'concierge-dot-teal',
+        text: `${h.shiftType}: ${h.notes}`,
+      });
+    });
+
+    openOrders.slice(0, 4).forEach(o => {
+      const d = o.createdAt instanceof Date ? o.createdAt : (o.createdAt as any)?.toDate?.() || new Date();
+      items.push({
+        id: `wo-${o.id}`,
+        time: d,
+        dotClass: o.severity === 'urgent' ? 'concierge-dot-red' : o.severity === 'medium' ? 'concierge-dot-amber' : 'concierge-dot-muted',
+        text: `Rm ${o.roomNumber}: ${o.description}`,
+      });
+    });
+
+    return items.sort((a, b) => b.time.getTime() - a.time.getTime()).slice(0, 6);
+  }, [recentHandoffs, openOrders]);
+
   if (authLoading || propLoading) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '12px', background: 'var(--bg)' }}>
@@ -210,33 +237,6 @@ export default function DashboardPage() {
   const fdCost = Math.round(2 * wage * 8);
   const mtCost = Math.round(1 * wage * 8);
   const totalCost = fdCost + hkCost + mtCost;
-
-  /* ── Briefing items: combine handoffs + work orders into a timeline ── */
-  const briefingItems = useMemo(() => {
-    const items: { id: string; time: Date; dotClass: string; text: string }[] = [];
-
-    recentHandoffs.slice(0, 3).forEach(h => {
-      const d = h.createdAt instanceof Date ? h.createdAt : (h.createdAt as any).toDate?.() || new Date(h.createdAt as any);
-      items.push({
-        id: `h-${h.id}`,
-        time: d,
-        dotClass: 'concierge-dot-teal',
-        text: `${h.shiftType}: ${h.notes}`,
-      });
-    });
-
-    openOrders.slice(0, 4).forEach(o => {
-      const d = o.createdAt instanceof Date ? o.createdAt : (o.createdAt as any)?.toDate?.() || new Date();
-      items.push({
-        id: `wo-${o.id}`,
-        time: d,
-        dotClass: o.severity === 'urgent' ? 'concierge-dot-red' : o.severity === 'medium' ? 'concierge-dot-amber' : 'concierge-dot-muted',
-        text: `Rm ${o.roomNumber}: ${o.description}`,
-      });
-    });
-
-    return items.sort((a, b) => b.time.getTime() - a.time.getTime()).slice(0, 6);
-  }, [recentHandoffs, openOrders]);
 
   const formatTime = (d: Date) => {
     const h = d.getHours();
