@@ -248,7 +248,7 @@ export default function DashboardPage() {
 
   return (
     <AppLayout>
-      <div style={{ padding: '20px', background: 'var(--bg)', minHeight: '100vh' }}>
+      <div style={{ padding: '40px 32px', background: '#fbf9f4', minHeight: '100vh' }}>
 
         {/* ════════════════════════════════════════════════════════════
             DEEP CLEAN ALERT — only shows when rooms are overdue
@@ -292,92 +292,100 @@ export default function DashboardPage() {
             GLASS HERO HUB — KPI Dashboard
             Occupancy | Dirty Rooms | Est. Labor Cost + Action Buttons
             ════════════════════════════════════════════════════════════ */}
-        <div className="glass-hero animate-in stagger-2" style={{ marginBottom: '24px', padding: '28px 32px' }}>
-          <div className="glass-hero-bg" />
+        <section className="glass-hero animate-in stagger-2" style={{ marginBottom: '32px' }}>
+          <div className="glass-hero-bg">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="https://lh3.googleusercontent.com/aida-public/AB6AXuAUkJ87OGqb9QZ3nLbfCbHYuNgoCRsfcrSTqcfy8LlaEm8_94XXXZc5LvqA_5T36RJJykyAlxUHbasVhW-V52jbgsdVMHhedC17vZk_Y5-TCMq6NWzbrN60mUF_bgeUYq_2wEOltK3e5GIuN5krTVz7lju3NN9ru-gTTwjtEG0ZIRdl1dGDL4FP5KjnJsNm2lw4HNq9nO7C0xSjh0WnhsNEQ0c9rQP5-Bg5ycpesyUdhDiSQPxFLzP6L1vDs-8LjUHCbvH0R4UFxyU"
+              alt=""
+              aria-hidden="true"
+            />
+          </div>
           <div style={{
-            position: 'relative', zIndex: 2,
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            gap: '32px', flexWrap: 'wrap',
+            position: 'relative', zIndex: 10,
+            display: 'flex', flexDirection: 'row', justifyContent: 'space-between',
+            alignItems: 'center', gap: '32px', flexWrap: 'wrap',
+            padding: '40px',
           }}>
 
             {/* KPI Cluster — left side */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '40px', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '48px', flex: 1 }}>
               {/* Occupancy */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <p style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', margin: 0 }}>
+                <p style={{ fontSize: '14px', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#454652', margin: 0 }}>
                   {t('occupancy', lang)}
                 </p>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px' }}>
-                  <span className="data-mono" style={{ fontSize: '42px', color: occupancyPct >= 80 ? '#006565' : occupancyPct >= 50 ? '#364262' : 'var(--amber)', lineHeight: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+                  <span className="data-mono" style={{ fontSize: '48px', fontWeight: 600, color: '#006565', lineHeight: 1 }}>
                     {occupancyPct}%
                   </span>
-                  {occupancyPct >= 80 && <TrendingUp size={18} color="#006565" strokeWidth={2} />}
+                  {occupancyPct >= 80 && <TrendingUp size={20} color="#006565" strokeWidth={2} />}
                 </div>
               </div>
 
               {/* Dirty Rooms */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <p style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', margin: 0 }}>
+                <p style={{ fontSize: '14px', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#454652', margin: 0 }}>
                   {t('dirtyRooms', lang)}
                 </p>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px' }}>
-                  <span className="data-mono" style={{ fontSize: '42px', color: dirty > 0 ? 'var(--red)' : 'var(--green)', lineHeight: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+                  <span className="data-mono" style={{ fontSize: '48px', fontWeight: 600, color: 'var(--red)', lineHeight: 1 }}>
                     {dirty}
                   </span>
-                  {dirty > 0 && <Wrench size={18} color="var(--red)" strokeWidth={2} />}
+                  {dirty > 0 && <Wrench size={20} color="var(--red)" strokeWidth={2} />}
                 </div>
               </div>
 
               {/* Est. Labor Cost */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <p style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', margin: 0 }}>
+                <p style={{ fontSize: '14px', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#454652', margin: 0 }}>
                   {t('estLaborCost', lang)}
                 </p>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
-                  <span className="data-mono" style={{ fontSize: '42px', color: '#364262', lineHeight: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+                  <span className="data-mono" style={{ fontSize: '48px', fontWeight: 600, color: '#364262', lineHeight: 1 }}>
                     ${totalCost}
                   </span>
-                  <span style={{ fontSize: '13px', color: 'var(--text-muted)', fontWeight: 500 }}>/shift</span>
+                  <span style={{ fontSize: '14px', color: '#454652' }}>/shift</span>
                 </div>
               </div>
             </div>
 
             {/* Action Buttons — right side */}
-            <div style={{ display: 'flex', gap: '12px', flexShrink: 0 }}>
+            <div style={{ display: 'flex', flexDirection: 'row', gap: '16px' }}>
               <button
                 onClick={() => router.push('/front-desk')}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: '8px',
-                  padding: '14px 28px', borderRadius: 'var(--radius-lg)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+                  padding: '16px 32px', borderRadius: '8px',
                   background: '#364262', color: '#FFFFFF',
                   border: 'none', cursor: 'pointer',
-                  fontFamily: 'var(--font-sans)', fontSize: '14px', fontWeight: 600,
-                  boxShadow: '0 4px 14px rgba(54,66,98,0.3)',
-                  transition: 'all 0.15s ease',
+                  fontFamily: 'var(--font-sans)', fontSize: '15px', fontWeight: 500,
+                  boxShadow: '0 4px 14px rgba(54,66,98,0.25)',
+                  transition: 'all 0.2s ease',
                 }}
               >
-                <Clock size={16} />
+                <Clock size={18} />
                 {lang === 'es' ? 'Recepción' : 'Front Desk Command'}
               </button>
               <button
                 onClick={() => router.push('/roi')}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: '8px',
-                  padding: '14px 28px', borderRadius: 'var(--radius-lg)',
-                  background: '#006565', color: '#FFFFFF',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+                  padding: '16px 32px', borderRadius: '8px',
+                  background: '#006565', color: '#82e2e1',
                   border: 'none', cursor: 'pointer',
-                  fontFamily: 'var(--font-sans)', fontSize: '14px', fontWeight: 600,
-                  boxShadow: '0 4px 14px rgba(0,101,101,0.3)',
-                  transition: 'all 0.15s ease',
+                  fontFamily: 'var(--font-sans)', fontSize: '15px', fontWeight: 500,
+                  boxShadow: '0 4px 14px rgba(0,101,101,0.25)',
+                  transition: 'all 0.2s ease',
                 }}
               >
-                <Sparkles size={16} />
+                <Sparkles size={18} />
                 {lang === 'es' ? 'Analítica ROI' : 'ROI Analytics'}
               </button>
             </div>
 
           </div>
-        </div>
+        </section>
 
         {/* ════════════════════════════════════════════════════════════
             BENTO GRID — 12-column layout
@@ -393,9 +401,9 @@ export default function DashboardPage() {
 
               {/* GUESTS CARD */}
               <div className="bento-card animate-in stagger-3">
-                <div className="bento-card-title">
-                  <Users size={24} color="var(--primary)" />
-                  <span>{lang === 'es' ? 'Huéspedes' : 'Guests'}</span>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '24px' }}>
+                  <h3 style={{ fontSize: '20px', fontWeight: 600, color: '#364262', margin: 0 }}>{lang === 'es' ? 'Huéspedes' : 'Guests'}</h3>
+                  <Users size={24} color="#454652" style={{ opacity: 0.5 }} />
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
@@ -438,9 +446,9 @@ export default function DashboardPage() {
 
               {/* REVENUE CARD */}
               <div className="bento-card animate-in stagger-4">
-                <div className="bento-card-title">
-                  <DollarSign size={24} color="var(--primary)" />
-                  <span>{lang === 'es' ? 'Ingresos' : 'Revenue'}</span>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '24px' }}>
+                  <h3 style={{ fontSize: '20px', fontWeight: 600, color: '#364262', margin: 0 }}>{lang === 'es' ? 'Ingresos' : 'Revenue'}</h3>
+                  <DollarSign size={24} color="#454652" style={{ opacity: 0.5 }} />
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
                   {/* ADR */}
@@ -473,9 +481,9 @@ export default function DashboardPage() {
 
               {/* OPERATIONS CARD */}
               <div className="bento-card animate-in stagger-5">
-                <div className="bento-card-title">
-                  <Wrench size={24} color="var(--primary)" />
-                  <span>{lang === 'es' ? 'Operaciones' : 'Operations'}</span>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '24px' }}>
+                  <h3 style={{ fontSize: '20px', fontWeight: 600, color: '#364262', margin: 0 }}>{lang === 'es' ? 'Operaciones' : 'Operations'}</h3>
+                  <Wrench size={24} color="#454652" style={{ opacity: 0.5 }} />
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -504,9 +512,9 @@ export default function DashboardPage() {
 
               {/* ROOMS CARD */}
               <div className="bento-card animate-in stagger-6">
-                <div className="bento-card-title">
-                  <TrendingUp size={24} color="var(--primary)" />
-                  <span>{lang === 'es' ? 'Habitaciones' : 'Rooms'}</span>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '24px' }}>
+                  <h3 style={{ fontSize: '20px', fontWeight: 600, color: '#364262', margin: 0 }}>{lang === 'es' ? 'Habitaciones' : 'Rooms'}</h3>
+                  <TrendingUp size={24} color="#454652" style={{ opacity: 0.5 }} />
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: '16px', alignItems: 'center' }}>
                   {/* Available */}
@@ -535,55 +543,50 @@ export default function DashboardPage() {
             </div>
 
             {/* CREW TRACKER — Full Width */}
-            {hkActivity.length > 0 ? (
-              <div className="bento-card animate-in stagger-7">
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '20px' }}>
-                  <Users size={20} color="var(--primary)" />
-                  <p style={{ fontSize: '14px', fontWeight: 600, color: 'var(--primary)', margin: 0 }}>
-                    {lang === 'es' ? 'Equipo Ahora' : 'Crew Right Now'}
-                  </p>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
-                  {hkActivity.map((hk, i) => (
-                    <div
-                      key={i}
-                      style={{
-                        display: 'flex', alignItems: 'center', gap: '12px',
-                        padding: '12px 0',
-                        borderBottom: i < hkActivity.length - 1 ? '1px solid var(--border)' : 'none',
-                      }}
-                    >
-                      <div style={{
-                        width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0,
-                        background: hk.active ? 'var(--amber)' : hk.done === hk.total ? 'var(--green)' : 'var(--text-muted)',
-                        boxShadow: hk.active ? '0 0 0 3px rgba(202,138,4,0.2)' : 'none',
-                      }} />
-                      <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)', flex: 1, minWidth: 0 }}>
-                        {hk.name.split(' ')[0]}
-                      </span>
-                      <span style={{ fontSize: '13px', color: hk.active ? 'var(--amber)' : 'var(--text-muted)', fontWeight: hk.active ? 600 : 400, flexShrink: 0 }}>
-                        {hk.active
-                          ? `${lang === 'es' ? 'Rm ' : 'Rm '}${hk.active.number}`
-                          : hk.done === hk.total
-                            ? (lang === 'es' ? 'Terminó' : 'Done')
-                            : (lang === 'es' ? 'Libre' : 'Idle')
-                        }
-                      </span>
-                      <span style={{ fontSize: '12px', fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--text-muted)', flexShrink: 0 }}>
-                        {hk.done}/{hk.total}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className="bento-card animate-in stagger-7" style={{ textAlign: 'center', padding: '48px 32px' }}>
-                <Users size={32} color="var(--text-muted)" style={{ margin: '0 auto 12px', opacity: 0.5 }} />
-                <p style={{ fontSize: '14px', color: 'var(--text-muted)', margin: 0 }}>
-                  {lang === 'es' ? 'Sin actividad de personal en este momento' : 'No staffing activity at this moment'}
+            {/* INTELLIGENT STAFFING FORECAST — full-width spanning card */}
+            <div className="animate-in stagger-7" style={{
+              gridColumn: '1 / -1',
+              background: '#f0eee9',
+              borderRadius: '16px',
+              padding: '40px',
+              display: 'flex', alignItems: 'center', gap: '48px',
+              overflow: 'hidden', position: 'relative',
+            }}>
+              <div style={{ zIndex: 10, display: 'flex', flexDirection: 'column', gap: '16px', flex: 1 }}>
+                <h4 style={{ fontSize: '24px', fontWeight: 600, color: '#364262', margin: 0 }}>
+                  {lang === 'es' ? 'Pronóstico Inteligente de Personal' : 'Intelligent Staffing Forecast'}
+                </h4>
+                <p style={{ fontSize: '15px', color: '#454652', margin: 0, maxWidth: '420px', lineHeight: 1.6 }}>
+                  {lang === 'es'
+                    ? 'Nuestra IA predice un alto volumen de check-in entre 3PM y 5PM. Recomendación: Agregar un embajador adicional en el lobby.'
+                    : 'Our AI predicts a high check-in volume between 3PM and 5PM. Recommended: Add one additional lobby ambassador for guest flow management.'}
                 </p>
+                <button
+                  onClick={() => router.push('/staff')}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '8px',
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    color: '#004b4b', fontWeight: 600, fontSize: '15px',
+                    fontFamily: 'var(--font-sans)', padding: 0,
+                  }}
+                >
+                  {lang === 'es' ? 'Ver Matriz de Personal' : 'View Staffing Matrix'}
+                  <ChevronRight size={16} />
+                </button>
               </div>
-            )}
+              <div style={{
+                position: 'absolute', right: 0, top: 0, height: '100%', width: '33%',
+                opacity: 0.2, pointerEvents: 'none',
+              }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src="https://lh3.googleusercontent.com/aida-public/AB6AXuDlBzULRKOrrma9wNoB66rncVr5VjKfUdyJj56cOCCN-aBG3hBfSluuvkEcdhwtN6ExR3HGkSsB3gzlgXCxWqagApWOGh3F0bOJT_DZxnWxQz9ybrpeqzkCI-sdpuSC0ZCn9Zi7pBUvfPw2gBZcgBIZ2lmFzvIuqRkQXMzC5pz-DtRIg41uOq5zoQHk0Ojy5_GX6DV0WK1Df1rVUxRYcPuOycz51VZtQfBtZ6nD45OORs8dsPD6VCVR7qIfKfx3OCfGFShL4szUOJw"
+                  alt=""
+                  aria-hidden="true"
+                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                />
+              </div>
+            </div>
 
           </div>
 
@@ -591,49 +594,57 @@ export default function DashboardPage() {
           <div className="bento-right">
             {/* MORNING CONCIERGE BRIEFING */}
             {(recentHandoffs.length > 0 || openOrders.length > 0) ? (
-              <div className="concierge-card animate-in stagger-8" style={{ padding: '32px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '24px' }}>
-                  <Sparkles size={20} color="#006565" fill="#006565" />
-                  <h3 style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
-                    {lang === 'es' ? 'Briefing Concierge' : 'Morning Concierge'}
+              <div className="concierge-card animate-in stagger-8" style={{ padding: '32px', minHeight: '100%' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '32px' }}>
+                  <Sparkles size={20} color="#004b4b" fill="#004b4b" />
+                  <h3 style={{ fontSize: '20px', fontWeight: 600, color: 'var(--text-primary)', margin: 0, letterSpacing: '-0.01em' }}>
+                    {lang === 'es' ? 'Briefing Concierge Matutino' : 'Morning Concierge Briefing'}
                   </h3>
                 </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
                   {briefingItems.map(item => (
-                    <div key={item.id} style={{ display: 'flex', gap: '12px' }}>
-                      <div className={`concierge-dot ${item.dotClass}`} />
-                      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                        <p style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', fontWeight: 500, color: 'var(--text-muted)', margin: 0 }}>
+                    <div key={item.id} style={{ display: 'flex', gap: '16px' }}>
+                      <div style={{
+                        width: '6px', height: '6px', borderRadius: '50%', marginTop: '8px', flexShrink: 0,
+                        background: item.dotClass === 'concierge-dot-red' ? 'var(--red)' : item.dotClass === 'concierge-dot-amber' ? 'var(--amber)' : '#004b4b',
+                        boxShadow: item.dotClass === 'concierge-dot-red'
+                          ? '0 0 0 4px rgba(186,26,26,0.1)'
+                          : item.dotClass === 'concierge-dot-teal'
+                            ? '0 0 0 4px rgba(0,75,75,0.1)'
+                            : 'none',
+                      }} />
+                      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        <p className="data-mono" style={{ fontSize: '12px', fontWeight: 500, color: '#454652', margin: 0 }}>
                           {formatTime(item.time)}
                         </p>
-                        <p style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-primary)', margin: 0, lineHeight: 1.4 }}>
-                          {item.text.length > 100 ? item.text.slice(0, 100) + '…' : item.text}
+                        <p style={{ fontSize: '15px', fontWeight: 500, color: 'var(--text-primary)', margin: 0, lineHeight: 1.6 }}>
+                          {item.text.length > 140 ? item.text.slice(0, 140) + '…' : item.text}
                         </p>
                       </div>
                     </div>
                   ))}
 
                   {briefingItems.length === 0 && (
-                    <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0, textAlign: 'center', padding: '24px 0' }}>
+                    <p style={{ fontSize: '14px', color: 'var(--text-muted)', margin: 0, textAlign: 'center', padding: '24px 0' }}>
                       {lang === 'es' ? 'Sin novedades' : 'No updates'}
                     </p>
                   )}
                 </div>
 
                 {(recentHandoffs.length + openOrders.length) > 6 && (
-                  <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: '1px solid var(--border)' }}>
+                  <div style={{ marginTop: '48px', paddingTop: '32px', borderTop: '1px solid rgba(197,197,212,0.1)' }}>
                     <button style={{
-                      width: '100%', padding: '10px',
-                      borderRadius: 'var(--radius-md)', border: 'none',
-                      background: 'var(--bg-subtle)', color: 'var(--text-secondary)',
-                      fontSize: '12px', fontWeight: 600,
+                      width: '100%', padding: '16px',
+                      borderRadius: '8px', border: 'none',
+                      background: '#e4e2dd', color: '#1b1c19',
+                      fontSize: '14px', fontWeight: 500,
                       cursor: 'pointer', fontFamily: 'var(--font-sans)',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
                       transition: 'all 0.15s ease',
                     }}>
-                      {lang === 'es' ? 'Ver todo' : 'View All'}
-                      <ChevronRight size={14} />
+                      {lang === 'es' ? 'Expandir Feed Completo' : 'Expand Full Feed'}
+                      <ChevronRight size={14} style={{ transform: 'rotate(90deg)' }} />
                     </button>
                   </div>
                 )}
