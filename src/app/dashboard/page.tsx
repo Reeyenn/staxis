@@ -228,35 +228,33 @@ export default function DashboardPage() {
           <div
             className="animate-in stagger-1"
             style={{
-              padding: '14px 18px',
+              padding: '8px 14px',
               display: 'flex',
               alignItems: 'center',
-              gap: '14px',
-              borderRadius: 'var(--radius-lg)',
+              gap: '10px',
+              borderRadius: 'var(--radius-md)',
               background: 'linear-gradient(135deg, rgba(245,158,11,0.06) 0%, rgba(220,38,38,0.04) 100%)',
               border: '1px solid rgba(245,158,11,0.2)',
             }}
           >
-            <div style={{
-              width: '36px', height: '36px', borderRadius: '8px',
-              background: 'rgba(245,158,11,0.12)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-            }}>
-              <Zap size={16} color="var(--amber)" />
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <p style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '1px' }}>
+            <Zap size={14} color="var(--amber)" style={{ flexShrink: 0 }} />
+            <p style={{ fontSize: '12px', color: 'var(--text-primary)', margin: 0, flex: 1, minWidth: 0 }}>
+              <span style={{ fontWeight: 600 }}>
                 {lang === 'es'
-                  ? `${overdueRooms.length} habitación${overdueRooms.length !== 1 ? 'es' : ''} atrasada${overdueRooms.length !== 1 ? 's' : ''} para limpieza profunda`
-                  : `${overdueRooms.length} room${overdueRooms.length !== 1 ? 's' : ''} overdue for deep cleaning`}
-              </p>
-              <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: 0 }}>
-                {dndFreedMins > 0 ? (lang === 'es' ? `${dndFreedMins} min liberados de habitaciones DND.` : `${dndFreedMins} min freed from DND rooms.`) : ''}
-                {dcSuggestion && dcSuggestion.count > 0
-                  ? (lang === 'es' ? ` Podrían caber ${dcSuggestion.count} limpieza${dcSuggestion.count !== 1 ? 's' : ''} profunda${dcSuggestion.count !== 1 ? 's' : ''}.` : ` Could fit ${dcSuggestion.count} deep clean${dcSuggestion.count !== 1 ? 's' : ''}.`)
-                  : ''}
-              </p>
-            </div>
+                  ? `${overdueRooms.length} atrasada${overdueRooms.length !== 1 ? 's' : ''}`
+                  : `${overdueRooms.length} overdue`}
+              </span>
+              {dcSuggestion && dcSuggestion.count > 0 && (
+                <span style={{ color: 'var(--text-muted)' }}>
+                  {lang === 'es' ? ` · caben ${dcSuggestion.count} hoy` : ` · fit ${dcSuggestion.count} today`}
+                </span>
+              )}
+              {dndFreedMins > 0 && (
+                <span style={{ color: 'var(--text-muted)' }}>
+                  {lang === 'es' ? ` · ${dndFreedMins}m DND` : ` · ${dndFreedMins}m DND`}
+                </span>
+              )}
+            </p>
           </div>
         )}
 
@@ -420,72 +418,51 @@ export default function DashboardPage() {
             MORNING BRIEFING — Overnight notes + pending maintenance
             ════════════════════════════════════════════════════════════ */}
         {(recentHandoffs.length > 0 || urgentOrders.length > 0 || openOrders.length > 0) && (
-          <div className="animate-in stagger-6 card" style={{ padding: '16px 18px' }}>
-            <p style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', margin: '0 0 10px' }}>
-              {lang === 'es' ? 'Resumen de Hoy' : "Today's Briefing"}
-            </p>
+          <div className="animate-in stagger-6 card" style={{ padding: '12px 14px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+              <p style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', margin: 0 }}>
+                {lang === 'es' ? 'Resumen de Hoy' : "Today's Briefing"}
+              </p>
+              {rooms.length > 0 && (
+                <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                  <strong style={{ color: 'var(--text-primary)' }}>{checkouts}</strong> {lang === 'es' ? 'sal' : 'out'} · <strong style={{ color: 'var(--text-primary)' }}>{stayovers}</strong> {lang === 'es' ? 'ocup' : 'stay'}
+                </span>
+              )}
+            </div>
 
-            {/* Overnight handoff notes */}
-            {recentHandoffs.length > 0 && (
-              <div style={{ marginBottom: '12px' }}>
-                <p style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', margin: '0 0 6px' }}>
-                  {lang === 'es' ? '📋 Notas del Turno' : '📋 Shift Notes'}
-                </p>
-                {recentHandoffs.slice(0, 3).map(h => (
-                  <div key={h.id} style={{ padding: '6px 10px', marginBottom: '4px', borderRadius: '6px', background: 'rgba(0,0,0,0.03)', fontSize: '12px', color: 'var(--text-primary)', lineHeight: 1.4 }}>
-                    <span style={{ fontWeight: 600, color: 'var(--text-muted)', fontSize: '10px', textTransform: 'uppercase' }}>
-                      {h.shiftType} · {h.author}
-                    </span>
-                    <br />
-                    {h.notes.length > 120 ? h.notes.slice(0, 120) + '…' : h.notes}
-                  </div>
-                ))}
-              </div>
-            )}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              {recentHandoffs.slice(0, 2).map(h => (
+                <div key={h.id} style={{ display: 'flex', alignItems: 'baseline', gap: '8px', fontSize: '12px', lineHeight: 1.4 }}>
+                  <span style={{ fontWeight: 700, color: 'var(--text-muted)', fontSize: '10px', textTransform: 'uppercase', flexShrink: 0, minWidth: '44px' }}>
+                    {h.shiftType}
+                  </span>
+                  <span style={{ color: 'var(--text-primary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {h.notes.length > 80 ? h.notes.slice(0, 80) + '…' : h.notes}
+                  </span>
+                </div>
+              ))}
 
-            {/* Pending maintenance */}
-            {openOrders.length > 0 && (
-              <div style={{ marginBottom: '12px' }}>
-                <p style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', margin: '0 0 6px' }}>
-                  {lang === 'es' ? '🔧 Mantenimiento Pendiente' : '🔧 Pending Maintenance'}
-                </p>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                  {openOrders.slice(0, 5).map(o => (
-                    <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', padding: '4px 0' }}>
-                      <div style={{
-                        width: '6px', height: '6px', borderRadius: '50%', flexShrink: 0,
-                        background: o.severity === 'urgent' ? 'var(--red)' : o.severity === 'medium' ? 'var(--amber)' : 'var(--text-muted)',
-                      }} />
-                      <span style={{ fontWeight: 600, color: 'var(--text-primary)', minWidth: '40px' }}>Rm {o.roomNumber}</span>
-                      <span style={{ color: 'var(--text-muted)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {o.description.length > 60 ? o.description.slice(0, 60) + '…' : o.description}
-                      </span>
-                      {o.severity === 'urgent' && (
-                        <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--red)', flexShrink: 0 }}>URGENT</span>
-                      )}
-                    </div>
-                  ))}
-                  {openOrders.length > 5 && (
-                    <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '2px 0 0' }}>
-                      +{openOrders.length - 5} {lang === 'es' ? 'más' : 'more'}
-                    </p>
+              {openOrders.slice(0, 4).map(o => (
+                <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' }}>
+                  <div style={{
+                    width: '6px', height: '6px', borderRadius: '50%', flexShrink: 0,
+                    background: o.severity === 'urgent' ? 'var(--red)' : o.severity === 'medium' ? 'var(--amber)' : 'var(--text-muted)',
+                  }} />
+                  <span style={{ fontWeight: 700, color: 'var(--text-muted)', fontSize: '10px', textTransform: 'uppercase', minWidth: '44px' }}>Rm {o.roomNumber}</span>
+                  <span style={{ color: 'var(--text-primary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {o.description.length > 60 ? o.description.slice(0, 60) + '…' : o.description}
+                  </span>
+                  {o.severity === 'urgent' && (
+                    <span style={{ fontSize: '9px', fontWeight: 700, color: 'var(--red)', flexShrink: 0 }}>!</span>
                   )}
                 </div>
-              </div>
-            )}
-
-            {/* Today's assignments summary */}
-            {rooms.length > 0 && (
-              <div>
-                <p style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', margin: '0 0 6px' }}>
-                  {lang === 'es' ? '📌 Asignaciones de Hoy' : "📌 Today's Assignments"}
+              ))}
+              {openOrders.length > 4 && (
+                <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '2px 0 0' }}>
+                  +{openOrders.length - 4} {lang === 'es' ? 'más' : 'more'}
                 </p>
-                <div style={{ display: 'flex', gap: '16px', fontSize: '12px', color: 'var(--text-muted)' }}>
-                  <span><strong style={{ color: 'var(--text-primary)' }}>{checkouts}</strong> {lang === 'es' ? 'salidas' : 'checkouts'}</span>
-                  <span><strong style={{ color: 'var(--text-primary)' }}>{stayovers}</strong> {lang === 'es' ? 'ocupadas' : 'stayovers'}</span>
-                </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         )}
 

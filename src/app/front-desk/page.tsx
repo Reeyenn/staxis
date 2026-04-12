@@ -49,10 +49,6 @@ export default function FrontDeskPage() {
   }
 
   const roomsByFloor = groupRoomsByFloor(rooms);
-  const available = rooms.filter(r => r.status === 'clean' || r.status === 'inspected').length;
-  const cleaning = rooms.filter(r => r.status === 'in_progress').length;
-  const dirty = rooms.filter(r => r.status === 'dirty').length;
-  const total = rooms.length;
 
   const handleEarlyCheckout = async () => {
     if (!selectedRoom || !user || !activePropertyId) return;
@@ -106,14 +102,6 @@ export default function FrontDeskPage() {
           </h1>
         </div>
 
-        {/* Summary Stats */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 p-4 bg-opacity-50" style={{ backgroundColor: 'var(--bg-card)' }}>
-          <StatCard label={t('total', lang)} value={total} />
-          <StatCard label={t('available', lang) || 'Available'} value={available} color="var(--green)" />
-          <StatCard label={t('cleaning', lang) || 'Cleaning'} value={cleaning} color="var(--amber)" />
-          <StatCard label={t('dirty', lang) || 'Dirty'} value={dirty} color="var(--red)" />
-        </div>
-
         {/* Rooms by Floor */}
         <div className="p-4 space-y-6">
           {Object.entries(roomsByFloor).map(([floor, floorRooms]) => (
@@ -165,28 +153,6 @@ export default function FrontDeskPage() {
         )}
       </div>
     </AppLayout>
-  );
-}
-
-interface StatCardProps {
-  label: string;
-  value: number;
-  color?: string;
-}
-
-function StatCard({ label, value, color = 'var(--text-secondary)' }: StatCardProps) {
-  return (
-    <div
-      className="p-3 rounded-lg text-center"
-      style={{ backgroundColor: 'var(--bg)', borderColor: 'var(--border)' }}
-    >
-      <div className="text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>
-        {label}
-      </div>
-      <div className="text-2xl font-bold" style={{ color }}>
-        {value}
-      </div>
-    </div>
   );
 }
 
@@ -261,87 +227,77 @@ function RoomDetailSheet({
 
       {/* Sheet */}
       <div
-        className="fixed bottom-0 left-0 right-0 z-50 rounded-t-2xl p-6 pt-8 max-h-96 overflow-y-auto"
+        className="fixed bottom-0 left-0 right-0 z-50 rounded-t-2xl overflow-y-auto"
         style={{
           backgroundColor: 'var(--bg-card)',
           borderColor: 'var(--border)',
-          animation: 'slideUp 0.3s ease-out'
+          animation: 'slideUp 0.3s ease-out',
+          padding: '14px 18px 18px',
+          maxHeight: '70vh',
         }}
       >
         {/* Close indicator */}
-        <div className="flex justify-center mb-4">
-          <div className="w-12 h-1 rounded-full" style={{ backgroundColor: 'var(--border)' }} />
+        <div className="flex justify-center mb-3">
+          <div className="w-10 h-1 rounded-full" style={{ backgroundColor: 'var(--border)' }} />
         </div>
 
-        <h2 className="text-2xl font-bold mb-4" style={{ color: 'var(--text-primary)' }}>
-          {lang === 'es' ? 'Habitación' : 'Room'} {room.number}
-        </h2>
-
-        {/* Room Details */}
-        <div className="space-y-3 mb-6">
-          <DetailRow label={lang === 'es' ? 'Estado' : 'Status'} value={getStatusLabel(room.status, lang)} />
-          <DetailRow label={lang === 'es' ? 'Tipo' : 'Type'} value={room.type === 'checkout' ? (lang === 'es' ? 'Salida' : 'Checkout') : room.type === 'stayover' ? (lang === 'es' ? 'Continuación' : 'Stayover') : (lang === 'es' ? 'Vacía' : 'Vacant')} />
-          {room.assignedName && <DetailRow label={lang === 'es' ? 'Asignada' : 'Assigned'} value={room.assignedName} />}
-          {room.isDnd && <DetailRow label={lang === 'es' ? 'Estado' : 'Status'} value={lang === 'es' ? 'No Molestar' : 'Do Not Disturb'} highlight />}
+        {/* Header row */}
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', marginBottom: '12px' }}>
+          <h2 style={{ fontFamily: 'var(--font-mono)', fontSize: '24px', fontWeight: 800, color: 'var(--text-primary)', margin: 0, lineHeight: 1 }}>
+            {room.number}
+          </h2>
+          <span style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: getStatusColor(room.status) }}>
+            {getStatusLabel(room.status, lang)}
+          </span>
+          <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginLeft: 'auto' }}>
+            {room.type === 'checkout' ? (lang === 'es' ? 'Salida' : 'Checkout') : room.type === 'stayover' ? (lang === 'es' ? 'Continuación' : 'Stayover') : (lang === 'es' ? 'Vacía' : 'Vacant')}
+          </span>
         </div>
 
-        {/* Action Buttons */}
-        <div className="space-y-3">
-          {room.type === 'stayover' && (
-            <>
-              <p className="text-xs text-center" style={{ color: 'var(--text-muted)' }}>
-                {lang === 'es'
-                  ? '¿El huésped se va antes? Esto cambia la habitación a limpieza completa de checkout.'
-                  : 'Guest checking out early? This changes the room to a full checkout clean.'}
-              </p>
-              <button
-                onClick={onEarlyCheckout}
-                disabled={processing}
-                className="w-full py-3 rounded-lg font-semibold transition-colors disabled:opacity-50"
-                style={{
-                  backgroundColor: 'var(--amber)',
-                  color: 'white'
-                }}
-              >
-                {processing ? (lang === 'es' ? 'Procesando...' : 'Processing...') : (lang === 'es' ? 'Marcar Salida Anticipada' : 'Mark Early Checkout')}
-              </button>
-            </>
-          )}
+        {/* Meta line */}
+        {(room.assignedName || room.isDnd) && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '12px', color: 'var(--text-muted)', marginBottom: '12px' }}>
+            {room.assignedName && (
+              <span>{lang === 'es' ? 'Asignada' : 'Assigned'}: <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{room.assignedName}</span></span>
+            )}
+            {room.isDnd && (
+              <span style={{ color: 'var(--amber)', fontWeight: 600 }}>{lang === 'es' ? 'No Molestar' : 'Do Not Disturb'}</span>
+            )}
+          </div>
+        )}
 
-          {room.type === 'checkout' && (
-            <>
-              <p className="text-xs text-center" style={{ color: 'var(--text-muted)' }}>
-                {lang === 'es'
-                  ? '¿El huésped extiende su estadía? Esto cambia la habitación a limpieza de continuación.'
-                  : 'Guest extending their stay? This changes the room to a stayover refresh.'}
-              </p>
-              <button
-                onClick={onExtension}
-                disabled={processing}
-                className="w-full py-3 rounded-lg font-semibold transition-colors disabled:opacity-50"
-                style={{
-                  backgroundColor: 'var(--navy)',
-                  color: 'white'
-                }}
-              >
-                {processing ? (lang === 'es' ? 'Procesando...' : 'Processing...') : (lang === 'es' ? 'Marcar Extensión' : 'Mark Extension')}
-              </button>
-            </>
-          )}
-
+        {/* Action Button */}
+        {room.type === 'stayover' && (
           <button
-            onClick={onClose}
-            className="w-full py-3 rounded-lg font-semibold transition-colors"
+            onClick={onEarlyCheckout}
+            disabled={processing}
+            className="w-full rounded-lg font-semibold transition-colors disabled:opacity-50"
             style={{
-              backgroundColor: 'var(--bg)',
-              color: 'var(--text-primary)',
-              borderColor: 'var(--border)',
-              borderWidth: '1px'
+              padding: '12px',
+              backgroundColor: 'var(--amber)',
+              color: 'white',
+              fontSize: '14px',
             }}
           >
-            {lang === 'es' ? 'Cerrar' : 'Close'}
+            {processing ? (lang === 'es' ? 'Procesando...' : 'Processing...') : (lang === 'es' ? 'Marcar Salida Anticipada' : 'Mark Early Checkout')}
           </button>
-        </div>
+        )}
+
+        {room.type === 'checkout' && (
+          <button
+            onClick={onExtension}
+            disabled={processing}
+            className="w-full rounded-lg font-semibold transition-colors disabled:opacity-50"
+            style={{
+              padding: '12px',
+              backgroundColor: 'var(--navy)',
+              color: 'white',
+              fontSize: '14px',
+            }}
+          >
+            {processing ? (lang === 'es' ? 'Procesando...' : 'Processing...') : (lang === 'es' ? 'Marcar Extensión' : 'Mark Extension')}
+          </button>
+        )}
 
         <style jsx>{`
           @keyframes fadeIn {
@@ -361,30 +317,6 @@ function RoomDetailSheet({
         `}</style>
       </div>
     </>
-  );
-}
-
-interface DetailRowProps {
-  label: string;
-  value: string;
-  highlight?: boolean;
-}
-
-function DetailRow({ label, value, highlight }: DetailRowProps) {
-  return (
-    <div className="flex justify-between items-center py-2 border-b" style={{ borderColor: 'var(--border)' }}>
-      <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
-        {label}
-      </span>
-      <span
-        className="text-sm font-semibold"
-        style={{
-          color: highlight ? 'var(--amber)' : 'var(--text-primary)'
-        }}
-      >
-        {value}
-      </span>
-    </div>
   );
 }
 

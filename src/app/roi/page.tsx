@@ -180,19 +180,19 @@ export default function ROIPage() {
                 borderColor: 'var(--border)'
               }}
             >
-              <h3 className="text-sm font-bold mb-4 uppercase tracking-wider" style={{ color: 'var(--text-primary)' }}>
-                {lang === 'es' ? 'Tendencia de Costo Laboral (Últimos 30 Días)' : 'Labor Cost Trend (Last 30 Days)'}
+              <h3 className="text-xs font-bold mb-3 uppercase tracking-wider" style={{ color: 'var(--text-secondary)' }}>
+                {lang === 'es' ? 'Costo Laboral · 30 Días' : 'Labor Cost · 30 Days'}
               </h3>
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={chartData}>
+              <ResponsiveContainer width="100%" height={180}>
+                <LineChart data={chartData} margin={{ top: 5, right: 8, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                   <XAxis
                     dataKey="date"
-                    tick={{ fill: 'var(--text-muted)', fontSize: 12 }}
+                    tick={{ fill: 'var(--text-muted)', fontSize: 11 }}
                   />
                   <YAxis
-                    tick={{ fill: 'var(--text-muted)', fontSize: 12 }}
-                    label={{ value: lang === 'es' ? 'Costo ($)' : 'Cost ($)', angle: -90, position: 'insideLeft', style: { fill: 'var(--text-muted)' } }}
+                    tick={{ fill: 'var(--text-muted)', fontSize: 11 }}
+                    width={40}
                   />
                   <Tooltip
                     contentStyle={{
@@ -207,7 +207,7 @@ export default function ROIPage() {
                     type="monotone"
                     dataKey="laborCost"
                     stroke="var(--red)"
-                    dot={{ r: 3, fill: 'var(--red)' }}
+                    dot={false}
                     strokeWidth={2}
                     name={lang === 'es' ? 'Costo Laboral' : 'Labor Cost'}
                   />
@@ -225,19 +225,19 @@ export default function ROIPage() {
                 borderColor: 'var(--border)'
               }}
             >
-              <h3 className="text-sm font-bold mb-4 uppercase tracking-wider" style={{ color: 'var(--text-primary)' }}>
-                {lang === 'es' ? 'Personal Recomendado vs Real (Últimos 30 Días)' : 'Recommended vs Actual Staff (Last 30 Days)'}
+              <h3 className="text-xs font-bold mb-3 uppercase tracking-wider" style={{ color: 'var(--text-secondary)' }}>
+                {lang === 'es' ? 'Personal Rec vs Real · 30 Días' : 'Rec vs Actual Staff · 30 Days'}
               </h3>
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={staffComparisonData}>
+              <ResponsiveContainer width="100%" height={180}>
+                <LineChart data={staffComparisonData} margin={{ top: 5, right: 8, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                   <XAxis
                     dataKey="date"
-                    tick={{ fill: 'var(--text-muted)', fontSize: 12 }}
+                    tick={{ fill: 'var(--text-muted)', fontSize: 11 }}
                   />
                   <YAxis
-                    tick={{ fill: 'var(--text-muted)', fontSize: 12 }}
-                    label={{ value: lang === 'es' ? 'Cantidad de Personal' : 'Staff Count', angle: -90, position: 'insideLeft', style: { fill: 'var(--text-muted)' } }}
+                    tick={{ fill: 'var(--text-muted)', fontSize: 11 }}
+                    width={30}
                   />
                   <Tooltip
                     contentStyle={{
