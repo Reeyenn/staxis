@@ -320,7 +320,7 @@ export default function DashboardPage() {
             GOOD MORNING HERO BANNER
             ════════════════════════════════════════════════════════════ */}
         <div className="animate-in stagger-1" style={{
-          position: 'relative', height: '280px', borderRadius: '16px',
+          position: 'relative', height: '200px', borderRadius: '16px',
           overflow: 'hidden', marginBottom: '32px',
         }}>
           {/* Background image */}
@@ -342,24 +342,24 @@ export default function DashboardPage() {
           <div style={{
             position: 'relative', zIndex: 10, height: '100%',
             display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end',
-            padding: '48px',
+            padding: '32px 40px',
           }}>
             {/* Left side: greeting */}
             <div style={{ maxWidth: '640px' }}>
               {/* AI Insight Ready badge */}
               <span style={{
                 display: 'inline-flex', alignItems: 'center', gap: '6px',
-                padding: '4px 12px', borderRadius: '9999px',
+                padding: '3px 10px', borderRadius: '9999px',
                 background: '#006565', color: '#FFFFFF',
-                fontSize: '12px', fontWeight: 700, marginBottom: '16px',
+                fontSize: '11px', fontWeight: 700, marginBottom: '12px',
                 letterSpacing: '0.02em',
               }}>
-                <Sparkles size={14} />
+                <Sparkles size={12} />
                 AI INSIGHT READY
               </span>
               <h1 style={{
-                fontSize: '48px', fontWeight: 700, color: '#FFFFFF',
-                letterSpacing: '-0.02em', lineHeight: 1.1, marginBottom: '8px',
+                fontSize: '36px', fontWeight: 700, color: '#FFFFFF',
+                letterSpacing: '-0.02em', lineHeight: 1.1, marginBottom: '6px',
               }}>
                 {(() => {
                   const hour = new Date().getHours();
@@ -373,7 +373,7 @@ export default function DashboardPage() {
                 })()}
               </h1>
               <p style={{
-                fontSize: '20px', fontWeight: 300, color: '#c5d1f8',
+                fontSize: '16px', fontWeight: 300, color: '#c5d1f8',
                 opacity: 0.9, margin: 0,
               }}>
                 {activeProperty?.name || 'Your property'} {lang === 'es' ? 'está al' : 'is at'} {occupancyPct}% {lang === 'es' ? 'de ocupación hoy.' : 'occupancy today.'} {occupancyPct >= 80
@@ -390,17 +390,17 @@ export default function DashboardPage() {
                 return (
                   <>
                     <p style={{
-                      fontSize: '14px', fontWeight: 600, textTransform: 'uppercase' as const,
+                      fontSize: '12px', fontWeight: 600, textTransform: 'uppercase' as const,
                       letterSpacing: '0.15em', color: 'rgba(255,255,255,0.6)',
-                      margin: '0 0 4px',
+                      margin: '0 0 2px',
                     }}>{days[now.getDay()]}</p>
                     <p className="data-mono" style={{
-                      fontSize: '42px', fontWeight: 500, color: '#FFFFFF',
+                      fontSize: '34px', fontWeight: 500, color: '#FFFFFF',
                       lineHeight: 1, margin: '0 0 2px',
                       textShadow: '0 2px 20px rgba(0,0,0,0.3)',
                     }}>{now.getDate()}</p>
                     <p style={{
-                      fontSize: '15px', fontWeight: 500, color: 'rgba(255,255,255,0.7)',
+                      fontSize: '13px', fontWeight: 500, color: 'rgba(255,255,255,0.7)',
                       letterSpacing: '0.06em', margin: 0,
                     }}>{months[now.getMonth()]} {now.getFullYear()}</p>
                   </>
