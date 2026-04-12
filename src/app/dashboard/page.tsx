@@ -292,63 +292,67 @@ export default function DashboardPage() {
             GLASS HERO HUB — KPI Dashboard
             Occupancy | Dirty Rooms | Est. Labor Cost + Action Buttons
             ════════════════════════════════════════════════════════════ */}
-        <div className="glass-hero animate-in stagger-2" style={{ marginBottom: '24px', padding: '32px' }}>
+        <div className="glass-hero animate-in stagger-2" style={{ marginBottom: '24px', padding: '28px 32px' }}>
           <div className="glass-hero-bg" />
-          <div style={{ position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column', gap: '24px' }}>
+          <div style={{
+            position: 'relative', zIndex: 2,
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            gap: '32px', flexWrap: 'wrap',
+          }}>
 
-            {/* KPI Grid Row */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '32px', alignItems: 'start' }}>
+            {/* KPI Cluster — left side */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '40px', flexWrap: 'wrap' }}>
               {/* Occupancy */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <p style={{ fontSize: '12px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', margin: 0 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <p style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', margin: 0 }}>
                   {t('occupancy', lang)}
                 </p>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
-                  <span className="data-mono" style={{ fontSize: '48px', color: occupancyPct >= 80 ? '#006565' : occupancyPct >= 50 ? '#364262' : 'var(--amber)', lineHeight: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px' }}>
+                  <span className="data-mono" style={{ fontSize: '42px', color: occupancyPct >= 80 ? '#006565' : occupancyPct >= 50 ? '#364262' : 'var(--amber)', lineHeight: 1 }}>
                     {occupancyPct}%
                   </span>
-                  {occupancyPct >= 80 && <TrendingUp size={20} color="#006565" strokeWidth={2} />}
+                  {occupancyPct >= 80 && <TrendingUp size={18} color="#006565" strokeWidth={2} />}
                 </div>
               </div>
 
               {/* Dirty Rooms */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <p style={{ fontSize: '12px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', margin: 0 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <p style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', margin: 0 }}>
                   {t('dirtyRooms', lang)}
                 </p>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
-                  <span className="data-mono" style={{ fontSize: '48px', color: dirty > 0 ? 'var(--red)' : 'var(--green)', lineHeight: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px' }}>
+                  <span className="data-mono" style={{ fontSize: '42px', color: dirty > 0 ? 'var(--red)' : 'var(--green)', lineHeight: 1 }}>
                     {dirty}
                   </span>
-                  {dirty > 0 && <Wrench size={20} color="var(--red)" strokeWidth={2} />}
+                  {dirty > 0 && <Wrench size={18} color="var(--red)" strokeWidth={2} />}
                 </div>
               </div>
 
               {/* Est. Labor Cost */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <p style={{ fontSize: '12px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', margin: 0 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <p style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', margin: 0 }}>
                   {t('estLaborCost', lang)}
                 </p>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
-                  <span className="data-mono" style={{ fontSize: '48px', color: '#364262', lineHeight: 1 }}>
+                  <span className="data-mono" style={{ fontSize: '42px', color: '#364262', lineHeight: 1 }}>
                     ${totalCost}
                   </span>
+                  <span style={{ fontSize: '13px', color: 'var(--text-muted)', fontWeight: 500 }}>/shift</span>
                 </div>
-                <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: 0 }}>/shift</p>
               </div>
             </div>
 
-            {/* Action Buttons */}
-            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+            {/* Action Buttons — right side */}
+            <div style={{ display: 'flex', gap: '12px', flexShrink: 0 }}>
               <button
                 onClick={() => router.push('/front-desk')}
                 style={{
                   display: 'flex', alignItems: 'center', gap: '8px',
-                  padding: '12px 24px', borderRadius: 'var(--radius-lg)',
+                  padding: '14px 28px', borderRadius: 'var(--radius-lg)',
                   background: '#364262', color: '#FFFFFF',
                   border: 'none', cursor: 'pointer',
                   fontFamily: 'var(--font-sans)', fontSize: '14px', fontWeight: 600,
-                  boxShadow: '0 2px 8px rgba(54,66,98,0.25)',
+                  boxShadow: '0 4px 14px rgba(54,66,98,0.3)',
                   transition: 'all 0.15s ease',
                 }}
               >
@@ -359,11 +363,11 @@ export default function DashboardPage() {
                 onClick={() => router.push('/roi')}
                 style={{
                   display: 'flex', alignItems: 'center', gap: '8px',
-                  padding: '12px 24px', borderRadius: 'var(--radius-lg)',
+                  padding: '14px 28px', borderRadius: 'var(--radius-lg)',
                   background: '#006565', color: '#FFFFFF',
                   border: 'none', cursor: 'pointer',
                   fontFamily: 'var(--font-sans)', fontSize: '14px', fontWeight: 600,
-                  boxShadow: '0 2px 8px rgba(0,101,101,0.25)',
+                  boxShadow: '0 4px 14px rgba(0,101,101,0.3)',
                   transition: 'all 0.15s ease',
                 }}
               >
