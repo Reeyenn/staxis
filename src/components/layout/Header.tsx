@@ -44,8 +44,10 @@ export function Header() {
   return (
     <header style={{
       position: 'sticky', top: 0, zIndex: 40,
-      background: '#ebe7e0',
-      boxShadow: '0 4px 24px -2px rgba(27,28,25,0.06)',
+      background: 'rgba(251, 249, 244, 0.85)',
+      backdropFilter: 'blur(64px)',
+      WebkitBackdropFilter: 'blur(64px)',
+      boxShadow: '0 4px 24px -2px rgba(27,28,25,0.04)',
     }}>
       <div style={{
         maxWidth: '1920px', margin: '0 auto',
