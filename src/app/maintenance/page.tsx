@@ -349,7 +349,7 @@ export default function MaintenancePage() {
 
         {/* ── Page header ── */}
         <div className="animate-in">
-          <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '22px', color: 'var(--text-primary)', letterSpacing: '-0.02em', lineHeight: 1 }}>
+          <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '17px', color: 'var(--text-primary)', letterSpacing: '-0.01em', lineHeight: 1 }}>
             {t('maintenance', lang)}
           </h1>
         </div>
@@ -387,7 +387,7 @@ export default function MaintenancePage() {
           <div className="animate-in stagger-2" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
 
             {/* Filter pills */}
-            <div className="scroll-pills" style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '2px', touchAction: 'pan-x', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none' }}>
+            <div className="scroll-pills" style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '2px', touchAction: 'pan-x', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none' }}>
               {([
                 { key: 'all' as FilterKey, label: t('allFilter', lang) },
                 { key: 'open' as FilterKey, label: t('openFilter', lang) },
@@ -398,22 +398,19 @@ export default function MaintenancePage() {
                   key={f.key}
                   onClick={() => setFilter(f.key)}
                   style={{
-                    display: 'flex', alignItems: 'center', gap: '6px',
-                    padding: '8px 14px', border: 'none', cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', gap: '5px',
+                    padding: '5px 12px', border: 'none', cursor: 'pointer',
                     borderRadius: 'var(--radius-full)',
                     fontSize: '12px', fontWeight: 600, fontFamily: 'var(--font-sans)',
                     background: filter === f.key ? 'var(--navy)' : 'var(--bg-elevated)',
                     color: filter === f.key ? '#fff' : 'var(--text-secondary)',
                     transition: 'all 150ms', flexShrink: 0,
-                    minHeight: '36px',
                   }}
                 >
                   {f.label}
                   <span style={{
                     fontSize: '10px', fontWeight: 700,
-                    padding: '1px 6px', borderRadius: '99px',
-                    background: filter === f.key ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.06)',
-                    color: filter === f.key ? '#fff' : 'var(--text-muted)',
+                    color: filter === f.key ? 'rgba(255,255,255,0.7)' : 'var(--text-muted)',
                   }}>
                     {filterCounts[f.key]}
                   </span>

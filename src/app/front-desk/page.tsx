@@ -96,8 +96,8 @@ export default function FrontDeskPage() {
     <AppLayout>
       <div className="min-h-screen" style={{ backgroundColor: 'var(--bg)' }}>
         {/* Header */}
-        <div style={{ padding: '20px 24px 0' }}>
-          <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '22px', color: 'var(--text-primary)', letterSpacing: '-0.02em', lineHeight: 1, margin: 0 }}>
+        <div style={{ padding: '12px 16px 0' }}>
+          <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '17px', color: 'var(--text-primary)', letterSpacing: '-0.01em', lineHeight: 1, margin: 0 }}>
             {lang === 'es' ? 'Recepción' : 'Front Desk'}
           </h1>
         </div>

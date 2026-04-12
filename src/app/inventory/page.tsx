@@ -198,8 +198,8 @@ export default function InventoryPage() {
   // ─── MAIN VIEW ─────────────────────────────────────────────────────────────
   return (
     <AppLayout>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', padding: '16px 14px 100px', alignItems: 'center' }}>
-        <h1 style={{ fontSize: '22px', fontWeight: 700, color: 'var(--text-primary)', margin: 0, alignSelf: 'flex-start' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '12px 14px 100px', alignItems: 'center' }}>
+        <h1 style={{ fontSize: '17px', fontWeight: 700, color: 'var(--text-primary)', margin: 0, alignSelf: 'flex-start' }}>
           {lang === 'es' ? 'Inventario' : 'Inventory'}
         </h1>
 

@@ -216,7 +216,7 @@ export default function DashboardPage() {
 
         {/* ── Page header ── */}
         <div className="animate-in">
-          <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '22px', color: 'var(--text-primary)', letterSpacing: '-0.02em', lineHeight: 1 }}>
+          <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '17px', color: 'var(--text-primary)', letterSpacing: '-0.01em', lineHeight: 1 }}>
             {t('dashboard', lang)}
           </h1>
         </div>
@@ -262,8 +262,8 @@ export default function DashboardPage() {
         {/* ════════════════════════════════════════════════════════════
             DETAILS — Secondary stats in a compact, single card
             ════════════════════════════════════════════════════════════ */}
-        <div className="animate-in stagger-3 card" style={{ padding: '18px 20px' }}>
-          <div className="dash-details-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '0', borderBottom: '1px solid var(--border)', paddingBottom: '14px', marginBottom: '14px' }}>
+        <div className="animate-in stagger-3 card" style={{ padding: '12px 14px' }}>
+          <div className="dash-details-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '0', borderBottom: '1px solid var(--border)', paddingBottom: '10px', marginBottom: '10px' }}>
 
             {/* Today section — the 3 KPIs that matter most */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', paddingRight: '16px' }}>

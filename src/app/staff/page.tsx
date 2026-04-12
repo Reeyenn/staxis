@@ -370,7 +370,7 @@ export default function StaffPage() {
 
         {/* ── Page header ── */}
         <div className="animate-in" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
-          <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '22px', letterSpacing: '-0.02em', margin: 0, display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '17px', letterSpacing: '-0.01em', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Users size={20} color="var(--navy)" />
             {t('staff', lang)}
           </h1>

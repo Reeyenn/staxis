@@ -1321,7 +1321,7 @@ function RoomsSection() {
                     <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
                   </div>
                   {/* Tiles */}
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(72px, 1fr))', gap: '6px' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(66px, 1fr))', gap: '5px' }}>
                     {floorRooms.map(room => {
                       const info = STATUS_INFO[room.status];
                       const assignedName = room.assignedName || null;
@@ -1336,7 +1336,7 @@ function RoomsSection() {
                           disabled={room.status === 'inspected'}
                           title={`Room ${room.number} · ${room.type ?? ''} · ${info.label}${assignedName ? ` · ${assignedName}` : ''}`}
                           style={{
-                            width: '100%', height: hasHelp ? '82px' : '72px', flexShrink: 0,
+                            width: '100%', height: hasHelp ? '74px' : '64px', flexShrink: 0,
                             display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
                             gap: '2px',
                             background: hasHelp ? 'rgba(249,115,22,0.12)' : info.bgColor,
@@ -3488,7 +3488,7 @@ export default function HousekeepingPage() {
       {/* ── Page header ── */}
       <div style={{ padding: '20px 16px 0' }}>
         <div style={{ padding: '0 0 4px' }}>
-          <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '24px', color: 'var(--text-primary)', letterSpacing: '-0.02em', display: 'flex', alignItems: 'center', gap: '8px', margin: 0 }}>
+          <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '17px', color: 'var(--text-primary)', letterSpacing: '-0.01em', display: 'flex', alignItems: 'center', gap: '8px', margin: 0 }}>
             {t('housekeeping', lang)}
           </h1>
         </div>

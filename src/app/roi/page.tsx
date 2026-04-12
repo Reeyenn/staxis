@@ -98,7 +98,7 @@ export default function ROIPage() {
       <div className="min-h-screen" style={{ backgroundColor: 'var(--bg)' }}>
         {/* Header */}
         <div style={{ padding: '20px 24px 0' }}>
-          <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '22px', color: 'var(--text-primary)', letterSpacing: '-0.02em', lineHeight: 1, margin: 0 }}>
+          <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '17px', color: 'var(--text-primary)', letterSpacing: '-0.01em', lineHeight: 1, margin: 0 }}>
             {lang === 'es' ? 'Resumen ROI' : 'ROI Summary'}
           </h1>
         </div>
