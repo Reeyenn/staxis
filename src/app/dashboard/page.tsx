@@ -212,7 +212,7 @@ export default function DashboardPage() {
 
   return (
     <AppLayout>
-      <div className="dash-page-content" style={{ padding: '20px 24px 24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      <div className="dash-page-content" style={{ padding: '14px 16px 20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
 
         {/* ── Page header ── */}
         <div className="animate-in">

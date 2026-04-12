@@ -368,9 +368,9 @@ export default function MaintenancePage() {
               aria-selected={activeTab === tab.key}
               aria-label={tab.label}
               style={{
-                flex: 1, padding: '10px 0', border: 'none', cursor: 'pointer',
+                flex: 1, padding: '7px 0', border: 'none', cursor: 'pointer',
                 borderRadius: 'var(--radius-md)',
-                fontFamily: 'var(--font-sans)', fontSize: '13px', fontWeight: 600,
+                fontFamily: 'var(--font-sans)', fontSize: '12px', fontWeight: 600,
                 background: activeTab === tab.key ? 'white' : 'transparent',
                 color: activeTab === tab.key ? 'var(--text-primary)' : 'var(--text-muted)',
                 boxShadow: activeTab === tab.key ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
@@ -445,11 +445,14 @@ export default function MaintenancePage() {
                     style={{ padding: '10px 14px', cursor: 'pointer', transition: 'box-shadow 150ms' }}
                     onClick={() => setExpandedId(isExpanded ? null : order.id)}
                   >
-                    {/* Row 1: severity dot + room + description + status + time */}
+                    {/* Row 1: severity + room + description + status + time */}
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
                       <span style={{
-                        width: '8px', height: '8px', borderRadius: '50%', background: sev.color, flexShrink: 0,
-                      }} />
+                        fontSize: '10px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.04em',
+                        color: sev.color, flexShrink: 0,
+                      }}>
+                        {sevLabel(order.severity)}
+                      </span>
                       {order.roomNumber && (
                         <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '13px', color: 'var(--text-primary)', flexShrink: 0 }}>
                           {order.roomNumber}
@@ -462,9 +465,7 @@ export default function MaintenancePage() {
                         {order.description}
                       </span>
                       <span style={{
-                        fontSize: '10px', fontWeight: 600,
-                        padding: '2px 8px', borderRadius: 'var(--radius-full)',
-                        background: stat.bg, color: stat.color, flexShrink: 0,
+                        fontSize: '11px', fontWeight: 700, color: stat.color, flexShrink: 0,
                       }}>
                         {statusLabel(order.status)}
                       </span>
@@ -695,75 +696,62 @@ export default function MaintenancePage() {
                     key={task.id}
                     className="card"
                     style={{
-                      padding: '14px 16px', borderLeft: `3px solid ${borderColor}`,
+                      padding: '10px 14px', borderLeft: `3px solid ${borderColor}`,
                       position: 'relative',
                       opacity: inSeason ? 1 : 0.55,
                     }}
                   >
-                    {/* Delete button */}
-                    <button
-                      onClick={() => handleDeleteLs(task)}
-                      aria-label={`Delete ${task.name}`}
-                      style={{
-                        position: 'absolute', top: '12px', right: '12px',
-                        background: 'none', border: 'none', cursor: 'pointer', padding: '4px',
-                      }}
-                    >
-                      <Trash2 size={14} color="var(--text-muted)" />
-                    </button>
-
-                    {/* Task name + season badge */}
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px', paddingRight: '28px', minWidth: 0 }}>
-                      <p style={{ fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)', margin: 0, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {/* Row 1: name + season icon + delete */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                      <SeasonIcon size={12} color={seasonCfg.color} style={{ flexShrink: 0 }} />
+                      <p style={{ fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)', margin: 0, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {task.name}
                       </p>
-                      <span style={{
-                        display: 'inline-flex', alignItems: 'center', gap: '3px',
-                        padding: '2px 8px', borderRadius: '99px', fontSize: '10px', fontWeight: 600,
-                        background: seasonCfg.bg, color: seasonCfg.color, whiteSpace: 'nowrap',
-                      }}>
-                        <SeasonIcon size={10} />
-                        {lang === 'es' ? seasonCfg.labelEs : seasonCfg.label}
-                      </span>
-                    </div>
-
-                    {/* Frequency + last completed */}
-                    <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '6px' }}>
-                      {lang === 'es' ? `Cada ${task.frequencyDays} días` : `Every ${task.frequencyDays} days`}
-                      {' · '}
-                      {t('lastCompleted', lang)}: {task.lastCompletedAt ? formatShortDate(toJsDate(task.lastCompletedAt)) : t('never', lang)}
-                    </p>
-
-                    {/* Due status + mark done */}
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                      <span style={{
-                        fontSize: '12px', fontWeight: 600,
-                        color: !inSeason ? 'var(--text-muted)' : isOverdue ? 'var(--red)' : isDueSoon ? 'var(--amber)' : 'var(--text-secondary)',
-                      }}>
-                        {!inSeason
-                          ? (lang === 'es' ? 'Fuera de temporada' : 'Off-season')
-                          : isOverdue
-                            ? (lang === 'es' ? `Vencida por ${Math.abs(daysUntil)} días` : `Overdue by ${Math.abs(daysUntil)} days`)
-                            : daysUntil === 0
-                              ? t('dueToday', lang)
-                              : (lang === 'es' ? `Vence en ${daysUntil} días` : `Due in ${daysUntil} days`)
-                        }
-                      </span>
                       {inSeason && (
                         <button
                           onClick={() => handleMarkLsDone(task)}
                           style={{
-                            display: 'flex', alignItems: 'center', gap: '5px',
-                            padding: '7px 14px', border: 'none', borderRadius: 'var(--radius-md)',
+                            display: 'flex', alignItems: 'center', gap: '4px',
+                            padding: '4px 10px', border: 'none', borderRadius: 'var(--radius-md)',
                             background: 'rgba(34,197,94,0.1)', color: 'var(--green)',
-                            fontSize: '12px', fontWeight: 600, cursor: 'pointer',
-                            minHeight: '36px',
+                            fontSize: '11px', fontWeight: 700, cursor: 'pointer',
+                            flexShrink: 0,
                           }}
                         >
-                          <CheckCircle2 size={13} />
+                          <CheckCircle2 size={11} />
                           {t('markDone', lang)}
                         </button>
                       )}
+                      <button
+                        onClick={() => handleDeleteLs(task)}
+                        aria-label={`Delete ${task.name}`}
+                        style={{
+                          background: 'none', border: 'none', cursor: 'pointer', padding: '2px', flexShrink: 0,
+                        }}
+                      >
+                        <Trash2 size={12} color="var(--text-muted)" />
+                      </button>
+                    </div>
+
+                    {/* Row 2: meta — due status · frequency · last */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '3px', fontSize: '11px', minWidth: 0 }}>
+                      <span style={{
+                        fontWeight: 700,
+                        color: !inSeason ? 'var(--text-muted)' : isOverdue ? 'var(--red)' : isDueSoon ? 'var(--amber)' : 'var(--text-secondary)',
+                        flexShrink: 0,
+                      }}>
+                        {!inSeason
+                          ? (lang === 'es' ? 'Fuera de temporada' : 'Off-season')
+                          : isOverdue
+                            ? (lang === 'es' ? `Vencida ${Math.abs(daysUntil)}d` : `Overdue ${Math.abs(daysUntil)}d`)
+                            : daysUntil === 0
+                              ? t('dueToday', lang)
+                              : (lang === 'es' ? `En ${daysUntil}d` : `In ${daysUntil}d`)
+                        }
+                      </span>
+                      <span style={{ color: 'var(--text-muted)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        · {lang === 'es' ? `cada ${task.frequencyDays}d` : `every ${task.frequencyDays}d`} · {task.lastCompletedAt ? formatShortDate(toJsDate(task.lastCompletedAt)) : t('never', lang)}
+                      </span>
                     </div>
                   </div>
                 );

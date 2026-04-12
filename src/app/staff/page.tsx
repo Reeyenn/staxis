@@ -495,15 +495,15 @@ export default function StaffPage() {
                       key={member.id}
                       className="staff-list-row"
                       style={{
-                        display: 'flex', alignItems: 'center', gap: '12px',
-                        padding: '12px 16px',
+                        display: 'flex', alignItems: 'center', gap: '10px',
+                        padding: '9px 14px',
                         borderBottom: idx < displayStaff.length - 1 ? '1px solid var(--border)' : 'none',
                         opacity: member.isActive === false ? 0.5 : 1,
                         background: nearMax ? 'rgba(251,191,36,0.04)' : 'transparent',
                       }}
                     >
                       {/* Avatar */}
-                      <div style={{ width: '34px', height: '34px', borderRadius: '8px', background: 'var(--navy)', color: '#FFFFFF', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: '12px', flexShrink: 0 }}>
+                      <div style={{ width: '28px', height: '28px', borderRadius: '7px', background: 'var(--navy)', color: '#FFFFFF', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: '11px', flexShrink: 0 }}>
                         {initials(member.name)}
                       </div>
 
