@@ -765,7 +765,7 @@ export default function MaintenancePage() {
           aria-label={t('newWorkOrder', lang)}
           style={{
             position: 'fixed', bottom: '80px', right: '20px', zIndex: 30,
-            width: '56px', height: '56px', borderRadius: '50%',
+            width: '48px', height: '48px', borderRadius: '50%',
             background: 'var(--navy)', color: '#fff', border: 'none',
             cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
             boxShadow: '0 4px 14px rgba(27,58,92,0.35)',
@@ -791,17 +791,17 @@ export default function MaintenancePage() {
         >
           <div style={{
             width: '100%', maxWidth: '500px', maxHeight: '90vh', overflowY: 'auto',
-            background: 'var(--bg-card)', borderRadius: '16px',
-            padding: '20px',
-            display: 'flex', flexDirection: 'column', gap: '16px',
+            background: 'var(--bg-card)', borderRadius: '14px',
+            padding: '16px',
+            display: 'flex', flexDirection: 'column', gap: '12px',
           }}>
             {/* Header */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <h2 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '18px', color: 'var(--text-primary)' }}>
+              <h2 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '15px', color: 'var(--text-primary)' }}>
                 {t('newWorkOrder', lang)}
               </h2>
               <button onClick={() => setShowCreateModal(false)} aria-label={lang === 'es' ? 'Cerrar' : 'Close'} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}>
-                <X size={20} color="var(--text-muted)" />
+                <X size={16} color="var(--text-muted)" />
               </button>
             </div>
 
@@ -816,7 +816,7 @@ export default function MaintenancePage() {
                 onChange={e => setNewRoom(e.target.value)}
                 placeholder="e.g. 302"
                 style={{
-                  width: '100%', padding: '12px 14px', fontSize: '14px',
+                  width: '100%', padding: '9px 12px', fontSize: '13px',
                   border: '1px solid var(--border)', borderRadius: 'var(--radius-md)',
                   background: 'var(--bg)', color: 'var(--text-primary)',
                   fontFamily: 'var(--font-mono)',
@@ -826,16 +826,16 @@ export default function MaintenancePage() {
 
             {/* Description */}
             <div>
-              <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '4px', display: 'block' }}>
+              <label style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '3px', display: 'block' }}>
                 {lang === 'es' ? 'Descripción' : 'Description'}
               </label>
               <textarea
                 value={newDesc}
                 onChange={e => setNewDesc(e.target.value)}
                 placeholder={t('describeIssue', lang)}
-                rows={3}
+                rows={2}
                 style={{
-                  width: '100%', padding: '12px 14px', fontSize: '14px',
+                  width: '100%', padding: '9px 12px', fontSize: '13px',
                   border: '1px solid var(--border)', borderRadius: 'var(--radius-md)',
                   background: 'var(--bg)', color: 'var(--text-primary)',
                   fontFamily: 'var(--font-sans)', resize: 'none',
@@ -845,10 +845,10 @@ export default function MaintenancePage() {
 
             {/* Severity */}
             <div>
-              <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '6px', display: 'block' }}>
+              <label style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '3px', display: 'block' }}>
                 {t('severity', lang)}
               </label>
-              <div style={{ display: 'flex', gap: '8px' }}>
+              <div style={{ display: 'flex', gap: '6px' }}>
                 {(['low', 'medium', 'urgent'] as WorkOrderSeverity[]).map(sev => {
                   const isSelected = newSeverity === sev;
                   const style = SEVERITY_STYLE[sev];
@@ -857,12 +857,12 @@ export default function MaintenancePage() {
                       key={sev}
                       onClick={() => setNewSeverity(sev)}
                       style={{
-                        flex: 1, padding: '10px', border: 'none', borderRadius: 'var(--radius-md)',
-                        fontSize: '13px', fontWeight: 600, cursor: 'pointer',
+                        flex: 1, padding: '8px', border: 'none', borderRadius: 'var(--radius-md)',
+                        fontSize: '12px', fontWeight: 600, cursor: 'pointer',
                         background: isSelected ? style.bg : 'var(--bg-elevated)',
                         color: isSelected ? style.color : 'var(--text-muted)',
                         outline: isSelected ? `2px solid ${style.color}` : 'none',
-                        transition: 'all 150ms', minHeight: '44px',
+                        transition: 'all 150ms',
                       }}
                     >
                       {sevLabel(sev)}
@@ -877,7 +877,7 @@ export default function MaintenancePage() {
               onClick={() => setNewBlockRoom(!newBlockRoom)}
               style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '12px 14px', borderRadius: 'var(--radius-md)',
+                padding: '9px 12px', borderRadius: 'var(--radius-md)',
                 border: newBlockRoom ? '2px solid var(--red)' : '1px solid var(--border)',
                 background: newBlockRoom ? 'var(--red-dim)' : 'transparent',
                 cursor: 'pointer', transition: 'all 150ms',
@@ -911,12 +911,12 @@ export default function MaintenancePage() {
               onClick={handleCreateOrder}
               disabled={!newDesc.trim() || submitting}
               style={{
-                width: '100%', padding: '14px', border: 'none',
+                width: '100%', padding: '10px', border: 'none',
                 borderRadius: 'var(--radius-md)', cursor: newDesc.trim() && !submitting ? 'pointer' : 'not-allowed',
                 background: newDesc.trim() && !submitting ? 'var(--navy)' : 'var(--bg-elevated)',
                 color: newDesc.trim() && !submitting ? '#fff' : 'var(--text-muted)',
-                fontSize: '14px', fontWeight: 700, fontFamily: 'var(--font-sans)',
-                transition: 'all 150ms', minHeight: '48px',
+                fontSize: '13px', fontWeight: 700, fontFamily: 'var(--font-sans)',
+                transition: 'all 150ms',
               }}
             >
               {submitting ? '...' : t('submitWorkOrder', lang)}
@@ -937,22 +937,22 @@ export default function MaintenancePage() {
         >
           <div style={{
             width: '100%', maxWidth: '500px',
-            background: 'var(--bg-card)', borderRadius: '16px 16px 0 0',
-            padding: '20px 20px calc(20px + env(safe-area-inset-bottom))',
-            display: 'flex', flexDirection: 'column', gap: '16px',
+            background: 'var(--bg-card)', borderRadius: '14px 14px 0 0',
+            padding: '16px 16px calc(16px + env(safe-area-inset-bottom))',
+            display: 'flex', flexDirection: 'column', gap: '12px',
           }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <h2 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '18px', color: 'var(--text-primary)' }}>
+              <h2 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '15px', color: 'var(--text-primary)' }}>
                 {t('addLandscapingTask', lang)}
               </h2>
               <button onClick={() => setShowLsModal(false)} aria-label={lang === 'es' ? 'Cerrar' : 'Close'} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}>
-                <X size={20} color="var(--text-muted)" />
+                <X size={16} color="var(--text-muted)" />
               </button>
             </div>
 
             {/* Task name */}
             <div>
-              <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '4px', display: 'block' }}>
+              <label style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '3px', display: 'block' }}>
                 {t('landscapingTaskName', lang)}
               </label>
               <input
@@ -961,7 +961,7 @@ export default function MaintenancePage() {
                 onChange={e => setNewLsName(e.target.value)}
                 placeholder={lang === 'es' ? 'ej. Corte de césped' : 'e.g. Grass Mowing'}
                 style={{
-                  width: '100%', padding: '12px 14px', fontSize: '14px',
+                  width: '100%', padding: '9px 12px', fontSize: '13px',
                   border: '1px solid var(--border)', borderRadius: 'var(--radius-md)',
                   background: 'var(--bg)', color: 'var(--text-primary)',
                   fontFamily: 'var(--font-sans)',
@@ -971,10 +971,10 @@ export default function MaintenancePage() {
 
             {/* Season selector */}
             <div>
-              <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '6px', display: 'block' }}>
+              <label style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '3px', display: 'block' }}>
                 {t('season', lang)}
               </label>
-              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
                 {(['year-round', 'spring', 'summer', 'fall', 'winter'] as LandscapingSeason[]).map(s => {
                   const cfg = SEASON_CONFIG[s];
                   const isSelected = newLsSeason === s;
@@ -984,15 +984,15 @@ export default function MaintenancePage() {
                       onClick={() => setNewLsSeason(s)}
                       style={{
                         display: 'flex', alignItems: 'center', gap: '4px',
-                        padding: '8px 12px', border: 'none', borderRadius: 'var(--radius-md)',
-                        fontSize: '12px', fontWeight: 600, cursor: 'pointer',
+                        padding: '5px 10px', border: 'none', borderRadius: 'var(--radius-md)',
+                        fontSize: '11px', fontWeight: 600, cursor: 'pointer',
                         background: isSelected ? cfg.bg : 'var(--bg-elevated)',
                         color: isSelected ? cfg.color : 'var(--text-muted)',
                         outline: isSelected ? `2px solid ${cfg.color}` : 'none',
-                        transition: 'all 150ms', minHeight: '36px',
+                        transition: 'all 150ms',
                       }}
                     >
-                      {React.createElement(cfg.icon, { size: 13 })}
+                      {React.createElement(cfg.icon, { size: 11 })}
                       {lang === 'es' ? cfg.labelEs : cfg.label}
                     </button>
                   );

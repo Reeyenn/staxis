@@ -315,7 +315,7 @@ export default function InventoryPage() {
         aria-label="Add Item"
         style={{
           position: 'fixed', bottom: '80px', right: '20px', zIndex: 30,
-          width: '52px', height: '52px', borderRadius: '50%',
+          width: '48px', height: '48px', borderRadius: '50%',
           background: 'var(--navy)', color: '#fff', border: 'none',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           cursor: 'pointer', boxShadow: '0 4px 16px rgba(27,58,92,0.3)',

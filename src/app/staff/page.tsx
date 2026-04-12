@@ -568,9 +568,9 @@ export default function StaffPage() {
 
             {/* Notification panel */}
             {showNotifPanel && (
-              <div className="card animate-in" style={{ padding: '16px', marginBottom: '16px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                  <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>{t('notificationsTitle', lang)}</span>
+              <div className="card animate-in" style={{ marginBottom: '12px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>{t('notificationsTitle', lang)}</span>
                   {unreadCount > 0 && (
                     <button onClick={() => { if (uid && pid) markAllNotificationsRead(uid, pid).catch(err => console.error('[staff] mark all read failed:', err)); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '11px', color: 'var(--amber)', fontWeight: 600, padding: 0 }}>
                       {t('markAllRead', lang)}
@@ -580,10 +580,10 @@ export default function StaffPage() {
                 {notifications.length === 0 ? (
                   <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>{t('noNotifications', lang)}</p>
                 ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                     {notifications.slice(0, 10).map(n => (
                       <div key={n.id} onClick={() => { if (!n.read && uid && pid) markNotificationRead(uid, pid, n.id).catch(err => console.error('[staff] mark read failed:', err)); }} style={{
-                        display: 'flex', alignItems: 'flex-start', gap: '10px', padding: '10px 12px',
+                        display: 'flex', alignItems: 'flex-start', gap: '8px', padding: '7px 10px',
                         background: n.read ? 'transparent' : 'rgba(251,191,36,0.05)',
                         border: `1px solid ${n.read ? 'var(--border)' : 'rgba(251,191,36,0.2)'}`,
                         borderRadius: 'var(--radius-md)', cursor: n.read ? 'default' : 'pointer',
@@ -601,19 +601,19 @@ export default function StaffPage() {
             )}
 
             {/* Date selector */}
-            <div className="card" style={{ padding: '16px', marginBottom: '16px' }}>
-              <p style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: '10px' }}>
+            <div className="card" style={{ marginBottom: '12px' }}>
+              <p style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: '6px' }}>
                 {t('selectShiftDate', lang)}
               </p>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                <button onClick={() => { setShiftDate(d => addDays(d, -1)); setSent(false); setSelected([]); setGmAccepted(false); }} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '6px 10px', cursor: 'pointer', color: 'var(--text-secondary)' }}>
-                  <ChevronLeft size={16} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <button onClick={() => { setShiftDate(d => addDays(d, -1)); setSent(false); setSelected([]); setGmAccepted(false); }} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '4px 8px', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+                  <ChevronLeft size={14} />
                 </button>
-                <span style={{ flex: 1, textAlign: 'center', fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                <span style={{ flex: 1, textAlign: 'center', fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)' }}>
                   {formatDisplayDate(shiftDate, lang)}
                 </span>
-                <button onClick={() => { setShiftDate(d => addDays(d, 1)); setSent(false); setSelected([]); setGmAccepted(false); }} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '6px 10px', cursor: 'pointer', color: 'var(--text-secondary)' }}>
-                  <ChevronRight size={16} />
+                <button onClick={() => { setShiftDate(d => addDays(d, 1)); setSent(false); setSelected([]); setGmAccepted(false); }} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '4px 8px', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+                  <ChevronRight size={14} />
                 </button>
               </div>
             </div>
@@ -628,14 +628,14 @@ export default function StaffPage() {
 
             {/* Existing confirmations */}
             {confirmations.length > 0 && (
-              <div className="card" style={{ padding: '16px', marginBottom: '16px' }}>
-                <p style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: '12px' }}>
+              <div className="card" style={{ marginBottom: '12px' }}>
+                <p style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: '8px' }}>
                   {t('crewForDate', lang)} {formatDisplayDate(shiftDate, lang)}
                 </p>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                   {confirmations.map(conf => (
-                    <div key={conf.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: 'rgba(0,0,0,0.02)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)' }}>
-                      <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-primary)' }}>{conf.staffName}</span>
+                    <div key={conf.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '7px 10px', background: 'rgba(0,0,0,0.02)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)' }}>
+                      <span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-primary)' }}>{conf.staffName}</span>
                       <span style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px', fontWeight: 600, color: STATUS_COLOR[conf.status] }}>
                         {STATUS_ICON[conf.status]}
                         {t(conf.status === 'pending' ? 'statusPending' : conf.status === 'confirmed' ? 'statusConfirmed' : conf.status === 'declined' ? 'statusDeclined' : 'statusNoResponse', lang)}
@@ -649,56 +649,47 @@ export default function StaffPage() {
             {/* ── AI GM RECOMMENDATION ── */}
             {!sent && gmRec.picks.length > 0 && !gmAccepted && (
               <div className="card animate-in" style={{
-                padding: '18px',
-                marginBottom: '16px',
+                marginBottom: '12px',
                 background: 'linear-gradient(135deg, rgba(27,58,92,0.04) 0%, rgba(37,99,235,0.04) 100%)',
                 border: '1px solid rgba(37,99,235,0.15)',
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
-                  <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: 'rgba(37,99,235,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <Bot size={16} color="var(--navy-light)" />
-                  </div>
-                  <div>
-                    <p style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
-                      GM Recommendation
-                    </p>
-                    <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: 0 }}>
-                      {gmRec.summary}
-                    </p>
-                  </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                  <Bot size={14} color="var(--navy-light)" style={{ flexShrink: 0 }} />
+                  <p style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)', margin: 0, flex: 1 }}>
+                    GM Recommendation
+                  </p>
+                  <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{gmRec.summary}</span>
                 </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '14px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '10px' }}>
                   {gmRec.picks.map(({ member, reason }) => (
                     <div key={member.id} style={{
-                      display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 12px',
+                      display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 10px',
                       background: 'rgba(255,255,255,0.7)', border: '1px solid var(--border)',
                       borderRadius: 'var(--radius-md)',
                     }}>
-                      <div style={{ width: '28px', height: '28px', borderRadius: '6px', background: 'var(--navy)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', fontWeight: 700, flexShrink: 0 }}>
+                      <div style={{ width: '24px', height: '24px', borderRadius: '6px', background: 'var(--navy)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '9px', fontWeight: 700, flexShrink: 0 }}>
                         {initials(member.name)}
                       </div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <p style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>{member.name}</p>
-                        <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0 }}>{reason}</p>
-                      </div>
+                      <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>{member.name}</span>
+                      <span style={{ fontSize: '11px', color: 'var(--text-muted)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{reason}</span>
                     </div>
                   ))}
                 </div>
 
-                <div style={{ display: 'flex', gap: '8px' }}>
+                <div style={{ display: 'flex', gap: '6px' }}>
                   <button onClick={acceptGMPicks} style={{
-                    flex: 1, padding: '10px', background: 'var(--navy-light)', color: '#fff',
-                    border: 'none', borderRadius: 'var(--radius-md)', fontWeight: 600, fontSize: '13px',
+                    flex: 1, padding: '8px', background: 'var(--navy-light)', color: '#fff',
+                    border: 'none', borderRadius: 'var(--radius-md)', fontWeight: 600, fontSize: '12px',
                     cursor: 'pointer', fontFamily: 'var(--font-sans)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px',
                   }}>
-                    <Sparkles size={14} />
+                    <Sparkles size={12} />
                     Accept & Select
                   </button>
                   <button onClick={() => setGmAccepted(true)} style={{
-                    padding: '10px 16px', background: 'transparent', color: 'var(--text-muted)',
-                    border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', fontWeight: 500, fontSize: '13px',
+                    padding: '8px 14px', background: 'transparent', color: 'var(--text-muted)',
+                    border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', fontWeight: 500, fontSize: '12px',
                     cursor: 'pointer', fontFamily: 'var(--font-sans)',
                   }}>
                     Skip
@@ -708,9 +699,9 @@ export default function StaffPage() {
             )}
 
             {/* Manual crew selection */}
-            <div className="card" style={{ padding: '16px', marginBottom: '16px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
-                <p style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', margin: 0 }}>
+            <div className="card" style={{ marginBottom: '12px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <p style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', margin: 0 }}>
                   {lang === 'es' ? 'Seleccionar equipo' : 'Select Crew'}
                   {selected.length > 0 && <span style={{ marginLeft: '8px', color: 'var(--amber)' }}>· {selected.length} selected</span>}
                 </p>

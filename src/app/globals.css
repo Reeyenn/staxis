@@ -123,8 +123,8 @@ body {
 
 /* ── Button ────────────────────────────────────────────────────────────────── */
 .btn {
-  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-  height: 40px; padding: 0 16px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 36px; padding: 0 14px;
   border-radius: var(--radius-md);
   font-family: var(--font-sans); font-size: 14px; font-weight: 500;
   cursor: pointer; border: none;
@@ -135,7 +135,7 @@ body {
 .btn-primary:hover { filter: brightness(1.08); }
 .btn-ghost { background: transparent; color: var(--text-secondary); border: 1px solid var(--border); }
 .btn-ghost:hover { color: var(--text-primary); border-color: var(--border-bright); }
-.btn-full { width: 100%; height: 48px; border-radius: var(--radius-lg); font-size: 15px; }
+.btn-full { width: 100%; height: 42px; border-radius: var(--radius-lg); font-size: 14px; }
 
 /* ── Input ─────────────────────────────────────────────────────────────────── */
 .input {
@@ -214,8 +214,8 @@ body {
 .stagger-6 { animation-delay: 120ms; }
 
 /* ── Button sizes ──────────────────────────────────────────────────────────── */
-.btn-sm { height: 32px; padding: 0 12px; font-size: 12px; border-radius: var(--radius-sm); }
-.btn-xl { height: 52px; padding: 0 24px; font-size: 16px; border-radius: var(--radius-lg); }
+.btn-sm { height: 28px; padding: 0 10px; font-size: 11px; border-radius: var(--radius-sm); }
+.btn-xl { height: 44px; padding: 0 20px; font-size: 15px; border-radius: var(--radius-lg); }
 
 /* ── Button variants ───────────────────────────────────────────────────────── */
 .btn-secondary { background: transparent; color: var(--text-secondary); border: 1px solid var(--border); }
@@ -343,14 +343,14 @@ body {
 
   /* Slightly taller touch targets for small buttons */
   .btn-sm {
-    height: 38px;
-    padding: 0 14px;
-    font-size: 13px;
+    height: 34px;
+    padding: 0 12px;
+    font-size: 12px;
     border-radius: var(--radius-md);
   }
 
   /* Ensure room card action buttons are tap-friendly */
-  .btn { min-height: 44px; }
+  .btn { min-height: 40px; }
 }
 
 /* ── Safe area helpers ──────────────────────────────────────────────────────── */
