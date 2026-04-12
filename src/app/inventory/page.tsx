@@ -203,38 +203,35 @@ export default function InventoryPage() {
           {lang === 'es' ? 'Inventario' : 'Inventory'}
         </h1>
 
-        {/* Count CTA */}
+        {/* Count CTA — slim bar */}
         <div className="inv-cta" style={{
-          display: 'inline-flex', alignItems: 'center', gap: '20px',
-          padding: '14px 24px', borderRadius: 'var(--radius-lg)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px',
+          padding: '8px 14px', borderRadius: 'var(--radius-md)',
           background: 'linear-gradient(135deg, var(--navy, #1b3a5c), var(--navy-light, #2a5a8c))',
-          color: '#fff',
+          color: '#fff', alignSelf: 'stretch', width: '100%',
         }}>
-          <div>
-            <div style={{ fontSize: '16px', fontWeight: 700, marginBottom: '4px' }}>
-              {lang === 'es' ? 'Conteo Semanal de Inventario' : 'Weekly Inventory Count'}
-            </div>
-            <div style={{ fontSize: '12px', opacity: 0.8, display: 'flex', alignItems: 'center', gap: '4px' }}>
-              <Clock size={12} />
-              {lang === 'es' ? 'Último conteo: ' : 'Last counted: '}{lastCounted ? timeAgo(lastCounted) : (lang === 'es' ? 'Nunca' : 'Never')}
-              {lowCount > 0 && (
-                <span style={{ marginLeft: '8px', padding: '2px 8px', borderRadius: '99px', background: 'rgba(220,38,38,0.3)', fontSize: '11px', fontWeight: 600 }}>
-                  {lowCount} {lang === 'es' ? 'bajo' : 'low'}
-                </span>
-              )}
-            </div>
+          <div style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+            <Clock size={12} style={{ flexShrink: 0, opacity: 0.8 }} />
+            <span style={{ opacity: 0.9 }}>
+              {lang === 'es' ? 'Último conteo: ' : 'Last count: '}{lastCounted ? timeAgo(lastCounted) : (lang === 'es' ? 'Nunca' : 'Never')}
+            </span>
+            {lowCount > 0 && (
+              <span style={{ padding: '2px 8px', borderRadius: '99px', background: 'rgba(220,38,38,0.35)', fontSize: '11px', fontWeight: 600, flexShrink: 0 }}>
+                {lowCount} {lang === 'es' ? 'bajo' : 'low'}
+              </span>
+            )}
           </div>
           <button
             onClick={() => setCounting(true)}
             style={{
-              padding: '10px 20px', borderRadius: 'var(--radius-md)',
+              padding: '6px 14px', borderRadius: 'var(--radius-md)',
               background: '#fff', color: 'var(--navy, #1b3a5c)', border: 'none',
-              fontWeight: 700, fontSize: '14px', cursor: 'pointer',
-              display: 'flex', alignItems: 'center', gap: '6px',
+              fontWeight: 700, fontSize: '13px', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0,
             }}
           >
-            <ClipboardCheck size={16} />
-            {lang === 'es' ? 'Contar Ahora' : 'Count Now'}
+            <ClipboardCheck size={14} />
+            {lang === 'es' ? 'Contar' : 'Count'}
           </button>
         </div>
 
