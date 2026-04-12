@@ -58,7 +58,15 @@ export default function DashboardPage() {
     'https://images.unsplash.com/photo-1723974915612-c9b6f524f28c?w=1200&q=80&auto=format&fit=crop',
     'https://images.unsplash.com/photo-1758194090785-8e09b7288199?w=1200&q=80&auto=format&fit=crop',
   ];
-  const heroImage = useMemo(() => HERO_IMAGES[Math.floor(Math.random() * HERO_IMAGES.length)], []);
+  // Persist across tab navigation — only changes on full page refresh (F5)
+  const heroImage = useMemo(() => {
+    if (typeof window === 'undefined') return HERO_IMAGES[0];
+    const stored = sessionStorage.getItem('staxis-hero-img');
+    if (stored && HERO_IMAGES.includes(stored)) return stored;
+    const picked = HERO_IMAGES[Math.floor(Math.random() * HERO_IMAGES.length)];
+    sessionStorage.setItem('staxis-hero-img', picked);
+    return picked;
+  }, []);
 
   // All React hooks MUST be declared before any conditional returns
 
