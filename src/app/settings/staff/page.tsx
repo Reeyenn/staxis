@@ -96,8 +96,8 @@ export default function StaffPage() {
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <Link href="/settings" style={{ color: 'var(--text-muted)', textDecoration: 'none', fontSize: '14px' }} aria-label={lang === 'es' ? 'Volver a configuración' : 'Go back to settings'}>← {t('settings', lang)}</Link>
             <span style={{ color: 'var(--text-muted)' }}>/</span>
-            <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '20px', letterSpacing: '-0.02em', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <Users size={18} color="var(--amber)" /> {t('staff', lang)}
+            <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '16px', letterSpacing: '-0.01em', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <Users size={15} color="var(--amber)" /> {t('staff', lang)}
             </h1>
           </div>
           <button onClick={openAdd} className="btn btn-primary btn-sm">

@@ -84,8 +84,8 @@ export default function PMSPage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '24px' }}>
           <Link href="/settings" style={{ color: 'var(--text-muted)', textDecoration: 'none', fontSize: '14px' }}>← {t('settings', lang)}</Link>
           <span style={{ color: 'var(--text-muted)' }}>/</span>
-          <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '20px', letterSpacing: '-0.02em', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Wifi size={18} color="var(--amber)" /> {lang === 'es' ? 'Conexión PMS' : 'PMS Connection'}
+          <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '16px', letterSpacing: '-0.01em', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <Wifi size={15} color="var(--amber)" /> {lang === 'es' ? 'Conexión PMS' : 'PMS Connection'}
           </h1>
         </div>
 

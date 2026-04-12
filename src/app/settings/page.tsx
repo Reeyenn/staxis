@@ -30,7 +30,7 @@ export default function SettingsPage() {
 
         {/* ── Header ── */}
         <div className="animate-in">
-          <h1 style={{ fontFamily:'var(--font-sans)', fontWeight:700, fontSize:'24px', color:'var(--text-primary)', letterSpacing:'-0.02em' }}>
+          <h1 style={{ fontFamily:'var(--font-sans)', fontWeight:700, fontSize:'17px', color:'var(--text-primary)', letterSpacing:'-0.01em' }}>
             {t('settings', lang)}
           </h1>
         </div>

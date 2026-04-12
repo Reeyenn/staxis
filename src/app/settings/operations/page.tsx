@@ -338,8 +338,8 @@ export default function OperationsConfigPage() {
             ← {t('settings', lang)}
           </Link>
           <span style={{ color: 'var(--text-muted)' }}>/</span>
-          <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '20px', letterSpacing: '-0.02em', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Wrench size={18} color="var(--amber)" /> {t('operationsConfig', lang)}
+          <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '16px', letterSpacing: '-0.01em', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <Wrench size={15} color="var(--amber)" /> {t('operationsConfig', lang)}
           </h1>
         </div>
 

@@ -212,11 +212,11 @@ export default function AccountsPage() {
           </button>
           <h1 style={{
             fontFamily: 'var(--font-sans)', fontWeight: 700,
-            fontSize: '26px', color: 'var(--text-primary)',
-            letterSpacing: '-0.02em',
-            display: 'flex', alignItems: 'center', gap: '8px',
+            fontSize: '16px', color: 'var(--text-primary)',
+            letterSpacing: '-0.01em',
+            display: 'flex', alignItems: 'center', gap: '6px',
           }}>
-            <Users size={18} color="var(--navy)" />
+            <Users size={15} color="var(--navy)" />
             {t('accountManagement', lang)}
           </h1>
           <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginTop: '4px' }}>

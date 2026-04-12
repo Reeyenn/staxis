@@ -242,12 +242,12 @@ export default function InventoryPage() {
               key={cat.key}
               onClick={() => setActiveCategory(cat.key)}
               style={{
-                padding: '6px 14px', borderRadius: 'var(--radius-full)',
+                padding: '5px 12px', borderRadius: 'var(--radius-full)',
                 border: activeCategory === cat.key ? 'none' : '1px solid var(--border)',
                 background: activeCategory === cat.key ? 'var(--navy, #1b3a5c)' : 'var(--bg)',
                 color: activeCategory === cat.key ? '#fff' : 'var(--text-secondary)',
-                fontSize: '13px', fontWeight: 600, cursor: 'pointer',
-                whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '6px',
+                fontSize: '12px', fontWeight: 600, cursor: 'pointer',
+                whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '5px',
               }}
             >
               {lang === 'es' ? cat.labelEs : cat.label}
