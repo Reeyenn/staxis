@@ -198,38 +198,37 @@ interface RoomCardProps {
 function RoomCard({ room, onSelect }: RoomCardProps) {
   const { lang } = useLang();
   const statusColor = getStatusColor(room.status);
-  const isAvailable = room.status === 'clean' || room.status === 'inspected';
 
   return (
     <button
       onClick={onSelect}
-      className="p-4 rounded-lg border-2 transition-all active:scale-95"
+      className="transition-all active:scale-95"
       style={{
+        position: 'relative',
+        padding: '10px 8px',
+        borderRadius: 'var(--radius-md)',
+        border: `1px solid ${statusColor}`,
         backgroundColor: 'var(--bg-card)',
-        borderColor: statusColor,
-        color: 'var(--text-primary)'
+        color: 'var(--text-primary)',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: '4px',
       }}
     >
       {room.isDnd && (
-        <div className="flex items-center justify-center mb-2 text-orange-500">
-          <Ban size={18} />
+        <div style={{ position: 'absolute', top: '4px', right: '4px', color: 'var(--amber)', lineHeight: 0 }}>
+          <Ban size={12} />
         </div>
       )}
-      <div className="text-lg font-bold text-center">{room.number}</div>
+      <div style={{ fontFamily: 'var(--font-mono)', fontSize: '22px', fontWeight: 800, letterSpacing: '-0.02em', lineHeight: 1 }}>
+        {room.number}
+      </div>
       <div
-        className="text-xs mt-2 text-center font-medium uppercase tracking-wider"
-        style={{ color: statusColor }}
+        style={{ fontSize: '10px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: statusColor }}
       >
         {getStatusLabel(room.status, lang)}
       </div>
-      <div className="text-xs mt-1 text-center" style={{ color: 'var(--text-muted)' }}>
-        {room.type === 'checkout' ? t('checkout', lang) : room.type === 'stayover' ? t('stayover', lang) : t('vacant', lang)}
-      </div>
-      {isAvailable && (
-        <div className="mt-2 text-xs font-semibold text-center py-1 px-2 rounded-full" style={{ backgroundColor: 'var(--green)', color: 'white' }}>
-          {lang === 'es' ? 'Lista' : 'Ready'}
-        </div>
-      )}
     </button>
   );
 }
