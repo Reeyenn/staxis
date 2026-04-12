@@ -542,51 +542,6 @@ export default function DashboardPage() {
 
             </div>
 
-            {/* CREW TRACKER — Full Width */}
-            {/* INTELLIGENT STAFFING FORECAST — full-width spanning card */}
-            <div className="animate-in stagger-7" style={{
-              gridColumn: '1 / -1',
-              background: '#f0eee9',
-              borderRadius: '16px',
-              padding: '40px',
-              display: 'flex', alignItems: 'center', gap: '48px',
-              overflow: 'hidden', position: 'relative',
-            }}>
-              <div style={{ zIndex: 10, display: 'flex', flexDirection: 'column', gap: '16px', flex: 1 }}>
-                <h4 style={{ fontSize: '24px', fontWeight: 600, color: '#364262', margin: 0 }}>
-                  {lang === 'es' ? 'Pronóstico Inteligente de Personal' : 'Intelligent Staffing Forecast'}
-                </h4>
-                <p style={{ fontSize: '15px', color: '#454652', margin: 0, maxWidth: '420px', lineHeight: 1.6 }}>
-                  {lang === 'es'
-                    ? 'Nuestra IA predice un alto volumen de check-in entre 3PM y 5PM. Recomendación: Agregar un embajador adicional en el lobby.'
-                    : 'Our AI predicts a high check-in volume between 3PM and 5PM. Recommended: Add one additional lobby ambassador for guest flow management.'}
-                </p>
-                <button
-                  onClick={() => router.push('/staff')}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: '8px',
-                    background: 'none', border: 'none', cursor: 'pointer',
-                    color: '#004b4b', fontWeight: 600, fontSize: '15px',
-                    fontFamily: 'var(--font-sans)', padding: 0,
-                  }}
-                >
-                  {lang === 'es' ? 'Ver Matriz de Personal' : 'View Staffing Matrix'}
-                  <ChevronRight size={16} />
-                </button>
-              </div>
-              <div style={{
-                position: 'absolute', right: 0, top: 0, height: '100%', width: '33%',
-                opacity: 0.2, pointerEvents: 'none',
-              }}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src="https://lh3.googleusercontent.com/aida-public/AB6AXuDlBzULRKOrrma9wNoB66rncVr5VjKfUdyJj56cOCCN-aBG3hBfSluuvkEcdhwtN6ExR3HGkSsB3gzlgXCxWqagApWOGh3F0bOJT_DZxnWxQz9ybrpeqzkCI-sdpuSC0ZCn9Zi7pBUvfPw2gBZcgBIZ2lmFzvIuqRkQXMzC5pz-DtRIg41uOq5zoQHk0Ojy5_GX6DV0WK1Df1rVUxRYcPuOycz51VZtQfBtZ6nD45OORs8dsPD6VCVR7qIfKfx3OCfGFShL4szUOJw"
-                  alt=""
-                  aria-hidden="true"
-                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                />
-              </div>
-            </div>
 
           </div>
 
