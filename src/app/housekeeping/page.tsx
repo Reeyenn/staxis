@@ -1214,11 +1214,38 @@ function RoomsSection() {
     return elapsed > limit;
   };
 
-  return (
-    <div style={{ padding: '14px 14px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+  // Compute metrics for the footer
+  const dirtyCount = rooms.filter(r => r.status === 'dirty').length;
+  const inProgressCount = rooms.filter(r => r.status === 'in_progress').length;
+  const queueCount = dirtyCount + inProgressCount;
 
-      {/* Room action popup — simple status cycling only */}
-      {/* Bottom sheet removed — rooms now auto-progress on click */}
+  // Status → glow class mapping
+  const GLOW_CLASS: Record<RoomStatus, string> = {
+    dirty: 'glow-dirty',
+    in_progress: 'glow-cleaning',
+    clean: 'glow-clean',
+    inspected: 'glow-inspected',
+  };
+
+  // Status → text color class
+  const STATUS_TEXT_CLASS: Record<RoomStatus, string> = {
+    dirty: 'text-status-dirty',
+    in_progress: 'text-status-cleaning',
+    clean: 'text-status-clean',
+    inspected: 'text-status-inspected',
+  };
+
+  // Room type icon (using unicode instead of Material Symbols for simplicity)
+  const getRoomIcon = (room: Room): string | null => {
+    if (room.isDnd) return '⊘';
+    if (room.type === 'checkout') return '↗';
+    if (room.type === 'stayover') return '🔒';
+    if (room.type === 'vacant') return '◇';
+    return null;
+  };
+
+  return (
+    <div style={{ padding: '24px', paddingBottom: '140px', background: '#f4f7fa', minHeight: 'calc(100vh - 180px)' }}>
 
       {/* Backup staff picker popup */}
       {backupRoom && (
@@ -1226,50 +1253,47 @@ function RoomsSection() {
           <div style={{ position: 'fixed', inset: 0, zIndex: 9997, background: 'rgba(0,0,0,0.4)' }} onClick={() => setBackupRoom(null)} />
           <div style={{
             position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 9998,
-            background: 'var(--bg-card)', borderRadius: '16px 16px 0 0',
+            background: '#fff', borderRadius: '16px 16px 0 0',
             boxShadow: '0 -4px 30px rgba(0,0,0,0.15)',
             padding: '20px 16px 32px', display: 'flex', flexDirection: 'column', gap: '12px',
-            animation: 'slideUp 0.2s ease-out', maxHeight: '60vh', overflowY: 'auto',
+            maxHeight: '60vh', overflowY: 'auto',
           }}>
-            <div style={{ width: '40px', height: '4px', borderRadius: '2px', background: 'var(--border)', margin: '0 auto 4px' }} />
-            <p style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+            <div style={{ width: '40px', height: '4px', borderRadius: '2px', background: '#e2e8f0', margin: '0 auto 4px' }} />
+            <p style={{ fontSize: '16px', fontWeight: 700, color: '#0f172a', margin: 0 }}>
               {lang === 'es' ? `Enviar ayuda a ${backupRoom.number}` : `Send backup to Room ${backupRoom.number}`}
             </p>
-            <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>
+            <p style={{ fontSize: '13px', color: '#64748b', margin: 0 }}>
               {lang === 'es' ? 'Selecciona quién enviar:' : 'Select who to send:'}
             </p>
             {staff.filter(s => s.isActive !== false && s.id !== backupRoom.assignedTo).map(s => (
               <button key={s.id} onClick={() => handleSendBackup(backupRoom, s.id, s.name)} style={{
                 display: 'flex', alignItems: 'center', gap: '12px', padding: '14px 16px',
-                background: 'var(--bg-elevated)', border: '1.5px solid var(--border)', borderRadius: '12px',
+                background: '#fff', border: '1px solid #e2e8f0', borderRadius: '12px',
                 cursor: 'pointer', fontFamily: 'var(--font-sans)', width: '100%',
               }}>
                 <div style={{
                   width: '36px', height: '36px', borderRadius: '10px',
-                  background: 'var(--navy)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: '#0f172a', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontWeight: 700, fontSize: '13px', flexShrink: 0,
                 }}>
                   {s.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)}
                 </div>
-                <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)' }}>{s.name}</span>
+                <span style={{ fontSize: '14px', fontWeight: 600, color: '#0f172a' }}>{s.name}</span>
               </button>
             ))}
           </div>
         </>
       )}
 
-      <style>{`@keyframes helpPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(249,115,22,0.4); } 50% { box-shadow: 0 0 0 6px rgba(249,115,22,0); } }`}</style>
-
       {/* Toast notification */}
       {toastMessage && (
         <div style={{
-          position: 'fixed', bottom: '20px', right: '20px',
-          background: 'var(--green)', color: '#fff',
-          padding: '12px 16px', borderRadius: 'var(--radius-md)',
+          position: 'fixed', bottom: '100px', right: '20px',
+          background: '#10b981', color: '#fff',
+          padding: '12px 16px', borderRadius: '12px',
           fontSize: '14px', fontWeight: 500,
           boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
           zIndex: 1000,
-          animation: 'slideIn 0.3s ease-out',
         }}>
           {toastMessage}
         </div>
@@ -1277,132 +1301,245 @@ function RoomsSection() {
 
       {loading ? (
         <div style={{ textAlign: 'center', padding: '48px 0' }}>
-          <div className="animate-spin" style={{ width: '28px', height: '28px', border: '3px solid var(--border)', borderTopColor: 'var(--amber)', borderRadius: '50%', margin: '0 auto 12px' }} />
-          <p style={{ color: 'var(--text-muted)', fontSize: '14px', margin: 0 }}>{t('loading', lang)}</p>
+          <div className="spinner" style={{ width: '28px', height: '28px', margin: '0 auto 12px' }} />
+          <p style={{ color: '#64748b', fontSize: '14px', margin: 0 }}>{t('loading', lang)}</p>
         </div>
       ) : sorted.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: '52px 20px', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)' }}>
+        <div style={{ textAlign: 'center', padding: '52px 20px', background: 'rgba(255,255,255,0.7)', borderRadius: '12px', backdropFilter: 'blur(8px)' }}>
           <p style={{ fontSize: '32px', marginBottom: '12px' }}>🛏️</p>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '15px', fontWeight: 500 }}>{rooms.length === 0 ? t('noRoomsTodayHkp', lang) : t('noRoomsFloor', lang)}</p>
+          <p style={{ color: '#64748b', fontSize: '15px', fontWeight: 500 }}>{rooms.length === 0 ? t('noRoomsTodayHkp', lang) : t('noRoomsFloor', lang)}</p>
         </div>
       ) : (
         <>
-          {/* Legend */}
-          <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '8px' }}>
-            <div className="room-legend" style={{
-              display: 'inline-flex', alignItems: 'center', gap: '10px',
-              padding: '5px 12px',
-              background: 'var(--bg-elevated)',
-              border: '1px solid var(--border)',
-              borderRadius: 'var(--radius-full)',
-            }}>
-              <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '3px', whiteSpace: 'nowrap' }}>🚪 {t('checkout', lang)}</span>
-              <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '3px', whiteSpace: 'nowrap' }}>🚫 DND</span>
-              <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '3px', whiteSpace: 'nowrap' }}>🔒 {t('roomOccupied', lang)}</span>
-              <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '3px', whiteSpace: 'nowrap' }}>💎 {t('available', lang)}</span>
+          {/* ── Status Legend ── */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '32px', marginBottom: '40px', padding: '0 4px', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
+              {[
+                { label: lang === 'es' ? 'Sucia' : 'Dirty', color: '#ef4444' },
+                { label: lang === 'es' ? 'Limpiando' : 'Cleaning', color: '#f59e0b' },
+                { label: lang === 'es' ? 'Limpia' : 'Clean', color: '#10b981' },
+                { label: lang === 'es' ? 'Inspeccionada' : 'Inspected', color: '#8b5cf6' },
+              ].map(s => (
+                <div key={s.label} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{
+                    width: '10px', height: '10px', borderRadius: '50%',
+                    background: s.color, boxShadow: `0 0 8px ${s.color}80`,
+                  }} />
+                  <span style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+                    {s.label}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div style={{ height: '16px', width: '1px', background: 'rgba(148,163,184,0.3)' }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '20px', color: '#94a3b8' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ fontSize: '14px' }}>⊘</span>
+                <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em' }}>DND</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ fontSize: '14px' }}>🔒</span>
+                <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em' }}>{lang === 'es' ? 'Ocupada' : 'Occupied'}</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ fontSize: '14px' }}>↗</span>
+                <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em' }}>{lang === 'es' ? 'Salida' : 'Checkout'}</span>
+              </div>
             </div>
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            {floors.map((floor, floorIdx) => {
+          {/* ── Floor Grids ── */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '48px' }}>
+            {floors.map((floor) => {
               const floorRooms = sorted.filter(r => getFloor(r.number) === floor);
-              const floorDone  = floorRooms.filter(r => r.status === 'clean' || r.status === 'inspected').length;
               if (floorRooms.length === 0) return null;
+              const floorLabel = floor === 'G' ? 'LOBBY' : `LEVEL ${floor.padStart(2, '0')}`;
               return (
-                <div key={floor}>
-                  {/* Floor label */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
-                    <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                      {t('floor', lang)} {floor}
-                    </span>
-                    <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                      {floorDone}/{floorRooms.length}
-                    </span>
-                    <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
+                <section key={floor}>
+                  {/* Floor header with gradient divider */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '16px', padding: '0 4px' }}>
+                    <h2 style={{
+                      fontSize: '10px', fontWeight: 900, textTransform: 'uppercase',
+                      letterSpacing: '0.3em', color: '#94a3b8', margin: 0,
+                      fontFamily: 'var(--font-sans)',
+                    }}>
+                      {floorLabel}
+                    </h2>
+                    <div style={{ flex: 1, height: '1px', background: 'linear-gradient(to right, #e2e8f0, #e2e8f0 50%, transparent)' }} />
                   </div>
-                  {/* Tiles */}
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(66px, 1fr))', gap: '5px' }}>
+
+                  {/* Room tiles grid */}
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fill, minmax(80px, 1fr))',
+                    gap: '12px',
+                  }}>
                     {floorRooms.map(room => {
-                      const info = STATUS_INFO[room.status];
-                      const assignedName = room.assignedName || null;
+                      const hasHelp = room.helpRequested === true;
                       const elapsed = getElapsedMins(room);
                       const overTime = isOverTime(room);
-                      const hasHelp = room.helpRequested === true;
+                      const icon = getRoomIcon(room);
+                      const glowClass = hasHelp ? 'glow-help' : GLOW_CLASS[room.status];
+                      const textClass = STATUS_TEXT_CLASS[room.status];
 
                       return (
                         <button
                           key={room.id}
-                          onClick={() => handleToggle(room)}
-                          disabled={room.status === 'inspected'}
-                          title={`Room ${room.number} · ${room.type ?? ''} · ${info.label}${assignedName ? ` · ${assignedName}` : ''}`}
+                          className={`glass-tile ${glowClass}`}
+                          onClick={() => hasHelp ? setBackupRoom(room) : handleToggle(room)}
+                          disabled={room.status === 'inspected' && !hasHelp}
+                          title={`Room ${room.number} · ${room.type ?? ''} · ${STATUS_INFO[room.status].label}`}
                           style={{
-                            width: '100%', height: hasHelp ? '74px' : '64px', flexShrink: 0,
-                            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                            gap: '2px',
-                            background: hasHelp ? 'rgba(249,115,22,0.12)' : info.bgColor,
-                            border: hasHelp ? '2px solid rgba(249,115,22,0.6)' : `1.5px solid ${info.borderColor}`,
-                            borderRadius: '10px',
-                            cursor: room.status === 'inspected' ? 'default' : 'pointer',
-                            opacity: room.status === 'inspected' ? 0.55 : 1,
-                            transition: 'all 0.1s',
+                            display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
+                            padding: '14px', borderRadius: '8px',
+                            border: '1px solid rgba(255,255,255,0.4)',
+                            cursor: room.status === 'inspected' && !hasHelp ? 'default' : 'pointer',
                             fontFamily: 'var(--font-sans)',
-                            position: 'relative', overflow: 'hidden',
-                            animation: hasHelp ? 'helpPulse 2s ease-in-out infinite' : undefined,
+                            position: 'relative',
+                            minHeight: '56px',
                           }}
                         >
-                          <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '17px', color: 'var(--text-primary)', lineHeight: 1 }}>
-                            {room.number}
-                          </span>
-                          <span style={{ fontSize: '10px', fontWeight: 800, color: info.color, textAlign: 'center', lineHeight: 1 }}>
-                            {info.label.replace(' ✓', '')}
-                          </span>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                            <span className={textClass} style={{
+                              fontFamily: 'var(--font-mono)', fontSize: '18px', fontWeight: 700, lineHeight: 1,
+                            }}>
+                              {room.number}
+                            </span>
+                            {icon && (
+                              <span style={{
+                                fontSize: '13px', lineHeight: 1,
+                                color: room.isDnd ? 'rgba(239,68,68,0.7)' : 'rgba(148,163,184,0.6)',
+                              }}>
+                                {icon}
+                              </span>
+                            )}
+                          </div>
+
                           {/* Timer for in-progress rooms */}
                           {elapsed !== null && (
                             <span style={{
-                              fontSize: '11px', fontWeight: 800, fontFamily: 'var(--font-mono)',
-                              color: overTime ? 'var(--red)' : 'var(--text-muted)',
-                              lineHeight: 1,
+                              fontSize: '10px', fontWeight: 700, fontFamily: 'var(--font-mono)',
+                              color: overTime ? '#ef4444' : '#94a3b8',
+                              marginTop: '4px', lineHeight: 1,
                             }}>
-                              {elapsed}m{overTime ? ' !' : ''}
+                              {elapsed}m{overTime ? ' ⚠' : ''}
                             </span>
                           )}
-                          {(room.isDnd || room.type === 'checkout' || room.type === 'vacant' || room.type === 'stayover') && (
-                            <div style={{ position: 'absolute', top: '2px', right: '3px', fontSize: '12px', lineHeight: 1 }}>
-                              {room.isDnd ? '🚫' : room.type === 'vacant' ? '💎' : room.type === 'stayover' ? '🔒' : '🚪'}
-                            </div>
-                          )}
-                          {/* Help request badge — pulsing orange */}
+
+                          {/* SOS badge */}
                           {hasHelp && (
-                            <div
-                              onClick={(e) => { e.stopPropagation(); setBackupRoom(room); }}
-                              style={{
-                                position: 'absolute', top: '2px', left: '2px', fontSize: '10px', lineHeight: 1,
-                                background: 'var(--orange, #F97316)', color: '#fff', borderRadius: '4px', padding: '2px 4px', fontWeight: 800,
-                                cursor: 'pointer',
-                              }}
-                            >
+                            <div style={{
+                              position: 'absolute', bottom: '4px', left: '50%', transform: 'translateX(-50%)',
+                              fontSize: '9px', fontWeight: 900, color: '#fff',
+                              background: '#f97316', borderRadius: '4px', padding: '1px 6px',
+                              letterSpacing: '0.05em',
+                            }}>
                               SOS
                             </div>
                           )}
-                          {assignedName && !hasHelp && (
+
+                          {/* Assigned staff name */}
+                          {room.assignedName && !hasHelp && (
                             <div style={{
-                              position: 'absolute', bottom: '2px', left: '50%', transform: 'translateX(-50%)',
-                              fontSize: '9px', fontWeight: 700, color: 'var(--text-muted)',
-                              maxWidth: '64px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                              fontSize: '9px', fontWeight: 600, color: '#94a3b8',
+                              marginTop: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                             }}>
-                              {assignedName.split(' ')[0]}
+                              {room.assignedName.split(' ')[0]}
                             </div>
                           )}
                         </button>
                       );
                     })}
                   </div>
-                </div>
+                </section>
               );
             })}
           </div>
 
+          {/* ── AI Intelligence Recommendation Card ── */}
+          {dirtyCount > 0 && (
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              marginTop: '48px', padding: '24px 28px',
+              background: 'rgba(255,255,255,0.7)', backdropFilter: 'blur(8px)',
+              border: '1px solid rgba(16,185,129,0.2)', borderRadius: '16px',
+              flexWrap: 'wrap', gap: '16px',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                <div style={{
+                  width: '48px', height: '48px', borderRadius: '16px',
+                  background: 'rgba(16,185,129,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  flexShrink: 0, boxShadow: '0 0 20px rgba(16,185,129,0.4)',
+                }}>
+                  <Zap size={24} color="#10b981" />
+                </div>
+                <div>
+                  <h3 style={{ fontSize: '10px', fontWeight: 900, color: '#059669', textTransform: 'uppercase', letterSpacing: '0.2em', marginBottom: '4px' }}>
+                    {lang === 'es' ? 'Recomendación Inteligente' : 'Intelligence Recommendation'}
+                  </h3>
+                  <p style={{ fontSize: '14px', color: '#334155', margin: 0 }}>
+                    {dirtyCount} {lang === 'es' ? 'habitaciones pendientes' : 'rooms in queue'}.{' '}
+                    <span style={{ color: '#059669', fontWeight: 700 }}>{pct}%</span>{' '}
+                    {lang === 'es' ? 'completado hoy' : 'completed today'}.
+                    {inProgressCount > 0 && (
+                      <> {inProgressCount} {lang === 'es' ? 'en progreso ahora' : 'in progress now'}.</>
+                    )}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
         </>
+      )}
+
+      {/* ── Glass Metrics Footer ── */}
+      {!loading && sorted.length > 0 && (
+        <footer className="glass-footer" style={{
+          position: 'fixed', bottom: 0, left: 0, width: '100%', zIndex: 50,
+          borderTop: '1px solid rgba(226,232,240,0.5)',
+          padding: '20px 40px',
+        }}>
+          <div style={{ maxWidth: '1800px', margin: '0 auto', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '64px' }}>
+              {/* Occupancy */}
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <span style={{ fontSize: '9px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.2em', color: '#94a3b8', marginBottom: '4px' }}>
+                  {lang === 'es' ? 'Progreso' : 'Progress'}
+                </span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '30px', fontWeight: 900, color: '#0f172a', lineHeight: 1 }}>
+                  {pct}<span style={{ fontSize: '14px', fontWeight: 500, color: '#94a3b8' }}>%</span>
+                </span>
+              </div>
+              {/* Queue */}
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <span style={{ fontSize: '9px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.2em', color: '#94a3b8', marginBottom: '4px' }}>
+                  {lang === 'es' ? 'En Cola' : 'Queue Status'}
+                </span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '30px', fontWeight: 900, color: queueCount > 0 ? '#ef4444' : '#10b981', lineHeight: 1 }}>
+                  {queueCount}<span style={{ fontSize: '14px', fontWeight: 500, color: '#94a3b8' }}> {lang === 'es' ? 'hab.' : 'rooms'}</span>
+                </span>
+              </div>
+              {/* Total */}
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <span style={{ fontSize: '9px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.2em', color: '#94a3b8', marginBottom: '4px' }}>
+                  {lang === 'es' ? 'Total' : 'Total Rooms'}
+                </span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '30px', fontWeight: 900, color: '#0f172a', lineHeight: 1 }}>
+                  {totalCount}
+                </span>
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+              <span style={{
+                padding: '12px 28px', borderRadius: '12px', fontSize: '12px', fontWeight: 700,
+                border: '1px solid #e2e8f0', background: 'rgba(255,255,255,0.5)', color: '#475569',
+                fontFamily: 'var(--font-sans)',
+              }}>
+                {doneCount}/{totalCount} {lang === 'es' ? 'Completadas' : 'Complete'}
+              </span>
+            </div>
+          </div>
+        </footer>
       )}
     </div>
   );
@@ -3485,21 +3622,12 @@ export default function HousekeepingPage() {
 
   return (
     <AppLayout>
-      {/* ── Page header ── */}
-      <div style={{ padding: '20px 16px 0' }}>
-        <div style={{ padding: '0 0 4px' }}>
-          <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '17px', color: 'var(--text-primary)', letterSpacing: '-0.01em', display: 'flex', alignItems: 'center', gap: '8px', margin: 0 }}>
-            {t('housekeeping', lang)}
-          </h1>
-        </div>
-      </div>
-
-      {/* ── Sub-tab bar ── */}
-      <div style={{ padding: '12px 16px 0', position: 'sticky', top: 52, zIndex: 10, background: 'var(--bg)' }}>
-        <div style={{
-          display: 'flex', gap: '6px',
-          background: 'var(--bg-card)', border: '1px solid var(--border)',
-          borderRadius: 'var(--radius-lg)', padding: '4px',
+      {/* ── Sub-tab bar (Stitch pill style) ── */}
+      <div style={{ padding: '16px 24px 0', position: 'sticky', top: 64, zIndex: 10, background: 'var(--bg)' }}>
+        <nav style={{
+          display: 'flex', gap: '4px', padding: '4px',
+          background: 'rgba(148,163,184,0.12)', borderRadius: '8px',
+          width: 'fit-content',
         }}>
           {TABS.map(tab => {
             const isActive = activeTab === tab.key;
@@ -3511,26 +3639,25 @@ export default function HousekeepingPage() {
                 className="hk-tab-btn"
                 onClick={() => setActiveTab(tab.key)}
                 style={{
-                  flex: 1,
-                  padding: '10px 8px',
-                  border: 'none',
-                  borderRadius: 'var(--radius-md)',
-                  background: isActive ? 'var(--navy)' : 'transparent',
-                  color: isActive ? '#FFFFFF' : 'var(--text-muted)',
+                  padding: '6px 16px',
+                  border: isActive ? '1px solid rgba(226,232,240,0.5)' : '1px solid transparent',
+                  borderRadius: '6px',
+                  background: isActive ? '#ffffff' : 'transparent',
+                  color: isActive ? '#0f172a' : '#64748b',
                   fontWeight: isActive ? 700 : 600,
-                  fontSize: '13px',
+                  fontSize: '12px',
                   cursor: 'pointer',
                   whiteSpace: 'nowrap',
                   fontFamily: 'var(--font-sans)',
                   transition: 'all 120ms',
-                  boxShadow: isActive ? '0 2px 8px rgba(27, 58, 92, 0.25)' : 'none',
+                  boxShadow: isActive ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
                 }}
               >
                 {tabLabel ?? (tabLabelKey ? t(tabLabelKey, lang) : '')}
               </button>
             );
           })}
-        </div>
+        </nav>
       </div>
 
       {/* ── Section content ── */}

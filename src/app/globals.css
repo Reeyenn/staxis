@@ -334,6 +334,50 @@ body {
   --secondary-container: #d3e4f8;
 }
 
+/* ── Glass Tiles (Concierge OS / Stitch design) ───────────────────────────── */
+.glass-tile {
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  background: rgba(255, 255, 255, 0.6);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.glass-tile:hover {
+  background: rgba(255, 255, 255, 0.9);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
+}
+.glow-dirty     { box-shadow: 0 0 15px -3px rgba(239, 68, 68, 0.15); border-bottom: 2px solid rgba(239, 68, 68, 0.5); }
+.glow-cleaning  { box-shadow: 0 0 15px -3px rgba(245, 158, 11, 0.15); border-bottom: 2px solid rgba(245, 158, 11, 0.5); }
+.glow-clean     { box-shadow: 0 0 15px -3px rgba(16, 185, 129, 0.15); border-bottom: 2px solid rgba(16, 185, 129, 0.5); }
+.glow-inspected { box-shadow: 0 0 15px -3px rgba(139, 92, 246, 0.15); border-bottom: 2px solid rgba(139, 92, 246, 0.5); }
+
+.glass-footer {
+  backdrop-filter: blur(24px) saturate(200%);
+  -webkit-backdrop-filter: blur(24px) saturate(200%);
+  background: rgba(255, 255, 255, 0.8);
+}
+
+/* Status colors for Concierge OS tiles */
+.text-status-dirty     { color: #ef4444; }
+.text-status-cleaning  { color: #f59e0b; }
+.text-status-clean     { color: #10b981; }
+.text-status-inspected { color: #8b5cf6; }
+.bg-status-dirty       { background: #ef4444; }
+.bg-status-cleaning    { background: #f59e0b; }
+.bg-status-clean       { background: #10b981; }
+.bg-status-inspected   { background: #8b5cf6; }
+
+/* Glass tile with help/SOS request */
+.glow-help {
+  box-shadow: 0 0 15px -3px rgba(249, 115, 22, 0.3);
+  border-bottom: 2px solid rgba(249, 115, 22, 0.6);
+  animation: helpPulse 2s ease-in-out infinite;
+}
+@keyframes helpPulse {
+  0%, 100% { box-shadow: 0 0 15px -3px rgba(249, 115, 22, 0.3); }
+  50%      { box-shadow: 0 0 20px -3px rgba(249, 115, 22, 0.5); }
+}
+
 /* ── Animations ────────────────────────────────────────────────────────────── */
 .animate-in { animation: fadeUp 180ms var(--ease) both; }
 @keyframes fadeUp { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
