@@ -870,7 +870,7 @@ function ScheduleSection() {
           </div>
 
           {/* Add staff + Priority row */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '24px' }}>
             {eligiblePool.filter(s => !selectedCrew.find(c => c.id === s.id)).length > 0 && (
               <button onClick={() => setShowAddStaff(true)} style={{
                 padding: '10px 20px', background: 'rgba(255,255,255,0.7)', backdropFilter: 'blur(24px)',
@@ -896,7 +896,6 @@ function ScheduleSection() {
             {/* Send Confirmations — same row, pushed right */}
             {!sent && selectedCrew.length > 0 && (
               <button onClick={(e) => { e.stopPropagation(); handleSend(); }} disabled={sending} style={{
-                marginLeft: 'auto',
                 padding: '14px 24px', background: '#006565', color: '#82e2e1',
                 borderRadius: '9999px', fontWeight: 600, fontSize: '14px',
                 border: 'none', cursor: sending ? 'not-allowed' : 'pointer',
@@ -911,7 +910,7 @@ function ScheduleSection() {
               </button>
             )}
             {sent && (
-              <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 24px', background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)', borderRadius: '9999px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 24px', background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)', borderRadius: '9999px' }}>
                 <CheckCircle2 size={18} color="#10b981" />
                 <span style={{ fontSize: '14px', fontWeight: 600, color: '#059669' }}>{t('confirmationsSent', lang)}</span>
               </div>
