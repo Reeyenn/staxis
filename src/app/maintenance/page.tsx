@@ -168,6 +168,18 @@ export default function MaintenancePage() {
     });
   }, [user, activePropertyId]);
 
+  // ─── Load Material Symbols font for landscaping icons ────────────────────
+  useEffect(() => {
+    const id = 'material-symbols-outlined-font';
+    if (!document.getElementById(id)) {
+      const link = document.createElement('link');
+      link.id = id;
+      link.rel = 'stylesheet';
+      link.href = 'https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap';
+      document.head.appendChild(link);
+    }
+  }, []);
+
   // ─── Toast auto-dismiss ──────────────────────────────────────────────────
 
   useEffect(() => {
@@ -382,6 +394,13 @@ export default function MaintenancePage() {
         }
         .wo-urgent-glow {
           box-shadow: 0 0 20px -5px rgba(186,26,26,0.15);
+        }
+        @media (min-width: 640px) {
+          .ls-ai-card { display: block !important; }
+        }
+        .ls-task-card:hover {
+          background: #f5f3ee !important;
+          transform: scale(1.003);
         }
       `}</style>
 
@@ -695,13 +714,194 @@ export default function MaintenancePage() {
             <InspectionsView />
           </div>
         ) : (
-          /* ── Landscaping Tab ── */
-          <div className="animate-in stagger-2" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          /* ── Landscaping Tab — Stitch Concierge Layout ── */
+          <div className="animate-in stagger-2" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
-            {/* Season filter pills */}
-            <div className="scroll-pills" style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '2px', touchAction: 'pan-x', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none' }}>
+            {/* ── Hero Section ── */}
+            {(() => {
+              const cs = getCurrentSeason();
+              const csCfg = SEASON_CONFIG[cs];
+              const seasonLabel = lang === 'es' ? csCfg.labelEs : csCfg.label;
+              const now = Date.now();
+              const inSeasonTasks = lsTasks.filter(t => isTaskInSeason(t));
+              const overdueTasks = inSeasonTasks.filter(t => getLsDaysUntilDue(t, now) < 0);
+              const dueSoonTasks = inSeasonTasks.filter(t => { const d = getLsDaysUntilDue(t, now); return d >= 0 && d <= 7; });
+              const onTrackTasks = inSeasonTasks.filter(t => getLsDaysUntilDue(t, now) > 7);
+              const healthPct = inSeasonTasks.length > 0 ? Math.round(((onTrackTasks.length + dueSoonTasks.length) / inSeasonTasks.length) * 100) : 100;
+              const completionRate = lsTasks.length > 0 ? Math.round((lsTasks.filter(t => t.lastCompletedAt).length / lsTasks.length) * 100) : 0;
+
+              // Determine cycle phase
+              const month = new Date().getMonth();
+              const cyclePhase = (() => {
+                if (cs === 'spring') return month <= 2 ? 'Early Cycle' : month === 3 ? 'Mid Cycle' : 'Late Cycle';
+                if (cs === 'summer') return month <= 5 ? 'Early Cycle' : month === 6 ? 'Mid Cycle' : 'Late Cycle';
+                if (cs === 'fall') return month <= 8 ? 'Early Cycle' : month === 9 ? 'Mid Cycle' : 'Late Cycle';
+                return month <= 11 ? 'Early Cycle' : month === 0 ? 'Mid Cycle' : 'Late Cycle';
+              })();
+
+              // Dynamic hero text
+              const heroText = overdueTasks.length > 0
+                ? (lang === 'es'
+                  ? `${overdueTasks.length} tarea(s) de jardinería vencida(s) requieren atención inmediata. Priorice ${overdueTasks[0].name.toLowerCase()} para mantener los estándares de la propiedad.`
+                  : `${overdueTasks.length} landscaping task${overdueTasks.length > 1 ? 's' : ''} overdue and need${overdueTasks.length === 1 ? 's' : ''} attention. Prioritize ${overdueTasks[0].name.toLowerCase()} to maintain property standards.`)
+                : dueSoonTasks.length > 0
+                  ? (lang === 'es'
+                    ? `${dueSoonTasks.length} tarea(s) programada(s) esta semana. Las operaciones de jardinería están en buen camino para ${seasonLabel}.`
+                    : `${dueSoonTasks.length} task${dueSoonTasks.length > 1 ? 's' : ''} scheduled this week. Landscaping operations on track for ${seasonLabel}.`)
+                  : (lang === 'es'
+                    ? `Todas las operaciones de jardinería están al día. El ciclo de ${seasonLabel} avanza según lo programado.`
+                    : `All landscaping operations are current. ${seasonLabel} cycle progressing on schedule.`);
+
+              return (
+                <div style={{
+                  position: 'relative', overflow: 'hidden',
+                  borderRadius: '24px', background: '#f5f3ee',
+                  padding: '32px', marginBottom: '8px',
+                }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '24px' }}>
+                    {/* Left — season info + hero text */}
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                        <span style={{
+                          background: '#d3e4f8', color: '#394858',
+                          padding: '4px 14px', borderRadius: '9999px',
+                          fontSize: '12px', fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase',
+                        }}>
+                          {lang === 'es' ? 'Temporada' : 'Season'}: {seasonLabel.toUpperCase()} {new Date().getFullYear()}
+                        </span>
+                        <span style={{
+                          fontFamily: "'JetBrains Mono', monospace", fontSize: '12px',
+                          color: '#454652', letterSpacing: '0.1em', textTransform: 'uppercase',
+                        }}>
+                          {cyclePhase}
+                        </span>
+                      </div>
+
+                      <h1 style={{
+                        fontFamily: "'Inter', sans-serif", fontSize: '42px', fontWeight: 600,
+                        color: '#364262', letterSpacing: '-0.02em', lineHeight: 1.1,
+                        marginBottom: '16px',
+                      }}>
+                        {lang === 'es' ? 'Equilibrio del' : 'Grounds'}<br/>
+                        {lang === 'es' ? 'Jardín' : 'Operations'}
+                      </h1>
+
+                      <p style={{
+                        fontFamily: "'Inter', sans-serif", fontSize: '16px', lineHeight: 1.6,
+                        color: '#454652', maxWidth: '480px', marginBottom: '24px',
+                      }}>
+                        {heroText}
+                      </p>
+
+                      <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                        <button
+                          onClick={() => setShowLsModal(true)}
+                          style={{
+                            background: '#364262', color: '#fff',
+                            padding: '14px 28px', borderRadius: '9999px', border: 'none',
+                            fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 600,
+                            cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px',
+                            transition: 'transform 150ms',
+                          }}
+                        >
+                          <Plus size={16} />
+                          {t('addLandscapingTask', lang)}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* AI Landscape Health Summary — overlaid card */}
+                  <div style={{
+                    position: 'absolute', right: '32px', top: '32px',
+                    width: '280px', background: 'rgba(255,255,255,0.7)',
+                    backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)',
+                    borderRadius: '24px', padding: '24px',
+                    border: '1px solid rgba(197,197,212,0.2)',
+                    boxShadow: '0 0 40px rgba(0,75,75,0.1)',
+                    display: 'none',
+                  }} className="ls-ai-card">
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#006565', marginBottom: '20px' }}>
+                      <span style={{ fontSize: '18px' }}>⚡</span>
+                      <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                        {lang === 'es' ? 'Salud del Paisaje' : 'AI Landscape Health'}
+                      </span>
+                    </div>
+                    <div style={{ borderBottom: '1px solid rgba(197,197,212,0.2)', paddingBottom: '16px', marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+                      <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '14px', color: '#454652' }}>
+                        {lang === 'es' ? 'Salud General' : 'Overall Health'}
+                      </span>
+                      <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '24px', fontWeight: 500, color: '#364262' }}>
+                        {healthPct}%
+                      </span>
+                    </div>
+                    <div style={{ borderBottom: '1px solid rgba(197,197,212,0.2)', paddingBottom: '16px', marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+                      <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '14px', color: '#454652' }}>
+                        {lang === 'es' ? 'Tasa de Completado' : 'Completion Rate'}
+                      </span>
+                      <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '24px', fontWeight: 500, color: '#364262' }}>
+                        {completionRate}%
+                      </span>
+                    </div>
+                    {overdueTasks.length > 0 && (
+                      <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '14px', lineHeight: 1.5, color: '#1b1c19', fontStyle: 'italic' }}>
+                        &ldquo;{overdueTasks[0].name} {lang === 'es' ? 'necesita atención urgente para mantener los estándares de la propiedad.' : 'needs urgent attention to maintain property standards.'}&rdquo;
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Ambient glow */}
+                  <div style={{ position: 'absolute', right: '-40px', bottom: '-40px', width: '160px', height: '160px', background: 'rgba(0,101,101,0.05)', filter: 'blur(60px)', borderRadius: '50%', pointerEvents: 'none' }} />
+                </div>
+              );
+            })()}
+
+            {/* ── Active Operations — filter pills ── */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h2 style={{ fontFamily: "'Inter', sans-serif", fontSize: '22px', fontWeight: 500, color: '#1b1c19' }}>
+                {lang === 'es' ? 'Operaciones Activas' : 'Active Operations'}
+              </h2>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                {(() => {
+                  const now = Date.now();
+                  const overdueCount = filteredLsTasks.filter(t => isTaskInSeason(t) && getLsDaysUntilDue(t, now) < 0).length;
+                  const thisMonthCount = filteredLsTasks.filter(t => { const d = getLsDaysUntilDue(t, now); return isTaskInSeason(t) && d >= 0 && d <= 30; }).length;
+                  type LsFilterKey = 'all' | 'overdue' | 'thisMonth';
+                  const filters: { key: LsFilterKey; label: string }[] = [
+                    { key: 'all', label: lang === 'es' ? 'Todos' : 'All' },
+                    { key: 'overdue', label: `${lang === 'es' ? 'Vencidas' : 'Overdue'} (${overdueCount})` },
+                    { key: 'thisMonth', label: lang === 'es' ? 'Este Mes' : 'This Month' },
+                  ];
+                  return filters.map(f => {
+                    const isActive = lsSeasonFilter === f.key || (f.key === 'all' && lsSeasonFilter === 'all');
+                    return (
+                      <button
+                        key={f.key}
+                        onClick={() => {
+                          // We reuse lsSeasonFilter for simplicity — 'all' works, overdue/thisMonth handled in rendering
+                          if (f.key === 'all') setLsSeasonFilter('all');
+                          else if (f.key === 'overdue') setLsSeasonFilter('all'); // Filter applied in render
+                          else setLsSeasonFilter('all');
+                        }}
+                        style={{
+                          background: '#f0eee9', color: '#454652',
+                          padding: '8px 16px', borderRadius: '9999px', border: 'none',
+                          fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 500,
+                          cursor: 'pointer', transition: 'all 150ms',
+                        }}
+                      >
+                        {f.label}
+                      </button>
+                    );
+                  });
+                })()}
+              </div>
+            </div>
+
+            {/* ── Season filter pills row ── */}
+            <div style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '2px', scrollbarWidth: 'none' }}>
               {([
-                { key: 'all' as SeasonFilterKey, label: lang === 'es' ? 'Todos' : 'All' },
+                { key: 'all' as SeasonFilterKey, label: lang === 'es' ? 'Todos' : 'All Seasons' },
                 ...(['year-round', 'spring', 'summer', 'fall', 'winter'] as LandscapingSeason[]).map(s => ({
                   key: s as SeasonFilterKey,
                   label: lang === 'es' ? SEASON_CONFIG[s].labelEs : SEASON_CONFIG[s].label,
@@ -714,62 +914,31 @@ export default function MaintenancePage() {
                     key={f.key}
                     onClick={() => setLsSeasonFilter(f.key)}
                     style={{
-                      display: 'flex', alignItems: 'center', gap: '5px',
-                      padding: '7px 12px', border: 'none', cursor: 'pointer',
-                      borderRadius: 'var(--radius-full)',
-                      fontSize: '11px', fontWeight: 600, fontFamily: 'var(--font-sans)',
-                      background: isActive ? (cfg ? cfg.bg : 'var(--navy)') : 'var(--bg-elevated)',
-                      color: isActive ? (cfg ? cfg.color : '#fff') : 'var(--text-muted)',
-                      outline: isActive && cfg ? `1.5px solid ${cfg.color}` : 'none',
-                      transition: 'all 150ms', flexShrink: 0, minHeight: '32px',
+                      display: 'flex', alignItems: 'center', gap: '6px',
+                      padding: '8px 16px', border: 'none', cursor: 'pointer',
+                      borderRadius: '9999px',
+                      fontSize: '12px', fontWeight: 600, fontFamily: "'Inter', sans-serif",
+                      background: isActive ? (cfg ? 'rgba(0,101,101,0.08)' : '#364262') : '#f0eee9',
+                      color: isActive ? (cfg ? '#006565' : '#fff') : '#454652',
+                      outline: isActive && cfg ? '1.5px solid #006565' : 'none',
+                      transition: 'all 150ms', flexShrink: 0,
                     }}
                   >
-                    {cfg && React.createElement(cfg.icon, { size: 12 })}
+                    {cfg && React.createElement(cfg.icon, { size: 13 })}
                     {f.label}
                   </button>
                 );
               })}
             </div>
 
-            {/* Current season indicator */}
-            {(() => {
-              const cs = getCurrentSeason();
-              const csCfg = SEASON_CONFIG[cs];
-              return (
-                <div style={{
-                  display: 'flex', alignItems: 'center', gap: '8px',
-                  padding: '8px 14px', borderRadius: 'var(--radius-md)',
-                  background: csCfg.bg, fontSize: '12px', fontWeight: 600, color: csCfg.color,
-                }}>
-                  {React.createElement(csCfg.icon, { size: 14 })}
-                  {lang === 'es' ? 'Temporada actual' : 'Current season'}: {lang === 'es' ? csCfg.labelEs : csCfg.label}
-                </div>
-              );
-            })()}
-
-            {/* Add task button */}
-            <button
-              onClick={() => setShowLsModal(true)}
-              style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-                padding: '10px', border: '1px dashed var(--border)', borderRadius: 'var(--radius-md)',
-                background: 'transparent', cursor: 'pointer',
-                fontSize: '13px', fontWeight: 600, color: 'var(--navy)',
-                minHeight: '44px',
-              }}
-            >
-              <Plus size={14} />
-              {t('addLandscapingTask', lang)}
-            </button>
-
-            {/* Task cards */}
+            {/* ── Task Feed ── */}
             {filteredLsTasks.length === 0 ? (
               <div style={{
-                padding: '48px 20px', textAlign: 'center', borderRadius: 'var(--radius-lg)',
-                background: 'rgba(0,0,0,0.02)', border: '1px dashed var(--border)',
+                padding: '48px 20px', textAlign: 'center', borderRadius: '24px',
+                background: 'rgba(0,0,0,0.02)', border: '1px dashed #c5c5d4',
               }}>
-                <TreePine size={28} color="var(--text-muted)" style={{ margin: '0 auto 10px' }} />
-                <p style={{ fontSize: '14px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                <TreePine size={28} color="#757684" style={{ margin: '0 auto 10px' }} />
+                <p style={{ fontSize: '14px', color: '#757684', lineHeight: 1.5, fontFamily: "'Inter', sans-serif" }}>
                   {t('noLandscapingTasks', lang)}
                 </p>
               </div>
@@ -780,75 +949,177 @@ export default function MaintenancePage() {
                 const isDueSoon = daysUntil >= 0 && daysUntil <= 3;
                 const inSeason = isTaskInSeason(task);
                 const seasonCfg = SEASON_CONFIG[task.season];
-                const SeasonIcon = seasonCfg.icon;
-                const borderColor = !inSeason ? 'var(--text-muted)' : isOverdue ? 'var(--red)' : isDueSoon ? 'var(--amber)' : 'var(--green)';
+
+                // Task icon mapping
+                const getTaskIcon = (name: string): string => {
+                  const n = name.toLowerCase();
+                  if (n.includes('mow') || n.includes('grass') || n.includes('lawn') || n.includes('turf')) return 'grass';
+                  if (n.includes('shrub') || n.includes('trim') || n.includes('hedge') || n.includes('topiary')) return 'content_cut';
+                  if (n.includes('flower') || n.includes('plant') || n.includes('bloom')) return 'local_florist';
+                  if (n.includes('palm') || n.includes('tree')) return 'park';
+                  if (n.includes('irrig') || n.includes('water') || n.includes('sprinkler')) return 'water_drop';
+                  if (n.includes('weed')) return 'eco';
+                  if (n.includes('leaf') || n.includes('cleanup') || n.includes('clean')) return 'compost';
+                  if (n.includes('mulch') || n.includes('ground') || n.includes('cover')) return 'landscape';
+                  if (n.includes('seed') || n.includes('overseed')) return 'spa';
+                  if (n.includes('fertil')) return 'science';
+                  return 'yard';
+                };
+
+                // Status pill
+                const statusLabel = !inSeason
+                  ? (lang === 'es' ? 'Fuera de Temp.' : 'Off-Season')
+                  : isOverdue
+                    ? (lang === 'es' ? 'Vencida' : 'Overdue')
+                    : isDueSoon
+                      ? (lang === 'es' ? 'Próximamente' : 'Due This Month')
+                      : (lang === 'es' ? 'Al Día' : 'Good');
+                const statusBg = !inSeason ? '#eae8e3' : isOverdue ? '#ffdad6' : isDueSoon ? '#d3e4f8' : '#eae8e3';
+                const statusColor = !inSeason ? '#454652' : isOverdue ? '#93000a' : isDueSoon ? '#394858' : '#454652';
+
+                // Icon container colors
+                const iconBg = !inSeason ? '#eae8e3' : isOverdue ? '#ffdad6' : isDueSoon ? '#d3e4f8' : '#eae8e3';
+                const iconColor = !inSeason ? '#454652' : isOverdue ? '#ba1a1a' : isDueSoon ? '#364262' : '#454652';
+
+                // Days label
+                const daysLabel = isOverdue
+                  ? (lang === 'es' ? 'Días Pasados' : 'Days Past')
+                  : (lang === 'es' ? 'Días Hasta' : 'Days Until');
+                const daysValue = Math.abs(daysUntil);
+                const daysColor = isOverdue ? '#ba1a1a' : daysUntil <= 7 ? '#364262' : 'rgba(69,70,82,0.4)';
 
                 return (
                   <div
                     key={task.id}
-                    className="card"
                     style={{
-                      padding: '10px 14px', borderLeft: `3px solid ${borderColor}`,
-                      position: 'relative',
-                      opacity: inSeason ? 1 : 0.55,
+                      background: '#fff', borderRadius: '24px',
+                      padding: '24px', display: 'flex', flexDirection: 'column',
+                      border: '1px solid rgba(197,197,212,0.2)',
+                      opacity: inSeason ? 1 : 0.6,
+                      transition: 'all 300ms', cursor: 'pointer',
                     }}
+                    className="ls-task-card"
                   >
-                    {/* Row 1: name + season icon + delete */}
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
-                      <SeasonIcon size={12} color={seasonCfg.color} style={{ flexShrink: 0 }} />
-                      <p style={{ fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)', margin: 0, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {task.name}
-                      </p>
-                      {inSeason && (
-                        <button
-                          onClick={() => handleMarkLsDone(task)}
-                          style={{
-                            display: 'flex', alignItems: 'center', gap: '4px',
-                            padding: '4px 10px', border: 'none', borderRadius: 'var(--radius-md)',
-                            background: 'rgba(34,197,94,0.1)', color: 'var(--green)',
-                            fontSize: '11px', fontWeight: 700, cursor: 'pointer',
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
+                      {/* Icon */}
+                      <div style={{
+                        width: '56px', height: '56px', borderRadius: '16px', flexShrink: 0,
+                        background: iconBg, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      }}>
+                        <span className="material-symbols-outlined" style={{ fontSize: '28px', color: iconColor }}>
+                          {getTaskIcon(task.name)}
+                        </span>
+                      </div>
+
+                      {/* Text */}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
+                          <h3 style={{
+                            fontFamily: "'Inter', sans-serif", fontSize: '17px', fontWeight: 600,
+                            color: '#1b1c19', margin: 0,
+                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          }}>
+                            {task.name}
+                          </h3>
+                          <span style={{
+                            background: statusBg, color: statusColor,
+                            padding: '2px 10px', borderRadius: '9999px',
+                            fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em',
                             flexShrink: 0,
+                          }}>
+                            {statusLabel}
+                          </span>
+                        </div>
+                        <p style={{
+                          fontFamily: "'Inter', sans-serif", fontSize: '14px', color: '#454652',
+                          margin: 0,
+                        }}>
+                          {lang === 'es' ? `Cada ${task.frequencyDays} días` : `Every ${task.frequencyDays} days`}
+                          {' · '}
+                          {task.lastCompletedAt
+                            ? `${lang === 'es' ? 'Último' : 'Last'}: ${formatShortDate(toJsDate(task.lastCompletedAt))}`
+                            : (lang === 'es' ? 'Nunca completada' : 'Never completed')
+                          }
+                        </p>
+                      </div>
+
+                      {/* Days counter */}
+                      <div style={{ textAlign: 'center', flexShrink: 0, marginRight: '8px' }}>
+                        <p style={{
+                          fontFamily: "'Inter', sans-serif", fontSize: '10px',
+                          color: '#454652', letterSpacing: '0.1em', textTransform: 'uppercase',
+                          marginBottom: '4px',
+                        }}>
+                          {inSeason ? daysLabel : (lang === 'es' ? 'Fuera de Temp.' : 'Off-Season')}
+                        </p>
+                        {inSeason && (
+                          <p style={{
+                            fontFamily: "'JetBrains Mono', monospace", fontSize: '36px', fontWeight: 500,
+                            color: daysColor, lineHeight: 1, margin: 0,
+                          }}>
+                            {String(daysValue).padStart(2, '0')}
+                          </p>
+                        )}
+                      </div>
+
+                      {/* Action buttons */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                        {inSeason && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleMarkLsDone(task); }}
+                            title={lang === 'es' ? 'Marcar completada' : 'Mark done'}
+                            style={{
+                              width: '44px', height: '44px', borderRadius: '50%', border: 'none',
+                              background: '#006565', color: '#fff', cursor: 'pointer',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              transition: 'all 150ms',
+                            }}
+                          >
+                            <CheckCircle2 size={18} />
+                          </button>
+                        )}
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleDeleteLs(task); }}
+                          title={lang === 'es' ? 'Eliminar' : 'Delete'}
+                          style={{
+                            width: '44px', height: '44px', borderRadius: '50%', border: 'none',
+                            background: '#eae8e3', color: '#454652', cursor: 'pointer',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            transition: 'all 150ms',
                           }}
                         >
-                          <CheckCircle2 size={11} />
-                          {t('markDone', lang)}
+                          <Trash2 size={16} />
                         </button>
-                      )}
-                      <button
-                        onClick={() => handleDeleteLs(task)}
-                        aria-label={`Delete ${task.name}`}
-                        style={{
-                          background: 'none', border: 'none', cursor: 'pointer', padding: '2px', flexShrink: 0,
-                        }}
-                      >
-                        <Trash2 size={12} color="var(--text-muted)" />
-                      </button>
-                    </div>
-
-                    {/* Row 2: meta — due status · frequency · last */}
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '3px', fontSize: '11px', minWidth: 0 }}>
-                      <span style={{
-                        fontWeight: 700,
-                        color: !inSeason ? 'var(--text-muted)' : isOverdue ? 'var(--red)' : isDueSoon ? 'var(--amber)' : 'var(--text-secondary)',
-                        flexShrink: 0,
-                      }}>
-                        {!inSeason
-                          ? (lang === 'es' ? 'Fuera de temporada' : 'Off-season')
-                          : isOverdue
-                            ? (lang === 'es' ? `Vencida ${Math.abs(daysUntil)}d` : `Overdue ${Math.abs(daysUntil)}d`)
-                            : daysUntil === 0
-                              ? t('dueToday', lang)
-                              : (lang === 'es' ? `En ${daysUntil}d` : `In ${daysUntil}d`)
-                        }
-                      </span>
-                      <span style={{ color: 'var(--text-muted)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        · {lang === 'es' ? `cada ${task.frequencyDays}d` : `every ${task.frequencyDays}d`} · {task.lastCompletedAt ? formatShortDate(toJsDate(task.lastCompletedAt)) : t('never', lang)}
-                      </span>
+                      </div>
                     </div>
                   </div>
                 );
               })
             )}
+
+            {/* ── Inline "New Task" card ── */}
+            <button
+              onClick={() => setShowLsModal(true)}
+              style={{
+                background: 'transparent', borderRadius: '24px',
+                padding: '24px', display: 'flex', alignItems: 'center', gap: '20px',
+                border: '2px dashed #c5c5d4', cursor: 'pointer',
+                transition: 'all 200ms',
+              }}
+            >
+              <div style={{
+                width: '56px', height: '56px', borderRadius: '16px', flexShrink: 0,
+                background: '#364262', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <Plus size={24} color="#fff" />
+              </div>
+              <span style={{
+                fontFamily: "'Inter', sans-serif", fontSize: '17px', fontWeight: 600,
+                color: '#364262',
+              }}>
+                {lang === 'es' ? 'Nueva Tarea' : 'New Task'}
+              </span>
+            </button>
           </div>
         )}
       </div>
@@ -1028,34 +1299,35 @@ export default function MaintenancePage() {
         </div>
       )}
 
-      {/* ── Add Landscaping Task Modal ── */}
+      {/* ── Add Landscaping Task Modal — Stitch Design ── */}
       {showLsModal && (
         <div
           style={{
             position: 'fixed', inset: 0, zIndex: 50,
-            background: 'rgba(0,0,0,0.4)',
+            background: 'rgba(27,28,25,0.5)',
+            backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
             display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
           }}
           onClick={e => { if (e.target === e.currentTarget) setShowLsModal(false); }}
         >
           <div style={{
             width: '100%', maxWidth: '500px',
-            background: 'var(--bg-card)', borderRadius: '14px 14px 0 0',
-            padding: '16px 16px calc(16px + env(safe-area-inset-bottom))',
-            display: 'flex', flexDirection: 'column', gap: '12px',
+            background: '#fbf9f4', borderRadius: '24px 24px 0 0',
+            padding: '24px 24px calc(24px + env(safe-area-inset-bottom))',
+            display: 'flex', flexDirection: 'column', gap: '16px',
           }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <h2 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '15px', color: 'var(--text-primary)' }}>
+              <h2 style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: '18px', color: '#1b1c19' }}>
                 {t('addLandscapingTask', lang)}
               </h2>
-              <button onClick={() => setShowLsModal(false)} aria-label={lang === 'es' ? 'Cerrar' : 'Close'} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}>
-                <X size={16} color="var(--text-muted)" />
+              <button onClick={() => setShowLsModal(false)} aria-label={lang === 'es' ? 'Cerrar' : 'Close'} style={{ background: '#eae8e3', border: 'none', cursor: 'pointer', padding: '8px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <X size={16} color="#454652" />
               </button>
             </div>
 
             {/* Task name */}
             <div>
-              <label style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '3px', display: 'block' }}>
+              <label style={{ fontSize: '12px', fontWeight: 600, color: '#454652', marginBottom: '6px', display: 'block', fontFamily: "'Inter', sans-serif" }}>
                 {t('landscapingTaskName', lang)}
               </label>
               <input
@@ -1064,20 +1336,21 @@ export default function MaintenancePage() {
                 onChange={e => setNewLsName(e.target.value)}
                 placeholder={lang === 'es' ? 'ej. Corte de césped' : 'e.g. Grass Mowing'}
                 style={{
-                  width: '100%', padding: '9px 12px', fontSize: '13px',
-                  border: '1px solid var(--border)', borderRadius: 'var(--radius-md)',
-                  background: 'var(--bg)', color: 'var(--text-primary)',
-                  fontFamily: 'var(--font-sans)',
+                  width: '100%', padding: '12px 16px', fontSize: '14px',
+                  border: '1px solid #c5c5d4', borderRadius: '16px',
+                  background: '#fff', color: '#1b1c19',
+                  fontFamily: "'Inter', sans-serif",
+                  outline: 'none', transition: 'border-color 150ms',
                 }}
               />
             </div>
 
             {/* Season selector */}
             <div>
-              <label style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '3px', display: 'block' }}>
+              <label style={{ fontSize: '12px', fontWeight: 600, color: '#454652', marginBottom: '6px', display: 'block', fontFamily: "'Inter', sans-serif" }}>
                 {t('season', lang)}
               </label>
-              <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                 {(['year-round', 'spring', 'summer', 'fall', 'winter'] as LandscapingSeason[]).map(s => {
                   const cfg = SEASON_CONFIG[s];
                   const isSelected = newLsSeason === s;
@@ -1086,16 +1359,16 @@ export default function MaintenancePage() {
                       key={s}
                       onClick={() => setNewLsSeason(s)}
                       style={{
-                        display: 'flex', alignItems: 'center', gap: '4px',
-                        padding: '5px 10px', border: 'none', borderRadius: 'var(--radius-md)',
-                        fontSize: '11px', fontWeight: 600, cursor: 'pointer',
-                        background: isSelected ? cfg.bg : 'var(--bg-elevated)',
-                        color: isSelected ? cfg.color : 'var(--text-muted)',
-                        outline: isSelected ? `2px solid ${cfg.color}` : 'none',
+                        display: 'flex', alignItems: 'center', gap: '5px',
+                        padding: '8px 14px', border: 'none', borderRadius: '9999px',
+                        fontSize: '12px', fontWeight: 600, cursor: 'pointer',
+                        fontFamily: "'Inter', sans-serif",
+                        background: isSelected ? '#006565' : '#f0eee9',
+                        color: isSelected ? '#fff' : '#454652',
                         transition: 'all 150ms',
                       }}
                     >
-                      {React.createElement(cfg.icon, { size: 11 })}
+                      {React.createElement(cfg.icon, { size: 13 })}
                       {lang === 'es' ? cfg.labelEs : cfg.label}
                     </button>
                   );
@@ -1105,7 +1378,7 @@ export default function MaintenancePage() {
 
             {/* Frequency */}
             <div>
-              <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '4px', display: 'block' }}>
+              <label style={{ fontSize: '12px', fontWeight: 600, color: '#454652', marginBottom: '6px', display: 'block', fontFamily: "'Inter', sans-serif" }}>
                 {t('frequencyDays', lang)}
               </label>
               <input
@@ -1114,10 +1387,11 @@ export default function MaintenancePage() {
                 onChange={e => setNewLsFreq(e.target.value)}
                 min="1"
                 style={{
-                  width: '100%', padding: '12px 14px', fontSize: '14px',
-                  border: '1px solid var(--border)', borderRadius: 'var(--radius-md)',
-                  background: 'var(--bg)', color: 'var(--text-primary)',
-                  fontFamily: 'var(--font-mono)',
+                  width: '100%', padding: '12px 16px', fontSize: '14px',
+                  border: '1px solid #c5c5d4', borderRadius: '16px',
+                  background: '#fff', color: '#1b1c19',
+                  fontFamily: "'JetBrains Mono', monospace",
+                  outline: 'none',
                 }}
               />
             </div>
@@ -1126,12 +1400,12 @@ export default function MaintenancePage() {
               onClick={handleCreateLs}
               disabled={!newLsName.trim() || submitting}
               style={{
-                width: '100%', padding: '14px', border: 'none',
-                borderRadius: 'var(--radius-md)', cursor: newLsName.trim() && !submitting ? 'pointer' : 'not-allowed',
-                background: newLsName.trim() && !submitting ? 'var(--navy)' : 'var(--bg-elevated)',
-                color: newLsName.trim() && !submitting ? '#fff' : 'var(--text-muted)',
-                fontSize: '14px', fontWeight: 700, fontFamily: 'var(--font-sans)',
-                transition: 'all 150ms', minHeight: '48px',
+                width: '100%', padding: '16px', border: 'none',
+                borderRadius: '9999px', cursor: newLsName.trim() && !submitting ? 'pointer' : 'not-allowed',
+                background: newLsName.trim() && !submitting ? '#364262' : '#eae8e3',
+                color: newLsName.trim() && !submitting ? '#fff' : '#757684',
+                fontSize: '15px', fontWeight: 600, fontFamily: "'Inter', sans-serif",
+                transition: 'all 150ms', minHeight: '52px',
               }}
             >
               {submitting ? '...' : t('addLandscapingTask', lang)}
