@@ -75,6 +75,15 @@ export function InspectionsView() {
   const [toast, setToast] = useState<string | null>(null);
   const [seeded, setSeeded] = useState(false);
 
+  // Load Material Symbols Outlined font
+  useEffect(() => {
+    if (document.querySelector('link[href*="Material+Symbols+Outlined"]')) return;
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = 'https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap';
+    document.head.appendChild(link);
+  }, []);
+
   const showToast = useCallback((msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(null), 2500);
@@ -137,124 +146,347 @@ export function InspectionsView() {
     }
   };
 
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+  // ─── Dynamic computed values ─────────────────────────────────────────────
+  const totalInspections = inspections.length;
+  const goodCount = inspections.filter(i => getStatus(i.dueMonth) === 'upcoming').length;
+  const notsetCount = inspections.filter(i => getStatus(i.dueMonth) === 'notset').length;
+  const healthPct = totalInspections > 0 ? Math.round(((goodCount) / totalInspections) * 100) : 100;
 
-      {/* Alert banner */}
-      {alertCount > 0 && (
+  // Icon mapping for inspection types
+  const getInspectionIcon = (name: string): string => {
+    const n = name.toLowerCase();
+    if (n.includes('elevator')) return 'elevator';
+    if (n.includes('fire ext')) return 'fire_extinguisher';
+    if (n.includes('sprinkler') || n.includes('fire spr')) return 'fire_extinguisher';
+    if (n.includes('fire panel')) return 'local_fire_department';
+    if (n.includes('breakfast') || n.includes('health') || n.includes('kitchen')) return 'restaurant';
+    if (n.includes('pool')) return 'pool';
+    if (n.includes('backflow') || n.includes('water')) return 'water_damage';
+    if (n.includes('pest')) return 'pest_control';
+    if (n.includes('hvac') || n.includes('air')) return 'air';
+    if (n.includes('roof')) return 'roofing';
+    return 'assignment_turned_in';
+  };
+
+  const getIconBg = (status: InspectionStatus): string => {
+    switch (status) {
+      case 'overdue': return 'rgba(186,26,26,0.08)';
+      case 'due': return 'rgba(211,228,248,0.3)';
+      case 'upcoming': return 'rgba(0,101,101,0.06)';
+      default: return '#f0eee9';
+    }
+  };
+
+  const getIconColor = (status: InspectionStatus): string => {
+    switch (status) {
+      case 'overdue': return '#ba1a1a';
+      case 'due': return '#506071';
+      case 'upcoming': return '#006565';
+      default: return '#454652';
+    }
+  };
+
+  const getStatusPill = (status: InspectionStatus): { bg: string; color: string; label: string; labelEs: string } => {
+    switch (status) {
+      case 'overdue': return { bg: '#ffdad6', color: '#93000a', label: 'Overdue', labelEs: 'Vencida' };
+      case 'due': return { bg: '#d3e4f8', color: '#394858', label: 'Due This Month', labelEs: 'Pendiente' };
+      case 'upcoming': return { bg: 'rgba(0,101,101,0.08)', color: '#006565', label: 'Annual Compliance', labelEs: 'Al Día' };
+      default: return { bg: '#eae8e3', color: '#454652', label: 'Set Date', labelEs: 'Sin Fecha' };
+    }
+  };
+
+  const getFreqLabel = (months: number): string => {
+    if (months === 1) return 'Monthly';
+    if (months === 3) return 'Quarterly';
+    if (months === 6) return 'Semi-Annual';
+    if (months === 12) return 'Annual';
+    return `Every ${months}mo`;
+  };
+
+  const getActionIcon = (status: InspectionStatus): string => {
+    switch (status) {
+      case 'overdue': return 'chevron_right';
+      case 'due': return 'chevron_right';
+      case 'upcoming': return 'add_task';
+      default: return 'calendar_month';
+    }
+  };
+
+  const getActionBg = (status: InspectionStatus): string => {
+    switch (status) {
+      case 'overdue': return '#364262';
+      case 'due': return '#eae8e3';
+      default: return '#eae8e3';
+    }
+  };
+
+  const getActionColor = (status: InspectionStatus): string => {
+    switch (status) {
+      case 'overdue': return '#fff';
+      default: return '#364262';
+    }
+  };
+
+  // AI recommendation text
+  const aiRecommendation = (() => {
+    const overdueItems = inspections.filter(i => getStatus(i.dueMonth) === 'overdue');
+    const dueItems = inspections.filter(i => getStatus(i.dueMonth) === 'due');
+    if (overdueItems.length > 0) {
+      const first = overdueItems[0];
+      const otherOverdue = overdueItems.length > 1 ? overdueItems[1] : null;
+      if (otherOverdue) {
+        return `The **${first.name}** is currently overdue. Failure to inspect promptly may result in regulatory penalties. Our AI suggests scheduling this simultaneously with the **${otherOverdue.name}** check to reduce contractor call-out fees.`;
+      }
+      return `The **${first.name}** is currently overdue. Schedule this inspection as soon as possible to avoid regulatory penalties and maintain compliance.`;
+    }
+    if (dueItems.length > 0) {
+      return `${dueItems.length} inspection${dueItems.length !== 1 ? 's' : ''} due this month. Schedule them together to minimize vendor coordination overhead and reduce costs.`;
+    }
+    return null;
+  })();
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+
+      {/* ── Asset Health Hero Card ── */}
+      <div style={{
+        background: '#f5f3ee', padding: '40px 48px', borderRadius: '20px',
+        position: 'relative', overflow: 'hidden',
+        border: '1px solid rgba(78,90,122,0.06)',
+      }}>
+        {/* Atmospheric blur */}
         <div style={{
-          display: 'flex', alignItems: 'center', gap: '12px',
-          padding: '12px 16px', borderRadius: 'var(--radius-lg)',
-          background: overdueCount > 0
-            ? 'linear-gradient(135deg, var(--red), #ef4444)'
-            : 'linear-gradient(135deg, var(--amber), #fbbf24)',
-          color: '#fff',
-        }}>
-          <AlertTriangle size={18} style={{ flexShrink: 0 }} />
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontWeight: 700, fontSize: '14px' }}>
-              {overdueCount > 0
-                ? lang === 'es'
-                  ? `${overdueCount} Inspección${overdueCount !== 1 ? 'es' : ''} Vencida${overdueCount !== 1 ? 's' : ''}`
-                  : `${overdueCount} Overdue Inspection${overdueCount !== 1 ? 's' : ''}`
-                : lang === 'es'
-                  ? `${dueCount} Inspección${dueCount !== 1 ? 'es' : ''} Pendiente${dueCount !== 1 ? 's' : ''} Este Mes`
-                  : `${dueCount} Inspection${dueCount !== 1 ? 's' : ''} Due This Month`
-              }
+          position: 'absolute', top: '-80px', right: '-80px', width: '240px', height: '240px',
+          background: 'rgba(0,101,101,0.04)', borderRadius: '50%', filter: 'blur(60px)',
+        }} />
+        <div style={{ position: 'relative', zIndex: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: '24px' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+              <span style={{ fontSize: '18px' }}>⚡</span>
+              <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#006565' }}>
+                {lang === 'es' ? 'Inteligencia de Mantenimiento' : 'Maintenance Intelligence'}
+              </span>
             </div>
-            <div style={{ fontSize: '11px', opacity: 0.9 }}>
-              {overdueCount > 0 && dueCount > 0
-                ? lang === 'es' ? `Más ${dueCount} pendientes este mes` : `Plus ${dueCount} due this month`
-                : lang === 'es' ? 'Toca un elemento para marcar' : 'Tap an item to mark as inspected'
-              }
+            <h2 style={{ fontFamily: "'Inter', sans-serif", fontSize: '36px', fontWeight: 600, color: '#1b1c19', lineHeight: 1.15, margin: 0 }}>
+              {lang === 'es' ? 'Salud de Activos' : 'Asset Health'}<br />
+              <span style={{ fontFamily: "'JetBrains Mono', monospace", color: '#364262' }}>{healthPct}%</span> {lang === 'es' ? 'Óptimo' : 'Optimal'}
+            </h2>
+          </div>
+          <div style={{ textAlign: 'right' }}>
+            <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '15px', color: '#454652', marginBottom: '8px' }}>
+              {lang === 'es' ? 'Estado del Sistema' : 'System Status'}: {overdueCount > 0 ? (lang === 'es' ? 'Atención' : 'Attention') : (lang === 'es' ? 'Activo' : 'Active')}
+            </p>
+            <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+              {overdueCount > 0 && (
+                <div style={{
+                  padding: '6px 14px', background: '#fff', borderRadius: '9999px',
+                  border: '1px solid rgba(197,197,212,0.2)',
+                  display: 'flex', alignItems: 'center', gap: '8px',
+                }}>
+                  <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#ba1a1a' }} />
+                  <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '13px', color: '#1b1c19' }}>
+                    {overdueCount} {lang === 'es' ? 'Crítico' : 'Critical'}
+                  </span>
+                </div>
+              )}
+              {(dueCount + goodCount + notsetCount) > 0 && (
+                <div style={{
+                  padding: '6px 14px', background: '#fff', borderRadius: '9999px',
+                  border: '1px solid rgba(197,197,212,0.2)',
+                  display: 'flex', alignItems: 'center', gap: '8px',
+                }}>
+                  <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#d3e4f8' }} />
+                  <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '13px', color: '#1b1c19' }}>
+                    {dueCount + goodCount + notsetCount} {lang === 'es' ? 'Próximas' : 'Upcoming'}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         </div>
-      )}
+      </div>
 
-      {/* Add Inspection button */}
-      <button
-        onClick={() => setShowAddModal(true)}
-        style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-          padding: '10px', border: '1px dashed var(--border)', borderRadius: 'var(--radius-md)',
-          background: 'transparent', cursor: 'pointer',
-          fontSize: '13px', fontWeight: 600, color: 'var(--navy)',
-          minHeight: '44px',
-        }}
-      >
-        <Plus size={14} />
-        {lang === 'es' ? 'Agregar Inspección' : 'Add Inspection'}
-      </button>
+      {/* ── Section Title + Sort ── */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+        <h2 style={{ fontFamily: "'Inter', sans-serif", fontSize: '24px', fontWeight: 500, letterSpacing: '-0.02em', color: '#1b1c19', margin: 0 }}>
+          {lang === 'es' ? 'Mantenimiento Preventivo' : 'Preventive Maintenance'}
+        </h2>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#454652' }}>
+          <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 500 }}>
+            {lang === 'es' ? 'Ordenar por: Prioridad' : 'Sort by: Priority'}
+          </span>
+        </div>
+      </div>
 
-      {/* Inspection list */}
-      <div style={{
-        borderRadius: 'var(--radius-lg)', border: '1px solid var(--border)',
-        overflow: 'hidden', background: 'var(--bg-card)',
-      }}>
+      {/* ── Inspection Cards Feed ── */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
         {sorted.length === 0 ? (
-          <div style={{ padding: '40px 20px', textAlign: 'center' }}>
-            <ClipboardCheck size={28} color="var(--text-muted)" style={{ margin: '0 auto 8px' }} />
-            <p style={{ fontSize: '14px', color: 'var(--text-muted)' }}>
+          <div style={{
+            background: 'rgba(255,255,255,0.6)', backdropFilter: 'blur(12px)',
+            borderRadius: '16px', padding: '48px 24px', textAlign: 'center',
+            border: '1px solid rgba(197,197,212,0.2)',
+          }}>
+            <ClipboardCheck size={28} color="#757684" style={{ margin: '0 auto 8px' }} />
+            <p style={{ fontSize: '14px', color: '#757684' }}>
               {lang === 'es' ? 'No hay inspecciones configuradas' : 'No inspections set up yet'}
             </p>
           </div>
         ) : (
-          sorted.map((item, idx) => {
+          sorted.map((item) => {
             const status = getStatus(item.dueMonth);
-            const cfg = STATUS_CONFIG[status];
-            const StatusIcon = cfg.icon;
-            const isLast = idx === sorted.length - 1;
+            const pill = getStatusPill(status);
+            const isBorderLeft = status === 'upcoming' || status === 'overdue';
             return (
               <div
                 key={item.id}
                 onClick={() => setEditModal(item)}
-                className="inspection-row"
                 style={{
-                  display: 'flex', alignItems: 'center', gap: '12px',
-                  padding: '14px 14px', borderBottom: isLast ? 'none' : '1px solid var(--border)',
-                  background: (status === 'overdue' || status === 'due') ? cfg.bg : undefined,
-                  cursor: 'pointer',
-                  transition: 'background 150ms',
+                  background: 'rgba(255,255,255,0.7)', backdropFilter: 'blur(24px)',
+                  borderRadius: '16px', padding: '28px 32px',
+                  border: '1px solid rgba(197,197,212,0.2)',
+                  borderLeft: isBorderLeft ? `4px solid ${getIconColor(status)}` : undefined,
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  gap: '24px', cursor: 'pointer',
+                  transition: 'transform 200ms cubic-bezier(0.2,0,0,1)',
                 }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.transform = 'translateY(-2px)'; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.transform = 'translateY(0)'; }}
               >
-                {/* Status icon */}
-                <div style={{
-                  width: '40px', height: '40px', borderRadius: '10px',
-                  background: cfg.bg, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  flexShrink: 0,
-                }}>
-                  <StatusIcon size={20} color={cfg.color} />
+                {/* Left: Icon + Info */}
+                <div style={{ display: 'flex', gap: '20px', alignItems: 'center', flex: 1, minWidth: 0 }}>
+                  <div style={{
+                    width: '56px', height: '56px', borderRadius: '16px',
+                    background: getIconBg(status),
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    flexShrink: 0,
+                  }}>
+                    <span className="material-symbols-outlined" style={{
+                      fontSize: '26px', color: getIconColor(status),
+                      fontVariationSettings: status === 'overdue' ? "'FILL' 1" : "'FILL' 0",
+                    }}>
+                      {getInspectionIcon(item.name)}
+                    </span>
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginBottom: '3px' }}>
+                      <h3 style={{ fontFamily: "'Inter', sans-serif", fontSize: '18px', fontWeight: 600, color: '#1b1c19', margin: 0 }}>
+                        {item.name}
+                      </h3>
+                      <span style={{
+                        padding: '3px 10px', borderRadius: '9999px',
+                        fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em',
+                        background: pill.bg, color: pill.color,
+                      }}>
+                        {lang === 'es' ? pill.labelEs : pill.label}
+                      </span>
+                    </div>
+                    <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#454652', margin: 0 }}>
+                      {lang === 'es' ? 'Frecuencia' : 'Frequency'}: <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>{getFreqLabel(item.frequencyMonths)}</span>
+                      {item.lastInspectedDate && (
+                        <span> · {lang === 'es' ? 'Última' : 'Last'}: <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>{item.lastInspectedDate}</span></span>
+                      )}
+                    </p>
+                  </div>
                 </div>
 
-                {/* Name + details */}
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 700, fontSize: '14px', color: 'var(--text-primary)' }}>
-                    {item.name}
+                {/* Right: Due date + action */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '20px', flexShrink: 0 }}>
+                  <div style={{ textAlign: 'right' }}>
+                    <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#757684', marginBottom: '3px' }}>
+                      {item.dueMonth ? (lang === 'es' ? 'Próxima' : 'Next Due') : (lang === 'es' ? 'Frecuencia' : 'Frequency')}
+                    </p>
+                    <p style={{
+                      fontFamily: "'JetBrains Mono', monospace", fontSize: '16px',
+                      color: status === 'overdue' ? '#ba1a1a' : '#1b1c19', margin: 0,
+                    }}>
+                      {item.dueMonth ? item.dueMonth.replace('-', '.') : getFreqLabel(item.frequencyMonths)}
+                    </p>
                   </div>
-                  <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '3px', display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                    <span>{lang === 'es' ? 'Vence: ' : 'Due: '}<strong style={{ color: cfg.color }}>{formatMonth(item.dueMonth)}</strong></span>
-                    {item.lastInspectedDate && (
-                      <span>{lang === 'es' ? 'Última: ' : 'Last: '}{item.lastInspectedDate}</span>
-                    )}
-                    <span>{lang === 'es' ? `Cada ${item.frequencyMonths}m` : `Every ${item.frequencyMonths}mo`}</span>
+                  <div style={{
+                    width: '44px', height: '44px', borderRadius: '50%',
+                    background: getActionBg(status), color: getActionColor(status),
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    transition: 'box-shadow 200ms',
+                  }}>
+                    <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>
+                      {getActionIcon(status)}
+                    </span>
                   </div>
                 </div>
-
-                {/* Status badge */}
-                <span style={{
-                  padding: '4px 10px', borderRadius: '99px', fontSize: '11px', fontWeight: 600,
-                  background: cfg.bg, color: cfg.color, whiteSpace: 'nowrap', flexShrink: 0,
-                }}>
-                  {lang === 'es' ? cfg.labelEs : cfg.label}
-                </span>
-
-                <ChevronRight size={16} color="var(--text-muted)" style={{ flexShrink: 0 }} />
               </div>
             );
           })
         )}
+
+        {/* ── Inline "New Entry" card at bottom of list ── */}
+        <div
+          onClick={() => setShowAddModal(true)}
+          style={{
+            background: 'rgba(255,255,255,0.4)', backdropFilter: 'blur(12px)',
+            borderRadius: '16px', padding: '28px 32px',
+            border: '2px dashed rgba(197,197,212,0.3)',
+            display: 'flex', justifyContent: 'center', alignItems: 'center',
+            gap: '12px', cursor: 'pointer',
+            transition: 'all 200ms cubic-bezier(0.2,0,0,1)',
+          }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.7)'; (e.currentTarget as HTMLElement).style.borderColor = 'rgba(54,66,98,0.3)'; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.4)'; (e.currentTarget as HTMLElement).style.borderColor = 'rgba(197,197,212,0.3)'; }}
+        >
+          <div style={{
+            width: '44px', height: '44px', borderRadius: '50%',
+            background: '#364262', color: '#fff',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <Plus size={20} strokeWidth={2.5} />
+          </div>
+          <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '15px', fontWeight: 600, color: '#364262' }}>
+            {lang === 'es' ? 'Agregar Inspección' : 'New Entry'}
+          </span>
+        </div>
       </div>
+
+      {/* ── AI Concierge Recommendation ── */}
+      {aiRecommendation && (
+        <div style={{
+          borderRadius: '16px', padding: '28px 32px',
+          background: '#fff', border: '1px solid rgba(0,101,101,0.1)',
+          position: 'relative', overflow: 'hidden', marginTop: '12px',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '20px' }}>
+            <span style={{ fontSize: '24px', marginTop: '2px' }}>✨</span>
+            <div>
+              <h4 style={{ fontFamily: "'Inter', sans-serif", fontSize: '16px', fontWeight: 600, color: '#1b1c19', marginBottom: '8px' }}>
+                {lang === 'es' ? 'Recomendación del Conserje' : 'Concierge Recommendation'}
+              </h4>
+              <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '15px', color: '#454652', lineHeight: 1.7, margin: 0 }}
+                dangerouslySetInnerHTML={{
+                  __html: aiRecommendation.replace(/\*\*(.*?)\*\*/g, '<span style="font-family: \'JetBrains Mono\', monospace; color: #364262; font-weight: 600;">$1</span>'),
+                }}
+              />
+              <div style={{ display: 'flex', gap: '12px', marginTop: '20px' }}>
+                <button style={{
+                  background: '#006565', color: '#82e2e1', padding: '8px 20px', borderRadius: '9999px',
+                  border: 'none', fontSize: '13px', fontWeight: 700, cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', gap: '6px',
+                  fontFamily: "'Inter', sans-serif",
+                  transition: 'background 150ms',
+                }}>
+                  <Calendar size={14} />
+                  {lang === 'es' ? 'Programar Lote' : 'Batch Schedule'}
+                </button>
+                <button style={{
+                  background: 'transparent', color: '#454652', padding: '8px 20px', borderRadius: '9999px',
+                  border: 'none', fontSize: '13px', fontWeight: 700, cursor: 'pointer',
+                  fontFamily: "'Inter', sans-serif",
+                  transition: 'background 150ms',
+                }}>
+                  {lang === 'es' ? 'Descartar' : 'Dismiss'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Add Inspection Modal */}
       <AddInspectionModal
@@ -278,11 +510,13 @@ export function InspectionsView() {
       {/* Toast */}
       {toast && (
         <div style={{
-          position: 'fixed', bottom: '140px', left: '50%', transform: 'translateX(-50%)',
-          padding: '10px 20px', borderRadius: 'var(--radius-lg)',
-          background: 'var(--navy)', color: '#fff',
-          fontSize: '13px', fontWeight: 600, zIndex: 50,
-          boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+          position: 'fixed', bottom: '100px', left: '50%', transform: 'translateX(-50%)',
+          padding: '12px 24px', borderRadius: '9999px',
+          background: '#364262', color: '#fff',
+          fontSize: '14px', fontWeight: 600, zIndex: 50,
+          fontFamily: "'Inter', sans-serif",
+          boxShadow: '0 8px 24px rgba(54,66,98,0.3)',
+          backdropFilter: 'blur(12px)',
         }}>
           {toast}
         </div>
