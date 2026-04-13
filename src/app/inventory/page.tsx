@@ -250,16 +250,45 @@ export default function InventoryPage() {
       <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '16px 24px 160px' }}>
 
         {/* ── Compact Hero ── */}
-        <header style={{ marginBottom: '20px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        <header style={{ marginBottom: '20px' }}>
           <div style={{
             background: '#f5f3ee', padding: '18px 24px', borderRadius: '14px',
             position: 'relative', overflow: 'hidden',
             border: '1px solid rgba(78,90,122,0.06)',
-            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-            flexWrap: 'wrap', gap: '16px',
+            display: 'flex', alignItems: 'center',
+            flexWrap: 'wrap', gap: '24px',
           }}>
-            <div style={{ minWidth: 0, flex: 1 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '6px' }}>
+            {/* Left: key stats */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', flexShrink: 0, minWidth: '140px' }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+                <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#757684', fontWeight: 500 }}>
+                  {lang === 'es' ? 'Conteo' : 'Count'}
+                </span>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '20px', fontWeight: 700, color: '#364262' }}>
+                  {countCompletionPct}%
+                </span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+                <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#757684', fontWeight: 500 }}>
+                  {lang === 'es' ? 'Salud' : 'Stock'}
+                </span>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '20px', fontWeight: 700, color: stockHealthPct >= 70 ? '#006565' : stockHealthPct >= 40 ? '#364262' : '#ba1a1a' }}>
+                  {stockHealthPct}%
+                </span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+                <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#757684', fontWeight: 500 }}>
+                  {lang === 'es' ? 'Contado' : 'Counted'}
+                </span>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '15px', fontWeight: 600, color: '#454652' }}>
+                  {lastCounted ? `${timeAgo(lastCounted)} ${lang === 'es' ? '' : 'ago'}`.trim() : (lang === 'es' ? 'Nunca' : 'Never')}
+                </span>
+              </div>
+            </div>
+
+            {/* Center: Concierge Insight */}
+            <div style={{ flex: 1, minWidth: '200px', textAlign: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '7px', marginBottom: '6px' }}>
                 <span style={{ fontSize: '13px', color: '#006565' }}>✦</span>
                 <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#006565' }}>
                   {lang === 'es' ? 'Insight del Concierge' : 'Concierge Insight'}
@@ -269,6 +298,8 @@ export default function InventoryPage() {
                 {aiInsight}
               </p>
             </div>
+
+            {/* Right: Start Count */}
             <button
               onClick={() => setCounting(true)}
               style={{
@@ -282,40 +313,6 @@ export default function InventoryPage() {
               <ClipboardCheck size={16} />
               {lang === 'es' ? 'Iniciar Conteo' : 'Start Count'}
             </button>
-          </div>
-
-          {/* ── Compact Stats Row ── */}
-          <div style={{
-            display: 'flex', gap: '20px', flexWrap: 'wrap', alignItems: 'center',
-            padding: '10px 16px',
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <ClipboardCheck size={14} color="#757684" />
-              <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#757684' }}>
-                {lang === 'es' ? 'Conteo' : 'Count'}
-              </span>
-              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '13px', fontWeight: 700, color: '#364262' }}>
-                {countCompletionPct}%
-              </span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <Package size={14} color={stockHealthPct >= 70 ? '#006565' : stockHealthPct >= 40 ? '#364262' : '#ba1a1a'} />
-              <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#757684' }}>
-                {lang === 'es' ? 'Salud' : 'Stock'}
-              </span>
-              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '13px', fontWeight: 700, color: stockHealthPct >= 70 ? '#006565' : stockHealthPct >= 40 ? '#364262' : '#ba1a1a' }}>
-                {stockHealthPct}%
-              </span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <Clock size={14} color="#757684" />
-              <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#757684' }}>
-                {lang === 'es' ? 'Último' : 'Last'}
-              </span>
-              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '12px', color: '#454652' }}>
-                {lastCounted ? timeAgo(lastCounted) : (lang === 'es' ? 'Nunca' : 'Never')}
-              </span>
-            </div>
           </div>
         </header>
 
