@@ -372,10 +372,16 @@ export default function InventoryPage() {
                     <div key={item.id} className="inv-card" style={{
                       background: '#fff', borderRadius: '14px', padding: '12px 14px',
                       transition: 'all 300ms',
+                      height: '104px', boxSizing: 'border-box',
+                      display: 'flex', flexDirection: 'column',
                     }}>
                       {/* Name + timestamp */}
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                        <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 500, color: '#454652' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', gap: '8px' }}>
+                        <span style={{
+                          fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 500, color: '#454652',
+                          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                          flex: 1, minWidth: 0,
+                        }}>
                           {item.name}
                         </span>
                         <span style={{
@@ -383,6 +389,7 @@ export default function InventoryPage() {
                           color: isCritical ? '#ba1a1a' : '#757684',
                           fontWeight: isCritical ? 700 : 500,
                           textTransform: 'uppercase', letterSpacing: '0.05em',
+                          flexShrink: 0,
                         }}>
                           {timeAgo(item.updatedAt)}
                         </span>
