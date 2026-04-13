@@ -614,7 +614,7 @@ function ScheduleSection() {
         background: 'rgba(255,255,255,0.7)', backdropFilter: 'blur(24px)',
         border: '1px solid rgba(197,197,212,0.2)', borderRadius: '16px',
         padding: '40px', position: 'relative', overflow: 'hidden',
-        cursor: 'pointer',
+        cursor: 'pointer', margin: '0 auto', width: 'fit-content', minWidth: '320px',
       }} onClick={() => setShowPredictionSettings(true)}>
         {/* Background glow */}
         <div style={{ position: 'absolute', top: '-96px', right: '-96px', width: '256px', height: '256px', background: '#006565', opacity: 0.05, filter: 'blur(100px)', borderRadius: '50%' }} />
@@ -630,51 +630,49 @@ function ScheduleSection() {
             <p style={{ fontSize: '12px', color: '#94a3b8', margin: '4px 0 0' }}>{t('pmsSync15Min', lang)}</p>
           </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '32px', position: 'relative', zIndex: 10 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '24px' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, auto)', gap: '48px' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Salidas Activas' : 'Active Checkouts'}</p>
-                  <p style={{ fontFamily: 'var(--font-mono)', fontSize: '48px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>{checkouts}</p>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Continuaciones' : 'Stayovers'}</p>
-                  <p style={{ fontFamily: 'var(--font-mono)', fontSize: '48px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>{stayovers}</p>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Personal Necesario' : 'Staff Needed'}</p>
-                  <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
-                    <p style={{ fontFamily: 'var(--font-mono)', fontSize: '48px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>{recommendedStaff}</p>
-                    {staffDeficit > 0 && (
-                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: '14px', fontWeight: 600, color: '#ba1a1a' }}>+{staffDeficit} Deficit</span>
-                    )}
-                  </div>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '32px', position: 'relative', zIndex: 10 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, auto)', gap: '48px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Salidas Activas' : 'Active Checkouts'}</p>
+                <p style={{ fontFamily: 'var(--font-mono)', fontSize: '48px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>{checkouts}</p>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Continuaciones' : 'Stayovers'}</p>
+                <p style={{ fontFamily: 'var(--font-mono)', fontSize: '48px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>{stayovers}</p>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Personal Necesario' : 'Staff Needed'}</p>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+                  <p style={{ fontFamily: 'var(--font-mono)', fontSize: '48px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>{recommendedStaff}</p>
+                  {staffDeficit > 0 && (
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: '14px', fontWeight: 600, color: '#ba1a1a' }}>+{staffDeficit} Deficit</span>
+                  )}
                 </div>
               </div>
-
-              {/* Auto-Optimize button — sends confirmations */}
-              {!sent && selectedCrew.length > 0 && (
-                <button onClick={(e) => { e.stopPropagation(); handleSend(); }} disabled={sending} style={{
-                  padding: '20px 32px', background: '#006565', color: '#82e2e1',
-                  borderRadius: '9999px', fontWeight: 600, fontSize: '15px',
-                  border: 'none', cursor: sending ? 'not-allowed' : 'pointer',
-                  display: 'flex', alignItems: 'center', gap: '12px',
-                  boxShadow: '0 10px 30px -10px rgba(0,101,101,0.3)',
-                  opacity: sending ? 0.7 : 1,
-                  fontFamily: 'var(--font-sans)',
-                  position: 'relative', overflow: 'hidden',
-                }}>
-                  <Zap size={18} />
-                  {sending ? (lang === 'es' ? 'Enviando…' : 'Sending…') : (lang === 'es' ? 'Enviar Confirmaciones' : 'Send Confirmations')}
-                </button>
-              )}
-              {sent && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '16px 28px', background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)', borderRadius: '9999px' }}>
-                  <CheckCircle2 size={18} color="#10b981" />
-                  <span style={{ fontSize: '14px', fontWeight: 600, color: '#059669' }}>{t('confirmationsSent', lang)}</span>
-                </div>
-              )}
             </div>
+
+            {/* Send Confirmations button — centered below stats */}
+            {!sent && selectedCrew.length > 0 && (
+              <button onClick={(e) => { e.stopPropagation(); handleSend(); }} disabled={sending} style={{
+                padding: '20px 32px', background: '#006565', color: '#82e2e1',
+                borderRadius: '9999px', fontWeight: 600, fontSize: '15px',
+                border: 'none', cursor: sending ? 'not-allowed' : 'pointer',
+                display: 'flex', alignItems: 'center', gap: '12px',
+                boxShadow: '0 10px 30px -10px rgba(0,101,101,0.3)',
+                opacity: sending ? 0.7 : 1,
+                fontFamily: 'var(--font-sans)',
+                position: 'relative', overflow: 'hidden',
+              }}>
+                <Zap size={18} />
+                {sending ? (lang === 'es' ? 'Enviando…' : 'Sending…') : (lang === 'es' ? 'Enviar Confirmaciones' : 'Send Confirmations')}
+              </button>
+            )}
+            {sent && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '16px 28px', background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)', borderRadius: '9999px' }}>
+                <CheckCircle2 size={18} color="#10b981" />
+                <span style={{ fontSize: '14px', fontWeight: 600, color: '#059669' }}>{t('confirmationsSent', lang)}</span>
+              </div>
+            )}
           </div>
         )}
       </section>
