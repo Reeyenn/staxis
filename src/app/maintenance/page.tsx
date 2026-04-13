@@ -425,7 +425,7 @@ export default function MaintenancePage() {
 
         {/* ── Tab content ── */}
         {activeTab === 'workOrders' ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
             {/* Filter pills */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', overflowX: 'auto', paddingBottom: '4px' }}>
@@ -455,7 +455,7 @@ export default function MaintenancePage() {
             </div>
 
             {/* Work order cards */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               {filteredOrders.length === 0 ? (
                 <div className="wo-glass-card" style={{
                   padding: '48px 24px', textAlign: 'center', borderRadius: '16px',
@@ -488,7 +488,7 @@ export default function MaintenancePage() {
                       key={order.id}
                       className={`wo-glass-card${isUrgent && order.status !== 'resolved' ? ' wo-urgent-glow' : ''}`}
                       style={{
-                        borderRadius: '16px', padding: '24px',
+                        borderRadius: '14px', padding: '18px 22px',
                         boxShadow: isUrgent && order.status !== 'resolved'
                           ? 'inset 0 0 0 1px rgba(186,26,26,0.1), 0 0 20px -5px rgba(186,26,26,0.15)'
                           : 'inset 0 0 0 1px rgba(197,197,212,0.1)',
@@ -498,25 +498,25 @@ export default function MaintenancePage() {
                       onClick={() => setExpandedId(isExpanded ? null : order.id)}
                     >
                       {/* Top row: room number + title + severity pill */}
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '4px' }}>
-                        <div style={{ display: 'flex', alignItems: 'baseline', gap: '16px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '2px' }}>
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: '14px' }}>
                           {order.roomNumber && (
-                            <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '28px', fontWeight: 500, letterSpacing: '-0.04em', color: '#364262' }}>
+                            <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '22px', fontWeight: 500, letterSpacing: '-0.04em', color: '#364262' }}>
                               {order.roomNumber}
                             </span>
                           )}
                           <div>
-                            <h3 style={{ fontFamily: "'Inter', sans-serif", fontSize: '18px', fontWeight: 600, color: '#1b1c19', lineHeight: 1.3, margin: 0 }}>
+                            <h3 style={{ fontFamily: "'Inter', sans-serif", fontSize: '16px', fontWeight: 600, color: '#1b1c19', lineHeight: 1.3, margin: 0 }}>
                               {order.description.length > 40 && !isExpanded ? order.description.slice(0, 40) + '…' : order.description}
                             </h3>
-                            <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '14px', color: '#454652', margin: '2px 0 0' }}>
+                            <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#454652', margin: '2px 0 0' }}>
                               {lang === 'es' ? 'Reportado' : 'Reported'} {timeAgo(toJsDate(order.createdAt))} {order.submittedByName ? `${lang === 'es' ? 'por' : 'by'} ${order.submittedByName}` : ''}
                             </p>
                           </div>
                         </div>
                         <span style={{
-                          padding: '4px 12px', borderRadius: '9999px',
-                          fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em',
+                          padding: '3px 9px', borderRadius: '9999px',
+                          fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em',
                           background: sevPillStyle[order.severity].bg,
                           color: sevPillStyle[order.severity].color,
                           flexShrink: 0,
@@ -705,7 +705,7 @@ export default function MaintenancePage() {
           </div>
         ) : (
           /* ── Landscaping Tab — Stitch Concierge Layout ── */
-          <div className="animate-in stagger-2" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div className="animate-in stagger-2" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
 
             {/* ── Hero Section ── */}
             {(() => {
@@ -982,30 +982,30 @@ export default function MaintenancePage() {
                   <div
                     key={task.id}
                     style={{
-                      background: '#fff', borderRadius: '24px',
-                      padding: '24px', display: 'flex', flexDirection: 'column',
+                      background: '#fff', borderRadius: '14px',
+                      padding: '18px 22px', display: 'flex', flexDirection: 'column',
                       border: '1px solid rgba(197,197,212,0.2)',
                       opacity: inSeason ? 1 : 0.6,
                       transition: 'all 300ms', cursor: 'pointer',
                     }}
                     className="ls-task-card"
                   >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
                       {/* Icon */}
                       <div style={{
-                        width: '56px', height: '56px', borderRadius: '16px', flexShrink: 0,
+                        width: '46px', height: '46px', borderRadius: '12px', flexShrink: 0,
                         background: iconBg, display: 'flex', alignItems: 'center', justifyContent: 'center',
                       }}>
-                        <span className="material-symbols-outlined" style={{ fontSize: '28px', color: iconColor }}>
+                        <span className="material-symbols-outlined" style={{ fontSize: '22px', color: iconColor }}>
                           {getTaskIcon(task.name)}
                         </span>
                       </div>
 
                       {/* Text */}
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '9px', marginBottom: '2px' }}>
                           <h3 style={{
-                            fontFamily: "'Inter', sans-serif", fontSize: '17px', fontWeight: 600,
+                            fontFamily: "'Inter', sans-serif", fontSize: '16px', fontWeight: 600,
                             color: '#1b1c19', margin: 0,
                             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                           }}>
@@ -1013,7 +1013,7 @@ export default function MaintenancePage() {
                           </h3>
                           <span style={{
                             background: statusBg, color: statusColor,
-                            padding: '2px 10px', borderRadius: '9999px',
+                            padding: '3px 9px', borderRadius: '9999px',
                             fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em',
                             flexShrink: 0,
                           }}>
@@ -1021,7 +1021,7 @@ export default function MaintenancePage() {
                           </span>
                         </div>
                         <p style={{
-                          fontFamily: "'Inter', sans-serif", fontSize: '14px', color: '#454652',
+                          fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#454652',
                           margin: 0,
                         }}>
                           {lang === 'es' ? `Cada ${task.frequencyDays} días` : `Every ${task.frequencyDays} days`}
@@ -1034,17 +1034,17 @@ export default function MaintenancePage() {
                       </div>
 
                       {/* Days counter */}
-                      <div style={{ textAlign: 'center', flexShrink: 0, marginRight: '8px' }}>
+                      <div style={{ textAlign: 'center', flexShrink: 0, marginRight: '4px' }}>
                         <p style={{
-                          fontFamily: "'Inter', sans-serif", fontSize: '10px',
+                          fontFamily: "'Inter', sans-serif", fontSize: '9px',
                           color: '#454652', letterSpacing: '0.1em', textTransform: 'uppercase',
-                          marginBottom: '4px',
+                          marginBottom: '2px',
                         }}>
                           {inSeason ? daysLabel : (lang === 'es' ? 'Fuera de Temp.' : 'Off-Season')}
                         </p>
                         {inSeason && (
                           <p style={{
-                            fontFamily: "'JetBrains Mono', monospace", fontSize: '36px', fontWeight: 500,
+                            fontFamily: "'JetBrains Mono', monospace", fontSize: '22px', fontWeight: 500,
                             color: daysColor, lineHeight: 1, margin: 0,
                           }}>
                             {String(daysValue).padStart(2, '0')}
@@ -1059,20 +1059,20 @@ export default function MaintenancePage() {
                             onClick={(e) => { e.stopPropagation(); handleMarkLsDone(task); }}
                             title={lang === 'es' ? 'Marcar completada' : 'Mark done'}
                             style={{
-                              width: '44px', height: '44px', borderRadius: '50%', border: 'none',
+                              width: '38px', height: '38px', borderRadius: '50%', border: 'none',
                               background: '#006565', color: '#fff', cursor: 'pointer',
                               display: 'flex', alignItems: 'center', justifyContent: 'center',
                               transition: 'all 150ms',
                             }}
                           >
-                            <CheckCircle2 size={18} />
+                            <CheckCircle2 size={16} />
                           </button>
                         )}
                         <button
                           onClick={(e) => { e.stopPropagation(); handleDeleteLs(task); }}
                           title={lang === 'es' ? 'Eliminar' : 'Delete'}
                           style={{
-                            width: '44px', height: '44px', borderRadius: '50%', border: 'none',
+                            width: '38px', height: '38px', borderRadius: '50%', border: 'none',
                             background: '#eae8e3', color: '#454652', cursor: 'pointer',
                             display: 'flex', alignItems: 'center', justifyContent: 'center',
                             transition: 'all 150ms',
