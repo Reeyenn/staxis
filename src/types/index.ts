@@ -133,6 +133,7 @@ export interface InventoryItem {
   category: InventoryCategory;
   currentStock: number;
   parLevel: number;             // minimum desired stock
+  reorderAt?: number;           // stock threshold that triggers a reorder notification
   unit: string;                 // "sets", "units", "bottles", etc.
   notes?: string;
   updatedAt: Date | null;

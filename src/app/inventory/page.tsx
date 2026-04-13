@@ -12,7 +12,7 @@ import {
 } from '@/lib/firestore';
 import type { InventoryItem, InventoryCategory } from '@/types';
 import {
-  Plus, Package, ClipboardCheck, Clock, AlertTriangle, Check,
+  Plus, Package, ClipboardCheck, Clock, AlertTriangle, Check, Info,
 } from 'lucide-react';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -67,8 +67,15 @@ function timeAgo(date: Date | null | undefined | { seconds?: number; toDate?: ()
   return `${days}d ago`;
 }
 
-function stockStatus(current: number, target: number): 'good' | 'low' | 'out' {
+function stockStatus(current: number, target: number, reorderAt?: number): 'good' | 'low' | 'out' {
   if (current <= 0) return 'out';
+  // If user set an explicit reorder threshold, use it
+  if (typeof reorderAt === 'number' && reorderAt > 0) {
+    if (current <= reorderAt * 0.5) return 'out';
+    if (current <= reorderAt) return 'low';
+    return 'good';
+  }
+  // Fallback to percentage-of-target heuristic
   if (current < target * 0.3) return 'out';
   if (current < target * 0.7) return 'low';
   return 'good';
@@ -164,7 +171,7 @@ export default function InventoryPage() {
     return counts;
   }, [items]);
 
-  const lowCount = useMemo(() => items.filter(i => stockStatus(i.currentStock, i.parLevel) !== 'good').length, [items]);
+  const lowCount = useMemo(() => items.filter(i => stockStatus(i.currentStock, i.parLevel, i.reorderAt) !== 'good').length, [items]);
 
   const lastCounted = useMemo(() => {
     const timestamps = items.map(i => {
@@ -182,7 +189,7 @@ export default function InventoryPage() {
   // ─── Computed stats for hero (must be before loading guard — hooks can't be after early returns) ──
   const stockHealthPct = useMemo(() => {
     if (items.length === 0) return 100;
-    const goodItems = items.filter(i => stockStatus(i.currentStock, i.parLevel) === 'good').length;
+    const goodItems = items.filter(i => stockStatus(i.currentStock, i.parLevel, i.reorderAt) === 'good').length;
     return Math.round((goodItems / items.length) * 100);
   }, [items]);
 
@@ -193,8 +200,8 @@ export default function InventoryPage() {
   }, [items]);
 
   const aiInsight = useMemo(() => {
-    const criticalItems = items.filter(i => stockStatus(i.currentStock, i.parLevel) === 'out');
-    const lowItemsList = items.filter(i => stockStatus(i.currentStock, i.parLevel) === 'low');
+    const criticalItems = items.filter(i => stockStatus(i.currentStock, i.parLevel, i.reorderAt) === 'out');
+    const lowItemsList = items.filter(i => stockStatus(i.currentStock, i.parLevel, i.reorderAt) === 'low');
     if (criticalItems.length > 0) {
       const worst = criticalItems[0];
       const pct = worst.parLevel > 0 ? Math.round((worst.currentStock / worst.parLevel) * 100) : 0;
@@ -217,9 +224,9 @@ export default function InventoryPage() {
   const fbItems = useMemo(() => items.filter(i => i.category === 'breakfast').sort((a, b) => a.name.localeCompare(b.name)), [items]);
 
   const catAlerts = useMemo(() => ({
-    housekeeping: hkItems.filter(i => stockStatus(i.currentStock, i.parLevel) !== 'good').length,
-    maintenance: maintItems.filter(i => stockStatus(i.currentStock, i.parLevel) !== 'good').length,
-    breakfast: fbItems.filter(i => stockStatus(i.currentStock, i.parLevel) !== 'good').length,
+    housekeeping: hkItems.filter(i => stockStatus(i.currentStock, i.parLevel, i.reorderAt) !== 'good').length,
+    maintenance: maintItems.filter(i => stockStatus(i.currentStock, i.parLevel, i.reorderAt) !== 'good').length,
+    breakfast: fbItems.filter(i => stockStatus(i.currentStock, i.parLevel, i.reorderAt) !== 'good').length,
   }), [hkItems, maintItems, fbItems]);
 
   // Loading guard
@@ -362,7 +369,7 @@ export default function InventoryPage() {
                 </div>
               ) : (
                 cat.items.map(item => {
-                  const status = stockStatus(item.currentStock, item.parLevel);
+                  const status = stockStatus(item.currentStock, item.parLevel, item.reorderAt);
                   const pct = item.parLevel > 0 ? Math.min(100, Math.round((item.currentStock / item.parLevel) * 100)) : 0;
                   const isCritical = status === 'out';
                   const barColor = status === 'good' ? '#364262' : status === 'low' ? '#364262' : '#ba1a1a';
@@ -508,7 +515,7 @@ export default function InventoryPage() {
             </div>
             <div style={{ overflow: 'auto', flex: 1 }}>
               {lowStockAlert.map(item => {
-                const status = stockStatus(item.currentStock, item.parLevel);
+                const status = stockStatus(item.currentStock, item.parLevel, item.reorderAt);
                 const pct = item.parLevel > 0 ? Math.round((item.currentStock / item.parLevel) * 100) : 0;
                 return (
                   <div key={item.id} style={{
@@ -679,7 +686,7 @@ function CountMode({
 
             {sorted.map((item, idx) => {
               const val = parseInt(counts[item.id] ?? '0') || 0;
-              const status = stockStatus(val, item.parLevel);
+              const status = stockStatus(val, item.parLevel, item.reorderAt);
               const changed = val !== item.currentStock;
               return (
                 <div
@@ -766,8 +773,9 @@ function AddItemModal({ isOpen, onClose, uid, pid, onAdded }: {
   const [category, setCategory] = useState<InventoryCategory>('housekeeping');
   const [stock, setStock] = useState('0');
   const [target, setTarget] = useState('100');
-  const [unit, setUnit] = useState('units');
+  const [reorderAt, setReorderAt] = useState('30');
   const [saving, setSaving] = useState(false);
+  const [openInfo, setOpenInfo] = useState<null | 'stock' | 'target' | 'reorder'>(null);
 
   const handleSubmit = async () => {
     if (!name.trim() || saving) return;
@@ -779,11 +787,12 @@ function AddItemModal({ isOpen, onClose, uid, pid, onAdded }: {
         category,
         currentStock: parseInt(stock) || 0,
         parLevel: parseInt(target) || 100,
-        unit: unit.trim() || 'units',
+        reorderAt: parseInt(reorderAt) || 0,
+        unit: 'units',
       });
       onAdded();
       onClose();
-      setName(''); setStock('0'); setTarget('100'); setUnit('units');
+      setName(''); setStock('0'); setTarget('100'); setReorderAt('30');
     } finally {
       setSaving(false);
     }
@@ -847,18 +856,30 @@ function AddItemModal({ isOpen, onClose, uid, pid, onAdded }: {
           </div>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
-          <div>
-            <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>In Stock</label>
+          <FieldWithInfo
+            label="In Stock"
+            tooltip="How many of this item you currently have on hand."
+            isOpen={openInfo === 'stock'}
+            onToggle={() => setOpenInfo(openInfo === 'stock' ? null : 'stock')}
+          >
             <input type="number" min="0" value={stock} onChange={e => setStock(e.target.value)} style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
-          </div>
-          <div>
-            <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>Target</label>
+          </FieldWithInfo>
+          <FieldWithInfo
+            label="Target"
+            tooltip="Your ideal stock level — the amount you want to keep fully stocked."
+            isOpen={openInfo === 'target'}
+            onToggle={() => setOpenInfo(openInfo === 'target' ? null : 'target')}
+          >
             <input type="number" min="0" value={target} onChange={e => setTarget(e.target.value)} style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
-          </div>
-          <div>
-            <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>Unit</label>
-            <input value={unit} onChange={e => setUnit(e.target.value)} placeholder="units" style={inputStyle} />
-          </div>
+          </FieldWithInfo>
+          <FieldWithInfo
+            label="Reorder At"
+            tooltip="When stock drops to this number, you'll get a notification to reorder."
+            isOpen={openInfo === 'reorder'}
+            onToggle={() => setOpenInfo(openInfo === 'reorder' ? null : 'reorder')}
+          >
+            <input type="number" min="0" value={reorderAt} onChange={e => setReorderAt(e.target.value)} style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
+          </FieldWithInfo>
         </div>
         <button
           onClick={handleSubmit}
@@ -875,6 +896,50 @@ function AddItemModal({ isOpen, onClose, uid, pid, onAdded }: {
           {saving ? 'Saving...' : 'Add Item'}
         </button>
       </div>
+    </div>
+  );
+}
+
+// ─── Field With Info Tooltip ──────────────────────────────────────────────────
+
+function FieldWithInfo({ label, tooltip, isOpen, onToggle, children }: {
+  label: string;
+  tooltip: string;
+  isOpen: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div style={{ position: 'relative' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '6px' }}>
+        <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652' }}>
+          {label}
+        </label>
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-label={`About ${label}`}
+          style={{
+            background: 'transparent', border: 'none', cursor: 'pointer',
+            padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: isOpen ? '#006565' : '#757684',
+          }}
+        >
+          <Info size={13} />
+        </button>
+      </div>
+      {children}
+      {isOpen && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 6px)', left: 0, right: 0, zIndex: 10,
+          background: '#1b1c19', color: '#fbf9f4',
+          borderRadius: '10px', padding: '10px 12px',
+          fontFamily: "'Inter', sans-serif", fontSize: '11px', lineHeight: 1.4,
+          boxShadow: '0 8px 20px rgba(0,0,0,0.2)',
+        }}>
+          {tooltip}
+        </div>
+      )}
     </div>
   );
 }
