@@ -247,96 +247,74 @@ export default function InventoryPage() {
         @media (min-width: 768px) { .inv-cat-grid { grid-template-columns: repeat(3, 1fr); } }
       `}</style>
 
-      <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '48px 24px 160px' }}>
+      <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '16px 24px 160px' }}>
 
-        {/* ── Hero: title + AI Insight ── */}
-        <header style={{ marginBottom: '40px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
-          <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'flex-end', gap: '24px' }}>
-            <div>
-              <h1 style={{
-                fontFamily: "'Inter', sans-serif", fontSize: '48px', fontWeight: 600,
-                color: '#1b1c19', letterSpacing: '-0.02em', lineHeight: 1.1, marginBottom: '8px',
-              }}>
-                {lang === 'es' ? 'Inteligencia de' : 'Inventory'}<br/>
-                {lang === 'es' ? 'Inventario' : 'Intelligence'}
-              </h1>
-              <p style={{
-                fontFamily: "'Inter', sans-serif", fontSize: '16px', lineHeight: 1.6,
-                color: '#454652', maxWidth: '520px',
-              }}>
-                {lang === 'es'
-                  ? 'Optimización de stock en tiempo real basada en patrones de consumo y flujo de huéspedes.'
-                  : 'Real-time stock optimization powered by historical consumption patterns and predicted guest flow.'}
-              </p>
-            </div>
-
-            {/* Concierge AI Insight card */}
-            <div style={{
-              background: '#fff', border: '1px solid rgba(197,213,248,0.3)',
-              borderRadius: '24px', padding: '24px', maxWidth: '400px', position: 'relative', overflow: 'hidden',
-              boxShadow: '0 0 40px rgba(0,101,101,0.1)',
-            }}>
-              <div style={{ position: 'absolute', top: '16px', right: '16px', opacity: 0.1, fontSize: '64px', lineHeight: 1 }}>✦</div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#006565', marginBottom: '16px' }}>
-                <span style={{ fontSize: '18px' }}>✦</span>
-                <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+        {/* ── Compact Hero ── */}
+        <header style={{ marginBottom: '20px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div style={{
+            background: '#f5f3ee', padding: '18px 24px', borderRadius: '14px',
+            position: 'relative', overflow: 'hidden',
+            border: '1px solid rgba(78,90,122,0.06)',
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            flexWrap: 'wrap', gap: '16px',
+          }}>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '6px' }}>
+                <span style={{ fontSize: '13px', color: '#006565' }}>✦</span>
+                <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#006565' }}>
                   {lang === 'es' ? 'Insight del Concierge' : 'Concierge Insight'}
                 </span>
               </div>
-              <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '15px', lineHeight: 1.6, color: '#1b1c19', margin: 0 }}>
+              <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '14px', lineHeight: 1.5, color: '#1b1c19', margin: 0 }}>
                 {aiInsight}
               </p>
             </div>
+            <button
+              onClick={() => setCounting(true)}
+              style={{
+                background: '#364262', color: '#fff', border: 'none',
+                padding: '10px 20px', borderRadius: '9999px',
+                fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 600,
+                cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px',
+                flexShrink: 0, transition: 'transform 150ms',
+              }}
+            >
+              <ClipboardCheck size={16} />
+              {lang === 'es' ? 'Iniciar Conteo' : 'Start Count'}
+            </button>
           </div>
 
-          {/* ── Key Stats Bar ── */}
+          {/* ── Compact Stats Row ── */}
           <div style={{
-            display: 'flex', gap: '24px', flexWrap: 'wrap', alignItems: 'center',
-            padding: '16px 24px', background: '#f5f3ee', borderRadius: '16px',
+            display: 'flex', gap: '20px', flexWrap: 'wrap', alignItems: 'center',
+            padding: '10px 16px',
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <ClipboardCheck size={18} color="#364262" />
-              <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#454652', fontWeight: 500 }}>
-                {lang === 'es' ? 'Conteo' : 'Count Completion'}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <ClipboardCheck size={14} color="#757684" />
+              <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#757684' }}>
+                {lang === 'es' ? 'Conteo' : 'Count'}
               </span>
-              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '18px', fontWeight: 700, color: '#364262' }}>
+              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '13px', fontWeight: 700, color: '#364262' }}>
                 {countCompletionPct}%
               </span>
             </div>
-            <div style={{ width: '1px', height: '24px', background: '#c5c5d4' }} />
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <Package size={18} color={stockHealthPct >= 70 ? '#006565' : stockHealthPct >= 40 ? '#364262' : '#ba1a1a'} />
-              <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#454652', fontWeight: 500 }}>
-                {lang === 'es' ? 'Salud de Stock' : 'Stock Health'}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Package size={14} color={stockHealthPct >= 70 ? '#006565' : stockHealthPct >= 40 ? '#364262' : '#ba1a1a'} />
+              <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#757684' }}>
+                {lang === 'es' ? 'Salud' : 'Stock'}
               </span>
-              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '18px', fontWeight: 700, color: stockHealthPct >= 70 ? '#006565' : stockHealthPct >= 40 ? '#364262' : '#ba1a1a' }}>
+              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '13px', fontWeight: 700, color: stockHealthPct >= 70 ? '#006565' : stockHealthPct >= 40 ? '#364262' : '#ba1a1a' }}>
                 {stockHealthPct}%
               </span>
             </div>
-            <div style={{ width: '1px', height: '24px', background: '#c5c5d4' }} />
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <Clock size={18} color="#454652" />
-              <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#454652', fontWeight: 500 }}>
-                {lang === 'es' ? 'Último Conteo' : 'Last Count'}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Clock size={14} color="#757684" />
+              <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#757684' }}>
+                {lang === 'es' ? 'Último' : 'Last'}
               </span>
-              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '14px', fontWeight: 500, color: '#364262' }}>
+              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '12px', color: '#454652' }}>
                 {lastCounted ? timeAgo(lastCounted) : (lang === 'es' ? 'Nunca' : 'Never')}
               </span>
-            </div>
-            <div style={{ marginLeft: 'auto' }}>
-              <button
-                onClick={() => setCounting(true)}
-                style={{
-                  background: '#364262', color: '#fff', border: 'none',
-                  padding: '10px 24px', borderRadius: '9999px',
-                  fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 600,
-                  cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px',
-                  transition: 'transform 150ms',
-                }}
-              >
-                <ClipboardCheck size={16} />
-                {lang === 'es' ? 'Iniciar Conteo' : 'Start Count'}
-              </button>
             </div>
           </div>
         </header>
