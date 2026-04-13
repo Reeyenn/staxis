@@ -610,14 +610,20 @@ function ScheduleSection() {
       </div>
 
       {/* ── Prediction Hero Card (glass) ── */}
-      <section style={{
-        background: 'rgba(255,255,255,0.7)', backdropFilter: 'blur(24px)',
+      <section className="glass-hero" style={{
         border: '1px solid rgba(197,197,212,0.2)', borderRadius: '16px',
         padding: '40px', position: 'relative', overflow: 'hidden',
         cursor: 'pointer', margin: '0 auto', width: 'fit-content', minWidth: '320px',
       }} onClick={() => setShowPredictionSettings(true)}>
-        {/* Background glow */}
-        <div style={{ position: 'absolute', top: '-96px', right: '-96px', width: '256px', height: '256px', background: '#006565', opacity: 0.05, filter: 'blur(100px)', borderRadius: '50%' }} />
+        {/* Background image — same as dashboard hero */}
+        <div className="glass-hero-bg">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="https://lh3.googleusercontent.com/aida-public/AB6AXuAUkJ87OGqb9QZ3nLbfCbHYuNgoCRsfcrSTqcfy8LlaEm8_94XXXZc5LvqA_5T36RJJykyAlxUHbasVhW-V52jbgsdVMHhedC17vZk_Y5-TCMq6NWzbrN60mUF_bgeUYq_2wEOltK3e5GIuN5krTVz7lju3NN9ru-gTTwjtEG0ZIRdl1dGDL4FP5KjnJsNm2lw4HNq9nO7C0xSjh0WnhsNEQ0c9rQP5-Bg5ycpesyUdhDiSQPxFLzP6L1vDs-8LjUHCbvH0R4UFxyU"
+            alt=""
+            aria-hidden="true"
+          />
+        </div>
 
         {predictionLoading ? (
           <div style={{ textAlign: 'center' }}>
