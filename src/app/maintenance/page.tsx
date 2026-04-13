@@ -343,19 +343,52 @@ export default function MaintenancePage() {
   const maintenanceStaff = staff.filter(s => s.department === 'maintenance' && s.isActive !== false);
   const assignableStaff = maintenanceStaff.length > 0 ? maintenanceStaff : staff.filter(s => s.isActive !== false);
 
+  // ─── AI Insight computation ─────────────────────────────────────────────
+  const aiInsightText = (() => {
+    const openCount = orders.filter(o => o.status !== 'resolved').length;
+    const urgentCount = orders.filter(o => o.severity === 'urgent' && o.status !== 'resolved').length;
+    const resolvedCount = orders.filter(o => o.status === 'resolved').length;
+    const blockedCount = orders.filter(o => o.blockedRoom && o.status !== 'resolved').length;
+
+    if (urgentCount >= 2) {
+      return `${urgentCount} urgent work orders require immediate attention. ${blockedCount > 0 ? `${blockedCount} room${blockedCount > 1 ? 's' : ''} blocked from rental until resolved.` : 'Recommend prioritizing dispatch for these units.'}`;
+    }
+    if (openCount > 5) {
+      return `Work order volume is higher than typical. ${openCount} open orders across the property. ${urgentCount > 0 ? `${urgentCount} marked urgent.` : 'No urgent items currently.'} Consider scheduling additional maintenance staff.`;
+    }
+    if (resolvedCount > 0 && openCount <= 3) {
+      return `Operations running smoothly — ${resolvedCount} order${resolvedCount > 1 ? 's' : ''} resolved with only ${openCount} remaining open. Team efficiency is strong.`;
+    }
+    if (openCount === 0) {
+      return 'All work orders resolved. No outstanding maintenance issues. Property is in excellent operational condition.';
+    }
+    return `${openCount} open work order${openCount !== 1 ? 's' : ''} currently tracked. ${urgentCount > 0 ? `${urgentCount} urgent.` : 'No urgent items.'} Maintenance pipeline is manageable.`;
+  })();
+
+  // Occupancy / dirty rooms from property context (fallback to order-derived)
+  const dirtyRoomCount = orders.filter(o => o.blockedRoom && o.status !== 'resolved').length;
+
   return (
     <AppLayout>
-      <div style={{ padding: '16px 20px 100px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+      <style>{`
+        .wo-glass-card {
+          background: rgba(255,255,255,0.6);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+        }
+        .wo-glass-card:hover {
+          background: rgba(255,255,255,0.8);
+          transform: scale(1.005);
+        }
+        .wo-urgent-glow {
+          box-shadow: 0 0 20px -5px rgba(186,26,26,0.15);
+        }
+      `}</style>
 
-        {/* ── Page header ── */}
-        <div className="animate-in">
-          <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '17px', color: 'var(--text-primary)', letterSpacing: '-0.01em', lineHeight: 1 }}>
-            {t('maintenance', lang)}
-          </h1>
-        </div>
+      <div style={{ maxWidth: '768px', margin: '0 auto', padding: '48px 24px 160px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
 
         {/* ── Tabs ── */}
-        <div className="animate-in stagger-1" style={{ display: 'flex', gap: '4px', background: 'var(--bg-elevated)', borderRadius: 'var(--radius-lg)', padding: '3px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '24px', marginBottom: '8px' }}>
           {([
             { key: 'workOrders' as TabKey, label: t('workOrders', lang) },
             { key: 'preventive' as TabKey, label: t('preventive', lang) },
@@ -368,12 +401,11 @@ export default function MaintenancePage() {
               aria-selected={activeTab === tab.key}
               aria-label={tab.label}
               style={{
-                flex: 1, padding: '7px 0', border: 'none', cursor: 'pointer',
-                borderRadius: 'var(--radius-md)',
-                fontFamily: 'var(--font-sans)', fontSize: '12px', fontWeight: 600,
-                background: activeTab === tab.key ? 'white' : 'transparent',
-                color: activeTab === tab.key ? 'var(--text-primary)' : 'var(--text-muted)',
-                boxShadow: activeTab === tab.key ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+                background: 'none', border: 'none', cursor: 'pointer', padding: '4px 0',
+                fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: activeTab === tab.key ? 600 : 400,
+                color: activeTab === tab.key ? '#1b1c19' : '#757684',
+                borderBottom: activeTab === tab.key ? '2px solid #1b1c19' : '2px solid transparent',
+                paddingBottom: '6px', letterSpacing: '-0.01em',
                 transition: 'all 150ms',
               }}
             >
@@ -384,10 +416,10 @@ export default function MaintenancePage() {
 
         {/* ── Tab content ── */}
         {activeTab === 'workOrders' ? (
-          <div className="animate-in stagger-2" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
 
             {/* Filter pills */}
-            <div className="scroll-pills" style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '2px', touchAction: 'pan-x', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', overflowX: 'auto', paddingBottom: '4px' }}>
               {([
                 { key: 'all' as FilterKey, label: t('allFilter', lang) },
                 { key: 'open' as FilterKey, label: t('openFilter', lang) },
@@ -398,201 +430,264 @@ export default function MaintenancePage() {
                   key={f.key}
                   onClick={() => setFilter(f.key)}
                   style={{
-                    display: 'flex', alignItems: 'center', gap: '5px',
-                    padding: '5px 12px', border: 'none', cursor: 'pointer',
-                    borderRadius: 'var(--radius-full)',
-                    fontSize: '12px', fontWeight: 600, fontFamily: 'var(--font-sans)',
-                    background: filter === f.key ? 'var(--navy)' : 'var(--bg-elevated)',
-                    color: filter === f.key ? '#fff' : 'var(--text-secondary)',
-                    transition: 'all 150ms', flexShrink: 0,
+                    padding: '8px 20px', border: 'none', cursor: 'pointer',
+                    borderRadius: '9999px',
+                    fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 500,
+                    background: filter === f.key ? 'rgba(255,255,255,0.6)' : 'transparent',
+                    backdropFilter: filter === f.key ? 'blur(12px)' : 'none',
+                    boxShadow: filter === f.key ? 'inset 0 0 0 1px #364262' : 'inset 0 0 0 1px rgba(197,197,212,0.2)',
+                    color: filter === f.key ? '#364262' : '#454652',
+                    transition: 'all 200ms', flexShrink: 0,
                   }}
                 >
                   {f.label}
-                  <span style={{
-                    fontSize: '10px', fontWeight: 700,
-                    color: filter === f.key ? 'rgba(255,255,255,0.7)' : 'var(--text-muted)',
-                  }}>
-                    {filterCounts[f.key]}
-                  </span>
                 </button>
               ))}
             </div>
 
             {/* Work order cards */}
-            {filteredOrders.length === 0 ? (
-              <div style={{
-                padding: '48px 20px', textAlign: 'center', borderRadius: 'var(--radius-lg)',
-                background: 'rgba(0,0,0,0.02)', border: '1px dashed var(--border)',
-              }}>
-                <Wrench size={28} color="var(--text-muted)" style={{ margin: '0 auto 10px' }} />
-                <p style={{ fontSize: '14px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
-                  {t('noWorkOrders', lang)}
-                </p>
-              </div>
-            ) : (
-              filteredOrders.map(order => {
-                const isExpanded = expandedId === order.id;
-                const sev = SEVERITY_STYLE[order.severity];
-                const stat = STATUS_STYLE[order.status];
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+              {filteredOrders.length === 0 ? (
+                <div className="wo-glass-card" style={{
+                  padding: '48px 24px', textAlign: 'center', borderRadius: '16px',
+                  boxShadow: 'inset 0 0 0 1px rgba(197,197,212,0.1)',
+                }}>
+                  <Wrench size={28} color="#757684" style={{ margin: '0 auto 10px' }} />
+                  <p style={{ fontSize: '14px', color: '#757684', lineHeight: 1.5 }}>
+                    {t('noWorkOrders', lang)}
+                  </p>
+                </div>
+              ) : (
+                filteredOrders.map(order => {
+                  const isExpanded = expandedId === order.id;
+                  const isUrgent = order.severity === 'urgent';
 
-                return (
-                  <div
-                    key={order.id}
-                    className="card"
-                    style={{ padding: '10px 14px', cursor: 'pointer', transition: 'box-shadow 150ms' }}
-                    onClick={() => setExpandedId(isExpanded ? null : order.id)}
-                  >
-                    {/* Row 1: severity + room + description + status + time */}
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
-                      <span style={{
-                        fontSize: '10px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.04em',
-                        color: sev.color, flexShrink: 0,
-                      }}>
-                        {sevLabel(order.severity)}
-                      </span>
-                      {order.roomNumber && (
-                        <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '13px', color: 'var(--text-primary)', flexShrink: 0 }}>
-                          {order.roomNumber}
-                        </span>
-                      )}
-                      <span style={{
-                        fontSize: '13px', color: 'var(--text-secondary)', flex: 1, minWidth: 0,
-                        ...(isExpanded ? { whiteSpace: 'normal' as const } : { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }),
-                      }}>
-                        {order.description}
-                      </span>
-                      <span style={{
-                        fontSize: '11px', fontWeight: 700, color: stat.color, flexShrink: 0,
-                      }}>
-                        {statusLabel(order.status)}
-                      </span>
-                    </div>
+                  const sevPillStyle: Record<WorkOrderSeverity, { bg: string; color: string }> = {
+                    urgent: { bg: '#ffdad6', color: '#93000a' },
+                    medium: { bg: '#d3e4f8', color: '#506071' },
+                    low: { bg: '#eae8e3', color: '#454652' },
+                  };
+                  const statusColorMap: Record<WorkOrderStatus, string> = {
+                    submitted: '#ba1a1a',
+                    assigned: '#364262',
+                    in_progress: '#006565',
+                    resolved: '#22c55e',
+                  };
 
-                    {/* Row 2: meta line — assignee + time + flags */}
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px', fontSize: '11px', color: 'var(--text-muted)' }}>
-                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {order.assignedName ? order.assignedName : t('unassigned', lang)}
-                      </span>
-                      {order.blockedRoom && (
-                        <span style={{ fontSize: '9px', fontWeight: 700, color: 'var(--red)', textTransform: 'uppercase', flexShrink: 0 }}>
-                          {lang === 'es' ? 'Bloq' : 'Blocked'}
-                        </span>
-                      )}
-                      <span style={{ display: 'flex', alignItems: 'center', gap: '3px', flexShrink: 0 }}>
-                        <Clock size={10} />
-                        {timeAgo(toJsDate(order.createdAt))}
-                      </span>
-                      {isExpanded ? <ChevronUp size={12} color="var(--text-muted)" /> : <ChevronDown size={12} color="var(--text-muted)" />}
-                    </div>
-
-                    {/* Expanded details */}
-                    {isExpanded && (
-                      <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: '10px' }}
-                        onClick={e => e.stopPropagation()}
-                      >
-                        {order.notes && (
-                          <p style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                            <strong>{t('workOrderNotes', lang)}:</strong> {order.notes}
-                          </p>
-                        )}
-                        {order.submittedByName && (
-                          <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                            {t('submittedBy', lang)}: {order.submittedByName}
-                          </p>
-                        )}
-                        <div style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                          {order.createdAt && <span>Created: {formatShortDate(toJsDate(order.createdAt))}</span>}
-                          {order.updatedAt && <span>Updated: {formatShortDate(toJsDate(order.updatedAt))}</span>}
-                          {order.resolvedAt && <span>Resolved: {formatShortDate(toJsDate(order.resolvedAt))}</span>}
+                  return (
+                    <div
+                      key={order.id}
+                      className={`wo-glass-card${isUrgent && order.status !== 'resolved' ? ' wo-urgent-glow' : ''}`}
+                      style={{
+                        borderRadius: '16px', padding: '24px',
+                        boxShadow: isUrgent && order.status !== 'resolved'
+                          ? 'inset 0 0 0 1px rgba(186,26,26,0.1), 0 0 20px -5px rgba(186,26,26,0.15)'
+                          : 'inset 0 0 0 1px rgba(197,197,212,0.1)',
+                        cursor: 'pointer',
+                        transition: 'all 200ms cubic-bezier(0.2,0,0,1)',
+                      }}
+                      onClick={() => setExpandedId(isExpanded ? null : order.id)}
+                    >
+                      {/* Top row: room number + title + severity pill */}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '4px' }}>
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: '16px' }}>
+                          {order.roomNumber && (
+                            <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '28px', fontWeight: 500, letterSpacing: '-0.04em', color: '#364262' }}>
+                              {order.roomNumber}
+                            </span>
+                          )}
+                          <div>
+                            <h3 style={{ fontFamily: "'Inter', sans-serif", fontSize: '18px', fontWeight: 600, color: '#1b1c19', lineHeight: 1.3, margin: 0 }}>
+                              {order.description.length > 40 && !isExpanded ? order.description.slice(0, 40) + '…' : order.description}
+                            </h3>
+                            <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '14px', color: '#454652', margin: '2px 0 0' }}>
+                              {lang === 'es' ? 'Reportado' : 'Reported'} {timeAgo(toJsDate(order.createdAt))} {order.submittedByName ? `${lang === 'es' ? 'por' : 'by'} ${order.submittedByName}` : ''}
+                            </p>
+                          </div>
                         </div>
+                        <span style={{
+                          padding: '4px 12px', borderRadius: '9999px',
+                          fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em',
+                          background: sevPillStyle[order.severity].bg,
+                          color: sevPillStyle[order.severity].color,
+                          flexShrink: 0,
+                        }}>
+                          {sevLabel(order.severity)}
+                        </span>
+                      </div>
 
-                        {/* Action buttons */}
-                        {order.status === 'submitted' && (
-                          <div style={{ position: 'relative' }}>
+                      {/* Status + assignment row */}
+                      {(order.assignedName || order.blockedRoom || order.status !== 'submitted') && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginTop: '16px' }}>
+                          {order.assignedName && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: '#dae2ff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', fontWeight: 700, color: '#364262' }}>
+                                {order.assignedName.charAt(0).toUpperCase()}
+                              </div>
+                              <span style={{ fontSize: '13px', color: '#454652', fontWeight: 500 }}>{order.assignedName}</span>
+                            </div>
+                          )}
+                          {order.blockedRoom && (
+                            <>
+                              <div style={{ width: '1px', height: '16px', background: 'rgba(197,197,212,0.3)' }} />
+                              <span style={{ fontSize: '11px', fontWeight: 700, color: '#ba1a1a', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                                {lang === 'es' ? 'Bloqueada' : 'Blocked'}
+                              </span>
+                            </>
+                          )}
+                          {order.status !== 'submitted' && (
+                            <>
+                              <div style={{ width: '1px', height: '16px', background: 'rgba(197,197,212,0.3)' }} />
+                              <span style={{ fontSize: '12px', fontWeight: 600, color: statusColorMap[order.status] }}>
+                                {statusLabel(order.status)}
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Notes quote block */}
+                      {order.notes && !isExpanded && (
+                        <div style={{
+                          background: 'rgba(245,243,238,0.4)', borderRadius: '12px',
+                          padding: '12px 16px', marginTop: '16px',
+                        }}>
+                          <p style={{ fontSize: '14px', color: '#1b1c19', lineHeight: 1.6, fontStyle: 'italic', margin: 0 }}>
+                            &ldquo;{order.notes}&rdquo;
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Expanded details */}
+                      {isExpanded && (
+                        <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid rgba(197,197,212,0.2)', display: 'flex', flexDirection: 'column', gap: '12px' }}
+                          onClick={e => e.stopPropagation()}
+                        >
+                          {order.notes && (
+                            <div style={{
+                              background: 'rgba(245,243,238,0.4)', borderRadius: '12px',
+                              padding: '12px 16px',
+                            }}>
+                              <p style={{ fontSize: '14px', color: '#1b1c19', lineHeight: 1.6, fontStyle: 'italic', margin: 0 }}>
+                                &ldquo;{order.notes}&rdquo;
+                              </p>
+                            </div>
+                          )}
+                          <div style={{ fontSize: '12px', color: '#757684', display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                            {order.createdAt && <span>{lang === 'es' ? 'Creado' : 'Created'}: {formatShortDate(toJsDate(order.createdAt))}</span>}
+                            {order.updatedAt && <span>{lang === 'es' ? 'Actualizado' : 'Updated'}: {formatShortDate(toJsDate(order.updatedAt))}</span>}
+                            {order.resolvedAt && <span>{lang === 'es' ? 'Resuelto' : 'Resolved'}: {formatShortDate(toJsDate(order.resolvedAt))}</span>}
+                          </div>
+
+                          {/* Action buttons */}
+                          {order.status === 'submitted' && (
+                            <div style={{ position: 'relative' }}>
+                              <button
+                                onClick={() => setAssigningId(assigningId === order.id ? null : order.id)}
+                                style={{
+                                  width: '100%', padding: '12px', fontSize: '14px', fontWeight: 600,
+                                  background: '#364262', color: '#fff', border: 'none',
+                                  borderRadius: '12px', cursor: 'pointer', minHeight: '44px',
+                                  fontFamily: "'Inter', sans-serif",
+                                  transition: 'background 150ms',
+                                }}
+                              >
+                                {t('assign', lang)}
+                              </button>
+                              {assigningId === order.id && (
+                                <div style={{
+                                  marginTop: '8px', borderRadius: '12px',
+                                  border: '1px solid rgba(197,197,212,0.2)', background: '#fff',
+                                  maxHeight: '180px', overflowY: 'auto',
+                                  boxShadow: '0 4px 16px rgba(0,0,0,0.08)',
+                                }}>
+                                  {assignableStaff.length === 0 ? (
+                                    <p style={{ padding: '16px', fontSize: '13px', color: '#757684', textAlign: 'center' }}>
+                                      {t('noStaff', lang)}
+                                    </p>
+                                  ) : (
+                                    assignableStaff.map(member => (
+                                      <button
+                                        key={member.id}
+                                        onClick={() => handleAssign(order, member)}
+                                        style={{
+                                          width: '100%', padding: '12px 16px', border: 'none',
+                                          background: 'transparent', cursor: 'pointer',
+                                          textAlign: 'left', fontSize: '14px', color: '#1b1c19',
+                                          borderBottom: '1px solid rgba(197,197,212,0.15)',
+                                          minHeight: '44px', fontFamily: "'Inter', sans-serif",
+                                          transition: 'background 100ms',
+                                        }}
+                                        onMouseEnter={e => { (e.target as HTMLElement).style.background = 'rgba(218,226,255,0.3)'; }}
+                                        onMouseLeave={e => { (e.target as HTMLElement).style.background = 'transparent'; }}
+                                      >
+                                        {member.name}
+                                        {member.department && (
+                                          <span style={{ fontSize: '12px', color: '#757684', marginLeft: '8px' }}>
+                                            {member.department}
+                                          </span>
+                                        )}
+                                      </button>
+                                    ))
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {order.status === 'assigned' && (
                             <button
-                              onClick={() => setAssigningId(assigningId === order.id ? null : order.id)}
-                              className="btn"
+                              onClick={() => handleStartWork(order)}
                               style={{
-                                width: '100%', padding: '10px', fontSize: '13px', fontWeight: 600,
-                                background: 'var(--navy)', color: '#fff', border: 'none',
-                                borderRadius: 'var(--radius-md)', cursor: 'pointer',
-                                minHeight: '44px',
+                                width: '100%', padding: '12px', fontSize: '14px', fontWeight: 600,
+                                background: 'rgba(0,101,101,0.08)', color: '#006565', border: 'none',
+                                borderRadius: '12px', cursor: 'pointer', minHeight: '44px',
+                                fontFamily: "'Inter', sans-serif",
+                                transition: 'background 150ms',
                               }}
                             >
-                              {t('assign', lang)}
+                              {t('startWork', lang)}
                             </button>
-                            {assigningId === order.id && (
-                              <div style={{
-                                marginTop: '6px', borderRadius: 'var(--radius-md)',
-                                border: '1px solid var(--border)', background: 'var(--bg-card)',
-                                maxHeight: '180px', overflowY: 'auto',
-                              }}>
-                                {assignableStaff.length === 0 ? (
-                                  <p style={{ padding: '12px', fontSize: '12px', color: 'var(--text-muted)', textAlign: 'center' }}>
-                                    {t('noStaff', lang)}
-                                  </p>
-                                ) : (
-                                  assignableStaff.map(member => (
-                                    <button
-                                      key={member.id}
-                                      onClick={() => handleAssign(order, member)}
-                                      style={{
-                                        width: '100%', padding: '10px 14px', border: 'none',
-                                        background: 'transparent', cursor: 'pointer',
-                                        textAlign: 'left', fontSize: '13px', color: 'var(--text-primary)',
-                                        borderBottom: '1px solid var(--border)',
-                                        minHeight: '44px',
-                                      }}
-                                    >
-                                      {member.name}
-                                      {member.department && (
-                                        <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginLeft: '8px' }}>
-                                          {member.department}
-                                        </span>
-                                      )}
-                                    </button>
-                                  ))
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        )}
+                          )}
 
-                        {order.status === 'assigned' && (
-                          <button
-                            onClick={() => handleStartWork(order)}
-                            className="btn"
-                            style={{
-                              width: '100%', padding: '10px', fontSize: '13px', fontWeight: 600,
-                              background: 'rgba(245,158,11,0.12)', color: 'var(--amber)', border: 'none',
-                              borderRadius: 'var(--radius-md)', cursor: 'pointer',
-                              minHeight: '44px',
-                            }}
-                          >
-                            {t('startWork', lang)}
-                          </button>
-                        )}
+                          {order.status === 'in_progress' && (
+                            <button
+                              onClick={() => handleResolve(order)}
+                              style={{
+                                width: '100%', padding: '12px', fontSize: '14px', fontWeight: 600,
+                                background: 'rgba(34,197,94,0.08)', color: '#16a34a', border: 'none',
+                                borderRadius: '12px', cursor: 'pointer', minHeight: '44px',
+                                fontFamily: "'Inter', sans-serif",
+                                transition: 'background 150ms',
+                              }}
+                            >
+                              {t('markResolved', lang)}
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
 
-                        {order.status === 'in_progress' && (
-                          <button
-                            onClick={() => handleResolve(order)}
-                            className="btn"
-                            style={{
-                              width: '100%', padding: '10px', fontSize: '13px', fontWeight: 600,
-                              background: 'rgba(34,197,94,0.12)', color: 'var(--green)', border: 'none',
-                              borderRadius: 'var(--radius-md)', cursor: 'pointer',
-                              minHeight: '44px',
-                            }}
-                          >
-                            {t('markResolved', lang)}
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })
-            )}
+            {/* ── AI Concierge Insight Card ── */}
+            <div style={{
+              borderRadius: '16px', padding: '32px', position: 'relative', overflow: 'hidden',
+              background: 'linear-gradient(135deg, #fff 0%, rgba(147,242,242,0.05) 100%)',
+              boxShadow: 'inset 0 0 0 1px rgba(0,101,101,0.1)',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '20px' }}>
+                <span style={{ fontSize: '20px' }}>⚡</span>
+                <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#006565' }}>
+                  {lang === 'es' ? 'Perspectiva del Conserje' : 'Concierge Insight'}
+                </span>
+              </div>
+              <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '17px', lineHeight: 1.6, color: '#1b1c19', margin: '0 0 20px' }}>
+                {aiInsightText}
+              </p>
+            </div>
           </div>
         ) : activeTab === 'preventive' ? (
           /* ── Preventive Maintenance Tab (Inspections) ── */
@@ -764,14 +859,14 @@ export default function MaintenancePage() {
           onClick={() => setShowCreateModal(true)}
           aria-label={t('newWorkOrder', lang)}
           style={{
-            position: 'fixed', bottom: '80px', right: '20px', zIndex: 30,
-            width: '48px', height: '48px', borderRadius: '50%',
-            background: 'var(--navy)', color: '#fff', border: 'none',
+            position: 'fixed', bottom: '32px', right: '32px', zIndex: 30,
+            width: '56px', height: '56px', borderRadius: '50%',
+            background: '#364262', color: '#fff', border: 'none',
             cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-            boxShadow: '0 4px 14px rgba(27,58,92,0.35)',
-            transition: 'transform 150ms, box-shadow 150ms',
+            boxShadow: '0 4px 16px rgba(54,66,98,0.35)',
+            transition: 'transform 200ms cubic-bezier(0.2,0,0,1)',
           }}
-          onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.08)'; }}
+          onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.1)'; }}
           onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; }}
         >
           <Plus size={24} strokeWidth={2.5} />
@@ -783,7 +878,7 @@ export default function MaintenancePage() {
         <div
           style={{
             position: 'fixed', inset: 0, zIndex: 50,
-            background: 'rgba(0,0,0,0.4)',
+            background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(4px)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             padding: '20px',
           }}
@@ -791,23 +886,24 @@ export default function MaintenancePage() {
         >
           <div style={{
             width: '100%', maxWidth: '500px', maxHeight: '90vh', overflowY: 'auto',
-            background: 'var(--bg-card)', borderRadius: '14px',
-            padding: '16px',
-            display: 'flex', flexDirection: 'column', gap: '12px',
+            background: '#fbf9f4', borderRadius: '24px',
+            padding: '24px',
+            display: 'flex', flexDirection: 'column', gap: '16px',
+            boxShadow: '0 24px 48px rgba(0,0,0,0.12)',
           }}>
             {/* Header */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <h2 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '15px', color: 'var(--text-primary)' }}>
+              <h2 style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: '18px', color: '#1b1c19' }}>
                 {t('newWorkOrder', lang)}
               </h2>
               <button onClick={() => setShowCreateModal(false)} aria-label={lang === 'es' ? 'Cerrar' : 'Close'} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}>
-                <X size={16} color="var(--text-muted)" />
+                <X size={18} color="#757684" />
               </button>
             </div>
 
             {/* Room # */}
             <div>
-              <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '4px', display: 'block' }}>
+              <label style={{ fontSize: '12px', fontWeight: 600, color: '#454652', marginBottom: '6px', display: 'block', fontFamily: "'Inter', sans-serif" }}>
                 {t('roomNumber', lang)}
               </label>
               <input
@@ -816,52 +912,59 @@ export default function MaintenancePage() {
                 onChange={e => setNewRoom(e.target.value)}
                 placeholder="e.g. 302"
                 style={{
-                  width: '100%', padding: '9px 12px', fontSize: '13px',
-                  border: '1px solid var(--border)', borderRadius: 'var(--radius-md)',
-                  background: 'var(--bg)', color: 'var(--text-primary)',
-                  fontFamily: 'var(--font-mono)',
+                  width: '100%', padding: '12px 16px', fontSize: '14px',
+                  border: '1px solid rgba(197,197,212,0.3)', borderRadius: '12px',
+                  background: '#fff', color: '#1b1c19',
+                  fontFamily: "'JetBrains Mono', monospace",
+                  outline: 'none', transition: 'border 150ms',
                 }}
               />
             </div>
 
             {/* Description */}
             <div>
-              <label style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '3px', display: 'block' }}>
+              <label style={{ fontSize: '12px', fontWeight: 600, color: '#454652', marginBottom: '6px', display: 'block', fontFamily: "'Inter', sans-serif" }}>
                 {lang === 'es' ? 'Descripción' : 'Description'}
               </label>
               <textarea
                 value={newDesc}
                 onChange={e => setNewDesc(e.target.value)}
                 placeholder={t('describeIssue', lang)}
-                rows={2}
+                rows={3}
                 style={{
-                  width: '100%', padding: '9px 12px', fontSize: '13px',
-                  border: '1px solid var(--border)', borderRadius: 'var(--radius-md)',
-                  background: 'var(--bg)', color: 'var(--text-primary)',
-                  fontFamily: 'var(--font-sans)', resize: 'none',
+                  width: '100%', padding: '12px 16px', fontSize: '14px',
+                  border: '1px solid rgba(197,197,212,0.3)', borderRadius: '12px',
+                  background: '#fff', color: '#1b1c19',
+                  fontFamily: "'Inter', sans-serif", resize: 'none',
+                  outline: 'none', transition: 'border 150ms',
                 }}
               />
             </div>
 
             {/* Severity */}
             <div>
-              <label style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '3px', display: 'block' }}>
+              <label style={{ fontSize: '12px', fontWeight: 600, color: '#454652', marginBottom: '6px', display: 'block', fontFamily: "'Inter', sans-serif" }}>
                 {t('severity', lang)}
               </label>
-              <div style={{ display: 'flex', gap: '6px' }}>
+              <div style={{ display: 'flex', gap: '8px' }}>
                 {(['low', 'medium', 'urgent'] as WorkOrderSeverity[]).map(sev => {
                   const isSelected = newSeverity === sev;
-                  const style = SEVERITY_STYLE[sev];
+                  const pillColors: Record<WorkOrderSeverity, { bg: string; color: string; activeBg: string }> = {
+                    low: { bg: '#eae8e3', color: '#454652', activeBg: '#eae8e3' },
+                    medium: { bg: '#d3e4f8', color: '#506071', activeBg: '#d3e4f8' },
+                    urgent: { bg: '#ffdad6', color: '#93000a', activeBg: '#ffdad6' },
+                  };
                   return (
                     <button
                       key={sev}
                       onClick={() => setNewSeverity(sev)}
                       style={{
-                        flex: 1, padding: '8px', border: 'none', borderRadius: 'var(--radius-md)',
-                        fontSize: '12px', fontWeight: 600, cursor: 'pointer',
-                        background: isSelected ? style.bg : 'var(--bg-elevated)',
-                        color: isSelected ? style.color : 'var(--text-muted)',
-                        outline: isSelected ? `2px solid ${style.color}` : 'none',
+                        flex: 1, padding: '10px', border: 'none', borderRadius: '12px',
+                        fontSize: '13px', fontWeight: 600, cursor: 'pointer',
+                        fontFamily: "'Inter', sans-serif",
+                        background: isSelected ? pillColors[sev].activeBg : '#f5f3ee',
+                        color: isSelected ? pillColors[sev].color : '#757684',
+                        outline: isSelected ? `2px solid ${pillColors[sev].color}` : 'none',
                         transition: 'all 150ms',
                       }}
                     >
@@ -877,27 +980,27 @@ export default function MaintenancePage() {
               onClick={() => setNewBlockRoom(!newBlockRoom)}
               style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '9px 12px', borderRadius: 'var(--radius-md)',
-                border: newBlockRoom ? '2px solid var(--red)' : '1px solid var(--border)',
-                background: newBlockRoom ? 'var(--red-dim)' : 'transparent',
+                padding: '12px 16px', borderRadius: '12px',
+                border: newBlockRoom ? '2px solid #ba1a1a' : '1px solid rgba(197,197,212,0.3)',
+                background: newBlockRoom ? '#ffdad6' : 'transparent',
                 cursor: 'pointer', transition: 'all 150ms',
               }}
             >
               <div>
-                <p style={{ fontSize: '13px', fontWeight: 600, color: newBlockRoom ? 'var(--red)' : 'var(--text-primary)' }}>
+                <p style={{ fontSize: '14px', fontWeight: 600, color: newBlockRoom ? '#93000a' : '#1b1c19', margin: 0, fontFamily: "'Inter', sans-serif" }}>
                   {lang === 'es' ? 'Bloquear Habitación' : 'Block Room'}
                 </p>
-                <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                <p style={{ fontSize: '12px', color: '#757684', marginTop: '2px', fontFamily: "'Inter', sans-serif" }}>
                   {lang === 'es' ? 'No se puede rentar hasta resolver' : "Can't rent until resolved"}
                 </p>
               </div>
               <div style={{
-                width: '40px', height: '22px', borderRadius: '99px',
-                background: newBlockRoom ? 'var(--red)' : 'rgba(0,0,0,0.12)',
+                width: '42px', height: '24px', borderRadius: '99px',
+                background: newBlockRoom ? '#ba1a1a' : 'rgba(0,0,0,0.12)',
                 position: 'relative', transition: 'background 150ms',
               }}>
                 <div style={{
-                  width: '18px', height: '18px', borderRadius: '50%',
+                  width: '20px', height: '20px', borderRadius: '50%',
                   background: '#fff', position: 'absolute', top: '2px',
                   left: newBlockRoom ? '20px' : '2px',
                   transition: 'left 150ms',
@@ -911,12 +1014,12 @@ export default function MaintenancePage() {
               onClick={handleCreateOrder}
               disabled={!newDesc.trim() || submitting}
               style={{
-                width: '100%', padding: '10px', border: 'none',
-                borderRadius: 'var(--radius-md)', cursor: newDesc.trim() && !submitting ? 'pointer' : 'not-allowed',
-                background: newDesc.trim() && !submitting ? 'var(--navy)' : 'var(--bg-elevated)',
-                color: newDesc.trim() && !submitting ? '#fff' : 'var(--text-muted)',
-                fontSize: '13px', fontWeight: 700, fontFamily: 'var(--font-sans)',
-                transition: 'all 150ms',
+                width: '100%', padding: '14px', border: 'none',
+                borderRadius: '12px', cursor: newDesc.trim() && !submitting ? 'pointer' : 'not-allowed',
+                background: newDesc.trim() && !submitting ? '#364262' : '#eae8e3',
+                color: newDesc.trim() && !submitting ? '#fff' : '#757684',
+                fontSize: '14px', fontWeight: 700, fontFamily: "'Inter', sans-serif",
+                transition: 'all 150ms', minHeight: '48px',
               }}
             >
               {submitting ? '...' : t('submitWorkOrder', lang)}
@@ -1040,12 +1143,13 @@ export default function MaintenancePage() {
       {/* ── Toast ── */}
       {toast && (
         <div style={{
-          position: 'fixed', bottom: '140px', left: '50%', transform: 'translateX(-50%)',
-          zIndex: 60, padding: '10px 20px', borderRadius: 'var(--radius-full)',
-          background: 'var(--navy)', color: '#fff',
-          fontSize: '13px', fontWeight: 600, fontFamily: 'var(--font-sans)',
-          boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+          position: 'fixed', bottom: '100px', left: '50%', transform: 'translateX(-50%)',
+          zIndex: 60, padding: '12px 24px', borderRadius: '9999px',
+          background: '#364262', color: '#fff',
+          fontSize: '14px', fontWeight: 600, fontFamily: "'Inter', sans-serif",
+          boxShadow: '0 8px 24px rgba(54,66,98,0.3)',
           animation: 'fadeIn 200ms ease-out',
+          backdropFilter: 'blur(12px)',
         }}>
           {toast}
         </div>
