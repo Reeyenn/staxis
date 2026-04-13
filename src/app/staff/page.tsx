@@ -677,33 +677,37 @@ export default function StaffPage() {
         {activeTab === 'schedule' && (
           <div className="animate-in">
 
-            {/* Notification panel */}
+            {/* ── Notification panel (Stitch) ── */}
             {showNotifPanel && (
-              <div className="card animate-in" style={{ marginBottom: '12px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                  <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>{t('notificationsTitle', lang)}</span>
+              <div style={{
+                marginBottom: '16px', padding: '18px 20px',
+                background: 'rgba(255,255,255,0.7)', backdropFilter: 'blur(24px)',
+                border: '1px solid #d5d2ca', borderRadius: '24px',
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                  <span style={{ fontSize: '14px', fontWeight: 700, color: '#1b1c19', fontFamily: 'Inter, sans-serif' }}>{t('notificationsTitle', lang)}</span>
                   {unreadCount > 0 && (
-                    <button onClick={() => { if (uid && pid) markAllNotificationsRead(uid, pid).catch(err => console.error('[staff] mark all read failed:', err)); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '11px', color: 'var(--amber)', fontWeight: 600, padding: 0 }}>
+                    <button onClick={() => { if (uid && pid) markAllNotificationsRead(uid, pid).catch(err => console.error('[staff] mark all read failed:', err)); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '12px', color: '#006565', fontWeight: 600, padding: 0, fontFamily: 'Inter, sans-serif' }}>
                       {t('markAllRead', lang)}
                     </button>
                   )}
                 </div>
                 {notifications.length === 0 ? (
-                  <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>{t('noNotifications', lang)}</p>
+                  <p style={{ fontSize: '14px', color: '#757684', margin: 0, fontFamily: 'Inter, sans-serif' }}>{t('noNotifications', lang)}</p>
                 ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     {notifications.slice(0, 10).map(n => (
                       <div key={n.id} onClick={() => { if (!n.read && uid && pid) markNotificationRead(uid, pid, n.id).catch(err => console.error('[staff] mark read failed:', err)); }} style={{
-                        display: 'flex', alignItems: 'flex-start', gap: '8px', padding: '7px 10px',
-                        background: n.read ? 'transparent' : 'rgba(251,191,36,0.05)',
-                        border: `1px solid ${n.read ? 'var(--border)' : 'rgba(251,191,36,0.2)'}`,
-                        borderRadius: 'var(--radius-md)', cursor: n.read ? 'default' : 'pointer',
+                        display: 'flex', alignItems: 'flex-start', gap: '10px', padding: '10px 14px',
+                        background: n.read ? 'transparent' : 'rgba(0,101,101,0.04)',
+                        border: `1px solid ${n.read ? '#eae8e3' : 'rgba(0,101,101,0.15)'}`,
+                        borderRadius: '16px', cursor: n.read ? 'default' : 'pointer',
                       }}>
-                        <span style={{ marginTop: '1px', flexShrink: 0, color: n.type === 'decline' || n.type === 'no_replacement' ? 'var(--red)' : n.type === 'all_confirmed' ? 'var(--green)' : 'var(--amber)' }}>
-                          {n.type === 'all_confirmed' ? <CheckCircle2 size={14} /> : n.type === 'decline' ? <XCircle size={14} /> : n.type === 'no_replacement' ? <AlertTriangle size={14} /> : <Users size={14} />}
+                        <span className="material-symbols-outlined" style={{ fontSize: '16px', flexShrink: 0, marginTop: '1px', color: n.type === 'decline' || n.type === 'no_replacement' ? '#ba1a1a' : n.type === 'all_confirmed' ? '#006565' : '#364262' }}>
+                          {n.type === 'all_confirmed' ? 'check_circle' : n.type === 'decline' ? 'cancel' : n.type === 'no_replacement' ? 'warning' : 'groups'}
                         </span>
-                        <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.4 }}>{n.message}</p>
-                        {!n.read && <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--amber)', flexShrink: 0, marginTop: '4px' }} />}
+                        <p style={{ margin: 0, fontSize: '13px', color: '#454652', lineHeight: 1.4, fontFamily: 'Inter, sans-serif', flex: 1 }}>{n.message}</p>
+                        {!n.read && <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#006565', flexShrink: 0, marginTop: '5px' }} />}
                       </div>
                     ))}
                   </div>
@@ -711,119 +715,215 @@ export default function StaffPage() {
               </div>
             )}
 
-            {/* Date selector */}
-            <div className="card" style={{ marginBottom: '12px' }}>
-              <p style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: '6px' }}>
-                {t('selectShiftDate', lang)}
-              </p>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <button onClick={() => { setShiftDate(d => addDays(d, -1)); setSent(false); setSelected([]); setGmAccepted(false); }} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '4px 8px', cursor: 'pointer', color: 'var(--text-secondary)' }}>
-                  <ChevronLeft size={14} />
-                </button>
-                <span style={{ flex: 1, textAlign: 'center', fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)' }}>
-                  {formatDisplayDate(shiftDate, lang)}
-                </span>
-                <button onClick={() => { setShiftDate(d => addDays(d, 1)); setSent(false); setSelected([]); setGmAccepted(false); }} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '4px 8px', cursor: 'pointer', color: 'var(--text-secondary)' }}>
-                  <ChevronRight size={14} />
-                </button>
+            {/* ── Conversational Hero ── */}
+            <div style={{ marginBottom: '28px' }}>
+              <h2 style={{
+                fontFamily: 'Inter, sans-serif', fontWeight: 600, fontSize: '28px',
+                letterSpacing: '-0.02em', color: '#1b1c19', margin: 0, lineHeight: 1.3,
+              }}>
+                {gmRec.summary || (lang === 'es' ? 'Planifica el turno del equipo.' : 'Plan your team\'s shift.')}
+              </h2>
+
+              {/* Action buttons row */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '20px' }}>
+                {!sent && gmRec.picks.length > 0 && !gmAccepted && (
+                  <button onClick={acceptGMPicks} style={{
+                    padding: '14px 28px', background: '#364262', color: '#FFFFFF',
+                    border: 'none', borderRadius: '9999px', fontWeight: 600, fontSize: '15px',
+                    cursor: 'pointer', fontFamily: 'Inter, sans-serif',
+                    display: 'flex', alignItems: 'center', gap: '8px',
+                    transition: 'all 0.15s',
+                  }}>
+                    {lang === 'es' ? 'Revisar y Publicar' : 'Review & Publish'}
+                  </button>
+                )}
+                {!sent && gmRec.picks.length > 0 && !gmAccepted && (
+                  <button onClick={() => setGmAccepted(true)} style={{
+                    padding: '14px 24px', background: 'rgba(0,101,101,0.08)',
+                    color: '#006565', border: 'none', borderRadius: '9999px',
+                    fontWeight: 600, fontSize: '15px', cursor: 'pointer', fontFamily: 'Inter, sans-serif',
+                    display: 'flex', alignItems: 'center', gap: '8px',
+                    transition: 'all 0.15s',
+                  }}>
+                    <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>colors_spark</span>
+                    {lang === 'es' ? 'Personalizar' : 'Customize Crew'}
+                  </button>
+                )}
               </div>
             </div>
 
-            {/* Sent banner */}
-            {sent && (
-              <div className="animate-in" style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '12px 16px', background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.25)', borderRadius: 'var(--radius-md)', marginBottom: '16px' }}>
-                <CheckCircle2 size={16} color="var(--green)" />
-                <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--green)' }}>{t('confirmationsSent', lang)}</span>
-              </div>
-            )}
-
-            {/* Existing confirmations */}
-            {confirmations.length > 0 && (
-              <div className="card" style={{ marginBottom: '12px' }}>
-                <p style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: '8px' }}>
-                  {t('crewForDate', lang)} {formatDisplayDate(shiftDate, lang)}
-                </p>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  {confirmations.map(conf => (
-                    <div key={conf.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '7px 10px', background: 'rgba(0,0,0,0.02)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)' }}>
-                      <span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-primary)' }}>{conf.staffName}</span>
-                      <span style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px', fontWeight: 600, color: STATUS_COLOR[conf.status] }}>
-                        {STATUS_ICON[conf.status]}
-                        {t(conf.status === 'pending' ? 'statusPending' : conf.status === 'confirmed' ? 'statusConfirmed' : conf.status === 'declined' ? 'statusDeclined' : 'statusNoResponse', lang)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* ── AI GM RECOMMENDATION ── */}
-            {!sent && gmRec.picks.length > 0 && !gmAccepted && (
-              <div className="card animate-in" style={{
-                marginBottom: '12px',
-                background: 'linear-gradient(135deg, rgba(27,58,92,0.04) 0%, rgba(37,99,235,0.04) 100%)',
-                border: '1px solid rgba(37,99,235,0.15)',
+            {/* ── Date Selector (Stitch) ── */}
+            <div style={{
+              marginBottom: '20px', padding: '16px 20px',
+              background: 'rgba(255,255,255,0.7)', backdropFilter: 'blur(24px)',
+              border: '1px solid #d5d2ca', borderRadius: '20px',
+              display: 'flex', alignItems: 'center', gap: '12px',
+            }}>
+              <button onClick={() => { setShiftDate(d => addDays(d, -1)); setSent(false); setSelected([]); setGmAccepted(false); }} style={{
+                background: '#eae8e3', border: 'none', borderRadius: '50%',
+                width: '36px', height: '36px', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                  <Bot size={14} color="var(--navy-light)" style={{ flexShrink: 0 }} />
-                  <p style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)', margin: 0, flex: 1 }}>
-                    GM Recommendation
-                  </p>
-                  <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{gmRec.summary}</span>
-                </div>
+                <span className="material-symbols-outlined" style={{ fontSize: '20px', color: '#454652' }}>chevron_left</span>
+              </button>
+              <span style={{ flex: 1, textAlign: 'center', fontSize: '15px', fontWeight: 600, color: '#1b1c19', fontFamily: 'Inter, sans-serif' }}>
+                {formatDisplayDate(shiftDate, lang)}
+              </span>
+              <button onClick={() => { setShiftDate(d => addDays(d, 1)); setSent(false); setSelected([]); setGmAccepted(false); }} style={{
+                background: '#eae8e3', border: 'none', borderRadius: '50%',
+                width: '36px', height: '36px', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <span className="material-symbols-outlined" style={{ fontSize: '20px', color: '#454652' }}>chevron_right</span>
+              </button>
+            </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '10px' }}>
+            {/* ── Sent Banner (Stitch) ── */}
+            {sent && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: '12px', padding: '14px 20px',
+                background: 'rgba(0,101,101,0.06)', border: '1px solid rgba(0,101,101,0.2)',
+                borderRadius: '20px', marginBottom: '20px',
+              }}>
+                <span className="material-symbols-outlined" style={{ fontSize: '20px', color: '#006565' }}>check_circle</span>
+                <span style={{ fontSize: '14px', fontWeight: 600, color: '#006565', fontFamily: 'Inter, sans-serif' }}>{t('confirmationsSent', lang)}</span>
+              </div>
+            )}
+
+            {/* ── Who's Working Today / Confirmations ── */}
+            {confirmations.length > 0 && (
+              <div style={{ marginBottom: '24px' }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '14px' }}>
+                  <h3 style={{ margin: 0, fontFamily: 'Inter, sans-serif', fontWeight: 600, fontSize: '18px', color: '#1b1c19' }}>
+                    {lang === 'es' ? 'Equipo del Día' : "Who's Working"}
+                  </h3>
+                  <span style={{ fontSize: '14px', color: '#757684', fontWeight: 500, fontFamily: 'Inter, sans-serif' }}>
+                    {formatDisplayDate(shiftDate, lang)}
+                  </span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '12px' }}>
+                  {confirmations.map(conf => {
+                    const confColor = conf.status === 'confirmed' ? '#006565' : conf.status === 'declined' ? '#ba1a1a' : conf.status === 'pending' ? '#364262' : '#757684';
+                    const confBg = conf.status === 'confirmed' ? 'rgba(0,101,101,0.06)' : conf.status === 'declined' ? 'rgba(186,26,26,0.06)' : 'transparent';
+                    const confIcon = conf.status === 'confirmed' ? 'check_circle' : conf.status === 'declined' ? 'cancel' : conf.status === 'pending' ? 'schedule' : 'help';
+                    return (
+                      <div key={conf.id} style={{
+                        padding: '16px 20px',
+                        background: 'rgba(255,255,255,0.8)', backdropFilter: 'blur(24px)',
+                        border: '1px solid #d5d2ca', borderRadius: '24px',
+                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                          <div style={{
+                            width: '40px', height: '40px', borderRadius: '50%',
+                            background: '#364262', color: '#fff',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            fontWeight: 700, fontSize: '14px', fontFamily: 'Inter, sans-serif',
+                          }}>
+                            {initials(conf.staffName)}
+                          </div>
+                          <div>
+                            <p style={{ margin: 0, fontWeight: 600, fontSize: '14px', color: '#1b1c19', fontFamily: 'Inter, sans-serif' }}>{conf.staffName}</p>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginTop: '2px' }}>
+                              <span className="material-symbols-outlined" style={{ fontSize: '14px', color: confColor }}>{confIcon}</span>
+                              <span style={{ fontSize: '12px', fontWeight: 600, color: confColor, fontFamily: 'Inter, sans-serif' }}>
+                                {t(conf.status === 'pending' ? 'statusPending' : conf.status === 'confirmed' ? 'statusConfirmed' : conf.status === 'declined' ? 'statusDeclined' : 'statusNoResponse', lang)}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* ── AI GM Recommendation (Stitch card) ── */}
+            {!sent && gmRec.picks.length > 0 && !gmAccepted && (
+              <div style={{
+                marginBottom: '20px', padding: '20px 24px',
+                background: 'rgba(255,255,255,0.7)', backdropFilter: 'blur(24px)',
+                border: '1px solid rgba(0,101,101,0.2)', borderRadius: '24px',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
+                  <span className="material-symbols-outlined" style={{ fontSize: '22px', color: '#006565' }}>smart_toy</span>
+                  <p style={{ margin: 0, fontFamily: 'Inter, sans-serif', fontWeight: 700, fontSize: '16px', color: '#1b1c19' }}>
+                    {lang === 'es' ? 'Recomendación del GM' : 'GM Recommendation'}
+                  </p>
+                </div>
+                <p style={{ margin: '0 0 14px', fontSize: '14px', color: '#454652', fontFamily: 'Inter, sans-serif', lineHeight: 1.5 }}>
+                  {gmRec.summary}
+                </p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '10px', marginBottom: '16px' }}>
                   {gmRec.picks.map(({ member, reason }) => (
                     <div key={member.id} style={{
-                      display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 10px',
-                      background: 'rgba(255,255,255,0.7)', border: '1px solid var(--border)',
-                      borderRadius: 'var(--radius-md)',
+                      display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 16px',
+                      background: 'rgba(255,255,255,0.8)', border: '1px solid #eae8e3',
+                      borderRadius: '20px',
                     }}>
-                      <div style={{ width: '24px', height: '24px', borderRadius: '6px', background: 'var(--navy)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '9px', fontWeight: 700, flexShrink: 0 }}>
+                      <div style={{
+                        width: '36px', height: '36px', borderRadius: '50%',
+                        background: '#364262', color: '#fff',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: '12px', fontWeight: 700, fontFamily: 'Inter, sans-serif', flexShrink: 0,
+                      }}>
                         {initials(member.name)}
                       </div>
-                      <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>{member.name}</span>
-                      <span style={{ fontSize: '11px', color: 'var(--text-muted)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{reason}</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <p style={{ margin: 0, fontWeight: 600, fontSize: '14px', color: '#1b1c19', fontFamily: 'Inter, sans-serif' }}>{member.name}</p>
+                        <p style={{ margin: '2px 0 0', fontSize: '12px', color: '#757684', fontFamily: 'Inter, sans-serif', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{reason}</p>
+                      </div>
                     </div>
                   ))}
                 </div>
-
-                <div style={{ display: 'flex', gap: '6px' }}>
+                <div style={{ display: 'flex', gap: '10px' }}>
                   <button onClick={acceptGMPicks} style={{
-                    flex: 1, padding: '8px', background: 'var(--navy-light)', color: '#fff',
-                    border: 'none', borderRadius: 'var(--radius-md)', fontWeight: 600, fontSize: '12px',
-                    cursor: 'pointer', fontFamily: 'var(--font-sans)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px',
+                    flex: 1, padding: '12px', background: '#364262', color: '#fff',
+                    border: 'none', borderRadius: '9999px', fontWeight: 600, fontSize: '14px',
+                    cursor: 'pointer', fontFamily: 'Inter, sans-serif',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
                   }}>
-                    <Sparkles size={12} />
-                    Accept & Select
+                    <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>check</span>
+                    {lang === 'es' ? 'Aceptar y Seleccionar' : 'Accept & Select'}
                   </button>
                   <button onClick={() => setGmAccepted(true)} style={{
-                    padding: '8px 14px', background: 'transparent', color: 'var(--text-muted)',
-                    border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', fontWeight: 500, fontSize: '12px',
-                    cursor: 'pointer', fontFamily: 'var(--font-sans)',
+                    padding: '12px 20px', background: 'transparent', color: '#454652',
+                    border: '1px solid #d5d2ca', borderRadius: '9999px', fontWeight: 600, fontSize: '14px',
+                    cursor: 'pointer', fontFamily: 'Inter, sans-serif',
                   }}>
-                    Skip
+                    {lang === 'es' ? 'Saltar' : 'Skip'}
                   </button>
                 </div>
               </div>
             )}
 
-            {/* Manual crew selection */}
-            <div className="card" style={{ marginBottom: '12px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-                <p style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', margin: 0 }}>
-                  {lang === 'es' ? 'Seleccionar equipo' : 'Select Crew'}
-                  {selected.length > 0 && <span style={{ marginLeft: '8px', color: 'var(--amber)' }}>· {selected.length} selected</span>}
-                </p>
+            {/* ── Manual Crew Selection (Stitch) ── */}
+            <div style={{
+              marginBottom: '20px', padding: '20px 24px',
+              background: 'rgba(255,255,255,0.7)', backdropFilter: 'blur(24px)',
+              border: '1px solid #d5d2ca', borderRadius: '24px',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+                <h3 style={{ margin: 0, fontFamily: 'Inter, sans-serif', fontWeight: 700, fontSize: '16px', color: '#1b1c19' }}>
+                  {lang === 'es' ? 'Seleccionar Equipo' : 'Select Crew'}
+                </h3>
+                {selected.length > 0 && (
+                  <span style={{
+                    fontFamily: "'JetBrains Mono', monospace", fontSize: '12px', fontWeight: 600,
+                    background: 'rgba(0,101,101,0.08)', color: '#006565', borderRadius: '9999px', padding: '4px 12px',
+                  }}>
+                    {selected.length} {lang === 'es' ? 'seleccionados' : 'selected'}
+                  </span>
+                )}
               </div>
 
               {!staffLoaded ? (
-                <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>{lang === 'es' ? 'Cargando…' : 'Loading…'}</p>
+                <p style={{ fontSize: '14px', color: '#757684', margin: 0, fontFamily: 'Inter, sans-serif' }}>{lang === 'es' ? 'Cargando…' : 'Loading…'}</p>
               ) : staff.filter(s => s.isActive !== false).length === 0 ? (
-                <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>{t('noEligibleStaff', lang)}</p>
+                <p style={{ fontSize: '14px', color: '#757684', margin: 0, fontFamily: 'Inter, sans-serif' }}>{t('noEligibleStaff', lang)}</p>
               ) : (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: '8px' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '10px' }}>
                   {staff
                     .filter(s => s.isActive !== false)
                     .sort((a, b) => {
@@ -842,65 +942,103 @@ export default function StaffPage() {
                       const onVacation = member.vacationDates?.includes(shiftDate);
                       const isAtLimit = !eligible && !inPool && !onVacation && member.isActive !== false && !!member.phone &&
                         ((member.daysWorkedThisWeek ?? 0) >= (member.maxDaysPerWeek ?? 5) || (member.weeklyHours ?? 0) >= (member.maxWeeklyHours ?? 40));
+                      const dept = DEPT_LABELS[member.department ?? 'housekeeping']?.[lang] ?? member.department;
                       return (
                         <div key={member.id} onClick={() => eligible && toggleSelected(member)} style={{
-                          padding: '10px 12px',
-                          border: `1px solid ${inPool ? 'rgba(34,197,94,0.3)' : isSelected ? 'rgba(251,191,36,0.5)' : eligible ? 'var(--border)' : 'rgba(0,0,0,0.04)'}`,
-                          background: inPool ? 'rgba(34,197,94,0.05)' : isSelected ? 'rgba(251,191,36,0.07)' : 'rgba(0,0,0,0.02)',
-                          borderRadius: 'var(--radius-md)', cursor: eligible ? 'pointer' : 'default',
-                          display: 'flex', alignItems: 'center', gap: '10px',
-                          opacity: (!eligible && !inPool) ? 0.45 : 1, transition: 'all 0.15s',
+                          padding: '14px 16px',
+                          background: inPool ? 'rgba(0,101,101,0.04)' : isSelected ? 'rgba(54,66,98,0.04)' : 'rgba(255,255,255,0.8)',
+                          border: `1px solid ${inPool ? 'rgba(0,101,101,0.25)' : isSelected ? 'rgba(54,66,98,0.3)' : '#eae8e3'}`,
+                          borderRadius: '20px', cursor: eligible ? 'pointer' : 'default',
+                          display: 'flex', alignItems: 'center', gap: '12px',
+                          opacity: (!eligible && !inPool) ? 0.4 : 1, transition: 'all 0.15s',
                         }}>
+                          {/* Selection circle */}
                           <div style={{
-                            width: '18px', height: '18px', borderRadius: '5px',
-                            border: `2px solid ${inPool ? 'var(--green)' : isSelected ? 'var(--amber)' : 'var(--border)'}`,
-                            background: inPool ? 'rgba(34,197,94,0.2)' : isSelected ? 'rgba(251,191,36,0.2)' : 'transparent',
+                            width: '22px', height: '22px', borderRadius: '50%',
+                            border: `2px solid ${inPool ? '#006565' : isSelected ? '#364262' : '#d5d2ca'}`,
+                            background: inPool ? 'rgba(0,101,101,0.15)' : isSelected ? 'rgba(54,66,98,0.15)' : 'transparent',
                             display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
                           }}>
-                            {(inPool || isSelected) && <CheckCircle2 size={11} color={inPool ? 'var(--green)' : 'var(--amber)'} strokeWidth={2.5} />}
+                            {(inPool || isSelected) && (
+                              <span className="material-symbols-outlined" style={{ fontSize: '14px', color: inPool ? '#006565' : '#364262' }}>check</span>
+                            )}
+                          </div>
+                          {/* Avatar */}
+                          <div style={{
+                            width: '36px', height: '36px', borderRadius: '50%',
+                            background: inPool ? '#006565' : '#364262', color: '#fff',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            fontSize: '12px', fontWeight: 700, fontFamily: 'Inter, sans-serif', flexShrink: 0,
+                          }}>
+                            {initials(member.name)}
                           </div>
                           <div style={{ flex: 1, minWidth: 0 }}>
-                            <p style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', margin: '0 0 2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{member.name}</p>
-                            <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0 }}>
-                              {inPool ? t('crewForDate', lang) : onVacation ? t('onVacation', lang) : !member.phone ? t('noPhoneLabel', lang) : isAtLimit ? t('atLimitLabel', lang) : eligible ? `${member.daysWorkedThisWeek ?? 0} ${t('daysWorkedLabel', lang)}` : t('inactiveLabel', lang)}
+                            <p style={{ margin: 0, fontWeight: 600, fontSize: '14px', color: '#1b1c19', fontFamily: 'Inter, sans-serif', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{member.name}</p>
+                            <p style={{ margin: '2px 0 0', fontSize: '12px', color: '#757684', fontFamily: 'Inter, sans-serif' }}>
+                              {dept} · {inPool ? t('crewForDate', lang) : onVacation ? t('onVacation', lang) : !member.phone ? t('noPhoneLabel', lang) : isAtLimit ? t('atLimitLabel', lang) : eligible ? `${member.daysWorkedThisWeek ?? 0} ${t('daysWorkedLabel', lang)}` : t('inactiveLabel', lang)}
                             </p>
                           </div>
                           {member.isSenior && (
-                            <span style={{ fontSize: '9px', fontWeight: 700, color: 'var(--amber)', background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.2)', borderRadius: '4px', padding: '1px 5px' }}>SR</span>
+                            <span style={{
+                              fontSize: '10px', fontWeight: 700, color: '#006565',
+                              background: 'rgba(0,101,101,0.08)', borderRadius: '9999px', padding: '2px 8px',
+                              fontFamily: 'Inter, sans-serif',
+                            }}>SR</span>
                           )}
                         </div>
                       );
                     })}
+
+                  {/* Add Team Member card */}
+                  <div
+                    className="staff-add-inline"
+                    onClick={openAdd}
+                    style={{
+                      padding: '14px 16px',
+                      border: '2px dashed #d5d2ca', borderRadius: '20px',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px',
+                      cursor: 'pointer', color: '#757684',
+                    }}
+                  >
+                    <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>person_add</span>
+                    <span style={{ fontSize: '14px', fontWeight: 600, fontFamily: 'Inter, sans-serif' }}>
+                      {lang === 'es' ? 'Agregar Miembro' : 'Add Team Member'}
+                    </span>
+                  </div>
                 </div>
               )}
 
               {/* Send button */}
               {selected.length > 0 && (
-                <button onClick={handleSend} disabled={sending} className="animate-in" style={{
-                  marginTop: '16px', width: '100%', padding: '14px',
-                  background: sending ? 'rgba(37,99,235,0.4)' : 'var(--navy-light)',
+                <button onClick={handleSend} disabled={sending} style={{
+                  marginTop: '20px', width: '100%', padding: '16px',
+                  background: sending ? 'rgba(54,66,98,0.4)' : '#364262',
                   color: sending ? 'rgba(255,255,255,0.5)' : '#FFFFFF',
-                  border: 'none', borderRadius: 'var(--radius-md)', fontWeight: 700, fontSize: '14px',
-                  cursor: sending ? 'not-allowed' : 'pointer', fontFamily: 'var(--font-sans)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+                  border: 'none', borderRadius: '9999px', fontWeight: 600, fontSize: '15px',
+                  cursor: sending ? 'not-allowed' : 'pointer', fontFamily: 'Inter, sans-serif',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px',
                 }}>
-                  <Send size={14} />
+                  <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>send</span>
                   {sending ? t('sendingLabel', lang) : `${t('sendConfirmations', lang)} (${selected.length})`}
                 </button>
               )}
             </div>
 
-            {/* Weekly hours tracker */}
-            <div className="card" style={{ padding: '16px' }}>
-              <p style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: '14px' }}>
+            {/* ── Weekly Hours Tracker (Stitch) ── */}
+            <div style={{
+              padding: '20px 24px',
+              background: 'rgba(255,255,255,0.7)', backdropFilter: 'blur(24px)',
+              border: '1px solid #d5d2ca', borderRadius: '24px',
+            }}>
+              <h3 style={{ margin: '0 0 16px', fontFamily: 'Inter, sans-serif', fontWeight: 700, fontSize: '16px', color: '#1b1c19' }}>
                 {t('weeklyHoursTracker', lang)}
-              </p>
+              </h3>
               {!staffLoaded ? (
-                <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>{lang === 'es' ? 'Cargando…' : 'Loading…'}</p>
+                <p style={{ fontSize: '14px', color: '#757684', margin: 0, fontFamily: 'Inter, sans-serif' }}>{lang === 'es' ? 'Cargando…' : 'Loading…'}</p>
               ) : staff.filter(s => s.isActive !== false).length === 0 ? (
-                <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>{t('noStaffYet', lang)}</p>
+                <p style={{ fontSize: '14px', color: '#757684', margin: 0, fontFamily: 'Inter, sans-serif' }}>{t('noStaffYet', lang)}</p>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
                   {staff.filter(s => s.isActive !== false).sort((a, b) => (b.weeklyHours ?? 0) - (a.weeklyHours ?? 0)).map(member => {
                     const maxHrs = member.maxWeeklyHours ?? 40;
                     const hrs = member.weeklyHours ?? 0;
@@ -909,19 +1047,19 @@ export default function StaffPage() {
                     const nearLimit = hrs >= maxHrs - 4;
                     return (
                       <div key={member.id}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                          <span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-primary)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                          <span style={{ fontSize: '13px', fontWeight: 600, color: '#1b1c19', fontFamily: 'Inter, sans-serif' }}>
                             {member.name}
                             {member.vacationDates?.includes(shiftDate) && (
-                              <span style={{ marginLeft: '6px', fontSize: '10px', color: 'var(--blue)', fontWeight: 600 }}>{t('onVacation', lang)}</span>
+                              <span style={{ marginLeft: '8px', fontSize: '11px', color: '#364262', fontWeight: 600, fontFamily: 'Inter, sans-serif' }}>{t('onVacation', lang)}</span>
                             )}
                           </span>
-                          <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: atLimit ? 'var(--red)' : nearLimit ? 'var(--amber)' : 'var(--text-muted)' }}>
+                          <span style={{ fontSize: '12px', fontFamily: "'JetBrains Mono', monospace", color: atLimit ? '#ba1a1a' : nearLimit ? '#364262' : '#757684' }}>
                             {hrs}h / {maxHrs}h
                           </span>
                         </div>
-                        <div style={{ height: '3px', background: 'rgba(0,0,0,0.05)', borderRadius: '2px', overflow: 'hidden' }}>
-                          <div style={{ width: `${pct}%`, height: '100%', background: atLimit ? 'var(--red)' : nearLimit ? 'var(--amber)' : 'var(--green)', borderRadius: '2px', transition: 'width 0.3s' }} />
+                        <div style={{ height: '6px', background: '#eae8e3', borderRadius: '9999px', overflow: 'hidden' }}>
+                          <div style={{ width: `${pct}%`, height: '100%', background: atLimit ? '#ba1a1a' : nearLimit ? '#364262' : '#006565', borderRadius: '9999px', transition: 'width 0.3s' }} />
                         </div>
                       </div>
                     );
