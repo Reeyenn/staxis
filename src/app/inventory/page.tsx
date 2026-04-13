@@ -243,7 +243,7 @@ export default function InventoryPage() {
     <AppLayout>
       <style>{`
         .inv-card:hover { transform: translateY(-2px); }
-        .inv-cat-grid { display: grid; grid-template-columns: 1fr; gap: 32px; }
+        .inv-cat-grid { display: grid; grid-template-columns: 1fr; gap: 20px; }
         @media (min-width: 768px) { .inv-cat-grid { grid-template-columns: repeat(3, 1fr); } }
       `}</style>
 
@@ -324,24 +324,24 @@ export default function InventoryPage() {
             { key: 'maintenance' as InventoryCategory, label: lang === 'es' ? 'Mantenimiento' : 'Maintenance', items: maintItems, alerts: catAlerts.maintenance },
             { key: 'breakfast' as InventoryCategory, label: lang === 'es' ? 'Alimentos y Bebidas' : 'Food & Beverage', items: fbItems, alerts: catAlerts.breakfast },
           ]).map(cat => (
-            <section key={cat.key} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <section key={cat.key} style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {/* Category header */}
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 4px' }}>
-                <h2 style={{ fontFamily: "'Inter', sans-serif", fontSize: '18px', fontWeight: 500, color: '#1b1c19' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 2px' }}>
+                <h2 style={{ fontFamily: "'Inter', sans-serif", fontSize: '15px', fontWeight: 600, color: '#1b1c19' }}>
                   {cat.label}
                 </h2>
                 {cat.alerts > 0 ? (
                   <span style={{
-                    fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', fontWeight: 500,
-                    background: '#f0eee9', color: '#454652', padding: '4px 10px', borderRadius: '8px',
+                    fontFamily: "'JetBrains Mono', monospace", fontSize: '10px', fontWeight: 500,
+                    background: '#f0eee9', color: '#454652', padding: '3px 8px', borderRadius: '6px',
                     letterSpacing: '0.05em', textTransform: 'uppercase',
                   }}>
                     {cat.alerts} {lang === 'es' ? 'alerta' : 'active alert'}{cat.alerts > 1 ? 's' : ''}
                   </span>
                 ) : (
                   <span style={{
-                    fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', fontWeight: 500,
-                    background: '#006565', color: '#fff', padding: '4px 10px', borderRadius: '8px',
+                    fontFamily: "'JetBrains Mono', monospace", fontSize: '10px', fontWeight: 500,
+                    background: '#006565', color: '#fff', padding: '3px 8px', borderRadius: '6px',
                     letterSpacing: '0.05em', textTransform: 'uppercase',
                   }}>
                     {lang === 'es' ? 'Saludable' : 'Healthy'}
@@ -352,11 +352,11 @@ export default function InventoryPage() {
               {/* Item cards */}
               {cat.items.length === 0 ? (
                 <div style={{
-                  padding: '40px 20px', textAlign: 'center', borderRadius: '24px',
+                  padding: '20px 12px', textAlign: 'center', borderRadius: '14px',
                   background: 'rgba(0,0,0,0.02)', border: '1px dashed #c5c5d4',
                 }}>
-                  <Package size={24} color="#757684" style={{ margin: '0 auto 8px' }} />
-                  <p style={{ fontSize: '13px', color: '#757684', fontFamily: "'Inter', sans-serif" }}>
+                  <Package size={18} color="#757684" style={{ margin: '0 auto 6px' }} />
+                  <p style={{ fontSize: '12px', color: '#757684', fontFamily: "'Inter', sans-serif" }}>
                     {lang === 'es' ? 'Sin artículos' : 'No items'}
                   </p>
                 </div>
@@ -370,16 +370,16 @@ export default function InventoryPage() {
 
                   return (
                     <div key={item.id} className="inv-card" style={{
-                      background: '#fff', borderRadius: '24px', padding: '24px',
+                      background: '#fff', borderRadius: '14px', padding: '12px 14px',
                       transition: 'all 300ms',
                     }}>
                       {/* Name + timestamp */}
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '20px' }}>
-                        <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '15px', fontWeight: 500, color: '#454652' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                        <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 500, color: '#454652' }}>
                           {item.name}
                         </span>
                         <span style={{
-                          fontFamily: "'JetBrains Mono', monospace", fontSize: '11px',
+                          fontFamily: "'JetBrains Mono', monospace", fontSize: '10px',
                           color: isCritical ? '#ba1a1a' : '#757684',
                           fontWeight: isCritical ? 700 : 500,
                           textTransform: 'uppercase', letterSpacing: '0.05em',
@@ -389,15 +389,15 @@ export default function InventoryPage() {
                       </div>
 
                       {/* Stock numbers */}
-                      <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px' }}>
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: '5px' }}>
                         <span style={{
-                          fontFamily: "'JetBrains Mono', monospace", fontSize: '36px', fontWeight: 500,
-                          color: isCritical ? '#ba1a1a' : '#364262', letterSpacing: '-0.02em',
+                          fontFamily: "'JetBrains Mono', monospace", fontSize: '22px', fontWeight: 500,
+                          color: isCritical ? '#ba1a1a' : '#364262', letterSpacing: '-0.02em', lineHeight: 1,
                         }}>
                           {item.currentStock.toLocaleString()}
                         </span>
                         <span style={{
-                          fontFamily: "'JetBrains Mono', monospace", fontSize: '18px',
+                          fontFamily: "'JetBrains Mono', monospace", fontSize: '13px',
                           color: '#c5c5d4',
                         }}>
                           / {item.parLevel.toLocaleString()}
@@ -406,7 +406,7 @@ export default function InventoryPage() {
 
                       {/* Progress bar */}
                       <div style={{
-                        marginTop: '16px', width: '100%', height: '4px',
+                        marginTop: '8px', width: '100%', height: '3px',
                         background: barBg, borderRadius: '9999px', overflow: 'hidden',
                       }}>
                         <div style={{
@@ -419,11 +419,11 @@ export default function InventoryPage() {
                       {/* Critical warning */}
                       {isCritical && (
                         <div style={{
-                          marginTop: '12px', display: 'flex', alignItems: 'center', gap: '6px',
-                          color: '#ba1a1a', fontSize: '13px', fontWeight: 500,
+                          marginTop: '6px', display: 'flex', alignItems: 'center', gap: '5px',
+                          color: '#ba1a1a', fontSize: '11px', fontWeight: 500,
                           fontFamily: "'Inter', sans-serif",
                         }}>
-                          <AlertTriangle size={14} />
+                          <AlertTriangle size={12} />
                           {lang === 'es' ? 'Crítico: Reabastecimiento Requerido' : 'Critical: Replenishment Required'}
                         </div>
                       )}
@@ -436,19 +436,19 @@ export default function InventoryPage() {
               <button
                 onClick={() => setShowAddModal(true)}
                 style={{
-                  background: 'transparent', borderRadius: '24px',
-                  padding: '20px', display: 'flex', alignItems: 'center', gap: '16px',
+                  background: 'transparent', borderRadius: '14px',
+                  padding: '10px 12px', display: 'flex', alignItems: 'center', gap: '10px',
                   border: '2px dashed #c5c5d4', cursor: 'pointer',
                   transition: 'all 200ms',
                 }}
               >
                 <div style={{
-                  width: '44px', height: '44px', borderRadius: '12px', flexShrink: 0,
+                  width: '28px', height: '28px', borderRadius: '8px', flexShrink: 0,
                   background: '#364262', display: 'flex', alignItems: 'center', justifyContent: 'center',
                 }}>
-                  <Plus size={20} color="#fff" />
+                  <Plus size={14} color="#fff" />
                 </div>
-                <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 600, color: '#364262' }}>
+                <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#364262' }}>
                   {lang === 'es' ? 'Agregar Artículo' : 'Add Item'}
                 </span>
               </button>
