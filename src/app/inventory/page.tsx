@@ -258,36 +258,36 @@ export default function InventoryPage() {
             display: 'flex', alignItems: 'center',
             flexWrap: 'wrap', gap: '24px',
           }}>
-            {/* Left: key stats */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', flexShrink: 0, minWidth: '140px' }}>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
-                <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#757684', fontWeight: 500 }}>
+            {/* Left: key stats — side by side */}
+            <div style={{ display: 'flex', flexDirection: 'row', gap: '28px', flexShrink: 0, alignItems: 'flex-start' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
                   {lang === 'es' ? 'Conteo' : 'Count'}
                 </span>
-                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '20px', fontWeight: 700, color: '#364262' }}>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '26px', fontWeight: 700, color: '#364262', lineHeight: 1.1 }}>
                   {countCompletionPct}%
                 </span>
               </div>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
-                <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#757684', fontWeight: 500 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
                   {lang === 'es' ? 'Salud' : 'Stock'}
                 </span>
-                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '20px', fontWeight: 700, color: stockHealthPct >= 70 ? '#006565' : stockHealthPct >= 40 ? '#364262' : '#ba1a1a' }}>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '26px', fontWeight: 700, color: stockHealthPct >= 70 ? '#006565' : stockHealthPct >= 40 ? '#364262' : '#ba1a1a', lineHeight: 1.1 }}>
                   {stockHealthPct}%
                 </span>
               </div>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
-                <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#757684', fontWeight: 500 }}>
-                  {lang === 'es' ? 'Contado' : 'Counted'}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+                  {lang === 'es' ? 'Último conteo' : 'Last counted'}
                 </span>
-                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '15px', fontWeight: 600, color: '#454652' }}>
-                  {lastCounted ? `${timeAgo(lastCounted)} ${lang === 'es' ? '' : 'ago'}`.trim() : (lang === 'es' ? 'Nunca' : 'Never')}
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '18px', fontWeight: 700, color: '#454652', lineHeight: 1.1 }}>
+                  {lastCounted ? timeAgo(lastCounted) : (lang === 'es' ? 'Nunca' : 'Never')}
                 </span>
               </div>
             </div>
 
-            {/* Center: Concierge Insight */}
-            <div style={{ flex: 1, minWidth: '200px', textAlign: 'center' }}>
+            {/* Center: Concierge Insight (nudged right with extra left padding) */}
+            <div style={{ flex: 1, minWidth: '200px', textAlign: 'center', paddingLeft: '24px' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '7px', marginBottom: '6px' }}>
                 <span style={{ fontSize: '13px', color: '#006565' }}>✦</span>
                 <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#006565' }}>
