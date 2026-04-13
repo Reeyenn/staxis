@@ -803,15 +803,16 @@ function AddItemModal({ isOpen, onClose, uid, pid, onAdded }: {
       style={{
         position: 'fixed', inset: 0, zIndex: 50,
         background: 'rgba(27,28,25,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
-        display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
       }}
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div style={{
-        width: '100%', maxWidth: '500px',
-        background: '#fbf9f4', borderRadius: '24px 24px 0 0',
-        padding: '24px 24px calc(24px + env(safe-area-inset-bottom))',
+        width: '100%', maxWidth: '500px', maxHeight: '90vh', overflowY: 'auto',
+        background: '#fbf9f4', borderRadius: '24px',
+        padding: '24px',
         display: 'flex', flexDirection: 'column', gap: '16px',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <h2 style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: '18px', color: '#1b1c19' }}>
