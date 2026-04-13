@@ -2617,149 +2617,162 @@ function DeepCleanSection() {
   };
 
   // ─── RENDER ───────────────────────────────────────────────────────────────
+  // Computed stats for the Soft Minimal card
+  const queuedCount = overdueRooms.filter(r => !r.inProgress).length;
+  const activeCount = inProgressRooms.length;
+  const completedCount = allRoomInfo.filter(r => r.status === 'ok' || (r.lastCleaned && r.daysSince <= 14 && !r.inProgress)).length;
+  const estMinutesRemaining = (activeCount + queuedCount) * (config?.minutesPerRoom ?? 60);
+  const estHours = Math.floor(estMinutesRemaining / 60);
+  const estMins = estMinutesRemaining % 60;
+  const hkStaffTotal = staff.filter(s => (!s.department || s.department === 'housekeeping') && s.isActive !== false).length;
+  const hkStaffActive = availableStaff.filter(s => s.doneForDay).length;
+  // AI suggestion text
+  const aiSuggestionText = (() => {
+    if (!isLightDay) return lang === 'es' ? `${checkoutCount} checkouts hoy. Limpieza profunda no recomendada.` : `${checkoutCount} checkouts today. Deep cleaning not recommended.`;
+    if (floorBreakdown.length > 0) {
+      const worstFloor = floorBreakdown.reduce((a, b) => b.count > a.count ? b : a);
+      return lang === 'es'
+        ? `Piso ${worstFloor.floor} necesita limpieza profunda prioritaria — ${worstFloor.count} habitaciones pendientes.`
+        : `Floor ${worstFloor.floor} requires priority deep cleaning — ${worstFloor.count} rooms overdue.`;
+    }
+    return lang === 'es' ? 'Todas las habitaciones están al día.' : 'All rooms are on schedule.';
+  })();
+
   return (
-    <div style={{ padding: '20px 16px', display: 'flex', flexDirection: 'column', gap: '14px', paddingBottom: '100px' }}>
+    <div style={{ padding: '24px 24px 120px', display: 'flex', flexDirection: 'column', alignItems: 'center', maxWidth: '900px', margin: '0 auto', width: '100%' }}>
 
-      {/* ── Header ── */}
-      <div className="animate-in">
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Zap size={16} color="var(--navy)" />
-            <h2 style={{ fontSize: '17px', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
-              {lang === 'es' ? 'Limpieza Profunda' : 'Deep Clean'}
-            </h2>
+      {/* ── AI Suggestion Ribbon ── */}
+      <div style={{ width: '100%', marginBottom: '40px' }}>
+        <div style={{
+          background: '#ffffff', borderRadius: '9999px', padding: '12px 24px',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          border: '1px solid rgba(78,90,122,0.08)', position: 'relative', overflow: 'hidden',
+        }}>
+          {/* Shimmer overlay */}
+          <div style={{ position: 'absolute', top: '-50%', left: '-50%', width: '200%', height: '200%', background: 'linear-gradient(45deg, transparent 25%, rgba(0,101,101,0.03) 50%, transparent 75%)', pointerEvents: 'none' }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', position: 'relative' }}>
+            <Zap size={18} style={{ color: '#006565' }} fill="#006565" />
+            <span style={{ fontSize: '14px', fontWeight: 500, color: '#454652' }}>
+              {lang === 'es' ? 'Sugerencia IA: ' : 'AI Suggestion: '}{aiSuggestionText}
+            </span>
           </div>
-          {/* Tappable overdue counter */}
-          <button
-            onClick={() => setShowBreakdown(!showBreakdown)}
-            style={{
-              fontSize: '14px', fontWeight: 700, color: totalOverdue === 0 ? 'var(--green)' : 'var(--red)',
-              background: 'none', border: 'none', cursor: 'pointer', padding: '4px 8px',
-              display: 'flex', alignItems: 'center', gap: '4px', minHeight: '44px',
-            }}
-          >
-            {totalOverdue} {lang === 'es' ? 'pendientes' : 'overdue'}
-            <ChevronDown size={14} style={{ transform: showBreakdown ? 'rotate(180deg)' : 'none', transition: 'transform 150ms' }} />
-          </button>
+          {isLightDay && suggestedRooms.length > 0 && (
+            <button
+              onClick={handleAcceptSuggestion}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#006565', fontWeight: 600, fontSize: '14px', whiteSpace: 'nowrap', position: 'relative' }}
+            >
+              {lang === 'es' ? 'Aplicar' : 'Apply Now'}
+            </button>
+          )}
         </div>
+      </div>
 
-        {/* Floor breakdown dropdown */}
-        {showBreakdown && floorBreakdown.length > 0 && (
-          <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '10px 14px', marginBottom: '8px', display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-            {floorBreakdown.map(({ floor, count }) => (
-              <span key={floor} style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', padding: '4px 10px', background: 'var(--bg-elevated, rgba(0,0,0,0.04))', borderRadius: '8px' }}>
-                {lang === 'es' ? `Piso ${floor}` : `Floor ${floor}`}: <span style={{ color: 'var(--red)' }}>{count}</span>
-              </span>
-            ))}
-          </div>
-        )}
-
-        {/* Progress bar */}
-        <div style={{ height: '6px', background: 'var(--border)', borderRadius: '99px', overflow: 'hidden' }}>
+      {/* ── Central Action Card ── */}
+      <div style={{ position: 'relative', width: '100%', paddingBottom: '75%', maxHeight: '600px', marginBottom: '40px' }}>
+        <div style={{
+          position: 'absolute', inset: 0, background: '#ffffff', borderRadius: '3rem',
+          overflow: 'hidden', boxShadow: '0 25px 60px -12px rgba(54,66,98,0.08)',
+          border: '1px solid rgba(197,197,212,0.15)',
+        }}>
+          {/* Progress fill background */}
           <div style={{
-            height: '100%', borderRadius: '99px',
-            transition: 'width 600ms cubic-bezier(0.4,0,0.2,1)',
-            width: `${pct}%`,
-            background: pct === 100 ? 'var(--green)' : 'var(--navy)',
+            position: 'absolute', bottom: 0, left: 0, width: '100%',
+            background: 'rgba(211,228,248,0.25)',
+            transition: 'height 1000ms cubic-bezier(0.4,0,0.2,1)',
+            height: `${pct}%`,
           }} />
-        </div>
+          {/* Atmospheric blur — top left */}
+          <div style={{ position: 'absolute', top: '-80px', left: '-80px', width: '256px', height: '256px', background: 'rgba(147,242,242,0.08)', filter: 'blur(80px)', borderRadius: '50%' }} />
+          {/* Atmospheric blur — bottom right */}
+          <div style={{ position: 'absolute', bottom: '-80px', right: '-80px', width: '256px', height: '256px', background: 'rgba(218,226,255,0.08)', filter: 'blur(80px)', borderRadius: '50%' }} />
 
-      </div>
-
-      {/* ── Today's Suggestion ── */}
-      <div className="animate-in stagger-1" style={{
-        padding: '16px', borderRadius: 'var(--radius-lg)',
-        background: isLightDay ? 'linear-gradient(135deg, var(--navy, #1b3a5c), var(--navy-light, #2a5a8c))' : 'var(--bg-card)',
-        border: isLightDay ? 'none' : '1px solid var(--border)',
-        color: isLightDay ? '#fff' : 'var(--text-primary)',
-      }}>
-        {isLightDay ? (
-          <>
-            <p style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', opacity: 0.8, margin: '0 0 6px' }}>
-              {lang === 'es' ? 'Sugerencia para hoy' : "Today's Suggestion"}
-            </p>
-            <p style={{ fontSize: '18px', fontWeight: 700, margin: '0 0 10px' }}>
-              {suggestedRooms.length} {lang === 'es' ? 'habitaciones' : 'rooms'}
-            </p>
-            <div className="scroll-pills" style={{ display: 'flex', gap: '10px', marginBottom: '12px', overflowX: 'auto', paddingBottom: '4px', touchAction: 'pan-x', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none' }}>
-              {suggestedRooms.map(r => {
-                const reason = r.daysSince === Infinity
-                  ? (lang === 'es' ? 'Nunca limpiado' : 'Never cleaned')
-                  : `${r.daysSince - freq}d ${lang === 'es' ? 'atrasado' : 'overdue'}`;
-                return (
-                  <button
-                    key={r.roomNumber}
-                    onClick={() => { setAssignRoom(r.roomNumber); setSelectedTeam([]); }}
-                    style={{
-                      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px',
-                      padding: '14px 18px', background: 'rgba(255,255,255,0.15)', borderRadius: '14px',
-                      minWidth: '100px', flexShrink: 0, border: 'none', cursor: 'pointer',
-                      color: 'inherit', transition: 'background 0.15s',
-                    }}
-                  >
-                    <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '24px' }}>
-                      {r.roomNumber}
-                    </span>
-                    <span style={{ fontSize: '12px', fontWeight: 600, opacity: 0.8, textAlign: 'center', lineHeight: 1.2 }}>
-                      {reason}
-                    </span>
-                  </button>
-                );
-              })}
+          {/* Content */}
+          <div style={{ position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', padding: '48px', textAlign: 'center' }}>
+            {/* Big percentage */}
+            <div style={{ marginBottom: '32px' }}>
+              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 'clamp(48px, 8vw, 96px)', fontWeight: 500, color: '#364262', letterSpacing: '-0.05em', lineHeight: 1, marginBottom: '8px' }}>
+                {pct}<span style={{ fontSize: 'clamp(24px, 3vw, 40px)', opacity: 0.35 }}>%</span>
+              </div>
+              <div style={{ color: '#454652', textTransform: 'uppercase', letterSpacing: '0.2em', fontSize: '11px', fontWeight: 700 }}>
+                {lang === 'es' ? 'Progreso del Ciclo' : 'Current Cycle Progress'}
+              </div>
             </div>
-            <p style={{ fontSize: '12px', opacity: 0.8, margin: 0 }}>
-              {dndCount > 0 && (lang === 'es' ? `${dndCount} DND liberan tiempo` : `${dndCount} DND rooms free up time`)}
-              {dndCount > 0 && checkoutCount < 25 && ' · '}
-              {checkoutCount < 25 && (lang === 'es' ? `Solo ${checkoutCount} checkouts` : `Only ${checkoutCount} checkouts`)}
-              {dayOfWeek === 1 && (dndCount > 0 || checkoutCount < 25 ? ' · ' : '') + (lang === 'es' ? 'Lunes — día más ligero' : 'Monday — lightest day')}
-            </p>
-          </>
-        ) : (
-          <>
-            <p style={{ fontSize: '14px', fontWeight: 600, margin: '0 0 4px' }}>
-              {lang === 'es' ? 'Hoy se ve ocupado' : 'Today looks busy'}
-            </p>
-            <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: 0 }}>
-              {lang === 'es'
-                ? `${checkoutCount} checkouts. Limpieza profunda no recomendada. Próximo día ligero: Lunes.`
-                : `${checkoutCount} checkouts. Deep cleaning not recommended. Next light day: Monday.`}
-            </p>
-          </>
-        )}
+
+            {/* Add Rooms button */}
+            <button
+              onClick={() => { setShowAddRooms(true); setAddRoomsFloor(null); }}
+              style={{
+                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px',
+                background: '#364262', color: '#fff', padding: 'clamp(32px, 4vw, 48px) clamp(48px, 6vw, 80px)',
+                borderRadius: '2.5rem', border: 'none', cursor: 'pointer',
+                transition: 'all 300ms cubic-bezier(0.4,0,0.2,1)',
+                boxShadow: '0 12px 32px -4px rgba(54,66,98,0.2)',
+                position: 'relative',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.05)'; }}
+              onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; }}
+            >
+              <Plus size={40} strokeWidth={1.5} />
+              <span style={{ fontSize: '20px', fontWeight: 600, letterSpacing: '-0.01em' }}>
+                {lang === 'es' ? 'Agregar Habitaciones' : 'Add Rooms'}
+              </span>
+            </button>
+
+            {/* Stats row */}
+            <div style={{ marginTop: '40px', display: 'flex', gap: '48px' }}>
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '22px', color: '#1b1c19', fontWeight: 500 }}>{String(queuedCount).padStart(2, '0')}</div>
+                <div style={{ color: '#454652', fontSize: '11px', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.1em', marginTop: '2px' }}>
+                  {lang === 'es' ? 'Pendientes' : 'Queued'}
+                </div>
+              </div>
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '22px', color: '#1b1c19', fontWeight: 500 }}>{String(activeCount).padStart(2, '0')}</div>
+                <div style={{ color: '#454652', fontSize: '11px', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.1em', marginTop: '2px' }}>
+                  {lang === 'es' ? 'Activos' : 'Active'}
+                </div>
+              </div>
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '22px', color: '#1b1c19', fontWeight: 500 }}>{String(completedCount).padStart(2, '0')}</div>
+                <div style={{ color: '#454652', fontSize: '11px', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.1em', marginTop: '2px' }}>
+                  {lang === 'es' ? 'Completos' : 'Complete'}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
-      {/* ── In Progress ── */}
+      {/* ── In Progress Cards (between main card and insights) ── */}
       {inProgressRooms.length > 0 && (
-        <div className="animate-in stagger-2">
-          <p style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'var(--amber)', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+        <div style={{ width: '100%', marginBottom: '24px' }}>
+          <p style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.15em', textTransform: 'uppercase', color: '#f59e0b', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}>
             <Clock size={12} /> {lang === 'es' ? 'En progreso' : 'In Progress'}
           </p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {inProgressRooms.map(r => (
               <div key={r.roomNumber} style={{
-                padding: '14px 16px', background: 'var(--bg-card)', border: '2px solid var(--amber)',
-                borderRadius: 'var(--radius-lg)', display: 'flex', alignItems: 'center', gap: '12px',
+                padding: '16px 20px', background: '#ffffff', border: '2px solid #f59e0b',
+                borderRadius: '16px', display: 'flex', alignItems: 'center', gap: '14px',
               }}>
                 <div style={{ flex: 1 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '20px', color: 'var(--text-primary)' }}>
+                    <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: '20px', color: '#1b1c19' }}>
                       {r.roomNumber}
                     </span>
-                    <span style={{ padding: '2px 8px', borderRadius: '100px', fontSize: '11px', fontWeight: 700, background: 'rgba(245,158,11,0.1)', color: 'var(--amber)' }}>
+                    <span style={{ padding: '2px 10px', borderRadius: '9999px', fontSize: '11px', fontWeight: 700, background: 'rgba(245,158,11,0.1)', color: '#f59e0b' }}>
                       {lang === 'es' ? 'En progreso' : 'In Progress'}
                     </span>
                   </div>
                   {r.team.length > 0 && (
-                    <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '3px' }}>
-                      {r.team.join(', ')}
-                    </p>
+                    <p style={{ fontSize: '13px', color: '#757684', marginTop: '4px' }}>{r.team.join(', ')}</p>
                   )}
                 </div>
                 <button
                   onClick={() => setCompleteRoom(r.roomNumber)}
                   style={{
-                    padding: '12px 18px', borderRadius: '10px', border: 'none',
-                    background: 'var(--green)', color: '#fff', fontWeight: 700, fontSize: '14px',
+                    padding: '12px 20px', borderRadius: '12px', border: 'none',
+                    background: '#10b981', color: '#fff', fontWeight: 700, fontSize: '14px',
                     cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
                     flexShrink: 0, minHeight: '48px',
                   }}
@@ -2772,19 +2785,100 @@ function DeepCleanSection() {
         </div>
       )}
 
-      {/* ── Add Rooms Button ── */}
-      <button
-        onClick={() => { setShowAddRooms(true); setAddRoomsFloor(null); }}
-        className="animate-in stagger-2"
-        style={{
-          width: '100%', padding: '16px', borderRadius: 'var(--radius-lg)',
-          border: '2px dashed var(--border)', background: 'var(--bg-card)',
-          cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
-          minHeight: '56px', fontSize: '15px', fontWeight: 700, color: 'var(--navy)',
-        }}
-      >
-        <Plus size={18} /> {lang === 'es' ? 'Agregar habitaciones' : 'Add Rooms'}
-      </button>
+      {/* ── Secondary Insight Cards ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '16px', width: '100%', marginBottom: '24px' }}>
+        <div style={{ background: '#f5f3ee', padding: '28px', borderRadius: '16px', display: 'flex', alignItems: 'center', gap: '20px' }}>
+          <div style={{ width: '52px', height: '52px', borderRadius: '50%', background: '#ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <Clock size={22} style={{ color: '#006565' }} />
+          </div>
+          <div>
+            <div style={{ color: '#454652', fontSize: '14px', fontWeight: 500 }}>
+              {lang === 'es' ? 'Est. Completar' : 'Est. Completion'}
+            </div>
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '20px', color: '#1b1c19', fontWeight: 500 }}>
+              {estHours}h {estMins}m <span style={{ fontSize: '12px', opacity: 0.4 }}>{lang === 'es' ? 'Restante' : 'Remaining'}</span>
+            </div>
+          </div>
+        </div>
+        <div style={{ background: '#f5f3ee', padding: '28px', borderRadius: '16px', display: 'flex', alignItems: 'center', gap: '20px' }}>
+          <div style={{ width: '52px', height: '52px', borderRadius: '50%', background: '#ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <Users size={22} style={{ color: '#364262' }} />
+          </div>
+          <div>
+            <div style={{ color: '#454652', fontSize: '14px', fontWeight: 500 }}>
+              {lang === 'es' ? 'Personal Activo' : 'Active Staff'}
+            </div>
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '20px', color: '#1b1c19', fontWeight: 500 }}>
+              {hkStaffActive} / {hkStaffTotal}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Recently Completed ── */}
+      {recentlyDone.length > 0 && (
+        <div style={{ width: '100%', marginBottom: '24px' }}>
+          <p style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.15em', textTransform: 'uppercase', color: '#757684', marginBottom: '10px' }}>
+            {lang === 'es' ? 'Completadas recientemente' : 'Recently Completed'}
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {recentlyDone.map(room => (
+              <div key={room.roomNumber} style={{
+                display: 'flex', alignItems: 'center', gap: '12px',
+                padding: '14px 18px', background: '#ffffff',
+                border: '1px solid rgba(197,197,212,0.15)', borderRadius: '14px', minHeight: '48px',
+              }}>
+                <CheckCircle2 size={16} color="#10b981" />
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: '15px', color: '#1b1c19' }}>
+                  {room.roomNumber}
+                </span>
+                <span style={{ fontSize: '13px', color: '#757684', flex: 1 }}>
+                  {room.daysSince === 0 ? (lang === 'es' ? 'Hoy' : 'Today') : `${room.daysSince}d ${lang === 'es' ? 'atrás' : 'ago'}`}
+                  {room.cleanedBy ? (
+                    <>
+                      {' · '}
+                      <span
+                        onClick={() => { setEditRoom(room.roomNumber); setEditDate(room.lastCleaned ?? ''); setEditCleanedBy(room.cleanedBy ?? ''); }}
+                        style={{ textDecoration: 'underline', textDecorationStyle: 'dotted', cursor: 'pointer', color: '#506071' }}
+                      >
+                        {room.cleanedBy}
+                      </span>
+                    </>
+                  ) : ''}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Glass Pill Footer ── */}
+      <div style={{
+        position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)',
+        borderRadius: '9999px', padding: '14px 32px', minWidth: '320px',
+        background: '#364262', boxShadow: '0 25px 50px -12px rgba(27,28,25,0.2)',
+        display: 'flex', justifyContent: 'space-around', alignItems: 'center', gap: '32px', zIndex: 40,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#ffffff' }}>
+          <Zap size={18} />
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '18px', lineHeight: 1.1 }}>{pct}%</span>
+            <span style={{ fontSize: '9px', textTransform: 'uppercase', letterSpacing: '0.15em', opacity: 0.7 }}>
+              {lang === 'es' ? 'Ciclo' : 'Cycle'}
+            </span>
+          </div>
+        </div>
+        <div style={{ width: '1px', height: '32px', background: 'rgba(255,255,255,0.1)' }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: totalOverdue > 0 ? '#ffdad6' : 'rgba(218,226,255,0.7)' }}>
+          <Clock size={18} />
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '18px', lineHeight: 1.1 }}>{totalOverdue}</span>
+            <span style={{ fontSize: '9px', textTransform: 'uppercase', letterSpacing: '0.15em', opacity: 0.7 }}>
+              {lang === 'es' ? 'Pendientes' : 'Overdue'}
+            </span>
+          </div>
+        </div>
+      </div>
 
       {/* ── Add Rooms Modal ── */}
       {showAddRooms && (
@@ -2793,23 +2887,23 @@ function DeepCleanSection() {
           <div style={{
             position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 9998,
             width: '420px', maxWidth: 'calc(100vw - 40px)', maxHeight: '70vh',
-            background: 'var(--bg-card)', borderRadius: '16px', boxShadow: '0 8px 40px rgba(0,0,0,0.2)',
+            background: '#fbf9f4', borderRadius: '20px', boxShadow: '0 8px 40px rgba(0,0,0,0.2)',
             padding: '0', display: 'flex', flexDirection: 'column', overflow: 'hidden',
           }}>
             {/* Modal header */}
-            <div style={{ padding: '18px 20px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ padding: '18px 20px 14px', borderBottom: '1px solid rgba(197,197,212,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               {addRoomsFloor !== null ? (
                 <button
                   onClick={() => setAddRoomsFloor(null)}
                   style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', padding: '0', minHeight: '44px' }}
                 >
-                  <ChevronLeft size={18} color="var(--navy)" />
-                  <span style={{ fontSize: '17px', fontWeight: 700, color: 'var(--text-primary)' }}>
+                  <ChevronLeft size={18} color="#364262" />
+                  <span style={{ fontSize: '17px', fontWeight: 700, color: '#1b1c19' }}>
                     {lang === 'es' ? `Piso ${addRoomsFloor}` : `Floor ${addRoomsFloor}`}
                   </span>
                 </button>
               ) : (
-                <span style={{ fontSize: '17px', fontWeight: 700, color: 'var(--text-primary)' }}>
+                <span style={{ fontSize: '17px', fontWeight: 700, color: '#1b1c19' }}>
                   {lang === 'es' ? 'Seleccionar piso' : 'Select Floor'}
                 </span>
               )}
@@ -2817,7 +2911,7 @@ function DeepCleanSection() {
                 onClick={() => { setShowAddRooms(false); setAddRoomsFloor(null); }}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '8px', minHeight: '44px', display: 'flex', alignItems: 'center' }}
               >
-                <XCircle size={20} color="var(--text-muted)" />
+                <XCircle size={20} color="#757684" />
               </button>
             </div>
 
@@ -2832,13 +2926,13 @@ function DeepCleanSection() {
                       onClick={() => setAddRoomsFloor(fs.floor)}
                       style={{
                         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                        padding: '16px 20px', borderBottom: '1px solid var(--border)',
+                        padding: '16px 20px', borderBottom: '1px solid rgba(197,197,212,0.15)',
                         background: 'none', border: 'none', borderBottomStyle: 'solid',
                         cursor: 'pointer', minHeight: '60px', textAlign: 'left', width: '100%',
                       }}
                     >
                       <div>
-                        <div style={{ fontWeight: 700, fontSize: '16px', color: 'var(--text-primary)' }}>
+                        <div style={{ fontWeight: 700, fontSize: '16px', color: '#1b1c19' }}>
                           {lang === 'es' ? `Piso ${fs.floor}` : `Floor ${fs.floor}`}
                         </div>
                         <div style={{ fontSize: '13px', color: fs.descColor, fontWeight: 600, marginTop: '2px' }}>
@@ -2846,17 +2940,17 @@ function DeepCleanSection() {
                         </div>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
+                        <span style={{ fontSize: '13px', color: '#757684' }}>
                           {fs.total} {lang === 'es' ? 'hab.' : 'rooms'}
                         </span>
-                        <ChevronRight size={16} color="var(--text-muted)" />
+                        <ChevronRight size={16} color="#757684" />
                       </div>
                     </button>
                   ))}
                   <button
                     onClick={() => setShowCycleModal(true)}
                     style={{
-                      fontSize: '13px', color: 'var(--text-muted)', marginTop: '4px',
+                      fontSize: '13px', color: '#757684', marginTop: '4px',
                       background: 'none', border: 'none', cursor: 'pointer', padding: '14px 0',
                       display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
                       minHeight: '44px', width: '100%',
@@ -2874,12 +2968,12 @@ function DeepCleanSection() {
                     return (
                       <div key={room.roomNumber} style={{
                         display: 'flex', alignItems: 'center', gap: '10px',
-                        padding: '16px 20px', borderBottom: '1px solid var(--border)',
+                        padding: '16px 20px', borderBottom: '1px solid rgba(197,197,212,0.15)',
                         background: room.inProgress ? 'rgba(245,158,11,0.04)' : undefined,
                       }}>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '18px', color: 'var(--text-primary)' }}>
+                            <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: '18px', color: '#1b1c19' }}>
                               {room.roomNumber}
                             </span>
                             <span style={{ fontSize: '13px', fontWeight: 600, color: desc.color }}>
@@ -2887,14 +2981,14 @@ function DeepCleanSection() {
                             </span>
                           </div>
                           {room.lastCleaned && (
-                            <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '3px' }}>
+                            <p style={{ fontSize: '12px', color: '#757684', marginTop: '3px' }}>
                               {lang === 'es' ? 'Última:' : 'Last:'} {room.daysSince}d {lang === 'es' ? 'atrás' : 'ago'}
                               {room.cleanedBy ? (
                                 <>
                                   {' · '}
                                   <span
                                     onClick={(e) => { e.stopPropagation(); setEditRoom(room.roomNumber); setEditDate(room.lastCleaned ?? ''); setEditCleanedBy(room.cleanedBy ?? ''); }}
-                                    style={{ textDecoration: 'underline', textDecorationStyle: 'dotted', cursor: 'pointer', color: 'var(--text-secondary)' }}
+                                    style={{ textDecoration: 'underline', textDecorationStyle: 'dotted', cursor: 'pointer', color: '#506071' }}
                                   >
                                     {room.cleanedBy}
                                   </span>
@@ -2903,7 +2997,7 @@ function DeepCleanSection() {
                             </p>
                           )}
                           {room.inProgress && room.team.length > 0 && (
-                            <p style={{ fontSize: '12px', color: 'var(--amber)', marginTop: '2px' }}>{room.team.join(', ')}</p>
+                            <p style={{ fontSize: '12px', color: '#f59e0b', marginTop: '2px' }}>{room.team.join(', ')}</p>
                           )}
                         </div>
                         {/* Action buttons */}
@@ -2913,8 +3007,8 @@ function DeepCleanSection() {
                             onClick={() => { setEditRoom(room.roomNumber); setEditDate(room.lastCleaned ?? ''); setEditCleanedBy(room.cleanedBy ?? ''); }}
                             style={{
                               padding: '10px 12px', borderRadius: '10px',
-                              border: '1.5px solid var(--border)', background: 'var(--bg)',
-                              fontWeight: 600, fontSize: '12px', color: 'var(--text-secondary)',
+                              border: '1.5px solid rgba(197,197,212,0.3)', background: '#fbf9f4',
+                              fontWeight: 600, fontSize: '12px', color: '#506071',
                               cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px',
                               minHeight: '44px', whiteSpace: 'nowrap',
                             }}
@@ -2931,7 +3025,7 @@ function DeepCleanSection() {
                               onClick={() => { setCompleteRoom(room.roomNumber); setShowAddRooms(false); }}
                               style={{
                                 padding: '10px 14px', borderRadius: '10px', border: 'none',
-                                background: 'var(--green)', color: '#fff', fontWeight: 700, fontSize: '13px',
+                                background: '#10b981', color: '#fff', fontWeight: 700, fontSize: '13px',
                                 cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px',
                                 minHeight: '44px',
                               }}
@@ -2944,7 +3038,7 @@ function DeepCleanSection() {
                               onClick={() => { setAssignRoom(room.roomNumber); setSelectedTeam([]); setShowAddRooms(false); }}
                               style={{
                                 padding: '10px 14px', borderRadius: '10px', border: 'none',
-                                background: 'var(--navy)', color: '#fff', fontWeight: 700, fontSize: '13px',
+                                background: '#364262', color: '#fff', fontWeight: 700, fontSize: '13px',
                                 cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px',
                                 minHeight: '44px',
                               }}
@@ -2954,7 +3048,7 @@ function DeepCleanSection() {
                             </button>
                           ) : (
                             <div style={{ width: '44px', height: '44px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                              <CheckCircle2 size={18} color="var(--green)" />
+                              <CheckCircle2 size={18} color="#10b981" />
                             </div>
                           )}
                         </div>
@@ -2968,56 +3062,19 @@ function DeepCleanSection() {
         </>
       )}
 
-      {/* ── Recently Completed ── */}
-      {recentlyDone.length > 0 && (
-        <div className="animate-in">
-          <p style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '8px' }}>
-            {lang === 'es' ? 'Completadas recientemente' : 'Recently Completed'}
-          </p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            {recentlyDone.map(room => (
-              <div key={room.roomNumber} style={{
-                display: 'flex', alignItems: 'center', gap: '10px',
-                padding: '12px 14px', background: 'var(--bg-card)',
-                border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', minHeight: '48px',
-              }}>
-                <CheckCircle2 size={16} color="var(--green)" />
-                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '15px', color: 'var(--text-primary)' }}>
-                  {room.roomNumber}
-                </span>
-                <span style={{ fontSize: '12px', color: 'var(--text-muted)', flex: 1 }}>
-                  {room.daysSince === 0 ? (lang === 'es' ? 'Hoy' : 'Today') : `${room.daysSince}d ${lang === 'es' ? 'atrás' : 'ago'}`}
-                  {room.cleanedBy ? (
-                    <>
-                      {' · '}
-                      <span
-                        onClick={() => { setEditRoom(room.roomNumber); setEditDate(room.lastCleaned ?? ''); setEditCleanedBy(room.cleanedBy ?? ''); }}
-                        style={{ textDecoration: 'underline', textDecorationStyle: 'dotted', cursor: 'pointer', color: 'var(--text-secondary)' }}
-                      >
-                        {room.cleanedBy}
-                      </span>
-                    </>
-                  ) : ''}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* ── Assign Team Modal ── */}
       {assignRoom && (
         <>
           <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 9997 }} onClick={() => { setAssignRoom(null); setSelectedTeam([]); }} />
           <div style={{
             position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 9998,
-            background: 'var(--bg-card)', borderRadius: '16px', boxShadow: '0 8px 40px rgba(0,0,0,0.2)',
+            background: '#fbf9f4', borderRadius: '20px', boxShadow: '0 8px 40px rgba(0,0,0,0.2)',
             padding: '20px', width: '340px', maxWidth: 'calc(100vw - 40px)', maxHeight: '80vh', overflowY: 'auto',
           }}>
-            <p style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text-primary)', margin: '0 0 4px' }}>
+            <p style={{ fontSize: '16px', fontWeight: 700, color: '#1b1c19', margin: '0 0 4px' }}>
               {lang === 'es' ? `Asignar equipo — ${assignRoom}` : `Assign Team — ${assignRoom}`}
             </p>
-            <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '0 0 14px' }}>
+            <p style={{ fontSize: '12px', color: '#757684', margin: '0 0 14px' }}>
               {lang === 'es' ? 'Selecciona 2-3 personas' : 'Select 2-3 people'}
             </p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '14px' }}>
@@ -3033,24 +3090,24 @@ function DeepCleanSection() {
                     }}
                     style={{
                       display: 'flex', alignItems: 'center', gap: '10px',
-                      padding: '12px 14px', borderRadius: '10px',
-                      border: isSelected ? '2px solid var(--navy)' : '1.5px solid var(--border)',
-                      background: isSelected ? 'rgba(37,99,235,0.06)' : 'var(--bg)',
+                      padding: '12px 14px', borderRadius: '12px',
+                      border: isSelected ? '2px solid #364262' : '1.5px solid rgba(197,197,212,0.3)',
+                      background: isSelected ? 'rgba(54,66,98,0.06)' : '#ffffff',
                       cursor: 'pointer', minHeight: '48px', textAlign: 'left',
                     }}
                   >
                     <div style={{
                       width: '36px', height: '36px', borderRadius: '10px',
-                      background: isSelected ? 'var(--navy)' : 'var(--bg-elevated)',
+                      background: isSelected ? '#364262' : '#eae8e3',
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      color: isSelected ? '#fff' : 'var(--text-muted)', fontWeight: 700, fontSize: '13px', flexShrink: 0,
+                      color: isSelected ? '#fff' : '#757684', fontWeight: 700, fontSize: '13px', flexShrink: 0,
                     }}>
                       {isSelected ? <Check size={16} /> : s.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)}
                     </div>
                     <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)' }}>{s.name}</div>
+                      <div style={{ fontWeight: 600, fontSize: '14px', color: '#1b1c19' }}>{s.name}</div>
                       {s.doneForDay && (
-                        <div style={{ fontSize: '11px', color: 'var(--green)', fontWeight: 600 }}>
+                        <div style={{ fontSize: '11px', color: '#10b981', fontWeight: 600 }}>
                           {lang === 'es' ? 'Terminó sus habitaciones' : 'Finished rooms'}
                         </div>
                       )}
@@ -3063,8 +3120,8 @@ function DeepCleanSection() {
               onClick={() => handleAssignTeam(assignRoom)}
               disabled={selectedTeam.length === 0 || saving}
               style={{
-                width: '100%', padding: '14px', borderRadius: 'var(--radius-md)',
-                background: selectedTeam.length > 0 ? 'var(--navy)' : 'var(--border)',
+                width: '100%', padding: '14px', borderRadius: '14px',
+                background: selectedTeam.length > 0 ? '#364262' : '#c5c5d4',
                 color: '#fff', border: 'none', fontWeight: 700, fontSize: '15px',
                 cursor: selectedTeam.length > 0 ? 'pointer' : 'not-allowed',
                 minHeight: '52px', opacity: saving ? 0.6 : 1,
@@ -3085,15 +3142,15 @@ function DeepCleanSection() {
           <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 9997 }} onClick={() => setCompleteRoom(null)} />
           <div style={{
             position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 9998,
-            background: 'var(--bg-card)', borderRadius: '16px', boxShadow: '0 8px 40px rgba(0,0,0,0.2)',
+            background: '#fbf9f4', borderRadius: '20px', boxShadow: '0 8px 40px rgba(0,0,0,0.2)',
             padding: '24px', width: '320px', maxWidth: 'calc(100vw - 40px)', textAlign: 'center',
           }}>
-            <CheckCircle2 size={40} color="var(--green)" style={{ margin: '0 auto 12px' }} />
-            <p style={{ fontSize: '17px', fontWeight: 700, color: 'var(--text-primary)', margin: '0 0 4px' }}>
+            <CheckCircle2 size={40} color="#10b981" style={{ margin: '0 auto 12px' }} />
+            <p style={{ fontSize: '17px', fontWeight: 700, color: '#1b1c19', margin: '0 0 4px' }}>
               {lang === 'es' ? `¿Completar ${completeRoom}?` : `Complete ${completeRoom}?`}
             </p>
             {records[completeRoom]?.cleanedByTeam && (
-              <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: '0 0 16px' }}>
+              <p style={{ fontSize: '13px', color: '#757684', margin: '0 0 16px' }}>
                 {lang === 'es' ? 'Equipo:' : 'Team:'} {records[completeRoom].cleanedByTeam!.join(', ')}
               </p>
             )}
@@ -3101,9 +3158,9 @@ function DeepCleanSection() {
               <button
                 onClick={() => setCompleteRoom(null)}
                 style={{
-                  flex: 1, padding: '14px', borderRadius: 'var(--radius-md)',
-                  border: '1px solid var(--border)', background: 'transparent',
-                  color: 'var(--text-secondary)', fontWeight: 600, fontSize: '14px',
+                  flex: 1, padding: '14px', borderRadius: '14px',
+                  border: '1px solid rgba(197,197,212,0.3)', background: 'transparent',
+                  color: '#506071', fontWeight: 600, fontSize: '14px',
                   cursor: 'pointer', minHeight: '48px',
                 }}
               >
@@ -3113,8 +3170,8 @@ function DeepCleanSection() {
                 onClick={() => handleComplete(completeRoom)}
                 disabled={saving}
                 style={{
-                  flex: 1, padding: '14px', borderRadius: 'var(--radius-md)',
-                  background: 'var(--green)', color: '#fff', border: 'none',
+                  flex: 1, padding: '14px', borderRadius: '14px',
+                  background: '#10b981', color: '#fff', border: 'none',
                   fontWeight: 700, fontSize: '14px', cursor: 'pointer',
                   minHeight: '48px', opacity: saving ? 0.6 : 1,
                 }}
@@ -3133,16 +3190,16 @@ function DeepCleanSection() {
           <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 9997 }} onClick={() => { setEditRoom(null); setEditDate(''); setEditCleanedBy(''); }} />
           <div style={{
             position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 9998,
-            background: 'var(--bg-card)', borderRadius: '16px', boxShadow: '0 8px 40px rgba(0,0,0,0.2)',
+            background: '#fbf9f4', borderRadius: '20px', boxShadow: '0 8px 40px rgba(0,0,0,0.2)',
             padding: '20px', width: '320px', maxWidth: 'calc(100vw - 40px)',
           }}>
-            <p style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text-primary)', margin: '0 0 4px' }}>
+            <p style={{ fontSize: '16px', fontWeight: 700, color: '#1b1c19', margin: '0 0 4px' }}>
               {lang === 'es' ? `Editar — ${editRoom}` : `Edit — ${editRoom}`}
             </p>
-            <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '0 0 14px' }}>
+            <p style={{ fontSize: '12px', color: '#757684', margin: '0 0 14px' }}>
               {lang === 'es' ? 'Cambiar fecha y quién lo limpió.' : 'Change date and who cleaned it.'}
             </p>
-            <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '4px', display: 'block' }}>
+            <label style={{ fontSize: '12px', fontWeight: 600, color: '#757684', marginBottom: '4px', display: 'block' }}>
               {lang === 'es' ? 'Fecha' : 'Date'}
             </label>
             <input
@@ -3150,23 +3207,23 @@ function DeepCleanSection() {
               value={editDate}
               onChange={e => setEditDate(e.target.value)}
               style={{
-                width: '100%', padding: '12px', borderRadius: 'var(--radius-md)',
-                border: '1px solid var(--border)', background: 'var(--bg)',
+                width: '100%', padding: '12px', borderRadius: '14px',
+                border: '1px solid rgba(197,197,212,0.3)', background: '#ffffff',
                 fontSize: '15px', minHeight: '48px', marginBottom: '12px',
                 boxSizing: 'border-box',
               }}
             />
-            <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '4px', display: 'block' }}>
+            <label style={{ fontSize: '12px', fontWeight: 600, color: '#757684', marginBottom: '4px', display: 'block' }}>
               {lang === 'es' ? 'Limpiado por' : 'Cleaned by'}
             </label>
             <select
               value={editCleanedBy}
               onChange={e => setEditCleanedBy(e.target.value)}
               style={{
-                width: '100%', padding: '12px', borderRadius: 'var(--radius-md)',
-                border: '1px solid var(--border)', background: 'var(--bg)',
+                width: '100%', padding: '12px', borderRadius: '14px',
+                border: '1px solid rgba(197,197,212,0.3)', background: '#ffffff',
                 fontSize: '15px', minHeight: '48px', marginBottom: '12px',
-                boxSizing: 'border-box', color: editCleanedBy ? 'var(--text-primary)' : 'var(--text-muted)',
+                boxSizing: 'border-box', color: editCleanedBy ? '#1b1c19' : '#757684',
               }}
             >
               <option value="">{lang === 'es' ? 'Seleccionar...' : 'Select...'}</option>
@@ -3178,9 +3235,9 @@ function DeepCleanSection() {
               <button
                 onClick={() => { setEditRoom(null); setEditDate(''); setEditCleanedBy(''); }}
                 style={{
-                  flex: 1, padding: '12px', borderRadius: 'var(--radius-md)',
-                  border: '1px solid var(--border)', background: 'transparent',
-                  color: 'var(--text-secondary)', fontWeight: 600, fontSize: '14px',
+                  flex: 1, padding: '12px', borderRadius: '14px',
+                  border: '1px solid rgba(197,197,212,0.3)', background: 'transparent',
+                  color: '#506071', fontWeight: 600, fontSize: '14px',
                   cursor: 'pointer', minHeight: '48px',
                 }}
               >
@@ -3190,8 +3247,8 @@ function DeepCleanSection() {
                 onClick={() => handleEditDate(editRoom)}
                 disabled={!editDate || saving}
                 style={{
-                  flex: 1, padding: '12px', borderRadius: 'var(--radius-md)',
-                  background: editDate ? 'var(--navy)' : 'var(--border)',
+                  flex: 1, padding: '12px', borderRadius: '14px',
+                  background: editDate ? '#364262' : '#c5c5d4',
                   color: '#fff', border: 'none', fontWeight: 700, fontSize: '14px',
                   cursor: editDate ? 'pointer' : 'not-allowed',
                   minHeight: '48px', opacity: saving ? 0.6 : 1,
@@ -3210,10 +3267,10 @@ function DeepCleanSection() {
           <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 9997 }} onClick={() => setShowCycleModal(false)} />
           <div style={{
             position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 9998,
-            background: 'var(--bg-card)', borderRadius: '16px', boxShadow: '0 8px 40px rgba(0,0,0,0.2)',
+            background: '#fbf9f4', borderRadius: '20px', boxShadow: '0 8px 40px rgba(0,0,0,0.2)',
             padding: '20px', width: '300px', maxWidth: 'calc(100vw - 40px)',
           }}>
-            <p style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text-primary)', margin: '0 0 14px' }}>
+            <p style={{ fontSize: '16px', fontWeight: 700, color: '#1b1c19', margin: '0 0 14px' }}>
               {lang === 'es' ? 'Ciclo de limpieza' : 'Deep Clean Cycle'}
             </p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -3224,11 +3281,11 @@ function DeepCleanSection() {
                     key={days}
                     onClick={() => { setCustomCycleDays(''); handleSaveCycle(days); }}
                     style={{
-                      padding: '14px', borderRadius: 'var(--radius-md)',
-                      border: isSelected ? '2px solid var(--navy)' : '1.5px solid var(--border)',
-                      background: isSelected ? 'rgba(37,99,235,0.06)' : 'var(--bg)',
+                      padding: '14px', borderRadius: '14px',
+                      border: isSelected ? '2px solid #364262' : '1.5px solid rgba(197,197,212,0.3)',
+                      background: isSelected ? 'rgba(54,66,98,0.06)' : '#ffffff',
                       fontWeight: isSelected ? 700 : 500, fontSize: '14px',
-                      color: isSelected ? 'var(--navy)' : 'var(--text-primary)',
+                      color: isSelected ? '#364262' : '#1b1c19',
                       cursor: 'pointer', minHeight: '48px', textAlign: 'left',
                     }}
                   >
@@ -3240,12 +3297,12 @@ function DeepCleanSection() {
               {/* Custom option */}
               <div style={{
                 display: 'flex', alignItems: 'center', gap: '8px',
-                padding: '10px 14px', borderRadius: 'var(--radius-md)',
-                border: (freq && ![30, 60, 90, 120].includes(freq)) ? '2px solid var(--navy)' : '1.5px solid var(--border)',
-                background: (freq && ![30, 60, 90, 120].includes(freq)) ? 'rgba(37,99,235,0.06)' : 'var(--bg)',
+                padding: '10px 14px', borderRadius: '14px',
+                border: (freq && ![30, 60, 90, 120].includes(freq)) ? '2px solid #364262' : '1.5px solid rgba(197,197,212,0.3)',
+                background: (freq && ![30, 60, 90, 120].includes(freq)) ? 'rgba(54,66,98,0.06)' : '#ffffff',
                 minHeight: '48px',
               }}>
-                <span style={{ fontSize: '14px', fontWeight: 500, color: 'var(--text-primary)', whiteSpace: 'nowrap' }}>
+                <span style={{ fontSize: '14px', fontWeight: 500, color: '#1b1c19', whiteSpace: 'nowrap' }}>
                   {lang === 'es' ? 'Personalizado:' : 'Custom:'}
                 </span>
                 <input
@@ -3258,8 +3315,8 @@ function DeepCleanSection() {
                   onChange={e => setCustomCycleDays(e.target.value)}
                   style={{
                     flex: 1, padding: '8px 10px', borderRadius: '8px',
-                    border: '1.5px solid var(--border)', background: 'var(--bg)',
-                    fontSize: '14px', color: 'var(--text-primary)',
+                    border: '1.5px solid rgba(197,197,212,0.3)', background: '#ffffff',
+                    fontSize: '14px', color: '#1b1c19',
                     outline: 'none', minWidth: 0,
                   }}
                 />
@@ -3271,7 +3328,7 @@ function DeepCleanSection() {
                   disabled={!customCycleDays || parseInt(customCycleDays, 10) <= 0}
                   style={{
                     padding: '8px 14px', borderRadius: '8px',
-                    background: customCycleDays && parseInt(customCycleDays, 10) > 0 ? 'var(--navy)' : 'var(--border)',
+                    background: customCycleDays && parseInt(customCycleDays, 10) > 0 ? '#364262' : '#c5c5d4',
                     color: '#fff', fontWeight: 600, fontSize: '13px',
                     border: 'none', cursor: customCycleDays && parseInt(customCycleDays, 10) > 0 ? 'pointer' : 'default',
                     opacity: customCycleDays && parseInt(customCycleDays, 10) > 0 ? 1 : 0.5,
@@ -3289,8 +3346,8 @@ function DeepCleanSection() {
       {toast && (
         <div style={{
           position: 'fixed', bottom: '90px', left: '50%', transform: 'translateX(-50%)',
-          background: 'var(--navy)', color: '#fff', padding: '12px 20px',
-          borderRadius: '10px', fontSize: '14px', fontWeight: 600,
+          background: '#364262', color: '#fff', padding: '12px 20px',
+          borderRadius: '12px', fontSize: '14px', fontWeight: 600,
           boxShadow: '0 4px 20px rgba(0,0,0,0.18)', zIndex: 9999,
           animation: 'toastIn 0.25s ease-out', whiteSpace: 'nowrap',
         }}>
