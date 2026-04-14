@@ -690,10 +690,11 @@ function FrequencySlider({ valueDays, onChange }: { valueDays: number; onChange:
             onChange={e => handleCustomChange(e.target.value, customUnit)}
             autoFocus
             style={{
-              width: '60px', padding: '6px 8px', borderRadius: '6px',
+              width: '84px', padding: '6px 10px', borderRadius: '6px',
               border: '2px solid var(--navy, #1b3a5c)', background: 'var(--bg)',
               fontSize: '16px', fontWeight: 700, fontFamily: 'var(--font-mono)',
               textAlign: 'center', color: 'var(--navy, #1b3a5c)', outline: 'none',
+              boxSizing: 'border-box',
             }}
           />
           <div style={{ display: 'flex', gap: '4px' }}>
