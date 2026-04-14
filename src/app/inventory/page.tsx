@@ -8,7 +8,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import { AppLayout } from '@/components/layout/AppLayout';
 import {
-  subscribeToInventory, addInventoryItem, updateInventoryItem,
+  subscribeToInventory, addInventoryItem, updateInventoryItem, deleteInventoryItem,
 } from '@/lib/firestore';
 import type { InventoryItem, InventoryCategory } from '@/types';
 import {
@@ -98,6 +98,7 @@ export default function InventoryPage() {
   const [activeCategory, setActiveCategory] = useState<InventoryCategory | 'all'>('all');
   const [counting, setCounting] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [editItem, setEditItem] = useState<InventoryItem | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [lowStockAlert, setLowStockAlert] = useState<InventoryItem[] | null>(null);
 
@@ -376,11 +377,12 @@ export default function InventoryPage() {
                   const barBg = status === 'out' ? '#ffdad6' : '#f0eee9';
 
                   return (
-                    <div key={item.id} className="inv-card" style={{
+                    <div key={item.id} className="inv-card" onClick={() => setEditItem(item)} style={{
                       background: '#fff', borderRadius: '14px', padding: '12px 14px',
                       transition: 'all 300ms',
                       height: '104px', boxSizing: 'border-box',
                       display: 'flex', flexDirection: 'column',
+                      cursor: 'pointer',
                     }}>
                       {/* Name + timestamp */}
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', gap: '8px' }}>
@@ -479,6 +481,18 @@ export default function InventoryPage() {
         pid={activePropertyId}
         onAdded={() => showToast('Item added ✓')}
       />
+
+      {/* Edit item modal */}
+      {editItem && (
+        <EditItemModal
+          item={editItem}
+          uid={user.uid}
+          pid={activePropertyId}
+          onClose={() => setEditItem(null)}
+          onSaved={() => { setEditItem(null); showToast('Item updated ✓'); }}
+          onDeleted={() => { setEditItem(null); showToast('Item deleted ✓'); }}
+        />
+      )}
 
       {/* Low Stock Alert */}
       {lowStockAlert && (
@@ -895,6 +909,169 @@ function AddItemModal({ isOpen, onClose, uid, pid, onAdded }: {
         >
           {saving ? 'Saving...' : 'Add Item'}
         </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Edit Item Modal ─────────────────────────────────────────────────────────
+
+function EditItemModal({ item, uid, pid, onClose, onSaved, onDeleted }: {
+  item: InventoryItem;
+  uid: string;
+  pid: string;
+  onClose: () => void;
+  onSaved: () => void;
+  onDeleted: () => void;
+}) {
+  const [name, setName] = useState(item.name);
+  const [category, setCategory] = useState<InventoryCategory>(item.category);
+  const [stock, setStock] = useState(String(item.currentStock));
+  const [target, setTarget] = useState(String(item.parLevel));
+  const [reorderAt, setReorderAt] = useState(String(item.reorderAt ?? ''));
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [openInfo, setOpenInfo] = useState<null | 'stock' | 'target' | 'reorder'>(null);
+
+  const handleSave = async () => {
+    if (!name.trim() || saving) return;
+    setSaving(true);
+    try {
+      await updateInventoryItem(uid, pid, item.id, {
+        name: name.trim(),
+        category,
+        currentStock: parseInt(stock) || 0,
+        parLevel: parseInt(target) || 0,
+        reorderAt: reorderAt.trim() === '' ? undefined : parseInt(reorderAt) || 0,
+      });
+      onSaved();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (deleting) return;
+    if (!confirm(`Delete "${item.name}"? This cannot be undone.`)) return;
+    setDeleting(true);
+    try {
+      await deleteInventoryItem(uid, pid, item.id);
+      onDeleted();
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '12px 16px', borderRadius: '16px',
+    border: '1px solid #c5c5d4', background: '#fff',
+    fontFamily: "'Inter', sans-serif", fontSize: '14px', color: '#1b1c19',
+    outline: 'none',
+  };
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 50,
+        background: 'rgba(27,28,25,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
+      }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{
+        width: '100%', maxWidth: '500px', maxHeight: '90vh', overflowY: 'auto',
+        background: '#fbf9f4', borderRadius: '24px',
+        padding: '24px',
+        display: 'flex', flexDirection: 'column', gap: '16px',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <h2 style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: '18px', color: '#1b1c19' }}>
+            Edit Item
+          </h2>
+          <button onClick={onClose} style={{ background: '#eae8e3', border: 'none', cursor: 'pointer', padding: '8px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <span style={{ fontSize: '16px', color: '#454652', lineHeight: 1 }}>✕</span>
+          </button>
+        </div>
+        <div>
+          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>Item Name *</label>
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Bath Towels" style={inputStyle} />
+        </div>
+        <div>
+          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>Category</label>
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+            {(['housekeeping', 'maintenance', 'breakfast'] as InventoryCategory[]).map(c => (
+              <button
+                key={c}
+                onClick={() => setCategory(c)}
+                style={{
+                  padding: '8px 16px', borderRadius: '9999px', border: 'none',
+                  fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, cursor: 'pointer',
+                  background: category === c ? '#006565' : '#f0eee9',
+                  color: category === c ? '#fff' : '#454652',
+                  transition: 'all 150ms',
+                }}
+              >
+                {c === 'housekeeping' ? 'Housekeeping' : c === 'maintenance' ? 'Maintenance' : 'Breakfast/F&B'}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
+          <FieldWithInfo
+            label="In Stock"
+            tooltip="How many of this item you currently have on hand."
+            isOpen={openInfo === 'stock'}
+            onToggle={() => setOpenInfo(openInfo === 'stock' ? null : 'stock')}
+          >
+            <input type="number" min="0" value={stock} onChange={e => setStock(e.target.value)} style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
+          </FieldWithInfo>
+          <FieldWithInfo
+            label="Target"
+            tooltip="Your ideal stock level — the amount you want to keep fully stocked."
+            isOpen={openInfo === 'target'}
+            onToggle={() => setOpenInfo(openInfo === 'target' ? null : 'target')}
+          >
+            <input type="number" min="0" value={target} onChange={e => setTarget(e.target.value)} style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
+          </FieldWithInfo>
+          <FieldWithInfo
+            label="Reorder At"
+            tooltip="When stock drops to this number, you'll get a notification to reorder."
+            isOpen={openInfo === 'reorder'}
+            onToggle={() => setOpenInfo(openInfo === 'reorder' ? null : 'reorder')}
+          >
+            <input type="number" min="0" value={reorderAt} onChange={e => setReorderAt(e.target.value)} style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
+          </FieldWithInfo>
+        </div>
+        <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
+          <button
+            onClick={handleDelete}
+            disabled={deleting || saving}
+            style={{
+              padding: '14px 20px', border: '1px solid #ffdad6',
+              borderRadius: '9999px', cursor: deleting || saving ? 'not-allowed' : 'pointer',
+              background: '#fff', color: '#ba1a1a',
+              fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 600,
+              transition: 'all 150ms', minHeight: '52px',
+            }}
+          >
+            {deleting ? 'Deleting...' : 'Delete'}
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={!name.trim() || saving || deleting}
+            style={{
+              flex: 1, padding: '16px', border: 'none',
+              borderRadius: '9999px', cursor: name.trim() && !saving ? 'pointer' : 'not-allowed',
+              background: name.trim() && !saving ? '#364262' : '#eae8e3',
+              color: name.trim() && !saving ? '#fff' : '#757684',
+              fontFamily: "'Inter', sans-serif", fontSize: '15px', fontWeight: 600,
+              transition: 'all 150ms', minHeight: '52px',
+            }}
+          >
+            {saving ? 'Saving...' : 'Save Changes'}
+          </button>
+        </div>
       </div>
     </div>
   );
