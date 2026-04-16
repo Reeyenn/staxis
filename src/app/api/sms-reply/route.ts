@@ -16,6 +16,18 @@ import { NextRequest, NextResponse } from 'next/server';
 import admin from '@/lib/firebase-admin';
 import { sendSms } from '@/lib/sms';
 
+// Twilio's inbound-SMS webhook expects TwiML (XML), not JSON. Returning JSON
+// makes Twilio log errorCode 12300 ("Invalid Content-Type") for every reply,
+// which is exactly the bug that was breaking the YES/NO flow. An empty
+// <Response/> tells Twilio "handled, send no auto-reply" — we've already
+// fired our own sendSms() above.
+function twimlOk(): NextResponse {
+  return new NextResponse(
+    '<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+    { headers: { 'Content-Type': 'text/xml; charset=utf-8' } },
+  );
+}
+
 function toE164(raw: string): string | null {
   const digits = raw.replace(/\D/g, '');
   if (digits.length === 10) return `+1${digits}`;
@@ -140,11 +152,11 @@ export async function POST(req: NextRequest) {
 
     if (!fromNumber || !text) {
       await logHit({ stage: 'drop_missing_from_or_text', fromNumber, text });
-      return NextResponse.json({ ok: true });
+      return twimlOk();
     }
 
     const phone164 = toE164(fromNumber);
-    if (!phone164) return NextResponse.json({ ok: true });
+    if (!phone164) return twimlOk();
 
     const reply = normalise(text);
     const db = admin.firestore();
@@ -193,7 +205,7 @@ export async function POST(req: NextRequest) {
 
     if (snap.empty) {
       // Nothing pending for this phone — probably an old reply. Drop silently.
-      return NextResponse.json({ ok: true });
+      return twimlOk();
     }
 
     const checkDoc = snap.docs[0];
@@ -216,7 +228,7 @@ export async function POST(req: NextRequest) {
         phone164,
         `Hola ${firstName}! ¿Puedes venir mañana (${dateLabel})?\nResponde SÍ o NO.\n\nFor English, reply ENGLISH\n– ${hotelName}`,
       );
-      return NextResponse.json({ ok: true });
+      return twimlOk();
     }
 
     // ── ENGLISH — switch back to English and resend ────────────────────────
@@ -232,7 +244,7 @@ export async function POST(req: NextRequest) {
         phone164,
         `Hi ${firstName}! Can you come in tomorrow (${dateLabel})?\nReply YES or NO.\n\nPara español, responde ESPAÑOL\n– ${hotelName}`,
       );
-      return NextResponse.json({ ok: true });
+      return twimlOk();
     }
 
     // ── YES — confirm, send personal link, ping manager(s) ──────────────────
@@ -269,7 +281,7 @@ export async function POST(req: NextRequest) {
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
         });
 
-      return NextResponse.json({ ok: true });
+      return twimlOk();
     }
 
     // ── NO — acknowledge, ping manager(s), NO auto-cascade ──────────────────
@@ -304,7 +316,7 @@ export async function POST(req: NextRequest) {
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
         });
 
-      return NextResponse.json({ ok: true });
+      return twimlOk();
     }
 
     // ── Unrecognised ─────────────────────────────────────────────────────────
@@ -313,10 +325,10 @@ export async function POST(req: NextRequest) {
       : `Didn't catch that. Please reply YES or NO.\n– ${hotelName}`;
     await sendSms(phone164, hint);
 
-    return NextResponse.json({ ok: true });
+    return twimlOk();
   } catch (err) {
     console.error('sms-reply error:', err);
     // Always 200 so Twilio doesn't retry
-    return NextResponse.json({ ok: true });
+    return twimlOk();
   }
 }
