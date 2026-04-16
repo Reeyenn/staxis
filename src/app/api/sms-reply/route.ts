@@ -93,25 +93,53 @@ async function notifyManagers(
   );
 }
 
+// Debug: write every webhook hit (and the final lookup outcome) to a
+// top-level `webhookLog` collection so we can diagnose failures end-to-end.
+// Safe to leave in — writes are tiny and capped implicitly by traffic.
+async function logHit(entry: Record<string, unknown>): Promise<void> {
+  try {
+    await admin.firestore().collection('webhookLog').add({
+      ...entry,
+      ts: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (e) {
+    console.error('logHit failed:', e);
+  }
+}
+
 export async function POST(req: NextRequest) {
   try {
     // Twilio sends form-encoded; some legacy senders send JSON.
     let fromNumber: string | undefined;
     let text: string | undefined;
+    let rawBodyForLog = '';
 
     const contentType = req.headers.get('content-type') ?? '';
     if (contentType.includes('application/json')) {
-      const body = await req.json() as { fromNumber?: string; From?: string; text?: string; Body?: string };
+      const jsonText = await req.text();
+      rawBodyForLog = jsonText;
+      const body = JSON.parse(jsonText) as { fromNumber?: string; From?: string; text?: string; Body?: string };
       fromNumber = body.fromNumber ?? body.From;
       text = body.text ?? body.Body;
     } else {
       const rawBody = await req.text();
+      rawBodyForLog = rawBody;
       const params = new URLSearchParams(rawBody);
       fromNumber = params.get('From') ?? params.get('fromNumber') ?? undefined;
       text = params.get('Body') ?? params.get('text') ?? undefined;
     }
 
+    await logHit({
+      stage: 'received',
+      contentType,
+      fromNumber: fromNumber ?? null,
+      text: text ?? null,
+      rawBodyLen: rawBodyForLog.length,
+      rawBodyPreview: rawBodyForLog.slice(0, 500),
+    });
+
     if (!fromNumber || !text) {
+      await logHit({ stage: 'drop_missing_from_or_text', fromNumber, text });
       return NextResponse.json({ ok: true });
     }
 
@@ -145,11 +173,23 @@ export async function POST(req: NextRequest) {
     ].filter(Boolean) as string[]));
 
     let snap = null as FirebaseFirestore.QuerySnapshot | null;
+    const tried: string[] = [];
     for (const v of variants) {
+      tried.push(v);
       const result = await findPending(v);
       if (!result.empty) { snap = result; break; }
     }
     if (!snap) snap = await findPending(phone164); // guaranteed empty → sentinel
+
+    await logHit({
+      stage: 'after_lookup',
+      reply,
+      phone164,
+      fromNumber,
+      variantsTried: tried,
+      matched: !snap.empty,
+      matchedDocPath: snap.empty ? null : snap.docs[0].ref.path,
+    });
 
     if (snap.empty) {
       // Nothing pending for this phone — probably an old reply. Drop silently.
