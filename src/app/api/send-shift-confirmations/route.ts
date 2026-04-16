@@ -99,7 +99,7 @@ export async function POST(req: NextRequest) {
           uid, pid,
           staffId,
           staffName: name,
-          staffPhone: phone,
+          staffPhone: phone164,
           shiftDate,
           status: 'pending',       // pending | confirmed | declined
           language,

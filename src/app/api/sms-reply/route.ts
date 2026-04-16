@@ -121,9 +121,10 @@ export async function POST(req: NextRequest) {
     const reply = normalise(text);
     const db = admin.firestore();
 
-    // Find the most recent pending shiftConfirmation for this phone. Try both
-    // the raw number and the E.164 version so it works whichever format was
-    // stored on the staff record.
+    // Find the most recent pending shiftConfirmation for this phone. New rows
+    // are always stored as E.164 (+1XXXXXXXXXX), but old rows might be whatever
+    // string the user typed into the Phone field, so we fall back through every
+    // reasonable variant: E.164, what Twilio sent, 10 digits, "1" + 10 digits.
     async function findPending(phoneVariant: string) {
       return db
         .collectionGroup('shiftConfirmations')
@@ -134,10 +135,21 @@ export async function POST(req: NextRequest) {
         .get();
     }
 
-    let snap = await findPending(fromNumber);
-    if (snap.empty && phone164 !== fromNumber) {
-      snap = await findPending(phone164);
+    const digits = fromNumber.replace(/\D/g, '');
+    const tenDigit = digits.length >= 10 ? digits.slice(-10) : digits;
+    const variants = Array.from(new Set([
+      phone164,              // +14098282023  (what we store going forward)
+      fromNumber,            // whatever Twilio sent us (usually same as phone164)
+      tenDigit,              // 4098282023    (legacy — raw user-entered)
+      `1${tenDigit}`,        // 14098282023   (legacy — country code, no +)
+    ].filter(Boolean) as string[]));
+
+    let snap = null as FirebaseFirestore.QuerySnapshot | null;
+    for (const v of variants) {
+      const result = await findPending(v);
+      if (!result.empty) { snap = result; break; }
     }
+    if (!snap) snap = await findPending(phone164); // guaranteed empty → sentinel
 
     if (snap.empty) {
       // Nothing pending for this phone — probably an old reply. Drop silently.
