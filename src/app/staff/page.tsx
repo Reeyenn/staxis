@@ -319,9 +319,13 @@ export default function StaffPage() {
     setSaving(true);
     try {
       const vacationDates = form.vacationDates.split('\n').map(s => s.trim()).filter(s => /^\d{4}-\d{2}-\d{2}$/.test(s));
+      // NOTE: `phone` is included unconditionally (even when empty). With the
+      // previous `...(form.phone && { phone })` spread, clearing the field did
+      // NOT clear the phone in Firestore — the old value survived the partial
+      // update. Writing '' explicitly fixes that.
       const data = {
         name: form.name.trim(),
-        ...(form.phone && { phone: form.phone }),
+        phone: form.phone?.trim() ?? '',
         language: form.language, department: form.department, isSenior: form.isSenior,
         ...(form.hourlyWage !== undefined && { hourlyWage: form.hourlyWage }),
         maxWeeklyHours: form.maxWeeklyHours, maxDaysPerWeek: form.maxDaysPerWeek,
