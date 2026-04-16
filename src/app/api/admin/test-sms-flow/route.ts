@@ -50,6 +50,12 @@ export async function POST(req: NextRequest) {
     const shiftDate = new Date().toISOString().slice(0, 10); // today
     const docId = `${shiftDate}_${staffId}`;
 
+    // Build a real hkUrl so the YES confirmation reply shows the link the
+    // housekeeper would actually click. Uses the request's origin so it
+    // works on whatever domain the app is deployed to.
+    const origin = new URL(req.url).origin;
+    const hkUrl = `${origin}/housekeeper/${staffId}`;
+
     const confirmRef = db
       .collection('users').doc(uid)
       .collection('properties').doc(pid)
@@ -65,7 +71,7 @@ export async function POST(req: NextRequest) {
       language,
       assignedRooms: [],
       assignedAreas: [],
-      hkUrl: '',
+      hkUrl,
       hotelName,
       sentAt: admin.firestore.FieldValue.serverTimestamp(),
       respondedAt: null,
