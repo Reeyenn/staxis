@@ -145,6 +145,7 @@ type TranslationKey =
   | 'vacationDatesLabel' | 'vacationDatesHelp' | 'isActiveLabel'
   | 'eligibleLabel' | 'atLimitLabel' | 'noPhoneLabel' | 'sendingLabel' | 'crewSelectedCount'
   | 'confirmDeclinedMsg' | 'replacementFoundMsg' | 'noReplacementMsg' | 'allConfirmedMsg'
+  | 'recommendedCrew' | 'noPlanData'
   // ── Housekeeping public areas & prediction ────────────────────────────────
   | 'roomDataLoading' | 'noRoomDataYet' | 'pmsSync15Min'
   | 'prepMinutes' | 'totalWorkload'
@@ -608,6 +609,8 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     replacementFoundMsg: 'Replacement found',
     noReplacementMsg: 'No replacement available',
     allConfirmedMsg: 'All confirmed',
+    recommendedCrew: 'Recommended Crew',
+    noPlanData: 'No plan data for this date yet. Data updates at 7pm and 6am.',
     // ── Housekeeping public areas & prediction ──
     roomDataLoading: 'Loading room data...',
     noRoomDataYet: 'No room data for this date yet',
@@ -1202,6 +1205,8 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     replacementFoundMsg: 'Reemplazo encontrado',
     noReplacementMsg: 'Sin reemplazo disponible',
     allConfirmedMsg: 'Todas confirmadas',
+    recommendedCrew: 'Equipo Recomendado',
+    noPlanData: 'Sin datos de planificación para esta fecha. Los datos se actualizan a las 7pm y 6am.',
     // ── Housekeeping public areas & prediction ──
     roomDataLoading: 'Cargando datos de habitaciones...',
     noRoomDataYet: 'No hay datos de habitaciones para esta fecha',

@@ -591,6 +591,69 @@ export async function deleteGuestRequest(uid: string, pid: string, gid: string) 
   await deleteDoc(guestRequestDocRef(uid, pid, gid));
 }
 
+// ─── Plan Snapshots (CSV scraper data) ─────────────────────────────────────
+
+export const planSnapshotRef = (uid: string, pid: string, date: string) =>
+  doc(db, 'users', uid, 'properties', pid, 'planSnapshots', date);
+
+export interface PlanSnapshot {
+  date: string;
+  pulledAt: any; // Firestore Timestamp
+  pullType: 'evening' | 'morning';
+  totalRooms: number;
+  checkouts: number;
+  stayovers: number;
+  fullServiceStayovers: number;
+  noneServiceStayovers: number;
+  arrivals: number;
+  vacantClean: number;
+  vacantDirty: number;
+  ooo: number;
+  totalCleaningMinutes: number;
+  recommendedHKs: number;
+  checkoutRoomNumbers: string[];
+  stayoverFullRoomNumbers: string[];
+  stayoverNoneRoomNumbers: string[];
+  arrivalRoomNumbers: string[];
+  vacantCleanRoomNumbers: string[];
+  oooRoomNumbers: string[];
+  rooms: Array<{
+    number: string;
+    roomType: string;
+    status: string;
+    condition: string;
+    stayType: string | null;
+    service: string;
+    adults: number;
+    children: number;
+    housekeeper: string | null;
+    arrival: string | null;
+    departure: string | null;
+    lastClean: string | null;
+  }>;
+}
+
+export function subscribeToPlanSnapshot(
+  uid: string,
+  pid: string,
+  date: string,
+  callback: (snapshot: PlanSnapshot | null) => void
+) {
+  return onSnapshot(planSnapshotRef(uid, pid, date), snap => {
+    if (!snap.exists()) {
+      callback(null);
+      return;
+    }
+    const data = snap.data();
+    callback({
+      ...data,
+      pulledAt: data.pulledAt?.toDate?.() ?? null,
+    } as PlanSnapshot);
+  }, error => {
+    console.error('[Firestore] Listener error in subscribeToPlanSnapshot:', error.message);
+  });
+}
+
 // ─── Shift Confirmations ────────────────────────────────────────────────────
 
 export const shiftConfirmationsRef = (uid: string, pid: string) =>

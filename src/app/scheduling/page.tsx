@@ -9,11 +9,13 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import {
   subscribeToShiftConfirmations,
   subscribeToManagerNotifications,
+  subscribeToPlanSnapshot,
   markNotificationRead,
   markAllNotificationsRead,
 } from '@/lib/firestore';
+import type { PlanSnapshot } from '@/lib/firestore';
 import type { StaffMember, ShiftConfirmation, ManagerNotification, ConfirmationStatus } from '@/types';
-import { Calendar, ChevronLeft, ChevronRight, Bell, CheckCircle2, XCircle, Clock, AlertTriangle, Users, Send, Zap } from 'lucide-react';
+import { Calendar, ChevronLeft, ChevronRight, Bell, CheckCircle2, XCircle, Clock, AlertTriangle, Users, Send, Zap, Home, ArrowRightLeft, Sparkles, Ban } from 'lucide-react';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -88,6 +90,7 @@ export default function SchedulingPage() {
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [showNotifPanel, setShowNotifPanel] = useState(false);
+  const [planSnapshot, setPlanSnapshot] = useState<PlanSnapshot | null>(null);
 
   const uid = user?.uid ?? '';
   const pid = activePropertyId ?? '';
@@ -100,6 +103,12 @@ export default function SchedulingPage() {
       refreshStaff();
     }
   }, [uid, pid]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Subscribe to plan snapshot for the selected date
+  useEffect(() => {
+    if (!uid || !pid) return;
+    return subscribeToPlanSnapshot(uid, pid, shiftDate, setPlanSnapshot);
+  }, [uid, pid, shiftDate]);
 
   // Subscribe to confirmations for the selected date
   useEffect(() => {
@@ -325,6 +334,129 @@ export default function SchedulingPage() {
             </button>
           </div>
         </div>
+
+        {/* Plan Snapshot — room breakdown + headcount recommendation */}
+        {planSnapshot ? (
+          <div className="card animate-in" style={{ padding: '16px', marginBottom: '14px' }}>
+            {/* Big headcount number */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+              <div>
+                <p style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', margin: '0 0 4px' }}>
+                  {t('recommendedCrew', lang) || 'Recommended Crew'}
+                </p>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px' }}>
+                  <span style={{ fontSize: '36px', fontWeight: 800, color: 'var(--navy)', lineHeight: 1, fontFamily: 'var(--font-mono)' }}>
+                    {planSnapshot.recommendedHKs}
+                  </span>
+                  <span style={{ fontSize: '13px', color: 'var(--text-muted)', fontWeight: 500 }}>
+                    {lang === 'es' ? 'personas' : 'housekeepers'}
+                  </span>
+                </div>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <p style={{ fontSize: '10px', color: 'var(--text-muted)', margin: '0 0 2px' }}>
+                  {planSnapshot.pullType === 'morning' ? (lang === 'es' ? 'Plan de la mañana' : 'Morning plan') : (lang === 'es' ? 'Plan de la noche' : 'Evening plan')}
+                </p>
+                <p style={{ fontSize: '10px', color: 'var(--text-muted)', margin: 0, fontFamily: 'var(--font-mono)' }}>
+                  {planSnapshot.pulledAt ? new Date(planSnapshot.pulledAt).toLocaleTimeString(lang === 'es' ? 'es-US' : 'en-US', { hour: 'numeric', minute: '2-digit' }) : '—'}
+                </p>
+              </div>
+            </div>
+
+            {/* Room breakdown grid */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px', marginBottom: '12px' }}>
+              {/* Checkouts */}
+              <div style={{ padding: '10px 12px', background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.15)', borderRadius: 'var(--radius-md)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+                  <ArrowRightLeft size={12} color="var(--red)" />
+                  <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--red)' }}>
+                    {lang === 'es' ? 'Salidas' : 'Checkouts'}
+                  </span>
+                </div>
+                <span style={{ fontSize: '22px', fontWeight: 800, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
+                  {planSnapshot.checkouts}
+                </span>
+              </div>
+
+              {/* Stayovers */}
+              <div style={{ padding: '10px 12px', background: 'rgba(37,99,235,0.06)', border: '1px solid rgba(37,99,235,0.15)', borderRadius: 'var(--radius-md)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+                  <Home size={12} color="var(--navy-light)" />
+                  <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--navy-light)' }}>
+                    {lang === 'es' ? 'Estancias' : 'Stayovers'}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
+                  <span style={{ fontSize: '22px', fontWeight: 800, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
+                    {planSnapshot.stayovers}
+                  </span>
+                  {planSnapshot.fullServiceStayovers > 0 && (
+                    <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                      ({planSnapshot.fullServiceStayovers} {lang === 'es' ? 'completo' : 'full'})
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Vacant Ready */}
+              <div style={{ padding: '10px 12px', background: 'rgba(34,197,94,0.06)', border: '1px solid rgba(34,197,94,0.15)', borderRadius: 'var(--radius-md)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+                  <Sparkles size={12} color="var(--green)" />
+                  <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--green)' }}>
+                    {lang === 'es' ? 'Listas' : 'Ready'}
+                  </span>
+                </div>
+                <span style={{ fontSize: '22px', fontWeight: 800, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
+                  {planSnapshot.vacantClean}
+                </span>
+              </div>
+
+              {/* OOO */}
+              <div style={{ padding: '10px 12px', background: 'rgba(0,0,0,0.03)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+                  <Ban size={12} color="var(--text-muted)" />
+                  <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)' }}>
+                    {lang === 'es' ? 'Fuera de servicio' : 'Out of Order'}
+                  </span>
+                </div>
+                <span style={{ fontSize: '22px', fontWeight: 800, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
+                  {planSnapshot.ooo}
+                </span>
+              </div>
+            </div>
+
+            {/* Workload bar */}
+            <div style={{ padding: '8px 12px', background: 'rgba(0,0,0,0.02)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  {lang === 'es' ? 'Carga total' : 'Total workload'}
+                </span>
+                <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
+                  {Math.floor(planSnapshot.totalCleaningMinutes / 60)}h {planSnapshot.totalCleaningMinutes % 60}m
+                </span>
+              </div>
+              <div style={{ height: '4px', background: 'rgba(0,0,0,0.06)', borderRadius: '2px', overflow: 'hidden' }}>
+                <div style={{
+                  width: `${Math.min((planSnapshot.totalCleaningMinutes / (planSnapshot.recommendedHKs * 480)) * 100, 100)}%`,
+                  height: '100%',
+                  background: 'var(--navy-light)',
+                  borderRadius: '2px',
+                }} />
+              </div>
+              <p style={{ fontSize: '10px', color: 'var(--text-muted)', margin: '4px 0 0', lineHeight: 1.4 }}>
+                {planSnapshot.checkouts} × 30min + {planSnapshot.fullServiceStayovers} × 20min + {planSnapshot.vacantDirty} × 30min
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="card" style={{ padding: '16px', marginBottom: '14px', textAlign: 'center' }}>
+            <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>
+              {lang === 'es'
+                ? 'Sin datos de planificación para esta fecha. Los datos se actualizan a las 7pm y 6am.'
+                : 'No plan data for this date yet. Data updates at 7pm and 6am.'}
+            </p>
+          </div>
+        )}
 
         {/* Sent banner */}
         {sent && (

@@ -15,6 +15,7 @@ const { getFirestore, Timestamp } = require('firebase-admin/firestore');
 const path = require('path');
 const fs = require('fs');
 const { runNightlyScheduler } = require('./scheduler');
+const { runCSVScrape } = require('./csv-scraper');
 
 // ─── Config ────────────────────────────────────────────────────────────────
 
@@ -345,10 +346,40 @@ async function writeRoomsToFirestore(rooms) {
 let lastSchedulerDate       = null; // 10pm nightly scheduler
 let lastAvailCheckDate      = null; // 9pm availability check texts
 let lastMorningResendDate   = null; // 6am morning re-send
+let lastEveningCSVDate      = null; // 7pm evening CSV pull
+let lastMorningCSVDate      = null; // 6am morning CSV pull
 
-async function maybeRunScheduler() {
+async function maybeRunScheduler(page) {
   const hour  = localHour();
   const today = todayISO();
+
+  // ── 6am: morning CSV pull (confirm today's plan) ──────────────────────────
+  if (hour === 6 && lastMorningCSVDate !== today) {
+    lastMorningCSVDate = today;
+    try {
+      await runCSVScrape(page, db, {
+        USER_ID:     CONFIG.USER_ID,
+        PROPERTY_ID: CONFIG.PROPERTY_ID,
+        TIMEZONE:    CONFIG.TIMEZONE,
+      }, 'morning', log);
+    } catch (err) {
+      log(`Morning CSV pull error: ${err.message}`);
+    }
+  }
+
+  // ── 7pm: evening CSV pull (plan for tomorrow) ─────────────────────────────
+  if (hour === 19 && lastEveningCSVDate !== today) {
+    lastEveningCSVDate = today;
+    try {
+      await runCSVScrape(page, db, {
+        USER_ID:     CONFIG.USER_ID,
+        PROPERTY_ID: CONFIG.PROPERTY_ID,
+        TIMEZONE:    CONFIG.TIMEZONE,
+      }, 'evening', log);
+    } catch (err) {
+      log(`Evening CSV pull error: ${err.message}`);
+    }
+  }
 
   // ── 9pm: send night-before YES/NO availability texts to all active HKs ──
   if (hour === 21 && lastAvailCheckDate !== today) {
@@ -445,8 +476,8 @@ async function run() {
 
   // Run once immediately, then on interval
   async function scrapeAndWrite() {
-    // Always check the nightly scheduler, even outside scraping hours
-    await maybeRunScheduler();
+    // Always check the nightly scheduler + CSV pulls, even outside scraping hours
+    await maybeRunScheduler(page);
 
     if (!isOperationalHours()) {
       log(`Outside operational hours (${CONFIG.OPERATIONAL_HOURS_START}:00–${CONFIG.OPERATIONAL_HOURS_END}:00) — skipping scrape`);
