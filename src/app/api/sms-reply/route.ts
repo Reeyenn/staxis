@@ -161,33 +161,15 @@ export async function POST(req: NextRequest) {
     const reply = normalise(text);
     const db = admin.firestore();
 
-    // Find the most recent pending shiftConfirmation for this phone. New rows
-    // are always stored as E.164 (+1XXXXXXXXXX), but old rows might be whatever
-    // string the user typed into the Phone field, so we fall back through every
-    // reasonable variant: E.164, what Twilio sent, 10 digits, "1" + 10 digits.
+    // Find the pending shiftConfirmation for this phone via the top-level
+    // `phoneLookup/{phone164}` index that /api/send-shift-confirmations writes
+    // on every send. Direct get — no collectionGroup, no composite index, no
+    // FAILED_PRECONDITION. New sends always last-write-win the lookup doc, so
+    // inbound replies always match the newest confirmation for this phone.
     //
-    // IMPORTANT: We deliberately do a single-field collectionGroup query on
-    // staffPhone only. Adding .where('status','==','pending').orderBy('sentAt',…)
-    // would require a composite collection-group index (which isn't provisioned),
-    // and Firestore throws FAILED_PRECONDITION without it. Instead we fetch all
-    // confirmations for the phone (tiny set — one per day per staff) and filter
-    // + sort in memory.
-    async function findPending(phoneVariant: string):
-      Promise<FirebaseFirestore.QueryDocumentSnapshot | null> {
-      const s = await db
-        .collectionGroup('shiftConfirmations')
-        .where('staffPhone', '==', phoneVariant)
-        .get();
-      const pending = s.docs
-        .filter(d => (d.data() as { status?: string }).status === 'pending')
-        .sort((a, b) => {
-          const at = (a.data() as { sentAt?: { toMillis?: () => number } }).sentAt?.toMillis?.() ?? 0;
-          const bt = (b.data() as { sentAt?: { toMillis?: () => number } }).sentAt?.toMillis?.() ?? 0;
-          return bt - at;
-        });
-      return pending[0] ?? null;
-    }
-
+    // We still try a few phone-format variants for the lookup key in case
+    // something upstream normalised differently (Twilio sends E.164, but legacy
+    // entries could have landed under a different key).
     const digits = fromNumber.replace(/\D/g, '');
     const tenDigit = digits.length >= 10 ? digits.slice(-10) : digits;
     const variants = Array.from(new Set([
@@ -197,14 +179,25 @@ export async function POST(req: NextRequest) {
       `1${tenDigit}`,        // 14098282023   (legacy — country code, no +)
     ].filter(Boolean) as string[]));
 
-    let checkDoc: FirebaseFirestore.QueryDocumentSnapshot | null = null;
+    let checkDoc: FirebaseFirestore.DocumentSnapshot | null = null;
     const tried: string[] = [];
     let lookupError: string | null = null;
+    let resolvedPath: string | null = null;
     try {
       for (const v of variants) {
         tried.push(v);
-        const found = await findPending(v);
-        if (found) { checkDoc = found; break; }
+        const lookupSnap = await db.collection('phoneLookup').doc(v).get();
+        if (!lookupSnap.exists) continue;
+        const lookupData = lookupSnap.data() as { path?: string } | undefined;
+        const path = lookupData?.path;
+        if (!path) continue;
+        resolvedPath = path;
+        const docSnap = await db.doc(path).get();
+        if (!docSnap.exists) continue;
+        const docData = docSnap.data() as { status?: string } | undefined;
+        if (docData?.status !== 'pending') continue; // already resolved — ignore
+        checkDoc = docSnap;
+        break;
       }
     } catch (e) {
       lookupError = String(e);
@@ -218,6 +211,7 @@ export async function POST(req: NextRequest) {
       variantsTried: tried,
       matched: !!checkDoc,
       matchedDocPath: checkDoc?.ref.path ?? null,
+      resolvedPath,
       lookupError,
     });
 

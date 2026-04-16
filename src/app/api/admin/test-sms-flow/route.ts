@@ -73,6 +73,16 @@ export async function POST(req: NextRequest) {
       isTest: true,
     });
 
+    // Same phoneLookup write as the real send endpoint so the webhook can
+    // find this synthetic doc without a collectionGroup query.
+    await db.collection('phoneLookup').doc(phone164).set({
+      path: confirmRef.path,
+      uid, pid, staffId,
+      shiftDate,
+      isTest: true,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
     const message = language === 'es'
       ? `[TEST] Hola ${name}! ¿Puedes venir mañana?\nResponde SÍ o NO.\n– ${hotelName}`
       : `[TEST] Hi ${name}! Can you come in tomorrow?\nReply YES or NO.\n– ${hotelName}`;

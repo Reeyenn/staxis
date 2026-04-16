@@ -112,6 +112,17 @@ export async function POST(req: NextRequest) {
           smsSent: false,
         });
 
+        // Top-level phone → doc path index so /api/sms-reply can find the
+        // pending confirmation via a direct GET (no collectionGroup query,
+        // no composite index required). Last-write-wins — the newest send
+        // for this phone is always what inbound replies match.
+        await db.collection('phoneLookup').doc(phone164).set({
+          path: confirmRef.path,
+          uid, pid, staffId,
+          shiftDate,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+
         const firstName = name.split(' ')[0];
         const dateLabel = formatShiftDate(shiftDate, language);
 
