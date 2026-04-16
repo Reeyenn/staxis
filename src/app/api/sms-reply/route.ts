@@ -165,14 +165,27 @@ export async function POST(req: NextRequest) {
     // are always stored as E.164 (+1XXXXXXXXXX), but old rows might be whatever
     // string the user typed into the Phone field, so we fall back through every
     // reasonable variant: E.164, what Twilio sent, 10 digits, "1" + 10 digits.
-    async function findPending(phoneVariant: string) {
-      return db
+    //
+    // IMPORTANT: We deliberately do a single-field collectionGroup query on
+    // staffPhone only. Adding .where('status','==','pending').orderBy('sentAt',…)
+    // would require a composite collection-group index (which isn't provisioned),
+    // and Firestore throws FAILED_PRECONDITION without it. Instead we fetch all
+    // confirmations for the phone (tiny set — one per day per staff) and filter
+    // + sort in memory.
+    async function findPending(phoneVariant: string):
+      Promise<FirebaseFirestore.QueryDocumentSnapshot | null> {
+      const s = await db
         .collectionGroup('shiftConfirmations')
         .where('staffPhone', '==', phoneVariant)
-        .where('status', '==', 'pending')
-        .orderBy('sentAt', 'desc')
-        .limit(1)
         .get();
+      const pending = s.docs
+        .filter(d => (d.data() as { status?: string }).status === 'pending')
+        .sort((a, b) => {
+          const at = (a.data() as { sentAt?: { toMillis?: () => number } }).sentAt?.toMillis?.() ?? 0;
+          const bt = (b.data() as { sentAt?: { toMillis?: () => number } }).sentAt?.toMillis?.() ?? 0;
+          return bt - at;
+        });
+      return pending[0] ?? null;
     }
 
     const digits = fromNumber.replace(/\D/g, '');
@@ -184,14 +197,18 @@ export async function POST(req: NextRequest) {
       `1${tenDigit}`,        // 14098282023   (legacy — country code, no +)
     ].filter(Boolean) as string[]));
 
-    let snap = null as FirebaseFirestore.QuerySnapshot | null;
+    let checkDoc: FirebaseFirestore.QueryDocumentSnapshot | null = null;
     const tried: string[] = [];
-    for (const v of variants) {
-      tried.push(v);
-      const result = await findPending(v);
-      if (!result.empty) { snap = result; break; }
+    let lookupError: string | null = null;
+    try {
+      for (const v of variants) {
+        tried.push(v);
+        const found = await findPending(v);
+        if (found) { checkDoc = found; break; }
+      }
+    } catch (e) {
+      lookupError = String(e);
     }
-    if (!snap) snap = await findPending(phone164); // guaranteed empty → sentinel
 
     await logHit({
       stage: 'after_lookup',
@@ -199,16 +216,16 @@ export async function POST(req: NextRequest) {
       phone164,
       fromNumber,
       variantsTried: tried,
-      matched: !snap.empty,
-      matchedDocPath: snap.empty ? null : snap.docs[0].ref.path,
+      matched: !!checkDoc,
+      matchedDocPath: checkDoc?.ref.path ?? null,
+      lookupError,
     });
 
-    if (snap.empty) {
-      // Nothing pending for this phone — probably an old reply. Drop silently.
+    if (!checkDoc) {
+      // Nothing pending for this phone — probably an old reply, or the lookup
+      // threw (see lookupError above). Drop silently; Twilio still needs a 200.
       return twimlOk();
     }
-
-    const checkDoc = snap.docs[0];
     const data = checkDoc.data() as ShiftConfirmation;
     const { uid, pid, staffName, shiftDate } = data;
     const lang: 'en' | 'es' = data.language ?? 'en';
@@ -328,6 +345,10 @@ export async function POST(req: NextRequest) {
     return twimlOk();
   } catch (err) {
     console.error('sms-reply error:', err);
+    // Surface the error to the webhookLog so we can diagnose without shell logs.
+    try {
+      await logHit({ stage: 'handler_error', error: String(err) });
+    } catch {}
     // Always 200 so Twilio doesn't retry
     return twimlOk();
   }
