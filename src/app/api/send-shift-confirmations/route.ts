@@ -1,5 +1,28 @@
+/**
+ * POST /api/send-shift-confirmations
+ *
+ * Called by the Housekeeping → Schedule tab's "Send" button.
+ * For each selected housekeeper, sends a simple YES/NO availability text and
+ * stores a `shiftConfirmations` doc so /api/sms-reply can look up the reply.
+ *
+ * The follow-up message after YES (with their personal link) is sent by
+ * /api/sms-reply, NOT by this route.
+ *
+ * Body:
+ *   {
+ *     uid, pid, shiftDate,                    // required
+ *     baseUrl,                                // required — used to build hkUrl
+ *     staff: [
+ *       {
+ *         staffId, name, phone, language,     // required
+ *         assignedRooms?: string[],           // room numbers for this HK
+ *         assignedAreas?: string[],           // public areas for this HK
+ *       },
+ *       ...
+ *     ]
+ *   }
+ */
 import { NextRequest, NextResponse } from 'next/server';
-import { randomUUID } from 'crypto';
 import admin from '@/lib/firebase-admin';
 import { sendSms } from '@/lib/sms';
 import { isValidDateStr } from '@/lib/utils';
@@ -9,14 +32,14 @@ interface StaffEntry {
   name: string;
   phone: string;
   language: 'en' | 'es';
-  assignedRooms?: string[];   // room numbers assigned to this HK
-  assignedAreas?: string[];   // public area names assigned to this HK
+  assignedRooms?: string[];
+  assignedAreas?: string[];
 }
 
 interface RequestBody {
   uid: string;
   pid: string;
-  shiftDate: string;   // YYYY-MM-DD
+  shiftDate: string;
   baseUrl: string;
   staff: StaffEntry[];
 }
@@ -29,14 +52,13 @@ function toE164(raw: string): string | null {
   return null;
 }
 
-
 function formatShiftDate(dateStr: string, lang: 'en' | 'es'): string {
   const [year, month, day] = dateStr.split('-').map(Number);
   const d = new Date(year, month - 1, day);
   const locale = lang === 'es' ? 'es-US' : 'en-US';
   const dayName = d.toLocaleDateString(locale, { weekday: 'long' });
   const dateFormatted = d.toLocaleDateString(locale, { month: 'short', day: 'numeric' });
-  return `${dayName} ${dateFormatted}`;
+  return `${dayName}, ${dateFormatted}`;
 }
 
 export async function POST(req: NextRequest) {
@@ -47,89 +69,73 @@ export async function POST(req: NextRequest) {
     if (!uid || !pid || !shiftDate || !staff?.length) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
-
     if (!isValidDateStr(shiftDate)) {
-      return NextResponse.json({ error: 'Invalid shiftDate format (expected YYYY-MM-DD)' }, { status: 400 });
+      return NextResponse.json({ error: 'Invalid shiftDate (expected YYYY-MM-DD)' }, { status: 400 });
     }
 
     const db = admin.firestore();
 
-    // Fetch hotel name from property doc
     const propSnap = await db.collection('users').doc(uid).collection('properties').doc(pid).get();
     const hotelName = propSnap.data()?.name || 'Your Hotel';
 
     const results = await Promise.allSettled(
       staff.map(async ({ staffId, name, phone, language, assignedRooms, assignedAreas }) => {
-        const token = randomUUID();
         const phone164 = toE164(phone);
-        if (!phone164) throw new Error(`Invalid phone number: ${phone}`);
+        if (!phone164) throw new Error(`Invalid phone: ${phone}`);
 
-        const rooms  = assignedRooms ?? [];
-        const areas  = assignedAreas ?? [];
-        const hkUrl  = `${baseUrl}/housekeeper/${staffId}`;
+        const rooms = assignedRooms ?? [];
+        const areas = assignedAreas ?? [];
+        const hkUrl = `${baseUrl}/housekeeper/${staffId}`;
 
-        // Store confirmation doc with room + area assignments so the
-        // post-confirm SMS can include the full list.
-        await db
+        // One shiftConfirmation per (shiftDate, staffId). Deterministic ID so
+        // re-clicking Send doesn't create duplicates — it refreshes the doc.
+        const docId = `${shiftDate}_${staffId}`;
+        const confirmRef = db
           .collection('users').doc(uid)
           .collection('properties').doc(pid)
-          .collection('shiftConfirmations').doc(token)
-          .set({
-            uid,
-            pid,
-            staffId,
-            staffName: name,
-            staffPhone: phone,
-            shiftDate,
-            status: 'pending',
-            language,
-            assignedRooms:  rooms,
-            assignedAreas:  areas,
-            hkUrl,
-            sentAt: admin.firestore.FieldValue.serverTimestamp(),
-            respondedAt: null,
-            smsSent: false,
-            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // 24 hours
-          });
+          .collection('shiftConfirmations').doc(docId);
 
-        const dateLabel   = formatShiftDate(shiftDate, language);
-        const confirmUrl  = `${baseUrl}/confirm/${token}?uid=${uid}&pid=${pid}`;
-        const firstName   = name.split(' ')[0];
+        await confirmRef.set({
+          uid, pid,
+          staffId,
+          staffName: name,
+          staffPhone: phone,
+          shiftDate,
+          status: 'pending',       // pending | confirmed | declined
+          language,
+          assignedRooms: rooms,
+          assignedAreas: areas,
+          hkUrl,
+          hotelName,
+          sentAt: admin.firestore.FieldValue.serverTimestamp(),
+          respondedAt: null,
+          smsSent: false,
+        });
 
-        // Availability check - mention room count so they know what to expect.
-        const roomCount  = rooms.length;
-        const areaCount  = areas.length;
-        const workSummary = language === 'es'
-          ? `${roomCount} hab.${areaCount > 0 ? ` + ${areaCount} área(s)` : ''}`
-          : `${roomCount} room${roomCount !== 1 ? 's' : ''}${areaCount > 0 ? ` + ${areaCount} area${areaCount !== 1 ? 's' : ''}` : ''}`;
+        const firstName = name.split(' ')[0];
+        const dateLabel = formatShiftDate(shiftDate, language);
 
         const message = language === 'es'
-          ? `Hola ${firstName} 👋 ¿Puedes venir mañana (${dateLabel})? Tendrías ${workSummary}. Confirma: ${confirmUrl} – ${hotelName}`
-          : `Hi ${firstName} 👋 Can you come in tomorrow (${dateLabel})? You'd have ${workSummary}. Confirm: ${confirmUrl} – ${hotelName}`;
+          ? `Hola ${firstName}! ¿Puedes venir mañana (${dateLabel})?\nResponde SÍ o NO.\n\nFor English, reply ENGLISH\n– ${hotelName}`
+          : `Hi ${firstName}! Can you come in tomorrow (${dateLabel})?\nReply YES or NO.\n\nPara español, responde ESPAÑOL\n– ${hotelName}`;
 
         await sendSms(phone164, message);
+        await confirmRef.update({ smsSent: true });
 
-        await db
-          .collection('users').doc(uid)
-          .collection('properties').doc(pid)
-          .collection('shiftConfirmations').doc(token)
-          .update({ smsSent: true });
-
-        return { staffId, token };
+        return { staffId, docId };
       })
     );
 
-    const sent   = results.filter(r => r.status === 'fulfilled').length;
+    const sent = results.filter(r => r.status === 'fulfilled').length;
     const failed = results.filter(r => r.status === 'rejected').length;
-    const tokens = results.flatMap(r => r.status === 'fulfilled' ? [r.value] : []);
 
     results.forEach((r, i) => {
       if (r.status === 'rejected') {
-        console.error(`Confirmation SMS failed for ${staff[i].name} (${staff[i].phone}):`, r.reason);
+        console.error(`send-shift-confirmations failed for ${staff[i].name}:`, r.reason);
       }
     });
 
-    return NextResponse.json({ sent, failed, tokens });
+    return NextResponse.json({ sent, failed });
   } catch (err) {
     console.error('send-shift-confirmations error:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

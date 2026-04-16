@@ -17,13 +17,14 @@ import {
   getDeepCleanConfig, setDeepCleanConfig, getDeepCleanRecords,
   markRoomDeepCleaned, assignRoomDeepClean, completeRoomDeepClean,
   subscribeToPlanSnapshot,
+  subscribeToShiftConfirmations,
 } from '@/lib/firestore';
 import type { PlanSnapshot } from '@/lib/firestore';
 import { getPublicAreasDueToday, calcPublicAreaMinutes, autoAssignRooms, getOverdueRooms, calcDndFreedMinutes, suggestDeepCleans } from '@/lib/calculations';
 import { getDefaultPublicAreas } from '@/lib/defaults';
 import type { PublicArea } from '@/types';
 import { todayStr } from '@/lib/utils';
-import type { Room, RoomStatus, StaffMember, DeepCleanRecord, DeepCleanConfig } from '@/types';
+import type { Room, RoomStatus, StaffMember, DeepCleanRecord, DeepCleanConfig, ShiftConfirmation, ConfirmationStatus } from '@/types';
 import { format, subDays } from 'date-fns';
 import {
   Calendar, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, CheckCircle2, Clock,
@@ -284,7 +285,7 @@ function ScheduleSection() {
   const tomorrow = addDays(schedTodayStr(), 1);
   const [shiftDate, setShiftDate] = useState(tomorrow);
   const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState(false);
+  const [confirmations, setConfirmations] = useState<ShiftConfirmation[]>([]);
   const [showPredictionSettings, setShowPredictionSettings] = useState(false);
   const [showPublicAreas, setShowPublicAreas] = useState(false);
   const [showAddStaff, setShowAddStaff] = useState(false);
@@ -349,6 +350,25 @@ function ScheduleSection() {
     if (!uid || !pid) return;
     return subscribeToPlanSnapshot(uid, pid, shiftDate, setPlanSnapshot);
   }, [uid, pid, shiftDate]);
+
+  // Subscribe to shift confirmations for this date (for the status panel)
+  useEffect(() => {
+    if (!uid || !pid) return;
+    return subscribeToShiftConfirmations(uid, pid, shiftDate, setConfirmations);
+  }, [uid, pid, shiftDate]);
+
+  // Map of staffId → confirmation status for this shift date
+  const statusByStaff = useMemo(() => {
+    const m = new Map<string, ConfirmationStatus>();
+    confirmations.forEach(c => m.set(c.staffId, c.status));
+    return m;
+  }, [confirmations]);
+  const alreadySent = confirmations.length > 0;
+
+  // Aggregate counts for the "Confirmations sent" banner
+  const confirmedCount = confirmations.filter(c => c.status === 'confirmed').length;
+  const declinedCount  = confirmations.filter(c => c.status === 'declined').length;
+  const pendingCount   = confirmations.filter(c => c.status === 'pending').length;
 
   useEffect(() => {
     if (!uid || !pid) return;
@@ -491,12 +511,25 @@ function ScheduleSection() {
     setSending(true);
     try {
       const baseUrl = window.location.origin;
-      const staffPayload = selectedCrew.filter(s => s.phone).map(s => ({ staffId: s.id, name: s.name, phone: s.phone!, language: s.language }));
+      const staffPayload = selectedCrew.filter(s => s.phone).map(s => {
+        const memberRooms = assignableRooms
+          .filter(r => assignments[r.id] === s.id)
+          .map(r => r.number);
+        return {
+          staffId: s.id,
+          name: s.name,
+          phone: s.phone!,
+          language: s.language,
+          assignedRooms: memberRooms,
+          assignedAreas: [] as string[],
+        };
+      });
       await fetch('/api/send-shift-confirmations', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ uid, pid, shiftDate, baseUrl, staff: staffPayload }),
       });
-      setSent(true);
+      // The subscribeToShiftConfirmations effect will pick up the new docs
+      // and flip `alreadySent` automatically.
     } finally { setSending(false); }
   };
 
@@ -609,13 +642,13 @@ function ScheduleSection() {
 
       {/* ── Date picker ── */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '16px' }}>
-        <button onClick={() => { setShiftDate(d => addDays(d, -1)); setSent(false); setCrewOverride([]); }} style={{ background: 'rgba(255,255,255,0.7)', backdropFilter: 'blur(24px)', border: '1px solid rgba(197,197,212,0.2)', borderRadius: '12px', padding: '8px 12px', cursor: 'pointer', color: '#454652' }} aria-label={lang === 'es' ? 'Día anterior' : 'Previous day'}>
+        <button onClick={() => { setShiftDate(d => addDays(d, -1)); setCrewOverride([]); }} style={{ background: 'rgba(255,255,255,0.7)', backdropFilter: 'blur(24px)', border: '1px solid rgba(197,197,212,0.2)', borderRadius: '12px', padding: '8px 12px', cursor: 'pointer', color: '#454652' }} aria-label={lang === 'es' ? 'Día anterior' : 'Previous day'}>
           <ChevronLeft size={18} />
         </button>
         <span style={{ fontSize: '16px', fontWeight: 600, color: '#364262', letterSpacing: '-0.01em' }}>
           {formatDisplayDate(shiftDate, lang)}
         </span>
-        <button onClick={() => { setShiftDate(d => addDays(d, 1)); setSent(false); setCrewOverride([]); }} style={{ background: 'rgba(255,255,255,0.7)', backdropFilter: 'blur(24px)', border: '1px solid rgba(197,197,212,0.2)', borderRadius: '12px', padding: '8px 12px', cursor: 'pointer', color: '#454652' }} aria-label={lang === 'es' ? 'Día siguiente' : 'Next day'}>
+        <button onClick={() => { setShiftDate(d => addDays(d, 1)); setCrewOverride([]); }} style={{ background: 'rgba(255,255,255,0.7)', backdropFilter: 'blur(24px)', border: '1px solid rgba(197,197,212,0.2)', borderRadius: '12px', padding: '8px 12px', cursor: 'pointer', color: '#454652' }} aria-label={lang === 'es' ? 'Día siguiente' : 'Next day'}>
           <ChevronRight size={18} />
         </button>
       </div>
@@ -804,6 +837,16 @@ function ScheduleSection() {
               const statusBg = memberRooms.length === 0 ? '#d3e4f8' : isNearCapacity ? '#ffdad6' : '#eae8e3';
               const statusColor = memberRooms.length === 0 ? '#0c1d2b' : isNearCapacity ? '#93000a' : '#454652';
 
+              // Confirmation status from SMS replies — only shown after Send
+              const confStatus = statusByStaff.get(member.id);
+              const confBadge = confStatus === 'confirmed'
+                ? { label: lang === 'es' ? 'Confirmado' : 'Confirmed',   bg: 'rgba(16,185,129,0.15)', color: '#059669' }
+                : confStatus === 'declined'
+                ? { label: lang === 'es' ? 'No viene'   : 'Declined',    bg: 'rgba(239,68,68,0.12)',  color: '#b91c1c' }
+                : confStatus === 'pending'
+                ? { label: lang === 'es' ? 'Esperando'  : 'Waiting',     bg: 'rgba(107,114,128,0.12)', color: '#6b7280' }
+                : null;
+
               return (
                 <div
                   key={member.id}
@@ -864,6 +907,15 @@ function ScheduleSection() {
                         }}>
                           {statusLabel}
                         </span>
+                        {confBadge && (
+                          <span style={{
+                            padding: '2px 8px', borderRadius: '9999px',
+                            background: confBadge.bg, color: confBadge.color,
+                            fontSize: '12px', fontWeight: 600,
+                          }}>
+                            {confBadge.label}
+                          </span>
+                        )}
                         <button onClick={() => {
                           const roomCount = Object.values(assignments).filter(sid => sid === member.id).length;
                           const msg = lang === 'es'
@@ -975,7 +1027,7 @@ function ScheduleSection() {
             </button>
 
             {/* Send Confirmations — absolutely centered on the same line */}
-            {!sent && selectedCrew.length > 0 && (
+            {!alreadySent && selectedCrew.length > 0 && (
               <button onClick={(e) => { e.stopPropagation(); handleSend(); }} disabled={sending} style={{
                 position: 'absolute', left: '50%', transform: 'translateX(-50%)',
                 padding: '14px 24px', background: '#006565', color: '#82e2e1',
@@ -991,10 +1043,30 @@ function ScheduleSection() {
                 {sending ? (lang === 'es' ? 'Enviando…' : 'Sending…') : (lang === 'es' ? 'Enviar Confirmaciones' : 'Send Confirmations')}
               </button>
             )}
-            {sent && (
-              <div style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 24px', background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)', borderRadius: '9999px' }}>
-                <CheckCircle2 size={18} color="#10b981" />
-                <span style={{ fontSize: '14px', fontWeight: 600, color: '#059669' }}>{t('confirmationsSent', lang)}</span>
+            {alreadySent && (
+              <div style={{
+                position: 'absolute', left: '50%', transform: 'translateX(-50%)',
+                display: 'flex', alignItems: 'center', gap: '12px',
+                padding: '10px 20px',
+                background: 'rgba(255,255,255,0.7)', backdropFilter: 'blur(24px)',
+                border: '1px solid rgba(197,197,212,0.3)', borderRadius: '9999px',
+                fontSize: '13px', fontWeight: 600, color: '#454652',
+                whiteSpace: 'nowrap',
+              }}>
+                <CheckCircle2 size={16} color="#10b981" />
+                <span>
+                  {lang === 'es' ? 'Enviado' : 'Sent'}
+                  {' · '}
+                  <span style={{ color: '#10b981' }}>{confirmedCount} {lang === 'es' ? 'confirmados' : 'confirmed'}</span>
+                  {' · '}
+                  <span style={{ color: '#6b7280' }}>{pendingCount} {lang === 'es' ? 'esperando' : 'waiting'}</span>
+                  {declinedCount > 0 && (
+                    <>
+                      {' · '}
+                      <span style={{ color: '#ef4444' }}>{declinedCount} {lang === 'es' ? 'no' : 'declined'}</span>
+                    </>
+                  )}
+                </span>
               </div>
             )}
           </div>
