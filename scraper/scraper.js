@@ -474,6 +474,21 @@ async function run() {
   // Save session so next run can skip login
   await context.storageState({ path: CONFIG.SESSION_FILE });
 
+  // ── One-time CSV test (remove after confirming it works) ─────────────────
+  if (process.env.CSV_TEST_ON_STARTUP === 'true') {
+    log('CSV_TEST_ON_STARTUP enabled — running immediate CSV scrape...');
+    try {
+      await runCSVScrape(page, db, {
+        USER_ID:     CONFIG.USER_ID,
+        PROPERTY_ID: CONFIG.PROPERTY_ID,
+        TIMEZONE:    CONFIG.TIMEZONE,
+      }, 'morning', log);
+      log('CSV test scrape complete!');
+    } catch (err) {
+      log(`CSV test scrape FAILED: ${err.message}`);
+    }
+  }
+
   // Run once immediately, then on interval
   async function scrapeAndWrite() {
     // Always check the nightly scheduler + CSV pulls, even outside scraping hours
