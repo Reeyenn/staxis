@@ -19,11 +19,40 @@ export async function GET(req: NextRequest) {
 
     const db = admin.firestore();
 
-    const [logSnap, confSnap] = await Promise.all([
+    // Also hit Twilio's REST API to check how the toll-free number is actually
+    // configured — specifically the SmsUrl/SmsMethod for inbound-SMS webhooks.
+    async function getTwilioNumbers(): Promise<unknown> {
+      try {
+        const sid = process.env.TWILIO_ACCOUNT_SID;
+        const tok = process.env.TWILIO_AUTH_TOKEN;
+        if (!sid || !tok) return { error: 'twilio env vars missing' };
+        const res = await fetch(
+          `https://api.twilio.com/2010-04-01/Accounts/${sid}/IncomingPhoneNumbers.json`,
+          { headers: { Authorization: `Basic ${Buffer.from(`${sid}:${tok}`).toString('base64')}` } },
+        );
+        if (!res.ok) return { error: `twilio status ${res.status}` };
+        const json = await res.json() as { incoming_phone_numbers?: Array<Record<string, unknown>> };
+        return (json.incoming_phone_numbers ?? []).map(n => ({
+          phoneNumber: n.phone_number,
+          friendlyName: n.friendly_name,
+          smsUrl: n.sms_url,
+          smsMethod: n.sms_method,
+          smsFallbackUrl: n.sms_fallback_url,
+          statusCallback: n.status_callback,
+          voiceUrl: n.voice_url,
+          sid: n.sid,
+        }));
+      } catch (e) {
+        return { error: String(e) };
+      }
+    }
+
+    const [logSnap, confSnap, twilioNumbers] = await Promise.all([
       db.collection('webhookLog').orderBy('ts', 'desc').limit(20).get(),
       db.collection('users').doc(uid)
         .collection('properties').doc(pid)
         .collection('shiftConfirmations').get(),
+      getTwilioNumbers(),
     ]);
 
     const logs = logSnap.docs.map(d => {
@@ -47,7 +76,7 @@ export async function GET(req: NextRequest) {
       };
     }).sort((a, b) => (b.sentAt ?? '').localeCompare(a.sentAt ?? '')).slice(0, 10);
 
-    return NextResponse.json({ webhookLogs: logs, confirmations: confs });
+    return NextResponse.json({ webhookLogs: logs, confirmations: confs, twilioNumbers });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
