@@ -24,31 +24,34 @@ function toE164(raw: string): string | null {
 export async function POST() {
   try {
     const db = admin.firestore();
-    const snap = await db
-      .collectionGroup('shiftConfirmations')
-      .where('status', '==', 'pending')
-      .get();
+    // Pull every shiftConfirmation (no status filter → no composite index needed).
+    const snap = await db.collectionGroup('shiftConfirmations').get();
 
     let scanned = 0;
     let rewritten = 0;
     let skipped = 0;
-    const examples: Array<{ from: string; to: string }> = [];
+    let nonPending = 0;
+    const examples: Array<{ from: string; to: string; status: string }> = [];
 
     const batch = db.batch();
     snap.docs.forEach(doc => {
       scanned += 1;
-      const current = (doc.data().staffPhone ?? '') as string;
+      const data = doc.data();
+      const status = (data.status ?? 'pending') as string;
+      if (status !== 'pending') { nonPending += 1; return; }
+
+      const current = (data.staffPhone ?? '') as string;
       const normalized = toE164(current);
       if (!normalized) { skipped += 1; return; }
       if (normalized === current) { skipped += 1; return; }
       batch.update(doc.ref, { staffPhone: normalized });
       rewritten += 1;
-      if (examples.length < 10) examples.push({ from: current, to: normalized });
+      if (examples.length < 10) examples.push({ from: current, to: normalized, status });
     });
 
     if (rewritten > 0) await batch.commit();
 
-    return NextResponse.json({ scanned, rewritten, skipped, examples });
+    return NextResponse.json({ scanned, nonPending, rewritten, skipped, examples });
   } catch (err) {
     console.error('normalize-confirmation-phones error:', err);
     return NextResponse.json({ error: String(err) }, { status: 500 });
