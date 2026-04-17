@@ -10,14 +10,38 @@ const { Timestamp } = require('firebase-admin/firestore');
 
 // ─── Staffing constants ─────────────────────────────────────────────────────
 
-// Minutes to clean each room type (replace with calibrated values once
-// fingerprint machine data is available)
+// Stayover cleaning uses a 2-day cycle keyed off each room's Arrival date.
+// These defaults match csv-scraper.js and the app's prediction settings. If
+// Maria customizes them in the UI they're saved on the Property doc; this
+// scheduler reads those overrides in runNightlyScheduler() below.
 const CLEANING_TIMES = {
-  checkout: 30,
-  stayover: 20,
+  checkout:     30,
+  stayoverDay1: 15,  // odd day of stay (1/3/5…) → light, no bed change
+  stayoverDay2: 20,  // even day of stay (2/4/6…) → full, bed change
+  // `stayover` kept for legacy callers / arrival-day fallback
+  stayover:     20,
 };
 
 const SHIFT_MINUTES = 480; // 8-hour shift
+
+/**
+ * Get cleaning minutes for a single room based on its type and stayoverDay.
+ * Honors property overrides if provided.
+ *
+ * @param {object} room — { type, stayoverDay?, stayoverMinutes? }
+ * @param {object} [times] — { checkout, stayoverDay1, stayoverDay2, stayover }
+ */
+function minutesForRoom(room, times = CLEANING_TIMES) {
+  if (room.type === 'checkout') return times.checkout;
+  // Checked-in-today guests (stayoverDay <= 0) — skipped for now, TBD.
+  if (typeof room.stayoverDay === 'number') {
+    if (room.stayoverDay <= 0) return 0;
+    return room.stayoverDay % 2 === 1 ? times.stayoverDay1 : times.stayoverDay2;
+  }
+  // No stayoverDay → fall back to legacy "blended" stayover time so we don't
+  // under-estimate workload.
+  return times.stayover;
+}
 
 // Fixed staff — always scheduled regardless of occupancy.
 // These are NOT included in the variable HK recommendation.
@@ -98,7 +122,7 @@ function getPublicAreaMinutes(dateISO) {
  *
  * Checkouts are sorted before stayovers within each floor.
  */
-function smartAssignRooms(rooms, numHousekeepers) {
+function smartAssignRooms(rooms, numHousekeepers, times = CLEANING_TIMES) {
   if (numHousekeepers <= 0 || rooms.length === 0) return [];
 
   // Group by floor (first digit of room number)
@@ -124,15 +148,16 @@ function smartAssignRooms(rooms, numHousekeepers) {
     totalMinutes: 0,
   }));
 
-  // Assign each floor-group to the least-loaded housekeeper
+  // Assign each floor-group to the least-loaded housekeeper.
+  // Uses per-room stayoverDay so Day 1 stayovers cost 15m, Day 2 cost 20m,
+  // checkouts cost 30m — same cycle the prediction UI shows Maria.
   const floors = Object.keys(byFloor).sort();
   for (const floor of floors) {
     const floorRooms = byFloor[floor];
     const hk = hks.reduce((min, h) => h.totalMinutes < min.totalMinutes ? h : min);
     for (const room of floorRooms) {
-      const mins = room.type === 'checkout' ? CLEANING_TIMES.checkout : CLEANING_TIMES.stayover;
       hk.rooms.push(room.number);
-      hk.totalMinutes += mins;
+      hk.totalMinutes += minutesForRoom(room, times);
     }
   }
 
@@ -158,35 +183,76 @@ async function runNightlyScheduler(db, config, log) {
 
   log(`Today: ${todayISO} | Planning for: ${tomorrowISO}`);
 
-  // ── 1. Read today's rooms (these represent tomorrow's workload) ───────────
-  const roomsSnap = await db
+  // ── 0. Load property to read manager-customized cleaning times ────────────
+  const propSnap = await db
+    .collection('users').doc(config.USER_ID)
+    .collection('properties').doc(config.PROPERTY_ID)
+    .get();
+  const propData = propSnap.data() || {};
+  const times = {
+    checkout:     propData.checkoutMinutes     ?? CLEANING_TIMES.checkout,
+    stayoverDay1: propData.stayoverDay1Minutes ?? CLEANING_TIMES.stayoverDay1,
+    stayoverDay2: propData.stayoverDay2Minutes ?? propData.stayoverMinutes ?? CLEANING_TIMES.stayoverDay2,
+    // Legacy fallback for arrival-day / missing-stayoverDay rooms.
+    stayover:     propData.stayoverMinutes     ?? CLEANING_TIMES.stayover,
+  };
+  log(`Cleaning times: checkout ${times.checkout}m · stayover D1 ${times.stayoverDay1}m · D2 ${times.stayoverDay2}m`);
+
+  // ── 1. Read TOMORROW's rooms (written by the 7pm CSV pull) ────────────────
+  // The 7pm CSV scraper writes rooms/{tomorrowISO}_{number} with stayoverDay
+  // merged in, so reading tomorrow gives us the correct projected workload +
+  // cycle-accurate cleaning time for every stayover. Fall back to today's
+  // rooms only if the 7pm pull failed.
+  let roomsSnap = await db
     .collection('users').doc(config.USER_ID)
     .collection('properties').doc(config.PROPERTY_ID)
     .collection('rooms')
-    .where('date', '==', todayISO)
+    .where('date', '==', tomorrowISO)
     .get();
+
+  let roomsSourceDate = tomorrowISO;
+  if (roomsSnap.empty) {
+    log(`No rooms found for ${tomorrowISO} — falling back to today's rooms as proxy.`);
+    roomsSnap = await db
+      .collection('users').doc(config.USER_ID)
+      .collection('properties').doc(config.PROPERTY_ID)
+      .collection('rooms')
+      .where('date', '==', todayISO)
+      .get();
+    roomsSourceDate = todayISO;
+  }
 
   const rooms = roomsSnap.docs.map(d => d.data());
   const checkouts = rooms.filter(r => r.type === 'checkout');
   const stayovers = rooms.filter(r => r.type === 'stayover');
 
-  log(`Rooms: ${checkouts.length} checkouts, ${stayovers.length} stayovers`);
+  // Break stayovers down by cycle day for visibility.
+  const stayoverDay1 = stayovers.filter(r => typeof r.stayoverDay === 'number' && r.stayoverDay > 0 && r.stayoverDay % 2 === 1);
+  const stayoverDay2 = stayovers.filter(r => typeof r.stayoverDay === 'number' && r.stayoverDay > 0 && r.stayoverDay % 2 === 0);
+  const stayoverArr  = stayovers.filter(r => typeof r.stayoverDay === 'number' && r.stayoverDay <= 0);
+  const stayoverUnk  = stayovers.filter(r => typeof r.stayoverDay !== 'number');
 
-  // ── 2. Calculate workload ─────────────────────────────────────────────────
-  const roomMinutes = (checkouts.length * CLEANING_TIMES.checkout) +
-                      (stayovers.length * CLEANING_TIMES.stayover);
+  log(`Rooms (from ${roomsSourceDate}): ${checkouts.length} C/O · ${stayoverDay1.length} D1-stays · ${stayoverDay2.length} D2-stays · ${stayoverArr.length} arrival-day · ${stayoverUnk.length} unknown`);
+
+  // ── 2. Calculate workload (per-room, using stayoverDay cycle) ─────────────
+  const checkoutMinutes     = checkouts.length    * times.checkout;
+  const stayoverDay1Minutes = stayoverDay1.length * times.stayoverDay1;
+  const stayoverDay2Minutes = stayoverDay2.length * times.stayoverDay2;
+  const stayoverUnkMinutes  = stayoverUnk.length  * times.stayover;  // safer blended fallback
+  // Arrival-day rooms contribute 0 (TBD until we nail down that logic).
+  const roomMinutes = checkoutMinutes + stayoverDay1Minutes + stayoverDay2Minutes + stayoverUnkMinutes;
 
   const { totalMinutes: publicAreaMinutes, areasToday } = getPublicAreaMinutes(tomorrowISO);
 
   const totalMinutes     = roomMinutes + publicAreaMinutes;
   const recommendedHKs   = Math.ceil(totalMinutes / SHIFT_MINUTES);
 
-  log(`Workload: ${roomMinutes} room min + ${publicAreaMinutes} area min = ${totalMinutes} min → ${recommendedHKs} variable HKs`);
+  log(`Workload: ${checkoutMinutes}m C/O + ${stayoverDay1Minutes}m D1 + ${stayoverDay2Minutes}m D2 + ${publicAreaMinutes}m areas = ${totalMinutes}m → ${recommendedHKs} variable HKs`);
   log(`Fixed staff: ${FIXED_STAFF.map(f => f.role).join(', ')}`);
 
-  // ── 3. Smart assign rooms ─────────────────────────────────────────────────
+  // ── 3. Smart assign rooms (cycle-aware) ───────────────────────────────────
   const cleanableRooms = [...checkouts, ...stayovers];
-  const assignments = smartAssignRooms(cleanableRooms, recommendedHKs);
+  const assignments = smartAssignRooms(cleanableRooms, recommendedHKs, times);
 
   // ── 4. Read staff + FCM tokens ────────────────────────────────────────────
   const staffSnap = await db
@@ -203,17 +269,26 @@ async function runNightlyScheduler(db, config, log) {
 
   // ── 5. Save schedule to Firestore ─────────────────────────────────────────
   const scheduleDoc = {
-    date:             tomorrowISO,
-    generatedAt:      Timestamp.now(),
-    checkouts:        checkouts.length,
-    stayovers:        stayovers.length,
+    date:              tomorrowISO,
+    generatedAt:       Timestamp.now(),
+    roomsSourceDate,   // which date's rooms were used to project this schedule
+    checkouts:         checkouts.length,
+    stayovers:         stayovers.length,
+    stayoverDay1:      stayoverDay1.length,
+    stayoverDay2:      stayoverDay2.length,
+    stayoverArrivalDay: stayoverArr.length,
+    stayoverUnknown:   stayoverUnk.length,
+    cleaningTimesUsed: times,
+    checkoutMinutes,
+    stayoverDay1Minutes,
+    stayoverDay2Minutes,
     roomMinutes,
     publicAreaMinutes,
     totalMinutes,
     recommendedHKs,
-    fixedStaff:       FIXED_STAFF,
-    areasScheduled:   areasToday,
-    assignments:      assignments.map(a => ({
+    fixedStaff:        FIXED_STAFF,
+    areasScheduled:    areasToday,
+    assignments:       assignments.map(a => ({
       hkIndex:      a.index,
       rooms:        a.rooms,
       totalMinutes: a.totalMinutes,
@@ -266,4 +341,4 @@ async function runNightlyScheduler(db, config, log) {
   return scheduleDoc;
 }
 
-module.exports = { runNightlyScheduler, getPublicAreaMinutes, smartAssignRooms, FIXED_STAFF, CLEANING_TIMES };
+module.exports = { runNightlyScheduler, getPublicAreaMinutes, smartAssignRooms, minutesForRoom, FIXED_STAFF, CLEANING_TIMES };

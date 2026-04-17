@@ -379,12 +379,12 @@ function ScheduleSection() {
 
   // Drag-and-drop state (pointer events — works for both mouse + touch)
   const [dragState, setDragState] = useState<{
-    roomId: string; roomNumber: string; roomType: string;
+    roomId: string; roomNumber: string; roomType: string; stayoverDay?: number;
     ghost: { x: number; y: number }; dropTarget: string | null;
   } | null>(null);
   const crewCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const dragRef = useRef<{
-    roomId: string | null; roomNumber: string; roomType: string;
+    roomId: string | null; roomNumber: string; roomType: string; stayoverDay?: number;
     startX: number; startY: number; active: boolean;
   }>({ roomId: null, roomNumber: '', roomType: '', startX: 0, startY: 0, active: false });
 
@@ -827,7 +827,7 @@ function ScheduleSection() {
     // Capture pointer so all subsequent move/up events come to this element
     e.currentTarget.setPointerCapture(e.pointerId);
     dragRef.current = {
-      roomId: room.id, roomNumber: room.number, roomType: room.type,
+      roomId: room.id, roomNumber: room.number, roomType: room.type, stayoverDay: room.stayoverDay,
       startX: e.clientX, startY: e.clientY, active: false,
     };
   }, []);
@@ -844,7 +844,7 @@ function ScheduleSection() {
     e.preventDefault();
     const dt = findDropTarget(e.clientX, e.clientY);
     setDragState({
-      roomId: d.roomId, roomNumber: d.roomNumber, roomType: d.roomType,
+      roomId: d.roomId, roomNumber: d.roomNumber, roomType: d.roomType, stayoverDay: d.stayoverDay,
       ghost: { x: e.clientX, y: e.clientY }, dropTarget: dt,
     });
   }, [findDropTarget]);
@@ -1338,7 +1338,11 @@ function ScheduleSection() {
                         >
                           <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '14px', color: '#364262', lineHeight: 1 }}>{room.number}</span>
                           <span style={{ fontSize: '9px', fontWeight: 700, color: room.type === 'checkout' ? '#93000a' : '#757684', lineHeight: 1, textTransform: 'uppercase' }}>
-                            {room.type === 'checkout' ? 'C' : 'S'}
+                            {room.type === 'checkout'
+                              ? 'C'
+                              : (typeof room.stayoverDay === 'number' && room.stayoverDay > 0
+                                  ? (room.stayoverDay % 2 === 1 ? 'S1' : 'S2')
+                                  : 'S')}
                           </span>
                         </button>
                       ))}
@@ -1674,7 +1678,13 @@ function ScheduleSection() {
           display: 'flex', flexDirection: 'column', alignItems: 'center', lineHeight: 1,
         }}>
           <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '14px', color: '#fff' }}>{dragState.roomNumber}</span>
-          <span style={{ fontSize: '9px', fontWeight: 700, color: 'rgba(255,255,255,0.6)' }}>{dragState.roomType === 'checkout' ? 'C' : 'S'}</span>
+          <span style={{ fontSize: '9px', fontWeight: 700, color: 'rgba(255,255,255,0.6)' }}>
+            {dragState.roomType === 'checkout'
+              ? 'C'
+              : (typeof dragState.stayoverDay === 'number' && dragState.stayoverDay > 0
+                  ? (dragState.stayoverDay % 2 === 1 ? 'S1' : 'S2')
+                  : 'S')}
+          </span>
         </div>
       )}
 
