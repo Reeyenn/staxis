@@ -659,6 +659,12 @@ export function subscribeToPlanSnapshot(
 export const scheduleAssignmentsRef = (uid: string, pid: string, date: string) =>
   doc(db, 'users', uid, 'properties', pid, 'scheduleAssignments', date);
 
+/** One entry in the CSV room snapshot — just enough to diff the CSV between pulls. */
+export interface CsvRoomSnapshot {
+  number: string;
+  type: 'checkout' | 'stayover';
+}
+
 export interface ScheduleAssignments {
   date: string;
   /** Map of roomId (`${date}_${number}`) → staffId. Rooms not in the map are unassigned. */
@@ -667,6 +673,10 @@ export interface ScheduleAssignments {
   crew: string[];
   /** Map of roomId → staffName (snapshot so we don't re-join against staff docs). */
   staffNames?: Record<string, string>;
+  /** The rooms that existed in the CSV at the time Maria last saved — used to diff after 6am pull. */
+  csvRoomSnapshot?: CsvRoomSnapshot[];
+  /** ISO timestamp of the CSV pull that was live when Maria last saved. */
+  csvPulledAt?: string | null;
   updatedAt: any;
 }
 
@@ -684,6 +694,8 @@ export function subscribeToScheduleAssignments(
       roomAssignments: data.roomAssignments ?? {},
       crew: data.crew ?? [],
       staffNames: data.staffNames ?? {},
+      csvRoomSnapshot: data.csvRoomSnapshot ?? [],
+      csvPulledAt: data.csvPulledAt ?? null,
       updatedAt: data.updatedAt?.toDate?.() ?? null,
     });
   }, error => {
@@ -699,19 +711,20 @@ export async function saveScheduleAssignments(
     roomAssignments: Record<string, string>;
     crew: string[];
     staffNames?: Record<string, string>;
+    csvRoomSnapshot?: CsvRoomSnapshot[];
+    csvPulledAt?: string | null;
   },
 ): Promise<void> {
-  await setDoc(
-    scheduleAssignmentsRef(uid, pid, date),
-    {
-      date,
-      roomAssignments: payload.roomAssignments,
-      crew: payload.crew,
-      staffNames: payload.staffNames ?? {},
-      updatedAt: serverTimestamp(),
-    },
-    { merge: true },
-  );
+  const doc: Record<string, any> = {
+    date,
+    roomAssignments: payload.roomAssignments,
+    crew: payload.crew,
+    staffNames: payload.staffNames ?? {},
+    updatedAt: serverTimestamp(),
+  };
+  if (payload.csvRoomSnapshot !== undefined) doc.csvRoomSnapshot = payload.csvRoomSnapshot;
+  if (payload.csvPulledAt !== undefined) doc.csvPulledAt = payload.csvPulledAt;
+  await setDoc(scheduleAssignmentsRef(uid, pid, date), doc, { merge: true });
 }
 
 export async function getScheduleAssignments(
@@ -725,6 +738,8 @@ export async function getScheduleAssignments(
     roomAssignments: data.roomAssignments ?? {},
     crew: data.crew ?? [],
     staffNames: data.staffNames ?? {},
+    csvRoomSnapshot: data.csvRoomSnapshot ?? [],
+    csvPulledAt: data.csvPulledAt ?? null,
     updatedAt: data.updatedAt?.toDate?.() ?? null,
   };
 }

@@ -21,7 +21,7 @@ import {
   subscribeToScheduleAssignments,
   saveScheduleAssignments,
 } from '@/lib/firestore';
-import type { PlanSnapshot, ScheduleAssignments } from '@/lib/firestore';
+import type { PlanSnapshot, ScheduleAssignments, CsvRoomSnapshot } from '@/lib/firestore';
 import { getPublicAreasDueToday, calcPublicAreaMinutes, autoAssignRooms, getOverdueRooms, calcDndFreedMinutes, suggestDeepCleans } from '@/lib/calculations';
 import { getDefaultPublicAreas } from '@/lib/defaults';
 import type { PublicArea } from '@/types';
@@ -566,6 +566,16 @@ function ScheduleSection() {
   };
 
 
+  // Snapshot of what the CSV looked like at save time — so the next open can diff.
+  const currentCsvSnapshot = useMemo<CsvRoomSnapshot[]>(
+    () => shiftRooms.map(r => ({ number: r.number, type: r.type as 'checkout' | 'stayover' })),
+    [shiftRooms],
+  );
+  const currentCsvPulledAt = useMemo<string | null>(
+    () => (planSnapshot?.pulledAt ? new Date(planSnapshot.pulledAt).toISOString() : null),
+    [planSnapshot?.pulledAt],
+  );
+
   // ── Persist assignments + crew to scheduleAssignments (debounced) ─────────
   // This is what makes Maria's 7pm work survive the 6am CSV refresh.
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -581,10 +591,99 @@ function ScheduleSection() {
         roomAssignments: assignments,
         crew: selectedCrew.map(s => s.id),
         staffNames,
+        csvRoomSnapshot: currentCsvSnapshot,
+        csvPulledAt: currentCsvPulledAt,
       }).catch(err => console.error('[Schedule] save assignments failed:', err));
     }, 400);
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
-  }, [uid, pid, shiftDate, assignments, selectedCrew, scheduleAssignmentsLoaded]);
+  }, [uid, pid, shiftDate, assignments, selectedCrew, scheduleAssignmentsLoaded, currentCsvSnapshot, currentCsvPulledAt]);
+
+  // ── Morning diff: what changed between Maria's saved CSV and the fresh 6am CSV ──
+  // Only fires when (a) she's saved before and (b) a newer CSV has landed.
+  const morningDiff = useMemo(() => {
+    if (!scheduleAssignmentsDoc) return null;
+    const savedSnap = scheduleAssignmentsDoc.csvRoomSnapshot ?? [];
+    const savedPulledAt = scheduleAssignmentsDoc.csvPulledAt ?? null;
+    if (savedSnap.length === 0) return null;                  // first save — nothing to diff against
+    if (!currentCsvPulledAt || !savedPulledAt) return null;
+    if (new Date(currentCsvPulledAt) <= new Date(savedPulledAt)) return null; // same or older CSV
+
+    const savedByNumber = new Map(savedSnap.map(r => [r.number, r.type]));
+    const currentByNumber = new Map(currentCsvSnapshot.map(r => [r.number, r.type]));
+
+    const added: CsvRoomSnapshot[] = [];
+    const removed: CsvRoomSnapshot[] = [];
+    const typeChanged: Array<{ number: string; was: 'checkout' | 'stayover'; now: 'checkout' | 'stayover' }> = [];
+
+    for (const r of currentCsvSnapshot) {
+      const prev = savedByNumber.get(r.number);
+      if (prev === undefined) added.push(r);
+      else if (prev !== r.type) typeChanged.push({ number: r.number, was: prev, now: r.type });
+    }
+    for (const r of savedSnap) {
+      if (!currentByNumber.has(r.number)) removed.push(r);
+    }
+
+    const hasChanges = added.length > 0 || removed.length > 0 || typeChanged.length > 0;
+    if (!hasChanges) return null;
+    return { added, removed, typeChanged, savedPulledAt, currentPulledAt: currentCsvPulledAt };
+  }, [scheduleAssignmentsDoc, currentCsvSnapshot, currentCsvPulledAt]);
+
+  // Plain-English sentence describing what changed overnight.
+  const morningSummary = useMemo(() => {
+    if (!morningDiff) return '';
+    const parts: string[] = [];
+    const { added, removed, typeChanged } = morningDiff;
+    if (added.length) {
+      const co = added.filter(r => r.type === 'checkout').map(r => r.number);
+      const so = added.filter(r => r.type === 'stayover').map(r => r.number);
+      const bits: string[] = [];
+      if (co.length) bits.push(`${co.length} new checkout${co.length === 1 ? '' : 's'} (${co.join(', ')})`);
+      if (so.length) bits.push(`${so.length} new stayover${so.length === 1 ? '' : 's'} (${so.join(', ')})`);
+      parts.push(bits.join(' and ') + ' showed up');
+    }
+    if (removed.length) {
+      parts.push(`${removed.length} room${removed.length === 1 ? '' : 's'} got pulled (${removed.map(r => r.number).join(', ')})`);
+    }
+    if (typeChanged.length) {
+      parts.push(typeChanged.map(c => `${c.number} flipped from ${c.was} to ${c.now}`).join(', '));
+    }
+    const joined = parts.length === 1 ? parts[0] : parts.slice(0, -1).join(', ') + ', and ' + parts.at(-1);
+    return joined.charAt(0).toUpperCase() + joined.slice(1) + '.';
+  }, [morningDiff]);
+
+  // Auto Recommend — distributes unassigned rooms across current crew, least-loaded first.
+  const handleAutoRecommend = () => {
+    if (selectedCrew.length === 0) return;
+    // Start from current workload so we respect her existing assignments.
+    const loadByStaff = new Map<string, number>();
+    selectedCrew.forEach(s => loadByStaff.set(s.id, 0));
+    for (const r of assignableRooms) {
+      const who = assignments[r.id];
+      if (!who || !loadByStaff.has(who)) continue;
+      const mins = (r.type === 'checkout' ? coMins : soMins) + prepPerRoom;
+      loadByStaff.set(who, (loadByStaff.get(who) ?? 0) + mins);
+    }
+    // Sort unassigned rooms checkouts-first then by room number, then greedily assign.
+    const toAssign = [...unassignedRooms].sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'checkout' ? -1 : 1;
+      return (parseInt(a.number.replace(/\D/g, '')) || 0) - (parseInt(b.number.replace(/\D/g, '')) || 0);
+    });
+    const next = { ...assignments };
+    for (const r of toAssign) {
+      let best: string | null = null;
+      let bestLoad = Infinity;
+      for (const [sid, load] of loadByStaff) {
+        if (load < bestLoad) { bestLoad = load; best = sid; }
+      }
+      if (!best) break;
+      next[r.id] = best;
+      const mins = (r.type === 'checkout' ? coMins : soMins) + prepPerRoom;
+      loadByStaff.set(best, bestLoad + mins);
+    }
+    setAssignments(next);
+    showMoveToast(lang === 'es' ? 'Habitaciones redistribuidas' : 'Rooms redistributed');
+  };
 
   const handleSend = async () => {
     if (!uid || !pid || selectedCrew.length === 0 || sending) return;
@@ -598,6 +697,8 @@ function ScheduleSection() {
         roomAssignments: assignments,
         crew: selectedCrew.map(s => s.id),
         staffNames,
+        csvRoomSnapshot: currentCsvSnapshot,
+        csvPulledAt: currentCsvPulledAt,
       }).catch(err => console.error('[Schedule] save-before-send failed:', err));
 
       const baseUrl = window.location.origin;
@@ -844,6 +945,61 @@ function ScheduleSection() {
           </div>
         )}
       </section>
+
+      {/* ── Overnight Changes Callout (6am CSV diff vs Maria's saved plan) ── */}
+      {!predictionLoading && morningDiff && (
+        <section style={{
+          display: 'flex', flexDirection: 'column', gap: '12px',
+          padding: '16px 18px',
+          borderRadius: '16px',
+          background: 'linear-gradient(180deg, rgba(255,236,179,0.45) 0%, rgba(255,236,179,0.2) 100%)',
+          border: '1px solid rgba(217,119,6,0.25)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <Sparkles size={16} style={{ color: '#b45309' }} />
+              <h3 style={{ fontSize: '15px', fontWeight: 700, color: '#78350f', margin: 0, letterSpacing: '0.01em' }}>
+                {lang === 'es' ? 'Cambios durante la noche' : 'What changed overnight'}
+              </h3>
+            </div>
+            <button
+              onClick={handleAutoRecommend}
+              disabled={unassignedRooms.length === 0 || selectedCrew.length === 0}
+              style={{
+                padding: '8px 14px', borderRadius: '9999px',
+                background: unassignedRooms.length === 0 ? '#e5e7eb' : '#364262',
+                color: unassignedRooms.length === 0 ? '#9ca3af' : '#ffffff',
+                border: 'none',
+                fontFamily: 'var(--font-sans)', fontSize: '13px', fontWeight: 600,
+                cursor: unassignedRooms.length === 0 ? 'not-allowed' : 'pointer',
+                display: 'inline-flex', alignItems: 'center', gap: '6px',
+              }}
+            >
+              <Sparkles size={13} />
+              {lang === 'es' ? 'Recomendación Automática' : 'Auto Recommend'}
+            </button>
+          </div>
+
+          <p style={{ fontSize: '14px', color: '#57361f', margin: 0, lineHeight: 1.5 }}>
+            {morningSummary}
+          </p>
+
+          {unassignedRooms.length > 0 && (
+            <p style={{ fontSize: '13px', color: '#92400e', margin: 0, lineHeight: 1.4, fontWeight: 500 }}>
+              {lang === 'es'
+                ? `${unassignedRooms.length} habitación${unassignedRooms.length === 1 ? '' : 'es'} sin asignar — arrastra manualmente o usa Recomendación Automática para repartirlas.`
+                : `${unassignedRooms.length} room${unassignedRooms.length === 1 ? '' : 's'} still need a housekeeper — drag them yourself or hit Auto Recommend to split them across the crew.`}
+            </p>
+          )}
+          {unassignedRooms.length === 0 && (
+            <p style={{ fontSize: '13px', color: '#065f46', margin: 0, lineHeight: 1.4, fontWeight: 500 }}>
+              {lang === 'es'
+                ? '✓ Todas las habitaciones están asignadas. Revisa y pulsa Enviar para actualizar a los limpiadores.'
+                : '✓ All rooms are covered. Review and hit Send to update the housekeepers.'}
+            </p>
+          )}
+        </section>
+      )}
 
       {/* ── Unassigned Rooms Pool ── */}
       {!predictionLoading && totalRooms > 0 && (
