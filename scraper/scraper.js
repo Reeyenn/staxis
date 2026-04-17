@@ -421,27 +421,39 @@ async function maybeRunScheduler(page) {
     }
   }
 
-  // ── 6am: morning re-send (update confirmed HKs with fresh room counts) ──
-  if (hour === 6 && lastMorningResendDate !== today) {
-    lastMorningResendDate = today;
-    const appUrl = process.env.APP_URL || 'https://hotelops-ai.vercel.app';
-    try {
-      const res = await fetch(`${appUrl}/api/morning-resend`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          uid:       CONFIG.USER_ID,
-          pid:       CONFIG.PROPERTY_ID,
-          shiftDate: today,
-          baseUrl:   appUrl,
-        }),
-      });
-      const result = await res.json();
-      log(`Morning re-send: ${result.message ?? JSON.stringify(result)}`);
-    } catch (err) {
-      log(`Morning re-send error: ${err.message}`);
-    }
-  }
+  // ── 6am: morning re-send — DISABLED ────────────────────────────────────────
+  // The morning-resend API runs a naive floor-based auto-assign that would
+  // OVERWRITE Maria's careful 7pm manual assignments and SMS every confirmed
+  // HK with a potentially different room list than the one they already got.
+  // That creates a disconnect between the SMS they receive and the
+  // /housekeeper/[id] page (which queries rooms.assignedTo and still shows
+  // Maria's true assignments).
+  //
+  // Correct flow: the 6am CSV pull refreshes planSnapshot. Maria opens the
+  // Schedule tab, sees the yellow "what changed overnight" callout (or green
+  // "no overnight changes" confirmation), uses Auto Recommend if needed, and
+  // clicks Send herself. Her Send is the only source of truth for HKs.
+  //
+  // if (hour === 6 && lastMorningResendDate !== today) {
+  //   lastMorningResendDate = today;
+  //   const appUrl = process.env.APP_URL || 'https://hotelops-ai.vercel.app';
+  //   try {
+  //     const res = await fetch(`${appUrl}/api/morning-resend`, {
+  //       method:  'POST',
+  //       headers: { 'Content-Type': 'application/json' },
+  //       body: JSON.stringify({
+  //         uid:       CONFIG.USER_ID,
+  //         pid:       CONFIG.PROPERTY_ID,
+  //         shiftDate: today,
+  //         baseUrl:   appUrl,
+  //       }),
+  //     });
+  //     const result = await res.json();
+  //     log(`Morning re-send: ${result.message ?? JSON.stringify(result)}`);
+  //   } catch (err) {
+  //     log(`Morning re-send error: ${err.message}`);
+  //   }
+  // }
 }
 
 // ─── Main loop ─────────────────────────────────────────────────────────────
