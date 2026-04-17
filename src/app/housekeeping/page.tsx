@@ -18,13 +18,15 @@ import {
   markRoomDeepCleaned, assignRoomDeepClean, completeRoomDeepClean,
   subscribeToPlanSnapshot,
   subscribeToShiftConfirmations,
+  subscribeToScheduleAssignments,
+  saveScheduleAssignments,
 } from '@/lib/firestore';
-import type { PlanSnapshot } from '@/lib/firestore';
+import type { PlanSnapshot, ScheduleAssignments } from '@/lib/firestore';
 import { getPublicAreasDueToday, calcPublicAreaMinutes, autoAssignRooms, getOverdueRooms, calcDndFreedMinutes, suggestDeepCleans } from '@/lib/calculations';
 import { getDefaultPublicAreas } from '@/lib/defaults';
 import type { PublicArea } from '@/types';
 import { todayStr } from '@/lib/utils';
-import type { Room, RoomStatus, StaffMember, DeepCleanRecord, DeepCleanConfig, ShiftConfirmation, ConfirmationStatus } from '@/types';
+import type { Room, RoomStatus, RoomType, RoomPriority, StaffMember, DeepCleanRecord, DeepCleanConfig, ShiftConfirmation, ConfirmationStatus } from '@/types';
 import { format, subDays } from 'date-fns';
 import {
   Calendar, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, CheckCircle2, Clock,
@@ -74,6 +76,35 @@ function isEligible(s: StaffMember, date: string): boolean {
 }
 
 const PRIORITY_ORDER = { priority: 0, normal: 1, excluded: 2 } as const;
+
+/**
+ * Derive synthetic Room[] from a planSnapshot (CSV data).
+ * This is the ONLY source the Schedule tab reads from — no rooms-collection dependency.
+ *   - C/O stayType → checkout
+ *   - OCC + Stay stayType → stayover
+ *   - everything else → skipped (arrivals, vacants, OOO don't need HK assignment)
+ */
+function snapshotToShiftRooms(snap: PlanSnapshot | null, pid: string): Room[] {
+  if (!snap?.rooms) return [];
+  const out: Room[] = [];
+  for (const r of snap.rooms) {
+    let type: RoomType | null = null;
+    if (r.stayType === 'C/O') type = 'checkout';
+    else if (r.stayType === 'Stay') type = 'stayover';
+    if (!type) continue;
+    out.push({
+      id: `${snap.date}_${r.number}`,
+      number: r.number,
+      type,
+      priority: 'standard' as RoomPriority,
+      status: 'dirty' as RoomStatus,
+      date: snap.date,
+      propertyId: pid,
+      assignedTo: r.housekeeper ?? undefined,
+    });
+  }
+  return out;
+}
 
 function autoSelectEligible(staff: StaffMember[], date: string, alreadyInPool: Set<string>): StaffMember[] {
   return staff
@@ -293,19 +324,26 @@ function ScheduleSection() {
   const [settingsForm, setSettingsForm] = useState({ checkoutMinutes: 30, stayoverMinutes: 20, prepMinutesPerActivity: 5 });
   const [savingSettings, setSavingSettings] = useState(false);
 
-  // Plan snapshot from CSV scraper (7pm / 6am pulls)
+  // Plan snapshot from CSV scraper (7pm / 6am pulls) — THE source of truth for Schedule tab.
   const [planSnapshot, setPlanSnapshot] = useState<PlanSnapshot | null>(null);
+  const [planSnapshotLoaded, setPlanSnapshotLoaded] = useState(false);
 
-  // Prediction model state
-  const [shiftRooms, setShiftRooms] = useState<Room[]>([]);
+  // Saved assignments (survives CSV overwrites — Maria's Send work persists).
+  const [scheduleAssignmentsDoc, setScheduleAssignmentsDoc] = useState<ScheduleAssignments | null>(null);
+  const [scheduleAssignmentsLoaded, setScheduleAssignmentsLoaded] = useState(false);
+
   const [publicAreas, setPublicAreas] = useState<PublicArea[]>([]);
-  const [predictionLoading, setPredictionLoading] = useState(true);
 
   // Crew assignments
   const [assignments, setAssignments] = useState<Record<string, string>>({});
   const [crewOverride, setCrewOverride] = useState<string[]>([]); // manually toggled staff IDs
   const [hasAutoSelected, setHasAutoSelected] = useState(false);
   const [showPrioritySettings, setShowPrioritySettings] = useState(false);
+
+  // Refs used by the hydration flow below (declared early so useEffects can flip them)
+  const userEditedCrew = useRef(false);
+  const manuallyAdded = useRef<Set<string>>(new Set());
+  const hasInitialAssign = useRef(false);
 
   // Swap dropdown
   const [swapOpenFor, setSwapOpenFor] = useState<string | null>(null);
@@ -333,23 +371,50 @@ function ScheduleSection() {
     if (uid && pid && staff.length === 0) refreshStaff();
   }, [uid, pid]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Schedule tab reads ONLY from the CSV pull (planSnapshots). The 15-min rooms scraper
+  // is intentionally ignored here — it powers the Rooms tab's live view during the day.
   useEffect(() => {
     if (!uid || !pid) return;
-    setPredictionLoading(true);
-    getRoomsForDate(uid, pid, shiftDate).then(rooms => {
-      setShiftRooms(rooms);
-      setPredictionLoading(false);
-    }).catch(err => {
-      console.error('Error fetching rooms for date:', err);
-      setPredictionLoading(false);
+    setPlanSnapshotLoaded(false);
+    return subscribeToPlanSnapshot(uid, pid, shiftDate, (snap) => {
+      setPlanSnapshot(snap);
+      setPlanSnapshotLoaded(true);
     });
   }, [uid, pid, shiftDate]);
 
-  // Subscribe to plan snapshot (CSV data from 7pm/6am pulls)
+  // Synthetic room list derived from CSV — no rooms-collection dependency.
+  const shiftRooms = useMemo(() => snapshotToShiftRooms(planSnapshot, pid), [planSnapshot, pid]);
+
+  // Maria's saved assignments for this date. Untouched by CSV refreshes.
   useEffect(() => {
     if (!uid || !pid) return;
-    return subscribeToPlanSnapshot(uid, pid, shiftDate, setPlanSnapshot);
+    setScheduleAssignmentsLoaded(false);
+    return subscribeToScheduleAssignments(uid, pid, shiftDate, (sa) => {
+      setScheduleAssignmentsDoc(sa);
+      setScheduleAssignmentsLoaded(true);
+    });
   }, [uid, pid, shiftDate]);
+
+  // One-time hydration per date: when assignments + crew load from Firestore, seed local state.
+  const hydratedForDate = useRef<string | null>(null);
+  useEffect(() => {
+    if (!scheduleAssignmentsLoaded) return;
+    if (hydratedForDate.current === shiftDate) return;
+    hydratedForDate.current = shiftDate;
+    if (scheduleAssignmentsDoc) {
+      setAssignments(scheduleAssignmentsDoc.roomAssignments ?? {});
+      setCrewOverride(scheduleAssignmentsDoc.crew ?? []);
+      userEditedCrew.current = true;     // respect what Maria already saved
+      hasInitialAssign.current = true;   // skip the auto-assign-on-first-load
+    } else {
+      setAssignments({});
+      setCrewOverride([]);
+      userEditedCrew.current = false;
+      hasInitialAssign.current = false;
+    }
+  }, [shiftDate, scheduleAssignmentsLoaded, scheduleAssignmentsDoc]);
+
+  const predictionLoading = !planSnapshotLoaded;
 
   // Subscribe to shift confirmations for this date (for the status panel)
   useEffect(() => {
@@ -441,9 +506,6 @@ function ScheduleSection() {
     [shiftRooms]
   );
 
-  // Track whether user has manually touched the crew list
-  const userEditedCrew = useRef(false);
-
   // The selected crew: auto-pick or manual override
   const selectedCrew = useMemo(() => {
     if (userEditedCrew.current) {
@@ -456,8 +518,6 @@ function ScheduleSection() {
   }, [crewOverride, eligiblePool, recommendedStaff, totalRooms, staff]);
 
   // Auto-assign: full assign on first load, then only assign unassigned rooms on crew changes
-  const manuallyAdded = useRef<Set<string>>(new Set());
-  const hasInitialAssign = useRef(false);
   useEffect(() => {
     if (assignableRooms.length === 0 || selectedCrew.length === 0) { setAssignments({}); hasInitialAssign.current = false; return; }
 
@@ -506,10 +566,40 @@ function ScheduleSection() {
   };
 
 
+  // ── Persist assignments + crew to scheduleAssignments (debounced) ─────────
+  // This is what makes Maria's 7pm work survive the 6am CSV refresh.
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!uid || !pid) return;
+    if (!scheduleAssignmentsLoaded) return;            // don't save before first load
+    if (hydratedForDate.current !== shiftDate) return; // still hydrating this date
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      const staffNames: Record<string, string> = {};
+      selectedCrew.forEach(s => { staffNames[s.id] = s.name; });
+      saveScheduleAssignments(uid, pid, shiftDate, {
+        roomAssignments: assignments,
+        crew: selectedCrew.map(s => s.id),
+        staffNames,
+      }).catch(err => console.error('[Schedule] save assignments failed:', err));
+    }, 400);
+    return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
+  }, [uid, pid, shiftDate, assignments, selectedCrew, scheduleAssignmentsLoaded]);
+
   const handleSend = async () => {
     if (!uid || !pid || selectedCrew.length === 0 || sending) return;
     setSending(true);
     try {
+      // Make sure the latest assignments are written before we fire SMS.
+      // The debounced save above may still be pending.
+      const staffNames: Record<string, string> = {};
+      selectedCrew.forEach(s => { staffNames[s.id] = s.name; });
+      await saveScheduleAssignments(uid, pid, shiftDate, {
+        roomAssignments: assignments,
+        crew: selectedCrew.map(s => s.id),
+        staffNames,
+      }).catch(err => console.error('[Schedule] save-before-send failed:', err));
+
       const baseUrl = window.location.origin;
       const staffPayload = selectedCrew.filter(s => s.phone).map(s => {
         const memberRooms = assignableRooms

@@ -654,6 +654,81 @@ export function subscribeToPlanSnapshot(
   });
 }
 
+// ─── Schedule Assignments (Maria's HK-to-room assignments, survives CSV overwrites) ──
+
+export const scheduleAssignmentsRef = (uid: string, pid: string, date: string) =>
+  doc(db, 'users', uid, 'properties', pid, 'scheduleAssignments', date);
+
+export interface ScheduleAssignments {
+  date: string;
+  /** Map of roomId (`${date}_${number}`) → staffId. Rooms not in the map are unassigned. */
+  roomAssignments: Record<string, string>;
+  /** Staff IDs Maria picked for this shift (even if they have 0 rooms yet). */
+  crew: string[];
+  /** Map of roomId → staffName (snapshot so we don't re-join against staff docs). */
+  staffNames?: Record<string, string>;
+  updatedAt: any;
+}
+
+export function subscribeToScheduleAssignments(
+  uid: string,
+  pid: string,
+  date: string,
+  callback: (sa: ScheduleAssignments | null) => void,
+) {
+  return onSnapshot(scheduleAssignmentsRef(uid, pid, date), snap => {
+    if (!snap.exists()) { callback(null); return; }
+    const data = snap.data() as ScheduleAssignments;
+    callback({
+      date: data.date,
+      roomAssignments: data.roomAssignments ?? {},
+      crew: data.crew ?? [],
+      staffNames: data.staffNames ?? {},
+      updatedAt: data.updatedAt?.toDate?.() ?? null,
+    });
+  }, error => {
+    console.error('[Firestore] Listener error in subscribeToScheduleAssignments:', error.message);
+  });
+}
+
+export async function saveScheduleAssignments(
+  uid: string,
+  pid: string,
+  date: string,
+  payload: {
+    roomAssignments: Record<string, string>;
+    crew: string[];
+    staffNames?: Record<string, string>;
+  },
+): Promise<void> {
+  await setDoc(
+    scheduleAssignmentsRef(uid, pid, date),
+    {
+      date,
+      roomAssignments: payload.roomAssignments,
+      crew: payload.crew,
+      staffNames: payload.staffNames ?? {},
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true },
+  );
+}
+
+export async function getScheduleAssignments(
+  uid: string, pid: string, date: string,
+): Promise<ScheduleAssignments | null> {
+  const snap = await getDoc(scheduleAssignmentsRef(uid, pid, date));
+  if (!snap.exists()) return null;
+  const data = snap.data() as ScheduleAssignments;
+  return {
+    date: data.date,
+    roomAssignments: data.roomAssignments ?? {},
+    crew: data.crew ?? [],
+    staffNames: data.staffNames ?? {},
+    updatedAt: data.updatedAt?.toDate?.() ?? null,
+  };
+}
+
 // ─── Shift Confirmations ────────────────────────────────────────────────────
 
 export const shiftConfirmationsRef = (uid: string, pid: string) =>
