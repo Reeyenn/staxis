@@ -2138,8 +2138,9 @@ function RoomsSection() {
                             <div style={{
                               position: 'absolute', bottom: '4px', left: '50%', transform: 'translateX(-50%)',
                               fontSize: '9px', fontWeight: 900, color: '#fff',
-                              background: '#f97316', borderRadius: '4px', padding: '1px 6px',
+                              background: '#dc2626', borderRadius: '4px', padding: '1px 6px',
                               letterSpacing: '0.05em',
+                              boxShadow: '0 0 8px rgba(220, 38, 38, 0.6)',
                             }}>
                               SOS
                             </div>

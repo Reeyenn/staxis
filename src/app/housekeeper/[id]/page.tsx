@@ -232,12 +232,20 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
     if (!issueRoomId || !issueNote.trim()) return;
     setSavingIssue(true);
     const room = rooms.find(r => r.id === issueRoomId);
-    if (room) {
-      await updateDoc(room._ref, { issueNote: issueNote.trim() });
+    if (!room) {
+      console.error('[housekeeper] submit issue: room not found', issueRoomId);
+      setSavingIssue(false);
+      return;
     }
-    setSavingIssue(false);
-    setIssueRoomId(null);
-    setIssueNote('');
+    try {
+      await updateDoc(room._ref, { issueNote: issueNote.trim() });
+      setIssueRoomId(null);
+      setIssueNote('');
+    } catch (err) {
+      console.error('[housekeeper] submit issue error:', err);
+    } finally {
+      setSavingIssue(false);
+    }
   };
 
   // ── Reset room (clean/inspected → dirty, clear times) ─────────────────────

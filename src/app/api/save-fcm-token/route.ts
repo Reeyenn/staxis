@@ -16,11 +16,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Missing fields' }, { status: 400 });
   }
 
-  await admin.firestore()
-    .collection('users').doc(uid)
-    .collection('properties').doc(pid)
-    .collection('staff').doc(staffId)
-    .update({ fcmToken: token });
-
-  return NextResponse.json({ ok: true });
+  try {
+    await admin.firestore()
+      .collection('users').doc(uid)
+      .collection('properties').doc(pid)
+      .collection('staff').doc(staffId)
+      .update({ fcmToken: token });
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    console.error('save-fcm-token: failed to save token', err);
+    return NextResponse.json(
+      { error: 'Failed to save token' },
+      { status: 500 }
+    );
+  }
 }

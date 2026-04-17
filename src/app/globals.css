@@ -367,15 +367,20 @@ body {
 .bg-status-clean       { background: #10b981; }
 .bg-status-inspected   { background: #8b5cf6; }
 
-/* Glass tile with help/SOS request */
+/* Glass tile with help/SOS request — bright red, can't miss it */
 .glow-help {
-  box-shadow: 0 0 15px -3px rgba(249, 115, 22, 0.3);
-  border-bottom: 2px solid rgba(249, 115, 22, 0.6);
-  animation: helpPulse 2s ease-in-out infinite;
+  background: rgba(239, 68, 68, 0.12) !important;
+  box-shadow: 0 0 20px -2px rgba(239, 68, 68, 0.55), inset 0 0 0 2px rgba(239, 68, 68, 0.85);
+  border-bottom: 2px solid rgba(239, 68, 68, 0.9) !important;
+  animation: helpPulse 1.2s ease-in-out infinite;
 }
 @keyframes helpPulse {
-  0%, 100% { box-shadow: 0 0 15px -3px rgba(249, 115, 22, 0.3); }
-  50%      { box-shadow: 0 0 20px -3px rgba(249, 115, 22, 0.5); }
+  0%, 100% {
+    box-shadow: 0 0 20px -2px rgba(239, 68, 68, 0.55), inset 0 0 0 2px rgba(239, 68, 68, 0.85);
+  }
+  50% {
+    box-shadow: 0 0 28px -2px rgba(239, 68, 68, 0.85), inset 0 0 0 2px rgba(239, 68, 68, 1);
+  }
 }
 
 /* ── Animations ────────────────────────────────────────────────────────────── */

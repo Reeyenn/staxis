@@ -358,6 +358,10 @@ export interface ShiftConfirmation {
   respondedAt: Date | null;
   smsSent: boolean;
   smsError?: string;
+  /** Set by /api/cron/escalate-pending after the 45-min reminder SMS goes out */
+  firstRemindedAt?: Date | null;
+  /** Set by /api/cron/escalate-pending after managers are paged at 75 min */
+  secondEscalatedAt?: Date | null;
 }
 
 export type NotificationType = 'decline' | 'no_response' | 'all_confirmed' | 'replacement_found' | 'no_replacement';
