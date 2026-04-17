@@ -58,6 +58,24 @@ function addDays(dateStr: string, n: number): string {
   return dt.toLocaleDateString('en-CA');
 }
 
+/**
+ * Short, human-friendly stamp for a CSV pull time.
+ * "Today 6:02 AM" if the pull happened today, otherwise "Fri 7:02 PM".
+ * Keeps Maria oriented at a glance — she always knows how fresh the room list is.
+ */
+function formatPulledAt(iso: string | null, lang: 'en' | 'es'): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const todayLocal = new Intl.DateTimeFormat('en-CA').format(new Date());
+  const thenLocal = new Intl.DateTimeFormat('en-CA').format(d);
+  const time = d.toLocaleTimeString(lang === 'es' ? 'es' : 'en', { hour: 'numeric', minute: '2-digit' });
+  if (thenLocal === todayLocal) {
+    return `${lang === 'es' ? 'Hoy' : 'Today'} ${time}`;
+  }
+  const weekday = d.toLocaleDateString(lang === 'es' ? 'es' : 'en', { weekday: 'short' });
+  return `${weekday} ${time}`;
+}
+
 function formatDisplayDate(dateStr: string, lang: 'en' | 'es'): string {
   const [y, m, d] = dateStr.split('-').map(Number);
   const dt = new Date(y, m - 1, d);
@@ -629,6 +647,19 @@ function ScheduleSection() {
     return { added, removed, typeChanged, savedPulledAt, currentPulledAt: currentCsvPulledAt };
   }, [scheduleAssignmentsDoc, currentCsvSnapshot, currentCsvPulledAt]);
 
+  // ── Morning confirmation: fresh CSV landed since Maria's save but nothing changed ──
+  // This gives her a positive signal instead of silence when the 6am pull matches 7pm.
+  const morningConfirmation = useMemo(() => {
+    if (morningDiff) return null; // yellow callout takes priority
+    if (!scheduleAssignmentsDoc) return null;
+    const savedSnap = scheduleAssignmentsDoc.csvRoomSnapshot ?? [];
+    const savedPulledAt = scheduleAssignmentsDoc.csvPulledAt ?? null;
+    if (savedSnap.length === 0) return null;
+    if (!currentCsvPulledAt || !savedPulledAt) return null;
+    if (new Date(currentCsvPulledAt) <= new Date(savedPulledAt)) return null;
+    return { pulledAt: currentCsvPulledAt };
+  }, [morningDiff, scheduleAssignmentsDoc, currentCsvPulledAt]);
+
   // Plain-English sentence describing what changed overnight.
   const morningSummary = useMemo(() => {
     if (!morningDiff) return '';
@@ -844,6 +875,28 @@ function ScheduleSection() {
         </button>
       </div>
 
+      {/* ── Last CSV update stamp — always visible so Maria knows the system is alive ── */}
+      {currentCsvPulledAt && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+          fontSize: '12px', color: '#64748b', marginTop: '-12px',
+        }}>
+          <Clock size={12} style={{ color: '#94a3b8' }} />
+          <span>
+            {lang === 'es' ? 'Lista de habitaciones actualizada:' : 'Room list updated:'}{' '}
+            <span style={{ color: '#364262', fontWeight: 600 }}>{formatPulledAt(currentCsvPulledAt, lang)}</span>
+            {planSnapshot?.pullType && (
+              <span style={{ color: '#94a3b8' }}>
+                {' · '}
+                {planSnapshot.pullType === 'evening'
+                  ? (lang === 'es' ? 'Plan nocturno' : 'Evening plan')
+                  : (lang === 'es' ? 'Plan matutino' : 'Morning plan')}
+              </span>
+            )}
+          </span>
+        </div>
+      )}
+
       {/* ── Prediction Hero Card (glass) ── */}
       <section className="glass-hero" style={{
         border: '1px solid rgba(197,197,212,0.2)', borderRadius: '16px',
@@ -998,6 +1051,29 @@ function ScheduleSection() {
                 : '✓ All rooms are covered. Review and hit Send to update the housekeepers.'}
             </p>
           )}
+        </section>
+      )}
+
+      {/* ── "No overnight changes" confirmation (6am CSV landed, matched Maria's 7pm save) ── */}
+      {!predictionLoading && morningConfirmation && (
+        <section style={{
+          display: 'flex', flexDirection: 'column', gap: '8px',
+          padding: '14px 18px',
+          borderRadius: '16px',
+          background: 'linear-gradient(180deg, rgba(34,197,94,0.12) 0%, rgba(34,197,94,0.04) 100%)',
+          border: '1px solid rgba(34,197,94,0.25)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <CheckCircle2 size={16} style={{ color: '#15803d' }} />
+            <h3 style={{ fontSize: '15px', fontWeight: 700, color: '#14532d', margin: 0, letterSpacing: '0.01em' }}>
+              {lang === 'es' ? 'Sin cambios durante la noche' : 'No overnight changes'}
+            </h3>
+          </div>
+          <p style={{ fontSize: '14px', color: '#166534', margin: 0, lineHeight: 1.5 }}>
+            {lang === 'es'
+              ? `El PMS se actualizó (${formatPulledAt(morningConfirmation.pulledAt, lang)}) y coincide con lo que guardaste anoche. Tu plan está bien — pulsa Enviar cuando estés lista.`
+              : `The PMS refreshed (${formatPulledAt(morningConfirmation.pulledAt, lang)}) and matches what you saved last night. Your plan is good to go — hit Send when you're ready.`}
+          </p>
         </section>
       )}
 
