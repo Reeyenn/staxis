@@ -595,7 +595,7 @@ function ScheduleSection() {
       }
     }
     // On subsequent crew changes, don't re-assign — let unassigned rooms stay unassigned
-  }, [selectedCrew, assignableRooms, coMins, soMins, prepPerRoom, shiftLen]);
+  }, [selectedCrew, assignableRooms, coMins, soMins, day1Mins, day2Mins, prepPerRoom, shiftLen]);
 
   const toggleCrewMember = (memberId: string) => {
     userEditedCrew.current = true;
