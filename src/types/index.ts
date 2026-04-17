@@ -53,6 +53,7 @@ export interface StaffMember {
   isActive?: boolean;           // default true (undefined = active)
   fcmToken?: string;            // FCM device token for push notifications
   schedulePriority?: SchedulePriority; // 'priority' = auto-selected first, 'normal' = backup, 'excluded' = never auto-selected
+  isSchedulingManager?: boolean; // single person who receives shift-confirmation escalation texts. Only one per property.
 }
 
 // ─── Public Areas ──────────────────────────────────────────────────────────

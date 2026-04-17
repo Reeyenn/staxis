@@ -79,10 +79,34 @@ async function handler(req: NextRequest) {
           .where('status', '==', 'pending')
           .get();
 
-        // Cache managers per property so we don't re-query for every escalation
+        // Cache managers per property so we don't re-query for every escalation.
+        // Preference order:
+        //   1. The single staff member flagged isSchedulingManager = true
+        //   2. Fallback: all active front_desk staff (so alerts are never silently dropped
+        //      if nobody has been flagged yet)
         let cachedManagers: Array<{ name: string; phone: string }> | null = null;
         const getManagers = async () => {
           if (cachedManagers) return cachedManagers;
+
+          // 1. Try the designated scheduling manager first
+          const smSnap = await propDoc.ref
+            .collection('staff')
+            .where('isSchedulingManager', '==', true)
+            .get();
+          const smList: Array<{ name: string; phone: string }> = [];
+          for (const m of smSnap.docs) {
+            const d = m.data() as { name?: string; phone?: string; isActive?: boolean };
+            if (d.isActive === false) continue;
+            const e164 = toE164(d.phone);
+            if (!e164) continue;
+            smList.push({ name: d.name ?? 'Manager', phone: e164 });
+          }
+          if (smList.length > 0) {
+            cachedManagers = smList;
+            return smList;
+          }
+
+          // 2. Fallback: front_desk department (preserves pre-toggle behavior)
           const mgrSnap = await propDoc.ref
             .collection('staff')
             .where('department', '==', 'front_desk')

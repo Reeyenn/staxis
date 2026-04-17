@@ -173,12 +173,13 @@ interface StaffFormData {
   maxDaysPerWeek: number;
   vacationDates: string;
   isActive: boolean;
+  isSchedulingManager: boolean;
 }
 
 const EMPTY_FORM: StaffFormData = {
   name: '', language: 'es', department: 'housekeeping',
   isSenior: false, maxWeeklyHours: 40, maxDaysPerWeek: 5,
-  vacationDates: '', isActive: true,
+  vacationDates: '', isActive: true, isSchedulingManager: false,
 };
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -310,12 +311,44 @@ export default function StaffPage() {
       maxDaysPerWeek: member.maxDaysPerWeek ?? 5,
       vacationDates: (member.vacationDates ?? []).join('\n'),
       isActive: member.isActive ?? true,
+      isSchedulingManager: member.isSchedulingManager === true,
     });
     setShowModal(true);
   };
 
   const handleSave = async () => {
     if (!uid || !pid || !form.name.trim()) return;
+
+    // ── Scheduling Manager swap guard ──────────────────────────────────────
+    // Only one staff member can be the scheduling manager at a time. If the
+    // user is turning the toggle ON for this person and someone else already
+    // holds the role, confirm the swap with them first.
+    if (form.isSchedulingManager) {
+      const currentManager = staff.find(
+        s => s.isSchedulingManager === true && s.id !== editMember?.id,
+      );
+      if (currentManager) {
+        const ok = window.confirm(
+          lang === 'es'
+            ? `${currentManager.name} es actualmente el responsable de horarios y recibe los mensajes de confirmación. Si continúas, ${form.name.trim()} tomará ese rol y ${currentManager.name} dejará de recibirlos. ¿Continuar?`
+            : `${currentManager.name} is currently the Scheduling Manager and receives the confirmation alerts. If you continue, ${form.name.trim()} will take that role and ${currentManager.name} will stop receiving them. Continue?`,
+        );
+        if (!ok) return;
+        // Swap: turn the current manager's flag off before saving this one on.
+        try {
+          await updateStaffMember(uid, pid, currentManager.id, { isSchedulingManager: false });
+        } catch (err) {
+          console.error('[staff] failed to clear previous scheduling manager:', err);
+          window.alert(
+            lang === 'es'
+              ? 'No se pudo actualizar el responsable anterior. Intenta de nuevo.'
+              : 'Could not update the previous manager. Please try again.',
+          );
+          return;
+        }
+      }
+    }
+
     setSaving(true);
     try {
       const vacationDates = form.vacationDates.split('\n').map(s => s.trim()).filter(s => /^\d{4}-\d{2}-\d{2}$/.test(s));
@@ -330,6 +363,7 @@ export default function StaffPage() {
         ...(form.hourlyWage !== undefined && { hourlyWage: form.hourlyWage }),
         maxWeeklyHours: form.maxWeeklyHours, maxDaysPerWeek: form.maxDaysPerWeek,
         vacationDates, isActive: form.isActive,
+        isSchedulingManager: form.isSchedulingManager,
       };
       if (editMember) await updateStaffMember(uid, pid, editMember.id, data);
       else await addStaffMember(uid, pid, { ...data, scheduledToday: false, weeklyHours: 0 });
@@ -1265,14 +1299,28 @@ export default function StaffPage() {
                 {[
                   { label: t('isActiveLabel', lang), field: 'isActive' as const },
                   { label: t('seniorStaff', lang), field: 'isSenior' as const },
-                ].map(({ label, field }) => (
-                  <div key={field} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', background: '#eae8e3', borderRadius: '16px' }}>
-                    <span style={{ fontSize: '14px', color: '#1b1c19', fontFamily: 'Inter, sans-serif' }}>{label}</span>
-                    <label className="toggle" style={{ margin: 0 }}>
-                      <input type="checkbox" checked={form[field] as boolean} onChange={e => setForm(f => ({ ...f, [field]: e.target.checked }))} />
-                      <span className="toggle-track" />
-                      <span className="toggle-thumb" />
-                    </label>
+                  {
+                    label: lang === 'es' ? 'Responsable de horarios' : 'Scheduling Manager',
+                    field: 'isSchedulingManager' as const,
+                    hint: lang === 'es'
+                      ? 'Recibe los mensajes cuando un empleado no responde. Solo una persona a la vez.'
+                      : 'Receives the alert texts when a housekeeper does not reply. Only one person at a time.',
+                  },
+                ].map(({ label, field, hint }) => (
+                  <div key={field} style={{ padding: '12px 16px', background: '#eae8e3', borderRadius: '16px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '14px', color: '#1b1c19', fontFamily: 'Inter, sans-serif' }}>{label}</span>
+                      <label className="toggle" style={{ margin: 0 }}>
+                        <input type="checkbox" checked={form[field] as boolean} onChange={e => setForm(f => ({ ...f, [field]: e.target.checked }))} />
+                        <span className="toggle-track" />
+                        <span className="toggle-thumb" />
+                      </label>
+                    </div>
+                    {hint && (
+                      <p style={{ fontSize: '11px', color: '#757684', margin: '6px 0 0', fontFamily: 'Inter, sans-serif', lineHeight: 1.4 }}>
+                        {hint}
+                      </p>
+                    )}
                   </div>
                 ))}
 

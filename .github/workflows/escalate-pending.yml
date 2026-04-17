@@ -1,0 +1,28 @@
+name: Escalate pending confirmations
+
+# Calls /api/cron/escalate-pending every 15 min.
+# Replaces Vercel Cron (Hobby plan doesn't allow sub-daily schedules).
+# Requires repo secret: CRON_SECRET (same value as the Vercel env var).
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call escalation endpoint
+        run: |
+          echo "Hitting escalation endpoint..."
+          RESPONSE=$(curl -sS -w "\nHTTP_CODE:%{http_code}\n" \
+            -X POST \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            https://hotelops-ai.vercel.app/api/cron/escalate-pending)
+          echo "$RESPONSE"
+          CODE=$(echo "$RESPONSE" | grep HTTP_CODE | cut -d: -f2)
+          if [[ ! "$CODE" =~ ^2 ]]; then
+            echo "::error::Non-2xx response (got $CODE)"
+            exit 1
+          fi
