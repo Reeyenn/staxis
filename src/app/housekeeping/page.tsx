@@ -1551,8 +1551,13 @@ function ScheduleSection() {
                       : `Unassign all ${assignedCount} room${assignedCount === 1 ? '' : 's'}? Every room will go back to the Unassigned pool.`;
                     if (!confirm(msg)) return;
                     setAssignments({});
-                    // Allow Auto Assign / auto-recommend to rebuild fresh on next trigger.
-                    hasInitialAssign.current = false;
+                    // IMPORTANT: do NOT reset hasInitialAssign here. The
+                    // initial-auto-assign effect keys off that flag, and if we
+                    // flip it back to false, the next crew change (e.g. Maria
+                    // clicking Add Staff) will silently re-run the full
+                    // auto-assignment. Unassign All should leave the pool
+                    // empty and stay empty until the user explicitly hits
+                    // Auto Assign — nothing should redistribute on its own.
                     showMoveToast(lang === 'es' ? 'Todas las habitaciones sin asignar' : 'All rooms unassigned');
                   }}
                   disabled={disabled}
