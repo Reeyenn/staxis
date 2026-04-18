@@ -15,7 +15,7 @@ import {
 import type { PlanSnapshot } from '@/lib/firestore';
 import type { StaffMember, StaffDepartment, ShiftConfirmation, ManagerNotification, ConfirmationStatus } from '@/types';
 import {
-  Users, Plus, Pencil, Trash2, Star, AlertTriangle, Clock,
+  Users, Plus, Pencil, Trash2, Star, Clock,
   Calendar, ChevronLeft, ChevronRight, Bell, CheckCircle2, XCircle,
   Send, Zap, Bot, Sparkles,
 } from 'lucide-react';
@@ -79,14 +79,15 @@ function isEligible(s: StaffMember, date: string): boolean {
   return true;
 }
 
-// 'sent' is the new default status post-Send (link went out, no reply expected);
-// 'pending' is the legacy equivalent from the old yes/no flow. Both render the
-// same way here.
+// 'sent' is the new default status post-Send (link went out, no reply
+// expected). 'pending' is the legacy equivalent. Both render identically.
+// 'confirmed' / 'declined' are legacy from the old yes/no flow — kept so
+// any existing docs in Firestore still render, but new code never writes them.
 const STATUS_COLOR: Record<ConfirmationStatus, string> = {
-  sent: 'var(--amber)', pending: 'var(--amber)', confirmed: 'var(--green)', declined: 'var(--red)', no_response: 'var(--text-muted)',
+  sent: 'var(--amber)', pending: 'var(--amber)', confirmed: 'var(--green)', declined: 'var(--red)',
 };
 const STATUS_ICON: Record<ConfirmationStatus, React.ReactNode> = {
-  sent: <Clock size={13} />, pending: <Clock size={13} />, confirmed: <CheckCircle2 size={13} />, declined: <XCircle size={13} />, no_response: <AlertTriangle size={13} />,
+  sent: <Clock size={13} />, pending: <Clock size={13} />, confirmed: <CheckCircle2 size={13} />, declined: <XCircle size={13} />,
 };
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -939,9 +940,8 @@ export default function StaffPage() {
                               {t(
                                 conf.status === 'confirmed' ? 'statusConfirmed'
                                 : conf.status === 'declined' ? 'statusDeclined'
-                                // 'sent' and legacy 'pending' both mean "link went out, waiting"
-                                : (conf.status === 'sent' || conf.status === 'pending') ? 'statusPending'
-                                : 'statusNoResponse',
+                                // 'sent' and legacy 'pending' both mean "link went out"
+                                : 'statusPending',
                                 lang,
                               )}
                             </span>

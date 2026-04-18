@@ -1,28 +1,27 @@
 /**
  * POST /api/sms-reply
  *
- * Twilio inbound-SMS webhook. Matches every incoming text against the most
- * recent open shiftConfirmation ('sent' or legacy 'pending') for that phone.
+ * Twilio inbound-SMS webhook. Under the new flow the outbound SMS is just a
+ * link to the HK's personal page — there is no YES/NO prompt, no escalation,
+ * no manager paging. Maria confirms availability in person at 3pm.
  *
- *   YES / SÍ / Y / S    → confirm → short thanks → ping manager(s)
- *                         (HK already has the link — no need to resend)
- *   NO / N              → decline → ack the HK → ping manager(s) (no auto-cascade)
- *   ESPAÑOL / ENGLISH   → toggle language preference, resend the LINK message
- *                         in the new language
- *   anything else       → gentle "didn't catch that" hint
+ * The only reply we act on is a language switch:
  *
- * Manager = every active staff member with department === 'front_desk' and a phone.
+ *   ESPAÑOL → mirror lang='es' to staffPrefs + staff doc + confirmation doc,
+ *             then resend the link SMS in Spanish.
+ *   ENGLISH → mirror lang='en' and resend the link SMS in English.
+ *   anything else → friendly "got your message, open your link" ack.
+ *
+ * Every code path returns an empty TwiML <Response/> so Twilio doesn't send
+ * its own auto-reply on top of ours.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import admin from '@/lib/firebase-admin';
 import { sendSms } from '@/lib/sms';
 
-// Twilio's inbound-SMS webhook expects TwiML (XML), not JSON. Returning JSON
-// makes Twilio log errorCode 12300 ("Invalid Content-Type") for every reply,
-// which is exactly the bug that was breaking the YES/NO flow. An empty
-// <Response/> tells Twilio "handled, send no auto-reply" — we've already
-// fired our own sendSms() above.
+// Twilio expects TwiML (XML), not JSON. An empty <Response/> tells Twilio
+// "handled, send no auto-reply" — we've fired our own sendSms() already.
 function twimlOk(): NextResponse {
   return new NextResponse(
     '<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
@@ -51,89 +50,8 @@ function normalise(text: string): string {
   return text.trim().toUpperCase().replace(/[.!?¿¡,;:()"'`]/g, '').trim();
 }
 
-// Tight exact-match sets for short replies (protects against false positives
-// on replies like "NOPE" or "YES but I'm late" which we handle via the fuzzy
-// matchers below).
-const YES_SET = new Set(['YES', 'Y', 'SI', 'SÍ', 'SÌ', 'S']);
-const NO_SET  = new Set(['NO', 'N']);
-const ES_SET  = new Set(['ESPANOL', 'ESPAÑOL', 'SPANISH', 'ESP']);
-const EN_SET  = new Set(['ENGLISH', 'INGLES', 'INGLÉS', 'EN']);
-
-/**
- * Fuzzy classifier for short conversational replies from non-native English
- * speakers on mobile keyboards. Examples we need to accept:
- *
- *   YES:  "yeah", "yep", "yup", "sure", "ok", "okay", "will do",
- *         "coming", "ill be there", "im coming", "si si", "claro",
- *         "yes im coming", "y es", "yess", "yes!!"
- *
- *   NO:   "nope", "nah", "cant", "cant make it", "sorry no",
- *         "no puedo", "not coming", "sick"
- *
- * Returns 'yes' | 'no' | null. Returns null (not yes or no) on truly
- * ambiguous inputs so the caller can send the "didn't catch that" hint.
- *
- * IMPORTANT: order of checks matters — we check NO *first* because replies
- * like "not coming" could otherwise accidentally hit a YES keyword if we
- * checked YES first.
- */
-function classifyReply(normalised: string): 'yes' | 'no' | null {
-  if (!normalised) return null;
-
-  // 1. Exact matches (strict, fastest path)
-  if (YES_SET.has(normalised)) return 'yes';
-  if (NO_SET.has(normalised)) return 'no';
-
-  // 2. Collapse repeated chars ("YESSSS" → "YES") and re-check exact sets
-  const collapsed = normalised.replace(/(.)\1{2,}/g, '$1$1');
-  if (YES_SET.has(collapsed)) return 'yes';
-  if (NO_SET.has(collapsed)) return 'no';
-
-  // 3. Word-level tokenisation so we only match whole words, not substrings.
-  //    "SICK" should be NO, but should NOT accidentally match "YES" inside
-  //    another word.
-  const tokens = normalised.split(/\s+/).filter(Boolean);
-  const tokenSet = new Set(tokens);
-
-  // Strong NO signals — check these BEFORE any YES signal, since phrases like
-  // "not coming" or "sorry no" contain tokens that would otherwise match YES.
-  const NO_WORDS = [
-    'NO', 'N', 'NOPE', 'NAH', 'NEGATIVE', 'NEVER',
-    'CANT', 'CANNOT', 'WONT',
-    'SICK', 'BUSY', 'SORRY',
-    'NOT',         // "not coming", "not going"
-    'POR',         // rare but shows up in "no puedo" variations
-    'PUEDO',       // "no puedo"
-  ];
-  for (const w of NO_WORDS) {
-    if (tokenSet.has(w)) return 'no';
-  }
-
-  // Strong YES signals
-  const YES_WORDS = [
-    'YES', 'Y', 'YEAH', 'YEA', 'YEP', 'YUP', 'YUH',
-    'OK', 'OKAY', 'KAY', 'K',
-    'SURE', 'DEFINITELY', 'ABSOLUTELY',
-    'COMING', 'COMIN',
-    'SI', 'SÍ', 'CLARO', 'VALE', 'LISTO',
-    'CONFIRM', 'CONFIRMED',
-    'WILL',         // "will do", "will be there"
-    'AFFIRMATIVE',
-  ];
-  for (const w of YES_WORDS) {
-    if (tokenSet.has(w)) return 'yes';
-  }
-
-  // 4. Last-ditch substring check for glued-together replies like "YESS" or
-  //    typo'd "YS" — only apply when the whole normalised string is very
-  //    short, so we don't accidentally match "YES" inside a longer sentence.
-  if (normalised.length <= 6) {
-    if (/^Y(E|S|ES|ESS|SS)?$/.test(normalised)) return 'yes';
-    if (/^N(O|OP|OPE|AH)?$/.test(normalised)) return 'no';
-  }
-
-  return null;
-}
+const ES_SET = new Set(['ESPANOL', 'ESPAÑOL', 'SPANISH', 'ESP']);
+const EN_SET = new Set(['ENGLISH', 'INGLES', 'INGLÉS', 'EN']);
 
 type ShiftConfirmation = {
   uid: string;
@@ -144,51 +62,12 @@ type ShiftConfirmation = {
   shiftDate: string;
   status: 'sent' | 'pending' | 'confirmed' | 'declined';
   language: 'en' | 'es';
-  assignedRooms?: string[];
-  assignedAreas?: string[];
   hkUrl?: string;
   hotelName?: string;
 };
 
-/**
- * Find active front-desk staff with phone numbers. These are the people we
- * SMS when a housekeeper confirms or declines.
- */
-async function getManagerPhones(uid: string, pid: string): Promise<Array<{ name: string; phone: string }>> {
-  const db = admin.firestore();
-  const snap = await db
-    .collection('users').doc(uid)
-    .collection('properties').doc(pid)
-    .collection('staff')
-    .where('department', '==', 'front_desk')
-    .get();
-
-  const results: Array<{ name: string; phone: string }> = [];
-  snap.docs.forEach(doc => {
-    const d = doc.data() as { name?: string; phone?: string; isActive?: boolean };
-    if (d.isActive === false) return;
-    if (!d.phone) return;
-    const phone164 = toE164(d.phone);
-    if (!phone164) return;
-    results.push({ name: d.name ?? 'Manager', phone: phone164 });
-  });
-  return results;
-}
-
-async function notifyManagers(
-  uid: string,
-  pid: string,
-  message: string,
-): Promise<void> {
-  const managers = await getManagerPhones(uid, pid);
-  await Promise.allSettled(
-    managers.map(m => sendSms(m.phone, message)),
-  );
-}
-
 // Debug: write every webhook hit (and the final lookup outcome) to a
 // top-level `webhookLog` collection so we can diagnose failures end-to-end.
-// Safe to leave in — writes are tiny and capped implicitly by traffic.
 async function logHit(entry: Record<string, unknown>): Promise<void> {
   try {
     await admin.firestore().collection('webhookLog').add({
@@ -242,22 +121,18 @@ export async function POST(req: NextRequest) {
     const reply = normalise(text);
     const db = admin.firestore();
 
-    // Find the pending shiftConfirmation for this phone via the top-level
-    // `phoneLookup/{phone164}` index that /api/send-shift-confirmations writes
-    // on every send. Direct get — no collectionGroup, no composite index, no
-    // FAILED_PRECONDITION. New sends always last-write-win the lookup doc, so
-    // inbound replies always match the newest confirmation for this phone.
-    //
-    // We still try a few phone-format variants for the lookup key in case
-    // something upstream normalised differently (Twilio sends E.164, but legacy
-    // entries could have landed under a different key).
+    // Find the most recent open shiftConfirmation for this phone via the
+    // top-level `phoneLookup/{phone164}` index that /api/send-shift-confirmations
+    // writes on every send. Direct get — no collectionGroup, no composite
+    // index, no FAILED_PRECONDITION. Last-write-wins: newest send for this
+    // phone is always what replies match.
     const digits = fromNumber.replace(/\D/g, '');
     const tenDigit = digits.length >= 10 ? digits.slice(-10) : digits;
     const variants = Array.from(new Set([
-      phone164,              // +14098282023  (what we store going forward)
-      fromNumber,            // whatever Twilio sent us (usually same as phone164)
-      tenDigit,              // 4098282023    (legacy — raw user-entered)
-      `1${tenDigit}`,        // 14098282023   (legacy — country code, no +)
+      phone164,
+      fromNumber,
+      tenDigit,
+      `1${tenDigit}`,
     ].filter(Boolean) as string[]));
 
     let checkDoc: FirebaseFirestore.DocumentSnapshot | null = null;
@@ -276,9 +151,9 @@ export async function POST(req: NextRequest) {
         const docSnap = await db.doc(path).get();
         if (!docSnap.exists) continue;
         const docData = docSnap.data() as { status?: string } | undefined;
-        // 'sent' is the new default status after Send; 'pending' is legacy
-        // from the old yes/no flow. Either counts as "open" — replies should
-        // still work. We only skip docs that are already resolved.
+        // 'sent' is the new default. 'pending' is legacy from the old yes/no
+        // flow — treat it the same for lookup purposes so legacy docs still
+        // match. 'confirmed' / 'declined' are resolved states — ignore.
         if (docData?.status !== 'sent' && docData?.status !== 'pending') continue;
         checkDoc = docSnap;
         break;
@@ -300,177 +175,69 @@ export async function POST(req: NextRequest) {
     });
 
     if (!checkDoc) {
-      // Nothing pending for this phone — probably an old reply, or the lookup
-      // threw (see lookupError above). Drop silently; Twilio still needs a 200.
+      // Nothing open for this phone — drop silently; Twilio still needs 200.
       return twimlOk();
     }
     const data = checkDoc.data() as ShiftConfirmation;
     const { uid, pid, staffName, shiftDate } = data;
-    const lang: 'en' | 'es' = data.language ?? 'en';
     const firstName = (staffName ?? 'there').split(' ')[0];
     const hotelName = data.hotelName || 'the hotel';
 
-    // Compose the link-with-rooms message used when the HK toggles language.
-    // Same template as /api/send-shift-confirmations — we just re-render in
-    // the new language and resend so they see their assignment in the
-    // language they asked for.
+    // Render the same minimal link SMS that /api/send-shift-confirmations
+    // sends. Used when the HK toggles language — we resend in the new lang.
     const renderLinkMessage = (targetLang: 'en' | 'es'): string => {
-      const rooms  = data.assignedRooms ?? [];
-      const areas  = data.assignedAreas ?? [];
-      const hkUrl  = data.hkUrl ?? '';
-      const label  = formatShiftDate(shiftDate, targetLang);
-      const roomsLabel = rooms.length
-        ? (targetLang === 'es' ? `Cuartos: ${rooms.join(', ')}` : `Rooms: ${rooms.join(', ')}`)
-        : (areas.length
-            ? (targetLang === 'es' ? `Áreas: ${areas.join(', ')}` : `Areas: ${areas.join(', ')}`)
-            : (targetLang === 'es' ? 'Sin asignaciones' : 'No assignments'));
+      const hkUrl = data.hkUrl ?? '';
+      const label = formatShiftDate(shiftDate, targetLang);
       return targetLang === 'es'
-        ? `Hola ${firstName}! Tu lista para ${label}:\n${roomsLabel}\nAbrir: ${hkUrl}\n\nFor English, reply ENGLISH\n– ${hotelName}`
-        : `Hi ${firstName}! Your list for ${label}:\n${roomsLabel}\nOpen: ${hkUrl}\n\nPara español, responde ESPAÑOL\n– ${hotelName}`;
+        ? `Hola ${firstName}! Tu lista para ${label}:\n${hkUrl}\n\nFor English, reply ENGLISH\n\n– ${hotelName}`
+        : `Hi ${firstName}! Your list for ${label}:\n${hkUrl}\n\nPara español, responde ESPAÑOL\n\n– ${hotelName}`;
+    };
+
+    const mirrorLang = async (next: 'en' | 'es'): Promise<void> => {
+      // Mirror the language onto three places so everything stays in sync:
+      // the legacy staffPrefs doc (kept for backward compat), the staff
+      // doc (canonical — what the admin Staff modal reads/writes and what
+      // the HK personal page seeds from), and the current confirmation.
+      await db.collection('staffPrefs').doc(data.staffId).set(
+        { language: next, updatedAt: admin.firestore.FieldValue.serverTimestamp() },
+        { merge: true },
+      );
+      try {
+        await db
+          .collection('users').doc(uid)
+          .collection('properties').doc(pid)
+          .collection('staff').doc(data.staffId)
+          .update({ language: next });
+      } catch (err) {
+        console.error(`[sms-reply] staff doc lang mirror (${next}) failed:`, err);
+      }
+      await checkDoc!.ref.update({ language: next });
     };
 
     // ── ESPAÑOL — switch to Spanish and resend the link ─────────────────────
     if (ES_SET.has(reply)) {
-      // Mirror the language choice onto three places so everything stays
-      // in sync: the legacy staffPrefs doc (kept for backward compat),
-      // the staff doc (canonical — what the admin Staff modal reads/writes
-      // and what the HK personal page now seeds from), and the current
-      // shift confirmation (so follow-up copy uses the right language).
-      await db.collection('staffPrefs').doc(data.staffId).set(
-        { language: 'es', updatedAt: admin.firestore.FieldValue.serverTimestamp() },
-        { merge: true },
-      );
-      try {
-        await db
-          .collection('users').doc(uid)
-          .collection('properties').doc(pid)
-          .collection('staff').doc(data.staffId)
-          .update({ language: 'es' });
-      } catch (err) {
-        console.error('[sms-reply] staff doc lang mirror (es) failed:', err);
-      }
-      await checkDoc.ref.update({ language: 'es' });
-
+      await mirrorLang('es');
       await sendSms(phone164, renderLinkMessage('es'));
       return twimlOk();
     }
 
-    // ── ENGLISH — switch back to English and resend the link ───────────────
+    // ── ENGLISH — switch to English and resend the link ─────────────────────
     if (EN_SET.has(reply)) {
-      // Mirror onto staffPrefs + staff doc + confirmation (see ESPAÑOL branch).
-      await db.collection('staffPrefs').doc(data.staffId).set(
-        { language: 'en', updatedAt: admin.firestore.FieldValue.serverTimestamp() },
-        { merge: true },
-      );
-      try {
-        await db
-          .collection('users').doc(uid)
-          .collection('properties').doc(pid)
-          .collection('staff').doc(data.staffId)
-          .update({ language: 'en' });
-      } catch (err) {
-        console.error('[sms-reply] staff doc lang mirror (en) failed:', err);
-      }
-      await checkDoc.ref.update({ language: 'en' });
-
+      await mirrorLang('en');
       await sendSms(phone164, renderLinkMessage('en'));
       return twimlOk();
     }
 
-    // ── YES/NO fuzzy classification ─────────────────────────────────────────
-    // Translate conversational replies like "yes im coming", "yeah sure",
-    // "nope", "cant make it" into a clean yes/no/null signal. Falls through
-    // to the "didn't catch that" hint for truly ambiguous input.
-    const intent = classifyReply(reply);
-    await logHit({ stage: 'classified', reply, intent });
-
-    // ── YES — confirm, send personal link, ping manager(s) ──────────────────
-    if (intent === 'yes') {
-      await checkDoc.ref.update({
-        status: 'confirmed',
-        respondedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-
-      // Short acknowledgment. The HK already has their link from the initial
-      // send — no need to resend it here. Maria confirms availability in
-      // person at 3pm anyway; this reply is just a courtesy.
-      const confirmMsg = lang === 'es'
-        ? `✅ ¡Gracias, ${firstName}! Nos vemos mañana.\n– ${hotelName}`
-        : `✅ Thanks, ${firstName}! See you tomorrow.\n– ${hotelName}`;
-      await sendSms(phone164, confirmMsg);
-
-      const dateLabel = formatShiftDate(shiftDate, 'en');
-      await notifyManagers(
-        uid, pid,
-        `✅ ${staffName} confirmed for ${dateLabel}.`,
-      );
-
-      // In-app notification for the dashboard panel
-      await db
-        .collection('users').doc(uid)
-        .collection('properties').doc(pid)
-        .collection('managerNotifications').add({
-          uid, pid,
-          type: 'availability_confirmed',
-          message: `${staffName} confirmed for ${shiftDate}`,
-          staffId: data.staffId,
-          staffName,
-          shiftDate,
-          read: false,
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-
-      return twimlOk();
-    }
-
-    // ── NO — acknowledge, ping manager(s), NO auto-cascade ──────────────────
-    if (intent === 'no') {
-      await checkDoc.ref.update({
-        status: 'declined',
-        respondedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-
-      const ackMsg = lang === 'es'
-        ? `Entendido, ${firstName}. Gracias por avisar.\n– ${hotelName}`
-        : `No problem, ${firstName}. Thanks for letting us know.\n– ${hotelName}`;
-      await sendSms(phone164, ackMsg);
-
-      const dateLabel = formatShiftDate(shiftDate, 'en');
-      await notifyManagers(
-        uid, pid,
-        `⚠️ ${staffName} can't come in ${dateLabel}. Please arrange cover.`,
-      );
-
-      await db
-        .collection('users').doc(uid)
-        .collection('properties').doc(pid)
-        .collection('managerNotifications').add({
-          uid, pid,
-          type: 'availability_declined',
-          message: `${staffName} can't come in ${shiftDate}`,
-          staffId: data.staffId,
-          staffName,
-          shiftDate,
-          read: false,
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-
-      return twimlOk();
-    }
-
-    // ── Unrecognised ─────────────────────────────────────────────────────────
-    // New flow: the SMS is just a link. There's no YES/NO prompt, so we
-    // don't tell the HK to reply YES or NO. We just let them know we got
-    // their message and point them at the link they already have.
+    // ── Anything else — friendly ack, point at their link ───────────────────
+    const lang: 'en' | 'es' = data.language ?? 'en';
     const hint = lang === 'es'
-      ? `¡Gracias, ${firstName}! Recibí tu mensaje. Abre tu enlace para ver tu lista de hoy.\n– ${hotelName}`
-      : `Thanks, ${firstName}! Got your message. Open your link to see today's list.\n– ${hotelName}`;
+      ? `¡Gracias, ${firstName}! Abre tu enlace para ver tu lista.\n– ${hotelName}`
+      : `Thanks, ${firstName}! Open your link to see your list.\n– ${hotelName}`;
     await sendSms(phone164, hint);
 
     return twimlOk();
   } catch (err) {
     console.error('sms-reply error:', err);
-    // Surface the error to the webhookLog so we can diagnose without shell logs.
     try {
       await logHit({ stage: 'handler_error', error: String(err) });
     } catch {}

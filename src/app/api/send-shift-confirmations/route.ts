@@ -321,25 +321,12 @@ export async function POST(req: NextRequest) {
           const firstName = name.split(' ')[0];
           const dateLabel = formatShiftDate(shiftDate, language);
 
-          // Short summary of what changed, e.g. "Rooms: 101, 102, 103" or
-          // "Areas: Lobby, Breakfast Area" when there are no rooms. Keep it
-          // compact so the SMS doesn't balloon into multiple segments.
-          const roomsLabel = rooms.length
-            ? (language === 'es' ? `Cuartos: ${rooms.join(', ')}` : `Rooms: ${rooms.join(', ')}`)
-            : (areas.length
-                ? (language === 'es' ? `Áreas: ${areas.join(', ')}` : `Areas: ${areas.join(', ')}`)
-                : (language === 'es' ? 'Sin asignaciones' : 'No assignments'));
-
-          // ONE message template for every send — new or update. The link +
-          // rooms IS the confirmation. "Your list changed" wording only fires
-          // on re-sends so the HK knows their assignment moved.
-          const message = isUpdate
-            ? (language === 'es'
-                ? `Hola ${firstName}! Tu lista para ${dateLabel} cambió.\n${roomsLabel}\nAbrir: ${hkUrl}\n\nFor English, reply ENGLISH\n– ${hotelName}`
-                : `Hi ${firstName}! Your list for ${dateLabel} changed.\n${roomsLabel}\nOpen: ${hkUrl}\n\nPara español, responde ESPAÑOL\n– ${hotelName}`)
-            : (language === 'es'
-                ? `Hola ${firstName}! Tu lista para ${dateLabel}:\n${roomsLabel}\nAbrir: ${hkUrl}\n\nFor English, reply ENGLISH\n– ${hotelName}`
-                : `Hi ${firstName}! Your list for ${dateLabel}:\n${roomsLabel}\nOpen: ${hkUrl}\n\nPara español, responde ESPAÑOL\n– ${hotelName}`);
+          // Minimal SMS: name + date + link + language toggle line + hotel
+          // footer. Room assignments live on the HK's personal page (opened
+          // via the link), NOT in the text. One template for every send.
+          const message = language === 'es'
+            ? `Hola ${firstName}! Tu lista para ${dateLabel}:\n${hkUrl}\n\nFor English, reply ENGLISH\n\n– ${hotelName}`
+            : `Hi ${firstName}! Your list for ${dateLabel}:\n${hkUrl}\n\nPara español, responde ESPAÑOL\n\n– ${hotelName}`;
 
           await sendSms(phone164, message);
           await confirmRef.update({ smsSent: true });

@@ -498,13 +498,9 @@ function ScheduleSection() {
   }, [confirmations]);
   const alreadySent = confirmations.length > 0;
 
-  // Aggregate counts for the "Links sent" banner.
-  // New flow: 'sent' is the default resting state (Maria confirms in person
-  // at 3pm). 'confirmed' / 'declined' only appear if a HK happens to reply.
-  // 'pending' is legacy — treat the same as 'sent' for the banner.
-  const sentCount      = confirmations.filter(c => c.status === 'sent' || c.status === 'pending').length;
-  const confirmedCount = confirmations.filter(c => c.status === 'confirmed').length;
-  const declinedCount  = confirmations.filter(c => c.status === 'declined').length;
+  // No more confirmation aggregates — the new flow doesn't track replies
+  // (Maria confirms in person at 3pm). The post-send pill just says "Links
+  // sent" and doesn't count anything.
 
   useEffect(() => {
     if (!uid || !pid) return;
@@ -1460,16 +1456,12 @@ function ScheduleSection() {
               const statusBg = memberRooms.length === 0 ? '#d3e4f8' : isNearCapacity ? '#ffdad6' : '#eae8e3';
               const statusColor = memberRooms.length === 0 ? '#0c1d2b' : isNearCapacity ? '#93000a' : '#454652';
 
-              // The badge next to each crew member's name has two layers:
-              //   1. If the HK replied NO → "Declined" (red).
-              //   2. If the HK replied YES → "Confirmed" (green) — optional.
-              //   3. Otherwise → what happened on the last Send click:
-              //        - sent     → "Link Sent" (green)
-              //        - skipped  → "Didn't Send — No Phone Number" (red)
-              //        - failed   → "Didn't Send — <reason>"         (red)
-              //   4. Fallback for page reloads: if we have no fresh Send result
-              //      but a 'sent' (or legacy 'pending') confirmation doc exists,
-              //      the link went out at some point → "Link Sent".
+              // The badge next to each crew member's name is simple now:
+              //   - sent         → "Link Sent" (green)
+              //   - skipped      → "Didn't Send — No Phone Number" (red)
+              //   - failed       → "Didn't Send — <reason>"         (red)
+              // On page reload, a confirmation doc being present is enough
+              // to show "Link Sent" even if we don't have a fresh sendResult.
               const confStatus = statusByStaff.get(member.id);
               const sendResult = sendResults.get(member.id);
 
@@ -1483,13 +1475,7 @@ function ScheduleSection() {
               };
 
               const confBadge =
-                confStatus === 'confirmed'
-                  ? { label: lang === 'es' ? 'Confirmado' : 'Confirmed',
-                      bg: 'rgba(16,185,129,0.15)', color: '#059669' }
-                : confStatus === 'declined'
-                  ? { label: lang === 'es' ? 'No viene' : 'Declined',
-                      bg: 'rgba(239,68,68,0.12)', color: '#b91c1c' }
-                : (sendResult?.status === 'skipped' || sendResult?.status === 'failed')
+                (sendResult?.status === 'skipped' || sendResult?.status === 'failed')
                   ? { label: (lang === 'es' ? 'No se envió — ' : "Didn't Send — ") + reasonLabel(sendResult.reason),
                       bg: 'rgba(239,68,68,0.12)', color: '#b91c1c' }
                 : (sendResult?.status === 'sent' || confStatus === 'sent' || confStatus === 'pending')
@@ -1899,24 +1885,8 @@ function ScheduleSection() {
                   fontSize: '13px', fontWeight: 600, color: '#454652',
                 }}>
                   <CheckCircle2 size={16} color="#10b981" />
-                  <span>
-                    <span style={{ color: '#10b981' }}>
-                      {sentCount + confirmedCount} {lang === 'es'
-                        ? (sentCount + confirmedCount === 1 ? 'enlace enviado' : 'enlaces enviados')
-                        : (sentCount + confirmedCount === 1 ? 'link sent' : 'links sent')}
-                    </span>
-                    {confirmedCount > 0 && (
-                      <>
-                        {' · '}
-                        <span style={{ color: '#059669' }}>{confirmedCount} {lang === 'es' ? 'confirmados' : 'confirmed'}</span>
-                      </>
-                    )}
-                    {declinedCount > 0 && (
-                      <>
-                        {' · '}
-                        <span style={{ color: '#ef4444' }}>{declinedCount} {lang === 'es' ? 'no viene' : 'declined'}</span>
-                      </>
-                    )}
+                  <span style={{ color: '#10b981' }}>
+                    {lang === 'es' ? 'Enlaces enviados' : 'Links sent'}
                   </span>
                 </div>
                 {selectedCrew.length > 0 && (
