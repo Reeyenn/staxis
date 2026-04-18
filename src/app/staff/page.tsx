@@ -469,6 +469,15 @@ export default function StaffPage() {
     ...DEPARTMENTS.map(d => ({ ...d, label: deptLabel(d.key, lang) })),
   ];
 
+  // If no active staff member has the Scheduling Manager flag, the
+  // 75-minute escalation in /api/cron/escalate-pending is a no-op — nobody
+  // gets paged when a housekeeper fails to reply. Surface a visible warning
+  // so Maria doesn't silently lose that safety net.
+  const hasSchedulingManager = useMemo(
+    () => staff.some(s => s.isSchedulingManager === true && s.isActive !== false),
+    [staff],
+  );
+
   /* ════════════════════════════════════════════════════════════════════════
      RENDER
      ════════════════════════════════════════════════════════════════════════ */
@@ -484,6 +493,34 @@ export default function StaffPage() {
         .staff-add-inline:hover { background: rgba(0,101,101,0.06) !important; border-color: #006565 !important; }
       `}</style>
       <div style={{ padding: '16px 28px 28px', maxWidth: '1200px', margin: '0 auto' }}>
+
+        {/* ── Missing-scheduling-manager warning banner ──
+             Shown whenever no active staff has isSchedulingManager = true.
+             Without a scheduling manager flagged, the 75-minute escalation
+             cron can't page anyone when a housekeeper doesn't reply, so
+             Maria would silently lose that safety net. */}
+        {totalStaff > 0 && !hasSchedulingManager && (
+          <div style={{
+            marginBottom: '16px',
+            padding: '12px 16px',
+            background: 'rgba(251,191,36,0.12)',
+            border: '1px solid rgba(251,191,36,0.35)',
+            borderRadius: '12px',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: '10px',
+          }}>
+            <span className="material-symbols-outlined" style={{ fontSize: '20px', color: '#b45309', flexShrink: 0, marginTop: '1px' }}>warning</span>
+            <div style={{ fontSize: '13px', color: '#78350f', fontFamily: 'Inter, sans-serif', lineHeight: 1.45 }}>
+              <strong>{lang === 'es' ? 'Sin Responsable de Horarios' : 'No Scheduling Manager set'}</strong>
+              <div style={{ marginTop: '2px' }}>
+                {lang === 'es'
+                  ? 'Si un limpiador no responde en 75 min, nadie recibirá el aviso. Abre un miembro del personal y activa "Responsable de horarios".'
+                  : 'If a housekeeper doesn\u2019t reply within 75 min, nobody will get paged. Open a staff member and toggle on "Scheduling Manager".'}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* ── Tab bar + actions row ── */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '20px', flexWrap: 'wrap' }}>
