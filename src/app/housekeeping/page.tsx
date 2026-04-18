@@ -2143,9 +2143,45 @@ function RoomsSection() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [actionRoom, setActionRoom] = useState<Room | null>(null); // room action popup
   const [nowMs, setNowMs] = useState(Date.now());
+  const [populating, setPopulating] = useState(false);
 
   // Help request badge tracking — rooms where helpRequested is true
   const [backupRoom, setBackupRoom] = useState<Room | null>(null); // room needing backup staff picker
+
+  // Manual "pull all rooms from last CSV" button handler — seeds rooms/{date}_{num}
+  // with the CSV baseline so the grid shows all 74 rooms (not just assigned ones).
+  const handlePopulateFromCsv = async () => {
+    if (!user || !activePropertyId || populating) return;
+    setPopulating(true);
+    try {
+      const res = await fetch('/api/populate-rooms-from-plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uid:  user.uid,
+          pid:  activePropertyId,
+          date: activeDate,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setToastMessage(lang === 'es'
+          ? `Error: ${data?.error ?? 'no se pudo cargar'}`
+          : `Error: ${data?.error ?? 'could not load'}`);
+      } else {
+        const { created = 0, updated = 0 } = data;
+        setToastMessage(lang === 'es'
+          ? `Cargadas ${created + updated} habitaciones (${created} nuevas, ${updated} actualizadas)`
+          : `Loaded ${created + updated} rooms (${created} new, ${updated} updated)`);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setToastMessage(lang === 'es' ? `Error: ${msg}` : `Error: ${msg}`);
+    } finally {
+      setPopulating(false);
+      setTimeout(() => setToastMessage(null), 3500);
+    }
+  };
 
   // Subscribe to ALL rooms in the property, then pick the active date to show.
   //
@@ -2387,7 +2423,26 @@ function RoomsSection() {
       ) : sorted.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '52px 20px', background: 'rgba(255,255,255,0.7)', borderRadius: '12px', backdropFilter: 'blur(8px)' }}>
           <p style={{ fontSize: '32px', marginBottom: '12px' }}>🛏️</p>
-          <p style={{ color: '#64748b', fontSize: '15px', fontWeight: 500 }}>{rooms.length === 0 ? t('noRoomsTodayHkp', lang) : t('noRoomsFloor', lang)}</p>
+          <p style={{ color: '#64748b', fontSize: '15px', fontWeight: 500, marginBottom: '20px' }}>{rooms.length === 0 ? t('noRoomsTodayHkp', lang) : t('noRoomsFloor', lang)}</p>
+          <button
+            onClick={handlePopulateFromCsv}
+            disabled={populating}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: '8px',
+              padding: '10px 18px',
+              background: populating ? 'rgba(16,185,129,0.4)' : '#10b981',
+              color: '#fff', border: 'none', borderRadius: '10px',
+              fontSize: '13px', fontWeight: 700, letterSpacing: '0.03em',
+              cursor: populating ? 'wait' : 'pointer',
+              boxShadow: '0 2px 8px rgba(16,185,129,0.3)',
+              fontFamily: 'var(--font-sans)',
+            }}
+          >
+            <RefreshCw size={14} style={{ animation: populating ? 'spin 1s linear infinite' : undefined }} />
+            {populating
+              ? (lang === 'es' ? 'Cargando…' : 'Loading…')
+              : (lang === 'es' ? 'Cargar desde CSV' : 'Load Rooms from CSV')}
+          </button>
         </div>
       ) : (
         <>
@@ -2457,6 +2512,34 @@ function RoomsSection() {
                 <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em' }}>{lang === 'es' ? 'Salida' : 'Checkout'}</span>
               </div>
             </div>
+
+            {/* ── Populate from CSV button (right-aligned) ── */}
+            <button
+              onClick={handlePopulateFromCsv}
+              disabled={populating}
+              title={lang === 'es'
+                ? 'Carga todas las habitaciones desde el último CSV. Preserva asignaciones.'
+                : 'Loads every room from the last CSV pull. Preserves assignments.'}
+              style={{
+                marginLeft: 'auto',
+                display: 'inline-flex', alignItems: 'center', gap: '8px',
+                padding: '8px 14px',
+                background: populating ? 'rgba(16,185,129,0.4)' : 'rgba(16,185,129,0.1)',
+                color: '#047857',
+                border: '1px solid rgba(16,185,129,0.35)',
+                borderRadius: '999px',
+                fontSize: '12px', fontWeight: 700,
+                letterSpacing: '0.03em',
+                cursor: populating ? 'wait' : 'pointer',
+                fontFamily: 'var(--font-sans)',
+                transition: 'all 0.15s ease',
+              }}
+            >
+              <RefreshCw size={13} style={{ animation: populating ? 'spin 1s linear infinite' : undefined }} />
+              {populating
+                ? (lang === 'es' ? 'Cargando…' : 'Loading…')
+                : (lang === 'es' ? 'Cargar desde CSV' : 'Load Rooms from CSV')}
+            </button>
           </div>
 
           {/* ── Floor Grids ── */}
