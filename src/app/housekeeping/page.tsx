@@ -417,6 +417,12 @@ function ScheduleSection() {
   // Maria's saved assignments for this date. Untouched by CSV refreshes.
   useEffect(() => {
     if (!uid || !pid) return;
+    // Clear the previous date's doc AND loaded flag synchronously before
+    // re-subscribing. Otherwise the hydration effect below can fire on the
+    // date change while `scheduleAssignmentsDoc` still holds the previous
+    // date's data — and lock in stale assignments whose room IDs are keyed
+    // to the old date (so everything shows as unassigned).
+    setScheduleAssignmentsDoc(null);
     setScheduleAssignmentsLoaded(false);
     return subscribeToScheduleAssignments(uid, pid, shiftDate, (sa) => {
       setScheduleAssignmentsDoc(sa);
@@ -429,6 +435,10 @@ function ScheduleSection() {
   useEffect(() => {
     if (!scheduleAssignmentsLoaded) return;
     if (hydratedForDate.current === shiftDate) return;
+    // Guard against a stale subscription emission: if the doc we have isn't
+    // for the shiftDate we're now viewing, wait for the real doc to arrive.
+    // (Happens when the user switches dates faster than Firestore re-emits.)
+    if (scheduleAssignmentsDoc && scheduleAssignmentsDoc.date !== shiftDate) return;
     hydratedForDate.current = shiftDate;
     if (scheduleAssignmentsDoc) {
       setAssignments(scheduleAssignmentsDoc.roomAssignments ?? {});
