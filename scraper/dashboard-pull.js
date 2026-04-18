@@ -1,0 +1,95 @@
+/**
+ * HotelOps AI — Dashboard Number Pull
+ *
+ * Pulls three operational numbers from Choice Advantage's View pages and
+ * writes them to scraperStatus/dashboard for display on the Schedule tab:
+ *   • View → In House    → Room Count (currently occupied rooms)
+ *   • View → Arrivals    → Room Count (arrivals still pending check-in)
+ *   • View → Departures  → Room Count (departures still pending check-out)
+ *
+ * Called from scraper.js every 15 minutes between 5am and 11pm local time.
+ *
+ * Note on selectors: the three View pages use inconsistent element IDs
+ * (#roomCount on Arrivals/Departures, #roomCountValue on In House). The
+ * surrounding HTML structure IS consistent though:
+ *
+ *   <ul class="CHI_Row_Left">
+ *     <li><label>Guest Count:</label></li>
+ *     <li><p class="CHI_Data">N</p></li>
+ *     <li><label>Room Count:</label></li>
+ *     <li><p class="CHI_Data">N</p></li>
+ *   </ul>
+ *
+ * So we target by label text and then walk to the next <li>'s .CHI_Data —
+ * robust across all three pages.
+ */
+
+const VIEW_PAGES = [
+  { key: 'inHouse',    url: 'https://www.choiceadvantage.com/choicehotels/ViewInHouseList.init' },
+  { key: 'arrivals',   url: 'https://www.choiceadvantage.com/choicehotels/ViewArrivalsList.init' },
+  { key: 'departures', url: 'https://www.choiceadvantage.com/choicehotels/ViewDeparturesList.init' },
+];
+
+async function readCounts(page) {
+  return await page.evaluate(() => {
+    const getCount = (labelText) => {
+      const labels = Array.from(document.querySelectorAll('label'));
+      const lbl = labels.find(l => l.textContent.trim() === labelText);
+      if (!lbl) return null;
+      const cell = lbl.closest('li');
+      const next = cell ? cell.nextElementSibling : null;
+      const data = next ? next.querySelector('.CHI_Data') : null;
+      if (!data) return null;
+      const n = parseInt(data.textContent.trim(), 10);
+      return Number.isNaN(n) ? null : n;
+    };
+    return {
+      guestCount: getCount('Guest Count:'),
+      roomCount:  getCount('Room Count:'),
+    };
+  });
+}
+
+/**
+ * Navigate the three View pages in sequence and write the numbers to
+ * scraperStatus/dashboard. Throws if CA bounced us to the login page —
+ * caller handles re-login.
+ */
+async function pullDashboardNumbers(page, db, log) {
+  const result = {};
+
+  for (const { key, url } of VIEW_PAGES) {
+    log(`Dashboard pull — ${key}...`);
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+    const cur = page.url();
+    if (cur.includes('Login') || cur.includes('j_security_check')) {
+      throw new Error(`Session expired (redirected to ${cur})`);
+    }
+
+    // The CHI_Row_Left block renders fast but wait for it so we don't
+    // read 0s from an empty DOM on slow loads.
+    await page.waitForSelector('ul.CHI_Row_Left label', { timeout: 15000 });
+    const { roomCount, guestCount } = await readCounts(page);
+    result[key] = { roomCount, guestCount };
+  }
+
+  const payload = {
+    inHouse:    result.inHouse?.roomCount    ?? null,
+    arrivals:   result.arrivals?.roomCount   ?? null,
+    departures: result.departures?.roomCount ?? null,
+    // Guest counts preserved in case the app ever wants "N guests" vs "N rooms"
+    inHouseGuests:    result.inHouse?.guestCount    ?? null,
+    arrivalsGuests:   result.arrivals?.guestCount   ?? null,
+    departuresGuests: result.departures?.guestCount ?? null,
+    pulledAt: new Date(),
+    error:    null,
+  };
+
+  await db.collection('scraperStatus').doc('dashboard').set(payload, { merge: true });
+
+  log(`Dashboard pull OK — inHouse=${payload.inHouse} arrivals=${payload.arrivals} departures=${payload.departures}`);
+  return payload;
+}
+
+module.exports = { pullDashboardNumbers };

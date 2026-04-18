@@ -20,8 +20,9 @@ import {
   subscribeToShiftConfirmations,
   subscribeToScheduleAssignments,
   saveScheduleAssignments,
+  subscribeToDashboardNumbers,
 } from '@/lib/firestore';
-import type { PlanSnapshot, ScheduleAssignments, CsvRoomSnapshot } from '@/lib/firestore';
+import type { PlanSnapshot, ScheduleAssignments, CsvRoomSnapshot, DashboardNumbers } from '@/lib/firestore';
 import { getPublicAreasDueToday, calcPublicAreaMinutes, autoAssignRooms, getOverdueRooms, calcDndFreedMinutes, suggestDeepCleans } from '@/lib/calculations';
 import { getDefaultPublicAreas } from '@/lib/defaults';
 import type { PublicArea } from '@/types';
@@ -376,6 +377,10 @@ function ScheduleSection() {
   const [planSnapshot, setPlanSnapshot] = useState<PlanSnapshot | null>(null);
   const [planSnapshotLoaded, setPlanSnapshotLoaded] = useState(false);
 
+  // Live PMS dashboard numbers (In House / Arrivals / Departures) — pulled off
+  // Choice Advantage's View pages every 15 min by the Railway scraper.
+  const [dashboardNums, setDashboardNums] = useState<DashboardNumbers | null>(null);
+
   // Saved assignments (survives CSV overwrites — Maria's Send work persists).
   const [scheduleAssignmentsDoc, setScheduleAssignmentsDoc] = useState<ScheduleAssignments | null>(null);
   const [scheduleAssignmentsLoaded, setScheduleAssignmentsLoaded] = useState(false);
@@ -452,6 +457,13 @@ function ScheduleSection() {
       setScheduleAssignmentsLoaded(true);
     });
   }, [uid, pid, shiftDate]);
+
+  // Live dashboard numbers from Choice Advantage View pages. One listener for
+  // the whole app — not per-date, not per-property — these are current-moment
+  // snapshots maintained by the Railway scraper (see scraper/dashboard-pull.js).
+  useEffect(() => {
+    return subscribeToDashboardNumbers(setDashboardNums);
+  }, []);
 
   // One-time hydration per date: when assignments + crew load from Firestore, seed local state.
   const hydratedForDate = useRef<string | null>(null);
@@ -1287,6 +1299,37 @@ function ScheduleSection() {
                 </div>
               </div>
             </div>
+
+            {/* ── Live PMS numbers from Choice Advantage View pages ─────── */}
+            {/* Pulled every 15 min by the Railway scraper (see scraper/   */}
+            {/* dashboard-pull.js). These are REMAINING counts at this     */}
+            {/* moment — arrivals not yet checked in, departures not yet   */}
+            {/* checked out, and currently-in-house occupancy.              */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, auto)', gap: '40px', paddingTop: '8px', borderTop: '1px solid rgba(0,0,0,0.08)' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Llegadas' : 'Arrivals'}</p>
+                <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>
+                  {dashboardNums?.arrivals ?? '—'}
+                </p>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'En Casa' : 'In House'}</p>
+                <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>
+                  {dashboardNums?.inHouse ?? '—'}
+                </p>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Salidas' : 'Departures'}</p>
+                <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>
+                  {dashboardNums?.departures ?? '—'}
+                </p>
+              </div>
+            </div>
+            {dashboardNums?.pulledAt && (
+              <p style={{ fontSize: '11px', color: '#94a3b8', margin: 0 }}>
+                {lang === 'es' ? 'PMS actualizado' : 'PMS updated'} {dashboardNums.pulledAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+              </p>
+            )}
 
           </div>
         )}

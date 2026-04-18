@@ -685,6 +685,44 @@ export function subscribeToPlanSnapshot(
   });
 }
 
+// ─── Dashboard numbers (CA View pages — In House / Arrivals / Departures) ────
+// Scraper refreshes this every 15 min 5am–11pm from Choice Advantage's View
+// pages. Shared across all properties for now (single-property deploy) — lives
+// at the top-level scraperStatus/dashboard doc rather than under a property.
+
+export interface DashboardNumbers {
+  inHouse:    number | null;
+  arrivals:   number | null;
+  departures: number | null;
+  inHouseGuests?:    number | null;
+  arrivalsGuests?:   number | null;
+  departuresGuests?: number | null;
+  pulledAt: Date | null;
+  error: string | null;
+}
+
+export function subscribeToDashboardNumbers(
+  callback: (nums: DashboardNumbers | null) => void
+) {
+  const ref = doc(db, 'scraperStatus', 'dashboard');
+  return onSnapshot(ref, snap => {
+    if (!snap.exists()) { callback(null); return; }
+    const d = snap.data() as Record<string, unknown>;
+    callback({
+      inHouse:    typeof d.inHouse    === 'number' ? d.inHouse    : null,
+      arrivals:   typeof d.arrivals   === 'number' ? d.arrivals   : null,
+      departures: typeof d.departures === 'number' ? d.departures : null,
+      inHouseGuests:    typeof d.inHouseGuests    === 'number' ? d.inHouseGuests    : null,
+      arrivalsGuests:   typeof d.arrivalsGuests   === 'number' ? d.arrivalsGuests   : null,
+      departuresGuests: typeof d.departuresGuests === 'number' ? d.departuresGuests : null,
+      pulledAt: (d.pulledAt as { toDate?: () => Date } | undefined)?.toDate?.() ?? null,
+      error:    typeof d.error === 'string' ? d.error : null,
+    });
+  }, error => {
+    console.error('[Firestore] Listener error in subscribeToDashboardNumbers:', error.message);
+  });
+}
+
 // ─── Schedule Assignments (Maria's HK-to-room assignments, survives CSV overwrites) ──
 
 export const scheduleAssignmentsRef = (uid: string, pid: string, date: string) =>

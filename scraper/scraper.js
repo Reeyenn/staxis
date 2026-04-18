@@ -1,10 +1,17 @@
 /**
  * HotelOps AI — CSV Schedule Runner
  *
- * Runs on Railway. Stays alive and, once per day, pulls the arrivals/
- * departures CSV from Choice Advantage at 6am (today's shift confirmation)
- * and 7pm (tomorrow's shift plan). Writes to planSnapshots/{date} and
- * merges the stayover-cycle fields into individual room docs.
+ * Runs on Railway. Stays alive and runs two things off the same tick loop:
+ *
+ *   1. CSV pulls (once per day) — the arrivals/departures CSV from Choice
+ *      Advantage at 6am (today's shift confirmation) and 7pm (tomorrow's
+ *      shift plan). Writes to planSnapshots/{date} and merges stayover-cycle
+ *      fields into individual room docs.
+ *
+ *   2. Dashboard number pulls (every 15 min, 5am–11pm) — grabs in-house,
+ *      arrivals, and departures counts from Choice Advantage's View pages
+ *      and writes them to scraperStatus/dashboard for the Schedule tab.
+ *      See dashboard-pull.js.
  *
  * Removed (intentionally):
  *   • Every-15-min live PMS scrape — was noise on the Rooms tab and is
@@ -27,6 +34,7 @@ const { getFirestore } = require('firebase-admin/firestore');
 const path = require('path');
 const fs = require('fs');
 const { runCSVScrape } = require('./csv-scraper');
+const { pullDashboardNumbers } = require('./dashboard-pull');
 
 // ─── Config ────────────────────────────────────────────────────────────────
 
@@ -238,6 +246,60 @@ async function runCSVScrapeFresh(page, pullType, relogin) {
   }
 }
 
+// ─── Dashboard number pull scheduler ───────────────────────────────────────
+// Every 15 min between 5am and 11pm local, grab in-house/arrivals/departures
+// counts off Choice Advantage's View pages and write them to
+// scraperStatus/dashboard for the Schedule tab to display live.
+//
+// Uses the same logged-in page as the CSV pull. On session expiry, calls
+// relogin() and retries once (mirrors the CSV pull's retry pattern).
+let lastDashboardPullAt = 0;
+const DASHBOARD_INTERVAL_MS = 15 * 60 * 1000;
+
+async function runDashboardPullFresh(page, relogin) {
+  try {
+    return await pullDashboardNumbers(page, db, log);
+  } catch (err) {
+    const msg = err.message || '';
+    if (msg.toLowerCase().includes('session expired')) {
+      log(`Dashboard pull lost session — re-logging and retrying once...`);
+      try {
+        await relogin();
+        return await pullDashboardNumbers(page, db, log);
+      } catch (retryErr) {
+        log(`Dashboard pull retry FAILED: ${retryErr.message}`);
+        await db.collection('scraperStatus').doc('dashboard').set({
+          error: `retry failed: ${retryErr.message}`,
+          pulledAt: new Date(),
+        }, { merge: true }).catch(() => {});
+        return null;
+      }
+    }
+    log(`Dashboard pull error: ${msg}`);
+    await db.collection('scraperStatus').doc('dashboard').set({
+      error: msg,
+      pulledAt: new Date(),
+    }, { merge: true }).catch(() => {});
+    return null;
+  }
+}
+
+async function maybeRunDashboardPull(page, relogin) {
+  const hour = localHour();
+  // 5am–10:59pm active window. Staff aren't looking at these numbers
+  // overnight and CA is quiet then — no reason to hammer the site.
+  if (hour < 5 || hour >= 23) return;
+
+  const now = Date.now();
+  if (now - lastDashboardPullAt < DASHBOARD_INTERVAL_MS) return;
+
+  const result = await runDashboardPullFresh(page, relogin);
+  // Mark the timestamp whether success or failure — a failed pull is logged
+  // to Firestore and we don't want to retry every 5 min tick on a down CA.
+  lastDashboardPullAt = now;
+  return result;
+}
+
 async function maybeRunCSVPull(page, relogin) {
   const hour  = localHour();
   const today = todayISO();
@@ -265,7 +327,7 @@ async function run() {
   log('=== HotelOps AI CSV Runner starting ===');
   log(`Property: ${CONFIG.PROPERTY_ID} | User: ${CONFIG.USER_ID}`);
   log(`Timezone: ${CONFIG.TIMEZONE} | Local hour: ${localHour()} | Today: ${todayISO()}`);
-  log(`Tick every ${CONFIG.TICK_MINUTES} min — triggers CSV pulls at 6am and 7pm local time`);
+  log(`Tick every ${CONFIG.TICK_MINUTES} min — CSV pulls at 6am+7pm, dashboard numbers every 15 min 5am–11pm`);
 
   const browser = await chromium.launch({
     headless: process.env.HEADED !== 'true',
@@ -311,6 +373,7 @@ async function run() {
       // scheduled pull didn't run this tick.
       await writeHeartbeat();
       await maybeRunCSVPull(page, relogin);
+      await maybeRunDashboardPull(page, relogin);
       // Refresh session cookie so we stay logged in
       await context.storageState({ path: CONFIG.SESSION_FILE });
     } catch (err) {
