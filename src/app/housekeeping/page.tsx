@@ -745,10 +745,30 @@ function ScheduleSection() {
 
   // Auto Recommend — distributes unassigned rooms across current crew, least-loaded first.
   const handleAutoRecommend = () => {
-    if (selectedCrew.length === 0) return;
-    // Start from current workload so we respect her existing assignments.
+    // ── Step 1: top up the crew to the recommended headcount ──
+    //
+    // Without this, clicking Auto Assign with only 2 crew on a 5-person
+    // workload crams 11h onto each of them — way over the 7h shift cap.
+    // Mirror the CSV-pull behavior: pull more staff from the eligible
+    // pool in priority order (autoSelectEligible already sorts by
+    // schedulePriority, weekly hours, senior flag, name) until we hit
+    // `recommendedStaff`. Anyone Maria has explicitly added still stays.
+    const currentIds = new Set(selectedCrew.map(s => s.id));
+    const additions: StaffMember[] = [];
+    for (const s of eligiblePool) {
+      if (currentIds.has(s.id)) continue;
+      if (selectedCrew.length + additions.length >= recommendedStaff) break;
+      additions.push(s);
+    }
+    const effectiveCrew = [...selectedCrew, ...additions];
+    if (effectiveCrew.length === 0) return;
+
+    // ── Step 2: distribute, least-loaded-first, across the full crew ──
+    // Keep existing assignments untouched so we don't yank rooms off of
+    // people who are already mid-clean; new staff start at 0 load and
+    // naturally absorb the unassigned pool first until things balance.
     const loadByStaff = new Map<string, number>();
-    selectedCrew.forEach(s => loadByStaff.set(s.id, 0));
+    effectiveCrew.forEach(s => loadByStaff.set(s.id, 0));
     for (const r of assignableRooms) {
       const who = assignments[r.id];
       if (!who || !loadByStaff.has(who)) continue;
@@ -772,8 +792,21 @@ function ScheduleSection() {
       const mins = minsForRoom(r) + prepPerRoom;
       loadByStaff.set(best, bestLoad + mins);
     }
+
+    // Commit crew additions first (so the new cards render), then the
+    // assignments that reference them.
+    if (additions.length > 0) {
+      userEditedCrew.current = true;
+      additions.forEach(s => manuallyAdded.current.add(s.id));
+      setCrewOverride(effectiveCrew.map(s => s.id));
+    }
     setAssignments(next);
-    showMoveToast(lang === 'es' ? 'Habitaciones redistribuidas' : 'Rooms redistributed');
+    const toastMsg = additions.length > 0
+      ? (lang === 'es'
+          ? `Personal agregado y habitaciones redistribuidas (${additions.length} agregado${additions.length === 1 ? '' : 's'})`
+          : `Added ${additions.length} staff and redistributed rooms`)
+      : (lang === 'es' ? 'Habitaciones redistribuidas' : 'Rooms redistributed');
+    showMoveToast(toastMsg);
   };
 
   const handleSend = async () => {
@@ -1492,13 +1525,15 @@ function ScheduleSection() {
               {lang === 'es' ? 'Prioridad' : 'Priority'}
             </button>
 
-            {/* Auto Assign — fills any unassigned rooms onto the current crew,
-                spreading the load least-loaded-first. Same logic that fires
-                automatically when the CSV pulls, just exposed as a manual
-                button so Maria can trigger it anytime. Disabled when there's
-                nothing to assign or no one to assign to. */}
+            {/* Auto Assign — tops up the crew from the eligible pool (priority
+                order) if the current crew is under the recommended headcount,
+                then distributes unassigned rooms least-loaded-first. Same
+                logic that fires automatically when the CSV pulls. Only
+                disabled if there's nothing to assign, or there's nobody in
+                the eligible pool to pull from at all. */}
             {(() => {
-              const disabled = unassignedRooms.length === 0 || selectedCrew.length === 0;
+              const canStaff = selectedCrew.length > 0 || eligiblePool.length > 0;
+              const disabled = unassignedRooms.length === 0 || !canStaff;
               return (
                 <button
                   onClick={handleAutoRecommend}
@@ -1507,8 +1542,10 @@ function ScheduleSection() {
                     disabled
                       ? (unassignedRooms.length === 0
                           ? (lang === 'es' ? 'No hay habitaciones sin asignar' : 'No unassigned rooms')
-                          : (lang === 'es' ? 'Agrega personal primero' : 'Add crew first'))
-                      : (lang === 'es' ? 'Distribuye las habitaciones sin asignar' : 'Distribute unassigned rooms across the crew')
+                          : (lang === 'es' ? 'No hay personal elegible' : 'No eligible staff'))
+                      : (lang === 'es'
+                          ? 'Agrega personal si hace falta y reparte las habitaciones'
+                          : 'Add staff if needed and distribute rooms across the crew')
                   }
                   style={{
                     padding: '10px 20px',
