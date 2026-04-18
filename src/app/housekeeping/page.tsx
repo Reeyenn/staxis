@@ -1589,14 +1589,15 @@ function ScheduleSection() {
               );
             })()}
 
-            {/* Send Confirmations — absolutely centered on the same line.
-                Before first send: primary "Send Confirmations" button.
-                After: status pill + smaller "Send Updates" button so Maria
-                can push changes (e.g. 6am overnight changes) without the
-                button disappearing. */}
+            {/* Send Confirmations — pushed to the right side of the row so
+                it never converges with the Unassign All button. Before the
+                first send: primary "Send Confirmations" button. After:
+                status pill + smaller "Send Updates" button so Maria can
+                push changes (e.g. 6am overnight changes) without the button
+                disappearing. */}
             {!alreadySent && selectedCrew.length > 0 && (
               <button onClick={(e) => { e.stopPropagation(); handleSend(); }} disabled={sending} style={{
-                position: 'absolute', left: '50%', transform: 'translateX(-50%)',
+                marginLeft: 'auto',
                 padding: '14px 24px', background: '#006565', color: '#82e2e1',
                 borderRadius: '9999px', fontWeight: 600, fontSize: '14px',
                 border: 'none', cursor: sending ? 'not-allowed' : 'pointer',
@@ -1612,7 +1613,7 @@ function ScheduleSection() {
             )}
             {alreadySent && (
               <div style={{
-                position: 'absolute', left: '50%', transform: 'translateX(-50%)',
+                marginLeft: 'auto',
                 display: 'flex', alignItems: 'center', gap: '10px',
                 whiteSpace: 'nowrap',
               }}>
