@@ -10,7 +10,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { Modal } from '@/components/ui/Modal';
 import { useSyncContext } from '@/contexts/SyncContext';
 import {
-  subscribeToRooms, updateRoom, addRoom,
+  subscribeToRooms, subscribeToAllRooms, updateRoom, addRoom,
   addStaffMember, updateStaffMember, deleteStaffMember,
   getRoomsForDate, getPublicAreas, setPublicArea, deletePublicArea,
   updateProperty,
@@ -1982,6 +1982,7 @@ function RoomsSection() {
   const { recordOfflineAction }                            = useSyncContext();
 
   const [rooms,   setRooms]   = useState<Room[]>([]);
+  const [activeDate, setActiveDate] = useState<string>(todayStr());
   const [loading, setLoading] = useState(true);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [actionRoom, setActionRoom] = useState<Room | null>(null); // room action popup
@@ -1990,10 +1991,42 @@ function RoomsSection() {
   // Help request badge tracking — rooms where helpRequested is true
   const [backupRoom, setBackupRoom] = useState<Room | null>(null); // room needing backup staff picker
 
+  // Subscribe to ALL rooms in the property, then pick the active date to show.
+  //
+  // The room docs are keyed by shiftDate — so today's live rooms (from the
+  // 15-min scraper) AND tomorrow's seeded rooms (from Send Shift Confirmations)
+  // both live here. We want the Rooms tab to show whichever shift is active:
+  //   • If today has rooms → show today
+  //   • Else if a future date has rooms → show the nearest one (prep view)
+  //   • Else fall back to the most recent past date (just-finished shift)
+  //
+  // This mirrors the HK personal page's nearest-shift logic so completions
+  // made from the HK page always show up on the Rooms tab in real time.
   useEffect(() => {
     if (!user || !activePropertyId) return;
-    const unsub = subscribeToRooms(user.uid, activePropertyId, todayStr(), (r) => {
-      setRooms(r);
+    const unsub = subscribeToAllRooms(user.uid, activePropertyId, (all) => {
+      const today = todayStr();
+      const byDate = new Map<string, Room[]>();
+      for (const r of all) {
+        if (!r.date) continue;
+        const list = byDate.get(r.date) ?? [];
+        list.push(r);
+        byDate.set(r.date, list);
+      }
+      let chosenDate = today;
+      if (byDate.has(today)) {
+        chosenDate = today;
+      } else {
+        const future = [...byDate.keys()].filter(d => d > today).sort();
+        if (future.length > 0) {
+          chosenDate = future[0];
+        } else {
+          const past = [...byDate.keys()].filter(d => d < today).sort().reverse();
+          if (past.length > 0) chosenDate = past[0];
+        }
+      }
+      setActiveDate(chosenDate);
+      setRooms(byDate.get(chosenDate) ?? []);
       setLoading(false);
     });
     return unsub;
@@ -2191,6 +2224,37 @@ function RoomsSection() {
         </div>
       ) : (
         <>
+          {/* ── Active Shift Date Banner ── */}
+          {(() => {
+            const today = todayStr();
+            const isToday = activeDate === today;
+            const isFuture = activeDate > today;
+            const parsed = new Date(activeDate + 'T00:00:00');
+            const dateLabel = format(parsed, 'EEEE, MMMM d');
+            const prefix = isToday
+              ? (lang === 'es' ? 'Turno de hoy' : "Today's shift")
+              : isFuture
+                ? (lang === 'es' ? 'Próximo turno' : 'Next shift')
+                : (lang === 'es' ? 'Último turno' : 'Last shift');
+            const bg = isToday ? 'rgba(16,185,129,0.08)' : isFuture ? 'rgba(59,130,246,0.08)' : 'rgba(148,163,184,0.12)';
+            const border = isToday ? 'rgba(16,185,129,0.25)' : isFuture ? 'rgba(59,130,246,0.25)' : 'rgba(148,163,184,0.35)';
+            const fg = isToday ? '#047857' : isFuture ? '#1d4ed8' : '#475569';
+            return (
+              <div style={{
+                display: 'inline-flex', alignItems: 'center', gap: '10px',
+                padding: '8px 14px', marginBottom: '20px',
+                background: bg, border: `1px solid ${border}`,
+                borderRadius: '999px', color: fg,
+                fontSize: '13px', fontWeight: 600,
+              }}>
+                <Calendar size={14} />
+                <span style={{ textTransform: 'uppercase', letterSpacing: '0.08em', fontSize: '11px', fontWeight: 700, opacity: 0.8 }}>{prefix}</span>
+                <span style={{ opacity: 0.45 }}>·</span>
+                <span>{dateLabel}</span>
+              </div>
+            );
+          })()}
+
           {/* ── Status Legend ── */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '32px', marginBottom: '40px', padding: '0 4px', flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>

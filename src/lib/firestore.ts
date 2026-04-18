@@ -215,6 +215,24 @@ export function subscribeToRooms(
   });
 }
 
+/**
+ * Real-time subscription to ALL rooms in a property (no date filter).
+ * Used by the Rooms tab so it can show today's rooms when today has a shift,
+ * or auto-fall-back to the nearest upcoming / most recent shift date.
+ */
+export function subscribeToAllRooms(
+  uid: string,
+  pid: string,
+  callback: (rooms: Room[]) => void
+) {
+  return onSnapshot(roomsRef(uid, pid), snap => {
+    const rooms = snap.docs.map(d => ({ id: d.id, ...d.data() } as Room));
+    callback(rooms);
+  }, error => {
+    console.error('[Firestore] Listener error in subscribeToAllRooms:', error.message);
+  });
+}
+
 export async function addRoom(uid: string, pid: string, room: Omit<Room, 'id'>): Promise<string> {
   try {
     const ref = await addDoc(roomsRef(uid, pid), room);
