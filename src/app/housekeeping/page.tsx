@@ -86,6 +86,11 @@ function formatDisplayDate(dateStr: string, lang: 'en' | 'es'): string {
 
 function isEligible(s: StaffMember, date: string): boolean {
   if (s.isActive === false) return false;
+  // Schedule tab is housekeeping-only — don't surface front-desk,
+  // maintenance, or managers in Add Staff / Auto Assign. Staff page
+  // treats undefined as 'housekeeping', so we mirror that here.
+  const dept = s.department ?? 'housekeeping';
+  if (dept !== 'housekeeping') return false;
   if (s.schedulePriority === 'excluded') return false;
   if (s.vacationDates?.includes(date)) return false;
   const maxHrs = s.maxWeeklyHours ?? 40;
