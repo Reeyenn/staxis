@@ -270,9 +270,16 @@ async function writeRoomsToFirestore(rooms) {
   const snaps = await Promise.all(refs.map(({ ref }) => ref.get()));
 
   // Build batch — scraper writes CA fields including status.
-  // NOTE: While housekeepers aren't yet using the app to mark rooms clean,
-  // CA condition is the source of truth for status. Once HKs are live on the
-  // app, flip this back to preserve status on existing docs.
+  //
+  // HK-TOUCH LOCK — once a housekeeper has physically clicked Start or Finish
+  // on a room in the Staxis app, the scraper must NOT overwrite `status` for
+  // that room for the rest of the day. CA lags behind real-world work (Maria
+  // updates it manually), so trusting CA would flip a cleaned room back to
+  // dirty 15 min later. All other CA fields (_caCondition, _caRoomStatus,
+  // _caService, isDnd, type) keep flowing so Week 1 comparison data is
+  // intact. Daily reset is automatic — tomorrow's room doc lives at a new
+  // path (YYYY-MM-DD_<roomNumber>) with no startedAt/completedAt, so the
+  // scraper regains full control at midnight.
   //
   // TYPE LATCHING — critical for operational value:
   // CA's "Service" field reflects the *current* state of a room, not the
@@ -284,13 +291,15 @@ async function writeRoomsToFirestore(rooms) {
   // Rule: once a room is classified as checkout or stayover for the day,
   // it stays that way. Only upgrades are allowed (stayover → checkout,
   // vacant → stayover/checkout). Downgrades to vacant are rejected.
-  // `status` (clean/dirty) keeps updating live — that's correct.
   const batch = db.batch();
 
   refs.forEach(({ room, ref }, i) => {
     const isNew       = !snaps[i].exists;
     const existing    = isNew ? null : snaps[i].data();
     const scrapedType = mapRoomType(room.service, room.roomStatus); // checkout|stayover|vacant
+
+    // HK-touch check: has a housekeeper physically acted on this room today?
+    const hkTouched = !!(existing && (existing.startedAt || existing.completedAt));
 
     // Latch: never demote a room's work-classification mid-day.
     // Priority order (highest → lowest): checkout > stayover > vacant.
@@ -307,7 +316,6 @@ async function writeRoomsToFirestore(rooms) {
     const syncData = {
       number:        room.number,
       type:          finalType,                        // checkout|stayover|vacant (latched)
-      status:        mapRoomStatus(room.condition),    // clean|dirty — live from CA
       priority:      'standard',
       date:          today,
       propertyId:    CONFIG.PROPERTY_ID,
@@ -315,15 +323,23 @@ async function writeRoomsToFirestore(rooms) {
       _caRoomType:   room.roomType,    // SNK, SNQQ, HSNK, etc.
       _caRoomStatus: room.roomStatus,  // Occupied / Vacant
       _caService:    room.service,     // Check Out / Stay Over / None (raw, for debugging)
-      _caCondition:  room.condition,   // Clean / Dirty
+      _caCondition:  room.condition,   // Clean / Dirty (raw, for comparison)
       _lastSyncedAt: now,
     };
 
+    // Only include `status` if the HK hasn't touched the room yet today.
+    // Once they click Start or Finish, the app is the source of truth for
+    // the rest of the day.
+    if (!hkTouched) {
+      syncData.status = mapRoomStatus(room.condition); // clean|dirty — live from CA
+    }
+
     if (isNew) {
-      // First sync of the day — initialize with no assignment
+      // First sync of the day — initialize with no assignment.
+      // Brand new doc → never HK-touched, so status is always set above.
       batch.set(ref, { ...syncData, assignedTo: null, assignedName: null });
     } else {
-      // Already exists — merge all fields (type is now latched above)
+      // Already exists — merge all fields. `status` is omitted if HK-touched.
       batch.set(ref, syncData, { merge: true });
     }
   });
