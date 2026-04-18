@@ -79,11 +79,14 @@ function isEligible(s: StaffMember, date: string): boolean {
   return true;
 }
 
+// 'sent' is the new default status post-Send (link went out, no reply expected);
+// 'pending' is the legacy equivalent from the old yes/no flow. Both render the
+// same way here.
 const STATUS_COLOR: Record<ConfirmationStatus, string> = {
-  pending: 'var(--amber)', confirmed: 'var(--green)', declined: 'var(--red)', no_response: 'var(--text-muted)',
+  sent: 'var(--amber)', pending: 'var(--amber)', confirmed: 'var(--green)', declined: 'var(--red)', no_response: 'var(--text-muted)',
 };
 const STATUS_ICON: Record<ConfirmationStatus, React.ReactNode> = {
-  pending: <Clock size={13} />, confirmed: <CheckCircle2 size={13} />, declined: <XCircle size={13} />, no_response: <AlertTriangle size={13} />,
+  sent: <Clock size={13} />, pending: <Clock size={13} />, confirmed: <CheckCircle2 size={13} />, declined: <XCircle size={13} />, no_response: <AlertTriangle size={13} />,
 };
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -933,7 +936,14 @@ export default function StaffPage() {
                           <p style={{ margin: '2px 0 0', fontSize: '13px', color: '#454652', fontFamily: 'Inter, sans-serif' }}>
                             {dept}{dept ? ' • ' : ''}
                             <span style={{ color: conf.status === 'confirmed' ? '#006565' : conf.status === 'declined' ? '#ba1a1a' : '#454652' }}>
-                              {t(conf.status === 'pending' ? 'statusPending' : conf.status === 'confirmed' ? 'statusConfirmed' : conf.status === 'declined' ? 'statusDeclined' : 'statusNoResponse', lang)}
+                              {t(
+                                conf.status === 'confirmed' ? 'statusConfirmed'
+                                : conf.status === 'declined' ? 'statusDeclined'
+                                // 'sent' and legacy 'pending' both mean "link went out, waiting"
+                                : (conf.status === 'sent' || conf.status === 'pending') ? 'statusPending'
+                                : 'statusNoResponse',
+                                lang,
+                              )}
                             </span>
                           </p>
                         </div>

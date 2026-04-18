@@ -2,11 +2,18 @@
  * POST /api/send-shift-confirmations
  *
  * Called by the Housekeeping → Schedule tab's "Send" button.
- * For each selected housekeeper, sends a simple YES/NO availability text and
- * stores a `shiftConfirmations` doc so /api/sms-reply can look up the reply.
+ * For each selected housekeeper, sends ONE SMS with their personal link and
+ * assigned rooms for tomorrow's shift, and stores a `shiftConfirmations` doc
+ * so /api/sms-reply can route any replies back to the right shift.
  *
- * The follow-up message after YES (with their personal link) is sent by
- * /api/sms-reply, NOT by this route.
+ * Maria confirms availability in-person at 3pm, so there is no YES/NO prompt
+ * in the SMS itself. The link text is the only thing sent on the first pass.
+ * Re-clicking Send later refreshes the same doc and re-sends the link with
+ * the latest room list (no "update" branch — it's one action, repeatable).
+ *
+ * YES/NO is still accepted by /api/sms-reply if a HK happens to reply — YES
+ * just marks the doc 'confirmed' as a nice acknowledgment; NO marks it
+ * 'declined' and pings managers so Maria knows someone flaked.
  *
  * Body:
  *   {
@@ -255,17 +262,20 @@ export async function POST(req: NextRequest) {
             .collection('shiftConfirmations').doc(docId);
 
           // Check for an existing confirmation doc. If the HK already replied
-          // YES ("confirmed"), we treat this Send as an update — preserve their
-          // confirmed status and send a short "your list changed" SMS with the
-          // new room numbers and their personal link. Pending/declined/new docs
-          // get the normal YES/NO prompt.
+          // YES ("confirmed"), we preserve that status. Otherwise the doc
+          // enters/remains in 'sent' state (the normal resting state — Maria
+          // confirms availability in person at 3pm). We send the SAME link
+          // SMS either way, just with slightly different copy for updates so
+          // the HK knows the list changed.
           const existingSnap = await confirmRef.get();
           const existingData = existingSnap.exists ? existingSnap.data() : null;
-          const isUpdate = existingData?.status === 'confirmed';
+          const isUpdate = existingSnap.exists;
+          const preserveConfirmed = existingData?.status === 'confirmed';
 
           if (isUpdate) {
-            // Keep status = 'confirmed'. Merge in the new room/area assignments
-            // and refresh the link so the HK's personal page shows today's plan.
+            // Keep the existing 'confirmed' flag if they'd already replied YES.
+            // Otherwise bump status back to 'sent'. Either way refresh rooms,
+            // link, language, and reset smsSent so this Send can mark it true.
             await confirmRef.update({
               staffName: name,
               staffPhone: phone164,
@@ -274,6 +284,7 @@ export async function POST(req: NextRequest) {
               assignedAreas: areas,
               hkUrl,
               hotelName,
+              ...(preserveConfirmed ? {} : { status: 'sent' }),
               lastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
               smsSent: false,
             });
@@ -284,7 +295,7 @@ export async function POST(req: NextRequest) {
               staffName: name,
               staffPhone: phone164,
               shiftDate,
-              status: 'pending',       // pending | confirmed | declined
+              status: 'sent',          // sent | confirmed | declined
               language,
               assignedRooms: rooms,
               assignedAreas: areas,
@@ -319,13 +330,16 @@ export async function POST(req: NextRequest) {
                 ? (language === 'es' ? `Áreas: ${areas.join(', ')}` : `Areas: ${areas.join(', ')}`)
                 : (language === 'es' ? 'Sin asignaciones' : 'No assignments'));
 
+          // ONE message template for every send — new or update. The link +
+          // rooms IS the confirmation. "Your list changed" wording only fires
+          // on re-sends so the HK knows their assignment moved.
           const message = isUpdate
             ? (language === 'es'
-                ? `Hola ${firstName}! Tu lista para ${dateLabel} cambió.\n${roomsLabel}\nAbrir: ${hkUrl}\n– ${hotelName}`
-                : `Hi ${firstName}! Your list for ${dateLabel} changed.\n${roomsLabel}\nOpen: ${hkUrl}\n– ${hotelName}`)
+                ? `Hola ${firstName}! Tu lista para ${dateLabel} cambió.\n${roomsLabel}\nAbrir: ${hkUrl}\n\nFor English, reply ENGLISH\n– ${hotelName}`
+                : `Hi ${firstName}! Your list for ${dateLabel} changed.\n${roomsLabel}\nOpen: ${hkUrl}\n\nPara español, responde ESPAÑOL\n– ${hotelName}`)
             : (language === 'es'
-                ? `Hola ${firstName}! ¿Puedes venir mañana (${dateLabel})?\nResponde SÍ o NO.\n\nFor English, reply ENGLISH\n– ${hotelName}`
-                : `Hi ${firstName}! Can you come in tomorrow (${dateLabel})?\nReply YES or NO.\n\nPara español, responde ESPAÑOL\n– ${hotelName}`);
+                ? `Hola ${firstName}! Tu lista para ${dateLabel}:\n${roomsLabel}\nAbrir: ${hkUrl}\n\nFor English, reply ENGLISH\n– ${hotelName}`
+                : `Hi ${firstName}! Your list for ${dateLabel}:\n${roomsLabel}\nOpen: ${hkUrl}\n\nPara español, responde ESPAÑOL\n– ${hotelName}`);
 
           await sendSms(phone164, message);
           await confirmRef.update({ smsSent: true });

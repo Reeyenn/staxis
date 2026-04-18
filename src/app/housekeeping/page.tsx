@@ -498,10 +498,13 @@ function ScheduleSection() {
   }, [confirmations]);
   const alreadySent = confirmations.length > 0;
 
-  // Aggregate counts for the "Confirmations sent" banner
+  // Aggregate counts for the "Links sent" banner.
+  // New flow: 'sent' is the default resting state (Maria confirms in person
+  // at 3pm). 'confirmed' / 'declined' only appear if a HK happens to reply.
+  // 'pending' is legacy — treat the same as 'sent' for the banner.
+  const sentCount      = confirmations.filter(c => c.status === 'sent' || c.status === 'pending').length;
   const confirmedCount = confirmations.filter(c => c.status === 'confirmed').length;
   const declinedCount  = confirmations.filter(c => c.status === 'declined').length;
-  const pendingCount   = confirmations.filter(c => c.status === 'pending').length;
 
   useEffect(() => {
     if (!uid || !pid) return;
@@ -990,8 +993,8 @@ function ScheduleSection() {
       // and flip `alreadySent` automatically.
 
       // Parse the API response so we can tell Maria what actually happened:
-      // - `fresh`: HKs who got a new YES/NO confirmation prompt
-      // - `updated`: HKs who had already replied YES and got an update SMS
+      // - `fresh`: HKs who got a brand-new link SMS (no prior doc)
+      // - `updated`: HKs whose existing doc was refreshed + re-texted
       // - `skipped`: HKs we couldn't text (no phone / invalid phone)
       // - `failed`: SMS sends that errored (Twilio issue, etc.)
       // - `perStaff`: per-person outcome, drives the badge next to each name
@@ -1013,7 +1016,7 @@ function ScheduleSection() {
         }
 
         const parts: string[] = [];
-        if (fresh > 0) parts.push(lang === 'es' ? `${fresh} confirmación${fresh === 1 ? '' : 'es'}` : `${fresh} confirmation${fresh === 1 ? '' : 's'}`);
+        if (fresh > 0) parts.push(lang === 'es' ? `${fresh} enlace${fresh === 1 ? '' : 's'}` : `${fresh} link${fresh === 1 ? '' : 's'}`);
         if (updated > 0) parts.push(lang === 'es' ? `${updated} actualización${updated === 1 ? '' : 'es'}` : `${updated} update${updated === 1 ? '' : 's'}`);
         if (skipped > 0) parts.push(lang === 'es' ? `${skipped} omitido${skipped === 1 ? '' : 's'}` : `${skipped} skipped`);
         if (failed > 0) parts.push(lang === 'es' ? `${failed} fallaron` : `${failed} failed`);
@@ -1458,14 +1461,15 @@ function ScheduleSection() {
               const statusColor = memberRooms.length === 0 ? '#0c1d2b' : isNearCapacity ? '#93000a' : '#454652';
 
               // The badge next to each crew member's name has two layers:
-              //   1. If the HK has already replied to the SMS → "Confirmed" / "Declined"
-              //   2. Otherwise → what happened on the last Send click:
-              //        - sent     → "Sent Confirmation!" (green)
+              //   1. If the HK replied NO → "Declined" (red).
+              //   2. If the HK replied YES → "Confirmed" (green) — optional.
+              //   3. Otherwise → what happened on the last Send click:
+              //        - sent     → "Link Sent" (green)
               //        - skipped  → "Didn't Send — No Phone Number" (red)
               //        - failed   → "Didn't Send — <reason>"         (red)
-              //   3. Fallback for page reloads: if we have no fresh Send result
-              //      but a pending confirmation doc exists, we know the SMS
-              //      went out at some point → "Sent Confirmation!"
+              //   4. Fallback for page reloads: if we have no fresh Send result
+              //      but a 'sent' (or legacy 'pending') confirmation doc exists,
+              //      the link went out at some point → "Link Sent".
               const confStatus = statusByStaff.get(member.id);
               const sendResult = sendResults.get(member.id);
 
@@ -1488,8 +1492,8 @@ function ScheduleSection() {
                 : (sendResult?.status === 'skipped' || sendResult?.status === 'failed')
                   ? { label: (lang === 'es' ? 'No se envió — ' : "Didn't Send — ") + reasonLabel(sendResult.reason),
                       bg: 'rgba(239,68,68,0.12)', color: '#b91c1c' }
-                : (sendResult?.status === 'sent' || confStatus === 'pending')
-                  ? { label: lang === 'es' ? '¡Confirmación enviada!' : 'Sent Confirmation!',
+                : (sendResult?.status === 'sent' || confStatus === 'sent' || confStatus === 'pending')
+                  ? { label: lang === 'es' ? 'Enlace enviado' : 'Link Sent',
                       bg: 'rgba(16,185,129,0.15)', color: '#059669' }
                 : null;
 
@@ -1855,14 +1859,16 @@ function ScheduleSection() {
               );
             })()}
 
-            {/* Send Confirmations — absolutely centered on the same line.
+            {/* Send Links — absolutely centered on the same line.
                 The left cluster uses a tight 10px gap so there's breathing
                 room around this centered block. Before the first send:
-                primary "Send Confirmations" button. After: status pill +
-                the SAME "Send Confirmations" button so Maria can re-send
+                primary "Send Links" button. After: status pill +
+                the SAME "Send Links" button so Maria can re-send
                 assignments at any time without us calling it something
-                different. "Send Updates" as a concept is gone — it's one
-                action, and you can do it as many times as you want. */}
+                different. "Send Updates" / "Send Confirmations" as concepts
+                are gone — it's one action, and you can do it as many times
+                as you want. Maria confirms availability in person at 3pm,
+                so the SMS is just the link to their list. */}
             {!alreadySent && selectedCrew.length > 0 && (
               <button onClick={(e) => { e.stopPropagation(); handleSend(); }} disabled={sending} style={{
                 position: 'absolute', left: '50%', transform: 'translateX(-50%)',
@@ -1876,7 +1882,7 @@ function ScheduleSection() {
                 overflow: 'hidden',
               }}>
                 <Zap size={18} />
-                {sending ? (lang === 'es' ? 'Enviando…' : 'Sending…') : (lang === 'es' ? 'Enviar Confirmaciones' : 'Send Confirmations')}
+                {sending ? (lang === 'es' ? 'Enviando…' : 'Sending…') : (lang === 'es' ? 'Enviar Enlaces' : 'Send Links')}
               </button>
             )}
             {alreadySent && (
@@ -1894,15 +1900,21 @@ function ScheduleSection() {
                 }}>
                   <CheckCircle2 size={16} color="#10b981" />
                   <span>
-                    {lang === 'es' ? 'Enviado' : 'Sent'}
-                    {' · '}
-                    <span style={{ color: '#10b981' }}>{confirmedCount} {lang === 'es' ? 'confirmados' : 'confirmed'}</span>
-                    {' · '}
-                    <span style={{ color: '#6b7280' }}>{pendingCount} {lang === 'es' ? 'esperando' : 'waiting'}</span>
+                    <span style={{ color: '#10b981' }}>
+                      {sentCount + confirmedCount} {lang === 'es'
+                        ? (sentCount + confirmedCount === 1 ? 'enlace enviado' : 'enlaces enviados')
+                        : (sentCount + confirmedCount === 1 ? 'link sent' : 'links sent')}
+                    </span>
+                    {confirmedCount > 0 && (
+                      <>
+                        {' · '}
+                        <span style={{ color: '#059669' }}>{confirmedCount} {lang === 'es' ? 'confirmados' : 'confirmed'}</span>
+                      </>
+                    )}
                     {declinedCount > 0 && (
                       <>
                         {' · '}
-                        <span style={{ color: '#ef4444' }}>{declinedCount} {lang === 'es' ? 'no' : 'declined'}</span>
+                        <span style={{ color: '#ef4444' }}>{declinedCount} {lang === 'es' ? 'no viene' : 'declined'}</span>
                       </>
                     )}
                   </span>
@@ -1921,7 +1933,7 @@ function ScheduleSection() {
                     <Zap size={14} />
                     {sending
                       ? (lang === 'es' ? 'Enviando…' : 'Sending…')
-                      : (lang === 'es' ? 'Enviar Confirmaciones' : 'Send Confirmations')}
+                      : (lang === 'es' ? 'Enviar Enlaces' : 'Send Links')}
                   </button>
                 )}
               </div>

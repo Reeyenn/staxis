@@ -3,13 +3,19 @@
  * .github/workflows/escalate-pending.yml). We moved off Vercel Cron because
  * the Hobby plan blocks sub-daily schedules.
  *
- * For each pending shiftConfirmation:
- *  - 45+ min after sentAt with no firstRemindedAt → resend YES/NO prompt to HK,
- *    set firstRemindedAt
- *  - 75+ min after sentAt with no secondEscalatedAt → SMS the scheduling
- *    manager (staff member flagged isSchedulingManager === true),
- *    "XYZ hasn't confirmed yet, please reach out", set secondEscalatedAt.
- *    No department fallback — if nobody is flagged, nobody gets paged.
+ * NOTE (2026-04-18): This cron was designed for the old yes/no confirmation
+ * flow where HKs had to text YES/NO by a deadline. The new flow (Maria
+ * confirms in person at 3pm, SMS is just a link to the assignment list)
+ * creates docs with status='sent', NOT 'pending', so the `where('status',
+ * '==', 'pending')` query below returns zero new results. This cron is
+ * effectively a no-op under the new flow, and the workflow file can be
+ * safely disabled. It's left in place for now so any legacy 'pending'
+ * docs from the old flow can still surface, and so we can re-enable
+ * escalations cleanly if we ever add a confirmation deadline back.
+ *
+ * Old behavior (pre-2026-04-18): for each pending shiftConfirmation
+ *  - 45+ min after sentAt with no firstRemindedAt → resend YES/NO prompt
+ *  - 75+ min after sentAt with no secondEscalatedAt → SMS scheduling manager
  *
  * Iterates users → properties → shiftConfirmations to avoid needing a
  * collectionGroup index (works out-of-the-box on a fresh Firestore).

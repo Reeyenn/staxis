@@ -343,7 +343,15 @@ export interface PreventiveTask {
 
 // ─── Shift Confirmation ────────────────────────────────────────────────────
 
-export type ConfirmationStatus = 'pending' | 'confirmed' | 'declined' | 'no_response';
+// 'sent'      → link SMS went out, no reply yet (the default after Send).
+//                Maria confirms availability in-person at 3pm, so "sent"
+//                is the normal resting state — not a problem.
+// 'confirmed' → HK replied YES (optional, just a nice acknowledgment).
+// 'declined'  → HK replied NO. Worth flagging so Maria can arrange cover.
+// 'pending'   → legacy: docs created under the old yes/no flow. Treated
+//                the same as 'sent' for lookup purposes.
+// 'no_response' → legacy.
+export type ConfirmationStatus = 'sent' | 'pending' | 'confirmed' | 'declined' | 'no_response';
 
 export interface ShiftConfirmation {
   id: string;               // token - also the Firestore doc ID

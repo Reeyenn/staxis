@@ -2,12 +2,14 @@
  * POST /api/sms-reply
  *
  * Twilio inbound-SMS webhook. Matches every incoming text against the most
- * recent pending shiftConfirmation for that phone.
+ * recent open shiftConfirmation ('sent' or legacy 'pending') for that phone.
  *
- *   YES / SÍ / Y / S    → confirm → send HK their personal link → ping manager(s)
+ *   YES / SÍ / Y / S    → confirm → short thanks → ping manager(s)
+ *                         (HK already has the link — no need to resend)
  *   NO / N              → decline → ack the HK → ping manager(s) (no auto-cascade)
- *   ESPAÑOL / ENGLISH   → toggle language preference, resend the YES/NO prompt
- *   anything else       → "didn't catch that, reply YES or NO"
+ *   ESPAÑOL / ENGLISH   → toggle language preference, resend the LINK message
+ *                         in the new language
+ *   anything else       → gentle "didn't catch that" hint
  *
  * Manager = every active staff member with department === 'front_desk' and a phone.
  */
@@ -140,7 +142,7 @@ type ShiftConfirmation = {
   staffName: string;
   staffPhone: string;
   shiftDate: string;
-  status: 'pending' | 'confirmed' | 'declined';
+  status: 'sent' | 'pending' | 'confirmed' | 'declined';
   language: 'en' | 'es';
   assignedRooms?: string[];
   assignedAreas?: string[];
@@ -274,7 +276,10 @@ export async function POST(req: NextRequest) {
         const docSnap = await db.doc(path).get();
         if (!docSnap.exists) continue;
         const docData = docSnap.data() as { status?: string } | undefined;
-        if (docData?.status !== 'pending') continue; // already resolved — ignore
+        // 'sent' is the new default status after Send; 'pending' is legacy
+        // from the old yes/no flow. Either counts as "open" — replies should
+        // still work. We only skip docs that are already resolved.
+        if (docData?.status !== 'sent' && docData?.status !== 'pending') continue;
         checkDoc = docSnap;
         break;
       }
@@ -305,7 +310,26 @@ export async function POST(req: NextRequest) {
     const firstName = (staffName ?? 'there').split(' ')[0];
     const hotelName = data.hotelName || 'the hotel';
 
-    // ── ESPAÑOL — switch to Spanish and resend ─────────────────────────────
+    // Compose the link-with-rooms message used when the HK toggles language.
+    // Same template as /api/send-shift-confirmations — we just re-render in
+    // the new language and resend so they see their assignment in the
+    // language they asked for.
+    const renderLinkMessage = (targetLang: 'en' | 'es'): string => {
+      const rooms  = data.assignedRooms ?? [];
+      const areas  = data.assignedAreas ?? [];
+      const hkUrl  = data.hkUrl ?? '';
+      const label  = formatShiftDate(shiftDate, targetLang);
+      const roomsLabel = rooms.length
+        ? (targetLang === 'es' ? `Cuartos: ${rooms.join(', ')}` : `Rooms: ${rooms.join(', ')}`)
+        : (areas.length
+            ? (targetLang === 'es' ? `Áreas: ${areas.join(', ')}` : `Areas: ${areas.join(', ')}`)
+            : (targetLang === 'es' ? 'Sin asignaciones' : 'No assignments'));
+      return targetLang === 'es'
+        ? `Hola ${firstName}! Tu lista para ${label}:\n${roomsLabel}\nAbrir: ${hkUrl}\n\nFor English, reply ENGLISH\n– ${hotelName}`
+        : `Hi ${firstName}! Your list for ${label}:\n${roomsLabel}\nOpen: ${hkUrl}\n\nPara español, responde ESPAÑOL\n– ${hotelName}`;
+    };
+
+    // ── ESPAÑOL — switch to Spanish and resend the link ─────────────────────
     if (ES_SET.has(reply)) {
       // Mirror the language choice onto three places so everything stays
       // in sync: the legacy staffPrefs doc (kept for backward compat),
@@ -327,15 +351,11 @@ export async function POST(req: NextRequest) {
       }
       await checkDoc.ref.update({ language: 'es' });
 
-      const dateLabel = formatShiftDate(shiftDate, 'es');
-      await sendSms(
-        phone164,
-        `Hola ${firstName}! ¿Puedes venir mañana (${dateLabel})?\nResponde SÍ o NO.\n\nFor English, reply ENGLISH\n– ${hotelName}`,
-      );
+      await sendSms(phone164, renderLinkMessage('es'));
       return twimlOk();
     }
 
-    // ── ENGLISH — switch back to English and resend ────────────────────────
+    // ── ENGLISH — switch back to English and resend the link ───────────────
     if (EN_SET.has(reply)) {
       // Mirror onto staffPrefs + staff doc + confirmation (see ESPAÑOL branch).
       await db.collection('staffPrefs').doc(data.staffId).set(
@@ -353,11 +373,7 @@ export async function POST(req: NextRequest) {
       }
       await checkDoc.ref.update({ language: 'en' });
 
-      const dateLabel = formatShiftDate(shiftDate, 'en');
-      await sendSms(
-        phone164,
-        `Hi ${firstName}! Can you come in tomorrow (${dateLabel})?\nReply YES or NO.\n\nPara español, responde ESPAÑOL\n– ${hotelName}`,
-      );
+      await sendSms(phone164, renderLinkMessage('en'));
       return twimlOk();
     }
 
@@ -375,10 +391,12 @@ export async function POST(req: NextRequest) {
         respondedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
-      const hkUrl = data.hkUrl ?? '';
+      // Short acknowledgment. The HK already has their link from the initial
+      // send — no need to resend it here. Maria confirms availability in
+      // person at 3pm anyway; this reply is just a courtesy.
       const confirmMsg = lang === 'es'
-        ? `✅ ¡Confirmado, ${firstName}! Mañana te esperamos.${hkUrl ? `\nTu enlace: ${hkUrl}` : ''}\n– ${hotelName}`
-        : `✅ Confirmed, ${firstName}! See you tomorrow.${hkUrl ? `\nYour link: ${hkUrl}` : ''}\n– ${hotelName}`;
+        ? `✅ ¡Gracias, ${firstName}! Nos vemos mañana.\n– ${hotelName}`
+        : `✅ Thanks, ${firstName}! See you tomorrow.\n– ${hotelName}`;
       await sendSms(phone164, confirmMsg);
 
       const dateLabel = formatShiftDate(shiftDate, 'en');
@@ -441,9 +459,12 @@ export async function POST(req: NextRequest) {
     }
 
     // ── Unrecognised ─────────────────────────────────────────────────────────
+    // New flow: the SMS is just a link. There's no YES/NO prompt, so we
+    // don't tell the HK to reply YES or NO. We just let them know we got
+    // their message and point them at the link they already have.
     const hint = lang === 'es'
-      ? `No entendí eso. Por favor responde SÍ o NO.\n– ${hotelName}`
-      : `Didn't catch that. Please reply YES or NO.\n– ${hotelName}`;
+      ? `¡Gracias, ${firstName}! Recibí tu mensaje. Abre tu enlace para ver tu lista de hoy.\n– ${hotelName}`
+      : `Thanks, ${firstName}! Got your message. Open your link to see today's list.\n– ${hotelName}`;
     await sendSms(phone164, hint);
 
     return twimlOk();
