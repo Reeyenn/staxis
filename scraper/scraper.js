@@ -133,36 +133,71 @@ async function login(page) {
 let lastEveningCSVDate = null;
 let lastMorningCSVDate = null;
 
-async function maybeRunCSVPull(page) {
+/**
+ * Run a scheduled CSV scrape. Always re-logs in *right before* the scrape so
+ * the session cookie is guaranteed fresh — CA expires sessions after a few
+ * hours of idle, and the runner goes idle between scheduled windows. A single
+ * login at startup isn't good enough.
+ *
+ * If the re-login itself fails or the scrape still fails, we return false so
+ * the caller leaves `lastMorningCSVDate` unset and the next tick retries.
+ */
+async function runCSVScrapeFresh(page, pullType, relogin) {
+  // Always re-login right before — sessions die between scheduled windows.
+  try {
+    await relogin();
+  } catch (loginErr) {
+    log(`${pullType} pre-scrape login FAILED: ${loginErr.message}`);
+    return false;
+  }
+
+  const scrapeConfig = {
+    USER_ID:     CONFIG.USER_ID,
+    PROPERTY_ID: CONFIG.PROPERTY_ID,
+    TIMEZONE:    CONFIG.TIMEZONE,
+  };
+
+  try {
+    await runCSVScrape(page, db, scrapeConfig, pullType, log);
+    return true;
+  } catch (err) {
+    const msg = err.message || '';
+    // Belt-and-suspenders: if CA killed the session *during* the scrape itself
+    // (rare but observed), retry once with another fresh login.
+    if (msg.toLowerCase().includes('session expired')) {
+      log(`${pullType} scrape lost session mid-run — re-logging and retrying once...`);
+      try {
+        await relogin();
+        await runCSVScrape(page, db, scrapeConfig, pullType, log);
+        return true;
+      } catch (retryErr) {
+        log(`${pullType} scrape retry FAILED: ${retryErr.message}`);
+        return false;
+      }
+    }
+    log(`${pullType} CSV pull error: ${msg}`);
+    return false;
+  }
+}
+
+async function maybeRunCSVPull(page, relogin) {
   const hour  = localHour();
   const today = todayISO();
 
-  // ── 6am: morning CSV pull (confirm today's plan) ──────────────────────────
-  if (hour === 6 && lastMorningCSVDate !== today) {
-    lastMorningCSVDate = today;
-    try {
-      await runCSVScrape(page, db, {
-        USER_ID:     CONFIG.USER_ID,
-        PROPERTY_ID: CONFIG.PROPERTY_ID,
-        TIMEZONE:    CONFIG.TIMEZONE,
-      }, 'morning', log);
-    } catch (err) {
-      log(`Morning CSV pull error: ${err.message}`);
-    }
+  // ── Morning CSV pull: target 6am, catch up any time 6am–6:59pm ───────────
+  // If a Railway redeploy wiped in-process state after 6am, we self-heal on
+  // the first tick by seeing "we're past 6am and haven't run today yet."
+  // IMPORTANT: only mark `lastMorningCSVDate` after the scrape *succeeds* so
+  // transient errors (session expiry, CA outages) don't lock us out for the day.
+  if (hour >= 6 && hour < 19 && lastMorningCSVDate !== today) {
+    const ok = await runCSVScrapeFresh(page, 'morning', relogin);
+    if (ok) lastMorningCSVDate = today;
   }
 
-  // ── 7pm: evening CSV pull (plan for tomorrow) ─────────────────────────────
-  if (hour === 19 && lastEveningCSVDate !== today) {
-    lastEveningCSVDate = today;
-    try {
-      await runCSVScrape(page, db, {
-        USER_ID:     CONFIG.USER_ID,
-        PROPERTY_ID: CONFIG.PROPERTY_ID,
-        TIMEZONE:    CONFIG.TIMEZONE,
-      }, 'evening', log);
-    } catch (err) {
-      log(`Evening CSV pull error: ${err.message}`);
-    }
+  // ── Evening CSV pull: target 7pm, catch up any time 7pm–midnight ─────────
+  if (hour >= 19 && lastEveningCSVDate !== today) {
+    const ok = await runCSVScrapeFresh(page, 'evening', relogin);
+    if (ok) lastEveningCSVDate = today;
   }
 }
 
@@ -204,9 +239,17 @@ async function run() {
     }
   }
 
+  // Fresh login helper. Called right before every scheduled CSV scrape to
+  // guarantee the CA session cookie is valid — sessions die between the
+  // morning/evening windows so we can't rely on startup login alone.
+  async function relogin() {
+    await login(page);
+    await context.storageState({ path: CONFIG.SESSION_FILE });
+  }
+
   async function tick() {
     try {
-      await maybeRunCSVPull(page);
+      await maybeRunCSVPull(page, relogin);
       // Refresh session cookie so we stay logged in
       await context.storageState({ path: CONFIG.SESSION_FILE });
     } catch (err) {
