@@ -838,18 +838,52 @@ function ScheduleSection() {
       fmap.set(f, (fmap.get(f) ?? 0) + 1);
     }
 
-    // Commit crew additions first (so the new cards render), then the
-    // assignments that reference them.
-    if (additions.length > 0) {
+    // ── Step 5: drop anyone with 0 rooms after distribution ──
+    //
+    // Auto Assign is a clean-slate distribution. If the algorithm didn't
+    // need a person (e.g. Astri sat at 0m while the other 4 carried the
+    // full load), kick them off the crew instead of leaving a dead tile
+    // cluttering the screen. This intentionally overrides the usual
+    // manuallyAdded stickiness — the user specifically asked for Auto
+    // Assign to prune extras. If somehow nobody got a room (defensive,
+    // e.g. unassignedRooms was empty to begin with), leave crew alone.
+    const usedStaffIds = new Set(
+      Object.values(next).filter((v): v is string => !!v)
+    );
+    const keep = effectiveCrew.filter(s => usedStaffIds.has(s.id));
+    const dropped = effectiveCrew.filter(s => !usedStaffIds.has(s.id));
+    const shouldPrune = keep.length > 0 && dropped.length > 0;
+
+    // Commit crew changes (additions + prunes) first so the tile render
+    // matches what we're about to write into assignments.
+    if (additions.length > 0 || shouldPrune) {
       userEditedCrew.current = true;
-      additions.forEach(s => manuallyAdded.current.add(s.id));
-      setCrewOverride(effectiveCrew.map(s => s.id));
+      // Only flag additions as manually-added if they actually ended up
+      // with rooms — an addition that got pruned shouldn't leave a
+      // sticky "manually added" marker behind.
+      additions.forEach(s => {
+        if (usedStaffIds.has(s.id)) manuallyAdded.current.add(s.id);
+      });
+      dropped.forEach(s => manuallyAdded.current.delete(s.id));
+      const finalCrew = shouldPrune ? keep : effectiveCrew;
+      setCrewOverride(finalCrew.map(s => s.id));
     }
     setAssignments(next);
-    const toastMsg = additions.length > 0
+    const parts: string[] = [];
+    if (additions.length > 0) {
+      parts.push(lang === 'es'
+        ? `Agregado${additions.length === 1 ? '' : 's'}: ${additions.length}`
+        : `Added ${additions.length}`);
+    }
+    if (shouldPrune) {
+      parts.push(lang === 'es'
+        ? `Quitado${dropped.length === 1 ? '' : 's'}: ${dropped.length}`
+        : `Removed ${dropped.length}`);
+    }
+    const toastMsg = parts.length > 0
       ? (lang === 'es'
-          ? `Personal agregado y habitaciones redistribuidas (${additions.length} agregado${additions.length === 1 ? '' : 's'})`
-          : `Added ${additions.length} staff and redistributed rooms`)
+          ? `Habitaciones redistribuidas (${parts.join(', ')})`
+          : `Rooms redistributed (${parts.join(', ')})`)
       : (lang === 'es' ? 'Habitaciones redistribuidas' : 'Rooms redistributed');
     showMoveToast(toastMsg);
   };
