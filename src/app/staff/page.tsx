@@ -654,27 +654,6 @@ export default function StaffPage() {
                                 </div>
                               </div>
 
-                              {/* Duty badge */}
-                              <div
-                                onClick={(e) => { e.stopPropagation(); toggleScheduledToday(member); }}
-                                style={{
-                                  padding: '5px 12px', borderRadius: '9999px',
-                                  background: member.scheduledToday ? 'rgba(0,101,101,0.08)' : '#eae8e3',
-                                  border: `1px solid ${member.scheduledToday ? 'rgba(0,101,101,0.2)' : '#d5d2ca'}`,
-                                  cursor: 'pointer', flexShrink: 0,
-                                  fontSize: '12px', fontWeight: 600, fontFamily: 'Inter, sans-serif',
-                                  color: member.scheduledToday ? '#006565' : '#757684',
-                                  display: 'flex', alignItems: 'center', gap: '5px',
-                                }}
-                              >
-                                <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>
-                                  {member.scheduledToday ? 'check_circle' : 'schedule'}
-                                </span>
-                                {member.scheduledToday
-                                  ? (lang === 'es' ? 'En turno' : 'On Duty')
-                                  : (lang === 'es' ? 'Libre' : 'Off')
-                                }
-                              </div>
                             </div>
                           );
                         })
@@ -1309,14 +1288,6 @@ export default function StaffPage() {
                     <input type="number" value={form.maxDaysPerWeek} min="1" max="7" onChange={e => setForm(f => ({ ...f, maxDaysPerWeek: parseInt(e.target.value) || 5 }))}
                       style={{ width: '100%', padding: '12px 16px', border: '1px solid #d5d2ca', borderRadius: '16px', background: '#fff', fontSize: '14px', fontFamily: "'JetBrains Mono', monospace", color: '#1b1c19', outline: 'none', boxSizing: 'border-box' }} />
                   </div>
-                </div>
-
-                <div>
-                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#454652', marginBottom: '6px', fontFamily: 'Inter, sans-serif' }}>{t('vacationDatesLabel', lang)}</label>
-                  <textarea value={form.vacationDates} onChange={e => setForm(f => ({ ...f, vacationDates: e.target.value }))}
-                    style={{ width: '100%', padding: '12px 16px', border: '1px solid #d5d2ca', borderRadius: '16px', background: '#fff', fontSize: '13px', fontFamily: "'JetBrains Mono', monospace", color: '#1b1c19', outline: 'none', resize: 'vertical', boxSizing: 'border-box' }}
-                    placeholder={'2026-07-04\n2026-12-25'} rows={3} />
-                  <p style={{ fontSize: '11px', color: '#757684', margin: '4px 0 0', fontFamily: 'Inter, sans-serif' }}>{t('vacationDatesHelp', lang)}</p>
                 </div>
 
                 {[
