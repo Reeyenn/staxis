@@ -20,7 +20,6 @@ import type { Room, RoomStatus } from '@/types';
 import { format } from 'date-fns';
 import { es as esLocale } from 'date-fns/locale';
 import { CheckCircle, AlertTriangle } from 'lucide-react';
-import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import type { Language } from '@/lib/translations';
 
@@ -55,7 +54,16 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   const uid = searchParams.get('uid');
   const pid = searchParams.get('pid');
   const today = todayStr();
-  const { lang, setLang } = useLang();
+
+  // ── Language is LOCAL to this page ──
+  // Previously this called the global setLang() from LanguageContext, which
+  // writes to localStorage. That meant when Maria (admin) opened any HK's
+  // personal link in her browser to test, the whole admin UI flipped to
+  // Spanish permanently. We keep a page-scoped lang state here instead and
+  // source the initial value from the staff doc (what Maria set in the
+  // staff modal) — falling back to the legacy staffPrefs doc for HKs who
+  // self-selected via SMS before we wired up the staff-doc write path.
+  const [lang, setLang] = useState<Language>('en');
 
   const [rooms, setRooms] = useState<RoomWithRef[]>([]);
   const [activeDate, setActiveDate] = useState<string>(today);
@@ -69,22 +77,51 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   const [savingHelp, setSavingHelp] = useState<string | null>(null);
   const [resettingRoomId, setResettingRoomId] = useState<string | null>(null);
 
-  // Load saved language preference from staffPrefs on mount so the page
-  // auto-displays in Spanish for HKs who replied ESPAÑOL to a text.
+  // Seed the page language from Firestore on mount.
+  // Primary source: the staff doc (`staff/{housekeeperId}.language`) — that's
+  // what Maria sets via the Staff modal and what drives everything we
+  // design going forward. Fallback: legacy `staffPrefs/{housekeeperId}` doc,
+  // written by the SMS ESPAÑOL/ENGLISH handler for HKs who self-selected
+  // before we started mirroring to the staff doc.
   useEffect(() => {
     if (!housekeeperId) return;
-    const prefRef = doc(db, 'staffPrefs', housekeeperId);
-    getDoc(prefRef)
-      .then(snap => {
-        if (snap.exists()) {
+    let cancelled = false;
+
+    (async () => {
+      // 1) Try the staff doc first (needs uid + pid from the query string).
+      if (uid && pid) {
+        try {
+          const staffRef = doc(db, 'users', uid, 'properties', pid, 'staff', housekeeperId);
+          const snap = await getDoc(staffRef);
+          if (!cancelled && snap.exists()) {
+            const s = snap.data() as { language?: 'en' | 'es' };
+            if (s.language === 'es' || s.language === 'en') {
+              setLang(s.language);
+              return;
+            }
+          }
+        } catch (err) {
+          console.error('[housekeeper] staff doc lang load failed:', err);
+        }
+      }
+
+      // 2) Fallback to the legacy staffPrefs doc.
+      try {
+        const prefRef = doc(db, 'staffPrefs', housekeeperId);
+        const snap = await getDoc(prefRef);
+        if (!cancelled && snap.exists()) {
           const pref = snap.data() as { language?: 'en' | 'es' };
           if (pref.language === 'es' || pref.language === 'en') {
-            setLang(pref.language as Language);
+            setLang(pref.language);
           }
         }
-      })
-      .catch(err => console.error('[housekeeper] staffPrefs load failed:', err));
-  }, [housekeeperId, setLang]);
+      } catch (err) {
+        console.error('[housekeeper] staffPrefs load failed:', err);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [housekeeperId, uid, pid]);
 
   useEffect(() => {
     let unsub: (() => void) | undefined;
@@ -386,7 +423,23 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
           </div>
 
           <button
-            onClick={() => setLang(lang === 'en' ? 'es' : 'en')}
+            onClick={async () => {
+              const next: Language = lang === 'en' ? 'es' : 'en';
+              setLang(next);
+              // Persist to the staff doc so Maria's staff modal stays in
+              // sync with whatever this HK picked. Best-effort; silent on
+              // failure since the UI already updated locally.
+              if (uid && pid && housekeeperId) {
+                try {
+                  await updateDoc(
+                    doc(db, 'users', uid, 'properties', pid, 'staff', housekeeperId),
+                    { language: next },
+                  );
+                } catch (err) {
+                  console.error('[housekeeper] lang persist failed:', err);
+                }
+              }
+            }}
             style={{
               background: 'rgba(255,255,255,0.18)',
               border: '1.5px solid rgba(255,255,255,0.35)',

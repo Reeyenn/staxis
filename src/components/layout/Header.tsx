@@ -106,6 +106,25 @@ export function Header() {
             <Bell size={20} color="#364262" />
           </button>
 
+          {/* Language toggle (standalone, visible at all times) */}
+          <button
+            onClick={() => setLang(lang === 'en' ? 'es' : 'en')}
+            title={lang === 'en' ? 'Switch to Español' : 'Cambiar a English'}
+            aria-label={lang === 'en' ? 'Switch language to Spanish' : 'Switch language to English'}
+            style={{
+              padding: '8px 10px', borderRadius: '8px', border: 'none',
+              background: 'transparent', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: '6px',
+              fontFamily: 'var(--font-sans)',
+              fontWeight: 600, fontSize: '12px', color: '#364262',
+              letterSpacing: '0.04em',
+              transition: 'background 0.15s',
+            }}
+          >
+            <Globe size={18} color="#364262" />
+            {lang === 'en' ? 'EN' : 'ES'}
+          </button>
+
           {/* Settings gear */}
           <button
             onClick={() => router.push('/settings')}

@@ -11,10 +11,9 @@ import type { PublicArea, LaundryCategory, Room } from '@/types';
 import { format } from 'date-fns';
 import { es as esLocale } from 'date-fns/locale';
 import { CheckCircle, Globe } from 'lucide-react';
-import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import type { Language } from '@/lib/translations';
-import { getDoc, doc } from 'firebase/firestore';
+import { getDoc, doc, updateDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 
 export default function LaundryPersonPage({ params }: { params: Promise<{ id: string }> }) {
@@ -23,7 +22,12 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
   const uid = searchParams.get('uid');
   const pid = searchParams.get('pid');
   const today = todayStr();
-  const { lang, setLang } = useLang();
+
+  // ── Language is LOCAL to this page ──
+  // See the matching comment block on /housekeeper/[id]. Using the global
+  // LanguageContext here was flipping Maria's admin UI to Spanish any time
+  // she opened a staff member's personal link.
+  const [lang, setLang] = useState<Language>('en');
 
   const [laundryPersonName, setLaundryPersonName] = useState('');
   const [publicAreas, setPublicAreas] = useState<PublicArea[]>([]);
@@ -33,21 +37,47 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
   const [completedAreas, setCompletedAreas] = useState<Set<string>>(new Set());
   const [completedLoads, setCompletedLoads] = useState<Set<string>>(new Set());
 
-  // Load saved language preference from staffPrefs
+  // Seed the page language from Firestore on mount.
+  // Primary source: staff doc (`staff/{laundryPersonId}.language`) set by
+  // Maria in the Staff modal. Fallback: legacy `staffPrefs/{id}` for folks
+  // who self-selected via SMS before we started mirroring to the staff doc.
   useEffect(() => {
     if (!laundryPersonId) return;
-    const prefRef = doc(db, 'staffPrefs', laundryPersonId);
-    getDoc(prefRef)
-      .then(snap => {
-        if (snap.exists()) {
+    let cancelled = false;
+
+    (async () => {
+      if (uid && pid) {
+        try {
+          const staffRef = doc(db, 'users', uid, 'properties', pid, 'staff', laundryPersonId);
+          const snap = await getDoc(staffRef);
+          if (!cancelled && snap.exists()) {
+            const s = snap.data() as { language?: 'en' | 'es' };
+            if (s.language === 'es' || s.language === 'en') {
+              setLang(s.language);
+              return;
+            }
+          }
+        } catch (err) {
+          console.error('[laundry] staff doc lang load failed:', err);
+        }
+      }
+
+      try {
+        const prefRef = doc(db, 'staffPrefs', laundryPersonId);
+        const snap = await getDoc(prefRef);
+        if (!cancelled && snap.exists()) {
           const pref = snap.data() as { language?: 'en' | 'es' };
           if (pref.language === 'es' || pref.language === 'en') {
-            setLang(pref.language as Language);
+            setLang(pref.language);
           }
         }
-      })
-      .catch(err => console.error('[laundry] staffPrefs load failed:', err));
-  }, [laundryPersonId, setLang]);
+      } catch (err) {
+        console.error('[laundry] staffPrefs load failed:', err);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [laundryPersonId, uid, pid]);
 
   // Load laundry person name from staff list
   useEffect(() => {
@@ -197,7 +227,20 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
           </div>
 
           <button
-            onClick={() => setLang(lang === 'en' ? 'es' : 'en')}
+            onClick={async () => {
+              const next: Language = lang === 'en' ? 'es' : 'en';
+              setLang(next);
+              if (uid && pid && laundryPersonId) {
+                try {
+                  await updateDoc(
+                    doc(db, 'users', uid, 'properties', pid, 'staff', laundryPersonId),
+                    { language: next },
+                  );
+                } catch (err) {
+                  console.error('[laundry] lang persist failed:', err);
+                }
+              }
+            }}
             style={{
               background: 'rgba(255,255,255,0.18)',
               border: '1.5px solid rgba(255,255,255,0.35)',

@@ -307,10 +307,24 @@ export async function POST(req: NextRequest) {
 
     // ── ESPAÑOL — switch to Spanish and resend ─────────────────────────────
     if (ES_SET.has(reply)) {
+      // Mirror the language choice onto three places so everything stays
+      // in sync: the legacy staffPrefs doc (kept for backward compat),
+      // the staff doc (canonical — what the admin Staff modal reads/writes
+      // and what the HK personal page now seeds from), and the current
+      // shift confirmation (so follow-up copy uses the right language).
       await db.collection('staffPrefs').doc(data.staffId).set(
         { language: 'es', updatedAt: admin.firestore.FieldValue.serverTimestamp() },
         { merge: true },
       );
+      try {
+        await db
+          .collection('users').doc(uid)
+          .collection('properties').doc(pid)
+          .collection('staff').doc(data.staffId)
+          .update({ language: 'es' });
+      } catch (err) {
+        console.error('[sms-reply] staff doc lang mirror (es) failed:', err);
+      }
       await checkDoc.ref.update({ language: 'es' });
 
       const dateLabel = formatShiftDate(shiftDate, 'es');
@@ -323,10 +337,20 @@ export async function POST(req: NextRequest) {
 
     // ── ENGLISH — switch back to English and resend ────────────────────────
     if (EN_SET.has(reply)) {
+      // Mirror onto staffPrefs + staff doc + confirmation (see ESPAÑOL branch).
       await db.collection('staffPrefs').doc(data.staffId).set(
         { language: 'en', updatedAt: admin.firestore.FieldValue.serverTimestamp() },
         { merge: true },
       );
+      try {
+        await db
+          .collection('users').doc(uid)
+          .collection('properties').doc(pid)
+          .collection('staff').doc(data.staffId)
+          .update({ language: 'en' });
+      } catch (err) {
+        console.error('[sms-reply] staff doc lang mirror (en) failed:', err);
+      }
       await checkDoc.ref.update({ language: 'en' });
 
       const dateLabel = formatShiftDate(shiftDate, 'en');
