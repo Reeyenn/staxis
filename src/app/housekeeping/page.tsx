@@ -1528,6 +1528,60 @@ function ScheduleSection() {
               );
             })()}
 
+            {/* Unassign All — clears every room assignment so the whole pool
+                goes back to Unassigned. Useful when the distribution is off
+                (one person overloaded, another idle) and Maria wants to reset
+                and let Auto Assign rebuild from scratch. Confirms first since
+                it wipes local state. */}
+            {(() => {
+              const assignedCount = Object.keys(assignments).length;
+              const disabled = assignedCount === 0;
+              return (
+                <button
+                  onClick={() => {
+                    const msg = lang === 'es'
+                      ? `¿Quitar la asignación de las ${assignedCount} habitaciones? Todas regresarán al grupo "Sin asignar".`
+                      : `Unassign all ${assignedCount} room${assignedCount === 1 ? '' : 's'}? Every room will go back to the Unassigned pool.`;
+                    if (!confirm(msg)) return;
+                    setAssignments({});
+                    // Allow Auto Assign / auto-recommend to rebuild fresh on next trigger.
+                    hasInitialAssign.current = false;
+                    showMoveToast(lang === 'es' ? 'Todas las habitaciones sin asignar' : 'All rooms unassigned');
+                  }}
+                  disabled={disabled}
+                  title={
+                    disabled
+                      ? (lang === 'es' ? 'No hay habitaciones asignadas' : 'No rooms to unassign')
+                      : (lang === 'es' ? 'Desasigna todas las habitaciones' : 'Clear every room assignment')
+                  }
+                  style={{
+                    padding: '10px 20px',
+                    background: disabled ? 'rgba(229,231,235,0.6)' : 'rgba(255,255,255,0.7)',
+                    backdropFilter: 'blur(24px)',
+                    border: '1px solid rgba(197,197,212,0.2)', borderRadius: '12px',
+                    cursor: disabled ? 'not-allowed' : 'pointer',
+                    fontFamily: 'var(--font-sans)',
+                    display: 'flex', alignItems: 'center', gap: '8px',
+                    fontSize: '14px', fontWeight: 600,
+                    color: disabled ? '#9ca3af' : '#ba1a1a',
+                    opacity: disabled ? 0.7 : 1,
+                  }}
+                >
+                  <Ban size={16} />
+                  {lang === 'es' ? 'Desasignar Todo' : 'Unassign All'}
+                  {assignedCount > 0 && (
+                    <span style={{
+                      padding: '1px 7px', borderRadius: '9999px',
+                      background: '#ba1a1a', color: '#ffffff',
+                      fontSize: '11px', fontWeight: 700,
+                    }}>
+                      {assignedCount}
+                    </span>
+                  )}
+                </button>
+              );
+            })()}
+
             {/* Send Confirmations — absolutely centered on the same line.
                 Before first send: primary "Send Confirmations" button.
                 After: status pill + smaller "Send Updates" button so Maria
