@@ -1464,8 +1464,11 @@ function ScheduleSection() {
             })}
           </div>
 
-          {/* Add staff + Priority row + Send Confirmations centered on same line */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '24px', position: 'relative', minHeight: '48px' }}>
+          {/* Add staff + Priority row + Send Confirmations centered on same line.
+              Tighter gap (10px, uniform) on the left cluster so there's room
+              for the Send Confirmations cluster to sit absolutely centered
+              without colliding with Unassign All. */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', position: 'relative', minHeight: '48px' }}>
             {eligiblePool.filter(s => !selectedCrew.find(c => c.id === s.id)).length > 0 && (
               <button onClick={() => setShowAddStaff(true)} style={{
                 padding: '10px 20px', background: 'rgba(255,255,255,0.7)', backdropFilter: 'blur(24px)',
@@ -1594,15 +1597,15 @@ function ScheduleSection() {
               );
             })()}
 
-            {/* Send Confirmations — pushed to the right side of the row so
-                it never converges with the Unassign All button. Before the
-                first send: primary "Send Confirmations" button. After:
-                status pill + smaller "Send Updates" button so Maria can
-                push changes (e.g. 6am overnight changes) without the button
-                disappearing. */}
+            {/* Send Confirmations — absolutely centered on the same line.
+                The left cluster uses a tight 10px gap so there's breathing
+                room around this centered block. Before the first send:
+                primary "Send Confirmations" button. After: status pill +
+                smaller "Send Updates" button so Maria can push changes
+                (e.g. 6am overnight changes) without the button disappearing. */}
             {!alreadySent && selectedCrew.length > 0 && (
               <button onClick={(e) => { e.stopPropagation(); handleSend(); }} disabled={sending} style={{
-                marginLeft: 'auto',
+                position: 'absolute', left: '50%', transform: 'translateX(-50%)',
                 padding: '14px 24px', background: '#006565', color: '#82e2e1',
                 borderRadius: '9999px', fontWeight: 600, fontSize: '14px',
                 border: 'none', cursor: sending ? 'not-allowed' : 'pointer',
@@ -1618,7 +1621,7 @@ function ScheduleSection() {
             )}
             {alreadySent && (
               <div style={{
-                marginLeft: 'auto',
+                position: 'absolute', left: '50%', transform: 'translateX(-50%)',
                 display: 'flex', alignItems: 'center', gap: '10px',
                 whiteSpace: 'nowrap',
               }}>
