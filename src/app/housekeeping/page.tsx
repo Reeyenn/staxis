@@ -1127,7 +1127,7 @@ function ScheduleSection() {
   const staffDeficit = recommendedStaff - selectedCrew.length;
 
   return (
-    <div style={{ padding: '16px 24px 120px', background: 'var(--bg)', minHeight: 'calc(100vh - 180px)', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+    <div style={{ padding: '16px 24px 200px', background: 'var(--bg)', minHeight: 'calc(100vh - 180px)', display: 'flex', flexDirection: 'column', gap: '20px' }}>
 
       {/* ── Date picker ── */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '16px' }}>
@@ -1143,26 +1143,42 @@ function ScheduleSection() {
       </div>
 
       {/* ── Last CSV update stamp — always visible so Maria knows the system is alive ── */}
-      {currentCsvPulledAt && (
-        <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-          fontSize: '12px', color: '#64748b', marginTop: '-12px',
-        }}>
-          <Clock size={12} style={{ color: '#94a3b8' }} />
-          <span>
-            {lang === 'es' ? 'Lista de habitaciones actualizada:' : 'Room list updated:'}{' '}
-            <span style={{ color: '#364262', fontWeight: 600 }}>{formatPulledAt(currentCsvPulledAt, lang)}</span>
-            {planSnapshot?.pullType && (
-              <span style={{ color: '#94a3b8' }}>
-                {' · '}
-                {planSnapshot.pullType === 'evening'
-                  ? (lang === 'es' ? 'Plan nocturno' : 'Evening plan')
-                  : (lang === 'es' ? 'Plan matutino' : 'Morning plan')}
-              </span>
-            )}
-          </span>
-        </div>
-      )}
+      {currentCsvPulledAt && (() => {
+        const ageMs = Date.now() - new Date(currentCsvPulledAt).getTime();
+        const ageHours = ageMs / (1000 * 60 * 60);
+        const isStale = ageHours > 6; // flag if >6h old
+        const isVeryStale = ageHours > 12;
+        const accent = isVeryStale ? '#b91c1c' : isStale ? '#b45309' : '#364262';
+        const mutedText = isVeryStale ? '#ef4444' : isStale ? '#d97706' : '#94a3b8';
+        return (
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+            fontSize: '12px', color: isStale ? accent : '#64748b', marginTop: '-12px',
+            fontWeight: isStale ? 600 : 400,
+          }}>
+            {isStale ? <AlertTriangle size={12} style={{ color: accent }} /> : <Clock size={12} style={{ color: '#94a3b8' }} />}
+            <span>
+              {lang === 'es' ? 'Lista de habitaciones actualizada:' : 'Room list updated:'}{' '}
+              <span style={{ color: accent, fontWeight: 600 }}>{formatPulledAt(currentCsvPulledAt, lang)}</span>
+              {planSnapshot?.pullType && (
+                <span style={{ color: mutedText }}>
+                  {' · '}
+                  {planSnapshot.pullType === 'evening'
+                    ? (lang === 'es' ? 'Plan nocturno' : 'Evening plan')
+                    : (lang === 'es' ? 'Plan matutino' : 'Morning plan')}
+                </span>
+              )}
+              {isStale && (
+                <span style={{ color: accent, marginLeft: '8px' }}>
+                  {lang === 'es'
+                    ? `· Datos de hace ${Math.round(ageHours)}h — considera recargar`
+                    : `· ${Math.round(ageHours)}h old — consider refreshing`}
+                </span>
+              )}
+            </span>
+          </div>
+        );
+      })()}
 
       {/* ── Prediction Hero Card (glass) ── */}
       <section className="glass-hero" style={{
@@ -2480,7 +2496,7 @@ function RoomsSection() {
   };
 
   return (
-    <div style={{ padding: '24px', paddingBottom: '140px', background: 'var(--bg)', minHeight: 'calc(100vh - 180px)' }}>
+    <div style={{ padding: '24px', paddingBottom: '200px', background: 'var(--bg)', minHeight: 'calc(100vh - 180px)' }}>
 
       {/* Backup staff picker popup */}
       {backupRoom && (

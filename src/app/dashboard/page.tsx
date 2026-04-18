@@ -610,10 +610,10 @@ export default function DashboardPage() {
                     </p>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                       <p className="data-mono" style={{ fontSize: '28px', color: 'var(--primary)', margin: 0 }}>
-                        {avgTurnover || '—'}
-                        {avgTurnover && <span style={{ fontSize: '14px', color: 'var(--text-muted)' }}>m</span>}
+                        {avgTurnover != null ? avgTurnover : '—'}
+                        {avgTurnover != null && <span style={{ fontSize: '14px', color: 'var(--text-muted)' }}>m</span>}
                       </p>
-                      {avgTurnover && (
+                      {avgTurnover != null && avgTurnover > 0 && (
                         <div style={{
                           display: 'inline-flex', alignItems: 'center',
                           gap: '4px', padding: '6px 10px', borderRadius: 'var(--radius-full)',
