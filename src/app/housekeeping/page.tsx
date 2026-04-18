@@ -1482,6 +1482,52 @@ function ScheduleSection() {
               {lang === 'es' ? 'Prioridad' : 'Priority'}
             </button>
 
+            {/* Auto Assign — fills any unassigned rooms onto the current crew,
+                spreading the load least-loaded-first. Same logic that fires
+                automatically when the CSV pulls, just exposed as a manual
+                button so Maria can trigger it anytime. Disabled when there's
+                nothing to assign or no one to assign to. */}
+            {(() => {
+              const disabled = unassignedRooms.length === 0 || selectedCrew.length === 0;
+              return (
+                <button
+                  onClick={handleAutoRecommend}
+                  disabled={disabled}
+                  title={
+                    disabled
+                      ? (unassignedRooms.length === 0
+                          ? (lang === 'es' ? 'No hay habitaciones sin asignar' : 'No unassigned rooms')
+                          : (lang === 'es' ? 'Agrega personal primero' : 'Add crew first'))
+                      : (lang === 'es' ? 'Distribuye las habitaciones sin asignar' : 'Distribute unassigned rooms across the crew')
+                  }
+                  style={{
+                    padding: '10px 20px',
+                    background: disabled ? 'rgba(229,231,235,0.6)' : 'rgba(255,255,255,0.7)',
+                    backdropFilter: 'blur(24px)',
+                    border: '1px solid rgba(197,197,212,0.2)', borderRadius: '12px',
+                    cursor: disabled ? 'not-allowed' : 'pointer',
+                    fontFamily: 'var(--font-sans)',
+                    display: 'flex', alignItems: 'center', gap: '8px',
+                    fontSize: '14px', fontWeight: 600,
+                    color: disabled ? '#9ca3af' : '#454652',
+                    opacity: disabled ? 0.7 : 1,
+                  }}
+                >
+                  <Sparkles size={16} />
+                  {lang === 'es' ? 'Asignación Automática' : 'Auto Assign'}
+                  {unassignedRooms.length > 0 && (
+                    <span style={{
+                      padding: '1px 7px', borderRadius: '9999px',
+                      background: '#364262', color: '#ffffff',
+                      fontSize: '11px', fontWeight: 700,
+                    }}>
+                      {unassignedRooms.length}
+                    </span>
+                  )}
+                </button>
+              );
+            })()}
+
             {/* Send Confirmations — absolutely centered on the same line.
                 Before first send: primary "Send Confirmations" button.
                 After: status pill + smaller "Send Updates" button so Maria
