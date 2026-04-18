@@ -1994,15 +1994,17 @@ function RoomsSection() {
 
   // Subscribe to ALL rooms in the property, then pick the active date to show.
   //
-  // The room docs are keyed by shiftDate — so today's live rooms (from the
-  // 15-min scraper) AND tomorrow's seeded rooms (from Send Shift Confirmations)
-  // both live here. We want the Rooms tab to show whichever shift is active:
-  //   • If today has rooms → show today
-  //   • Else if a future date has rooms → show the nearest one (prep view)
-  //   • Else fall back to the most recent past date (just-finished shift)
+  // Two data sources write to this collection:
+  //   1. The 15-min PMS scraper writes today's LIVE occupancy with today's date
+  //      but WITHOUT assignedTo (it doesn't know who's cleaning what).
+  //   2. `send-shift-confirmations` seeds the SHIFT date's rooms with
+  //      assignedTo populated — that's Maria's active plan.
   //
-  // This mirrors the HK personal page's nearest-shift logic so completions
-  // made from the HK page always show up on the Rooms tab in real time.
+  // We want the Rooms tab to track Maria's active PLAN, not scraper noise.
+  // So prefer dates that have at least one assigned room (the "assigned
+  // shift"), and use scraper-only dates as a last-resort fallback.
+  //
+  // Within assigned dates: today → nearest future → most recent past.
   useEffect(() => {
     if (!user || !activePropertyId) return;
     const unsub = subscribeToAllRooms(user.uid, activePropertyId, (all) => {
@@ -2014,18 +2016,27 @@ function RoomsSection() {
         list.push(r);
         byDate.set(r.date, list);
       }
-      let chosenDate = today;
-      if (byDate.has(today)) {
-        chosenDate = today;
-      } else {
-        const future = [...byDate.keys()].filter(d => d > today).sort();
-        if (future.length > 0) {
-          chosenDate = future[0];
-        } else {
-          const past = [...byDate.keys()].filter(d => d < today).sort().reverse();
-          if (past.length > 0) chosenDate = past[0];
-        }
+
+      const pickFrom = (dates: string[]) => {
+        if (dates.includes(today)) return today;
+        const future = dates.filter(d => d > today).sort();
+        if (future.length > 0) return future[0];
+        const past = dates.filter(d => d < today).sort().reverse();
+        if (past.length > 0) return past[0];
+        return null;
+      };
+
+      // Prefer dates where Maria has actually assigned rooms — that's her
+      // active plan. Scraper-only dates (no assignedTo) are fallback only.
+      const assignedDates = [...byDate.entries()]
+        .filter(([, list]) => list.some(r => r.assignedTo))
+        .map(([date]) => date);
+
+      let chosenDate = pickFrom(assignedDates);
+      if (!chosenDate) {
+        chosenDate = pickFrom([...byDate.keys()]) ?? today;
       }
+
       setActiveDate(chosenDate);
       setRooms(byDate.get(chosenDate) ?? []);
       setLoading(false);
