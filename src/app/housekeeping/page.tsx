@@ -59,6 +59,16 @@ function addDays(dateStr: string, n: number): string {
   return dt.toLocaleDateString('en-CA');
 }
 
+// Maria plans the next day's housekeeping in the afternoon / evening, so
+// default the Schedule tab to tomorrow once we hit 1pm local. Before 1pm,
+// "next shift" still means today — stops the tab from silently flipping to
+// tomorrow at midnight when she's still actively working on today's crew.
+function defaultShiftDate(): string {
+  const now = new Date();
+  const today = now.toLocaleDateString('en-CA');
+  return now.getHours() >= 13 ? addDays(today, 1) : today;
+}
+
 /**
  * Short, human-friendly stamp for a CSV pull time.
  * "Today 6:02 AM" if the pull happened today, otherwise "Fri 7:02 PM".
@@ -340,8 +350,7 @@ function ScheduleSection() {
   const { lang } = useLang();
   const { recordOfflineAction } = useSyncContext();
 
-  const tomorrow = addDays(schedTodayStr(), 1);
-  const [shiftDate, setShiftDate] = useState(tomorrow);
+  const [shiftDate, setShiftDate] = useState(defaultShiftDate);
   const [sending, setSending] = useState(false);
   const [confirmations, setConfirmations] = useState<ShiftConfirmation[]>([]);
   // Per-person outcome from the last Send click: 'sent' | 'skipped' | 'failed'
