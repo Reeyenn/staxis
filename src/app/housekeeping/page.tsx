@@ -589,13 +589,22 @@ function ScheduleSection() {
     [shiftRooms]
   );
 
-  // The selected crew: auto-pick or manual override
+  // The selected crew: auto-pick or manual override.
+  // Always strip out anyone who isn't a housekeeper anymore — a saved
+  // crew doc from an earlier day can still carry the old IDs, and we
+  // don't want a manager who got moved to 'other' to keep showing up
+  // on the schedule with rooms assigned.
+  const isHousekeeper = (s: StaffMember) => (s.department ?? 'housekeeping') === 'housekeeping';
   const selectedCrew = useMemo(() => {
     if (userEditedCrew.current) {
       // User has made manual changes — respect crewOverride exactly (even if empty)
-      return crewOverride.map(id => staff.find(s => s.id === id)).filter((s): s is StaffMember => !!s);
+      return crewOverride
+        .map(id => staff.find(s => s.id === id))
+        .filter((s): s is StaffMember => !!s && isHousekeeper(s));
     }
-    if (crewOverride.length > 0) return crewOverride.map(id => staff.find(s => s.id === id)).filter((s): s is StaffMember => !!s);
+    if (crewOverride.length > 0) return crewOverride
+      .map(id => staff.find(s => s.id === id))
+      .filter((s): s is StaffMember => !!s && isHousekeeper(s));
     if (recommendedStaff > 0 && totalRooms > 0) return eligiblePool.slice(0, recommendedStaff);
     return eligiblePool;
   }, [crewOverride, eligiblePool, recommendedStaff, totalRooms, staff]);
