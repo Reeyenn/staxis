@@ -678,8 +678,20 @@ function ScheduleSection() {
     [planSnapshot?.pulledAt],
   );
 
+  // Ref mirror of assignableRooms so the sync-effect below can read the latest
+  // list without becoming a dep (which would cause loops when our own write
+  // bumps the rooms snapshot).
+  const assignableRoomsRef = useRef(assignableRooms);
+  useEffect(() => { assignableRoomsRef.current = assignableRooms; }, [assignableRooms]);
+
   // ── Persist assignments + crew to scheduleAssignments (debounced) ─────────
   // This is what makes Maria's 7pm work survive the 6am CSV refresh.
+  //
+  // ALSO fires /api/sync-room-assignments which mirrors the per-room
+  // `assignedTo`/`assignedName` field on each rooms doc so the crew-row "Link"
+  // button (opens /housekeeper/{id}) shows the current Schedule state before
+  // Maria even hits Send. The HK page queries rooms by `assignedTo`, so
+  // without this sync the Link preview would show stale data.
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!uid || !pid) return;
@@ -696,6 +708,25 @@ function ScheduleSection() {
         csvRoomSnapshot: currentCsvSnapshot,
         csvPulledAt: currentCsvPulledAt,
       }).catch(err => console.error('[Schedule] save assignments failed:', err));
+
+      // Mirror the assignments onto each room doc (drives the HK Link preview).
+      // Best-effort — a transient failure here is not user-visible; the next
+      // autosave or Send will catch it up. Uses an `assignableRoomsRef` so the
+      // effect doesn't re-fire every time Firestore's own write bumps the
+      // rooms snapshot (which would loop through this effect).
+      const currentAssignable = assignableRoomsRef.current;
+      const staffPayload = selectedCrew.map(s => ({
+        staffId: s.id,
+        staffName: s.name,
+        assignedRooms: currentAssignable
+          .filter(r => assignments[r.id] === s.id)
+          .map(r => r.number),
+      }));
+      fetch('/api/sync-room-assignments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uid, pid, shiftDate, staff: staffPayload }),
+      }).catch(err => console.error('[Schedule] sync room assignments failed:', err));
     }, 400);
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
   }, [uid, pid, shiftDate, assignments, selectedCrew, scheduleAssignmentsLoaded, currentCsvSnapshot, currentCsvPulledAt]);
