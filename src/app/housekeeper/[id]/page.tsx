@@ -58,6 +58,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   const { lang, setLang } = useLang();
 
   const [rooms, setRooms] = useState<RoomWithRef[]>([]);
+  const [activeDate, setActiveDate] = useState<string>(today);
   const [loading, setLoading] = useState(true);
   const [savingRoomId, setSavingRoomId] = useState<string | null>(null);
   const [issueRoomId, setIssueRoomId] = useState<string | null>(null);
@@ -97,10 +98,41 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       unsub = onSnapshot(
         q,
         snap => {
-          const data = snap.docs
-            .map(d => ({ id: d.id, _ref: d.ref, ...d.data() } as RoomWithRef))
-            .filter(r => r.date === today);
-          setRooms(sortRooms(data));
+          // Grab every room assigned to this HK, then pick the right date
+          // bucket to display. Previously this always filtered to `today` —
+          // which broke when Maria sent assignments for tomorrow's shift:
+          // the rooms existed in Firestore but the page saw zero matches.
+          //
+          // New behavior: prefer today's rooms if there are any; otherwise
+          // fall back to the nearest upcoming shift date. If there's no
+          // future date either, fall back to the most recent past date so
+          // HKs can still see their just-completed shift.
+          const all = snap.docs.map(d => ({ id: d.id, _ref: d.ref, ...d.data() } as RoomWithRef));
+
+          const byDate = new Map<string, RoomWithRef[]>();
+          for (const r of all) {
+            if (!r.date) continue;
+            const list = byDate.get(r.date) ?? [];
+            list.push(r);
+            byDate.set(r.date, list);
+          }
+
+          // Pick the date bucket to display
+          let chosenDate = today;
+          if (byDate.has(today)) {
+            chosenDate = today;
+          } else {
+            const future = [...byDate.keys()].filter(d => d > today).sort();
+            if (future.length > 0) {
+              chosenDate = future[0]; // nearest upcoming shift
+            } else {
+              const past = [...byDate.keys()].filter(d => d < today).sort().reverse();
+              if (past.length > 0) chosenDate = past[0];
+            }
+          }
+
+          setActiveDate(chosenDate);
+          setRooms(sortRooms(byDate.get(chosenDate) ?? []));
           setLoading(false);
         },
         error => {
@@ -321,7 +353,20 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
               {lang === 'es' ? `Hola, ${firstName}` : `Hi, ${firstName}`}
             </h1>
             <p style={{ fontSize: '12px', opacity: 0.7, fontWeight: 500 }}>
-              {format(new Date(), 'EEEE, MMMM d', { locale: lang === 'es' ? esLocale : undefined })}
+              {(() => {
+                // Parse activeDate as local-time midnight (avoids the UTC-shift
+                // "Saturday Apr 18" getting rendered as "Friday Apr 17" on clients
+                // west of UTC).
+                const [y, m, d] = activeDate.split('-').map(Number);
+                const dateObj = new Date(y, (m ?? 1) - 1, d ?? 1);
+                const formatted = format(dateObj, 'EEEE, MMMM d', { locale: lang === 'es' ? esLocale : undefined });
+                if (activeDate === today) return formatted;
+                // Different date — add a label so HK knows they're looking at a
+                // future (or past) shift.
+                return activeDate > today
+                  ? `${lang === 'es' ? 'Próximo turno: ' : 'Next shift: '}${formatted}`
+                  : `${lang === 'es' ? 'Turno anterior: ' : 'Last shift: '}${formatted}`;
+              })()}
             </p>
           </div>
 
