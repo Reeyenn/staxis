@@ -119,6 +119,9 @@ function snapshotToShiftRooms(snap: PlanSnapshot | null, pid: string): Room[] {
       date: snap.date,
       propertyId: pid,
       assignedTo: r.housekeeper ?? undefined,
+      // Carry the stayover cycle day through so the UI can label S1 vs S2
+      // (light vs full clean) on both the unassigned pool and crew tiles.
+      stayoverDay: typeof r.stayoverDay === 'number' ? r.stayoverDay : undefined,
     });
   }
   return out;
@@ -1216,21 +1219,25 @@ function ScheduleSection() {
                 onPointerMove={onPillPointerMove}
                 onPointerUp={e => { onPillPointerUp(e); }}
                 onPointerCancel={onPillPointerCancel}
+                className="sched-room-pill"
                 style={{
-                  padding: '12px 20px', borderRadius: '9999px',
-                  background: room.type === 'checkout' ? '#ffdad6' : '#d3e4f8',
-                  color: room.type === 'checkout' ? '#93000a' : '#0c1d2b',
-                  display: 'flex', alignItems: 'center', gap: '8px',
+                  width: '42px', height: '48px',
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                  gap: '1px',
+                  borderRadius: '8px', background: '#eae8e3',
                   border: 'none', cursor: 'grab',
                   opacity: dragState?.roomId === room.id ? 0.3 : 1,
                   touchAction: 'none', userSelect: 'none',
                   WebkitUserSelect: 'none', WebkitTouchCallout: 'none',
-                  fontFamily: 'var(--font-sans)',
                 }}
               >
-                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '14px' }}>{room.number}</span>
-                <span style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 700, opacity: 0.7 }}>
-                  {room.type === 'checkout' ? (lang === 'es' ? 'Salida' : 'Checkout') : (lang === 'es' ? 'Cont.' : 'Stayover')}
+                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '14px', color: '#364262', lineHeight: 1 }}>{room.number}</span>
+                <span style={{ fontSize: '9px', fontWeight: 700, color: room.type === 'checkout' ? '#93000a' : '#757684', lineHeight: 1, textTransform: 'uppercase' }}>
+                  {room.type === 'checkout'
+                    ? 'C'
+                    : (typeof room.stayoverDay === 'number' && room.stayoverDay > 0
+                        ? (room.stayoverDay % 2 === 1 ? 'S1' : 'S2')
+                        : 'S')}
                 </span>
               </button>
             ))}
