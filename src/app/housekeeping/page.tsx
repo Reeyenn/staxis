@@ -353,6 +353,7 @@ function ScheduleSection() {
     stayoverDay1Minutes: 15,
     stayoverDay2Minutes: 20,
     prepMinutesPerActivity: 5,
+    shiftMinutes: 420,  // per-housekeeper daily cap in minutes (7h default)
   });
   const [savingSettings, setSavingSettings] = useState(false);
 
@@ -516,6 +517,7 @@ function ScheduleSection() {
         stayoverDay1Minutes: activeProperty.stayoverDay1Minutes ?? 15,
         stayoverDay2Minutes: activeProperty.stayoverDay2Minutes ?? legacySo,
         prepMinutesPerActivity: activeProperty.prepMinutesPerActivity ?? 5,
+        shiftMinutes: activeProperty.shiftMinutes ?? 420,
       });
     }
   }, [activeProperty]);
@@ -543,7 +545,10 @@ function ScheduleSection() {
   // soMins kept for legacy call sites (DND/over-time fallbacks) — represents a sensible "blended" stayover estimate.
   const soMins = legacySoMins;
   const prepPerRoom = activeProperty?.prepMinutesPerActivity ?? 5;
-  const shiftLen = Math.min(activeProperty?.shiftMinutes ?? 420, 420); // 7h max per housekeeper
+  // Per-housekeeper daily cap. Configurable via Prediction Settings →
+  // "Max hours per housekeeper" so different operators can dial it to
+  // their staffing reality (6h, 7h, 8h, etc.). Default 420m (7h).
+  const shiftLen = activeProperty?.shiftMinutes ?? 420;
 
   const checkouts = shiftRooms.filter(r => r.type === 'checkout').length;
   const stayovers = shiftRooms.filter(r => r.type === 'stayover').length;
@@ -745,52 +750,92 @@ function ScheduleSection() {
 
   // Auto Recommend — distributes unassigned rooms across current crew, least-loaded first.
   const handleAutoRecommend = () => {
-    // ── Step 1: top up the crew to the recommended headcount ──
+    // ── Step 1: top up crew to cleaningStaff (not recommendedStaff) ──
     //
-    // Without this, clicking Auto Assign with only 2 crew on a 5-person
-    // workload crams 11h onto each of them — way over the 7h shift cap.
-    // Mirror the CSV-pull behavior: pull more staff from the eligible
-    // pool in priority order (autoSelectEligible already sorts by
-    // schedulePriority, weekly hours, senior flag, name) until we hit
-    // `recommendedStaff`. Anyone Maria has explicitly added still stays.
+    // cleaningStaff = ceil(totalCleaningMinutes / shiftLen) — the minimum
+    // number of people needed to finish rooms without anyone going over
+    // the configurable shift cap. recommendedStaff adds +1 for laundry,
+    // but that person handles laundry, not rooms, so they shouldn't be
+    // in the Auto Assign distribution. Using cleaningStaff here means
+    // each housekeeper ends up closer to a full shift instead of sitting
+    // at ~4h 30m while 5 people share work 4 could do.
     const currentIds = new Set(selectedCrew.map(s => s.id));
     const additions: StaffMember[] = [];
+    const target = Math.max(cleaningStaff, 1);
     for (const s of eligiblePool) {
       if (currentIds.has(s.id)) continue;
-      if (selectedCrew.length + additions.length >= recommendedStaff) break;
+      if (selectedCrew.length + additions.length >= target) break;
       additions.push(s);
     }
     const effectiveCrew = [...selectedCrew, ...additions];
     if (effectiveCrew.length === 0) return;
 
-    // ── Step 2: distribute, least-loaded-first, across the full crew ──
-    // Keep existing assignments untouched so we don't yank rooms off of
-    // people who are already mid-clean; new staff start at 0 load and
-    // naturally absorb the unassigned pool first until things balance.
+    // ── Step 2: seed current loads + floor counts from existing assignments ──
+    // Existing (non-empty) assignments stay put — we don't yank rooms off
+    // anyone mid-clean. floorCount[staff][floor] = how many rooms on that
+    // floor they already own, so the stickiness logic below can prefer the
+    // person who already owns most of a floor.
     const loadByStaff = new Map<string, number>();
-    effectiveCrew.forEach(s => loadByStaff.set(s.id, 0));
+    const floorCountByStaff = new Map<string, Map<string, number>>();
+    for (const s of effectiveCrew) {
+      loadByStaff.set(s.id, 0);
+      floorCountByStaff.set(s.id, new Map());
+    }
     for (const r of assignableRooms) {
       const who = assignments[r.id];
       if (!who || !loadByStaff.has(who)) continue;
       const mins = minsForRoom(r) + prepPerRoom;
       loadByStaff.set(who, (loadByStaff.get(who) ?? 0) + mins);
+      const f = getFloor(r.number);
+      const fmap = floorCountByStaff.get(who)!;
+      fmap.set(f, (fmap.get(f) ?? 0) + 1);
     }
-    // Sort unassigned rooms checkouts-first then by room number, then greedily assign.
+
+    // ── Step 3: sort unassigned rooms by floor, then checkouts first ──
+    // Going floor-by-floor is what lets stickiness cluster the whole
+    // floor onto one person before moving to the next.
     const toAssign = [...unassignedRooms].sort((a, b) => {
+      const fA = getFloor(a.number);
+      const fB = getFloor(b.number);
+      if (fA !== fB) return fA < fB ? -1 : 1;
       if (a.type !== b.type) return a.type === 'checkout' ? -1 : 1;
       return (parseInt(a.number.replace(/\D/g, '')) || 0) - (parseInt(b.number.replace(/\D/g, '')) || 0);
     });
+
+    // ── Step 4: one-person-per-floor with capacity respect ──
+    //
+    // For each room we want the staff who already owns the most rooms
+    // on that floor (stickiness → one person per floor). Ties break on
+    // whoever has less total load today. If the top pick would blow
+    // through the shift cap, we filter them out first and fall back to
+    // the next candidate — so floors that won't fit on one person spill
+    // cleanly onto the next person instead of overloading anyone.
     const next = { ...assignments };
     for (const r of toAssign) {
+      const f = getFloor(r.number);
+      const mins = minsForRoom(r) + prepPerRoom;
+      // Prefer only staff who have room under the cap. If literally
+      // nobody fits, fall back to the full crew (better to assign than
+      // leave the room in the pool — cap breach shows up as Near Capacity).
+      const withCapacity = effectiveCrew.filter(s => (loadByStaff.get(s.id) ?? 0) + mins <= shiftLen);
+      const pool = withCapacity.length > 0 ? withCapacity : effectiveCrew;
       let best: string | null = null;
+      let bestFloorCount = -1;
       let bestLoad = Infinity;
-      for (const [sid, load] of loadByStaff) {
-        if (load < bestLoad) { bestLoad = load; best = sid; }
+      for (const s of pool) {
+        const fc = floorCountByStaff.get(s.id)?.get(f) ?? 0;
+        const load = loadByStaff.get(s.id) ?? 0;
+        if (fc > bestFloorCount || (fc === bestFloorCount && load < bestLoad)) {
+          bestFloorCount = fc;
+          bestLoad = load;
+          best = s.id;
+        }
       }
       if (!best) break;
       next[r.id] = best;
-      const mins = minsForRoom(r) + prepPerRoom;
-      loadByStaff.set(best, bestLoad + mins);
+      loadByStaff.set(best, (loadByStaff.get(best) ?? 0) + mins);
+      const fmap = floorCountByStaff.get(best)!;
+      fmap.set(f, (fmap.get(f) ?? 0) + 1);
     }
 
     // Commit crew additions first (so the new cards render), then the
@@ -1878,6 +1923,37 @@ function ScheduleSection() {
               </p>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {/* Max hours per housekeeper — shown in hours for readability,
+                  stored as minutes on the property doc (shiftMinutes). This
+                  is the cap Auto Assign respects when deciding whether it
+                  needs to pull in more crew. */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                  <span style={{ fontSize: '14px', fontWeight: 500, color: '#1b1c19' }}>
+                    {lang === 'es' ? 'Horas máx. por limpiador' : 'Max hours per housekeeper'}
+                  </span>
+                  <span style={{ fontSize: '11px', color: '#9a9baa', marginTop: '2px' }}>
+                    {lang === 'es' ? 'Tope diario por persona' : 'Daily cap per person'}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                  <input
+                    className="input"
+                    type="number"
+                    min={1}
+                    max={24}
+                    step={0.25}
+                    value={(settingsForm.shiftMinutes / 60).toString()}
+                    onChange={e => {
+                      const hrs = Number(e.target.value);
+                      if (isNaN(hrs) || hrs <= 0) return;
+                      setSettingsForm(p => ({ ...p, shiftMinutes: Math.round(hrs * 60) }));
+                    }}
+                    style={{ width: '64px', textAlign: 'center', padding: '8px 4px' }}
+                  />
+                  <span style={{ fontSize: '13px', color: '#757684' }}>hr</span>
+                </div>
+              </div>
               {[
                 {
                   label: lang === 'es' ? 'Habitación de salida' : 'Checkout room',
