@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { signInAnonymously } from 'firebase/auth';
+import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
 import { todayStr } from '@/lib/utils';
 import { getPublicAreas, getLaundryConfig, subscribeToRooms } from '@/lib/firestore';
@@ -87,22 +87,32 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
   useEffect(() => {
     if (!uid || !pid) return;
 
-    const currentUser = auth.currentUser;
     const subscribe = () => {
       subscribeToRooms(uid, pid, today, (data: Room[]) => {
         setRooms(data);
       });
     };
 
-    if (currentUser) {
-      subscribe();
-    } else {
-      signInAnonymously(auth)
-        .then(subscribe)
-        .catch(err => {
-          console.error('[laundry] Anonymous auth failed:', err);
-        });
-    }
+    // Wait for Firebase auth to resolve before deciding to sign in anonymously.
+    // `auth.currentUser` is unreliable on initial render (reads null even when
+    // a session is being restored from IndexedDB), and calling signInAnonymously
+    // in that window would clobber an admin's session across all tabs.
+    let started = false;
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
+      if (started) return;
+      started = true;
+      if (user) {
+        subscribe();
+      } else {
+        signInAnonymously(auth)
+          .then(subscribe)
+          .catch(err => {
+            console.error('[laundry] Anonymous auth failed:', err);
+          });
+      }
+    });
+
+    return () => unsubAuth();
   }, [uid, pid, today]);
 
   // Calculate today's date for area filtering

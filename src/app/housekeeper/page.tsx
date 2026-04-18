@@ -4,7 +4,7 @@ import React, { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
-import { signInAnonymously } from 'firebase/auth';
+import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
 import { registerForPushNotifications } from '@/lib/notifications';
 import { BedDouble, Bell, CheckCircle, AlertCircle, Globe } from 'lucide-react';
@@ -42,9 +42,19 @@ function HousekeeperInner() {
     // Sign in anonymously so Firestore security rules allow room reads/updates.
     // Housekeepers don't have Google accounts - anonymous auth gives them a
     // real Firebase auth token without requiring any login UI.
-    signInAnonymously(auth).catch(() => {
-      // Non-fatal - staff-list API route uses firebase-admin (bypasses rules)
-      // and the [id] page will retry on its own useEffect.
+    //
+    // But only sign in anonymously if there is genuinely no user. Otherwise
+    // we'd clobber an admin's session — Firebase propagates auth changes
+    // across all tabs, so an admin viewing this page would be silently
+    // logged out of the main app. Wait for onAuthStateChanged to resolve
+    // first; `auth.currentUser` is unreliable on initial render.
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
+      unsubAuth();
+      if (user) return;
+      signInAnonymously(auth).catch(() => {
+        // Non-fatal - staff-list API route uses firebase-admin (bypasses rules)
+        // and the [id] page will retry on its own useEffect.
+      });
     });
 
     fetch(`/api/staff-list?uid=${uid}&pid=${pid}`)

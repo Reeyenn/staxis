@@ -4,7 +4,7 @@ import React, { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
-import { signInAnonymously } from 'firebase/auth';
+import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
 import { registerForPushNotifications } from '@/lib/notifications';
 import { Droplet, Bell, CheckCircle, AlertCircle, Globe } from 'lucide-react';
@@ -39,9 +39,17 @@ function LaundryInner() {
   useEffect(() => {
     if (!uid || !pid) { setStep('bad-link'); return; }
 
-    // Sign in anonymously so Firestore security rules allow reads
-    signInAnonymously(auth).catch(() => {
-      // Non-fatal - staff-list API route uses firebase-admin (bypasses rules)
+    // Sign in anonymously so Firestore security rules allow reads — but only
+    // if no user is already signed in. Otherwise we'd clobber an admin's
+    // session, and Firebase propagates that across all tabs, logging them
+    // out of the main app. `auth.currentUser` is unreliable on first render,
+    // so wait for onAuthStateChanged.
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
+      unsubAuth();
+      if (user) return;
+      signInAnonymously(auth).catch(() => {
+        // Non-fatal - staff-list API route uses firebase-admin (bypasses rules)
+      });
     });
 
     fetch(`/api/staff-list?uid=${uid}&pid=${pid}`)

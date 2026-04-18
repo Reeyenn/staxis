@@ -13,7 +13,7 @@ import {
   Timestamp,
   DocumentReference,
 } from 'firebase/firestore';
-import { signInAnonymously } from 'firebase/auth';
+import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { db, auth } from '@/lib/firebase';
 import { todayStr } from '@/lib/utils';
 import type { Room, RoomStatus } from '@/types';
@@ -142,19 +142,34 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       );
     };
 
-    const currentUser = auth.currentUser;
-    if (currentUser) {
-      subscribeToRooms();
-    } else {
-      signInAnonymously(auth)
-        .then(subscribeToRooms)
-        .catch(err => {
-          console.error('[housekeeper] Anonymous auth failed:', err);
-          setLoading(false);
-        });
-    }
+    // Wait for Firebase to resolve the auth state before deciding whether to
+    // sign in anonymously. `auth.currentUser` is unreliable on first render —
+    // it reads null even when a real session is being restored from IndexedDB.
+    // Calling signInAnonymously during that window would clobber an admin's
+    // session and, because Firebase propagates auth changes across all tabs,
+    // log them out of the admin app. This pattern only signs in anonymously
+    // after Firebase confirms there is genuinely no user.
+    let started = false;
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
+      if (started) return;
+      if (user) {
+        started = true;
+        subscribeToRooms();
+      } else {
+        started = true;
+        signInAnonymously(auth)
+          .then(subscribeToRooms)
+          .catch(err => {
+            console.error('[housekeeper] Anonymous auth failed:', err);
+            setLoading(false);
+          });
+      }
+    });
 
-    return () => unsub?.();
+    return () => {
+      unsub?.();
+      unsubAuth();
+    };
   }, [housekeeperId, today]);
 
   // ── Start room (dirty → in_progress) ──────────────────────────────────────
