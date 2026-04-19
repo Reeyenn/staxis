@@ -4,7 +4,7 @@ import React, { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
-import { signInAnonymously } from 'firebase/auth';
+import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
 import { registerForPushNotifications } from '@/lib/notifications';
 import { BedDouble, Bell, CheckCircle, AlertCircle, Globe } from 'lucide-react';
@@ -42,9 +42,19 @@ function HousekeeperInner() {
     // Sign in anonymously so Firestore security rules allow room reads/updates.
     // Housekeepers don't have Google accounts - anonymous auth gives them a
     // real Firebase auth token without requiring any login UI.
-    signInAnonymously(auth).catch(() => {
-      // Non-fatal - staff-list API route uses firebase-admin (bypasses rules)
-      // and the [id] page will retry on its own useEffect.
+    //
+    // But only sign in anonymously if there is genuinely no user. Otherwise
+    // we'd clobber an admin's session — Firebase propagates auth changes
+    // across all tabs, so an admin viewing this page would be silently
+    // logged out of the main app. Wait for onAuthStateChanged to resolve
+    // first; `auth.currentUser` is unreliable on initial render.
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
+      unsubAuth();
+      if (user) return;
+      signInAnonymously(auth).catch(() => {
+        // Non-fatal - staff-list API route uses firebase-admin (bypasses rules)
+        // and the [id] page will retry on its own useEffect.
+      });
     });
 
     fetch(`/api/staff-list?uid=${uid}&pid=${pid}`)
@@ -146,13 +156,21 @@ function HousekeeperInner() {
 
       {/* Loading */}
       {step === 'loading' && (
-        <p style={{ color: 'var(--text-muted)', fontSize: '14px' }}>{t('loading', lang)}</p>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{
+            width: '32px', height: '32px', border: '4px solid var(--border)',
+            borderTopColor: 'var(--amber)', borderRadius: '50%',
+            animation: 'spin 0.8s linear infinite', margin: '0 auto 12px',
+          }} />
+          <p style={{ color: 'var(--text-muted)', fontSize: '14px' }}>{t('loading', lang)}</p>
+          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+        </div>
       )}
 
       {/* Bad link */}
       {step === 'bad-link' && (
         <div style={{ textAlign: 'center', maxWidth: '320px' }}>
-          <AlertCircle size={40} color="#EF4444" style={{ marginBottom: '12px' }} />
+          <AlertCircle size={40} color="var(--red)" style={{ marginBottom: '12px' }} />
           <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: 1.6 }}>
             {t('badLink', lang)}
           </p>
@@ -164,19 +182,19 @@ function HousekeeperInner() {
         <div style={{
           width: '100%', maxWidth: '360px',
           background: 'var(--bg-card)', border: '1px solid var(--border)',
-          borderRadius: 'var(--radius-lg)', padding: '24px',
+          borderRadius: 'var(--radius-lg)', padding: '16px',
         }}>
-          <h1 style={{ fontSize: '22px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '6px', letterSpacing: '-0.02em' }}>
+          <h1 style={{ fontSize: '17px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '4px', letterSpacing: '-0.01em' }}>
             {t('setupNotifications', lang)}
           </h1>
-          <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '24px', lineHeight: 1.6 }}>
+          <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '14px', lineHeight: 1.5 }}>
             {t('selectNameDesc', lang)}
           </p>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '20px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '14px' }}>
             {staff.map(member => (
               <button key={member.id} onClick={() => setSelectedId(member.id)} style={{
-                padding: '14px 16px',
+                padding: '10px 14px',
                 background: selectedId === member.id ? 'var(--amber-dim)' : 'var(--bg)',
                 border: `1.5px solid ${selectedId === member.id ? 'var(--amber-border)' : 'var(--border)'}`,
                 borderRadius: 'var(--radius-md)', textAlign: 'left', cursor: 'pointer',
@@ -265,7 +283,7 @@ function HousekeeperInner() {
           background: 'var(--bg-card)', border: '1px solid var(--border)',
           borderRadius: 'var(--radius-lg)', padding: '32px 24px',
         }}>
-          <AlertCircle size={40} color="#EF4444" style={{ marginBottom: '16px' }} />
+          <AlertCircle size={40} color="var(--red)" style={{ marginBottom: '16px' }} />
           <h2 style={{ fontSize: '18px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>{t('somethingWentWrong', lang)}</h2>
           <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>{errorMsg}</p>
           <button onClick={() => { setStep('loading'); }} style={{

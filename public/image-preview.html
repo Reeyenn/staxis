@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Staxis Hero Image Preview</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<style>
+  body { font-family: 'Inter', sans-serif; background: #1b1c19; color: #fff; margin: 0; padding: 40px; }
+  h1 { text-align: center; margin-bottom: 8px; font-size: 28px; }
+  p.sub { text-align: center; color: #999; margin-bottom: 40px; font-size: 14px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(600px, 1fr)); gap: 28px; }
+  .card { position: relative; border-radius: 16px; overflow: hidden; height: 300px; }
+  .card img.bg { width: 100%; height: 100%; object-fit: cover; }
+  .card .overlay {
+    position: absolute; inset: 0;
+    background: linear-gradient(to right, rgba(54,66,98,0.82) 0%, rgba(54,66,98,0.25) 55%, rgba(54,66,98,0.15) 100%);
+  }
+  .card .label {
+    position: absolute; bottom: 12px; left: 16px;
+    background: rgba(0,0,0,0.55); padding: 5px 12px; border-radius: 8px;
+    font-size: 13px; font-weight: 600; letter-spacing: -0.01em;
+  }
+
+  /* Left side: greeting */
+  .card .text-left {
+    position: absolute; bottom: 48px; left: 48px; z-index: 10;
+  }
+  .card .text-left .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 12px; border-radius: 9999px;
+    background: #006565; color: #fff;
+    font-size: 11px; font-weight: 700; margin-bottom: 14px;
+    letter-spacing: 0.03em;
+  }
+  .card .text-left h2 {
+    font-size: 38px; font-weight: 700; margin: 0 0 6px;
+    letter-spacing: -0.02em; line-height: 1.1;
+  }
+  .card .text-left p { font-size: 15px; opacity: 0.85; margin: 0; font-weight: 300; }
+
+  /* Right side: date display */
+  .card .date-display {
+    position: absolute; right: 40px; bottom: 48px; z-index: 10;
+    text-align: right;
+  }
+  .card .date-display .day-name {
+    font-size: 14px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.15em; color: rgba(255,255,255,0.6);
+    margin: 0 0 4px;
+  }
+  .card .date-display .date-big {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 42px; font-weight: 500; color: #fff;
+    line-height: 1; margin: 0 0 2px;
+    text-shadow: 0 2px 20px rgba(0,0,0,0.3);
+  }
+  .card .date-display .month-year {
+    font-size: 15px; font-weight: 500; color: rgba(255,255,255,0.7);
+    letter-spacing: 0.06em; margin: 0;
+  }
+</style>
+<script>
+  // Get today's date parts
+  const now = new Date();
+  const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const dayName = days[now.getDay()];
+  const monthName = months[now.getMonth()];
+  const dateNum = now.getDate();
+  const year = now.getFullYear();
+
+  document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('.day-name-js').forEach(el => el.textContent = dayName);
+    document.querySelectorAll('.date-num-js').forEach(el => el.textContent = dateNum);
+    document.querySelectorAll('.month-year-js').forEach(el => el.textContent = monthName + ' ' + year);
+  });
+</script>
+</head>
+<body>
+<h1>Staxis Dashboard — Hero Image Candidates</h1>
+<p class="sub">Each image has the greeting on the left + date display on the right. Scroll through and pick the ones you like.</p>
+<div class="grid">
+
+  <div class="card">
+    <img class="bg" src="https://images.unsplash.com/photo-1677129667171-92abd8740fa3?w=1200&q=80&auto=format&fit=crop" alt="Hotel lobby with chandelier"/>
+    <div class="overlay"></div>
+    <div class="text-left">
+      <div class="badge">✦ AI INSIGHT READY</div>
+      <h2>Good morning, Jay.</h2>
+      <p>Comfort Suites is at 92% occupancy today.</p>
+    </div>
+    <div class="date-display">
+      <p class="day-name day-name-js">Sunday</p>
+      <p class="date-big date-num-js">12</p>
+      <p class="month-year month-year-js">April 2026</p>
+    </div>
+    <div class="label">#1 — Hotel lobby chandelier</div>
+  </div>
+
+  <div class="card">
+    <img class="bg" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBZbI6Q__TgrGV68CwAljtCXlm-IIQqMH3Xp-2bJ6iCAK7czY26jVHPqSvr1eW6Jr9UzXxPWcHxnZY-vhxpsuzsHWrTmc959Y8259FEe1eFselJfyEo8TSuB3A5ousMXyxqU07-hrv_pwBIgA8BPUv8oz2UdjcLL_sZNHiuPA7ImV_kiS6oL0xM1Jdkrs6Nsv7LTW-MVg0PWv1jzCrTFmWDskwTsIebZXs0pedyHW35oLHSX4pjQ_Y8CA130SYTXxEN-ZUlVQTT94A" alt=""/>
+    <div class="overlay"></div>
+    <div class="text-left">
+      <div class="badge">✦ AI INSIGHT READY</div>
+      <h2>Good morning, Jay.</h2>
+      <p>Comfort Suites is at 92% occupancy today.</p>
+    </div>
+    <div class="date-display">
+      <p class="day-name day-name-js">Sunday</p>
+      <p class="date-big date-num-js">12</p>
+      <p class="month-year month-year-js">April 2026</p>
+    </div>
+    <div class="label">#2 — Stitch concierge lobby</div>
+  </div>
+
+  <div class="card">
+    <img class="bg" src="https://images.unsplash.com/photo-1767395523614-53f52709c37a?w=1200&q=80&auto=format&fit=crop" alt="Grand hotel lobby with ornate hanging lights and plants"/>
+    <div class="overlay"></div>
+    <div class="text-left">
+      <div class="badge">✦ AI INSIGHT READY</div>
+      <h2>Good morning, Jay.</h2>
+      <p>Comfort Suites is at 92% occupancy today.</p>
+    </div>
+    <div class="date-display">
+      <p class="day-name day-name-js">Sunday</p>
+      <p class="date-big date-num-js">12</p>
+      <p class="month-year month-year-js">April 2026</p>
+    </div>
+    <div class="label">#3 — Grand hotel lobby lights</div>
+  </div>
+
+  <div class="card">
+    <img class="bg" src="https://images.unsplash.com/photo-1763560705345-5aed55f99c8f?w=1200&q=80&auto=format&fit=crop" alt="Modern hotel lobby with reception desk and seating area"/>
+    <div class="overlay"></div>
+    <div class="text-left">
+      <div class="badge">✦ AI INSIGHT READY</div>
+      <h2>Good morning, Jay.</h2>
+      <p>Comfort Suites is at 92% occupancy today.</p>
+    </div>
+    <div class="date-display">
+      <p class="day-name day-name-js">Sunday</p>
+      <p class="date-big date-num-js">12</p>
+      <p class="month-year month-year-js">April 2026</p>
+    </div>
+    <div class="label">#4 — Hotel lobby reception</div>
+  </div>
+
+  <div class="card">
+    <img class="bg" src="https://images.unsplash.com/photo-1759038086917-7dc476207c0f?w=1200&q=80&auto=format&fit=crop" alt="Lobby with leather chairs and modern floor lamp"/>
+    <div class="overlay"></div>
+    <div class="text-left">
+      <div class="badge">✦ AI INSIGHT READY</div>
+      <h2>Good morning, Jay.</h2>
+      <p>Comfort Suites is at 92% occupancy today.</p>
+    </div>
+    <div class="date-display">
+      <p class="day-name day-name-js">Sunday</p>
+      <p class="date-big date-num-js">12</p>
+      <p class="month-year month-year-js">April 2026</p>
+    </div>
+    <div class="label">#5 — Lobby leather chairs</div>
+  </div>
+
+  <div class="card">
+    <img class="bg" src="https://images.unsplash.com/photo-1758193783649-13371d7fb8dd?w=1200&q=80&auto=format&fit=crop" alt="Modern hotel lobby with sleek reception desk and seating"/>
+    <div class="overlay"></div>
+    <div class="text-left">
+      <div class="badge">✦ AI INSIGHT READY</div>
+      <h2>Good morning, Jay.</h2>
+      <p>Comfort Suites is at 92% occupancy today.</p>
+    </div>
+    <div class="date-display">
+      <p class="day-name day-name-js">Sunday</p>
+      <p class="date-big date-num-js">12</p>
+      <p class="month-year month-year-js">April 2026</p>
+    </div>
+    <div class="label">#6 — Modern hotel reception</div>
+  </div>
+
+  <div class="card">
+    <img class="bg" src="https://images.unsplash.com/photo-1758194190679-198a77cba84f?w=1200&q=80&auto=format&fit=crop" alt="Modern lobby with marble floors and contemporary furniture"/>
+    <div class="overlay"></div>
+    <div class="text-left">
+      <div class="badge">✦ AI INSIGHT READY</div>
+      <h2>Good morning, Jay.</h2>
+      <p>Comfort Suites is at 92% occupancy today.</p>
+    </div>
+    <div class="date-display">
+      <p class="day-name day-name-js">Sunday</p>
+      <p class="date-big date-num-js">12</p>
+      <p class="month-year month-year-js">April 2026</p>
+    </div>
+    <div class="label">#7 — Marble lobby modern</div>
+  </div>
+
+  <div class="card">
+    <img class="bg" src="https://images.unsplash.com/photo-1702814160779-4a88cfb330c7?w=1200&q=80&auto=format&fit=crop" alt="Hotel dining room with tables chairs and candles"/>
+    <div class="overlay"></div>
+    <div class="text-left">
+      <div class="badge">✦ AI INSIGHT READY</div>
+      <h2>Good morning, Jay.</h2>
+      <p>Comfort Suites is at 92% occupancy today.</p>
+    </div>
+    <div class="date-display">
+      <p class="day-name day-name-js">Sunday</p>
+      <p class="date-big date-num-js">12</p>
+      <p class="month-year month-year-js">April 2026</p>
+    </div>
+    <div class="label">#8 — Hotel dining room</div>
+  </div>
+
+  <div class="card">
+    <img class="bg" src="https://images.unsplash.com/photo-1696766984569-a33d52748dba?w=1200&q=80&auto=format&fit=crop" alt=""/>
+    <div class="overlay"></div>
+    <div class="text-left">
+      <div class="badge">✦ AI INSIGHT READY</div>
+      <h2>Good morning, Jay.</h2>
+      <p>Comfort Suites is at 92% occupancy today.</p>
+    </div>
+    <div class="date-display">
+      <p class="day-name day-name-js">Sunday</p>
+      <p class="date-big date-num-js">12</p>
+      <p class="month-year month-year-js">April 2026</p>
+    </div>
+    <div class="label">#9 — Unsplash</div>
+  </div>
+
+  <div class="card">
+    <img class="bg" src="https://images.unsplash.com/photo-1768346564825-6f90c0b89e2e?w=1200&q=80&auto=format&fit=crop" alt=""/>
+    <div class="overlay"></div>
+    <div class="text-left">
+      <div class="badge">✦ AI INSIGHT READY</div>
+      <h2>Good morning, Jay.</h2>
+      <p>Comfort Suites is at 92% occupancy today.</p>
+    </div>
+    <div class="date-display">
+      <p class="day-name day-name-js">Sunday</p>
+      <p class="date-big date-num-js">12</p>
+      <p class="month-year month-year-js">April 2026</p>
+    </div>
+    <div class="label">#10 — Unsplash</div>
+  </div>
+
+  <div class="card">
+    <img class="bg" src="https://images.unsplash.com/photo-1771918522305-9d78f9cf9751?w=1200&q=80&auto=format&fit=crop" alt="Hotel hallway with chairs console table and artwork"/>
+    <div class="overlay"></div>
+    <div class="text-left">
+      <div class="badge">✦ AI INSIGHT READY</div>
+      <h2>Good morning, Jay.</h2>
+      <p>Comfort Suites is at 92% occupancy today.</p>
+    </div>
+    <div class="date-display">
+      <p class="day-name day-name-js">Sunday</p>
+      <p class="date-big date-num-js">12</p>
+      <p class="month-year month-year-js">April 2026</p>
+    </div>
+    <div class="label">#11 — Hotel hallway artwork</div>
+  </div>
+
+  <div class="card">
+    <img class="bg" src="https://images.unsplash.com/photo-1774192621035-20d11389f781?w=1200&q=80&auto=format&fit=crop" alt=""/>
+    <div class="overlay"></div>
+    <div class="text-left">
+      <div class="badge">✦ AI INSIGHT READY</div>
+      <h2>Good morning, Jay.</h2>
+      <p>Comfort Suites is at 92% occupancy today.</p>
+    </div>
+    <div class="date-display">
+      <p class="day-name day-name-js">Sunday</p>
+      <p class="date-big date-num-js">12</p>
+      <p class="month-year month-year-js">April 2026</p>
+    </div>
+    <div class="label">#12 — Unsplash</div>
+  </div>
+
+  <div class="card">
+    <img class="bg" src="https://images.unsplash.com/photo-1759177715489-74112089de1a?w=1200&q=80&auto=format&fit=crop" alt=""/>
+    <div class="overlay"></div>
+    <div class="text-left">
+      <div class="badge">✦ AI INSIGHT READY</div>
+      <h2>Good morning, Jay.</h2>
+      <p>Comfort Suites is at 92% occupancy today.</p>
+    </div>
+    <div class="date-display">
+      <p class="day-name day-name-js">Sunday</p>
+      <p class="date-big date-num-js">12</p>
+      <p class="month-year month-year-js">April 2026</p>
+    </div>
+    <div class="label">#13 — Unsplash</div>
+  </div>
+
+  <div class="card">
+    <img class="bg" src="https://images.unsplash.com/photo-1723974915612-c9b6f524f28c?w=1200&q=80&auto=format&fit=crop" alt=""/>
+    <div class="overlay"></div>
+    <div class="text-left">
+      <div class="badge">✦ AI INSIGHT READY</div>
+      <h2>Good morning, Jay.</h2>
+      <p>Comfort Suites is at 92% occupancy today.</p>
+    </div>
+    <div class="date-display">
+      <p class="day-name day-name-js">Sunday</p>
+      <p class="date-big date-num-js">12</p>
+      <p class="month-year month-year-js">April 2026</p>
+    </div>
+    <div class="label">#14 — Unsplash</div>
+  </div>
+
+  <div class="card">
+    <img class="bg" src="https://images.unsplash.com/photo-1758194090785-8e09b7288199?w=1200&q=80&auto=format&fit=crop" alt=""/>
+    <div class="overlay"></div>
+    <div class="text-left">
+      <div class="badge">✦ AI INSIGHT READY</div>
+      <h2>Good morning, Jay.</h2>
+      <p>Comfort Suites is at 92% occupancy today.</p>
+    </div>
+    <div class="date-display">
+      <p class="day-name day-name-js">Sunday</p>
+      <p class="date-big date-num-js">12</p>
+      <p class="month-year month-year-js">April 2026</p>
+    </div>
+    <div class="label">#15 — Unsplash</div>
+  </div>
+
+</div>
+</body>
+</html>

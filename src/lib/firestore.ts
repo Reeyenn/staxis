@@ -215,6 +215,24 @@ export function subscribeToRooms(
   });
 }
 
+/**
+ * Real-time subscription to ALL rooms in a property (no date filter).
+ * Used by the Rooms tab so it can show today's rooms when today has a shift,
+ * or auto-fall-back to the nearest upcoming / most recent shift date.
+ */
+export function subscribeToAllRooms(
+  uid: string,
+  pid: string,
+  callback: (rooms: Room[]) => void
+) {
+  return onSnapshot(roomsRef(uid, pid), snap => {
+    const rooms = snap.docs.map(d => ({ id: d.id, ...d.data() } as Room));
+    callback(rooms);
+  }, error => {
+    console.error('[Firestore] Listener error in subscribeToAllRooms:', error.message);
+  });
+}
+
 export async function addRoom(uid: string, pid: string, room: Omit<Room, 'id'>): Promise<string> {
   try {
     const ref = await addDoc(roomsRef(uid, pid), room);
@@ -591,6 +609,275 @@ export async function deleteGuestRequest(uid: string, pid: string, gid: string) 
   await deleteDoc(guestRequestDocRef(uid, pid, gid));
 }
 
+// ─── Plan Snapshots (CSV scraper data) ─────────────────────────────────────
+
+export const planSnapshotRef = (uid: string, pid: string, date: string) =>
+  doc(db, 'users', uid, 'properties', pid, 'planSnapshots', date);
+
+export interface PlanSnapshot {
+  date: string;
+  pulledAt: any; // Firestore Timestamp
+  pullType: 'evening' | 'morning';
+  totalRooms: number;
+  checkouts: number;
+  stayovers: number;
+  // 2-day stayover cycle (new — replaces fullServiceStayovers/noneServiceStayovers)
+  stayoverDay1: number;         // odd day of stay (1/3/5…) → light clean, 15 min
+  stayoverDay2: number;         // even day of stay (2/4/6…) → full clean, 20 min
+  stayoverArrivalDay: number;   // day 0 — arriving today, skipped (TBD)
+  stayoverUnknown: number;      // missing arrival date on CSV
+  arrivals: number;
+  vacantClean: number;
+  vacantDirty: number;
+  ooo: number;
+  // Workload breakdown (minutes)
+  checkoutMinutes: number;
+  stayoverDay1Minutes: number;
+  stayoverDay2Minutes: number;
+  vacantDirtyMinutes: number;
+  totalCleaningMinutes: number;
+  recommendedHKs: number;
+  // Room number arrays
+  checkoutRoomNumbers: string[];
+  stayoverDay1RoomNumbers: string[];
+  stayoverDay2RoomNumbers: string[];
+  stayoverArrivalRoomNumbers: string[];
+  arrivalRoomNumbers: string[];
+  vacantCleanRoomNumbers: string[];
+  vacantDirtyRoomNumbers: string[];
+  oooRoomNumbers: string[];
+  rooms: Array<{
+    number: string;
+    roomType: string;
+    status: string;
+    condition: string;
+    stayType: string | null;
+    service: string;
+    adults: number;
+    children: number;
+    housekeeper: string | null;
+    arrival: string | null;
+    departure: string | null;
+    lastClean: string | null;
+    stayoverDay?: number | null;    // 0 (arrival), 1, 2, 3, …; undefined for non-stayovers
+    stayoverMinutes?: number;       // 0, 15, or 20 for stayovers; undefined otherwise
+  }>;
+}
+
+export function subscribeToPlanSnapshot(
+  uid: string,
+  pid: string,
+  date: string,
+  callback: (snapshot: PlanSnapshot | null) => void
+) {
+  return onSnapshot(planSnapshotRef(uid, pid, date), snap => {
+    if (!snap.exists()) {
+      callback(null);
+      return;
+    }
+    const data = snap.data();
+    callback({
+      ...data,
+      pulledAt: data.pulledAt?.toDate?.() ?? null,
+    } as PlanSnapshot);
+  }, error => {
+    console.error('[Firestore] Listener error in subscribeToPlanSnapshot:', error.message);
+  });
+}
+
+// ─── Dashboard numbers (CA View pages — In House / Arrivals / Departures) ────
+// Scraper refreshes this every 15 min 5am–11pm from Choice Advantage's View
+// pages. Shared across all properties for now (single-property deploy) — lives
+// at the top-level scraperStatus/dashboard doc rather than under a property.
+//
+// Contract with the scraper:
+//   • Success-field writes (inHouse/arrivals/departures/pulledAt) are atomic
+//     — all three numbers come from a single consistent CA snapshot or none
+//     of them get updated. See scraper/dashboard-pull.js.
+//   • Failures write ONLY to errorCode / errorMessage / erroredAt. Last good
+//     numbers stay put so Maria keeps seeing "25 in house, last updated 4:01
+//     PM" instead of a spooky blank screen — but `pulledAt` grows stale and
+//     the UI shows a warning banner once it crosses the staleness threshold.
+//   • errorCode is drawn from a fixed vocabulary (see dashboard-pull.js
+//     ERROR_CODES). UI and alert cron branch on code, never on error text.
+
+// Fixed vocabulary — must match scraper/dashboard-pull.js ERROR_CODES.
+export type DashboardErrorCode =
+  | 'login_failed'
+  | 'session_expired'
+  | 'selector_miss'
+  | 'timeout'
+  | 'parse_error'
+  | 'validation_failed'
+  | 'ca_unreachable'
+  | 'unknown';
+
+export interface DashboardNumbers {
+  inHouse:    number | null;
+  arrivals:   number | null;
+  departures: number | null;
+  inHouseGuests?:    number | null;
+  arrivalsGuests?:   number | null;
+  departuresGuests?: number | null;
+  pulledAt: Date | null;
+
+  // Error fields: only set if the LAST attempted pull failed. Cleared on the
+  // next successful pull.
+  errorCode:    DashboardErrorCode | null;
+  errorMessage: string | null;
+  errorPage:    string | null;   // which View page failed (inHouse/arrivals/departures)
+  erroredAt:    Date | null;
+
+  // Legacy field — kept for backwards compat with any old consumer that
+  // still reads `error`. New UI code should use errorCode instead.
+  error: string | null;
+}
+
+// Maria's staleness tolerance. The scraper pulls every 15 min, so anything
+// over 20 is either "one pull got skipped" (could be normal) and over 45 is
+// definitely broken. We start warning at 25 min — enough buffer for one
+// slow pull, tight enough that a silent failure becomes visible within half
+// an hour instead of hours.
+export const DASHBOARD_STALE_MINUTES = 25;
+
+export type DashboardFreshness = 'fresh' | 'stale' | 'error' | 'unknown';
+
+/**
+ * Derive a single status for the UI to render. Centralised so the Schedule
+ * tab, the admin diagnostics page, and any future alert surface all agree
+ * on what "stale" means.
+ */
+export function dashboardFreshness(
+  d: DashboardNumbers | null,
+  nowMs: number = Date.now()
+): DashboardFreshness {
+  if (!d) return 'unknown';
+  // A current error code beats staleness — even if the last good numbers are
+  // 5 minutes old, if CA is actively failing right now we should say so.
+  if (d.errorCode) return 'error';
+  if (!d.pulledAt) return 'unknown';
+  const ageMs = nowMs - d.pulledAt.getTime();
+  return ageMs > DASHBOARD_STALE_MINUTES * 60_000 ? 'stale' : 'fresh';
+}
+
+export function subscribeToDashboardNumbers(
+  callback: (nums: DashboardNumbers | null) => void
+) {
+  const ref = doc(db, 'scraperStatus', 'dashboard');
+  return onSnapshot(ref, snap => {
+    if (!snap.exists()) { callback(null); return; }
+    const d = snap.data() as Record<string, unknown>;
+    const toDate = (v: unknown) =>
+      (v as { toDate?: () => Date } | undefined)?.toDate?.() ?? null;
+    callback({
+      inHouse:    typeof d.inHouse    === 'number' ? d.inHouse    : null,
+      arrivals:   typeof d.arrivals   === 'number' ? d.arrivals   : null,
+      departures: typeof d.departures === 'number' ? d.departures : null,
+      inHouseGuests:    typeof d.inHouseGuests    === 'number' ? d.inHouseGuests    : null,
+      arrivalsGuests:   typeof d.arrivalsGuests   === 'number' ? d.arrivalsGuests   : null,
+      departuresGuests: typeof d.departuresGuests === 'number' ? d.departuresGuests : null,
+      pulledAt:     toDate(d.pulledAt),
+      errorCode:    typeof d.errorCode    === 'string' ? d.errorCode as DashboardErrorCode : null,
+      errorMessage: typeof d.errorMessage === 'string' ? d.errorMessage : null,
+      errorPage:    typeof d.errorPage    === 'string' ? d.errorPage    : null,
+      erroredAt:    toDate(d.erroredAt),
+      error:        typeof d.error === 'string' ? d.error : null,
+    });
+  }, error => {
+    console.error('[Firestore] Listener error in subscribeToDashboardNumbers:', error.message);
+  });
+}
+
+// ─── Schedule Assignments (Maria's HK-to-room assignments, survives CSV overwrites) ──
+
+export const scheduleAssignmentsRef = (uid: string, pid: string, date: string) =>
+  doc(db, 'users', uid, 'properties', pid, 'scheduleAssignments', date);
+
+/** One entry in the CSV room snapshot — just enough to diff the CSV between pulls. */
+export interface CsvRoomSnapshot {
+  number: string;
+  type: 'checkout' | 'stayover';
+}
+
+export interface ScheduleAssignments {
+  date: string;
+  /** Map of roomId (`${date}_${number}`) → staffId. Rooms not in the map are unassigned. */
+  roomAssignments: Record<string, string>;
+  /** Staff IDs Maria picked for this shift (even if they have 0 rooms yet). */
+  crew: string[];
+  /** Map of roomId → staffName (snapshot so we don't re-join against staff docs). */
+  staffNames?: Record<string, string>;
+  /** The rooms that existed in the CSV at the time Maria last saved — used to diff after 6am pull. */
+  csvRoomSnapshot?: CsvRoomSnapshot[];
+  /** ISO timestamp of the CSV pull that was live when Maria last saved. */
+  csvPulledAt?: string | null;
+  updatedAt: any;
+}
+
+export function subscribeToScheduleAssignments(
+  uid: string,
+  pid: string,
+  date: string,
+  callback: (sa: ScheduleAssignments | null) => void,
+) {
+  return onSnapshot(scheduleAssignmentsRef(uid, pid, date), snap => {
+    if (!snap.exists()) { callback(null); return; }
+    const data = snap.data() as ScheduleAssignments;
+    callback({
+      date: data.date,
+      roomAssignments: data.roomAssignments ?? {},
+      crew: data.crew ?? [],
+      staffNames: data.staffNames ?? {},
+      csvRoomSnapshot: data.csvRoomSnapshot ?? [],
+      csvPulledAt: data.csvPulledAt ?? null,
+      updatedAt: data.updatedAt?.toDate?.() ?? null,
+    });
+  }, error => {
+    console.error('[Firestore] Listener error in subscribeToScheduleAssignments:', error.message);
+  });
+}
+
+export async function saveScheduleAssignments(
+  uid: string,
+  pid: string,
+  date: string,
+  payload: {
+    roomAssignments: Record<string, string>;
+    crew: string[];
+    staffNames?: Record<string, string>;
+    csvRoomSnapshot?: CsvRoomSnapshot[];
+    csvPulledAt?: string | null;
+  },
+): Promise<void> {
+  const doc: Record<string, any> = {
+    date,
+    roomAssignments: payload.roomAssignments,
+    crew: payload.crew,
+    staffNames: payload.staffNames ?? {},
+    updatedAt: serverTimestamp(),
+  };
+  if (payload.csvRoomSnapshot !== undefined) doc.csvRoomSnapshot = payload.csvRoomSnapshot;
+  if (payload.csvPulledAt !== undefined) doc.csvPulledAt = payload.csvPulledAt;
+  await setDoc(scheduleAssignmentsRef(uid, pid, date), doc, { merge: true });
+}
+
+export async function getScheduleAssignments(
+  uid: string, pid: string, date: string,
+): Promise<ScheduleAssignments | null> {
+  const snap = await getDoc(scheduleAssignmentsRef(uid, pid, date));
+  if (!snap.exists()) return null;
+  const data = snap.data() as ScheduleAssignments;
+  return {
+    date: data.date,
+    roomAssignments: data.roomAssignments ?? {},
+    crew: data.crew ?? [],
+    staffNames: data.staffNames ?? {},
+    csvRoomSnapshot: data.csvRoomSnapshot ?? [],
+    csvPulledAt: data.csvPulledAt ?? null,
+    updatedAt: data.updatedAt?.toDate?.() ?? null,
+  };
+}
+
 // ─── Shift Confirmations ────────────────────────────────────────────────────
 
 export const shiftConfirmationsRef = (uid: string, pid: string) =>
@@ -718,8 +1005,41 @@ export async function markRoomDeepCleaned(
     id: roomNumber,
     roomNumber,
     lastDeepClean: today,
+    status: 'completed',
+    completedAt: today,
     ...(cleanedBy ? { cleanedBy } : {}),
     ...(notes ? { notes } : {}),
   };
   await setDoc(deepCleanRecordDocRef(uid, pid, roomNumber), record);
+}
+
+export async function assignRoomDeepClean(
+  uid: string, pid: string, roomNumber: string, team: string[]
+) {
+  const today = new Date().toLocaleDateString('en-CA');
+  const existing = await getDoc(deepCleanRecordDocRef(uid, pid, roomNumber));
+  const prev = existing.exists() ? (existing.data() as DeepCleanRecord) : null;
+  const record: DeepCleanRecord = {
+    id: roomNumber,
+    roomNumber,
+    lastDeepClean: prev?.lastDeepClean ?? '',
+    cleanedByTeam: team,
+    status: 'in_progress',
+    assignedAt: today,
+  };
+  await setDoc(deepCleanRecordDocRef(uid, pid, roomNumber), record, { merge: true });
+}
+
+export async function completeRoomDeepClean(
+  uid: string, pid: string, roomNumber: string, team: string[]
+) {
+  const today = new Date().toLocaleDateString('en-CA');
+  const record: Partial<DeepCleanRecord> = {
+    lastDeepClean: today,
+    cleanedByTeam: team,
+    cleanedBy: team.join(', '),
+    status: 'completed',
+    completedAt: today,
+  };
+  await setDoc(deepCleanRecordDocRef(uid, pid, roomNumber), record, { merge: true });
 }

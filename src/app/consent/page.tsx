@@ -147,14 +147,47 @@ export default function ConsentPage() {
           {/* How consent is collected */}
           <div className="section">
             <p className="section-title">How Consent Is Collected</p>
-            <span className="badge">Opt-In Type: Verbal</span>
+            <span className="badge">Opt-In Type: Verbal (In-Person)</span>
             <div className="section-body">
-              <p>When hotel employees are hired, the hotel manager verbally informs them that they will receive SMS text messages from Staxis for daily scheduling purposes. This includes:</p>
-              <p>
-                • A nightly availability check asking if they can work the next day<br />
-                • A shift confirmation message with their room assignments if they confirm
+              <p>Before any phone number is added to Staxis, the Staxis founder goes to the hotel property in person, stands with the head housekeeper, and asks each housekeeper one at a time — face to face — whether she is okay with receiving the nightly scheduling text from Staxis. The phone number is only entered into the system after the housekeeper says yes. If she says no, her number is never added and she continues to be scheduled the way she was before.</p>
+            </div>
+          </div>
+
+          {/* Verbal consent script - verbatim */}
+          <div className="section">
+            <p className="section-title">Verbal Consent Script (Word-for-Word)</p>
+            <div className="section-body">
+              <p>This is what is said, in person, to each housekeeper before her number is added:</p>
+              <div className="example-box">
+                <p className="example-label">Verbatim — Spoken to Each Housekeeper</p>
+                <p>
+                  "Hey, I'm Reeyen — I built a scheduling tool called Staxis that the hotel is
+                  going to start using. Right now Maria texts you every night from her own phone
+                  to tell you if you're working tomorrow. With Staxis, you'll get that same text,
+                  but it'll come from the Staxis number — 855-514-1450 — instead of from Maria.
+                </p>
+                <p>
+                  It asks one thing: can you work tomorrow, yes or no. You text back YES or NO. If
+                  you say yes, in the morning you get one more text with the rooms you're cleaning
+                  that day. That's it — two texts max per day, nothing else. No ads, no spam.
+                </p>
+                <p>
+                  If you ever want it to stop, text back STOP and it stops. Is it okay with you if
+                  I add your number so you start getting these instead of Maria texting you?"
+                </p>
+                <p style={{ marginTop: '10px', color: '#6b7280', fontStyle: 'italic' }}>
+                  [Wait for the housekeeper to say yes, then add her number to Staxis. If she
+                  says no, do not add her number.]
+                </p>
+              </div>
+              <p style={{ marginTop: '14px' }}>
+                <strong>What actually happened at Comfort Suites Beaumont, TX:</strong> In April
+                2026, the Staxis founder visited the property, walked through the hotel with head
+                housekeeper Maria, and asked every housekeeper on the roster this question in
+                person. Every housekeeper said yes. Their phone numbers were then added to Staxis
+                one by one, with Maria present to confirm. This is the first and only property
+                currently using Staxis.
               </p>
-              <p>Employees are told they can reply <strong>STOP</strong> at any time to opt out of messages. Their phone number is added to the platform only after this verbal disclosure.</p>
             </div>
           </div>
 
@@ -197,7 +230,15 @@ export default function ConsentPage() {
           </div>
 
           <footer>
-            Staxis · hotelops-ai.vercel.app · For questions contact vxreeyen@gmail.com
+            <div style={{ marginBottom: '6px' }}>
+              Staxis — operated by Reeyen Patel (sole proprietor)
+            </div>
+            <div style={{ marginBottom: '6px' }}>
+              2215 Rio Grande St, Austin, TX 78705, United States
+            </div>
+            <div>
+              For questions contact <a href="mailto:rp@reeyenpatel.com" style={{ color: '#6b7280' }}>rp@reeyenpatel.com</a>
+            </div>
           </footer>
 
         </div>

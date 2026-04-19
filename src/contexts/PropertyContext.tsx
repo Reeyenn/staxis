@@ -52,7 +52,10 @@ const PropertyContext = createContext<PropertyContextType>({
 export function PropertyProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   const [properties, setProperties] = useState<Property[]>([]);
-  const [activePropertyId, setActivePropertyIdState] = useState<string | null>(null);
+  const [activePropertyId, setActivePropertyIdState] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') return localStorage.getItem('hotelops-active-property');
+    return null;
+  });
   const [staff, setStaff] = useState<StaffMember[]>([]);
   const [staffLoaded, setStaffLoaded] = useState(false);
   const [publicAreas, setPublicAreas] = useState<PublicArea[]>([]);

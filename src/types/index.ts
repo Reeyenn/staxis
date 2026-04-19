@@ -7,7 +7,16 @@ export interface Property {
   avgOccupancy: number;
   hourlyWage: number;
   checkoutMinutes: number;      // default 30
-  stayoverMinutes: number;      // default 20
+  /**
+   * @deprecated Use `stayoverDay1Minutes` + `stayoverDay2Minutes` instead.
+   * Kept as fallback for existing property docs and any aggregate math that
+   * has no per-room day-of-stay signal. New code should prefer the two
+   * day-specific fields so light-touch vs full-service cleans are timed
+   * correctly through the 2-day cycle.
+   */
+  stayoverMinutes: number;      // default 20  (legacy — average / fallback)
+  stayoverDay1Minutes?: number; // default 15  — light touch, no bed change
+  stayoverDay2Minutes?: number; // default 20  — full clean w/ bed change
   prepMinutesPerActivity: number; // default 5
   shiftMinutes: number;         // default 480 (8 hrs)
   totalStaffOnRoster: number;
@@ -44,6 +53,7 @@ export interface StaffMember {
   isActive?: boolean;           // default true (undefined = active)
   fcmToken?: string;            // FCM device token for push notifications
   schedulePriority?: SchedulePriority; // 'priority' = auto-selected first, 'normal' = backup, 'excluded' = never auto-selected
+  isSchedulingManager?: boolean; // single person who receives shift-confirmation escalation texts. Only one per property.
 }
 
 // ─── Public Areas ──────────────────────────────────────────────────────────
@@ -74,8 +84,12 @@ export interface DeepCleanRecord {
   id: string;                     // same as room number for easy lookup
   roomNumber: string;
   lastDeepClean: string;          // ISO date YYYY-MM-DD
-  cleanedBy?: string;             // staff name
+  cleanedBy?: string;             // staff name (legacy single)
+  cleanedByTeam?: string[];       // staff names (multi-staff)
   notes?: string;
+  status?: 'in_progress' | 'completed'; // in-progress or done
+  assignedAt?: string;            // ISO date when team was assigned
+  completedAt?: string;           // ISO date when marked done
 }
 
 // ─── Laundry Config ────────────────────────────────────────────────────────
@@ -113,13 +127,17 @@ export interface Room {
   inspectedAt?: Date | null;    // timestamp of inspection sign-off
   isDnd?: boolean;              // Do Not Disturb flag
   dndNote?: string;             // optional DND note
+  arrival?: string;             // guest arrival date "M/D/YY" (from CSV pull)
+  stayoverDay?: number;         // 0 = arrival day, 1 = light, 2 = full, 3 = light, … (null if checkout/vacant)
+  stayoverMinutes?: number;     // classified cleaning time (0/15/20) — written by CSV scraper
+  helpRequested?: boolean;      // housekeeper tapped "Need Help" — shows SOS badge on Maria's view
   checklist?: Record<string, boolean>; // cleaning checklist item completion
   photoUrl?: string;            // issue photo URL
 }
 
 // ─── Inventory / Supply Tracking ───────────────────────────────────────────
 
-export type InventoryCategory = 'linens' | 'towels' | 'amenities' | 'cleaning' | 'maintenance' | 'other';
+export type InventoryCategory = 'housekeeping' | 'maintenance' | 'breakfast';
 
 export interface InventoryItem {
   id: string;
@@ -128,9 +146,47 @@ export interface InventoryItem {
   category: InventoryCategory;
   currentStock: number;
   parLevel: number;             // minimum desired stock
+  reorderAt?: number;           // stock threshold that triggers a reorder notification
   unit: string;                 // "sets", "units", "bottles", etc.
   notes?: string;
   updatedAt: Date | null;
+  // Usage prediction fields
+  usagePerCheckout?: number;    // how many of this item used per checkout room
+  usagePerStayover?: number;    // how many used per stayover room
+  reorderLeadDays?: number;     // days before empty to trigger reorder (default 3)
+  vendorName?: string;          // supplier name
+  lastOrderedAt?: Date | null;  // when last ordered
+}
+
+// ─── Inspections ──────────────────────────────────────────────────────────
+
+export interface Inspection {
+  id: string;
+  propertyId: string;
+  name: string;                   // e.g. "Fire Extinguisher Inspection"
+  dueMonth: string;               // "YYYY-MM" — month the inspection is due
+  frequencyMonths: number;        // legacy: months between inspections (kept for backward compat)
+  frequencyDays?: number;         // canonical: days between inspections (preferred when set, supports weekly/biweekly)
+  lastInspectedDate?: string;     // ISO date YYYY-MM-DD of last completed inspection
+  notes?: string;
+  createdAt: Date | null;
+  updatedAt: Date | null;
+}
+
+// ─── Landscaping Tasks ────────────────────────────────────────────────────
+
+export type LandscapingSeason = 'year-round' | 'spring' | 'summer' | 'fall' | 'winter';
+
+export interface LandscapingTask {
+  id: string;
+  propertyId: string;
+  name: string;                    // e.g. "Grass Mowing", "Shrub Trimming"
+  season: LandscapingSeason;       // when this task applies
+  frequencyDays: number;           // how often it recurs (e.g. 7, 10, 14, 90)
+  lastCompletedAt: Date | null;    // null = never done
+  lastCompletedBy?: string;        // name of who did it
+  notes?: string;
+  createdAt: Date | null;
 }
 
 // ─── Shift Handoff Log ─────────────────────────────────────────────────────
@@ -266,6 +322,7 @@ export interface WorkOrder {
   assignedName?: string;
   photoUrl?: string;          // optional photo attachment
   notes?: string;             // manager notes
+  blockedRoom?: boolean;      // true = room is blocked from being rented due to maintenance
   createdAt: Date | null;
   updatedAt: Date | null;
   resolvedAt?: Date | null;
@@ -286,7 +343,12 @@ export interface PreventiveTask {
 
 // ─── Shift Confirmation ────────────────────────────────────────────────────
 
-export type ConfirmationStatus = 'pending' | 'confirmed' | 'declined' | 'no_response';
+// 'sent'      → link SMS went out. Normal resting state (Maria confirms
+//                availability in person at 3pm, so no reply is expected).
+// 'confirmed' → legacy from the old yes/no flow. New code doesn't write it.
+// 'declined'  → legacy from the old yes/no flow. New code doesn't write it.
+// 'pending'   → legacy from the old yes/no flow. Treated the same as 'sent'.
+export type ConfirmationStatus = 'sent' | 'pending' | 'confirmed' | 'declined';
 
 export interface ShiftConfirmation {
   id: string;               // token - also the Firestore doc ID
@@ -342,4 +404,9 @@ export interface MorningSetupForm {
   startTime: string;
   scheduledStaff: number;
   hourlyWage?: number;          // override property default for today
+  // Dashboard enrichment fields
+  arrivals?: number;            // expected check-ins today
+  reservations?: number;        // total reservations (including future)
+  inHouse?: number;             // guests currently in-house
+  adr?: number;                 // Average Daily Rate ($)
 }

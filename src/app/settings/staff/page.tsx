@@ -61,10 +61,18 @@ export default function StaffPage() {
     }
   };
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = async (id: string, name: string) => {
     if (!user || !activePropertyId) return;
-    await deleteStaffMember(user.uid, activePropertyId, id);
-    await refreshStaff();
+    const msg = lang === 'es'
+      ? `¿Estás seguro de que quieres eliminar a ${name}?`
+      : `Are you sure you want to remove ${name}?`;
+    if (!confirm(msg)) return;
+    try {
+      await deleteStaffMember(user.uid, activePropertyId, id);
+      await refreshStaff();
+    } catch (error) {
+      console.error('Error deleting staff member:', error);
+    }
   };
 
   const handleToggle = async (member: StaffMember, field: 'scheduledToday' | 'isSenior') => {
@@ -86,10 +94,10 @@ export default function StaffPage() {
       <div style={{ padding: '16px', maxWidth: '600px', margin: '0 auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <Link href="/settings" style={{ color: 'var(--text-muted)', textDecoration: 'none', fontSize: '14px' }}>← Settings</Link>
+            <Link href="/settings" style={{ color: 'var(--text-muted)', textDecoration: 'none', fontSize: '14px' }} aria-label={lang === 'es' ? 'Volver a configuración' : 'Go back to settings'}>← {t('settings', lang)}</Link>
             <span style={{ color: 'var(--text-muted)' }}>/</span>
-            <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '20px', letterSpacing: '-0.02em', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <Users size={18} color="var(--amber)" /> {t('staff', lang)}
+            <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '16px', letterSpacing: '-0.01em', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <Users size={15} color="var(--amber)" /> {t('staff', lang)}
             </h1>
           </div>
           <button onClick={openAdd} className="btn btn-primary btn-sm">
@@ -100,7 +108,9 @@ export default function StaffPage() {
         {staff.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '48px 16px' }}>
             <Users size={40} color="var(--text-muted)" style={{ margin: '0 auto 12px' }} />
-            <p style={{ color: 'var(--text-muted)', fontSize: '15px' }}>No staff added yet. Add your first housekeeper.</p>
+            <p style={{ color: 'var(--text-muted)', fontSize: '15px' }}>
+              {lang === 'es' ? 'No hay personal registrado. Agrega tu primer empleado.' : 'No staff added yet. Add your first housekeeper.'}
+            </p>
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
@@ -125,11 +135,11 @@ export default function StaffPage() {
                     <div style={{ flex: 1 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
                         <span style={{ fontWeight: 600, fontSize: '15px', color: 'var(--text-primary)' }}>{member.name}</span>
-                        {member.isSenior && <span className="badge badge-vip"><Star size={10} /> Senior</span>}
+                        {member.isSenior && <span className="badge badge-vip"><Star size={10} /> {lang === 'es' ? 'Veterano' : 'Senior'}</span>}
                         <span className="badge badge-stayover">{member.language === 'es' ? 'ES' : 'EN'}</span>
                         {wouldOvertime && (
-                          <span style={{ display: 'flex', alignItems: 'center', gap: '4px', background: 'rgba(251,191,36,0.15)', color: '#fbbf24', fontSize: '11px', fontWeight: 600, padding: '2px 8px', borderRadius: '100px' }}>
-                            <AlertTriangle size={10} /> Overtime
+                          <span style={{ display: 'flex', alignItems: 'center', gap: '4px', background: 'var(--amber-dim, rgba(251,191,36,0.15))', color: 'var(--amber)', fontSize: '11px', fontWeight: 600, padding: '2px 8px', borderRadius: '100px' }}>
+                            <AlertTriangle size={10} /> {lang === 'es' ? 'Horas Extra' : 'Overtime'}
                           </span>
                         )}
                       </div>
@@ -140,15 +150,15 @@ export default function StaffPage() {
                       {/* Hours tracker */}
                       <div style={{ marginBottom: '8px' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: 'var(--text-muted)', marginBottom: '4px' }}>
-                          <span>{member.weeklyHours}h / {member.maxWeeklyHours}h this week</span>
-                          <span style={{ color: remaining < 8 ? '#fbbf24' : 'var(--text-muted)' }}>{remaining}h remaining</span>
+                          <span>{member.weeklyHours}h / {member.maxWeeklyHours}h {lang === 'es' ? 'esta semana' : 'this week'}</span>
+                          <span style={{ color: remaining < 8 ? 'var(--amber)' : 'var(--text-muted)' }}>{remaining}h {lang === 'es' ? 'restantes' : 'remaining'}</span>
                         </div>
                         <div className="progress-track" style={{ height: '4px' }}>
                           <div
                             className="progress-fill"
                             style={{
                               width: `${Math.min(utilizationPct, 100)}%`,
-                              background: utilizationPct > 90 ? '#ef4444' : utilizationPct > 75 ? '#fbbf24' : 'var(--amber)',
+                              background: utilizationPct > 90 ? 'var(--red)' : utilizationPct > 75 ? 'var(--amber)' : 'var(--amber)',
                             }}
                           />
                         </div>
@@ -156,7 +166,7 @@ export default function StaffPage() {
 
                       {/* Weekly hours input */}
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Hours worked this week:</span>
+                        <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{lang === 'es' ? 'Horas trabajadas esta semana:' : 'Hours worked this week:'}</span>
                         <input
                           type="number"
                           value={member.weeklyHours}
@@ -175,14 +185,14 @@ export default function StaffPage() {
                             textAlign: 'center',
                           }}
                         />
-                        <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>hrs</span>
+                        <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{lang === 'es' ? 'hrs' : 'hrs'}</span>
                       </div>
                     </div>
 
                     {/* Toggles & actions */}
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px' }}>
-                      <button onClick={() => openEdit(member)} className="btn btn-secondary btn-sm">Edit</button>
-                      <button onClick={() => handleDelete(member.id)} className="btn btn-danger btn-sm" style={{ padding: '6px 10px' }}>
+                      <button onClick={() => openEdit(member)} className="btn btn-secondary btn-sm">{lang === 'es' ? 'Editar' : 'Edit'}</button>
+                      <button onClick={() => handleDelete(member.id, member.name)} className="btn btn-danger btn-sm" style={{ padding: '6px 10px' }} aria-label={lang === 'es' ? `Eliminar ${member.name}` : `Delete ${member.name}`}>
                         <Trash2 size={13} />
                       </button>
                     </div>
@@ -214,7 +224,7 @@ export default function StaffPage() {
         )}
 
         {/* Add/Edit modal */}
-        <Modal isOpen={showModal} onClose={() => setShowModal(false)} title={editMember ? 'Edit Staff Member' : t('addStaff', lang)}>
+        <Modal isOpen={showModal} onClose={() => setShowModal(false)} title={editMember ? (lang === 'es' ? 'Editar Personal' : 'Edit Staff Member') : t('addStaff', lang)}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
             <div>
               <label className="label">{t('name', lang)}</label>
@@ -232,7 +242,7 @@ export default function StaffPage() {
               </select>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', background: 'rgba(0,0,0,0.03)', border: '1px solid var(--border)', borderRadius: '8px' }}>
-              <span style={{ fontSize: '14px' }}>{t('senior', lang)} (gets VIP rooms)</span>
+              <span style={{ fontSize: '14px' }}>{t('senior', lang)} {lang === 'es' ? '(recibe habitaciones VIP)' : '(gets VIP rooms)'}</span>
               <label className="toggle" style={{ margin: 0 }}>
                 <input type="checkbox" checked={form.isSenior} onChange={e => setForm(f => ({ ...f, isSenior: e.target.checked }))} />
                 <span className="toggle-track" />
@@ -242,7 +252,7 @@ export default function StaffPage() {
             <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
               <button onClick={() => setShowModal(false)} className="btn btn-secondary" style={{ flex: 1, justifyContent: 'center' }}>{t('cancel', lang)}</button>
               <button onClick={handleSave} disabled={saving || !form.name.trim()} className="btn btn-primary" style={{ flex: 1, justifyContent: 'center' }}>
-                {saving ? 'Saving...' : t('save', lang)}
+                {saving ? (lang === 'es' ? 'Guardando...' : 'Saving...') : t('save', lang)}
               </button>
             </div>
           </div>

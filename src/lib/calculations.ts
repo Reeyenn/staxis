@@ -53,7 +53,7 @@ export function calcLaundryMinutes(
       twoBedCheckouts * cat.unitsPerCheckout * cat.twoBedMultiplier +
       stayovers * cat.unitsPerCheckout * cat.stayoverFactor;
 
-    const loads = Math.ceil(units / cat.roomEquivsPerLoad);
+    const loads = Math.ceil(units / Math.max(cat.roomEquivsPerLoad, 1));
     const minutes = loads * cat.minutesPerLoad;
 
     return { category: cat.name, units: Math.round(units), loads, minutes };
@@ -188,28 +188,51 @@ export function predictTodayFromHistory(
 // ─── Room time estimates ───────────────────────────────────────────────────
 
 const CHECKOUT_MINS = 30;
-const STAYOVER_MINS = 15;
+const STAYOVER_DAY1_MINS = 15;
+const STAYOVER_DAY2_MINS = 20;
 
-export function getRoomMinutes(room: { type: string; priority: string }): number {
-  return room.type === 'checkout' ? CHECKOUT_MINS : STAYOVER_MINS;
+/**
+ * Get estimated cleaning minutes for a room, accounting for stayover cycle day.
+ * - checkout → checkout minutes
+ * - stayover with stayoverDay known → Day 1 (odd) = light (15 default), Day 2 (even) = full (20 default)
+ * - stayover without stayoverDay → fall back to Day 2 / legacy stayoverMinutes (safer higher estimate)
+ * - arrival-day stayovers (stayoverDay=0) → fall back to legacy stayoverMinutes too (TBD)
+ */
+export function getRoomMinutes(
+  room: { type: string; priority: string; stayoverDay?: number },
+  property?: { checkoutMinutes?: number; stayoverMinutes?: number; stayoverDay1Minutes?: number; stayoverDay2Minutes?: number }
+): number {
+  if (room.type === 'checkout') {
+    return property?.checkoutMinutes ?? CHECKOUT_MINS;
+  }
+  const day1 = property?.stayoverDay1Minutes ?? STAYOVER_DAY1_MINS;
+  const day2 = property?.stayoverDay2Minutes ?? property?.stayoverMinutes ?? STAYOVER_DAY2_MINS;
+  const fallback = property?.stayoverMinutes ?? day2;
+  if (typeof room.stayoverDay !== 'number' || room.stayoverDay <= 0) return fallback;
+  return room.stayoverDay % 2 === 1 ? day1 : day2;
 }
 
 // ─── Auto-assign rooms to staff ────────────────────────────────────────────
 
 export interface AssignConfig {
   checkoutMinutes?: number;
+  /** @deprecated Use stayoverDay1Minutes + stayoverDay2Minutes */
   stayoverMinutes?: number;
+  stayoverDay1Minutes?: number;
+  stayoverDay2Minutes?: number;
   prepMinutesPerRoom?: number;
   shiftMinutes?: number;
 }
 
 export function autoAssignRooms(
-  rooms: Array<{ id: string; number: string; type: string; priority: string }>,
+  rooms: Array<{ id: string; number: string; type: string; priority: string; stayoverDay?: number }>,
   staff: StaffMember[],
   config?: AssignConfig,
 ): Record<string, string> {
   const coMins = config?.checkoutMinutes ?? 30;
-  const soMins = config?.stayoverMinutes ?? 20;
+  const day1Mins = config?.stayoverDay1Minutes ?? 15;
+  const day2Mins = config?.stayoverDay2Minutes ?? config?.stayoverMinutes ?? 20;
+  const legacySoMins = config?.stayoverMinutes ?? day2Mins;
   const prepMins = config?.prepMinutesPerRoom ?? 5;
   const shiftCap = config?.shiftMinutes ?? 420; // 7 hours max
 
@@ -232,7 +255,15 @@ export function autoAssignRooms(
 
   for (const room of sortedRooms) {
     const floor = room.number.length >= 3 ? room.number[0] : '1';
-    const roomTime = (room.type === 'checkout' ? coMins : soMins) + prepMins;
+    let baseMins: number;
+    if (room.type === 'checkout') {
+      baseMins = coMins;
+    } else if (typeof room.stayoverDay === 'number' && room.stayoverDay > 0) {
+      baseMins = room.stayoverDay % 2 === 1 ? day1Mins : day2Mins;
+    } else {
+      baseMins = legacySoMins;
+    }
+    const roomTime = baseMins + prepMins;
 
     // Find staff who still have capacity
     const withCapacity = available.filter(s => staffLoad[s.id].minutes + roomTime <= shiftCap);
@@ -267,10 +298,11 @@ export interface HousekeeperAssignment {
 }
 
 export function buildHousekeeperAssignments(
-  rooms: Array<{ id: string; number: string; type: string; priority: string }>,
+  rooms: Array<{ id: string; number: string; type: string; priority: string; stayoverDay?: number }>,
   staff: StaffMember[],
   assignments: Record<string, string>, // roomId → staffId
   startTime: string = '08:00',
+  property?: { checkoutMinutes?: number; stayoverMinutes?: number; stayoverDay1Minutes?: number; stayoverDay2Minutes?: number },
 ): HousekeeperAssignment[] {
   const available = staff.filter(s => s.scheduledToday);
   const [startHour, startMin] = startTime.split(':').map(Number);
@@ -284,7 +316,7 @@ export function buildHousekeeperAssignments(
 
     if (assignedRooms.length === 0) continue;
 
-    const totalMinutes = assignedRooms.reduce((sum, r) => sum + getRoomMinutes(r), 0);
+    const totalMinutes = assignedRooms.reduce((sum, r) => sum + getRoomMinutes(r, property), 0);
 
     const startDate = new Date();
     startDate.setHours(startHour, startMin, 0, 0);
@@ -342,13 +374,16 @@ export function getOverdueRooms(
 
 /** Calculate freed minutes from DND rooms that can be used for deep cleaning */
 export function calcDndFreedMinutes(
-  rooms: Array<{ isDnd?: boolean; type: string }>,
+  rooms: Array<{ isDnd?: boolean; type: string; stayoverDay?: number; priority?: string }>,
   property: Property
 ): number {
   return rooms
     .filter(r => r.isDnd)
     .reduce((sum, r) => {
-      const mins = r.type === 'checkout' ? property.checkoutMinutes : property.stayoverMinutes;
+      const mins = getRoomMinutes(
+        { type: r.type, priority: r.priority ?? 'standard', stayoverDay: r.stayoverDay },
+        property
+      );
       return sum + mins;
     }, 0);
 }

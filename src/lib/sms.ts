@@ -14,6 +14,10 @@
  * Long-term: submit Toll-Free Verification in Twilio console for full throughput.
  */
 
+function sanitizeSmsBody(text: string): string {
+  return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '').trim();
+}
+
 export async function sendSms(to: string, message: string): Promise<void> {
   const accountSid = process.env.TWILIO_ACCOUNT_SID;
   const authToken  = process.env.TWILIO_AUTH_TOKEN;
@@ -24,7 +28,8 @@ export async function sendSms(to: string, message: string): Promise<void> {
   }
 
   const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`;
-  const body = new URLSearchParams({ To: to, From: from, Body: message });
+  const sanitizedBody = sanitizeSmsBody(message);
+  const body = new URLSearchParams({ To: to, From: from, Body: sanitizedBody });
 
   const res = await fetch(url, {
     method: 'POST',
@@ -36,7 +41,7 @@ export async function sendSms(to: string, message: string): Promise<void> {
   });
 
   if (!res.ok) {
-    const err = await res.json() as { message?: string };
+    const err = await res.json().catch(() => ({})) as { message?: string };
     throw new Error(err.message ?? `Twilio error ${res.status}`);
   }
 }

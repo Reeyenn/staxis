@@ -14,6 +14,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import admin from '@/lib/firebase-admin';
 import { sendSms } from '@/lib/sms';
+import { isValidDateStr } from '@/lib/utils';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -89,7 +90,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Missing uid, pid, or shiftDate' }, { status: 400 });
     }
 
+    if (!isValidDateStr(shiftDate)) {
+      return NextResponse.json({ error: 'Invalid shiftDate format (expected YYYY-MM-DD)' }, { status: 400 });
+    }
+
     const db = admin.firestore();
+
+    // Fetch hotel name from property doc
+    const propSnap = await db.collection('users').doc(uid).collection('properties').doc(pid).get();
+    const hotelName = propSnap.data()?.name || 'Your Hotel';
 
     // ── 1. Load confirmed HKs for this shift date ────────────────────────────
     const confirmsSnap = await db
@@ -181,12 +190,12 @@ export async function POST(req: NextRequest) {
             msg  = `📋 Actualización de turno, ${firstName}. Lista revisada:`;
             if (newRooms.length > 0) msg += `\nHabitaciones: ${newRooms.join(', ')}`;
             if (hk.assignedAreas?.length > 0) msg += `\nÁreas: ${hk.assignedAreas.join(', ')}`;
-            msg += `\nTu enlace: ${hkUrl}\n– Comfort Suites`;
+            msg += `\nTu enlace: ${hkUrl}\n– ${hotelName}`;
           } else {
             msg  = `📋 Shift update, ${firstName}. Revised list:`;
             if (newRooms.length > 0) msg += `\nRooms: ${newRooms.join(', ')}`;
             if (hk.assignedAreas?.length > 0) msg += `\nAreas: ${hk.assignedAreas.join(', ')}`;
-            msg += `\nYour link: ${hkUrl}\n– Comfort Suites`;
+            msg += `\nYour link: ${hkUrl}\n– ${hotelName}`;
           }
 
           try {

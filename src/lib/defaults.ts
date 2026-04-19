@@ -92,7 +92,13 @@ export const DEFAULT_PROPERTY = {
   avgOccupancy: 65,
   hourlyWage: 12,
   checkoutMinutes: 30,
+  // Stayover cleaning uses a 2-day cycle:
+  //   Day 1, 3, 5, … → 15 min (light touch, no bed change)
+  //   Day 2, 4, 6, … → 20 min (full clean, bed change)
+  // `stayoverMinutes` is kept as a legacy fallback; prefer the two below.
   stayoverMinutes: 20,
+  stayoverDay1Minutes: 15,
+  stayoverDay2Minutes: 20,
   prepMinutesPerActivity: 5,
   shiftMinutes: 480,
   totalStaffOnRoster: 8,
