@@ -54,6 +54,17 @@ service cloud.firestore {
     // /users/{uid}/... rule above, which covers all subcollections.
     // No additional rules needed for client-side access.
 
+    // ── Scraper status (live dashboard numbers) ──────────────────────────────
+    // scraperStatus/dashboard holds the live In House / Arrivals / Departures
+    // counts pulled from Choice Advantage's View pages every 15 min. Read-only
+    // for clients — the Railway scraper (Admin SDK) is the only writer. Other
+    // scraperStatus docs (heartbeat, morning, evening) aren't needed on the
+    // client yet, so keep this rule narrow.
+    match /scraperStatus/{doc} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
     // ── Staff language preferences ───────────────────────────────────────────
     // staffPrefs/{staffId} stores a single doc per housekeeper: { language: 'en' | 'es' }.
     // Written by the SMS-reply webhook (Admin SDK bypass). Read by the
