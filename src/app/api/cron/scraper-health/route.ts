@@ -1,10 +1,12 @@
 /**
- * Scraper health check — Vercel cron
+ * Scraper health check — triggered by GitHub Actions cron
  *
- * Runs every 30 minutes via vercel.json cron config. This is the
- * **monitoring layer**: it watches the scraper so a silent failure becomes
- * an SMS to Reeyen within the same business day — not a "why are the
- * numbers wrong" phone call from Maria three hours later.
+ * Runs every 15 minutes via .github/workflows/scraper-health-cron.yml
+ * (NOT vercel.json — Vercel Hobby plan caps crons at once-per-day, which
+ * is useless for this endpoint; GitHub Actions has no such cap). This is
+ * the **monitoring layer**: it watches the scraper so a silent failure
+ * becomes an SMS to Reeyen within the same business day — not a "why are
+ * the numbers wrong" phone call from Maria three hours later.
  *
  * Three signals, all fed by the Railway scraper writing to Firestore:
  *
@@ -28,10 +30,10 @@
  *   "recovered" SMS when things come back so he knows he can stop worrying.
  *
  * Auth:
- *   Vercel crons hit this endpoint with the `authorization: Bearer
- *   $CRON_SECRET` header (when CRON_SECRET is set). We check that env var
- *   and reject otherwise. This also prevents anyone on the public internet
- *   from triggering spam alerts.
+ *   The GitHub Actions workflow sends `Authorization: Bearer $CRON_SECRET`
+ *   using the same secret value set as the CRON_SECRET env var in Vercel.
+ *   We check that env var and reject otherwise. This prevents anyone on
+ *   the public internet from triggering spam alerts.
  */
 
 import { NextRequest, NextResponse } from 'next/server';

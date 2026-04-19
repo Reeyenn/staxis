@@ -1,12 +1,3 @@
 {
-  "crons": [
-    {
-      "path": "/api/cron/scraper-health",
-      "schedule": "*/30 * * * *"
-    },
-    {
-      "path": "/api/cron/scraper-weekly-digest",
-      "schedule": "0 14 * * 6"
-    }
-  ]
+  "$schema": "https://openapi.vercel.sh/vercel.json"
 }

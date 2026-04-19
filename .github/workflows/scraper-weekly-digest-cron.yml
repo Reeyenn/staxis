@@ -1,0 +1,54 @@
+# Scraper Weekly Digest — GitHub Actions cron
+#
+# Runs once a week (Saturday 9am Central = 14:00 UTC during CST, 15:00 UTC
+# during CDT — we split the difference at 14:00 UTC which lands 8am–9am CT
+# depending on DST, close enough for a weekly check-in).
+#
+# The endpoint itself does the work: reads scraperStatus/dashboardCounters,
+# diffs against the previous week's snapshot, sends a single SMS summarizing
+# success rate and any failures.
+#
+# Same rationale as scraper-health-cron: Vercel Hobby cron caps at daily,
+# so GitHub Actions owns all scheduling.
+
+name: Scraper Weekly Digest
+
+on:
+  schedule:
+    # Saturday 14:00 UTC → Saturday 8am–9am Central depending on DST.
+    - cron: "0 14 * * 6"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  weekly-digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Ping scraper-weekly-digest endpoint
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+
+          URL="https://hotelops-ai.vercel.app/api/cron/scraper-weekly-digest"
+
+          RESPONSE=$(curl \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --max-time 60 \
+            --retry 2 \
+            --retry-delay 5 \
+            --retry-connrefused \
+            -H "Authorization: Bearer ${CRON_SECRET:-}" \
+            "$URL")
+
+          echo "Response: $RESPONSE"
+
+          echo "$RESPONSE" | grep -q '"ok":true' || {
+            echo "::error::scraper-weekly-digest endpoint returned ok:false or malformed JSON"
+            exit 1
+          }

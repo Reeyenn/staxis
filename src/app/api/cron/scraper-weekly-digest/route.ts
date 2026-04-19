@@ -1,8 +1,10 @@
 /**
- * Scraper weekly digest — Vercel cron
+ * Scraper weekly digest — triggered by GitHub Actions cron
  *
- * Runs once a week (Saturday 9am CT via vercel.json). Goal: a *positive*
- * heartbeat. The health check (scraper-health) is silent when things are
+ * Runs once a week (Saturday 14:00 UTC via
+ * .github/workflows/scraper-weekly-digest-cron.yml). Vercel Hobby plan
+ * caps crons at once-per-day max so we schedule this from GitHub Actions
+ * instead. Goal: a *positive* heartbeat. The health check (scraper-health) is silent when things are
  * fine — but silence after a long stretch can also mean "alerting is
  * broken." This digest makes Reeyen actively see proof of life every
  * weekend along with the week's numbers.
