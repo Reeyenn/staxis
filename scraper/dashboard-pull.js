@@ -78,11 +78,38 @@ async function pullDashboardNumbers(page, db, log) {
       throw new Error(`Session expired (login form present at ${cur})`);
     }
 
-    // The CHI_Row_Left block renders fast but wait for it so we don't
-    // read 0s from an empty DOM on slow loads.
-    await page.waitForSelector('ul.CHI_Row_Left label', { timeout: 15000 });
+    // Wait specifically for the "Room Count:" label with a numeric
+    // sibling. A generic `ul.CHI_Row_Left label` wait is unreliable
+    // because CA uses CHI_Row_Left in multiple places on the page, and
+    // interstitial / redirect pages also include CHI_Row_Left markup.
+    try {
+      await page.waitForFunction(() => {
+        const labels = Array.from(document.querySelectorAll('label'));
+        const rc = labels.find(l => l.textContent.trim() === 'Room Count:');
+        if (!rc) return false;
+        const li = rc.closest('li');
+        const next = li ? li.nextElementSibling : null;
+        const data = next ? next.querySelector('.CHI_Data') : null;
+        return !!(data && /^\d+$/.test(data.textContent.trim()));
+      }, { timeout: 15000 });
+    } catch (waitErr) {
+      // Log useful diagnostics so we can see what page we actually landed on
+      const diag = await page.evaluate(() => ({
+        title: document.title,
+        h1: (document.querySelector('h1')?.textContent || '').trim(),
+        firstLabels: Array.from(document.querySelectorAll('label')).slice(0, 10).map(l => l.textContent.trim()),
+        hasLoginForm: !!document.querySelector('input[name="j_username"], input[name="j_password"]'),
+      })).catch(() => ({}));
+      log(`Dashboard pull ${key} — wait for Room Count failed. URL=${page.url()} title=${diag.title} h1=${diag.h1} login=${diag.hasLoginForm} labels=${JSON.stringify(diag.firstLabels)}`);
+      if (diag.hasLoginForm) {
+        throw new Error(`Session expired (login form present at ${page.url()})`);
+      }
+      throw waitErr;
+    }
+
     const { roomCount, guestCount } = await readCounts(page);
     result[key] = { roomCount, guestCount };
+    log(`Dashboard pull ${key} — roomCount=${roomCount} guestCount=${guestCount}`);
   }
 
   const payload = {
