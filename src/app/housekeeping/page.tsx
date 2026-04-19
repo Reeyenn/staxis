@@ -1300,37 +1300,43 @@ function ScheduleSection() {
               </div>
             </div>
 
-            {/* ── Live PMS numbers from Choice Advantage View pages ─────── */}
-            {/* Pulled every 15 min by the Railway scraper (see scraper/   */}
-            {/* dashboard-pull.js). These are REMAINING counts at this     */}
-            {/* moment — arrivals not yet checked in, departures not yet   */}
-            {/* checked out, and currently-in-house occupancy.              */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, auto)', gap: '40px', paddingTop: '8px', borderTop: '1px solid rgba(0,0,0,0.08)' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          </div>
+        )}
+
+        {/* ── Live PMS numbers from Choice Advantage View pages ───────── */}
+        {/* Always rendered — regardless of plan-snapshot / active-rooms /  */}
+        {/* empty branch above — because these are CURRENT-MOMENT PMS      */}
+        {/* numbers and Maria needs them visible on every view of the      */}
+        {/* Schedule tab. Pulled every 15 min 5am–11pm by the Railway      */}
+        {/* scraper (see scraper/dashboard-pull.js). Shows "—" until the   */}
+        {/* first pull lands or if the scraper is down.                     */}
+        {!predictionLoading && (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', marginTop: '16px', paddingTop: '16px', borderTop: '1px solid rgba(0,0,0,0.08)' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, auto)', gap: '40px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center' }}>
                 <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Llegadas' : 'Arrivals'}</p>
                 <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>
                   {dashboardNums?.arrivals ?? '—'}
                 </p>
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center' }}>
                 <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'En Casa' : 'In House'}</p>
                 <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>
                   {dashboardNums?.inHouse ?? '—'}
                 </p>
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center' }}>
                 <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Salidas' : 'Departures'}</p>
                 <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>
                   {dashboardNums?.departures ?? '—'}
                 </p>
               </div>
             </div>
-            {dashboardNums?.pulledAt && (
-              <p style={{ fontSize: '11px', color: '#94a3b8', margin: 0 }}>
-                {lang === 'es' ? 'PMS actualizado' : 'PMS updated'} {dashboardNums.pulledAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
-              </p>
-            )}
-
+            <p style={{ fontSize: '11px', color: '#94a3b8', margin: 0 }}>
+              {dashboardNums?.pulledAt
+                ? `${lang === 'es' ? 'PMS actualizado' : 'PMS updated'} ${dashboardNums.pulledAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+                : (lang === 'es' ? 'Esperando datos de PMS...' : 'Waiting for PMS data...')}
+            </p>
           </div>
         )}
       </section>
