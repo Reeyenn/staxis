@@ -53,28 +53,5 @@ service cloud.firestore {
     // The scheduling page reads these as the authenticated owner via the
     // /users/{uid}/... rule above, which covers all subcollections.
     // No additional rules needed for client-side access.
-
-    // ── Scraper status (live dashboard numbers) ──────────────────────────────
-    // scraperStatus/dashboard holds the live In House / Arrivals / Departures
-    // counts pulled from Choice Advantage's View pages every 15 min. Read-only
-    // for clients — the Railway scraper (Admin SDK) is the only writer. Other
-    // scraperStatus docs (heartbeat, morning, evening) aren't needed on the
-    // client yet, so keep this rule narrow.
-    match /scraperStatus/{doc} {
-      allow read: if request.auth != null;
-      allow write: if false;
-    }
-
-    // ── Staff language preferences ───────────────────────────────────────────
-    // staffPrefs/{staffId} stores a single doc per housekeeper: { language: 'en' | 'es' }.
-    // Written by the SMS-reply webhook (Admin SDK bypass). Read by the
-    // housekeeper + laundry mobile pages so they auto-render in the HK's
-    // preferred language. Any authenticated session (anon or Google) can
-    // read — staff IDs are required to query, so there's no meaningful PII
-    // exposure. Writes are blocked; only the server (Admin SDK) updates this.
-    match /staffPrefs/{staffId} {
-      allow read: if request.auth != null;
-      allow write: if false;
-    }
   }
 }

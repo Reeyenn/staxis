@@ -2,6 +2,7 @@
 
 import React, { useEffect } from 'react';
 import { Header } from './Header';
+import { BottomNav } from './BottomNav';
 import { useLang } from '@/contexts/LanguageContext';
 import { useSyncContext } from '@/contexts/SyncContext';
 import { t } from '@/lib/translations';
@@ -37,22 +38,22 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       {/* ── Status banner ── */}
       {showBanner && (
         <div style={{
-          borderBottom: '1px solid ' + (showSyncing ? 'var(--amber-border, rgba(251,191,36,0.3))' : 'var(--red-border, rgba(239,68,68,0.3))'),
-          background:   showSyncing ? 'var(--amber-dim)' : 'var(--red-dim)',
+          borderBottom: '1px solid ' + (showSyncing ? 'rgba(251,191,36,0.3)' : 'rgba(239,68,68,0.3)'),
+          background:   showSyncing ? 'rgba(251,191,36,0.10)' : 'rgba(239,68,68,0.12)',
           padding: '8px 16px',
           display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
         }}>
           {showSyncing ? (
             <>
-              <RefreshCw size={14} color="var(--amber)" style={{ animation: 'spin 1s linear infinite' }} />
-              <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--amber)' }}>
+              <RefreshCw size={14} color="#D97706" style={{ animation: 'spin 1s linear infinite' }} />
+              <span style={{ fontSize: '12px', fontWeight: 600, color: '#D97706' }}>
                 {t('syncingChanges', lang)}
               </span>
             </>
           ) : (
             <>
-              <WifiOff size={14} color="var(--red)" />
-              <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--red)' }}>
+              <WifiOff size={14} color="#EF4444" />
+              <span style={{ fontSize: '12px', fontWeight: 600, color: '#EF4444' }}>
                 {offlineLabel}
               </span>
             </>
@@ -63,11 +64,14 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       <main style={{
         flex: 1,
         width: '100%',
-        maxWidth: '1920px',
+        maxWidth: '1280px',
         margin: '0 auto',
+        /* bottom padding = nav 64px + safe area + 8px breathing room */
+        paddingBottom: 'calc(72px + env(safe-area-inset-bottom, 0px))',
       }}>
         {children}
       </main>
+      <BottomNav />
     </div>
   );
 }

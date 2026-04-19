@@ -98,8 +98,8 @@ export default function AccountsPage() {
 
   const handleSave = async () => {
     if (!user) return;
-    if (!form.username.trim()) { setFormError(lang === 'es' ? 'El nombre de usuario es requerido' : 'Username is required'); return; }
-    if (!editingId && !form.password.trim()) { setFormError(lang === 'es' ? 'La contraseña es requerida para cuentas nuevas' : 'Password is required for new accounts'); return; }
+    if (!form.username.trim()) { setFormError('Username is required'); return; }
+    if (!editingId && !form.password.trim()) { setFormError('Password is required for new accounts'); return; }
 
     setSaving(true);
     setFormError('');
@@ -153,7 +153,7 @@ export default function AccountsPage() {
 
   const handleDelete = async (accountId: string) => {
     if (!user) return;
-    if (!confirm(lang === 'es' ? '¿Eliminar esta cuenta?' : 'Delete this account?')) return;
+    if (!confirm('Delete this account?')) return;
 
     try {
       const res = await fetch(`/api/auth/accounts?accountId=${accountId}`, {
@@ -212,15 +212,15 @@ export default function AccountsPage() {
           </button>
           <h1 style={{
             fontFamily: 'var(--font-sans)', fontWeight: 700,
-            fontSize: '16px', color: 'var(--text-primary)',
-            letterSpacing: '-0.01em',
-            display: 'flex', alignItems: 'center', gap: '6px',
+            fontSize: '26px', color: 'var(--text-primary)',
+            letterSpacing: '-0.02em',
+            display: 'flex', alignItems: 'center', gap: '8px',
           }}>
-            <Users size={15} color="var(--navy)" />
+            <Users size={18} color="var(--navy)" />
             {t('accountManagement', lang)}
           </h1>
           <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginTop: '4px' }}>
-            {lang === 'es' ? 'Administra inicios de sesión y acceso a propiedades para tu equipo.' : 'Manage logins and property access for your team.'}
+            Manage logins and property access for your team.
           </p>
         </div>
 
@@ -238,7 +238,7 @@ export default function AccountsPage() {
           }}
         >
           <Plus size={15} />
-          {lang === 'es' ? 'Agregar' : 'Add'} {t('accountManagement', lang)}
+          Add {t('accountManagement', lang)}
         </button>
 
         {/* List */}
@@ -288,12 +288,12 @@ export default function AccountsPage() {
                     {acct.role}
                     {' · '}
                     {acct.propertyAccess.includes('*')
-                      ? (lang === 'es' ? 'Todas las propiedades' : 'All properties')
+                      ? 'All properties'
                       : acct.propertyAccess.length === 0
-                        ? (lang === 'es' ? 'Sin propiedades' : 'No properties')
+                        ? 'No properties'
                         : acct.propertyAccess.length === 1
-                          ? (lang === 'es' ? '1 propiedad' : '1 property')
-                          : `${acct.propertyAccess.length} ${lang === 'es' ? 'propiedades' : 'properties'}`
+                          ? `${acct.propertyAccess.length} property`
+                          : `${acct.propertyAccess.length} properties`
                     }
                   </div>
                 </div>
@@ -302,7 +302,6 @@ export default function AccountsPage() {
                 <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
                   <button
                     onClick={() => openEdit(acct)}
-                    aria-label={lang === 'es' ? `Editar ${acct.displayName}` : `Edit ${acct.displayName}`}
                     style={{
                       width: '32px', height: '32px', borderRadius: 'var(--radius-sm)',
                       background: 'transparent', border: '1px solid var(--border)',
@@ -315,10 +314,9 @@ export default function AccountsPage() {
                   {acct.accountId !== user.accountId && (
                     <button
                       onClick={() => handleDelete(acct.accountId)}
-                      aria-label={lang === 'es' ? `Eliminar ${acct.displayName}` : `Delete ${acct.displayName}`}
                       style={{
                         width: '32px', height: '32px', borderRadius: 'var(--radius-sm)',
-                        background: 'transparent', border: '1px solid var(--red-border, rgba(239,68,68,0.3))',
+                        background: 'transparent', border: '1px solid rgba(239,68,68,0.3)',
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
                         cursor: 'pointer', color: 'var(--red)',
                       }}
@@ -360,11 +358,10 @@ export default function AccountsPage() {
                 fontFamily: 'var(--font-sans)', fontWeight: 700,
                 fontSize: '18px', color: 'var(--text-primary)',
               }}>
-                {editingId ? t('edit', lang) : (lang === 'es' ? 'Agregar' : 'Add')} {t('accountManagement', lang)}
+                {editingId ? t('edit', lang) : 'Add'} {t('accountManagement', lang)}
               </h2>
               <button
                 onClick={() => setShowForm(false)}
-                aria-label={lang === 'es' ? 'Cerrar' : 'Close'}
                 style={{
                   background: 'transparent', border: 'none',
                   color: 'var(--text-muted)', cursor: 'pointer',
@@ -383,7 +380,7 @@ export default function AccountsPage() {
                 value={form.username}
                 onChange={e => setForm(f => ({ ...f, username: e.target.value }))}
                 disabled={!!editingId}
-                placeholder={lang === 'es' ? 'minúsculas, sin espacios' : 'lowercase, no spaces'}
+                placeholder="lowercase, no spaces"
                 style={{ ...inputStyle, opacity: editingId ? 0.5 : 1 }}
               />
             </div>
@@ -395,7 +392,7 @@ export default function AccountsPage() {
                 type="text"
                 value={form.displayName}
                 onChange={e => setForm(f => ({ ...f, displayName: e.target.value }))}
-                placeholder={lang === 'es' ? 'Nombre completo (ej. Jay Patel)' : 'Full name (e.g. Jay Patel)'}
+                placeholder="Full name (e.g. Jay Patel)"
                 style={inputStyle}
               />
             </div>
@@ -407,7 +404,7 @@ export default function AccountsPage() {
                 type="password"
                 value={form.password}
                 onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
-                placeholder={editingId ? (lang === 'es' ? 'Dejar en blanco para mantener actual' : 'Leave blank to keep current') : (lang === 'es' ? 'Establecer contraseña' : 'Set a password')}
+                placeholder={editingId ? 'Leave blank to keep current' : 'Set a password'}
                 style={inputStyle}
               />
             </div>
@@ -448,7 +445,7 @@ export default function AccountsPage() {
                 }}
               >
                 <span style={{ fontSize: '13px', color: 'var(--text-secondary)', fontFamily: 'var(--font-sans)' }}>
-                  {lang === 'es' ? 'Todas las propiedades (actuales y futuras)' : 'All properties (current & future)'}
+                  All properties (current & future)
                 </span>
                 {form.propertyAccess.includes('*') && <Check size={14} color="var(--amber)" />}
               </button>
@@ -460,8 +457,8 @@ export default function AccountsPage() {
                   onClick={() => togglePropertyAccess(p.id)}
                   style={{
                     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    background: form.propertyAccess.includes(p.id) ? 'var(--green-dim)' : 'var(--bg-card)',
-                    border: `1px solid ${form.propertyAccess.includes(p.id) ? 'var(--green-border, rgba(34,197,94,0.25))' : 'var(--border)'}`,
+                    background: form.propertyAccess.includes(p.id) ? 'rgba(100,200,100,0.08)' : 'var(--bg-card)',
+                    border: `1px solid ${form.propertyAccess.includes(p.id) ? 'rgba(100,200,100,0.3)' : 'var(--border)'}`,
                     borderRadius: 'var(--radius-sm)', padding: '10px 12px',
                     cursor: 'pointer',
                   }}
@@ -477,8 +474,8 @@ export default function AccountsPage() {
             {formError && (
               <p style={{
                 fontSize: '13px', color: 'var(--red)',
-                background: 'var(--red-dim)',
-                border: '1px solid var(--red-border, rgba(239,68,68,0.25))',
+                background: 'rgba(239,68,68,0.08)',
+                border: '1px solid rgba(239,68,68,0.2)',
                 borderRadius: 'var(--radius-sm)', padding: '10px 12px',
               }}>
                 {formError}
@@ -499,7 +496,7 @@ export default function AccountsPage() {
             >
               {saving
                 ? <div className="spinner" style={{ width: '18px', height: '18px', borderTopColor: '#FFFFFF', borderColor: 'rgba(255,255,255,0.3)' }} />
-                : editingId ? t('saveChanges', lang) : (lang === 'es' ? 'Crear cuenta' : 'Create account')
+                : editingId ? t('saveChanges', lang) : 'Create account'
               }
             </button>
           </div>

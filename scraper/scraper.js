@@ -1,27 +1,8 @@
 /**
- * HotelOps AI — CSV Schedule Runner
+ * HotelOps AI — Choice Advantage Scraper
  *
- * Runs on Railway. Stays alive and runs two things off the same tick loop:
- *
- *   1. CSV pulls (once per day) — the arrivals/departures CSV from Choice
- *      Advantage at 6am (today's shift confirmation) and 7pm (tomorrow's
- *      shift plan). Writes to planSnapshots/{date} and merges stayover-cycle
- *      fields into individual room docs.
- *
- *   2. Dashboard number pulls (every 15 min, 5am–11pm) — grabs in-house,
- *      arrivals, and departures counts from Choice Advantage's View pages
- *      and writes them to scraperStatus/dashboard for the Schedule tab.
- *      See dashboard-pull.js.
- *
- * Removed (intentionally):
- *   • Every-15-min live PMS scrape — was noise on the Rooms tab and is
- *     no longer needed now that Maria's "Send Confirmations" is the
- *     source of truth for which rooms show up in the app.
- *   • 10pm nightly auto-scheduler — Maria builds the schedule herself at
- *     ~7:30pm using the Schedule tab, so this was running after the fact
- *     and writing to a collection nothing in the app ever read.
- *   • 9pm availability-check text blast — superseded by per-crew Send
- *     Confirmations; the underlying API endpoint was already retired.
+ * Logs into Choice Advantage, scrapes the Housekeeping Center every 15 minutes,
+ * and writes live room data to Firebase Firestore.
  *
  * Property: Comfort Suites Beaumont TX (TXA32)
  * PMS: choiceADVANTAGE (SkyTouch Technology)
@@ -30,17 +11,17 @@
 require('dotenv').config();
 const { chromium } = require('playwright');
 const { initializeApp, cert } = require('firebase-admin/app');
-const { getFirestore } = require('firebase-admin/firestore');
+const { getFirestore, Timestamp } = require('firebase-admin/firestore');
 const path = require('path');
 const fs = require('fs');
-const { runCSVScrape } = require('./csv-scraper');
-const { pullDashboardNumbers, ScraperError, ERROR_CODES } = require('./dashboard-pull');
+const { runNightlyScheduler } = require('./scheduler');
 
 // ─── Config ────────────────────────────────────────────────────────────────
 
 const CONFIG = {
   // Choice Advantage
   CA_LOGIN_URL: 'https://www.choiceadvantage.com/choicehotels/Welcome.init',
+  CA_HK_URL:    'https://www.choiceadvantage.com/choicehotels/HousekeepingCenter_start.init',
   CA_USERNAME:  process.env.CA_USERNAME,
   CA_PASSWORD:  process.env.CA_PASSWORD,
 
@@ -53,13 +34,14 @@ const CONFIG = {
   USER_ID:     process.env.HOTELOPS_USER_ID,
   PROPERTY_ID: process.env.HOTELOPS_PROPERTY_ID,
 
-  // Timezone — Railway runs UTC; set to hotel's local timezone so date
-  // bucketing and the 6am/7pm triggers fire at the right local time.
-  TIMEZONE: process.env.TIMEZONE || 'America/Chicago',
+  // Scraper
+  INTERVAL_MINUTES:        parseInt(process.env.SCRAPE_INTERVAL_MINUTES || '15'),
+  OPERATIONAL_HOURS_START: parseInt(process.env.OPERATIONAL_HOURS_START || '6'),
+  OPERATIONAL_HOURS_END:   parseInt(process.env.OPERATIONAL_HOURS_END || '22'),
 
-  // How often we wake up to check "is it 6am or 7pm yet?" — 5 min is
-  // frequent enough to never miss an hour boundary but light on Railway.
-  TICK_MINUTES: parseInt(process.env.TICK_MINUTES || '5'),
+  // Timezone — Railway runs UTC; set to hotel's local timezone so operational
+  // hours and date bucketing are correct. Beaumont TX is America/Chicago.
+  TIMEZONE: process.env.TIMEZONE || 'America/Chicago',
 
   // Session state file (persists login cookies between runs)
   SESSION_FILE: path.join(__dirname, '.session.json'),
@@ -80,101 +62,173 @@ const db = getFirestore();
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 function todayISO() {
+  // Use the hotel's local timezone so date bucketing is correct.
+  // 'en-CA' formats as YYYY-MM-DD; Intl handles DST automatically.
   return new Intl.DateTimeFormat('en-CA', { timeZone: CONFIG.TIMEZONE }).format(new Date());
 }
 
 function localHour() {
+  // Returns the current hour (0–23) in the hotel's local timezone.
+  // Railway runs UTC, so using new Date().getHours() would be wrong.
   return parseInt(
     new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: CONFIG.TIMEZONE }).format(new Date()),
     10
   );
 }
 
+function isOperationalHours() {
+  const hour = localHour();
+  // Normal hours (6am-10pm) + midnight scrape (hour 0) for next-day data
+  return (hour >= CONFIG.OPERATIONAL_HOURS_START && hour < CONFIG.OPERATIONAL_HOURS_END) || hour === 0;
+}
+
 function log(msg) {
   console.log(`[${new Date().toISOString()}] ${msg}`);
 }
 
-// ─── Status reporting ──────────────────────────────────────────────────────
-// Scraper writes to Firestore so the app can warn users when the scraper is
-// down or a scrape has failed. Paths:
-//   scraperStatus/heartbeat  — bumped every tick (proves the loop is alive)
-//   scraperStatus/morning    — last morning scrape result (success or error)
-//   scraperStatus/evening    — last evening scrape result (success or error)
-// All writes are best-effort (try/catch) — status reporting must never crash
-// the main loop.
-
-async function writeHeartbeat() {
-  try {
-    await db.collection('scraperStatus').doc('heartbeat').set({
-      at: new Date(),
-      localHour: localHour(),
-      today: todayISO(),
-      // Version string so future-me can tell "is this an old scraper deploy
-      // still running somehow?" at a glance without digging into Railway.
-      scraperVersion: 'atomic-v1',
-      timezone: CONFIG.TIMEZONE,
-      tickMinutes: CONFIG.TICK_MINUTES,
-    }, { merge: true });
-  } catch (err) {
-    log(`Heartbeat write failed: ${err.message}`);
-  }
+/**
+ * Map Choice Advantage service string → HotelOps RoomType
+ * CA values: "Check Out", "Stay Over", "None"
+ */
+function mapRoomType(caService, caRoomStatus) {
+  if (caService === 'Check Out') return 'checkout';
+  if (caService === 'Stay Over') return 'stayover';
+  // "None" means vacant — either clean or dirty
+  return 'vacant';
 }
 
-async function writeScrapeStatus(pullType, status, extra = {}) {
-  try {
-    await db.collection('scraperStatus').doc(pullType).set({
-      at: new Date(),
-      status, // 'success' | 'error'
-      ...extra,
-    }, { merge: true });
-  } catch (err) {
-    log(`Status write (${pullType}) failed: ${err.message}`);
-  }
+/**
+ * Map CA condition → HotelOps RoomStatus
+ * CA values: "Clean", "Dirty"
+ */
+function mapRoomStatus(caCondition) {
+  if (caCondition === 'Clean') return 'clean';
+  return 'dirty'; // default
 }
 
-// ─── Login ─────────────────────────────────────────────────────────────────
+// ─── Scraper ───────────────────────────────────────────────────────────────
+
+async function scrapeHousekeepingCenter(page) {
+  log('Navigating to Housekeeping Center...');
+  await page.goto(CONFIG.CA_HK_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+  // Check if we got redirected to login
+  const currentUrl = page.url();
+  log(`Landed on: ${currentUrl}`);
+  if (currentUrl.includes('sign_in')) {
+    log('Session expired — logging in again...');
+    await login(page);
+    await page.goto(CONFIG.CA_HK_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  }
+
+  // Wait for the room table — CA uses id="updateRoomConditionHeaderTable"
+  // Use 45s timeout — headless Chromium needs extra time for CA's JS to render
+  try {
+    await page.waitForSelector('#updateRoomConditionHeaderTable tr', { timeout: 45000 });
+  } catch (e) {
+    // Take a debug screenshot so we can see what's actually on screen
+    await page.screenshot({ path: path.join(__dirname, 'debug.png') });
+    log(`Table not found — screenshot saved to debug.png. Page URL: ${page.url()}`);
+    throw e;
+  }
+
+  // Scrape all room rows. Cell layout confirmed from live DOM inspection:
+  // 0=Room#, 1=empty, 2=Type(SNK/SNQQ), 3=RoomStatus, 4=Condition, 5=Service, 6=AssignedTo, 7=DnD
+  const rooms = await page.evaluate(() => {
+    const rows = document.querySelectorAll('#updateRoomConditionHeaderTable tr');
+    const results = [];
+
+    rows.forEach((row, idx) => {
+      if (idx === 0) return; // skip header row
+      const cells = row.querySelectorAll('td');
+      if (cells.length < 6) return;
+
+      const roomNum = cells[0]?.innerText?.trim();
+      if (!roomNum || !roomNum.match(/^\d{3,4}$/)) return;
+
+      const type       = cells[2]?.innerText?.trim();       // SNK, SNQQ, HSNK, etc.
+      const roomStatus = cells[3]?.innerText?.trim();       // Occupied / Vacant
+      // CLEAN is active when #rcInput contains a div with class "GreenFake"
+      const isClean    = cells[4]?.querySelector('#rcInput .GreenFake') !== null;
+      const service    = cells[5]?.innerText?.trim();       // Check Out / Stay Over / None
+      const assignedTo = cells[6]?.innerText?.trim() || null;
+      const isDnd      = cells[7]?.querySelector('input[type="checkbox"]:checked') !== null;
+
+      results.push({
+        number:      roomNum,
+        roomType:    type,
+        roomStatus,
+        condition:   isClean ? 'Clean' : 'Dirty',
+        service,
+        assignedTo:  assignedTo || null,
+        isDnd,
+      });
+    });
+
+    return results;
+  });
+
+  log(`Scraped ${rooms.length} rooms`);
+  return rooms;
+}
 
 async function login(page) {
   log('Logging into Choice Advantage...');
-  try {
-    await page.goto(CONFIG.CA_LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
-  } catch (err) {
-    throw new ScraperError(ERROR_CODES.CA_UNREACHABLE, `Login page unreachable: ${err.message}`);
-  }
+  await page.goto(CONFIG.CA_LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
   log(`Login page URL: ${page.url()}`);
 
-  // Detect whether we're actually at the login form via DOM — CA's login
-  // URL and authenticated URLs both contain "Welcome", so URL-based
-  // detection was returning early without authenticating.
-  const hasLoginForm = await page.evaluate(() => {
-    return !!document.querySelector('input[name="j_username"]');
-  });
-  if (!hasLoginForm) {
-    log('Already logged in (no login form present)');
+  // If already on dashboard, we're done
+  const url = page.url();
+  if (url.includes('Login.do') || url.includes('Welcome')) {
+    log('Already logged in (session active)');
     return;
   }
 
-  // Guard against missing credentials — if the env var is empty, the fill
-  // below would submit blank fields and we'd misclassify the resulting
-  // rejection as a password-change. Be explicit.
-  if (!CONFIG.CA_USERNAME || !CONFIG.CA_PASSWORD) {
-    throw new ScraperError(
-      ERROR_CODES.LOGIN_FAILED,
-      'Missing CA_USERNAME / CA_PASSWORD env vars'
-    );
-  }
-
   try {
+    // Debug: screenshot what Playwright actually sees on the login page
+    await page.screenshot({ path: path.join(__dirname, 'login-debug.png') });
+    log('Saved login-debug.png');
+
+    // Debug: check which form elements are present
+    const hasUsername = await page.locator('input[name="j_username"]').count();
+    const hasPassword = await page.locator('input[name="j_password"]').count();
+    const hasGreenBtn = await page.locator('a#greenButton').count();
+    const hasSubmitBtn = await page.locator('input[type="submit"]').count();
+    const hasLoginBtn  = await page.locator('button[type="submit"]').count();
+    log(`Elements found — j_username:${hasUsername} j_password:${hasPassword} a#greenButton:${hasGreenBtn} input[submit]:${hasSubmitBtn} button[submit]:${hasLoginBtn}`);
+
+    // Log all input names on the page so we can identify the right fields
+    const inputNames = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('input')).map(el => `${el.type}[name=${el.name}][id=${el.id}]`)
+    );
+    log(`All inputs: ${inputNames.join(', ')}`);
+
+    // Log all clickable elements that might be the login button
+    const buttons = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('a, button, input[type="submit"], input[type="button"]'))
+        .map(el => `${el.tagName}[id=${el.id}][class=${el.className}][text=${el.innerText?.trim()?.slice(0,30)}]`)
+    );
+    log(`Buttons/links: ${buttons.join(' | ')}`);
+
+    // CA login page uses j_username / j_password field names
+    await page.waitForSelector('input[name="j_username"]', { timeout: 10000 });
     await page.fill('input[name="j_username"]', CONFIG.CA_USERNAME);
     await page.fill('input[name="j_password"]', CONFIG.CA_PASSWORD);
 
+    // Click the login button — triggers formSubmit() → form.submit()
+    // Must start waitForNavigation BEFORE clicking to catch the redirect
     await Promise.all([
       page.waitForNavigation({ waitUntil: 'load', timeout: 30000 }),
       page.click('a#greenButton'),
     ]);
     log(`After login click — now at: ${page.url()}`);
 
+    // j_security_check may return 200 + JS/meta-refresh to dashboard instead of a
+    // straight 302. waitForNavigation only catches the first navigation (to j_security_check).
+    // If we're still there, wait for the second navigation (JS redirect to dashboard).
     if (page.url().includes('j_security_check')) {
+      log('On j_security_check — saving screenshot and waiting for redirect to dashboard...');
+      await page.screenshot({ path: path.join(__dirname, 'jsecurity-debug.png') });
       try {
         await page.waitForURL(url => !url.toString().includes('j_security_check'), { timeout: 15000 });
         log(`Redirected away from j_security_check — now at: ${page.url()}`);
@@ -183,285 +237,219 @@ async function login(page) {
       }
     }
 
+    // Wait for any post-login JS/cookies to fully settle
     await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
     log(`After settle — now at: ${page.url()}`);
 
-    // VERIFY login actually worked. If the login form is still present on the
-    // page after a submit, CA rejected our credentials — password was changed
-    // or the account was locked. This used to be a silent failure: the scraper
-    // would loop forever hitting "session expired" because every View page
-    // bounced back to the login form. Now it surfaces as a typed error the
-    // health-check cron can alert on with "CA password changed".
-    const stillOnLoginForm = await page.evaluate(() =>
-      !!document.querySelector('input[name="j_username"]')
-    );
-    if (stillOnLoginForm) {
-      // Grab the error message CA displays so we can distinguish "wrong
-      // password" from "account locked" from "too many attempts" later.
-      const caMessage = await page.evaluate(() => {
-        const el = document.querySelector('.CHI_Error, .error, [class*="rror"]');
-        return el ? el.textContent.trim().slice(0, 200) : null;
-      }).catch(() => null);
-      throw new ScraperError(
-        ERROR_CODES.LOGIN_FAILED,
-        `Credentials rejected at ${page.url()}${caMessage ? ` — CA said: "${caMessage}"` : ''}`,
-        { diagnostics: { caMessage, url: page.url() } }
-      );
-    }
   } catch (err) {
-    if (err instanceof ScraperError) throw err;
     log(`Login error: ${err.message}`);
-    throw new ScraperError(ERROR_CODES.UNKNOWN, `Login threw: ${err.message}`);
+    throw err;
   }
 }
 
-// ─── CSV pull scheduler ────────────────────────────────────────────────────
-// Each daily trigger fires exactly once per calendar day even though the
-// runner ticks every few minutes.
-let lastEveningCSVDate = null;
-let lastMorningCSVDate = null;
+// ─── Firestore writer ──────────────────────────────────────────────────────
 
-/**
- * Run a scheduled CSV scrape. Always re-logs in *right before* the scrape so
- * the session cookie is guaranteed fresh — CA expires sessions after a few
- * hours of idle, and the runner goes idle between scheduled windows. A single
- * login at startup isn't good enough.
- *
- * If the re-login itself fails or the scrape still fails, we return false so
- * the caller leaves `lastMorningCSVDate` unset and the next tick retries.
- */
-async function runCSVScrapeFresh(page, pullType, relogin) {
-  // Always re-login right before — sessions die between scheduled windows.
-  try {
-    await relogin();
-  } catch (loginErr) {
-    log(`${pullType} pre-scrape login FAILED: ${loginErr.message}`);
-    await writeScrapeStatus(pullType, 'error', {
-      error: `login failed: ${loginErr.message}`,
-      date: todayISO(),
-    });
-    return false;
-  }
+async function writeRoomsToFirestore(rooms) {
+  const today = todayISO();
+  const now = Timestamp.now();
 
-  const scrapeConfig = {
-    USER_ID:     CONFIG.USER_ID,
-    PROPERTY_ID: CONFIG.PROPERTY_ID,
-    TIMEZONE:    CONFIG.TIMEZONE,
-  };
+  // Build all refs first
+  const refs = rooms.map(room => ({
+    room,
+    ref: db
+      .collection('users')
+      .doc(CONFIG.USER_ID)
+      .collection('properties')
+      .doc(CONFIG.PROPERTY_ID)
+      .collection('rooms')
+      .doc(`${today}_${room.number}`),
+  }));
 
-  try {
-    const snapshot = await runCSVScrape(page, db, scrapeConfig, pullType, log);
-    await writeScrapeStatus(pullType, 'success', {
-      date: snapshot?.date || todayISO(),
-      totalRooms: snapshot?.totalRooms ?? null,
-      checkouts: snapshot?.checkouts ?? null,
-      stayovers: snapshot?.stayovers ?? null,
-      recommendedHKs: snapshot?.recommendedHKs ?? null,
-      error: null,
-    });
-    return true;
-  } catch (err) {
-    const msg = err.message || '';
-    // Belt-and-suspenders: if CA killed the session *during* the scrape itself
-    // (rare but observed), retry once with another fresh login.
-    if (msg.toLowerCase().includes('session expired')) {
-      log(`${pullType} scrape lost session mid-run — re-logging and retrying once...`);
-      try {
-        await relogin();
-        const snapshot = await runCSVScrape(page, db, scrapeConfig, pullType, log);
-        await writeScrapeStatus(pullType, 'success', {
-          date: snapshot?.date || todayISO(),
-          totalRooms: snapshot?.totalRooms ?? null,
-          error: null,
-        });
-        return true;
-      } catch (retryErr) {
-        log(`${pullType} scrape retry FAILED: ${retryErr.message}`);
-        await writeScrapeStatus(pullType, 'error', {
-          error: `retry failed: ${retryErr.message}`,
-          date: todayISO(),
-        });
-        return false;
-      }
+  // Fetch all existing docs in parallel to know which are new vs existing
+  const snaps = await Promise.all(refs.map(({ ref }) => ref.get()));
+
+  // Build batch — scraper writes CA fields including status.
+  // NOTE: While housekeepers aren't yet using the app to mark rooms clean,
+  // CA condition is the source of truth for status. Once HKs are live on the
+  // app, flip this back to preserve status on existing docs.
+  const batch = db.batch();
+
+  refs.forEach(({ room, ref }, i) => {
+    const isNew = !snaps[i].exists;
+    const syncData = {
+      number:        room.number,
+      type:          mapRoomType(room.service, room.roomStatus), // checkout|stayover|vacant
+      status:        mapRoomStatus(room.condition),              // clean|dirty — from CA condition
+      priority:      'standard',
+      date:          today,
+      propertyId:    CONFIG.PROPERTY_ID,
+      isDnd:         room.isDnd || false,
+      _caRoomType:   room.roomType,    // SNK, SNQQ, HSNK, etc.
+      _caRoomStatus: room.roomStatus,  // Occupied / Vacant
+      _caService:    room.service,     // Check Out / Stay Over / None
+      _caCondition:  room.condition,   // Clean / Dirty
+      _lastSyncedAt: now,
+    };
+
+    if (isNew) {
+      // First sync of the day — initialize with no assignment
+      batch.set(ref, { ...syncData, assignedTo: null, assignedName: null });
+    } else {
+      // Already exists — merge all fields including status
+      batch.set(ref, syncData, { merge: true });
     }
-    log(`${pullType} CSV pull error: ${msg}`);
-    await writeScrapeStatus(pullType, 'error', {
-      error: msg,
-      date: todayISO(),
-    });
-    return false;
-  }
+  });
+
+  await batch.commit();
+  log(`Wrote ${rooms.length} rooms to Firestore (date: ${today})`);
+
+  // Also update the property's lastSyncedAt
+  await db
+    .collection('users')
+    .doc(CONFIG.USER_ID)
+    .collection('properties')
+    .doc(CONFIG.PROPERTY_ID)
+    .update({ lastSyncedAt: Timestamp.now(), pmsConnected: true });
 }
 
-// ─── Dashboard number pull scheduler ───────────────────────────────────────
-// Every 15 min between 5am and 11pm local, grab in-house/arrivals/departures
-// counts off Choice Advantage's View pages and write them to
-// scraperStatus/dashboard for the Schedule tab to display live.
-//
-// Uses the same logged-in page as the CSV pull. On session expiry, calls
-// relogin() and retries once (mirrors the CSV pull's retry pattern).
-let lastDashboardPullAt = 0;
-const DASHBOARD_INTERVAL_MS = 15 * 60 * 1000;
+// ─── Scheduler trigger ─────────────────────────────────────────────────────
+// Tracks whether each daily trigger has already fired today so they
+// run exactly once per calendar day even though the scraper loops every 15 min.
+let lastSchedulerDate       = null; // 10pm nightly scheduler
+let lastAvailCheckDate      = null; // 9pm availability check texts
+let lastMorningResendDate   = null; // 6am morning re-send
 
-/**
- * Run the dashboard pull with one layer of retry for recoverable failures.
- *
- * Retry policy is deliberately narrow:
- *   • session_expired → re-login, try once more. Sessions legitimately expire
- *     between the 15-min tick windows and re-login is the correct response.
- *   • login_failed    → re-login would just fail the same way. Don't retry.
- *   • everything else → one-shot. Retrying a selector_miss or validation
- *     failure gives us the same wrong answer 2x, masked as "flaky".
- *
- * The inner pullDashboardNumbers already wrote the error state to Firestore
- * on the first throw, so we don't need to re-write it here — we just need to
- * decide whether a retry makes sense.
- */
-async function runDashboardPullFresh(page, relogin) {
-  try {
-    return await pullDashboardNumbers(page, db, log);
-  } catch (err) {
-    const code = err instanceof ScraperError ? err.code : ERROR_CODES.UNKNOWN;
-
-    if (code === ERROR_CODES.SESSION_EXPIRED) {
-      log(`Dashboard pull lost session — re-logging and retrying once...`);
-      try {
-        await relogin();
-      } catch (loginErr) {
-        // Re-login itself failed (likely login_failed). Leave the original
-        // session_expired error in Firestore — but surface the login failure
-        // too, because that's the real underlying problem now.
-        log(`Re-login FAILED after session expiry: ${loginErr.message}`);
-        await db.collection('scraperStatus').doc('dashboard').set({
-          errorCode:    loginErr instanceof ScraperError ? loginErr.code : ERROR_CODES.UNKNOWN,
-          errorMessage: `Re-login failed after session expiry: ${loginErr.message}`.slice(0, 500),
-          erroredAt:    new Date(),
-        }, { merge: true }).catch(() => {});
-        return null;
-      }
-
-      // Retry the pull — if this one fails, its error state overwrites the
-      // first and we don't retry again. (Don't want infinite loops on a
-      // persistently sad CA.)
-      try {
-        return await pullDashboardNumbers(page, db, log);
-      } catch (retryErr) {
-        log(`Dashboard pull retry FAILED: [${retryErr.code || 'unknown'}] ${retryErr.message}`);
-        return null;
-      }
-    }
-
-    // Non-retryable code paths. pullDashboardNumbers already wrote the error
-    // to Firestore, so we just log and return.
-    log(`Dashboard pull error [${code}]: ${err.message}`);
-    return null;
-  }
-}
-
-async function maybeRunDashboardPull(page, relogin) {
-  const hour = localHour();
-  // 5am–10:59pm active window. Staff aren't looking at these numbers
-  // overnight and CA is quiet then — no reason to hammer the site.
-  if (hour < 5 || hour >= 23) return;
-
-  const now = Date.now();
-  if (now - lastDashboardPullAt < DASHBOARD_INTERVAL_MS) return;
-
-  const result = await runDashboardPullFresh(page, relogin);
-  // Mark the timestamp whether success or failure — a failed pull is logged
-  // to Firestore and we don't want to retry every 5 min tick on a down CA.
-  lastDashboardPullAt = now;
-  return result;
-}
-
-async function maybeRunCSVPull(page, relogin) {
+async function maybeRunScheduler() {
   const hour  = localHour();
   const today = todayISO();
 
-  // ── Morning CSV pull: target 6am, catch up any time 6am–6:59pm ───────────
-  // If a Railway redeploy wiped in-process state after 6am, we self-heal on
-  // the first tick by seeing "we're past 6am and haven't run today yet."
-  // IMPORTANT: only mark `lastMorningCSVDate` after the scrape *succeeds* so
-  // transient errors (session expiry, CA outages) don't lock us out for the day.
-  if (hour >= 6 && hour < 19 && lastMorningCSVDate !== today) {
-    const ok = await runCSVScrapeFresh(page, 'morning', relogin);
-    if (ok) lastMorningCSVDate = today;
+  // ── 9pm: send night-before YES/NO availability texts to all active HKs ──
+  if (hour === 21 && lastAvailCheckDate !== today) {
+    lastAvailCheckDate = today;
+    const appUrl = process.env.APP_URL || 'https://hotelops-ai.vercel.app';
+    // shiftDate = tomorrow (the shift they're being asked about)
+    const tomorrowISO = new Intl.DateTimeFormat('en-CA', { timeZone: CONFIG.TIMEZONE }).format(
+      new Date(Date.now() + 24 * 60 * 60 * 1000),
+    );
+    try {
+      const res = await fetch(`${appUrl}/api/nightly-availability-check`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uid:       CONFIG.USER_ID,
+          pid:       CONFIG.PROPERTY_ID,
+          shiftDate: tomorrowISO,
+        }),
+      });
+      const result = await res.json();
+      log(`Availability check: sent=${result.sent ?? '?'} failed=${result.failed ?? '?'} for ${tomorrowISO}`);
+    } catch (err) {
+      log(`Availability check error: ${err.message}`);
+    }
   }
 
-  // ── Evening CSV pull: target 7pm, catch up any time 7pm–midnight ─────────
-  if (hour >= 19 && lastEveningCSVDate !== today) {
-    const ok = await runCSVScrapeFresh(page, 'evening', relogin);
-    if (ok) lastEveningCSVDate = today;
+  // ── 10pm: nightly scheduler (build tomorrow's schedule + send availability texts) ──
+  if (hour === 22 && lastSchedulerDate !== today) {
+    lastSchedulerDate = today;
+    try {
+      await runNightlyScheduler(db, {
+        USER_ID:     CONFIG.USER_ID,
+        PROPERTY_ID: CONFIG.PROPERTY_ID,
+        TIMEZONE:    CONFIG.TIMEZONE,
+        APP_URL:     process.env.APP_URL || 'https://hotelops-ai.vercel.app',
+      }, log);
+    } catch (err) {
+      log(`Scheduler error: ${err.message}`);
+    }
+  }
+
+  // ── 6am: morning re-send (update confirmed HKs with fresh room counts) ──
+  if (hour === 6 && lastMorningResendDate !== today) {
+    lastMorningResendDate = today;
+    const appUrl = process.env.APP_URL || 'https://hotelops-ai.vercel.app';
+    try {
+      const res = await fetch(`${appUrl}/api/morning-resend`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uid:       CONFIG.USER_ID,
+          pid:       CONFIG.PROPERTY_ID,
+          shiftDate: today,
+          baseUrl:   appUrl,
+        }),
+      });
+      const result = await res.json();
+      log(`Morning re-send: ${result.message ?? JSON.stringify(result)}`);
+    } catch (err) {
+      log(`Morning re-send error: ${err.message}`);
+    }
   }
 }
 
 // ─── Main loop ─────────────────────────────────────────────────────────────
 
 async function run() {
-  log('=== HotelOps AI CSV Runner starting ===');
+  log('=== HotelOps AI Scraper starting ===');
   log(`Property: ${CONFIG.PROPERTY_ID} | User: ${CONFIG.USER_ID}`);
   log(`Timezone: ${CONFIG.TIMEZONE} | Local hour: ${localHour()} | Today: ${todayISO()}`);
-  log(`Tick every ${CONFIG.TICK_MINUTES} min — CSV pulls at 6am+7pm, dashboard numbers every 15 min 5am–11pm`);
+  log(`Interval: every ${CONFIG.INTERVAL_MINUTES} min | Hours: ${CONFIG.OPERATIONAL_HOURS_START}:00–${CONFIG.OPERATIONAL_HOURS_END}:00 (${CONFIG.TIMEZONE})`);
 
+  // Launch browser (headless in production, headed for debugging)
   const browser = await chromium.launch({
     headless: process.env.HEADED !== 'true',
     args: ['--no-sandbox', '--disable-setuid-sandbox'], // needed on Railway/Linux
   });
 
-  // Persistent context keeps cookies/session across runs
+  // Persistent context keeps cookies/session across scrapes
+  // NOTE: No custom userAgent — CA fingerprints the UA and serves a different
+  // legacy login page to older/fake Chrome versions. Let Playwright use its
+  // real Chromium UA so CA serves the modern login page (j_username / a#greenButton).
   const context = await browser.newContext({
     storageState: fs.existsSync(CONFIG.SESSION_FILE) ? CONFIG.SESSION_FILE : undefined,
   });
 
   const page = await context.newPage();
 
+  // Initial login
   await login(page);
+
+  // Save session so next run can skip login
   await context.storageState({ path: CONFIG.SESSION_FILE });
 
-  // Optional: on startup, pull today's CSV immediately — useful for smoke tests.
-  if (process.env.CSV_TEST_ON_STARTUP === 'true') {
-    log('CSV_TEST_ON_STARTUP enabled — running immediate CSV scrape...');
-    try {
-      await runCSVScrape(page, db, {
-        USER_ID:     CONFIG.USER_ID,
-        PROPERTY_ID: CONFIG.PROPERTY_ID,
-        TIMEZONE:    CONFIG.TIMEZONE,
-      }, 'morning', log);
-      log('CSV test scrape complete!');
-    } catch (err) {
-      log(`CSV test scrape FAILED: ${err.message}`);
+  // Run once immediately, then on interval
+  async function scrapeAndWrite() {
+    // Always check the nightly scheduler, even outside scraping hours
+    await maybeRunScheduler();
+
+    if (!isOperationalHours()) {
+      log(`Outside operational hours (${CONFIG.OPERATIONAL_HOURS_START}:00–${CONFIG.OPERATIONAL_HOURS_END}:00) — skipping scrape`);
+      return;
     }
-  }
 
-  // Fresh login helper. Called right before every scheduled CSV scrape to
-  // guarantee the CA session cookie is valid — sessions die between the
-  // morning/evening windows so we can't rely on startup login alone.
-  async function relogin() {
-    await login(page);
-    await context.storageState({ path: CONFIG.SESSION_FILE });
-  }
-
-  async function tick() {
     try {
-      // Heartbeat first so the app knows the scraper is alive even if the
-      // scheduled pull didn't run this tick.
-      await writeHeartbeat();
-      await maybeRunCSVPull(page, relogin);
-      await maybeRunDashboardPull(page, relogin);
-      // Refresh session cookie so we stay logged in
+      const rooms = await scrapeHousekeepingCenter(page);
+      if (rooms.length === 0) {
+        log('WARNING: 0 rooms scraped — possible page change or auth issue');
+        return;
+      }
+      await writeRoomsToFirestore(rooms);
+
+      // Save updated session after each successful run
       await context.storageState({ path: CONFIG.SESSION_FILE });
     } catch (err) {
-      log(`ERROR during tick: ${err.message}`);
+      log(`ERROR during scrape: ${err.message}`);
+      // Don't crash the process — just log and wait for next interval
     }
   }
 
-  // First tick immediately, then on interval
-  await tick();
+  // First run
+  await scrapeAndWrite();
 
-  const tickMs = CONFIG.TICK_MINUTES * 60 * 1000;
-  setInterval(tick, tickMs);
+  // Repeat every N minutes
+  const intervalMs = CONFIG.INTERVAL_MINUTES * 60 * 1000;
+  setInterval(scrapeAndWrite, intervalMs);
 
-  log(`CSV runner running. Next tick in ${CONFIG.TICK_MINUTES} minutes.`);
+  log(`Scraper running. Next scrape in ${CONFIG.INTERVAL_MINUTES} minutes.`);
 }
 
 // ─── Entry point ───────────────────────────────────────────────────────────

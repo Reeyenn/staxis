@@ -17,7 +17,7 @@ export default function SignInPage() {
   const [signing, setSigning] = useState(false);
 
   useEffect(() => {
-    if (!loading && user) router.replace('/property-selector');
+    if (!loading && user) router.replace('/');
   }, [user, loading, router]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -144,8 +144,8 @@ export default function SignInPage() {
           {error && (
             <p style={{
               fontSize: '13px', color: 'var(--red)',
-              background: 'var(--red-dim)',
-              border: '1px solid var(--red-border, rgba(239,68,68,0.2))',
+              background: 'rgba(239,68,68,0.08)',
+              border: '1px solid rgba(239,68,68,0.2)',
               borderRadius: 'var(--radius-sm)',
               padding: '10px 12px',
               margin: 0,

@@ -51,7 +51,6 @@ type TranslationKey =
   | 'propertyNameLabel' | 'propertyNameHelp'
   | 'totalRoomsField' | 'avgOccupancyField' | 'staffOnRosterField'
   | 'hourlyWageField' | 'checkoutMinutesField' | 'stayoverMinutesField'
-  | 'stayoverDay1MinutesField' | 'stayoverDay2MinutesField'
   | 'shiftLengthField' | 'weeklyBudgetField'
   | 'nextStepTitle' | 'nextStepDesc' | 'openApp' | 'savingDots'
   // Dashboard
@@ -146,7 +145,6 @@ type TranslationKey =
   | 'vacationDatesLabel' | 'vacationDatesHelp' | 'isActiveLabel'
   | 'eligibleLabel' | 'atLimitLabel' | 'noPhoneLabel' | 'sendingLabel' | 'crewSelectedCount'
   | 'confirmDeclinedMsg' | 'replacementFoundMsg' | 'noReplacementMsg' | 'allConfirmedMsg'
-  | 'recommendedCrew' | 'noPlanData'
   // ── Housekeeping public areas & prediction ────────────────────────────────
   | 'roomDataLoading' | 'noRoomDataYet' | 'pmsSync15Min'
   | 'prepMinutes' | 'totalWorkload'
@@ -159,11 +157,6 @@ type TranslationKey =
   | 'dirtyRooms' | 'needCleaning' | 'checkoutsToday'
   | 'roomStatus' | 'noRoomsAssignedToday' | 'progress' | 'total'
   | 'tomorrowsCrew' | 'noConfirmationsYet'
-  // Dashboard: occupancy & revenue
-  | 'occupancy' | 'rented' | 'arrivals' | 'inHouse' | 'reservations' | 'blockedRooms'
-  | 'adr' | 'revpar' | 'perNight' | 'perAvailRoom'
-  // Dashboard: labor cost split
-  | 'frontDeskLabor' | 'housekeepingLabor' | 'maintenanceLabor'
   // ── Settings pages ────────────────────────────────────────────────────────
   | 'operationsConfig' | 'operationsConfigDesc'
   | 'propertySettings' | 'propertySettingsDesc'
@@ -186,20 +179,6 @@ type TranslationKey =
   | 'allProperties'
   // ── Room availability ─────────────────────────────────────────────────────
   | 'availableRooms' | 'available' | 'roomOccupied'
-  // ── Inventory tracking ────────────────────────────────────────────────────
-  | 'inspections'
-  | 'inventoryTracking' | 'parLevel' | 'currentStock' | 'belowPar' | 'atPar'
-  | 'criticallyLow' | 'addItem' | 'itemAdded' | 'noInventoryItems'
-  | 'allCategories' | 'housekeepingCategory' | 'maintenanceCategory' | 'breakfastFbCategory'
-  | 'unitLabel' | 'stockUpdated' | 'allStocked'
-  | 'overview' | 'reorderList' | 'usageSettings'
-  | 'burningPerDay' | 'emptyInDays' | 'orderNow' | 'orderSoon'
-  | 'suggestedOrder' | 'copyReorderList' | 'copiedToClipboard'
-  | 'usagePerCheckout' | 'usagePerStayover' | 'reorderLeadDays'
-  | 'vendor' | 'configureUsageRates' | 'needsOrderingNow'
-  | 'allStockedUp' | 'covers2Weeks' | 'avgCheckoutsPerDay' | 'setUsageRates'
-  | 'totalItems' | 'pastReorderWindow' | 'criticalOrderToday' | 'empty'
-  | 'usageSettingsDesc'
   // ── Maintenance page ──────────────────────────────────────────────────────
   | 'preventive' | 'allFilter' | 'openFilter' | 'urgentFilter' | 'resolvedFilter'
   | 'submitWorkOrder' | 'severityLow' | 'severityMedium' | 'severityUrgent'
@@ -208,9 +187,6 @@ type TranslationKey =
   | 'allRoutine' | 'preventiveMaintenance' | 'lastCompleted' | 'never'
   | 'dueToday' | 'addTask' | 'taskName' | 'frequencyDays'
   | 'noWorkOrders' | 'noPreventiveTasks' | 'justNow'
-  // Landscaping
-  | 'landscaping' | 'noLandscapingTasks' | 'addLandscapingTask' | 'landscapingTaskName'
-  | 'season' | 'yearRound' | 'spring' | 'summer' | 'fall' | 'winter'
   | 'inspect' | 'inspection' | 'approve' | 'reject' | 'rejectReason'
   | 'roomApproved' | 'roomRejected' | 'allCaughtUp' | 'alreadyInspected'
   | 'roomsCleaned' | 'avgTime' | 'noRoomsCompleted' | 'avgTurnover'
@@ -363,8 +339,6 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     hourlyWageField: 'Housekeeper Hourly Wage',
     checkoutMinutesField: 'Minutes to Clean a Checkout Room',
     stayoverMinutesField: 'Minutes to Clean a Stayover Room',
-    stayoverDay1MinutesField: 'Minutes for Stayover Day 1 (light clean)',
-    stayoverDay2MinutesField: 'Minutes for Stayover Day 2 (full clean)',
     shiftLengthField: 'Shift Length',
     weeklyBudgetField: 'Weekly Labor Budget (optional)',
     nextStepTitle: 'Next step:',
@@ -612,8 +586,6 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     replacementFoundMsg: 'Replacement found',
     noReplacementMsg: 'No replacement available',
     allConfirmedMsg: 'All confirmed',
-    recommendedCrew: 'Recommended Crew',
-    noPlanData: 'No plan data for this date yet. Data updates at 7pm and 6am.',
     // ── Housekeeping public areas & prediction ──
     roomDataLoading: 'Loading room data...',
     noRoomDataYet: 'No room data for this date yet',
@@ -651,21 +623,6 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     total: 'total',
     tomorrowsCrew: "Tomorrow's Crew",
     noConfirmationsYet: 'No confirmations yet - go to Housekeeping › Schedule to send.',
-    // Dashboard: occupancy & revenue
-    occupancy: 'Occupancy',
-    rented: 'Rented',
-    arrivals: 'Arrivals',
-    inHouse: 'In-House',
-    reservations: 'Reservations',
-    blockedRooms: 'Blocked Rooms',
-    adr: 'ADR',
-    revpar: 'RevPAR',
-    perNight: 'per night',
-    perAvailRoom: 'per avail. room',
-    // Dashboard: labor cost split
-    frontDeskLabor: 'Front Desk',
-    housekeepingLabor: 'Housekeeping',
-    maintenanceLabor: 'Maintenance',
     // ── Settings pages ──
     operationsConfig: 'Operations Config',
     operationsConfigDesc: 'Public areas, cleaning times, prep time',
@@ -713,49 +670,6 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     availableRooms: 'Available Rooms',
     available: 'Available',
     roomOccupied: 'Occupied',
-    // ── Inventory tracking ──
-    inventoryTracking: 'Inventory',
-    inspections: 'Inspections',
-    parLevel: 'Par Level',
-    currentStock: 'Current Stock',
-    belowPar: 'Below Par',
-    atPar: 'At Par',
-    criticallyLow: 'Critically Low',
-    addItem: 'Add Item',
-    itemAdded: 'Item added',
-    noInventoryItems: 'No inventory items yet',
-    allCategories: 'All',
-    housekeepingCategory: 'Housekeeping',
-    maintenanceCategory: 'Maintenance',
-    breakfastFbCategory: 'Breakfast/F&B',
-    unitLabel: 'Unit',
-    stockUpdated: 'Stock updated',
-    allStocked: 'All stocked',
-    overview: 'Overview',
-    reorderList: 'Reorder List',
-    usageSettings: 'Usage Settings',
-    burningPerDay: 'Using ~{0}/day',
-    emptyInDays: 'Empty in {0} days',
-    orderNow: 'ORDER NOW',
-    orderSoon: 'Order soon',
-    suggestedOrder: 'Suggested order',
-    copyReorderList: 'Copy Reorder List',
-    copiedToClipboard: 'Copied to clipboard',
-    usagePerCheckout: 'Per checkout room',
-    usagePerStayover: 'Per stayover room',
-    reorderLeadDays: 'Reorder lead days',
-    vendor: 'Vendor',
-    configureUsageRates: 'Set usage rates for predictions',
-    needsOrderingNow: 'items need ordering NOW',
-    allStockedUp: 'All stocked up — nothing needs ordering',
-    covers2Weeks: 'covers 2 weeks',
-    avgCheckoutsPerDay: 'Avg Checkouts/day',
-    setUsageRates: 'Set usage rates →',
-    totalItems: 'Total Items',
-    pastReorderWindow: 'already past reorder window',
-    criticalOrderToday: 'CRITICAL — order today',
-    empty: 'Empty',
-    usageSettingsDesc: 'Set how many of each item are used per checkout and stayover room. The system uses these rates combined with your daily room counts to predict when you\'ll run out.',
     // ── Maintenance page ──
     preventive: 'Preventive',
     allFilter: 'All',
@@ -784,17 +698,6 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     frequencyDays: 'Frequency (days)',
     noWorkOrders: 'No work orders yet',
     noPreventiveTasks: 'No preventive tasks yet',
-    // Landscaping
-    landscaping: 'Landscaping',
-    noLandscapingTasks: 'No landscaping tasks yet',
-    addLandscapingTask: 'Add Task',
-    landscapingTaskName: 'Task Name',
-    season: 'Season',
-    yearRound: 'Year-Round',
-    spring: 'Spring',
-    summer: 'Summer',
-    fall: 'Fall',
-    winter: 'Winter',
     justNow: 'just now',
     inspect: 'Inspect',
     inspection: 'Inspection',
@@ -961,8 +864,6 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     hourlyWageField: 'Salario por Hora',
     checkoutMinutesField: 'Minutos por Hab. de Salida',
     stayoverMinutesField: 'Minutos por Hab. de Continuación',
-    stayoverDay1MinutesField: 'Minutos Continuación Día 1 (limpieza ligera)',
-    stayoverDay2MinutesField: 'Minutos Continuación Día 2 (limpieza completa)',
     shiftLengthField: 'Duración del Turno',
     weeklyBudgetField: 'Presupuesto Semanal (opcional)',
     nextStepTitle: 'Próximo paso:',
@@ -1210,8 +1111,6 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     replacementFoundMsg: 'Reemplazo encontrado',
     noReplacementMsg: 'Sin reemplazo disponible',
     allConfirmedMsg: 'Todas confirmadas',
-    recommendedCrew: 'Equipo Recomendado',
-    noPlanData: 'Sin datos de planificación para esta fecha. Los datos se actualizan a las 7pm y 6am.',
     // ── Housekeeping public areas & prediction ──
     roomDataLoading: 'Cargando datos de habitaciones...',
     noRoomDataYet: 'No hay datos de habitaciones para esta fecha',
@@ -1249,21 +1148,6 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     total: 'total',
     tomorrowsCrew: 'Equipo de Mañana',
     noConfirmationsYet: 'No hay confirmaciones aún — ve a Limpieza › Horario para enviar.',
-    // Dashboard: occupancy & revenue
-    occupancy: 'Ocupación',
-    rented: 'Rentadas',
-    arrivals: 'Llegadas',
-    inHouse: 'En Casa',
-    reservations: 'Reservaciones',
-    blockedRooms: 'Hab. Bloqueadas',
-    adr: 'ADR',
-    revpar: 'RevPAR',
-    perNight: 'por noche',
-    perAvailRoom: 'por hab. disponible',
-    // Dashboard: labor cost split
-    frontDeskLabor: 'Recepción',
-    housekeepingLabor: 'Limpieza',
-    maintenanceLabor: 'Mantenimiento',
     // ── Settings pages ──
     operationsConfig: 'Config. de Operaciones',
     operationsConfigDesc: 'Áreas públicas, tiempos de limpieza, preparación',
@@ -1311,49 +1195,6 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     availableRooms: 'Hab. Disponibles',
     available: 'Disponible',
     roomOccupied: 'Ocupada',
-    // ── Inventory tracking ──
-    inventoryTracking: 'Inventario',
-    inspections: 'Inspecciones',
-    parLevel: 'Nivel Mínimo',
-    currentStock: 'Stock Actual',
-    belowPar: 'Bajo Mínimo',
-    atPar: 'En Nivel',
-    criticallyLow: 'Críticamente Bajo',
-    addItem: 'Agregar Artículo',
-    itemAdded: 'Artículo agregado',
-    noInventoryItems: 'Sin artículos de inventario',
-    allCategories: 'Todos',
-    housekeepingCategory: 'Limpieza',
-    maintenanceCategory: 'Mantenimiento',
-    breakfastFbCategory: 'Desayuno/Alimentos',
-    unitLabel: 'Unidad',
-    stockUpdated: 'Stock actualizado',
-    allStocked: 'Todo abastecido',
-    overview: 'Resumen',
-    reorderList: 'Lista de Pedidos',
-    usageSettings: 'Configuración de Uso',
-    burningPerDay: 'Consumo ~{0}/día',
-    emptyInDays: 'Vacío en {0} días',
-    orderNow: 'PEDIR AHORA',
-    orderSoon: 'Pedir pronto',
-    suggestedOrder: 'Pedido sugerido',
-    copyReorderList: 'Copiar Lista',
-    copiedToClipboard: 'Copiado al portapapeles',
-    usagePerCheckout: 'Por habitación checkout',
-    usagePerStayover: 'Por habitación stayover',
-    reorderLeadDays: 'Días de anticipación',
-    vendor: 'Proveedor',
-    configureUsageRates: 'Configure tasas de uso',
-    needsOrderingNow: 'artículos necesitan pedido YA',
-    allStockedUp: 'Todo abastecido',
-    covers2Weeks: 'cubre 2 semanas',
-    avgCheckoutsPerDay: 'Promedio Checkouts/día',
-    setUsageRates: 'Configurar tasas →',
-    totalItems: 'Artículos',
-    pastReorderWindow: 'ya pasó la ventana de pedido',
-    criticalOrderToday: 'CRÍTICO — pedir hoy',
-    empty: 'Vacío',
-    usageSettingsDesc: 'Configure cuánto de cada artículo se usa por tipo de habitación. El sistema usa estas tasas junto con los conteos diarios para predecir cuándo se agotarán.',
     // ── Maintenance page ──
     preventive: 'Preventivo',
     allFilter: 'Todos',
@@ -1382,17 +1223,6 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     frequencyDays: 'Frecuencia (días)',
     noWorkOrders: 'Sin órdenes de trabajo',
     noPreventiveTasks: 'Sin tareas preventivas',
-    // Landscaping
-    landscaping: 'Jardinería',
-    noLandscapingTasks: 'Sin tareas de jardinería',
-    addLandscapingTask: 'Agregar Tarea',
-    landscapingTaskName: 'Nombre de la tarea',
-    season: 'Temporada',
-    yearRound: 'Todo el año',
-    spring: 'Primavera',
-    summer: 'Verano',
-    fall: 'Otoño',
-    winter: 'Invierno',
     justNow: 'ahora mismo',
     inspect: 'Inspeccionar',
     inspection: 'Inspección',

@@ -1,7 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   collectionGroup,
   doc,
@@ -13,13 +12,13 @@ import {
   Timestamp,
   DocumentReference,
 } from 'firebase/firestore';
-import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { signInAnonymously } from 'firebase/auth';
 import { db, auth } from '@/lib/firebase';
 import { todayStr } from '@/lib/utils';
 import type { Room, RoomStatus } from '@/types';
 import { format } from 'date-fns';
-import { es as esLocale } from 'date-fns/locale';
 import { CheckCircle, AlertTriangle } from 'lucide-react';
+import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import type { Language } from '@/lib/translations';
 
@@ -50,23 +49,10 @@ function sortRooms(rooms: RoomWithRef[]): RoomWithRef[] {
 
 export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: string }> }) {
   const { id: housekeeperId } = React.use(params);
-  const searchParams = useSearchParams();
-  const uid = searchParams.get('uid');
-  const pid = searchParams.get('pid');
   const today = todayStr();
-
-  // ── Language is LOCAL to this page ──
-  // Previously this called the global setLang() from LanguageContext, which
-  // writes to localStorage. That meant when Maria (admin) opened any HK's
-  // personal link in her browser to test, the whole admin UI flipped to
-  // Spanish permanently. We keep a page-scoped lang state here instead and
-  // source the initial value from the staff doc (what Maria set in the
-  // staff modal) — falling back to the legacy staffPrefs doc for HKs who
-  // self-selected via SMS before we wired up the staff-doc write path.
-  const [lang, setLang] = useState<Language>('en');
+  const { lang, setLang } = useLang();
 
   const [rooms, setRooms] = useState<RoomWithRef[]>([]);
-  const [activeDate, setActiveDate] = useState<string>(today);
   const [loading, setLoading] = useState(true);
   const [savingRoomId, setSavingRoomId] = useState<string | null>(null);
   const [issueRoomId, setIssueRoomId] = useState<string | null>(null);
@@ -75,53 +61,23 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   const [savingDnd, setSavingDnd] = useState<string | null>(null);
   const [helpSent, setHelpSent] = useState<Set<string>>(new Set());
   const [savingHelp, setSavingHelp] = useState<string | null>(null);
-  const [resettingRoomId, setResettingRoomId] = useState<string | null>(null);
 
-  // Seed the page language from Firestore on mount.
-  // Primary source: the staff doc (`staff/{housekeeperId}.language`) — that's
-  // what Maria sets via the Staff modal and what drives everything we
-  // design going forward. Fallback: legacy `staffPrefs/{housekeeperId}` doc,
-  // written by the SMS ESPAÑOL/ENGLISH handler for HKs who self-selected
-  // before we started mirroring to the staff doc.
+  // Load saved language preference from staffPrefs on mount so the page
+  // auto-displays in Spanish for HKs who replied ESPAÑOL to a text.
   useEffect(() => {
     if (!housekeeperId) return;
-    let cancelled = false;
-
-    (async () => {
-      // 1) Try the staff doc first (needs uid + pid from the query string).
-      if (uid && pid) {
-        try {
-          const staffRef = doc(db, 'users', uid, 'properties', pid, 'staff', housekeeperId);
-          const snap = await getDoc(staffRef);
-          if (!cancelled && snap.exists()) {
-            const s = snap.data() as { language?: 'en' | 'es' };
-            if (s.language === 'es' || s.language === 'en') {
-              setLang(s.language);
-              return;
-            }
-          }
-        } catch (err) {
-          console.error('[housekeeper] staff doc lang load failed:', err);
-        }
-      }
-
-      // 2) Fallback to the legacy staffPrefs doc.
-      try {
-        const prefRef = doc(db, 'staffPrefs', housekeeperId);
-        const snap = await getDoc(prefRef);
-        if (!cancelled && snap.exists()) {
+    const prefRef = doc(db, 'staffPrefs', housekeeperId);
+    getDoc(prefRef)
+      .then(snap => {
+        if (snap.exists()) {
           const pref = snap.data() as { language?: 'en' | 'es' };
           if (pref.language === 'es' || pref.language === 'en') {
-            setLang(pref.language);
+            setLang(pref.language as Language);
           }
         }
-      } catch (err) {
-        console.error('[housekeeper] staffPrefs load failed:', err);
-      }
-    })();
-
-    return () => { cancelled = true; };
-  }, [housekeeperId, uid, pid]);
+      })
+      .catch(err => console.error('[housekeeper] staffPrefs load failed:', err));
+  }, [housekeeperId, setLang]);
 
   useEffect(() => {
     let unsub: (() => void) | undefined;
@@ -135,41 +91,10 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       unsub = onSnapshot(
         q,
         snap => {
-          // Grab every room assigned to this HK, then pick the right date
-          // bucket to display. Previously this always filtered to `today` —
-          // which broke when Maria sent assignments for tomorrow's shift:
-          // the rooms existed in Firestore but the page saw zero matches.
-          //
-          // New behavior: prefer today's rooms if there are any; otherwise
-          // fall back to the nearest upcoming shift date. If there's no
-          // future date either, fall back to the most recent past date so
-          // HKs can still see their just-completed shift.
-          const all = snap.docs.map(d => ({ id: d.id, _ref: d.ref, ...d.data() } as RoomWithRef));
-
-          const byDate = new Map<string, RoomWithRef[]>();
-          for (const r of all) {
-            if (!r.date) continue;
-            const list = byDate.get(r.date) ?? [];
-            list.push(r);
-            byDate.set(r.date, list);
-          }
-
-          // Pick the date bucket to display
-          let chosenDate = today;
-          if (byDate.has(today)) {
-            chosenDate = today;
-          } else {
-            const future = [...byDate.keys()].filter(d => d > today).sort();
-            if (future.length > 0) {
-              chosenDate = future[0]; // nearest upcoming shift
-            } else {
-              const past = [...byDate.keys()].filter(d => d < today).sort().reverse();
-              if (past.length > 0) chosenDate = past[0];
-            }
-          }
-
-          setActiveDate(chosenDate);
-          setRooms(sortRooms(byDate.get(chosenDate) ?? []));
+          const data = snap.docs
+            .map(d => ({ id: d.id, _ref: d.ref, ...d.data() } as RoomWithRef))
+            .filter(r => r.date === today);
+          setRooms(sortRooms(data));
           setLoading(false);
         },
         error => {
@@ -179,34 +104,19 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       );
     };
 
-    // Wait for Firebase to resolve the auth state before deciding whether to
-    // sign in anonymously. `auth.currentUser` is unreliable on first render —
-    // it reads null even when a real session is being restored from IndexedDB.
-    // Calling signInAnonymously during that window would clobber an admin's
-    // session and, because Firebase propagates auth changes across all tabs,
-    // log them out of the admin app. This pattern only signs in anonymously
-    // after Firebase confirms there is genuinely no user.
-    let started = false;
-    const unsubAuth = onAuthStateChanged(auth, (user) => {
-      if (started) return;
-      if (user) {
-        started = true;
-        subscribeToRooms();
-      } else {
-        started = true;
-        signInAnonymously(auth)
-          .then(subscribeToRooms)
-          .catch(err => {
-            console.error('[housekeeper] Anonymous auth failed:', err);
-            setLoading(false);
-          });
-      }
-    });
+    const currentUser = auth.currentUser;
+    if (currentUser) {
+      subscribeToRooms();
+    } else {
+      signInAnonymously(auth)
+        .then(subscribeToRooms)
+        .catch(err => {
+          console.error('[housekeeper] Anonymous auth failed:', err);
+          setLoading(false);
+        });
+    }
 
-    return () => {
-      unsub?.();
-      unsubAuth();
-    };
+    return () => unsub?.();
   }, [housekeeperId, today]);
 
   // ── Start room (dirty → in_progress) ──────────────────────────────────────
@@ -219,21 +129,6 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       });
     } catch (err) {
       console.error('[housekeeper] start room error:', err);
-    } finally {
-      setSavingRoomId(null);
-    }
-  };
-
-  // ── Stop room (in_progress → dirty, clear startedAt) ──────────────────────
-  const handleStopRoom = async (room: RoomWithRef) => {
-    setSavingRoomId(room.id);
-    try {
-      await updateDoc(room._ref, {
-        status: 'dirty' as RoomStatus,
-        startedAt: null,
-      });
-    } catch (err) {
-      console.error('[housekeeper] stop room error:', err);
     } finally {
       setSavingRoomId(null);
     }
@@ -287,23 +182,6 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
         helpRequestedBy: housekeeperId,
       });
       setHelpSent(prev => new Set(prev).add(room.id));
-
-      // Send SMS notification to front desk staff (best-effort, don't block on failure)
-      if (uid && pid) {
-        fetch('/api/help-request', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            uid,
-            pid,
-            staffName: room.assignedName || 'Housekeeper',
-            roomNumber: room.number,
-            language: lang,
-          }),
-        }).catch(err => {
-          console.error('[housekeeper] help request SMS failed:', err);
-        });
-      }
     } catch (err) {
       console.error('[housekeeper] help request error:', err);
     } finally {
@@ -316,45 +194,20 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
     if (!issueRoomId || !issueNote.trim()) return;
     setSavingIssue(true);
     const room = rooms.find(r => r.id === issueRoomId);
-    if (!room) {
-      console.error('[housekeeper] submit issue: room not found', issueRoomId);
-      setSavingIssue(false);
-      return;
-    }
-    try {
+    if (room) {
       await updateDoc(room._ref, { issueNote: issueNote.trim() });
-      setIssueRoomId(null);
-      setIssueNote('');
-    } catch (err) {
-      console.error('[housekeeper] submit issue error:', err);
-    } finally {
-      setSavingIssue(false);
     }
-  };
-
-  // ── Reset room (clean/inspected → dirty, clear times) ─────────────────────
-  const handleResetRoom = async (room: RoomWithRef) => {
-    setResettingRoomId(room.id);
-    try {
-      await updateDoc(room._ref, {
-        status: 'dirty' as RoomStatus,
-        startedAt: null,
-        completedAt: null,
-      });
-    } catch (err) {
-      console.error('[housekeeper] reset room error:', err);
-    } finally {
-      setResettingRoomId(null);
-    }
+    setSavingIssue(false);
+    setIssueRoomId(null);
+    setIssueNote('');
   };
 
   // ── Derived state ──────────────────────────────────────────────────────────
   const housekeeperName = rooms[0]?.assignedName ?? '';
   const firstName = housekeeperName.split(' ')[0] || 'Housekeeper';
   const total = rooms.length;
-  const done = rooms.filter(r => r.status === 'clean' || r.status === 'inspected' || r.isDnd).length;
+  const done = rooms.filter(r => r.status === 'clean' || r.status === 'inspected').length;
   const inProgress = rooms.filter(r => r.status === 'in_progress').length;
-  const dndCount = rooms.filter(r => r.isDnd && r.status !== 'clean' && r.status !== 'inspected').length;
   const allDone = total > 0 && done === total;
   const progressPct = total > 0 ? Math.round((done / total) * 100) : 0;
 
@@ -362,36 +215,23 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
     return (
       <div style={{
         minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-        flexDirection: 'column', gap: '12px',
-        background: 'var(--bg)', fontFamily: 'var(--font-sans, system-ui, -apple-system, sans-serif)',
+        background: '#F0FDF4', fontFamily: 'system-ui, -apple-system, sans-serif',
       }}>
-        <div style={{
-          width: '32px', height: '32px', border: '4px solid var(--border)',
-          borderTopColor: 'var(--green)', borderRadius: '50%',
-          animation: 'spin 0.8s linear infinite',
-        }} />
-        <p style={{ color: 'var(--text-muted)', fontSize: '14px' }}>
+        <p style={{ color: '#6B7280', fontSize: '16px' }}>
           {t('loadingRooms', lang)}
         </p>
-        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       </div>
     );
   }
 
   return (
     <div style={{
-      minHeight: '100dvh', background: 'var(--green-bg, #F0FDF4)',
-      fontFamily: 'var(--font-sans, system-ui, -apple-system, BlinkMacSystemFont, sans-serif)',
-    }}>
-    <div style={{
-      maxWidth: '768px',
-      margin: '0 auto',
-      minHeight: '100dvh',
-      background: 'var(--green-bg, #F0FDF4)',
+      minHeight: '100dvh', background: '#F0FDF4',
+      fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
     }}>
 
       {/* ── Header ── */}
-      <div style={{ background: 'linear-gradient(135deg, var(--navy, #0F172A) 0%, var(--navy-light, #2563EB) 100%)', padding: '20px 16px 28px', color: 'white' }}>
+      <div style={{ background: '#166534', padding: '20px 16px 28px', color: 'white' }}>
         <p style={{
           fontSize: '11px', fontWeight: 600, letterSpacing: '0.08em',
           textTransform: 'uppercase', opacity: 0.55, marginBottom: '6px',
@@ -401,45 +241,16 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
 
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px' }}>
           <div>
-            <h1 style={{ fontSize: '20px', fontWeight: 800, letterSpacing: '-0.02em', marginBottom: '2px', lineHeight: 1.1 }}>
+            <h1 style={{ fontSize: '28px', fontWeight: 800, letterSpacing: '-0.02em', marginBottom: '2px', lineHeight: 1.1 }}>
               {lang === 'es' ? `Hola, ${firstName}` : `Hi, ${firstName}`}
             </h1>
-            <p style={{ fontSize: '12px', opacity: 0.7, fontWeight: 500 }}>
-              {(() => {
-                // Parse activeDate as local-time midnight (avoids the UTC-shift
-                // "Saturday Apr 18" getting rendered as "Friday Apr 17" on clients
-                // west of UTC).
-                const [y, m, d] = activeDate.split('-').map(Number);
-                const dateObj = new Date(y, (m ?? 1) - 1, d ?? 1);
-                const formatted = format(dateObj, 'EEEE, MMMM d', { locale: lang === 'es' ? esLocale : undefined });
-                if (activeDate === today) return formatted;
-                // Different date — add a label so HK knows they're looking at a
-                // future (or past) shift.
-                return activeDate > today
-                  ? `${lang === 'es' ? 'Próximo turno: ' : 'Next shift: '}${formatted}`
-                  : `${lang === 'es' ? 'Turno anterior: ' : 'Last shift: '}${formatted}`;
-              })()}
+            <p style={{ fontSize: '13px', opacity: 0.7, fontWeight: 500 }}>
+              {format(new Date(), 'EEEE, MMMM d')}
             </p>
           </div>
 
           <button
-            onClick={async () => {
-              const next: Language = lang === 'en' ? 'es' : 'en';
-              setLang(next);
-              // Persist to the staff doc so Maria's staff modal stays in
-              // sync with whatever this HK picked. Best-effort; silent on
-              // failure since the UI already updated locally.
-              if (uid && pid && housekeeperId) {
-                try {
-                  await updateDoc(
-                    doc(db, 'users', uid, 'properties', pid, 'staff', housekeeperId),
-                    { language: next },
-                  );
-                } catch (err) {
-                  console.error('[housekeeper] lang persist failed:', err);
-                }
-              }
-            }}
+            onClick={() => setLang(lang === 'en' ? 'es' : 'en')}
             style={{
               background: 'rgba(255,255,255,0.18)',
               border: '1.5px solid rgba(255,255,255,0.35)',
@@ -460,8 +271,8 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
               <span style={{ fontSize: '14px', fontWeight: 600 }}>
                 {lang === 'es'
-                  ? `${done} de ${total} listas${dndCount > 0 ? ` · ${dndCount} DND` : ''}${inProgress > 0 ? ` · ${inProgress} en progreso` : ''}`
-                  : `${done} of ${total} done${dndCount > 0 ? ` · ${dndCount} DND` : ''}${inProgress > 0 ? ` · ${inProgress} in progress` : ''}`}
+                  ? `${done} de ${total} listas${inProgress > 0 ? ` · ${inProgress} en progreso` : ''}`
+                  : `${done} of ${total} done${inProgress > 0 ? ` · ${inProgress} in progress` : ''}`}
               </span>
               <span style={{ fontSize: '14px', fontWeight: 700, opacity: 0.9 }}>
                 {progressPct}%
@@ -473,7 +284,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
             }}>
               <div style={{
                 height: '100%', width: `${progressPct}%`,
-                background: progressPct === 100 ? 'var(--green)' : 'var(--green-light, #86EFAC)',
+                background: progressPct === 100 ? '#4ADE80' : '#86EFAC',
                 borderRadius: '99px',
                 transition: 'width 500ms cubic-bezier(0.4,0,0.2,1)',
               }} />
@@ -485,36 +296,33 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       {/* ── Room list ── */}
       <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
 
-        {allDone && (
+        {allDone ? (
           <div style={{
-            textAlign: 'center', padding: '32px 24px', background: 'white',
+            textAlign: 'center', padding: '64px 24px', background: 'white',
             borderRadius: '20px', boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
-            marginBottom: '4px',
           }}>
             <div style={{
-              width: '64px', height: '64px', borderRadius: '50%',
-              background: 'var(--green-dim)', display: 'flex', alignItems: 'center',
-              justifyContent: 'center', margin: '0 auto 14px',
+              width: '84px', height: '84px', borderRadius: '50%',
+              background: '#DCFCE7', display: 'flex', alignItems: 'center',
+              justifyContent: 'center', margin: '0 auto 20px',
             }}>
-              <CheckCircle size={32} color="var(--green)" />
+              <CheckCircle size={42} color="#16A34A" />
             </div>
-            <h2 style={{ fontSize: '22px', fontWeight: 800, color: 'var(--text-primary)', marginBottom: '6px' }}>
+            <h2 style={{ fontSize: '26px', fontWeight: 800, color: '#111827', marginBottom: '10px' }}>
               {t('allDone', lang)}
             </h2>
-            <p style={{ fontSize: '14px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+            <p style={{ fontSize: '16px', color: '#4B5563', lineHeight: 1.5 }}>
               {lang === 'es'
                 ? `¡Buen trabajo hoy, ${firstName}! 🎉`
                 : `Great work today, ${firstName}! 🎉`}
             </p>
           </div>
-        )}
-
-        {total === 0 ? (
+        ) : total === 0 ? (
           <div style={{
             textAlign: 'center', padding: '64px 24px', background: 'white',
             borderRadius: '20px', boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
           }}>
-            <p style={{ fontSize: '16px', color: 'var(--text-muted)', lineHeight: 1.8 }}>
+            <p style={{ fontSize: '16px', color: '#6B7280', lineHeight: 1.8 }}>
               {lang === 'es'
                 ? <><strong>{t('noRoomsAssigned', lang)}</strong><br />{t('checkBackSoon', lang)}</>
                 : <><strong>{t('noRoomsAssigned', lang)}</strong><br />{t('checkBackSoon', lang)}</>}
@@ -533,9 +341,6 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
               helpAlreadySent={helpSent.has(room.id)}
               onStart={() => handleStartRoom(room)}
               onFinish={() => handleFinishRoom(room)}
-              onStop={() => handleStopRoom(room)}
-              onReset={() => handleResetRoom(room)}
-              isResetting={resettingRoomId === room.id}
               onReportIssue={() => {
                 setIssueRoomId(room.id);
                 setIssueNote((room as Room & { issueNote?: string }).issueNote ?? '');
@@ -555,8 +360,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
           style={{
             position: 'fixed', inset: 0,
             background: 'rgba(0,0,0,0.4)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            padding: '16px',
+            display: 'flex', alignItems: 'flex-end',
             zIndex: 200,
           }}
           onClick={e => {
@@ -567,14 +371,14 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
           }}
         >
           <div style={{
-            width: '100%', maxWidth: '420px', background: 'white',
-            borderRadius: '20px',
-            padding: '24px 20px',
+            width: '100%', background: 'white',
+            borderRadius: '20px 20px 0 0',
+            padding: '24px 16px calc(env(safe-area-inset-bottom, 0px) + 24px)',
           }}>
-            <h3 style={{ fontSize: '20px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '4px' }}>
+            <h3 style={{ fontSize: '20px', fontWeight: 700, color: '#111827', marginBottom: '4px' }}>
               {t('reportIssue', lang)}
             </h3>
-            <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '16px' }}>
+            <p style={{ fontSize: '13px', color: '#6B7280', marginBottom: '16px' }}>
               {lang === 'es' ? 'Hab.' : 'Room'} {rooms.find(r => r.id === issueRoomId)?.number}
             </p>
             <textarea
@@ -586,20 +390,20 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
               rows={4}
               style={{
                 width: '100%', padding: '14px', boxSizing: 'border-box',
-                border: '1.5px solid var(--border)', borderRadius: '12px',
+                border: '1.5px solid #D1D5DB', borderRadius: '12px',
                 fontSize: '16px', fontFamily: 'inherit',
                 resize: 'none', outline: 'none', lineHeight: 1.5,
               }}
-              onFocus={e => { e.target.style.borderColor = 'var(--green-dark, #166534)'; }}
-              onBlur={e => { e.target.style.borderColor = 'var(--border)'; }}
+              onFocus={e => { e.target.style.borderColor = '#166534'; }}
+              onBlur={e => { e.target.style.borderColor = '#D1D5DB'; }}
             />
             <div style={{ display: 'flex', gap: '10px', marginTop: '14px' }}>
               <button
                 onClick={() => { setIssueRoomId(null); setIssueNote(''); }}
                 style={{
-                  flex: 1, height: '56px', background: 'var(--bg-elevated, #F3F4F6)', border: 'none',
+                  flex: 1, height: '56px', background: '#F3F4F6', border: 'none',
                   borderRadius: '12px', fontSize: '17px', fontWeight: 600,
-                  color: 'var(--text-secondary)', cursor: 'pointer',
+                  color: '#374151', cursor: 'pointer',
                   WebkitTapHighlightColor: 'transparent',
                 }}
               >
@@ -612,8 +416,8 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
                   flex: 1, height: '56px', border: 'none', borderRadius: '12px',
                   fontSize: '17px', fontWeight: 600,
                   cursor: !issueNote.trim() || savingIssue ? 'not-allowed' : 'pointer',
-                  background: !issueNote.trim() || savingIssue ? 'var(--border)' : 'var(--green-dark, #166534)',
-                  color: !issueNote.trim() || savingIssue ? 'var(--text-muted)' : 'white',
+                  background: !issueNote.trim() || savingIssue ? '#D1D5DB' : '#166534',
+                  color: !issueNote.trim() || savingIssue ? '#9CA3AF' : 'white',
                   transition: 'background 150ms ease',
                   WebkitTapHighlightColor: 'transparent',
                 }}
@@ -626,7 +430,6 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
           </div>
         </div>
       )}
-    </div>
     </div>
   );
 }
@@ -648,9 +451,6 @@ function RoomCard({
   helpAlreadySent,
   onStart,
   onFinish,
-  onStop,
-  onReset,
-  isResetting,
   onReportIssue,
   onToggleDnd,
   onNeedHelp,
@@ -664,9 +464,6 @@ function RoomCard({
   helpAlreadySent: boolean;
   onStart: () => void;
   onFinish: () => void;
-  onStop: () => void;
-  onReset: () => void;
-  isResetting: boolean;
   onReportIssue: () => void;
   onToggleDnd: () => void;
   onNeedHelp: () => void;
@@ -680,14 +477,14 @@ function RoomCard({
     : (lang === 'es' ? 'VACANTE' : 'VACANT');
 
   const accentColor =
-    isDone ? 'var(--green)'
-    : isInProgress ? 'var(--navy-light, #2563EB)'
-    : room.priority === 'vip' ? 'var(--red)'
-    : room.priority === 'early' ? 'var(--orange, #EA580C)'
-    : 'var(--border)';
+    isDone ? '#16A34A'
+    : isInProgress ? '#D97706'
+    : room.priority === 'vip' ? '#DC2626'
+    : room.priority === 'early' ? '#EA580C'
+    : '#D1D5DB';
 
-  const cardBg = isDone ? 'var(--green-bg, #F0FDF4)' : isInProgress ? 'var(--blue-dim, #EFF6FF)' : 'white';
-  const cardBorder = isDone ? 'var(--green-light, #86EFAC)' : isInProgress ? 'var(--blue-light, #93C5FD)' : 'var(--border-light, #E5E7EB)';
+  const cardBg = isDone ? '#F0FDF4' : isInProgress ? '#FFFBEB' : 'white';
+  const cardBorder = isDone ? '#86EFAC' : isInProgress ? '#FCD34D' : '#E5E7EB';
 
   return (
     <div style={{
@@ -700,13 +497,12 @@ function RoomCard({
       boxShadow: isDone ? 'none' : '0 1px 6px rgba(0,0,0,0.07)',
     }}>
 
-      {/* DND banner — only show when in-progress, dirty+DND uses the action area instead */}
-      {room.isDnd && isInProgress && (
+      {/* DND banner */}
+      {room.isDnd && (
         <div style={{
-          background: 'var(--gray-dim, #F3F4F6)', color: 'var(--text-secondary, #4B5563)',
+          background: '#FCD34D', color: '#78350F',
           padding: '10px 14px', borderRadius: '10px',
           fontSize: '14px', fontWeight: 700, marginBottom: '12px',
-          border: '1.5px solid var(--border-light, #E5E7EB)',
         }}>
           {lang === 'es' ? '🚫 No Molestar' : '🚫 ' + t('doNotDisturb', lang)}
         </div>
@@ -716,7 +512,7 @@ function RoomCard({
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
         <span style={{
           fontSize: '13px', fontWeight: 700,
-          color: isDone ? 'var(--green)' : isInProgress ? 'var(--navy-light, #2563EB)' : 'var(--text-muted)',
+          color: isDone ? '#16A34A' : isInProgress ? '#D97706' : '#9CA3AF',
           minWidth: '18px', lineHeight: 1, flexShrink: 0,
         }}>
           {index}.
@@ -724,7 +520,7 @@ function RoomCard({
 
         <span style={{
           fontFamily: 'ui-monospace, monospace', fontWeight: 800, fontSize: '34px',
-          color: isDone ? 'var(--green)' : isInProgress ? 'var(--navy-light, #2563EB)' : 'var(--text-primary)',
+          color: isDone ? '#16A34A' : isInProgress ? '#92400E' : '#111827',
           letterSpacing: '-0.02em', lineHeight: 1,
         }}>
           {room.number}
@@ -734,7 +530,7 @@ function RoomCard({
           <span style={{
             fontSize: '11px', fontWeight: 700, textTransform: 'uppercase',
             letterSpacing: '0.07em',
-            color: isDone ? 'var(--green)' : isInProgress ? 'var(--navy-light, #2563EB)' : 'var(--text-secondary)',
+            color: isDone ? '#16A34A' : isInProgress ? '#D97706' : '#6B7280',
           }}>
             {isInProgress
               ? (lang === 'es' ? '⟳ ' + t('inProgress', lang) : '⟳ ' + t('inProgress', lang))
@@ -742,8 +538,8 @@ function RoomCard({
           </span>
           {room.priority === 'vip' && !isDone && !isInProgress && (
             <span style={{
-              fontSize: '11px', fontWeight: 700, color: 'var(--red)',
-              background: 'var(--red-dim)', padding: '2px 7px', borderRadius: '5px',
+              fontSize: '11px', fontWeight: 700, color: '#DC2626',
+              background: '#FEE2E2', padding: '2px 7px', borderRadius: '5px',
               display: 'inline-block', width: 'fit-content',
             }}>
               ★ VIP
@@ -751,8 +547,8 @@ function RoomCard({
           )}
           {room.priority === 'early' && !isDone && !isInProgress && (
             <span style={{
-              fontSize: '11px', fontWeight: 700, color: 'var(--orange, #EA580C)',
-              background: 'var(--orange-dim, #FFF7ED)', padding: '2px 7px', borderRadius: '5px',
+              fontSize: '11px', fontWeight: 700, color: '#EA580C',
+              background: '#FFF7ED', padding: '2px 7px', borderRadius: '5px',
               display: 'inline-block', width: 'fit-content',
             }}>
               ⚡ {t('earlyCheckin', lang)}
@@ -760,41 +556,34 @@ function RoomCard({
           )}
           {/* Show startedAt time when in progress */}
           {isInProgress && room.startedAt && (
-            <span style={{ fontSize: '11px', color: 'var(--navy-light, #2563EB)', fontWeight: 600 }}>
-              {t('start', lang)}: {format(firestoreToDate(room.startedAt), 'h:mm a')}
+            <span style={{ fontSize: '11px', color: '#D97706', fontWeight: 600 }}>
+              {t('start', lang)}
+              {format(firestoreToDate(room.startedAt), 'h:mm a')}
             </span>
           )}
         </div>
 
         <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
-          {/* DND toggle button — hide when done, when dirty+DND (action area handles it), and when in-progress (can't DND a started room) */}
-          {!isDone && !isInProgress && !room.isDnd && (
+          {/* DND toggle button */}
+          {!isDone && (
             <button
               onClick={onToggleDnd}
               disabled={isSavingDnd}
               style={{
-                height: '36px',
-                padding: '0 10px',
-                border: `1.5px solid var(--border-light, #E5E7EB)`,
+                width: '40px', height: '40px',
+                border: `1.5px solid ${room.isDnd ? '#F59E0B' : '#E5E7EB'}`,
                 borderRadius: '10px',
-                background: 'transparent',
+                background: room.isDnd ? '#FEF3C7' : 'transparent',
                 cursor: isSavingDnd ? 'not-allowed' : 'pointer',
                 flexShrink: 0,
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px',
-                opacity: isSavingDnd ? 0.4 : 0.6,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                opacity: isSavingDnd ? 0.4 : room.isDnd ? 1 : 0.6,
                 WebkitTapHighlightColor: 'transparent',
                 transition: 'all 150ms ease',
               }}
               aria-label={room.isDnd ? t('removeDnd', lang) : t('markDnd', lang)}
             >
-              <span style={{ fontSize: '13px', lineHeight: 1 }}>🚫</span>
-              <span style={{
-                fontSize: '11px', fontWeight: 700,
-                color: 'var(--text-muted)',
-                whiteSpace: 'nowrap',
-              }}>
-                {lang === 'es' ? 'DND' : 'DND'}
-              </span>
+              <span style={{ fontSize: '16px', lineHeight: 1 }}>🚫</span>
             </button>
           )}
 
@@ -802,25 +591,17 @@ function RoomCard({
           <button
             onClick={onReportIssue}
             style={{
-              height: '36px',
-              padding: '0 10px',
-              border: '1.5px solid var(--border-light, #E5E7EB)',
+              width: '40px', height: '40px',
+              border: '1.5px solid #E5E7EB',
               borderRadius: '10px', background: 'transparent',
               cursor: 'pointer', flexShrink: 0,
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
               opacity: 0.6,
               WebkitTapHighlightColor: 'transparent',
             }}
             aria-label={lang === 'es' ? 'Reportar problema' : 'Report issue'}
           >
-            <AlertTriangle size={14} color="var(--text-muted)" />
-            <span style={{
-              fontSize: '11px', fontWeight: 700,
-              color: 'var(--text-muted)',
-              whiteSpace: 'nowrap',
-            }}>
-              {lang === 'es' ? 'Problema' : 'Issue'}
-            </span>
+            <AlertTriangle size={17} color="#6B7280" />
           </button>
         </div>
       </div>
@@ -829,11 +610,11 @@ function RoomCard({
       {(room as Room & { issueNote?: string }).issueNote && (
         <div style={{
           display: 'flex', gap: '6px', alignItems: 'flex-start',
-          padding: '9px 11px', background: 'var(--red-dim, #FEF2F2)', borderRadius: '10px',
-          marginBottom: '12px', border: '1px solid var(--red-light, #FECACA)',
+          padding: '9px 11px', background: '#FEF3C7', borderRadius: '10px',
+          marginBottom: '12px',
         }}>
-          <AlertTriangle size={13} color="var(--red, #DC2626)" style={{ flexShrink: 0, marginTop: '2px' }} />
-          <span style={{ fontSize: '13px', color: 'var(--red-dark, #991B1B)', lineHeight: 1.4 }}>
+          <AlertTriangle size={13} color="#D97706" style={{ flexShrink: 0, marginTop: '2px' }} />
+          <span style={{ fontSize: '13px', color: '#92400E', lineHeight: 1.4 }}>
             {(room as Room & { issueNote?: string }).issueNote}
           </span>
         </div>
@@ -843,96 +624,21 @@ function RoomCard({
       {isDone ? (
         <div style={{
           height: '56px', borderRadius: '14px',
-          background: 'var(--green-dim)',
+          background: '#DCFCE7',
           display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px',
         }}>
-          <CheckCircle size={22} color="var(--green)" />
-          <span style={{ fontSize: '18px', fontWeight: 800, color: 'var(--green)' }}>
+          <CheckCircle size={22} color="#16A34A" />
+          <span style={{ fontSize: '18px', fontWeight: 800, color: '#16A34A' }}>
             {t('done', lang)}
           </span>
           {room.completedAt && (
-            <span style={{ fontSize: '13px', color: 'var(--green)', opacity: 0.65, marginLeft: '2px' }}>
+            <span style={{ fontSize: '13px', color: '#16A34A', opacity: 0.65, marginLeft: '2px' }}>
               {format(firestoreToDate(room.completedAt), 'h:mm a')}
             </span>
           )}
-          <span style={{ color: 'var(--green)', opacity: 0.3, fontSize: '14px', margin: '0 2px' }}>·</span>
-          <button
-            onClick={onReset}
-            disabled={isResetting}
-            style={{
-              background: 'none',
-              border: 'none',
-              padding: '4px 6px',
-              fontSize: '13px',
-              fontWeight: 600,
-              color: 'var(--green)',
-              cursor: isResetting ? 'not-allowed' : 'pointer',
-              opacity: isResetting ? 0.4 : 0.55,
-              WebkitTapHighlightColor: 'transparent',
-              textDecoration: 'underline',
-              textUnderlineOffset: '2px',
-              transition: 'opacity 150ms ease',
-            }}
-          >
-            {isResetting
-              ? '...'
-              : (lang === 'es' ? 'Revertir' : 'Reset')}
-          </button>
         </div>
       ) : isInProgress ? (
-        <div style={{ display: 'flex', gap: '8px' }}>
-          <button
-            onClick={onStop}
-            disabled={isSaving}
-            style={{
-              width: '68px', height: '68px', flexShrink: 0,
-              border: '2px solid var(--border-light, #E5E7EB)',
-              borderRadius: '14px',
-              background: 'white',
-              color: 'var(--text-secondary)',
-              fontSize: '13px', fontWeight: 700,
-              cursor: isSaving ? 'not-allowed' : 'pointer',
-              opacity: isSaving ? 0.4 : 1,
-              WebkitTapHighlightColor: 'transparent',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              transition: 'all 150ms ease',
-            }}
-          >
-            {lang === 'es' ? 'Parar' : 'Stop'}
-          </button>
-          <div style={{ flex: 1 }}>
-            <CompleteButton lang={lang} isSaving={isSaving} onFinish={onFinish} />
-          </div>
-        </div>
-      ) : room.isDnd ? (
-        <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px',
-          height: '68px', borderRadius: '14px',
-          background: 'var(--gray-dim, #F3F4F6)',
-          border: '2px solid var(--border-light, #E5E7EB)',
-        }}>
-          <span style={{ fontSize: '20px' }}>🚫</span>
-          <span style={{ fontSize: '17px', fontWeight: 700, color: 'var(--text-secondary, #4B5563)' }}>
-            {lang === 'es' ? 'No Molestar' : 'Do Not Disturb'}
-          </span>
-          <span style={{ color: 'var(--border-light, #E5E7EB)', margin: '0 2px' }}>·</span>
-          <button
-            onClick={onToggleDnd}
-            disabled={isSavingDnd}
-            style={{
-              background: 'none', border: 'none',
-              fontSize: '14px', fontWeight: 600,
-              color: 'var(--text-secondary, #4B5563)',
-              cursor: isSavingDnd ? 'not-allowed' : 'pointer',
-              opacity: isSavingDnd ? 0.4 : 0.7,
-              textDecoration: 'underline', textUnderlineOffset: '2px',
-              WebkitTapHighlightColor: 'transparent',
-              padding: '4px 6px',
-            }}
-          >
-            {isSavingDnd ? '...' : (lang === 'es' ? 'Quitar' : 'Undo')}
-          </button>
-        </div>
+        <HoldToFinishButton lang={lang} isSaving={isSaving} onFinish={onFinish} />
       ) : (
         <StartButton lang={lang} isSaving={isSaving} onStart={onStart} />
       )}
@@ -944,10 +650,10 @@ function RoomCard({
           disabled={isSavingHelp || helpAlreadySent}
           style={{
             width: '100%', height: '48px', marginTop: '8px',
-            border: helpAlreadySent ? '2px solid var(--green-light, #86EFAC)' : '2px solid var(--red-light, #FCA5A5)',
+            border: helpAlreadySent ? '2px solid #86EFAC' : '2px solid #FCA5A5',
             borderRadius: '12px',
-            background: helpAlreadySent ? 'var(--green-bg, #F0FDF4)' : isSavingHelp ? 'var(--red-dim)' : 'var(--red-dim)',
-            color: helpAlreadySent ? 'var(--green)' : 'var(--red)',
+            background: helpAlreadySent ? '#F0FDF4' : isSavingHelp ? '#FEE2E2' : '#FEF2F2',
+            color: helpAlreadySent ? '#16A34A' : '#DC2626',
             fontSize: '16px', fontWeight: 700,
             cursor: isSavingHelp || helpAlreadySent ? 'not-allowed' : 'pointer',
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
@@ -957,7 +663,7 @@ function RoomCard({
         >
           {helpAlreadySent ? (
             <>
-              <CheckCircle size={18} color="var(--green)" />
+              <CheckCircle size={18} color="#16A34A" />
               {t('helpAlertSent', lang)}
             </>
           ) : isSavingHelp ? (
@@ -995,8 +701,8 @@ function StartButton({
       onPointerLeave={() => setPressed(false)}
       style={{
         width: '100%', height: '68px', border: 'none', borderRadius: '14px',
-        background: isSaving ? 'var(--border)' : pressed ? 'var(--navy)' : 'var(--navy-light, #2563EB)',
-        color: isSaving ? 'var(--text-muted)' : 'white',
+        background: isSaving ? '#D1D5DB' : pressed ? '#1D4ED8' : '#2563EB',
+        color: isSaving ? '#9CA3AF' : 'white',
         fontSize: '20px', fontWeight: 800,
         cursor: isSaving ? 'not-allowed' : 'pointer',
         letterSpacing: '-0.01em',
@@ -1013,8 +719,10 @@ function StartButton({
   );
 }
 
-/* ── Complete Button - simple tap to mark done ── */
-function CompleteButton({
+/* ── Hold to Finish Button - press and hold 1.5s to confirm ──
+   Prevents accidental taps. A progress bar fills while holding.
+   Release early = cancel. Complete = fires onFinish.            */
+function HoldToFinishButton({
   lang,
   isSaving,
   onFinish,
@@ -1023,31 +731,93 @@ function CompleteButton({
   isSaving: boolean;
   onFinish: () => void;
 }) {
-  const [pressed, setPressed] = useState(false);
+  const [progress, setProgress] = useState(0); // 0–100
+  const holdStartRef = useRef<number | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const firedRef = useRef(false);
+  const HOLD_MS = 1500;
+
+  const startHold = () => {
+    if (isSaving) return;
+    firedRef.current = false;
+    holdStartRef.current = Date.now();
+
+    const tick = () => {
+      if (!holdStartRef.current) return;
+      const elapsed = Date.now() - holdStartRef.current;
+      const pct = Math.min(100, (elapsed / HOLD_MS) * 100);
+      setProgress(pct);
+
+      if (pct >= 100 && !firedRef.current) {
+        firedRef.current = true;
+        holdStartRef.current = null;
+        onFinish();
+        setProgress(0);
+      } else if (pct < 100) {
+        rafRef.current = requestAnimationFrame(tick);
+      }
+    };
+
+    rafRef.current = requestAnimationFrame(tick);
+  };
+
+  const cancelHold = () => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = null;
+    holdStartRef.current = null;
+    setProgress(0);
+  };
+
+  const isHolding = progress > 0;
+  const label = isSaving
+    ? t('savingDots', lang)
+    : isHolding
+      ? t('keepHolding', lang)
+      : t('holdToFinish', lang);
 
   return (
     <button
-      onClick={onFinish}
       disabled={isSaving}
-      onPointerDown={() => !isSaving && setPressed(true)}
-      onPointerUp={() => setPressed(false)}
-      onPointerLeave={() => setPressed(false)}
+      onPointerDown={startHold}
+      onPointerUp={cancelHold}
+      onPointerLeave={cancelHold}
+      onPointerCancel={cancelHold}
       style={{
+        position: 'relative',
         width: '100%', height: '68px', border: 'none', borderRadius: '14px',
-        background: isSaving ? 'var(--border)' : pressed ? 'var(--green-dark, #166534)' : 'var(--green)',
-        color: isSaving ? 'var(--text-muted)' : 'white',
-        fontSize: '20px', fontWeight: 800,
+        background: '#D1FAE5',
+        color: '#166534',
+        fontSize: '18px', fontWeight: 800,
         cursor: isSaving ? 'not-allowed' : 'pointer',
         letterSpacing: '-0.01em',
-        transform: pressed && !isSaving ? 'scale(0.97)' : 'scale(1)',
-        transition: 'background 100ms ease, transform 80ms ease',
+        overflow: 'hidden',
         WebkitTapHighlightColor: 'transparent',
-        boxShadow: pressed || isSaving ? 'none' : '0 4px 12px rgba(22,101,52,0.35)',
+        userSelect: 'none',
+        // Subtle border to distinguish from the done state
+        outline: '2px solid #86EFAC',
       }}
     >
-      {isSaving
-        ? t('savingDots', lang)
-        : (lang === 'es' ? '✓ Completar' : '✓ Complete')}
+      {/* Fill bar - grows left to right as user holds */}
+      <div style={{
+        position: 'absolute',
+        inset: 0,
+        background: '#16A34A',
+        transformOrigin: 'left center',
+        transform: `scaleX(${progress / 100})`,
+        transition: progress === 0 ? 'transform 200ms ease' : 'none',
+        borderRadius: '14px',
+      }} />
+
+      {/* Label on top of fill */}
+      <span style={{
+        position: 'relative',
+        zIndex: 1,
+        color: progress > 50 ? 'white' : '#166534',
+        transition: 'color 150ms ease',
+        pointerEvents: 'none',
+      }}>
+        {label}
+      </span>
     </button>
   );
 }
