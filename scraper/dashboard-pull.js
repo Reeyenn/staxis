@@ -67,6 +67,17 @@ async function pullDashboardNumbers(page, db, log) {
       throw new Error(`Session expired (redirected to ${cur})`);
     }
 
+    // CA silently redirects expired sessions to a login-ish page whose URL
+    // doesn't include "Login" (usually Welcome.init). Detect via the DOM:
+    // the login form has j_username / j_password fields. If we see that,
+    // treat it as session-expired so the caller can re-login and retry.
+    const onLoginPage = await page.evaluate(() => {
+      return !!document.querySelector('input[name="j_username"], input[name="j_password"]');
+    });
+    if (onLoginPage) {
+      throw new Error(`Session expired (login form present at ${cur})`);
+    }
+
     // The CHI_Row_Left block renders fast but wait for it so we don't
     // read 0s from an empty DOM on slow loads.
     await page.waitForSelector('ul.CHI_Row_Left label', { timeout: 15000 });

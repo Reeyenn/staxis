@@ -134,14 +134,18 @@ async function login(page) {
   await page.goto(CONFIG.CA_LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
   log(`Login page URL: ${page.url()}`);
 
-  const url = page.url();
-  if (url.includes('Login.do') || url.includes('Welcome')) {
-    log('Already logged in (session active)');
+  // Detect whether we're actually at the login form via DOM — CA's login
+  // URL and authenticated URLs both contain "Welcome", so URL-based
+  // detection was returning early without authenticating.
+  const hasLoginForm = await page.evaluate(() => {
+    return !!document.querySelector('input[name="j_username"]');
+  });
+  if (!hasLoginForm) {
+    log('Already logged in (no login form present)');
     return;
   }
 
   try {
-    await page.waitForSelector('input[name="j_username"]', { timeout: 10000 });
     await page.fill('input[name="j_username"]', CONFIG.CA_USERNAME);
     await page.fill('input[name="j_password"]', CONFIG.CA_PASSWORD);
 
