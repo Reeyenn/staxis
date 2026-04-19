@@ -23,6 +23,7 @@ import {
   subscribeToDashboardNumbers,
 } from '@/lib/firestore';
 import type { PlanSnapshot, ScheduleAssignments, CsvRoomSnapshot, DashboardNumbers } from '@/lib/firestore';
+import { dashboardFreshness, DASHBOARD_STALE_MINUTES } from '@/lib/firestore';
 import { getPublicAreasDueToday, calcPublicAreaMinutes, autoAssignRooms, getOverdueRooms, calcDndFreedMinutes, suggestDeepCleans } from '@/lib/calculations';
 import { getDefaultPublicAreas } from '@/lib/defaults';
 import type { PublicArea } from '@/types';
@@ -380,6 +381,17 @@ function ScheduleSection() {
   // Live PMS dashboard numbers (In House / Arrivals / Departures) — pulled off
   // Choice Advantage's View pages every 15 min by the Railway scraper.
   const [dashboardNums, setDashboardNums] = useState<DashboardNumbers | null>(null);
+
+  // Staleness ticker — re-renders the PMS block once a minute so that a
+  // Schedule tab left open on screen starts showing "stale" the moment
+  // pulledAt crosses the threshold, even without a Firestore update. Without
+  // this, the UI could tell Maria "fresh at 4:01" all evening while the
+  // scraper has been dead for 3 hours.
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   // Saved assignments (survives CSV overwrites — Maria's Send work persists).
   const [scheduleAssignmentsDoc, setScheduleAssignmentsDoc] = useState<ScheduleAssignments | null>(null);
@@ -1308,37 +1320,140 @@ function ScheduleSection() {
         {/* empty branch above — because these are CURRENT-MOMENT PMS      */}
         {/* numbers and Maria needs them visible on every view of the      */}
         {/* Schedule tab. Pulled every 15 min 5am–11pm by the Railway      */}
-        {/* scraper (see scraper/dashboard-pull.js). Shows "—" until the   */}
-        {/* first pull lands or if the scraper is down.                     */}
-        {!predictionLoading && (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', marginTop: '16px', paddingTop: '16px', borderTop: '1px solid rgba(0,0,0,0.08)' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, auto)', gap: '40px' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center' }}>
-                <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Llegadas' : 'Arrivals'}</p>
-                <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>
-                  {dashboardNums?.arrivals ?? '—'}
-                </p>
+        {/* scraper (see scraper/dashboard-pull.js).                        */}
+        {/*                                                                  */}
+        {/* Three visual states, driven by dashboardFreshness():            */}
+        {/*   • fresh:   normal numbers, grey "PMS updated 4:01 PM" caption */}
+        {/*   • stale:   numbers greyed out with amber warning banner;      */}
+        {/*              Maria can still see them but knows not to trust    */}
+        {/*   • error:   numbers replaced with dashes, red banner with      */}
+        {/*              actionable text ("Sign in failed — password may   */}
+        {/*              have been changed")                                */}
+        {/*                                                                  */}
+        {/* We deliberately NEVER show a plausible-looking number without   */}
+        {/* also telling Maria how stale it is. The whole point of this     */}
+        {/* block is that a silently wrong number is worse than no number. */}
+        {!predictionLoading && (() => {
+          const freshness = dashboardFreshness(dashboardNums, nowMs);
+          // Wrap the numbers-or-dashes choice once so it stays consistent
+          // across all three columns. 'error' shows dashes unless we have
+          // a pulledAt still in-window (then it's degraded to "stale"
+          // visually but we already flagged it in the banner).
+          const showDashes = freshness === 'error' || freshness === 'unknown';
+          const fmt = (n: number | null | undefined) =>
+            showDashes ? '—' : (typeof n === 'number' ? n : '—');
+          const numColor =
+            freshness === 'fresh' ? '#364262' :
+            freshness === 'stale' ? '#94a3b8' :
+            '#cbd5e1';
+          // Build the caption / banner. Shape depends on state.
+          const errorCopy = (code: DashboardNumbers['errorCode'], lang: 'en' | 'es'): string => {
+            // Actionable human copy per code. Keep short — this shows in a
+            // red banner on a phone screen. "What does Maria do next?" is
+            // the guiding question for the wording.
+            const en: Record<string, string> = {
+              login_failed:      'Choice Advantage sign-in failed — password may have been changed. Tell Reeyen.',
+              session_expired:   'Lost Choice Advantage session — retrying. Check back in a minute.',
+              selector_miss:     'Choice Advantage page layout changed — Reeyen needs to update the scraper.',
+              timeout:           'Choice Advantage was slow to respond — retrying in 15 min.',
+              parse_error:       'Could not read numbers from Choice Advantage. Reeyen has been notified.',
+              validation_failed: 'Choice Advantage returned numbers outside the expected range. Reeyen has been notified.',
+              ca_unreachable:    'Could not reach Choice Advantage. Check the CA website yourself.',
+              unknown:           'Something unexpected happened pulling PMS data. Reeyen has been notified.',
+            };
+            const es: Record<string, string> = {
+              login_failed:      'Falló el inicio de sesión en Choice Advantage — la contraseña puede haber cambiado. Avísale a Reeyen.',
+              session_expired:   'Sesión de Choice Advantage perdida — reintentando. Revisa en un minuto.',
+              selector_miss:     'El diseño de Choice Advantage cambió — Reeyen debe actualizar el scraper.',
+              timeout:           'Choice Advantage respondió lento — reintentando en 15 min.',
+              parse_error:       'No se pudieron leer los números de Choice Advantage. Reeyen fue notificado.',
+              validation_failed: 'Choice Advantage devolvió números fuera de rango. Reeyen fue notificado.',
+              ca_unreachable:    'No se pudo conectar con Choice Advantage. Revisa el sitio directamente.',
+              unknown:           'Ocurrió algo inesperado al obtener los datos del PMS. Reeyen fue notificado.',
+            };
+            const dict = lang === 'es' ? es : en;
+            return dict[code ?? 'unknown'] ?? dict.unknown;
+          };
+          // Stale caption shows BOTH last-fresh time and minutes-old count so
+          // Maria can eyeball "how out of date is this" without doing math.
+          const minutesStale = dashboardNums?.pulledAt
+            ? Math.max(0, Math.round((nowMs - dashboardNums.pulledAt.getTime()) / 60_000))
+            : null;
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', marginTop: '16px', paddingTop: '16px', borderTop: '1px solid rgba(0,0,0,0.08)' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, auto)', gap: '40px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center' }}>
+                  <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Llegadas' : 'Arrivals'}</p>
+                  <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: numColor, lineHeight: 1, margin: 0 }}>
+                    {fmt(dashboardNums?.arrivals)}
+                  </p>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center' }}>
+                  <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'En Casa' : 'In House'}</p>
+                  <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: numColor, lineHeight: 1, margin: 0 }}>
+                    {fmt(dashboardNums?.inHouse)}
+                  </p>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center' }}>
+                  <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Salidas' : 'Departures'}</p>
+                  <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: numColor, lineHeight: 1, margin: 0 }}>
+                    {fmt(dashboardNums?.departures)}
+                  </p>
+                </div>
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center' }}>
-                <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'En Casa' : 'In House'}</p>
-                <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>
-                  {dashboardNums?.inHouse ?? '—'}
+              {/* Status line / banner — one of four variants. */}
+              {freshness === 'fresh' && dashboardNums?.pulledAt && (
+                <p style={{ fontSize: '11px', color: '#94a3b8', margin: 0 }}>
+                  {`${lang === 'es' ? 'PMS actualizado' : 'PMS updated'} ${dashboardNums.pulledAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`}
                 </p>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center' }}>
-                <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Salidas' : 'Departures'}</p>
-                <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>
-                  {dashboardNums?.departures ?? '—'}
+              )}
+              {freshness === 'stale' && (
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: '8px',
+                  padding: '8px 12px', borderRadius: '8px',
+                  background: 'rgba(245, 158, 11, 0.12)',
+                  border: '1px solid rgba(217, 119, 6, 0.35)',
+                  fontSize: '12px', color: '#78350f', fontWeight: 500,
+                  maxWidth: '440px', textAlign: 'center',
+                }}>
+                  <AlertTriangle size={14} style={{ color: '#b45309', flexShrink: 0 }} />
+                  <span>
+                    {lang === 'es'
+                      ? `Datos PMS antiguos — última actualización ${dashboardNums?.pulledAt?.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) ?? '—'}${minutesStale !== null ? ` (hace ${minutesStale} min)` : ''}. Verifica Choice Advantage directamente si necesitas números en vivo.`
+                      : `PMS data is stale — last updated ${dashboardNums?.pulledAt?.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) ?? '—'}${minutesStale !== null ? ` (${minutesStale} min ago)` : ''}. Should be every ${DASHBOARD_STALE_MINUTES} min max. Check Choice Advantage directly if you need live numbers.`}
+                  </span>
+                </div>
+              )}
+              {freshness === 'error' && (
+                <div style={{
+                  display: 'flex', alignItems: 'flex-start', gap: '8px',
+                  padding: '8px 12px', borderRadius: '8px',
+                  background: 'rgba(220, 38, 38, 0.10)',
+                  border: '1px solid rgba(220, 38, 38, 0.35)',
+                  fontSize: '12px', color: '#7f1d1d', fontWeight: 500,
+                  maxWidth: '440px',
+                }}>
+                  <AlertTriangle size={14} style={{ color: '#b91c1c', flexShrink: 0, marginTop: '2px' }} />
+                  <div style={{ textAlign: 'left' }}>
+                    <div>{errorCopy(dashboardNums?.errorCode ?? 'unknown', lang === 'es' ? 'es' : 'en')}</div>
+                    {dashboardNums?.pulledAt && (
+                      <div style={{ fontSize: '11px', color: '#991b1b', fontWeight: 400, marginTop: '2px' }}>
+                        {lang === 'es'
+                          ? `Últimos números buenos a las ${dashboardNums.pulledAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.`
+                          : `Last good numbers at ${dashboardNums.pulledAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.`}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+              {freshness === 'unknown' && (
+                <p style={{ fontSize: '11px', color: '#94a3b8', margin: 0 }}>
+                  {lang === 'es' ? 'Esperando datos de PMS...' : 'Waiting for PMS data...'}
                 </p>
-              </div>
+              )}
             </div>
-            <p style={{ fontSize: '11px', color: '#94a3b8', margin: 0 }}>
-              {dashboardNums?.pulledAt
-                ? `${lang === 'es' ? 'PMS actualizado' : 'PMS updated'} ${dashboardNums.pulledAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
-                : (lang === 'es' ? 'Esperando datos de PMS...' : 'Waiting for PMS data...')}
-            </p>
-          </div>
-        )}
+          );
+        })()}
       </section>
 
       {/* ── Overnight Changes Callout (6am CSV diff vs Maria's saved plan) ── */}

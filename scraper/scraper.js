@@ -34,7 +34,7 @@ const { getFirestore } = require('firebase-admin/firestore');
 const path = require('path');
 const fs = require('fs');
 const { runCSVScrape } = require('./csv-scraper');
-const { pullDashboardNumbers } = require('./dashboard-pull');
+const { pullDashboardNumbers, ScraperError, ERROR_CODES } = require('./dashboard-pull');
 
 // ─── Config ────────────────────────────────────────────────────────────────
 
@@ -109,6 +109,11 @@ async function writeHeartbeat() {
       at: new Date(),
       localHour: localHour(),
       today: todayISO(),
+      // Version string so future-me can tell "is this an old scraper deploy
+      // still running somehow?" at a glance without digging into Railway.
+      scraperVersion: 'atomic-v1',
+      timezone: CONFIG.TIMEZONE,
+      tickMinutes: CONFIG.TICK_MINUTES,
     }, { merge: true });
   } catch (err) {
     log(`Heartbeat write failed: ${err.message}`);
@@ -131,7 +136,11 @@ async function writeScrapeStatus(pullType, status, extra = {}) {
 
 async function login(page) {
   log('Logging into Choice Advantage...');
-  await page.goto(CONFIG.CA_LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  try {
+    await page.goto(CONFIG.CA_LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  } catch (err) {
+    throw new ScraperError(ERROR_CODES.CA_UNREACHABLE, `Login page unreachable: ${err.message}`);
+  }
   log(`Login page URL: ${page.url()}`);
 
   // Detect whether we're actually at the login form via DOM — CA's login
@@ -143,6 +152,16 @@ async function login(page) {
   if (!hasLoginForm) {
     log('Already logged in (no login form present)');
     return;
+  }
+
+  // Guard against missing credentials — if the env var is empty, the fill
+  // below would submit blank fields and we'd misclassify the resulting
+  // rejection as a password-change. Be explicit.
+  if (!CONFIG.CA_USERNAME || !CONFIG.CA_PASSWORD) {
+    throw new ScraperError(
+      ERROR_CODES.LOGIN_FAILED,
+      'Missing CA_USERNAME / CA_PASSWORD env vars'
+    );
   }
 
   try {
@@ -166,9 +185,33 @@ async function login(page) {
 
     await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
     log(`After settle — now at: ${page.url()}`);
+
+    // VERIFY login actually worked. If the login form is still present on the
+    // page after a submit, CA rejected our credentials — password was changed
+    // or the account was locked. This used to be a silent failure: the scraper
+    // would loop forever hitting "session expired" because every View page
+    // bounced back to the login form. Now it surfaces as a typed error the
+    // health-check cron can alert on with "CA password changed".
+    const stillOnLoginForm = await page.evaluate(() =>
+      !!document.querySelector('input[name="j_username"]')
+    );
+    if (stillOnLoginForm) {
+      // Grab the error message CA displays so we can distinguish "wrong
+      // password" from "account locked" from "too many attempts" later.
+      const caMessage = await page.evaluate(() => {
+        const el = document.querySelector('.CHI_Error, .error, [class*="rror"]');
+        return el ? el.textContent.trim().slice(0, 200) : null;
+      }).catch(() => null);
+      throw new ScraperError(
+        ERROR_CODES.LOGIN_FAILED,
+        `Credentials rejected at ${page.url()}${caMessage ? ` — CA said: "${caMessage}"` : ''}`,
+        { diagnostics: { caMessage, url: page.url() } }
+      );
+    }
   } catch (err) {
+    if (err instanceof ScraperError) throw err;
     log(`Login error: ${err.message}`);
-    throw err;
+    throw new ScraperError(ERROR_CODES.UNKNOWN, `Login threw: ${err.message}`);
   }
 }
 
@@ -260,30 +303,57 @@ async function runCSVScrapeFresh(page, pullType, relogin) {
 let lastDashboardPullAt = 0;
 const DASHBOARD_INTERVAL_MS = 15 * 60 * 1000;
 
+/**
+ * Run the dashboard pull with one layer of retry for recoverable failures.
+ *
+ * Retry policy is deliberately narrow:
+ *   • session_expired → re-login, try once more. Sessions legitimately expire
+ *     between the 15-min tick windows and re-login is the correct response.
+ *   • login_failed    → re-login would just fail the same way. Don't retry.
+ *   • everything else → one-shot. Retrying a selector_miss or validation
+ *     failure gives us the same wrong answer 2x, masked as "flaky".
+ *
+ * The inner pullDashboardNumbers already wrote the error state to Firestore
+ * on the first throw, so we don't need to re-write it here — we just need to
+ * decide whether a retry makes sense.
+ */
 async function runDashboardPullFresh(page, relogin) {
   try {
     return await pullDashboardNumbers(page, db, log);
   } catch (err) {
-    const msg = err.message || '';
-    if (msg.toLowerCase().includes('session expired')) {
+    const code = err instanceof ScraperError ? err.code : ERROR_CODES.UNKNOWN;
+
+    if (code === ERROR_CODES.SESSION_EXPIRED) {
       log(`Dashboard pull lost session — re-logging and retrying once...`);
       try {
         await relogin();
-        return await pullDashboardNumbers(page, db, log);
-      } catch (retryErr) {
-        log(`Dashboard pull retry FAILED: ${retryErr.message}`);
+      } catch (loginErr) {
+        // Re-login itself failed (likely login_failed). Leave the original
+        // session_expired error in Firestore — but surface the login failure
+        // too, because that's the real underlying problem now.
+        log(`Re-login FAILED after session expiry: ${loginErr.message}`);
         await db.collection('scraperStatus').doc('dashboard').set({
-          error: `retry failed: ${retryErr.message}`,
-          pulledAt: new Date(),
+          errorCode:    loginErr instanceof ScraperError ? loginErr.code : ERROR_CODES.UNKNOWN,
+          errorMessage: `Re-login failed after session expiry: ${loginErr.message}`.slice(0, 500),
+          erroredAt:    new Date(),
         }, { merge: true }).catch(() => {});
         return null;
       }
+
+      // Retry the pull — if this one fails, its error state overwrites the
+      // first and we don't retry again. (Don't want infinite loops on a
+      // persistently sad CA.)
+      try {
+        return await pullDashboardNumbers(page, db, log);
+      } catch (retryErr) {
+        log(`Dashboard pull retry FAILED: [${retryErr.code || 'unknown'}] ${retryErr.message}`);
+        return null;
+      }
     }
-    log(`Dashboard pull error: ${msg}`);
-    await db.collection('scraperStatus').doc('dashboard').set({
-      error: msg,
-      pulledAt: new Date(),
-    }, { merge: true }).catch(() => {});
+
+    // Non-retryable code paths. pullDashboardNumbers already wrote the error
+    // to Firestore, so we just log and return.
+    log(`Dashboard pull error [${code}]: ${err.message}`);
     return null;
   }
 }

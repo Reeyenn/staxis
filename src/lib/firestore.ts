@@ -689,6 +689,28 @@ export function subscribeToPlanSnapshot(
 // Scraper refreshes this every 15 min 5am–11pm from Choice Advantage's View
 // pages. Shared across all properties for now (single-property deploy) — lives
 // at the top-level scraperStatus/dashboard doc rather than under a property.
+//
+// Contract with the scraper:
+//   • Success-field writes (inHouse/arrivals/departures/pulledAt) are atomic
+//     — all three numbers come from a single consistent CA snapshot or none
+//     of them get updated. See scraper/dashboard-pull.js.
+//   • Failures write ONLY to errorCode / errorMessage / erroredAt. Last good
+//     numbers stay put so Maria keeps seeing "25 in house, last updated 4:01
+//     PM" instead of a spooky blank screen — but `pulledAt` grows stale and
+//     the UI shows a warning banner once it crosses the staleness threshold.
+//   • errorCode is drawn from a fixed vocabulary (see dashboard-pull.js
+//     ERROR_CODES). UI and alert cron branch on code, never on error text.
+
+// Fixed vocabulary — must match scraper/dashboard-pull.js ERROR_CODES.
+export type DashboardErrorCode =
+  | 'login_failed'
+  | 'session_expired'
+  | 'selector_miss'
+  | 'timeout'
+  | 'parse_error'
+  | 'validation_failed'
+  | 'ca_unreachable'
+  | 'unknown';
 
 export interface DashboardNumbers {
   inHouse:    number | null;
@@ -698,7 +720,44 @@ export interface DashboardNumbers {
   arrivalsGuests?:   number | null;
   departuresGuests?: number | null;
   pulledAt: Date | null;
+
+  // Error fields: only set if the LAST attempted pull failed. Cleared on the
+  // next successful pull.
+  errorCode:    DashboardErrorCode | null;
+  errorMessage: string | null;
+  errorPage:    string | null;   // which View page failed (inHouse/arrivals/departures)
+  erroredAt:    Date | null;
+
+  // Legacy field — kept for backwards compat with any old consumer that
+  // still reads `error`. New UI code should use errorCode instead.
   error: string | null;
+}
+
+// Maria's staleness tolerance. The scraper pulls every 15 min, so anything
+// over 20 is either "one pull got skipped" (could be normal) and over 45 is
+// definitely broken. We start warning at 25 min — enough buffer for one
+// slow pull, tight enough that a silent failure becomes visible within half
+// an hour instead of hours.
+export const DASHBOARD_STALE_MINUTES = 25;
+
+export type DashboardFreshness = 'fresh' | 'stale' | 'error' | 'unknown';
+
+/**
+ * Derive a single status for the UI to render. Centralised so the Schedule
+ * tab, the admin diagnostics page, and any future alert surface all agree
+ * on what "stale" means.
+ */
+export function dashboardFreshness(
+  d: DashboardNumbers | null,
+  nowMs: number = Date.now()
+): DashboardFreshness {
+  if (!d) return 'unknown';
+  // A current error code beats staleness — even if the last good numbers are
+  // 5 minutes old, if CA is actively failing right now we should say so.
+  if (d.errorCode) return 'error';
+  if (!d.pulledAt) return 'unknown';
+  const ageMs = nowMs - d.pulledAt.getTime();
+  return ageMs > DASHBOARD_STALE_MINUTES * 60_000 ? 'stale' : 'fresh';
 }
 
 export function subscribeToDashboardNumbers(
@@ -708,6 +767,8 @@ export function subscribeToDashboardNumbers(
   return onSnapshot(ref, snap => {
     if (!snap.exists()) { callback(null); return; }
     const d = snap.data() as Record<string, unknown>;
+    const toDate = (v: unknown) =>
+      (v as { toDate?: () => Date } | undefined)?.toDate?.() ?? null;
     callback({
       inHouse:    typeof d.inHouse    === 'number' ? d.inHouse    : null,
       arrivals:   typeof d.arrivals   === 'number' ? d.arrivals   : null,
@@ -715,8 +776,12 @@ export function subscribeToDashboardNumbers(
       inHouseGuests:    typeof d.inHouseGuests    === 'number' ? d.inHouseGuests    : null,
       arrivalsGuests:   typeof d.arrivalsGuests   === 'number' ? d.arrivalsGuests   : null,
       departuresGuests: typeof d.departuresGuests === 'number' ? d.departuresGuests : null,
-      pulledAt: (d.pulledAt as { toDate?: () => Date } | undefined)?.toDate?.() ?? null,
-      error:    typeof d.error === 'string' ? d.error : null,
+      pulledAt:     toDate(d.pulledAt),
+      errorCode:    typeof d.errorCode    === 'string' ? d.errorCode as DashboardErrorCode : null,
+      errorMessage: typeof d.errorMessage === 'string' ? d.errorMessage : null,
+      errorPage:    typeof d.errorPage    === 'string' ? d.errorPage    : null,
+      erroredAt:    toDate(d.erroredAt),
+      error:        typeof d.error === 'string' ? d.error : null,
     });
   }, error => {
     console.error('[Firestore] Listener error in subscribeToDashboardNumbers:', error.message);
