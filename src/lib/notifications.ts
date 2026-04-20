@@ -42,7 +42,7 @@ export async function registerForPushNotifications(): Promise<string | null> {
 }
 
 /**
- * Sends SMS room assignment notifications via Textbelt.
+ * Sends SMS room assignment notifications via Twilio.
  * Called alongside sendAssignmentNotifications after Smart Assign.
  */
 export async function sendSmsNotifications(
