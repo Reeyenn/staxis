@@ -37,7 +37,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import admin from '@/lib/firebase-admin';
+import admin, { verifyFirebaseAuth } from '@/lib/firebase-admin';
 import { sendSms } from '@/lib/sms';
 
 export const runtime = 'nodejs';
@@ -154,9 +154,12 @@ function tsToDate(v: unknown): Date | null {
 // ─── Handler ─────────────────────────────────────────────────────────────
 
 async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCondition | 'ok'; detail: string }> {
-  if (!admin.apps.length) {
-    return { alerted: false, condition: 'ok', detail: 'Firebase Admin not configured' };
-  }
+  // Preflight the service account key. If this throws, the catch in GET()
+  // returns the specific error message to GitHub Actions — which then emails
+  // Reeyen the exact fix instead of a generic "workflow failed". Memoized,
+  // so only the first request per cold-start pays the round-trip.
+  await verifyFirebaseAuth();
+
   const db = admin.firestore();
   const nowMs = Date.now();
 
