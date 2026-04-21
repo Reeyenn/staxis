@@ -35,6 +35,7 @@ const path = require('path');
 const fs = require('fs');
 const { runCSVScrape } = require('./csv-scraper');
 const { pullDashboardNumbers, ScraperError, ERROR_CODES } = require('./dashboard-pull');
+const { runVercelWatchdog } = require('./vercel-watchdog');
 
 // ─── Config ────────────────────────────────────────────────────────────────
 
@@ -490,6 +491,21 @@ async function run() {
       await context.storageState({ path: CONFIG.SESSION_FILE });
     } catch (err) {
       log(`ERROR during tick: ${err.message}`);
+    }
+
+    // Cross-platform watchdog: from Railway, ping Vercel's doctor endpoint
+    // and SMS Reeyen if it's been red for ≥3 ticks (~15 min). This is the
+    // OPPOSITE of GH Actions' scraper-health (which watches Railway from
+    // outside) — same pattern, opposite direction. Together they cover both
+    // platforms with independent alerting paths.
+    //
+    // Wrapped in its own try/catch so a watchdog bug NEVER takes down the
+    // scraper tick. Watchdog already swallows its own errors internally;
+    // this is belt-and-suspenders.
+    try {
+      await runVercelWatchdog({ timezone: CONFIG.TIMEZONE });
+    } catch (err) {
+      log(`watchdog crashed (non-fatal): ${err.message}`);
     }
   }
 

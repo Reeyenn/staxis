@@ -1,0 +1,342 @@
+/**
+ * Vercel Watchdog — the "other side" of cross-platform monitoring
+ *
+ * ─── Why this exists ─────────────────────────────────────────────────────
+ * Our GitHub Actions scraper-health cron is great at catching "Railway
+ * scraper is dead." But who watches the WATCHMAN? If Vercel itself drifts
+ * (stale Firebase key, missing env var, expired Twilio token, OOM on a
+ * route), GH Actions' scraper-health only notices if its dependencies on
+ * Vercel also break — and it shares Vercel's network path.
+ *
+ * This module runs INSIDE the Railway scraper process. Railway is a
+ * completely different cloud in a different network than Vercel or
+ * GitHub. Every tick, it pings https://hotelops-ai.vercel.app/api/admin/doctor
+ * with the shared CRON_SECRET. If Vercel's doctor returns red — or doesn't
+ * respond at all — Railway texts Reeyen directly using the already-
+ * configured Twilio account.
+ *
+ * Result: Vercel watches Railway (GH Actions scraper-health). Railway
+ * watches Vercel (this module). Both sides have independent network paths
+ * and independent alert delivery. A single platform outage CAN'T hide
+ * from us.
+ *
+ * ─── Design choices ──────────────────────────────────────────────────────
+ *
+ *   • De-duplication: alert only after N consecutive failures. A single
+ *     500 from a cold-starting Lambda isn't worth waking you up — 3 in a
+ *     row (15 min of sustained failure) is.
+ *
+ *   • Alert debouncing: once alerted, stay quiet until we've recovered.
+ *     On recovery, send a one-line "Vercel recovered" SMS.
+ *
+ *   • State in Firestore: scraperStatus/vercelWatchdog stores consecutive
+ *     fail count + lastAlertedAt. Survives Railway redeploys so the
+ *     counter doesn't reset every time the container cycles.
+ *
+ *   • Non-blocking: every call is wrapped in try/catch. This module MUST
+ *     NEVER crash the main scraper loop — if the watchdog itself breaks,
+ *     we log and continue scraping.
+ *
+ *   • No new dependencies: uses native fetch + basic-auth-encoded Twilio
+ *     REST API. Keeps scraper's package.json minimal.
+ *
+ *   • Graceful degradation: if CRON_SECRET or OPS_ALERT_PHONE aren't set
+ *     on Railway, the watchdog logs a warning and no-ops instead of
+ *     crashing. Gives Reeyen time to add the env vars without breaking
+ *     the rest of the scraper.
+ *
+ *   • Business-hours gate: overnight Vercel hiccups are caught by GH
+ *     Actions email; no need to buzz Reeyen's phone at 3am when he can
+ *     only fix it at 8am anyway.
+ */
+
+const { getFirestore } = require('firebase-admin/firestore');
+
+// How many consecutive failures before we alert. 3 * 5-min-tick = 15 min
+// of sustained failure. Tight enough that Vercel drift doesn't hide for
+// long, loose enough to absorb a single cold-start blip.
+const FAILURE_THRESHOLD = 3;
+
+// After alerting, how long before we'll alert again for the same condition.
+// Same 6h as scraper-health — don't spam about the same problem.
+const REALERT_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+// Business-hours window (local Central). Matches scraper-health's.
+const ALERT_WINDOW_START = 6;
+const ALERT_WINDOW_END   = 22;
+
+// Doctor endpoint — Vercel's production URL. We hit this URL from Railway
+// specifically because that's the whole point: cross-platform check.
+const DOCTOR_URL = process.env.VERCEL_DOCTOR_URL
+  || 'https://hotelops-ai.vercel.app/api/admin/doctor';
+
+// Max time to wait for doctor to respond. Doctor itself caps at 30s, so
+// 35s covers the round trip with headroom.
+const DOCTOR_TIMEOUT_MS = 35_000;
+
+function log(msg) {
+  console.log(`[${new Date().toISOString()}] [watchdog] ${msg}`);
+}
+
+function localHour(tz) {
+  return parseInt(
+    new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: tz })
+      .format(new Date()),
+    10
+  );
+}
+
+/**
+ * Ping the doctor endpoint. Returns a classified result:
+ *   { status: 'ok'       }                        — HTTP 200, ok:true
+ *   { status: 'red', detail: '...'  }             — HTTP 503 (checks failed) or ok:false body
+ *   { status: 'unreachable', detail: '...' }      — network error, timeout, non-2xx/503
+ *   { status: 'auth_mismatch', detail: '...' }    — HTTP 401 (CRON_SECRET drift)
+ *
+ * We distinguish 'unreachable' from 'red' because their remediation is
+ * different: red = fix Vercel config, unreachable = check network/Vercel up.
+ */
+async function pingDoctor(cronSecret) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DOCTOR_TIMEOUT_MS);
+  try {
+    const res = await fetch(DOCTOR_URL, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${cronSecret}` },
+      signal: controller.signal,
+    });
+
+    if (res.status === 401) {
+      return {
+        status: 'auth_mismatch',
+        detail: 'Vercel returned 401. CRON_SECRET on Railway differs from Vercel.',
+      };
+    }
+
+    // 200 (all green) and 503 (some red) both return structured JSON. Anything
+    // else is a transport-level issue we classify as unreachable.
+    if (res.status !== 200 && res.status !== 503) {
+      return {
+        status: 'unreachable',
+        detail: `Vercel returned HTTP ${res.status} ${res.statusText}`,
+      };
+    }
+
+    const body = await res.json().catch(() => null);
+    if (!body || typeof body.ok !== 'boolean') {
+      return {
+        status: 'unreachable',
+        detail: `Vercel doctor returned malformed JSON (HTTP ${res.status})`,
+      };
+    }
+
+    if (body.ok) {
+      return { status: 'ok' };
+    }
+
+    // Red — pick the most informative failing check.
+    const failing = Array.isArray(body.checks)
+      ? body.checks.filter(c => c && c.status === 'fail').map(c => c.name)
+      : [];
+    return {
+      status: 'red',
+      detail: failing.length ? `failing: ${failing.join(', ')}` : 'unknown red check',
+    };
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      return { status: 'unreachable', detail: `timed out after ${DOCTOR_TIMEOUT_MS}ms` };
+    }
+    return { status: 'unreachable', detail: err.message || String(err) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Send SMS directly via Twilio REST API. No twilio-node dependency.
+ * Returns { ok: true } on success, { ok: false, detail } on failure.
+ */
+async function sendTwilioSms(to, body) {
+  const sid   = process.env.TWILIO_ACCOUNT_SID;
+  const token = process.env.TWILIO_AUTH_TOKEN;
+  const from  = process.env.TWILIO_PHONE_NUMBER;
+  if (!sid || !token || !from) {
+    return { ok: false, detail: 'Twilio env vars missing on Railway (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_PHONE_NUMBER)' };
+  }
+  try {
+    const form = new URLSearchParams({ From: from, To: to, Body: body });
+    const auth = Buffer.from(`${sid}:${token}`).toString('base64');
+    const res = await fetch(
+      `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(sid)}/Messages.json`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Basic ${auth}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: form.toString(),
+      }
+    );
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      return { ok: false, detail: `Twilio HTTP ${res.status}: ${errText.slice(0, 200)}` };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, detail: err.message || String(err) };
+  }
+}
+
+/**
+ * Main entry — called once per tick from scraper.js.
+ *
+ * Every tick:
+ *  1. Ping doctor.
+ *  2. Read watchdog state from Firestore.
+ *  3. On failure: increment counter. If counter >= threshold and enough time
+ *     has passed since last alert and we're inside business hours, SMS.
+ *  4. On success: if we'd alerted and this is the first success, SMS recovery.
+ *     Always reset counter on success.
+ *
+ * All errors swallowed and logged — the caller is the main scraper tick and
+ * must never crash because of watchdog issues.
+ */
+async function runVercelWatchdog({ timezone }) {
+  const cronSecret = process.env.CRON_SECRET;
+  const alertPhone = process.env.OPS_ALERT_PHONE;
+
+  if (!cronSecret) {
+    log('CRON_SECRET not set on Railway — watchdog is a no-op. Add CRON_SECRET env var on Railway to enable.');
+    return;
+  }
+
+  // Ping first so network errors are always visible in Railway logs even if
+  // Firestore is unhappy.
+  const result = await pingDoctor(cronSecret);
+
+  // Load & update state. Wrapped in try/catch so Firestore blips don't silence
+  // the watchdog — we can still log.
+  const db = getFirestore();
+  const stateRef = db.collection('scraperStatus').doc('vercelWatchdog');
+
+  let state = {};
+  try {
+    const snap = await stateRef.get();
+    state = snap.exists ? snap.data() || {} : {};
+  } catch (err) {
+    log(`state read failed: ${err.message} — continuing with empty state`);
+  }
+
+  const now = new Date();
+  const prevCount = Number.isFinite(state.consecutiveFailures) ? state.consecutiveFailures : 0;
+  const prevAlertedAt = state.lastAlertedAt && typeof state.lastAlertedAt.toDate === 'function'
+    ? state.lastAlertedAt.toDate()
+    : null;
+  const wasAlerted = state.alertActive === true;
+
+  // ── SUCCESS path ───────────────────────────────────────────────────────
+  if (result.status === 'ok') {
+    log(`doctor ok (prevCount=${prevCount}${wasAlerted ? ', was alerted' : ''})`);
+
+    const patch = {
+      lastCheckAt: now,
+      lastStatus: 'ok',
+      consecutiveFailures: 0,
+      alertActive: false,
+    };
+
+    // Send recovery SMS only once — transitioning from alerted to ok.
+    if (wasAlerted && alertPhone) {
+      const smsRes = await sendTwilioSms(
+        alertPhone,
+        'Staxis Vercel: recovered. /api/admin/doctor is green again.'
+      );
+      if (!smsRes.ok) log(`recovery SMS failed: ${smsRes.detail}`);
+      patch.lastRecoverySmsAt = now;
+      patch.lastRecoverySmsOk = smsRes.ok;
+    }
+
+    try { await stateRef.set(patch, { merge: true }); }
+    catch (err) { log(`state write (ok) failed: ${err.message}`); }
+    return;
+  }
+
+  // ── FAILURE path ───────────────────────────────────────────────────────
+  const newCount = prevCount + 1;
+  log(`doctor ${result.status}: ${result.detail} (consecutive=${newCount})`);
+
+  const patch = {
+    lastCheckAt: now,
+    lastStatus: result.status,
+    lastDetail: result.detail,
+    consecutiveFailures: newCount,
+  };
+
+  // Short-circuit: auth_mismatch means Vercel env var ≠ Railway env var for
+  // CRON_SECRET. That's a configuration bug that won't self-heal — escalate
+  // on the FIRST occurrence, bypassing the 3-failure threshold.
+  const shouldAlert = result.status === 'auth_mismatch' || newCount >= FAILURE_THRESHOLD;
+
+  if (!shouldAlert) {
+    try { await stateRef.set(patch, { merge: true }); }
+    catch (err) { log(`state write (fail) failed: ${err.message}`); }
+    return;
+  }
+
+  // Debounce & business-hours gate.
+  const hoursSinceAlert = prevAlertedAt
+    ? (now.getTime() - prevAlertedAt.getTime())
+    : Infinity;
+  const hour = localHour(timezone);
+  const insideWindow = hour >= ALERT_WINDOW_START && hour < ALERT_WINDOW_END;
+
+  if (wasAlerted && hoursSinceAlert < REALERT_INTERVAL_MS) {
+    // Already alerted about this recently — stay quiet.
+    patch.alertActive = true;
+    try { await stateRef.set(patch, { merge: true }); }
+    catch (err) { log(`state write (debounce) failed: ${err.message}`); }
+    return;
+  }
+
+  if (!insideWindow) {
+    // Track that we'd have alerted, but don't send. Next in-window check
+    // will pick this up.
+    patch.alertActive = true;
+    patch.pendingAlertSinceCount = newCount;
+    try { await stateRef.set(patch, { merge: true }); }
+    catch (err) { log(`state write (offhours) failed: ${err.message}`); }
+    log(`alert suppressed (outside business hours ${ALERT_WINDOW_START}:00–${ALERT_WINDOW_END}:00)`);
+    return;
+  }
+
+  // Send alert.
+  if (!alertPhone) {
+    log(`ALERT would have fired but OPS_ALERT_PHONE is not set: ${result.detail}`);
+    patch.alertActive = true;
+    try { await stateRef.set(patch, { merge: true }); }
+    catch (err) { log(`state write (no-phone) failed: ${err.message}`); }
+    return;
+  }
+
+  const body = result.status === 'auth_mismatch'
+    ? `Staxis Vercel watchdog: CRON_SECRET mismatch between Railway and Vercel. Update one to match the other, then redeploy.`
+    : result.status === 'red'
+    ? `Staxis Vercel watchdog: doctor RED (${result.detail}). Hit /api/admin/doctor for the fix message.`
+    : `Staxis Vercel watchdog: Vercel unreachable from Railway for ${newCount * 5}+ min. ${result.detail}`;
+
+  const smsRes = await sendTwilioSms(alertPhone, body);
+  patch.alertActive = true;
+  patch.lastAlertedAt = now;
+  patch.lastAlertedBody = body;
+  patch.lastAlertSmsOk = smsRes.ok;
+  if (!smsRes.ok) {
+    log(`ALERT SMS FAILED: ${smsRes.detail}. Would have said: ${body}`);
+  } else {
+    log(`ALERT sent: ${body}`);
+  }
+
+  try { await stateRef.set(patch, { merge: true }); }
+  catch (err) { log(`state write (alert) failed: ${err.message}`); }
+}
+
+module.exports = { runVercelWatchdog };
