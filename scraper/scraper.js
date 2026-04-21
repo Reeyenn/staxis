@@ -120,6 +120,40 @@ async function writeHeartbeat() {
   }
 }
 
+// ─── Firebase auth preflight ───────────────────────────────────────────────
+// The Admin SDK's writes are wrapped in try/catch inside tick() so a
+// transient Firestore outage can't crash the loop. But that also means if
+// the service account key is *revoked or rotated* on us, every write
+// silently fails with "16 UNAUTHENTICATED" forever while the container stays
+// up — Railway keeps reporting "service online", but nothing lands in
+// Firestore and the app's dashboard goes stale. We learned this the hard
+// way on 2026-04-20: scraper died at 3:47 PM, we didn't notice for 8+ hours.
+//
+// This preflight does a cheap authenticated read at startup so that case
+// crashes the process instead. Railway's crash-loop + the scraper-health
+// cron's stale-heartbeat SMS alert will surface it within minutes.
+async function verifyFirebaseAuth() {
+  const missing = [];
+  if (!CONFIG.FIREBASE_PROJECT_ID)   missing.push('FIREBASE_PROJECT_ID');
+  if (!CONFIG.FIREBASE_CLIENT_EMAIL) missing.push('FIREBASE_CLIENT_EMAIL');
+  if (!CONFIG.FIREBASE_PRIVATE_KEY)  missing.push('FIREBASE_PRIVATE_KEY');
+  if (missing.length) {
+    log(`FATAL: Missing Firebase env vars on Railway: ${missing.join(', ')}`);
+    process.exit(1);
+  }
+  try {
+    // Known doc — reading it forces an OAuth exchange. If the key is
+    // revoked, the Admin SDK fails with "16 UNAUTHENTICATED" right here.
+    await db.collection('scraperStatus').doc('heartbeat').get();
+    log('Firebase auth verified ✓');
+  } catch (err) {
+    log(`FATAL: Firebase auth failed at startup: ${err.message}`);
+    log('This usually means FIREBASE_PRIVATE_KEY on Railway is stale or the service account key was revoked.');
+    log('Fix: Firebase Console → Project Settings → Service Accounts → Generate new private key, then update Railway env vars.');
+    process.exit(1);
+  }
+}
+
 async function writeScrapeStatus(pullType, status, extra = {}) {
   try {
     await db.collection('scraperStatus').doc(pullType).set({
@@ -402,6 +436,10 @@ async function run() {
   log(`Property: ${CONFIG.PROPERTY_ID} | User: ${CONFIG.USER_ID}`);
   log(`Timezone: ${CONFIG.TIMEZONE} | Local hour: ${localHour()} | Today: ${todayISO()}`);
   log(`Tick every ${CONFIG.TICK_MINUTES} min — CSV pulls at 6am+7pm, dashboard numbers every 15 min 5am–11pm`);
+
+  // Verify Firebase credentials BEFORE launching Playwright. If creds are
+  // stale/revoked, crash loud now instead of writing garbage for hours.
+  await verifyFirebaseAuth();
 
   const browser = await chromium.launch({
     headless: process.env.HEADED !== 'true',
