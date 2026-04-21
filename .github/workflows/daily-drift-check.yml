@@ -1,0 +1,168 @@
+# Daily credential & platform drift check
+#
+# Why this exists:
+#   The Apr 20/21 incident happened because the Firebase service account
+#   key was rotated on Railway but the corresponding Vercel env var held
+#   a stale copy for ~20 hours. scraper-health-cron passes while the
+#   warm Lambda container has cached valid creds, then fails the moment
+#   Vercel cycles the container. This workflow runs a DIFFERENT kind of
+#   check — one that can't be masked by container warmth.
+#
+# What it does (once a day, 8am Central):
+#   1. Hits /api/admin/doctor on Vercel. This forces a fresh Firestore
+#      auth round-trip and returns a structured report.
+#   2. Hits /api/cron/scraper-health on Vercel. This reads scraperStatus
+#      docs that the Railway scraper writes — so it indirectly proves
+#      Railway's Firebase key is working too.
+#   3. Cross-references: if doctor says Vercel auth is healthy BUT
+#      scraper-health says the heartbeat is stale, that's drift — Railway
+#      is dead while Vercel is fine. If doctor says Vercel auth is
+#      broken, that's drift in the other direction.
+#   4. Any mismatch OR any failure → workflow fails → GitHub emails Reeyen.
+#
+# Why daily:
+#   scraper-health runs every 15 min and covers "is the scraper alive".
+#   This workflow covers the slower, sneakier class of bug — a rotation
+#   landed on one platform but not the other. A daily cadence is enough
+#   because you only rotate keys a few times a year.
+#
+# Required GitHub Secrets:
+#   CRON_SECRET — same value as Vercel's CRON_SECRET env var.
+
+name: Daily drift check
+
+on:
+  schedule:
+    # 14:00 UTC = 8am Central during CST, 9am during CDT. Close enough to
+    # "before Reeyen's morning work session" that if drift exists, he sees
+    # the alert email before he starts his day.
+    - cron: "0 14 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Check Vercel auth via /api/admin/doctor
+        id: doctor
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+
+          URL="https://hotelops-ai.vercel.app/api/admin/doctor"
+
+          http_code=$(curl \
+            --silent \
+            --show-error \
+            --max-time 30 \
+            --retry 2 \
+            --retry-delay 5 \
+            -o /tmp/doctor.json \
+            -w "%{http_code}" \
+            -H "Authorization: Bearer ${CRON_SECRET:-}" \
+            "$URL" || echo "000")
+
+          echo "Doctor HTTP $http_code"
+          cat /tmp/doctor.json | python3 -m json.tool || cat /tmp/doctor.json
+          echo ""
+
+          if [ "$http_code" = "200" ]; then
+            echo "vercel_healthy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "vercel_healthy=false" >> "$GITHUB_OUTPUT"
+            # Extract failing check names for the summary step.
+            failing=$(python3 -c "
+          import json
+          try:
+              r = json.load(open('/tmp/doctor.json'))
+              print(','.join(c['name'] for c in r.get('checks', []) if c.get('status') == 'fail'))
+          except Exception:
+              print('unreadable-response')
+          ")
+            echo "vercel_failing=$failing" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check Railway scraper via /api/cron/scraper-health
+        id: scraper
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+
+          URL="https://hotelops-ai.vercel.app/api/cron/scraper-health"
+
+          http_code=$(curl \
+            --silent \
+            --show-error \
+            --max-time 30 \
+            --retry 2 \
+            --retry-delay 5 \
+            -o /tmp/scraper.json \
+            -w "%{http_code}" \
+            -H "Authorization: Bearer ${CRON_SECRET:-}" \
+            "$URL" || echo "000")
+
+          echo "Scraper-health HTTP $http_code"
+          cat /tmp/scraper.json | python3 -m json.tool || cat /tmp/scraper.json
+          echo ""
+
+          # 200 with ok:true means scraper is alive AND Vercel auth is fine
+          # enough to read Firestore. Anything else = some layer is broken.
+          if [ "$http_code" = "200" ]; then
+            cond=$(python3 -c "
+          import json
+          try:
+              r = json.load(open('/tmp/scraper.json'))
+              print(r.get('condition', 'unknown'))
+          except Exception:
+              print('unreadable')
+          ")
+            echo "scraper_condition=$cond" >> "$GITHUB_OUTPUT"
+            if [ "$cond" = "ok" ]; then
+              echo "scraper_healthy=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "scraper_healthy=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "scraper_healthy=false" >> "$GITHUB_OUTPUT"
+            echo "scraper_condition=http_$http_code" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Summarize and fail on any drift
+        env:
+          VERCEL_HEALTHY: ${{ steps.doctor.outputs.vercel_healthy }}
+          VERCEL_FAILING: ${{ steps.doctor.outputs.vercel_failing }}
+          SCRAPER_HEALTHY: ${{ steps.scraper.outputs.scraper_healthy }}
+          SCRAPER_CONDITION: ${{ steps.scraper.outputs.scraper_condition }}
+        run: |
+          set -euo pipefail
+
+          echo "── Drift check summary ──"
+          echo "Vercel (doctor):            healthy=$VERCEL_HEALTHY  failing=[$VERCEL_FAILING]"
+          echo "Railway (scraper-health):   healthy=$SCRAPER_HEALTHY  condition=$SCRAPER_CONDITION"
+          echo ""
+
+          if [ "$VERCEL_HEALTHY" = "true" ] && [ "$SCRAPER_HEALTHY" = "true" ]; then
+            echo "✓ Both platforms healthy. No drift detected."
+            exit 0
+          fi
+
+          # Diagnose the specific drift pattern so the GH email is actionable.
+          if [ "$VERCEL_HEALTHY" != "true" ] && [ "$SCRAPER_HEALTHY" = "true" ]; then
+            echo "::error::DRIFT: Vercel is unhealthy but Railway scraper is fine. Likely a recent rotation updated Railway but not Vercel. Failing Vercel checks: $VERCEL_FAILING. Fix: see RUNBOOKS.md → Credential Drift."
+            exit 1
+          fi
+
+          if [ "$VERCEL_HEALTHY" = "true" ] && [ "$SCRAPER_HEALTHY" != "true" ]; then
+            echo "::error::DRIFT: Vercel is healthy but Railway scraper is unhealthy (condition=$SCRAPER_CONDITION). Likely Railway was updated but missed a rotation, OR scraper crashed. Fix: see RUNBOOKS.md → Scraper Dead."
+            exit 1
+          fi
+
+          echo "::error::BOTH platforms unhealthy. Something larger is wrong. Vercel failing: $VERCEL_FAILING. Scraper: $SCRAPER_CONDITION. Start with RUNBOOKS.md → General Diagnostics."
+          exit 1

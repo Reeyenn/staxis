@@ -1,0 +1,140 @@
+# Post-deploy smoke test
+#
+# Why this exists:
+#   We repeatedly shipped deploys that LOOKED successful (Vercel built, app
+#   loaded in the browser) but had a stale or missing env var that only
+#   broke cron routes. We found out 20 hours later when the scraper-health
+#   cron started failing. That's the exact failure mode this workflow
+#   eliminates.
+#
+# What it does:
+#   On every push to main, this workflow:
+#     1. Waits for Vercel to finish the deploy (polls until /api/admin/doctor
+#        returns, capped at 5 minutes).
+#     2. Calls /api/admin/doctor — which tests EVERY critical dependency
+#        (env vars, Firebase Admin auth, Twilio creds, CRON_SECRET, etc.).
+#     3. If anything in doctor is 'fail', this workflow fails → GitHub
+#        emails Reeyen within 3 minutes of the bad deploy.
+#
+# Required GitHub Secrets:
+#   CRON_SECRET — same value as Vercel's CRON_SECRET env var.
+#
+# Manual trigger:
+#   Actions tab → Post-deploy smoke test → Run workflow. Useful after
+#   rotating a secret on Vercel to immediately verify the redeploy worked.
+
+name: Post-deploy smoke test
+
+on:
+  push:
+    branches: [main]
+    # Only trigger on changes that could affect runtime behavior.
+    # Docs-only changes don't need a smoke test.
+    paths:
+      - 'src/**'
+      - 'public/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'next.config.*'
+      - 'vercel.json'
+      - '.github/workflows/post-deploy-smoke-test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    # Give Vercel plenty of time to finish a slow deploy before we give up.
+    # 10 min is ~2x the 90th percentile deploy time; anything longer and
+    # something's wrong with Vercel itself.
+    timeout-minutes: 10
+
+    steps:
+      - name: Wait for Vercel deploy, then call doctor
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          URL="https://hotelops-ai.vercel.app/api/admin/doctor"
+
+          # Vercel deploys finish in 60–180s typically. Give them up to 5
+          # min (20 tries * 15s) before we start failing loudly. During
+          # that window, HTTP errors from Vercel (502/503) are EXPECTED
+          # as the new deploy is spinning up, so we don't fail on them.
+          MAX_ATTEMPTS=20
+          SLEEP_BETWEEN=15
+          attempt=0
+          response=""
+
+          while [ $attempt -lt $MAX_ATTEMPTS ]; do
+            attempt=$((attempt + 1))
+            echo "── Attempt $attempt/$MAX_ATTEMPTS ──"
+
+            # Capture body + HTTP status separately. curl -w writes status
+            # to stdout after the body; we split them.
+            http_code=$(curl \
+              --silent \
+              --show-error \
+              --max-time 30 \
+              -o /tmp/doctor-body.json \
+              -w "%{http_code}" \
+              -H "Authorization: Bearer ${CRON_SECRET:-}" \
+              "$URL" || echo "000")
+
+            echo "HTTP $http_code"
+
+            # 200 = all green.
+            # 503 = doctor ran but one or more checks failed — we STILL want
+            #       to see the body so we know which check broke.
+            # Anything else (000/502/504) = Vercel itself isn't ready yet.
+            if [ "$http_code" = "200" ] || [ "$http_code" = "503" ]; then
+              response=$(cat /tmp/doctor-body.json)
+              break
+            fi
+
+            echo "Vercel deploy not ready yet (or unavailable). Waiting ${SLEEP_BETWEEN}s..."
+            sleep $SLEEP_BETWEEN
+          done
+
+          if [ -z "$response" ]; then
+            echo "::error::Vercel /api/admin/doctor never returned a usable response after $((MAX_ATTEMPTS * SLEEP_BETWEEN))s. Deploy may be stuck — check https://vercel.com/reeyenns-projects/staxis/deployments"
+            exit 1
+          fi
+
+          # Pretty-print the full report so the GH Actions log is useful.
+          echo ""
+          echo "── Doctor report ──"
+          echo "$response" | python3 -m json.tool || echo "$response"
+          echo ""
+
+          # Top-level ok flag is the authoritative answer.
+          ok=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('ok', False))")
+
+          if [ "$ok" = "True" ]; then
+            # Count warnings to surface them in the log even when things pass.
+            warn_count=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('summary',{}).get('warn',0))")
+            echo "✓ All checks passed (${warn_count} warnings)."
+            exit 0
+          fi
+
+          # ok=false — grab the failing check names and their fix messages so
+          # Reeyen can read the GitHub email and know exactly what to do.
+          echo ""
+          echo "── FAILING CHECKS ──"
+          echo "$response" | python3 -c "
+          import sys, json
+          r = json.load(sys.stdin)
+          for c in r.get('checks', []):
+              if c.get('status') == 'fail':
+                  print(f\"✗ {c['name']}: {c.get('detail', '')}\")
+                  if c.get('fix'):
+                      print(f\"   FIX: {c['fix']}\")
+                  print()
+          "
+
+          echo "::error::Post-deploy smoke test failed for commit ${COMMIT_SHA}. See report above."
+          exit 1
