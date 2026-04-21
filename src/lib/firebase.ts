@@ -1,4 +1,5 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
+import { initializeAppCheck, ReCaptchaV3Provider } from 'firebase/app-check';
 import { getAuth } from 'firebase/auth';
 import {
   getFirestore,
@@ -18,6 +19,24 @@ const firebaseConfig = {
 
 // Prevent duplicate initialization in Next.js hot reload
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+
+// Initialize Firebase App Check with reCAPTCHA v3. Runs only in the browser.
+// Enforcement is set to UNENFORCED in Firebase (monitoring mode) so missing
+// or invalid tokens won't break the app — this is a gradual rollout.
+// Falls back silently if init fails (e.g. env var missing, duplicate init).
+if (typeof window !== 'undefined') {
+  const recaptchaSiteKey = process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY;
+  if (recaptchaSiteKey) {
+    try {
+      initializeAppCheck(app, {
+        provider: new ReCaptchaV3Provider(recaptchaSiteKey),
+        isTokenAutoRefreshEnabled: true,
+      });
+    } catch (e) {
+      console.warn('App Check: initialization failed', e);
+    }
+  }
+}
 
 export const auth = getAuth(app);
 
