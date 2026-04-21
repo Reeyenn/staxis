@@ -3,6 +3,24 @@ import admin from '@/lib/firebase-admin';
 import { sendSms } from '@/lib/sms';
 import type { StaffMember } from '@/types';
 
+/**
+ * POST /api/help-request
+ *
+ * Triggered when a housekeeper taps "Need Help" on their mobile page.
+ * Sends ONE SMS to the single staff member flagged as the property's
+ * Scheduling Manager (`isSchedulingManager: true` on their staff doc).
+ *
+ * No broadcasts. No department-based routing. One person, one text.
+ * If no scheduling manager is flagged, the request is a no-op (sent = 0).
+ *
+ * Payload:
+ *   uid        – auth user id (property owner)
+ *   pid        – property id
+ *   staffName  – name of the housekeeper asking for help (shown in the SMS)
+ *   roomNumber – room the housekeeper is in
+ *   language   – 'en' | 'es' (optional, defaults to en)
+ */
+
 /** E.164 phone normalization */
 function toE164(raw: string): string | null {
   const digits = raw.replace(/\D/g, '');
@@ -36,54 +54,59 @@ export async function POST(req: NextRequest) {
 
     const propertyName = propSnap.data()?.name || 'Your Hotel';
 
-    // Get all front_desk staff members (they're the ones who need to be notified)
-    const staffSnap = await db
+    // Find the single Scheduling Manager for this property.
+    // There is only ever one per property — the Staff page enforces that
+    // invariant via a swap-confirm modal.
+    const managerSnap = await db
       .collection('users')
       .doc(uid)
       .collection('properties')
       .doc(pid)
       .collection('staff')
-      .where('department', '==', 'front_desk')
+      .where('isSchedulingManager', '==', true)
+      .limit(1)
       .get();
 
-    const frontDeskStaff = staffSnap.docs
-      .map(doc => ({ id: doc.id, ...doc.data() } as StaffMember & { id: string }))
-      .filter(staff => staff.phone && staff.isActive !== false);
-
-    if (frontDeskStaff.length === 0) {
-      // No front desk staff to notify
-      return NextResponse.json({ sent: 0, failed: 0 });
+    if (managerSnap.empty) {
+      console.warn(
+        `[help-request] No scheduling manager flagged for property ${pid}. Help request from ${staffName} in Room ${roomNumber} was not routed.`
+      );
+      return NextResponse.json({ sent: 0, failed: 0, reason: 'no-scheduling-manager' });
     }
 
-    // Build SMS message based on language preference
+    const manager = {
+      id: managerSnap.docs[0].id,
+      ...managerSnap.docs[0].data(),
+    } as StaffMember & { id: string };
+
+    if (!manager.phone || manager.isActive === false) {
+      console.warn(
+        `[help-request] Scheduling manager ${manager.name} is inactive or has no phone. Help request not routed.`
+      );
+      return NextResponse.json({ sent: 0, failed: 0, reason: 'manager-unreachable' });
+    }
+
+    const e164 = toE164(manager.phone);
+    if (!e164) {
+      console.error(`[help-request] Invalid phone for scheduling manager: ${manager.phone}`);
+      return NextResponse.json({ sent: 0, failed: 1, reason: 'invalid-phone' });
+    }
+
     const lang = language === 'es' ? 'es' : 'en';
     const message = lang === 'es'
       ? `🆘 ¡Ayuda necesaria! ${staffName} necesita ayuda en Habitación ${roomNumber}. – ${propertyName}`
       : `🆘 Help needed! ${staffName} is requesting help in Room ${roomNumber}. – ${propertyName}`;
 
-    // Send SMS to all front desk staff
-    const results = await Promise.allSettled(
-      frontDeskStaff.map(staff => {
-        const e164 = toE164(staff.phone!);
-        if (!e164) throw new Error(`Invalid phone number: ${staff.phone}`);
-        return sendSms(e164, message);
-      })
-    );
-
-    const sent = results.filter(r => r.status === 'fulfilled').length;
-    const failed = results.filter(r => r.status === 'rejected').length;
-
-    // Log any failures for debugging
-    results.forEach((r, i) => {
-      if (r.status === 'rejected') {
-        console.error(
-          `SMS failed for ${frontDeskStaff[i].name} (${frontDeskStaff[i].phone}):`,
-          r.reason
-        );
-      }
-    });
-
-    return NextResponse.json({ sent, failed });
+    try {
+      await sendSms(e164, message);
+      return NextResponse.json({ sent: 1, failed: 0 });
+    } catch (err) {
+      console.error(
+        `[help-request] SMS failed for scheduling manager ${manager.name} (${manager.phone}):`,
+        err
+      );
+      return NextResponse.json({ sent: 0, failed: 1 });
+    }
   } catch (err) {
     console.error('[help-request] error:', err);
     return NextResponse.json(

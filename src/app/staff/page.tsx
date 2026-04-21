@@ -500,9 +500,9 @@ export default function StaffPage() {
 
         {/* ── Missing-scheduling-manager warning banner ──
              Shown whenever no active staff has isSchedulingManager = true.
-             Without a scheduling manager flagged, the 75-minute escalation
-             cron can't page anyone when a housekeeper doesn't reply, so
-             Maria would silently lose that safety net. */}
+             The scheduling manager is the single person who gets the SMS
+             when a housekeeper taps "Need Help" on their mobile page.
+             Without one flagged, those help requests go nowhere. */}
         {totalStaff > 0 && !hasSchedulingManager && (
           <div style={{
             marginBottom: '16px',
@@ -519,8 +519,8 @@ export default function StaffPage() {
               <strong>{lang === 'es' ? 'Sin Responsable de Horarios' : 'No Scheduling Manager set'}</strong>
               <div style={{ marginTop: '2px' }}>
                 {lang === 'es'
-                  ? 'Si un limpiador no responde en 75 min, nadie recibirá el aviso. Abre un miembro del personal y activa "Responsable de horarios".'
-                  : 'If a housekeeper doesn\u2019t reply within 75 min, nobody will get paged. Open a staff member and toggle on "Scheduling Manager".'}
+                  ? 'Si un limpiador presiona "Necesito ayuda", nadie recibirá el mensaje. Abre un miembro del personal y activa "Responsable de horarios".'
+                  : 'If a housekeeper taps "Need Help", nobody will get texted. Open a staff member and toggle on "Scheduling Manager".'}
               </div>
             </div>
           </div>
@@ -1368,8 +1368,8 @@ export default function StaffPage() {
                     label: lang === 'es' ? 'Responsable de horarios' : 'Scheduling Manager',
                     field: 'isSchedulingManager' as const,
                     hint: lang === 'es'
-                      ? 'Única persona que recibe los mensajes cuando un empleado no responde después de 75 minutos. Solo una persona a la vez.'
-                      : 'The only person who gets the alert text when a housekeeper does not reply after 75 minutes. Only one person at a time.',
+                      ? 'Única persona que recibe el mensaje cuando un limpiador presiona "Necesito ayuda" en su teléfono. Solo una persona a la vez.'
+                      : 'The only person who gets texted when a housekeeper taps "Need Help" on their phone. Only one person at a time.',
                   },
                 ].map(({ label, field, hint }) => (
                   <div key={field} style={{ padding: '12px 16px', background: '#eae8e3', borderRadius: '16px' }}>

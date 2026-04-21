@@ -2575,14 +2575,16 @@ function RoomsSection() {
       helpRequested: false,
       issueNote: `Backup sent: ${backupStaffName} at ${new Date().toLocaleTimeString()}`,
     });
-    // Send SMS to the backup person
+    // Send SMS directly to the backup person Mario picked — not the
+    // scheduling manager, not a broadcast. Uses /api/notify-backup which is
+    // the only path that texts a specific staff member by id.
     try {
-      await fetch('/api/help-request', {
+      await fetch('/api/notify-backup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           uid: user.uid, pid: activePropertyId,
-          staffName: backupStaffName,
+          backupStaffId,
           roomNumber: room.number,
           language: 'en',
         }),

@@ -288,7 +288,10 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       });
       setHelpSent(prev => new Set(prev).add(room.id));
 
-      // Send SMS notification to front desk staff (best-effort, don't block on failure)
+      // Send SMS to the property's Scheduling Manager only.
+      // /api/help-request looks up the single staff member with
+      // isSchedulingManager=true and texts them — no broadcasts, no
+      // front desk fallback. Best-effort, don't block on failure.
       if (uid && pid) {
         fetch('/api/help-request', {
           method: 'POST',
