@@ -192,6 +192,44 @@ curl -i -H "Authorization: Bearer $CRON_SECRET" \
 
 ---
 
+## Vercel watchdog (Railway-hosted) fires an alert
+
+### Symptom
+- SMS: "Staxis Vercel watchdog: 3 consecutive fails. Last status: ..."
+- OR Railway logs show `[watchdog] alert fired` lines
+- OR Railway logs show `[watchdog] auth mismatch — CRON_SECRET drift between Railway and Vercel`
+
+### What this means
+The scraper (on Railway) pings `hotelops-ai.vercel.app/api/admin/doctor` every 5 min. This is a **cross-platform check** — Railway watching Vercel, completely independent of GitHub Actions. If it trips, either Vercel is genuinely broken OR the `CRON_SECRET` has drifted between Railway and Vercel.
+
+### Diagnosis
+```bash
+# 1. Manually hit the doctor from outside (same as the watchdog does):
+curl -i -H "Authorization: Bearer $CRON_SECRET" \
+  https://hotelops-ai.vercel.app/api/admin/doctor
+
+# - 200 with all green → false alarm, watchdog has since recovered
+# - 401 → CRON_SECRET mismatch (see section below)
+# - 503 with red checks → Vercel is genuinely broken, follow the relevant runbook
+# - Timeout/connection refused → Vercel platform outage
+```
+
+### Fix
+- If doctor returns 401: CRON_SECRET on Railway doesn't match Vercel. Update Railway's `CRON_SECRET` env var to match Vercel's current value.
+- If doctor returns 503 with a specific red check: follow the runbook for that check (firebase auth / env vars / etc).
+- If doctor is unreachable: Vercel platform outage, wait it out. Watchdog will auto-recover when Vercel returns.
+
+### Verify
+- Railway logs show `[watchdog] doctor ok (prevCount=0)` on the next 5-min tick
+- Doctor returns 200 from the shell
+
+### Prevention
+- Watchdog uses a 3-failure threshold (15 min) before alerting to absorb transient Vercel 502s.
+- `auth_mismatch` (HTTP 401) short-circuits the threshold — alerts on first occurrence because auth drift is never transient.
+- Watchdog is wrapped in its own try/catch so it can never crash the main scraper loop — if watchdog code itself has a bug, the scraper keeps running and Railway logs show `[watchdog] crashed (non-fatal)`.
+
+---
+
 ## GitHub Actions workflow failing
 
 ### Symptom
