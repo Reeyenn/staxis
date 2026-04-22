@@ -138,19 +138,24 @@ async function reconcileOOO(db, config, ooo, log) {
     .collection('properties').doc(config.PROPERTY_ID)
     .collection('workOrders');
 
-  // 1) Load all currently OPEN ca_ooo docs. (Resolved ones are historical —
-  // if the same work order re-appears in CA later we create a fresh doc.)
-  const openCaSnap = await workOrdersCol
+  // 1) Load all ca_ooo docs with a single-field equality filter (no
+  //    composite index required), then filter to OPEN statuses in memory.
+  //    We deliberately avoid `where('status','in',[...])` here because that
+  //    combined with `source == ca_ooo` would need a composite index that
+  //    nobody's created yet on the live Firestore project.
+  //    ca_ooo doc count is tiny (CA OOO list is typically <10 rooms) so the
+  //    in-memory filter is free.
+  const caSnap = await workOrdersCol
     .where('source', '==', 'ca_ooo')
-    .where('status', 'in', ['submitted', 'assigned', 'in_progress'])
     .get();
 
+  const OPEN_STATUSES = new Set(['submitted', 'assigned', 'in_progress']);
   const openByCaNumber = new Map();
-  openCaSnap.forEach(d => {
+  caSnap.forEach(d => {
     const data = d.data();
-    if (data && data.caWorkOrderNumber) {
-      openByCaNumber.set(String(data.caWorkOrderNumber), { id: d.id, data });
-    }
+    if (!data || !data.caWorkOrderNumber) return;
+    if (!OPEN_STATUSES.has(data.status)) return;
+    openByCaNumber.set(String(data.caWorkOrderNumber), { id: d.id, data });
   });
 
   // 2) Walk the CA list, upsert each one.
