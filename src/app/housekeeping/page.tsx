@@ -21,6 +21,7 @@ import {
   subscribeToScheduleAssignments,
   saveScheduleAssignments,
   subscribeToDashboardNumbers,
+  getDashboardForDate,
   subscribeToWorkOrders,
 } from '@/lib/firestore';
 import type { PlanSnapshot, ScheduleAssignments, CsvRoomSnapshot, DashboardNumbers } from '@/lib/firestore';
@@ -480,12 +481,33 @@ function ScheduleSection() {
     });
   }, [uid, pid, shiftDate]);
 
-  // Live dashboard numbers from Choice Advantage View pages. One listener for
-  // the whole app — not per-date, not per-property — these are current-moment
-  // snapshots maintained by the Railway scraper (see scraper/dashboard-pull.js).
+  // Dashboard numbers — TWO modes depending on which date tab is active:
+  //
+  //   • Today's tab  → live subscription to scraperStatus/dashboard. The doc
+  //     refreshes every 15 min from the scraper and the UI reacts instantly.
+  //   • Any other date → one-shot read from dashboardByDate/{date}. That doc
+  //     was frozen when the scraper did its last pull of that day. No live
+  //     updates — past days don't change.
+  //
+  // Why two modes: before this, we only had a single live doc and it looked
+  // like the numbers belonged to whatever date tab was active. Confusing for
+  // Maria — she'd see today's 37 in-house while clicking through yesterday's
+  // assignments. Per-date reads fix that AND give her real historical data.
   useEffect(() => {
-    return subscribeToDashboardNumbers(setDashboardNums);
-  }, []);
+    const today = schedTodayStr();
+    if (shiftDate === today) {
+      // Live — subscribe and let onSnapshot push updates.
+      return subscribeToDashboardNumbers(setDashboardNums);
+    }
+    // Past or future — one-shot read, no listener. Clear state first so we
+    // don't flash stale live numbers while the fetch is in flight.
+    setDashboardNums(null);
+    let cancelled = false;
+    getDashboardForDate(shiftDate).then(nums => {
+      if (!cancelled) setDashboardNums(nums);
+    });
+    return () => { cancelled = true; };
+  }, [shiftDate]);
 
   // Subscribe to work orders so we can exclude blocked rooms from the
   // cleaning workflow. Sourced from either manual toggles in Maintenance or
@@ -1595,7 +1617,17 @@ function ScheduleSection() {
         {/* also telling Maria how stale it is. The whole point of this     */}
         {/* block is that a silently wrong number is worse than no number. */}
         {!predictionLoading && (() => {
-          const freshness = dashboardFreshness(dashboardNums, nowMs);
+          // Historical mode: when the user is looking at a past or future date
+          // tab, these numbers came from dashboardByDate/{date} — a frozen
+          // end-of-day snapshot, not a live feed. We skip staleness detection
+          // (a frozen snapshot can't go "stale"), hide the error banner, and
+          // show a "Last updated 10:45 PM on Apr 22" caption instead of the
+          // live-refresh one. If we have no snapshot for that date at all,
+          // show an empty-state caption rather than dashes-with-no-context.
+          const isHistorical = shiftDate !== schedTodayStr();
+          const freshness = isHistorical
+            ? (dashboardNums ? 'fresh' : 'unknown')
+            : dashboardFreshness(dashboardNums, nowMs);
           // Wrap the numbers-or-dashes choice once so it stays consistent
           // across all three columns. 'error' shows dashes unless we have
           // a pulledAt still in-window (then it's degraded to "stale"
@@ -1662,10 +1694,14 @@ function ScheduleSection() {
                   </p>
                 </div>
               </div>
-              {/* Status line / banner — one of four variants. */}
+              {/* Status line / banner — one of four variants. On historical
+                  tabs the stale/error banners are skipped (a frozen snapshot
+                  can't go stale) and the caption shows the snapshot date. */}
               {freshness === 'fresh' && dashboardNums?.pulledAt && (
                 <p style={{ fontSize: '11px', color: '#94a3b8', margin: 0 }}>
-                  {`${lang === 'es' ? 'PMS actualizado' : 'PMS updated'} ${dashboardNums.pulledAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`}
+                  {isHistorical
+                    ? `${lang === 'es' ? 'Última actualización' : 'Last updated'} ${dashboardNums.pulledAt.toLocaleDateString(lang === 'es' ? 'es-ES' : 'en-US', { month: 'short', day: 'numeric' })}, ${dashboardNums.pulledAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+                    : `${lang === 'es' ? 'PMS actualizado' : 'PMS updated'} ${dashboardNums.pulledAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`}
                 </p>
               )}
               {freshness === 'stale' && (
@@ -1709,7 +1745,9 @@ function ScheduleSection() {
               )}
               {freshness === 'unknown' && (
                 <p style={{ fontSize: '11px', color: '#94a3b8', margin: 0 }}>
-                  {lang === 'es' ? 'Esperando datos de PMS...' : 'Waiting for PMS data...'}
+                  {isHistorical
+                    ? (lang === 'es' ? 'Sin datos guardados para este día.' : 'No saved data for this day.')
+                    : (lang === 'es' ? 'Esperando datos de PMS...' : 'Waiting for PMS data...')}
                 </p>
               )}
 

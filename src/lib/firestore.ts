@@ -788,6 +788,45 @@ export function subscribeToDashboardNumbers(
   });
 }
 
+// ─── Per-date dashboard snapshots (frozen history for past-date tabs) ────────
+// Scraper overwrites dashboardByDate/{YYYY-MM-DD} on every successful pull.
+// The *last* pull of the day before midnight becomes the permanent snapshot
+// for that date — the UI reads this when Maria clicks back to a past date,
+// so she sees what the hotel looked like that day instead of the live numbers.
+//
+// This is a ONE-SHOT read (getDoc), not a subscription. Past-date data never
+// changes once the day is over, so there's nothing to listen for. For today's
+// tab we still use subscribeToDashboardNumbers above.
+export async function getDashboardForDate(
+  dateStr: string,
+): Promise<DashboardNumbers | null> {
+  try {
+    const ref = doc(db, 'dashboardByDate', dateStr);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) return null;
+    const d = snap.data() as Record<string, unknown>;
+    const toDate = (v: unknown) =>
+      (v as { toDate?: () => Date } | undefined)?.toDate?.() ?? null;
+    return {
+      inHouse:    typeof d.inHouse    === 'number' ? d.inHouse    : null,
+      arrivals:   typeof d.arrivals   === 'number' ? d.arrivals   : null,
+      departures: typeof d.departures === 'number' ? d.departures : null,
+      inHouseGuests:    typeof d.inHouseGuests    === 'number' ? d.inHouseGuests    : null,
+      arrivalsGuests:   typeof d.arrivalsGuests   === 'number' ? d.arrivalsGuests   : null,
+      departuresGuests: typeof d.departuresGuests === 'number' ? d.departuresGuests : null,
+      pulledAt:     toDate(d.pulledAt),
+      errorCode:    typeof d.errorCode    === 'string' ? d.errorCode as DashboardErrorCode : null,
+      errorMessage: typeof d.errorMessage === 'string' ? d.errorMessage : null,
+      errorPage:    typeof d.errorPage    === 'string' ? d.errorPage    : null,
+      erroredAt:    toDate(d.erroredAt),
+      error:        typeof d.error === 'string' ? d.error : null,
+    };
+  } catch (err) {
+    console.error('[Firestore] getDashboardForDate error:', (err as Error).message);
+    return null;
+  }
+}
+
 // ─── Schedule Assignments (Maria's HK-to-room assignments, survives CSV overwrites) ──
 
 export const scheduleAssignmentsRef = (uid: string, pid: string, date: string) =>

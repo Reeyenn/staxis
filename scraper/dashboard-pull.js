@@ -328,6 +328,25 @@ async function pullDashboardNumbers(page, db, log) {
 
   await db.collection('scraperStatus').doc('dashboard').set(payload, { merge: true });
 
+  // Also write to a per-date doc so past date tabs in the UI can show a frozen
+  // end-of-day snapshot instead of whatever the live numbers happen to be.
+  //
+  // Mechanism: we overwrite dashboardByDate/{YYYY-MM-DD} on every successful
+  // pull. During the day the doc churns — that's fine, the UI only reads it
+  // for non-today dates. The *last* successful pull before midnight local time
+  // becomes the frozen historical snapshot for that date. No separate cron or
+  // append-only log needed. Dates are bucketed by the hotel's local timezone
+  // so a pull at 11:45pm Central writes to today, not tomorrow-UTC.
+  const timezone = process.env.TIMEZONE || 'America/Chicago';
+  const localDate = new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(new Date());
+  await db.collection('dashboardByDate').doc(localDate).set({
+    ...payload,
+    date: localDate,
+  }, { merge: true }).catch(writeErr => {
+    // Non-fatal — live dashboard already succeeded. Log and keep going.
+    log(`Failed to write per-date snapshot for ${localDate}: ${writeErr.message}`);
+  });
+
   // Bump the success counter so the weekly digest can report
   // "672/672 pulls succeeded this week" without keeping a log table.
   await db.collection('scraperStatus').doc('dashboardCounters').set({
