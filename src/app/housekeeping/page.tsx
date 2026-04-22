@@ -1292,6 +1292,33 @@ function ScheduleSection() {
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px', position: 'relative', zIndex: 10 }}>
+            {/* CSV caption — Active Checkouts / Stayovers / Staff Needed all
+                come from the hourly CSV pull (see scraper/scraper.js
+                maybeRunCSVPull). Shows the last successful pull time so Maria
+                knows how fresh the numbers are. Goes amber after 75 min
+                (hourly cadence + one missed-pull buffer). */}
+            {planSnapshot?.pulledAt && (() => {
+              const CSV_STALE_MINUTES = 75;
+              const csvPulledAt: Date | null =
+                planSnapshot.pulledAt instanceof Date
+                  ? planSnapshot.pulledAt
+                  : (planSnapshot.pulledAt?.toDate?.() ?? null);
+              if (!csvPulledAt) return null;
+              const csvMinutesAgo = Math.max(0, Math.round((nowMs - csvPulledAt.getTime()) / 60_000));
+              const csvStale = csvMinutesAgo > CSV_STALE_MINUTES;
+              const timeStr = csvPulledAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+              return (
+                <p style={{ fontSize: '11px', color: csvStale ? '#b45309' : '#94a3b8', margin: 0 }}>
+                  {csvStale
+                    ? (lang === 'es'
+                        ? `CSV antiguo — última actualización ${timeStr} (hace ${csvMinutesAgo} min)`
+                        : `CSV stale — last updated ${timeStr} (${csvMinutesAgo} min ago)`)
+                    : (lang === 'es'
+                        ? `CSV actualizado ${timeStr}`
+                        : `CSV updated ${timeStr}`)}
+                </p>
+              );
+            })()}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, auto)', gap: '40px' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Salidas Activas' : 'Active Checkouts'}</p>
@@ -1407,32 +1434,6 @@ function ScheduleSection() {
                   {`${lang === 'es' ? 'PMS actualizado' : 'PMS updated'} ${dashboardNums.pulledAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`}
                 </p>
               )}
-              {/* CSV caption — the checkouts/stayovers/room-list data refreshes
-                  once per hour (see scraper/scraper.js maybeRunCSVPull), so a
-                  separate timestamp is needed. Always show if we have one;
-                  stale after CSV_STALE_MINUTES = hourly + one missed pull. */}
-              {planSnapshot?.pulledAt && (() => {
-                const CSV_STALE_MINUTES = 75;
-                const csvPulledAt: Date | null =
-                  planSnapshot.pulledAt instanceof Date
-                    ? planSnapshot.pulledAt
-                    : (planSnapshot.pulledAt?.toDate?.() ?? null);
-                if (!csvPulledAt) return null;
-                const csvMinutesAgo = Math.max(0, Math.round((nowMs - csvPulledAt.getTime()) / 60_000));
-                const csvStale = csvMinutesAgo > CSV_STALE_MINUTES;
-                const timeStr = csvPulledAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-                return (
-                  <p style={{ fontSize: '11px', color: csvStale ? '#b45309' : '#94a3b8', margin: 0 }}>
-                    {csvStale
-                      ? (lang === 'es'
-                          ? `CSV antiguo — última actualización ${timeStr} (hace ${csvMinutesAgo} min)`
-                          : `CSV stale — last updated ${timeStr} (${csvMinutesAgo} min ago)`)
-                      : (lang === 'es'
-                          ? `CSV actualizado ${timeStr}`
-                          : `CSV updated ${timeStr}`)}
-                  </p>
-                );
-              })()}
               {freshness === 'stale' && (
                 <div style={{
                   display: 'flex', alignItems: 'center', gap: '8px',
