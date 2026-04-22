@@ -3,10 +3,12 @@
  *
  * Runs on Railway. Stays alive and runs two things off the same tick loop:
  *
- *   1. CSV pulls (once per day) — the arrivals/departures CSV from Choice
- *      Advantage at 6am (today's shift confirmation) and 7pm (tomorrow's
- *      shift plan). Writes to planSnapshots/{date} and merges stayover-cycle
- *      fields into individual room docs.
+ *   1. CSV pulls (hourly, 5am–11pm) — the arrivals/departures CSV from
+ *      Choice Advantage. Before 7pm the pull writes to today's snapshot
+ *      (pullType='morning'); 7pm and later it writes to tomorrow's snapshot
+ *      (pullType='evening') so the next-day plan starts filling in as the
+ *      PMS churns through check-ins. csv-scraper merges new pulls on top of
+ *      the existing snapshot, so each hourly pull refines the same doc.
  *
  *   2. Dashboard number pulls (every 15 min, 5am–11pm) — grabs in-house,
  *      arrivals, and departures counts from Choice Advantage's View pages
@@ -251,10 +253,10 @@ async function login(page) {
 }
 
 // ─── CSV pull scheduler ────────────────────────────────────────────────────
-// Each daily trigger fires exactly once per calendar day even though the
-// runner ticks every few minutes.
-let lastEveningCSVDate = null;
-let lastMorningCSVDate = null;
+// Runs hourly during the active window (5am–11pm local). `lastCSVPullAt` is
+// only bumped on success so a failed pull is retried on the next tick.
+let lastCSVPullAt = 0;
+const CSV_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
 /**
  * Run a scheduled CSV scrape. Always re-logs in *right before* the scrape so
@@ -263,7 +265,7 @@ let lastMorningCSVDate = null;
  * login at startup isn't good enough.
  *
  * If the re-login itself fails or the scrape still fails, we return false so
- * the caller leaves `lastMorningCSVDate` unset and the next tick retries.
+ * the caller leaves `lastCSVPullAt` unchanged and the next tick retries.
  */
 async function runCSVScrapeFresh(page, pullType, relogin) {
   // Always re-login right before — sessions die between scheduled windows.
@@ -410,24 +412,22 @@ async function maybeRunDashboardPull(page, relogin) {
 }
 
 async function maybeRunCSVPull(page, relogin) {
-  const hour  = localHour();
-  const today = todayISO();
+  const hour = localHour();
+  // 5am–10:59pm active window. Same as dashboard pulls — staff aren't
+  // looking at the data overnight and CA is quiet then.
+  if (hour < 5 || hour >= 23) return;
 
-  // ── Morning CSV pull: target 6am, catch up any time 6am–6:59pm ───────────
-  // If a Railway redeploy wiped in-process state after 6am, we self-heal on
-  // the first tick by seeing "we're past 6am and haven't run today yet."
-  // IMPORTANT: only mark `lastMorningCSVDate` after the scrape *succeeds* so
-  // transient errors (session expiry, CA outages) don't lock us out for the day.
-  if (hour >= 6 && hour < 19 && lastMorningCSVDate !== today) {
-    const ok = await runCSVScrapeFresh(page, 'morning', relogin);
-    if (ok) lastMorningCSVDate = today;
-  }
+  const now = Date.now();
+  if (now - lastCSVPullAt < CSV_INTERVAL_MS) return;
 
-  // ── Evening CSV pull: target 7pm, catch up any time 7pm–midnight ─────────
-  if (hour >= 19 && lastEveningCSVDate !== today) {
-    const ok = await runCSVScrapeFresh(page, 'evening', relogin);
-    if (ok) lastEveningCSVDate = today;
-  }
+  // Before 7pm → 'morning' (writes to today's planSnapshot).
+  // 7pm and later → 'evening' (writes to tomorrow's planSnapshot so the next
+  // day's plan starts filling in as the PMS churns through check-ins).
+  const pullType = hour < 19 ? 'morning' : 'evening';
+
+  const ok = await runCSVScrapeFresh(page, pullType, relogin);
+  // Only bump the timestamp on success — a failed pull should retry next tick.
+  if (ok) lastCSVPullAt = now;
 }
 
 // ─── Main loop ─────────────────────────────────────────────────────────────
@@ -436,7 +436,7 @@ async function run() {
   log('=== HotelOps AI CSV Runner starting ===');
   log(`Property: ${CONFIG.PROPERTY_ID} | User: ${CONFIG.USER_ID}`);
   log(`Timezone: ${CONFIG.TIMEZONE} | Local hour: ${localHour()} | Today: ${todayISO()}`);
-  log(`Tick every ${CONFIG.TICK_MINUTES} min — CSV pulls at 6am+7pm, dashboard numbers every 15 min 5am–11pm`);
+  log(`Tick every ${CONFIG.TICK_MINUTES} min — CSV pulls hourly 5am–11pm, dashboard numbers every 15 min 5am–11pm`);
 
   // Verify Firebase credentials BEFORE launching Playwright. If creds are
   // stale/revoked, crash loud now instead of writing garbage for hours.
