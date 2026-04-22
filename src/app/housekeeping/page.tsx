@@ -867,17 +867,34 @@ function ScheduleSection() {
     return joined.charAt(0).toUpperCase() + joined.slice(1) + '.';
   }, [morningDiff]);
 
-  // Auto Recommend — distributes unassigned rooms across current crew, least-loaded first.
+  // Auto Recommend — clean-slate redistribute every dirty room across the crew.
+  //
+  // Design rules (burned in from the 4/22 incident where Brenda ended at
+  // 10h 15m, Cindy at 25m, and Julia at 9h 50m after a button press):
+  //
+  //   1. HARD CAP at shiftLen — nobody ever exceeds 7h (or whatever the
+  //      operator configured). If nobody can fit a room, it stays unassigned
+  //      and the "X rooms need a housekeeper" banner surfaces it.
+  //   2. CLEAN-SLATE — every dirty room's assignment is wiped and rebuilt.
+  //      Rooms already in_progress / clean / inspected are preserved (never
+  //      yank a room off an HK mid-clean). This is what prevents stale 10h
+  //      distributions from surviving the button press.
+  //   3. CONSOLIDATION — after distribution, any HK with <2h of work has
+  //      their rooms offered to other HKs who still have capacity under cap.
+  //      If all their rooms get absorbed, they're dropped from crew (no more
+  //      "Cindy shows up for one room" scenarios).
+  //   4. SMART STAFFING — top up only when the current crew genuinely can't
+  //      fit the work under cap. Then post-prune anyone who ended up empty.
   const handleAutoRecommend = () => {
-    // ── Step 1: top up crew to cleaningStaff (not recommendedStaff) ──
-    //
-    // cleaningStaff = ceil(totalCleaningMinutes / shiftLen) — the minimum
-    // number of people needed to finish rooms without anyone going over
-    // the configurable shift cap. recommendedStaff adds +1 for laundry,
-    // but that person handles laundry, not rooms, so they shouldn't be
-    // in the Auto Assign distribution. Using cleaningStaff here means
-    // each housekeeper ends up closer to a full shift instead of sitting
-    // at ~4h 30m while 5 people share work 4 could do.
+    const MIN_WORTHWHILE_MINUTES = 120; // 2h — anything less gets consolidated
+
+    // Preserved rooms = anything a housekeeper already started / finished.
+    // We never move these — even on a clean-slate pass.
+    const isPreserved = (r: Room) => r.status !== 'dirty';
+    const preservedRooms = assignableRooms.filter(isPreserved);
+    const redistributableRooms = assignableRooms.filter(r => !isPreserved(r));
+
+    // ── Step 1: top up crew to cleaningStaff (rooms-only, no laundry) ──
     const currentIds = new Set(selectedCrew.map(s => s.id));
     const additions: StaffMember[] = [];
     const target = Math.max(cleaningStaff, 1);
@@ -889,20 +906,22 @@ function ScheduleSection() {
     const effectiveCrew = [...selectedCrew, ...additions];
     if (effectiveCrew.length === 0) return;
 
-    // ── Step 2: seed current loads + floor counts from existing assignments ──
-    // Existing (non-empty) assignments stay put — we don't yank rooms off
-    // anyone mid-clean. floorCount[staff][floor] = how many rooms on that
-    // floor they already own, so the stickiness logic below can prefer the
-    // person who already owns most of a floor.
+    // ── Step 2: seed loads ONLY from preserved rooms ──
+    // Dirty rooms are about to be rebuilt from zero. Preserved rooms (in
+    // progress or done) keep their owner and contribute to that owner's
+    // baseline load so the distribution accounts for work already in
+    // flight.
     const loadByStaff = new Map<string, number>();
     const floorCountByStaff = new Map<string, Map<string, number>>();
     for (const s of effectiveCrew) {
       loadByStaff.set(s.id, 0);
       floorCountByStaff.set(s.id, new Map());
     }
-    for (const r of assignableRooms) {
+    const next: Record<string, string> = {};
+    for (const r of preservedRooms) {
       const who = assignments[r.id];
       if (!who || !loadByStaff.has(who)) continue;
+      next[r.id] = who;
       const mins = minsForRoom(r) + prepPerRoom;
       loadByStaff.set(who, (loadByStaff.get(who) ?? 0) + mins);
       const f = getFloor(r.number);
@@ -910,10 +929,8 @@ function ScheduleSection() {
       fmap.set(f, (fmap.get(f) ?? 0) + 1);
     }
 
-    // ── Step 3: sort unassigned rooms by floor, then checkouts first ──
-    // Going floor-by-floor is what lets stickiness cluster the whole
-    // floor onto one person before moving to the next.
-    const toAssign = [...unassignedRooms].sort((a, b) => {
+    // ── Step 3: sort redistributable rooms by floor, then checkouts first ──
+    const toAssign = [...redistributableRooms].sort((a, b) => {
       const fA = getFloor(a.number);
       const fB = getFloor(b.number);
       if (fA !== fB) return fA < fB ? -1 : 1;
@@ -921,23 +938,13 @@ function ScheduleSection() {
       return (parseInt(a.number.replace(/\D/g, '')) || 0) - (parseInt(b.number.replace(/\D/g, '')) || 0);
     });
 
-    // ── Step 4: one-person-per-floor with capacity respect ──
-    //
-    // For each room we want the staff who already owns the most rooms
-    // on that floor (stickiness → one person per floor). Ties break on
-    // whoever has less total load today. If the top pick would blow
-    // through the shift cap, we filter them out first and fall back to
-    // the next candidate — so floors that won't fit on one person spill
-    // cleanly onto the next person instead of overloading anyone.
-    const next = { ...assignments };
+    // ── Step 4: one-person-per-floor with HARD CAP ──
+    // For each room: prefer the HK who already owns the most rooms on that
+    // floor (floor stickiness). Tiebreak on least load. Only consider HKs
+    // who have room under the cap. If nobody fits, the room stays unassigned.
     for (const r of toAssign) {
       const f = getFloor(r.number);
       const mins = minsForRoom(r) + prepPerRoom;
-      // HARD CAP: only staff who have room under the cap are eligible. If
-      // nobody fits, the room stays unassigned — the "X rooms still need a
-      // housekeeper" banner surfaces it and Reeyen can add another person or
-      // manually stretch someone. Previous behavior fell back to the full
-      // crew here, which is what produced 10h+ shifts.
       const withCapacity = effectiveCrew.filter(s => (loadByStaff.get(s.id) ?? 0) + mins <= shiftLen);
       if (withCapacity.length === 0) continue; // leave in unassigned pool
       let best: string | null = null;
@@ -959,15 +966,90 @@ function ScheduleSection() {
       fmap.set(f, (fmap.get(f) ?? 0) + 1);
     }
 
-    // ── Step 5: drop anyone with 0 rooms after distribution ──
-    //
-    // Auto Assign is a clean-slate distribution. If the algorithm didn't
-    // need a person (e.g. Astri sat at 0m while the other 4 carried the
-    // full load), kick them off the crew instead of leaving a dead tile
-    // cluttering the screen. This intentionally overrides the usual
-    // manuallyAdded stickiness — the user specifically asked for Auto
-    // Assign to prune extras. If somehow nobody got a room (defensive,
-    // e.g. unassignedRooms was empty to begin with), leave crew alone.
+    // ── Step 5: consolidation pass ──
+    // If any HK ended up with less than MIN_WORTHWHILE_MINUTES of work,
+    // try to move their rooms onto other HKs who still have capacity.
+    // We don't touch preserved rooms (in-progress stays put even if it's
+    // only 25 minutes of work — can't pull a room off someone mid-clean).
+    // If all movable rooms get absorbed, the HK is eligible to be dropped
+    // from the crew by Step 6.
+    const preservedByStaff = new Map<string, number>();
+    for (const r of preservedRooms) {
+      const who = next[r.id];
+      if (!who) continue;
+      preservedByStaff.set(who, (preservedByStaff.get(who) ?? 0) + 1);
+    }
+
+    // Iterate repeatedly: moving rooms can push another HK below the
+    // threshold, or free capacity on the recipient. Cap at crew.length
+    // iterations to avoid any theoretical loop.
+    for (let pass = 0; pass < effectiveCrew.length; pass++) {
+      let movedThisPass = false;
+      for (const giver of effectiveCrew) {
+        const giverLoad = loadByStaff.get(giver.id) ?? 0;
+        if (giverLoad >= MIN_WORTHWHILE_MINUTES) continue;
+        if (giverLoad === 0) continue; // nothing to move — will be pruned
+        if ((preservedByStaff.get(giver.id) ?? 0) > 0) continue; // don't disturb in-progress
+        // Find every redistributable room currently assigned to giver.
+        const giverRooms = redistributableRooms.filter(r => next[r.id] === giver.id);
+        if (giverRooms.length === 0) continue;
+        // Try to move each room to another HK under cap. Sort smallest
+        // rooms first so if some fit and some don't, we at least offload
+        // the easy wins and drain the giver down.
+        const withSize = giverRooms.map(r => ({ r, mins: minsForRoom(r) + prepPerRoom }))
+          .sort((a, b) => a.mins - b.mins);
+        const moves: Array<{ room: Room; mins: number; to: string; from: string }> = [];
+        const simLoad = new Map(loadByStaff);
+        const simFloorCount = new Map<string, Map<string, number>>();
+        floorCountByStaff.forEach((m, k) => simFloorCount.set(k, new Map(m)));
+        let giverEmptied = true;
+        for (const { r, mins } of withSize) {
+          const f = getFloor(r.number);
+          // Pick recipient: someone other than giver, under cap, prefer
+          // most floor ownership then least load (same ruleset as Step 4).
+          const candidates = effectiveCrew.filter(s =>
+            s.id !== giver.id &&
+            (simLoad.get(s.id) ?? 0) + mins <= shiftLen
+          );
+          if (candidates.length === 0) { giverEmptied = false; break; }
+          let pick: string | null = null;
+          let pickFloor = -1;
+          let pickLoad = Infinity;
+          for (const s of candidates) {
+            const fc = simFloorCount.get(s.id)?.get(f) ?? 0;
+            const load = simLoad.get(s.id) ?? 0;
+            if (fc > pickFloor || (fc === pickFloor && load < pickLoad)) {
+              pickFloor = fc;
+              pickLoad = load;
+              pick = s.id;
+            }
+          }
+          if (!pick) { giverEmptied = false; break; }
+          moves.push({ room: r, mins, to: pick, from: giver.id });
+          simLoad.set(pick, (simLoad.get(pick) ?? 0) + mins);
+          simLoad.set(giver.id, (simLoad.get(giver.id) ?? 0) - mins);
+          const fmapTo = simFloorCount.get(pick)!;
+          fmapTo.set(f, (fmapTo.get(f) ?? 0) + 1);
+          const fmapFrom = simFloorCount.get(giver.id)!;
+          fmapFrom.set(f, Math.max(0, (fmapFrom.get(f) ?? 0) - 1));
+        }
+        // Only commit the moves if they actually emptied the giver — a
+        // partial move would leave the giver with a smaller-still tiny
+        // load, which defeats the purpose.
+        if (giverEmptied && moves.length > 0) {
+          for (const mv of moves) {
+            next[mv.room.id] = mv.to;
+          }
+          // Commit the simulated loads / floor counts.
+          simLoad.forEach((v, k) => loadByStaff.set(k, v));
+          simFloorCount.forEach((m, k) => floorCountByStaff.set(k, m));
+          movedThisPass = true;
+        }
+      }
+      if (!movedThisPass) break;
+    }
+
+    // ── Step 6: drop anyone with 0 rooms after distribution + consolidation ──
     const usedStaffIds = new Set(
       Object.values(next).filter((v): v is string => !!v)
     );
@@ -975,13 +1057,8 @@ function ScheduleSection() {
     const dropped = effectiveCrew.filter(s => !usedStaffIds.has(s.id));
     const shouldPrune = keep.length > 0 && dropped.length > 0;
 
-    // Commit crew changes (additions + prunes) first so the tile render
-    // matches what we're about to write into assignments.
     if (additions.length > 0 || shouldPrune) {
       userEditedCrew.current = true;
-      // Only flag additions as manually-added if they actually ended up
-      // with rooms — an addition that got pruned shouldn't leave a
-      // sticky "manually added" marker behind.
       additions.forEach(s => {
         if (usedStaffIds.has(s.id)) manuallyAdded.current.add(s.id);
       });
@@ -990,6 +1067,13 @@ function ScheduleSection() {
       setCrewOverride(finalCrew.map(s => s.id));
     }
     setAssignments(next);
+
+    // Toast summary — count how many rooms are still unassigned + whether
+    // anyone is still over cap (shouldn't happen with hard cap, but a
+    // safety signal for dev).
+    const stillUnassigned = redistributableRooms.filter(r => !next[r.id]).length;
+    const overCap = effectiveCrew.filter(s => (loadByStaff.get(s.id) ?? 0) > shiftLen).length;
+
     const parts: string[] = [];
     if (additions.length > 0) {
       parts.push(lang === 'es'
@@ -1000,6 +1084,16 @@ function ScheduleSection() {
       parts.push(lang === 'es'
         ? `Quitado${dropped.length === 1 ? '' : 's'}: ${dropped.length}`
         : `Removed ${dropped.length}`);
+    }
+    if (stillUnassigned > 0) {
+      parts.push(lang === 'es'
+        ? `${stillUnassigned} sin asignar (añade personal)`
+        : `${stillUnassigned} unassigned (add staff)`);
+    }
+    if (overCap > 0) {
+      parts.push(lang === 'es'
+        ? `⚠︎ ${overCap} sobre el límite`
+        : `⚠︎ ${overCap} over cap`);
     }
     const toastMsg = parts.length > 0
       ? (lang === 'es'
