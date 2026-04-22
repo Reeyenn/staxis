@@ -1157,9 +1157,6 @@ function ScheduleSection() {
     dragRef.current = { roomId: null, roomNumber: '', roomType: '', startX: 0, startY: 0, active: false };
   }, []);
 
-  // Compute deficit
-  const staffDeficit = recommendedStaff - selectedCrew.length;
-
   return (
     <div style={{ padding: '16px 24px 200px', background: 'var(--bg)', minHeight: 'calc(100vh - 180px)', display: 'flex', flexDirection: 'column', gap: '20px' }}>
 
@@ -1385,12 +1382,7 @@ function ScheduleSection() {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Personal Necesario' : 'Staff Needed'}</p>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
-                  <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>{recommendedStaff}</p>
-                  {staffDeficit > 0 && (
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: '14px', fontWeight: 600, color: '#ba1a1a' }}>+{staffDeficit} Deficit</span>
-                  )}
-                </div>
+                <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>{recommendedStaff}</p>
               </div>
             </div>
 
