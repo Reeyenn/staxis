@@ -21,6 +21,7 @@ import {
   subscribeToScheduleAssignments,
   saveScheduleAssignments,
   subscribeToDashboardNumbers,
+  subscribeToWorkOrders,
 } from '@/lib/firestore';
 import type { PlanSnapshot, ScheduleAssignments, CsvRoomSnapshot, DashboardNumbers } from '@/lib/firestore';
 import { dashboardFreshness, DASHBOARD_STALE_MINUTES } from '@/lib/firestore';
@@ -28,7 +29,7 @@ import { getPublicAreasDueToday, calcPublicAreaMinutes, autoAssignRooms, getOver
 import { getDefaultPublicAreas } from '@/lib/defaults';
 import type { PublicArea } from '@/types';
 import { todayStr } from '@/lib/utils';
-import type { Room, RoomStatus, RoomType, RoomPriority, StaffMember, DeepCleanRecord, DeepCleanConfig, ShiftConfirmation, ConfirmationStatus } from '@/types';
+import type { Room, RoomStatus, RoomType, RoomPriority, StaffMember, DeepCleanRecord, DeepCleanConfig, ShiftConfirmation, ConfirmationStatus, WorkOrder } from '@/types';
 import { format, subDays } from 'date-fns';
 import {
   Calendar, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, CheckCircle2, Clock,
@@ -382,6 +383,11 @@ function ScheduleSection() {
   // Choice Advantage's View pages every 15 min by the Railway scraper.
   const [dashboardNums, setDashboardNums] = useState<DashboardNumbers | null>(null);
 
+  // Open work orders — used to derive blocked-room numbers so the scheduling
+  // page can exclude them from the check-off list, Staff Needed math, and
+  // auto-assign. A blocked room isn't cleaned, so it shouldn't eat crew time.
+  const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
+
   // Staleness ticker — re-renders the PMS block once a minute so that a
   // Schedule tab left open on screen starts showing "stale" the moment
   // pulledAt crosses the threshold, even without a Firestore update. Without
@@ -476,6 +482,14 @@ function ScheduleSection() {
   useEffect(() => {
     return subscribeToDashboardNumbers(setDashboardNums);
   }, []);
+
+  // Subscribe to work orders so we can exclude blocked rooms from the
+  // cleaning workflow. Sourced from either manual toggles in Maintenance or
+  // Choice Advantage's OOO feed (ca_ooo work orders).
+  useEffect(() => {
+    if (!uid || !pid) return;
+    return subscribeToWorkOrders(uid, pid, setWorkOrders);
+  }, [uid, pid]);
 
   // One-time hydration per date: when assignments + crew load from Firestore, seed local state.
   const hydratedForDate = useRef<string | null>(null);
@@ -592,8 +606,31 @@ function ScheduleSection() {
   // their staffing reality (6h, 7h, 8h, etc.). Default 420m (7h).
   const shiftLen = activeProperty?.shiftMinutes ?? 420;
 
-  const checkouts = shiftRooms.filter(r => r.type === 'checkout').length;
-  const stayovers = shiftRooms.filter(r => r.type === 'stayover').length;
+  // Blocked room numbers — any non-resolved work order with blockedRoom:true,
+  // whether it came from CA's OOO feed (source: 'ca_ooo') or was toggled on
+  // manually in the Maintenance tab. Rooms in this Set are dropped from every
+  // housekeeping calculation below, so they never show up on the check-off
+  // list, never count toward Staff Needed, and never get auto-assigned.
+  const blockedRoomNumbers = useMemo(() => {
+    const s = new Set<string>();
+    for (const o of workOrders) {
+      if (o.blockedRoom && o.status !== 'resolved') s.add(o.roomNumber);
+    }
+    return s;
+  }, [workOrders]);
+
+  // workShiftRooms = shiftRooms minus anything currently blocked. Used for all
+  // operational math on this page. shiftRooms (raw CA snapshot) is preserved
+  // for the csvRoomSnapshot so the diff-on-refresh logic still compares apples
+  // to apples with the next CA pull.
+  const workShiftRooms = useMemo(
+    () => shiftRooms.filter(r => !blockedRoomNumbers.has(r.number)),
+    [shiftRooms, blockedRoomNumbers]
+  );
+  const blockedCount = shiftRooms.length - workShiftRooms.length;
+
+  const checkouts = workShiftRooms.filter(r => r.type === 'checkout').length;
+  const stayovers = workShiftRooms.filter(r => r.type === 'stayover').length;
   const totalRooms = checkouts + stayovers;
   // Per-room cleaning minutes using stayoverDay cycle (Day 1 odd = light, Day 2 even = full).
   // Fall back to legacy stayoverMinutes for arrival-day stayovers (stayoverDay=0 or missing).
@@ -603,7 +640,7 @@ function ScheduleSection() {
     if (typeof d !== 'number' || d <= 0) return legacySoMins;
     return d % 2 === 1 ? day1Mins : day2Mins;
   };
-  const stayoverRooms = shiftRooms.filter(r => r.type === 'stayover');
+  const stayoverRooms = workShiftRooms.filter(r => r.type === 'stayover');
   const stayoverMinutesTotal = stayoverRooms.reduce((sum, r) => sum + minsForRoom(r), 0);
   const roomMinutes = (checkouts * coMins) + stayoverMinutesTotal;
   const prepMinutes = totalRooms * prepPerRoom;
@@ -621,9 +658,9 @@ function ScheduleSection() {
   // ── Auto-select crew + auto-assign rooms ──
   const eligiblePool = useMemo(() => autoSelectEligible(staff, shiftDate, new Set()), [staff, shiftDate]);
   const assignableRooms = useMemo(() =>
-    [...shiftRooms].filter(r => r.type === 'checkout' || r.type === 'stayover')
+    [...workShiftRooms].filter(r => r.type === 'checkout' || r.type === 'stayover')
       .sort((a, b) => (parseInt(a.number.replace(/\D/g, '')) || 0) - (parseInt(b.number.replace(/\D/g, '')) || 0)),
-    [shiftRooms]
+    [workShiftRooms]
   );
 
   // The selected crew: auto-pick or manual override.
@@ -1371,7 +1408,7 @@ function ScheduleSection() {
                 </div>
               );
             })()}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, auto)', gap: '40px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, auto)', gap: '40px' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Salidas Activas' : 'Active Checkouts'}</p>
                 <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>{checkouts}</p>
@@ -1379,6 +1416,10 @@ function ScheduleSection() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Continuaciones' : 'Stayovers'}</p>
                 <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>{stayovers}</p>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Hab. Bloqueadas' : 'Blocked Rooms'}</p>
+                <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: blockedCount > 0 ? '#ba1a1a' : '#9ca3af', lineHeight: 1, margin: 0 }}>{blockedCount}</p>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Personal Necesario' : 'Staff Needed'}</p>
