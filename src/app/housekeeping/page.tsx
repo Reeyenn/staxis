@@ -1419,7 +1419,7 @@ function ScheduleSection() {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Hab. Bloqueadas' : 'Blocked Rooms'}</p>
-                <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: blockedCount > 0 ? '#ba1a1a' : '#9ca3af', lineHeight: 1, margin: 0 }}>{blockedCount}</p>
+                <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>{blockedCount}</p>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Personal Necesario' : 'Staff Needed'}</p>
