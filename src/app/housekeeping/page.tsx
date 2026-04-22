@@ -63,14 +63,12 @@ function addDays(dateStr: string, n: number): string {
   return dt.toLocaleDateString('en-CA');
 }
 
-// Maria plans the next day's housekeeping in the afternoon / evening, so
-// default the Schedule tab to tomorrow once we hit 1pm local. Before 1pm,
-// "next shift" still means today — stops the tab from silently flipping to
-// tomorrow at midnight when she's still actively working on today's crew.
+// Always default to today. Maria uses the arrow keys to flip to tomorrow
+// when she's planning the next day's crew — auto-jumping at 1pm was
+// confusing because she'd open the page expecting today's numbers and get
+// tomorrow instead. Manual navigation beats clever defaults here.
 function defaultShiftDate(): string {
-  const now = new Date();
-  const today = now.toLocaleDateString('en-CA');
-  return now.getHours() >= 13 ? addDays(today, 1) : today;
+  return new Date().toLocaleDateString('en-CA');
 }
 
 /**
