@@ -1533,12 +1533,19 @@ function ScheduleSection() {
               )}
 
               {/* ── Room-count reconciliation ("hidden rooms" check) ──
-                  Maria's 7pm ritual: compare in-house + arrivals against the
-                  property's total room count. If they don't match, the front
-                  desk has probably over- or under-counted a group booking
+                  Maria's 7pm ritual: at 100% occupancy, in-house + arrivals
+                  should equal the property's total rooms. If it's GREATER
+                  than total, the front desk has over-counted a group booking
                   (e.g. TDCJ books 25 when they only need 18 → 7 rooms get
                   "hidden" and can't be sold). Brandy is the only one with
-                  group-booking access so the action here is "tell Brandy".
+                  group-booking access, so the action is "tell Brandy".
+
+                  We deliberately do NOT flag the under-count case (sum <
+                  total). On a non-fully-booked night that's just empty
+                  rooms — totally normal. The under-count-with-hidden-rooms
+                  scenario only matters when CA shows 0 available, and we
+                  don't scrape that field yet, so we can't distinguish it
+                  from "just empty" without false positives.
 
                   Rendered only when PMS numbers are actually trustworthy —
                   skipped on 'error' and 'unknown' freshness so we don't flag
@@ -1555,7 +1562,8 @@ function ScheduleSection() {
                   const roomSum = inHouseNum + arrivalsNum;
                   const delta = roomSum - totalPropertyRooms;
 
-                  // Matched — quiet green confirmation.
+                  // Fully booked and everything adds up — subtle green ✓
+                  // so Maria can see at a glance that the math is clean.
                   if (delta === 0) {
                     return (
                       <p style={{ fontSize: '11px', color: '#15803d', margin: 0, fontWeight: 500 }}>
@@ -1567,8 +1575,8 @@ function ScheduleSection() {
                   }
 
                   // Over-count — red. Group booking has extra rooms that
-                  // should be released. This is the scenario Maria catches
-                  // most often (e.g. TDCJ booked 25, needs 18).
+                  // should be released. The scenario Maria catches most
+                  // often (e.g. TDCJ booked 25, needs 18).
                   if (delta > 0) {
                     return (
                       <div style={{
@@ -1596,35 +1604,10 @@ function ScheduleSection() {
                     );
                   }
 
-                  // Under-count — amber. Could be legit (rooms genuinely
-                  // available for sale) OR rooms hidden in a group booking.
-                  // We can't tell which without scraping the "available"
-                  // number, so surface it softly and let Maria/Raj judge
-                  // by cross-checking CA's available count.
-                  return (
-                    <div style={{
-                      display: 'flex', alignItems: 'flex-start', gap: '8px',
-                      padding: '8px 12px', borderRadius: '8px',
-                      background: 'rgba(245, 158, 11, 0.12)',
-                      border: '1px solid rgba(217, 119, 6, 0.35)',
-                      fontSize: '12px', color: '#78350f', fontWeight: 500,
-                      maxWidth: '460px',
-                    }}>
-                      <AlertTriangle size={14} style={{ color: '#b45309', flexShrink: 0, marginTop: '2px' }} />
-                      <div style={{ textAlign: 'left' }}>
-                        <div>
-                          {lang === 'es'
-                            ? `Faltan habitaciones: ${inHouseNum} en casa + ${arrivalsNum} llegadas = ${roomSum}, de ${totalPropertyRooms}.`
-                            : `Rooms missing: ${inHouseNum} in-house + ${arrivalsNum} arrivals = ${roomSum}, out of ${totalPropertyRooms}.`}
-                        </div>
-                        <div style={{ fontSize: '11px', color: '#92400e', fontWeight: 400, marginTop: '2px' }}>
-                          {lang === 'es'
-                            ? `${-delta} habitación${-delta === 1 ? '' : 'es'} sin contar. Si Choice Advantage muestra 0 disponibles, pídele a Brandy que revise si hay habitaciones escondidas en un grupo.`
-                            : `${-delta} room${-delta === 1 ? '' : 's'} unaccounted for. If Choice Advantage shows 0 available, ask Brandy to check if rooms are hidden in a group booking.`}
-                        </div>
-                      </div>
-                    </div>
-                  );
+                  // Under-count — silent. Empty rooms on a non-busy night
+                  // look identical to hidden rooms on a fully-booked night;
+                  // we'd need CA's "available" number to distinguish them.
+                  return null;
                 })()}
             </div>
           );
