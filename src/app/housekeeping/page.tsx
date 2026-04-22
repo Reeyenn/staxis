@@ -1813,14 +1813,14 @@ function ScheduleSection() {
             </div>
             <button
               onClick={handleAutoRecommend}
-              disabled={unassignedRooms.length === 0 || selectedCrew.length === 0}
+              disabled={assignableRooms.length === 0 || selectedCrew.length === 0}
               style={{
                 padding: '8px 14px', borderRadius: '9999px',
-                background: unassignedRooms.length === 0 ? '#e5e7eb' : '#364262',
-                color: unassignedRooms.length === 0 ? '#9ca3af' : '#ffffff',
+                background: assignableRooms.length === 0 ? '#e5e7eb' : '#364262',
+                color: assignableRooms.length === 0 ? '#9ca3af' : '#ffffff',
                 border: 'none',
                 fontFamily: 'var(--font-sans)', fontSize: '13px', fontWeight: 600,
-                cursor: unassignedRooms.length === 0 ? 'not-allowed' : 'pointer',
+                cursor: assignableRooms.length === 0 ? 'not-allowed' : 'pointer',
                 display: 'inline-flex', alignItems: 'center', gap: '6px',
               }}
             >
@@ -2260,27 +2260,30 @@ function ScheduleSection() {
               {lang === 'es' ? 'Prioridad' : 'Priority'}
             </button>
 
-            {/* Auto Assign — tops up the crew from the eligible pool (priority
-                order) if the current crew is under the recommended headcount,
-                then distributes unassigned rooms least-loaded-first. Same
-                logic that fires automatically when the CSV pulls. Only
-                disabled if there's nothing to assign, or there's nobody in
-                the eligible pool to pull from at all. */}
+            {/* Auto Assign — clean-slate redistribute. Wipes every dirty
+                room's assignment and rebuilds from zero under the 7h hard
+                cap, preserving in-progress rooms and Maria's pinned
+                drags. Enabled whenever there are ANY assignable rooms
+                (not just unassigned) — the whole point is to let Maria
+                click this when a bad distribution needs to be rebuilt
+                (e.g. someone over cap after a stale save). Only
+                disabled when there's literally nothing to distribute or
+                nobody to distribute to. */}
             {(() => {
               const canStaff = selectedCrew.length > 0 || eligiblePool.length > 0;
-              const disabled = unassignedRooms.length === 0 || !canStaff;
+              const disabled = assignableRooms.length === 0 || !canStaff;
               return (
                 <button
                   onClick={handleAutoRecommend}
                   disabled={disabled}
                   title={
                     disabled
-                      ? (unassignedRooms.length === 0
-                          ? (lang === 'es' ? 'No hay habitaciones sin asignar' : 'No unassigned rooms')
+                      ? (assignableRooms.length === 0
+                          ? (lang === 'es' ? 'No hay habitaciones para asignar' : 'No rooms to assign')
                           : (lang === 'es' ? 'No hay personal elegible' : 'No eligible staff'))
                       : (lang === 'es'
-                          ? 'Agrega personal si hace falta y reparte las habitaciones'
-                          : 'Add staff if needed and distribute rooms across the crew')
+                          ? 'Reconstruye la distribución desde cero respetando el límite de 7h'
+                          : 'Rebuild distribution from scratch under the 7h cap')
                   }
                   style={{
                     padding: '10px 20px',
