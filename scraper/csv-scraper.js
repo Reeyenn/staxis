@@ -4,12 +4,11 @@
  * Navigates to Choice Advantage → Run → Reports → Housekeeping Check-off List,
  * explicitly sets all filters to capture the FULL property snapshot,
  * checks the CSV export box, downloads the file, parses it, and writes
- * a planSnapshot/{YYYY-MM-DD} document to Firestore.
+ * a row to plan_snapshots keyed by (property_id, date).
  *
  * Called from the main scraper loop at 7pm CT (evening plan) and 6am CT (morning confirm).
  */
 
-const { Timestamp } = require('firebase-admin/firestore');
 const path = require('path');
 const fs = require('fs');
 
@@ -163,9 +162,11 @@ function parseCSVLine(line) {
 // ─── Snapshot Builder ────────────────────────────────────────────────────────
 
 /**
- * Build a planSnapshot document from parsed room data.
+ * Build an in-memory snapshot from parsed room data. Shape matches
+ * plan_snapshots table columns in camelCase — the writer converts to
+ * snake_case when upserting.
  */
-function buildSnapshot(rooms, pullType, dateISO, timezone) {
+function buildSnapshot(rooms, pullType, dateISO /*, timezone */) {
   // All rooms with C/O flag (checked out today, regardless of clean/dirty)
   const checkoutRooms = rooms.filter(r => r.stayType === 'C/O');
   // Stayovers: occupied rooms staying
@@ -213,7 +214,7 @@ function buildSnapshot(rooms, pullType, dateISO, timezone) {
 
   return {
     date: dateISO,
-    pulledAt: Timestamp.now(),
+    pulledAt: new Date().toISOString(),
     pullType,                              // "evening" or "morning"
     totalRooms: rooms.length,
 
@@ -247,7 +248,7 @@ function buildSnapshot(rooms, pullType, dateISO, timezone) {
     vacantDirtyRoomNumbers:     vacantDirty.map(r => r.number),
     oooRoomNumbers:             oooRooms.map(r => r.number),
 
-    // Full room data array (for detailed view)
+    // Full room data array (for detailed view) — stored as jsonb in Postgres.
     // Stayovers carry their classified day + minutes so the UI can show them.
     rooms: rooms.map(r => {
       const base = {
@@ -278,10 +279,6 @@ function buildSnapshot(rooms, pullType, dateISO, timezone) {
 
 /**
  * Navigate to CA Reports, set all filters, download the CSV, and return the raw text.
- *
- * @param {import('playwright').Page} page — authenticated CA session
- * @param {function} log — logging function
- * @returns {string} CSV file contents
  */
 async function downloadCSVFromCA(page, log) {
   log('[CSV] Navigating to Reports page...');
@@ -310,7 +307,6 @@ async function downloadCSVFromCA(page, log) {
   }
 
   // Click "Housekeeping Check-off List" link
-  // It appears in the TOP 10 LIST section and in Housekeeping Reports
   log('[CSV] Looking for Housekeeping Check-off List link...');
   const hkLink = page.locator('a:has-text("Housekeeping Check-off List")').first();
   await hkLink.waitFor({ timeout: 10000 });
@@ -322,16 +318,6 @@ async function downloadCSVFromCA(page, log) {
   await page.waitForTimeout(1000); // CA forms can be slow
 
   // ── Set all filters explicitly (never trust defaults / sticky state) ──
-  // Element names confirmed from live CA DOM inspection 2026-04-16:
-  //   select[name="status"]              → "*" = Select All, "O" = Occupied, "OOO" = Out of Order, "V" = Vacant
-  //   select[name="condition"]           → "*" = Select All, "D" = Dirty, "C" = Clean
-  //   select[name="housekeeper"]         → "*" = Select All
-  //   input[name="roomRangeStartField"] → "101"
-  //   input[name="roomRangeEndField"]   → "422"
-  //   select[name="sort"]               → "room_number" = Room Number
-  //   input#CSVcheckbox                  → check to get CSV
-  //   a:has-text("Submit")              → submit (it's a link, not a button)
-
   // Status: Select All
   await page.selectOption('select[name="status"]', '*');
   log('[CSV] Set Status → Select All');
@@ -437,82 +423,114 @@ async function downloadCSVFromCA(page, log) {
   return csvText;
 }
 
-// ─── Firestore Writer ────────────────────────────────────────────────────────
+// ─── Supabase Writers ────────────────────────────────────────────────────────
 
 /**
- * Write a planSnapshot document to Firestore.
- *
- * Path: users/{userId}/properties/{propertyId}/planSnapshots/{dateISO}
- *
- * @param {FirebaseFirestore.Firestore} db
- * @param {object} config — { USER_ID, PROPERTY_ID, TIMEZONE }
- * @param {object} snapshot — from buildSnapshot()
- * @param {function} log
+ * Upsert a plan_snapshots row for (property_id, date). Each hourly pull
+ * overwrites the previous pull's row for the same date — the writer always
+ * stores the most recent view of the plan. No merge required: every column
+ * is recomputed from the CSV each pull.
  */
-async function writePlanSnapshot(db, config, snapshot, log) {
-  const ref = db
-    .collection('users').doc(config.USER_ID)
-    .collection('properties').doc(config.PROPERTY_ID)
-    .collection('planSnapshots').doc(snapshot.date);
+async function writePlanSnapshot(supabase, config, snapshot, log) {
+  const row = {
+    property_id:                   config.PROPERTY_ID,
+    date:                          snapshot.date,
+    pulled_at:                     snapshot.pulledAt,
+    pull_type:                     snapshot.pullType,
+    total_rooms:                   snapshot.totalRooms,
+    checkouts:                     snapshot.checkouts,
+    stayovers:                     snapshot.stayovers,
+    stayover_day1:                 snapshot.stayoverDay1,
+    stayover_day2:                 snapshot.stayoverDay2,
+    stayover_arrival_day:          snapshot.stayoverArrivalDay,
+    stayover_unknown:              snapshot.stayoverUnknown,
+    arrivals:                      snapshot.arrivals,
+    vacant_clean:                  snapshot.vacantClean,
+    vacant_dirty:                  snapshot.vacantDirty,
+    ooo:                           snapshot.ooo,
+    checkout_minutes:              snapshot.checkoutMinutes,
+    stayover_day1_minutes:         snapshot.stayoverDay1Minutes,
+    stayover_day2_minutes:         snapshot.stayoverDay2Minutes,
+    vacant_dirty_minutes:          snapshot.vacantDirtyMinutes,
+    total_cleaning_minutes:        snapshot.totalCleaningMinutes,
+    recommended_hks:               snapshot.recommendedHKs,
+    checkout_room_numbers:         snapshot.checkoutRoomNumbers,
+    stayover_day1_room_numbers:    snapshot.stayoverDay1RoomNumbers,
+    stayover_day2_room_numbers:    snapshot.stayoverDay2RoomNumbers,
+    stayover_arrival_room_numbers: snapshot.stayoverArrivalRoomNumbers,
+    arrival_room_numbers:          snapshot.arrivalRoomNumbers,
+    vacant_clean_room_numbers:     snapshot.vacantCleanRoomNumbers,
+    vacant_dirty_room_numbers:     snapshot.vacantDirtyRoomNumbers,
+    ooo_room_numbers:              snapshot.oooRoomNumbers,
+    rooms:                         snapshot.rooms,
+  };
 
-  // Use set with merge so evening + morning pulls stack
-  // (morning overwrites evening data for same date, which is correct)
-  await ref.set(snapshot, { merge: true });
+  const { error } = await supabase
+    .from('plan_snapshots')
+    .upsert(row, { onConflict: 'property_id,date' });
+  if (error) throw error;
 
-  log(`[CSV] planSnapshot/${snapshot.date} written — ${snapshot.totalRooms} rooms, ${snapshot.checkouts} C/Os, ${snapshot.stayovers} stays (D1:${snapshot.stayoverDay1} / D2:${snapshot.stayoverDay2} / arrival:${snapshot.stayoverArrivalDay}), rec ${snapshot.recommendedHKs} HKs`);
+  log(`[CSV] plan_snapshots upserted — ${snapshot.date} / ${snapshot.totalRooms} rooms, ${snapshot.checkouts} C/Os, ${snapshot.stayovers} stays (D1:${snapshot.stayoverDay1} / D2:${snapshot.stayoverDay2} / arrival:${snapshot.stayoverArrivalDay}), rec ${snapshot.recommendedHKs} HKs`);
 }
 
 /**
- * Merge stayover-cycle fields (arrival, stayoverDay, stayoverMinutes) into each
- * individual room doc at rooms/{date}_{number}. This lets the live housekeeping
- * UI read per-room cycle day without re-parsing the snapshot.
+ * Merge stayover-cycle fields (arrival, stayover_day, stayover_minutes) into
+ * EXISTING rows in the rooms table. We deliberately use UPDATE-only (no
+ * INSERT) because:
  *
- * Uses `merge: true` so we never clobber fields written by the live room scraper
- * (status, condition, housekeeper, timestamps, etc.).
+ *   1. The rooms.type column is NOT NULL with a CHECK constraint — inserting
+ *      a bare stayover-cycle row without a proper type would fail or pollute
+ *      the table with half-specified rooms.
+ *   2. The canonical room-creation flow is populate-rooms-from-plan / the
+ *      send-shift-confirmations route, which set every required field. This
+ *      writer is a best-effort enhancement; if the target row doesn't exist
+ *      yet, populate-rooms-from-plan will re-read the same stayover data
+ *      directly from plan_snapshots.rooms when it creates the row.
+ *
+ * Runs all updates in parallel. Each row is matched by (property_id, date,
+ * number) via the composite unique index. Missing rows are silently skipped
+ * (update with no matching row is a no-op in Postgres).
  */
-async function writeRoomStayoverDays(db, config, snapshot, log) {
-  const roomsCol = db
-    .collection('users').doc(config.USER_ID)
-    .collection('properties').doc(config.PROPERTY_ID)
-    .collection('rooms');
+async function writeRoomStayoverDays(supabase, config, snapshot, log) {
+  const propertyId = config.PROPERTY_ID;
+  const date = snapshot.date;
 
-  // Firestore batch limit is 500 writes — we have ~74 rooms, so one batch is safe.
-  const batch = db.batch();
-  let written = 0;
-
+  const updates = [];
   for (const r of snapshot.rooms) {
     if (!r.number) continue;
-    const docId = `${snapshot.date}_${r.number}`;
-    const payload = {
-      number: r.number,
-      arrival: r.arrival ?? null,
-    };
-    if (typeof r.stayoverDay !== 'undefined') {
-      payload.stayoverDay = r.stayoverDay;
-    }
-    if (typeof r.stayoverMinutes !== 'undefined') {
-      payload.stayoverMinutes = r.stayoverMinutes;
-    }
-    batch.set(roomsCol.doc(docId), payload, { merge: true });
-    written++;
+    const patch = { arrival: r.arrival ?? null };
+    if (typeof r.stayoverDay !== 'undefined')    patch.stayover_day     = r.stayoverDay;
+    if (typeof r.stayoverMinutes !== 'undefined') patch.stayover_minutes = r.stayoverMinutes;
+    updates.push(
+      supabase
+        .from('rooms')
+        .update(patch)
+        .eq('property_id', propertyId)
+        .eq('date', date)
+        .eq('number', r.number)
+    );
   }
 
-  await batch.commit();
-  log(`[CSV] Merged stayover cycle fields into ${written} rooms/{date}_{number} docs`);
+  const results = await Promise.all(updates.map(q => q.then(r => r, err => ({ error: err }))));
+  let errored = 0;
+  for (const r of results) {
+    if (r?.error) errored++;
+  }
+  log(`[CSV] Merged stayover cycle fields into rooms (${updates.length} attempted, ${errored} errored — missing rows are no-ops)`);
 }
 
 // ─── Main Entry Point ────────────────────────────────────────────────────────
 
 /**
- * Full CSV scrape cycle: download → parse → build snapshot → write to Firestore.
+ * Full CSV scrape cycle: download → parse → build snapshot → write to Supabase.
  *
- * @param {import('playwright').Page} page — authenticated CA page
- * @param {FirebaseFirestore.Firestore} db
- * @param {object} config — { USER_ID, PROPERTY_ID, TIMEZONE }
+ * @param {import('playwright').Page} page       — authenticated CA page
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabase
+ * @param {object} config   — { PROPERTY_ID, TIMEZONE }
  * @param {string} pullType — "evening" or "morning"
  * @param {function} log
  */
-async function runCSVScrape(page, db, config, pullType, log) {
+async function runCSVScrape(page, supabase, config, pullType, log) {
   log(`[CSV] === Starting ${pullType} CSV scrape ===`);
 
   const timezone = config.TIMEZONE || 'America/Chicago';
@@ -551,7 +569,7 @@ async function runCSVScrape(page, db, config, pullType, log) {
     if (rooms.length < MIN_EXPECTED_ROOMS) {
       throw new Error(
         `Only ${rooms.length} rooms parsed — expected ~74 (min ${MIN_EXPECTED_ROOMS}). ` +
-        `Refusing to overwrite planSnapshot with suspiciously small dataset.`
+        `Refusing to overwrite plan_snapshots with suspiciously small dataset.`
       );
     }
 
@@ -569,13 +587,13 @@ async function runCSVScrape(page, db, config, pullType, log) {
     fs.writeFileSync(path.join(DOWNLOAD_DIR, `${targetDate}_${pullType}.csv`), csvText);
     log(`[CSV] Saved backup: ${targetDate}_${pullType}.csv`);
 
-    // Step 5: Write to Firestore
-    await writePlanSnapshot(db, config, snapshot, log);
+    // Step 5: Write to Supabase
+    await writePlanSnapshot(supabase, config, snapshot, log);
 
-    // Step 6: Merge stayover-cycle fields into individual room docs so the
+    // Step 6: Merge stayover-cycle fields into individual rooms rows so the
     // live UI (housekeeping schedule tab) can read per-room cycle day.
     try {
-      await writeRoomStayoverDays(db, config, snapshot, log);
+      await writeRoomStayoverDays(supabase, config, snapshot, log);
     } catch (err) {
       // Non-fatal: snapshot is still written, UI falls back to legacy minutes.
       log(`[CSV] WARNING: room stayoverDay merge failed: ${err.message}`);

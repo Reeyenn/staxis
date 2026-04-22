@@ -4,7 +4,7 @@
  * ─── Why this exists ─────────────────────────────────────────────────────
  * Our GitHub Actions scraper-health cron is great at catching "Railway
  * scraper is dead." But who watches the WATCHMAN? If Vercel itself drifts
- * (stale Firebase key, missing env var, expired Twilio token, OOM on a
+ * (stale Supabase key, missing env var, expired Twilio token, OOM on a
  * route), GH Actions' scraper-health only notices if its dependencies on
  * Vercel also break — and it shares Vercel's network path.
  *
@@ -29,9 +29,9 @@
  *   • Alert debouncing: once alerted, stay quiet until we've recovered.
  *     On recovery, send a one-line "Vercel recovered" SMS.
  *
- *   • State in Firestore: scraperStatus/vercelWatchdog stores consecutive
- *     fail count + lastAlertedAt. Survives Railway redeploys so the
- *     counter doesn't reset every time the container cycles.
+ *   • State in Supabase: scraper_status[key='vercel_watchdog'] stores
+ *     consecutive fail count + lastAlertedAt. Survives Railway redeploys
+ *     so the counter doesn't reset every time the container cycles.
  *
  *   • Non-blocking: every call is wrapped in try/catch. This module MUST
  *     NEVER crash the main scraper loop — if the watchdog itself breaks,
@@ -50,7 +50,7 @@
  *     only fix it at 8am anyway.
  */
 
-const { getFirestore } = require('firebase-admin/firestore');
+const { mergeStatus, getStatus } = require('./supabase-helpers');
 
 // How many consecutive failures before we alert. 3 * 5-min-tick = 15 min
 // of sustained failure. Tight enough that Vercel drift doesn't hide for
@@ -159,9 +159,12 @@ async function pingDoctor(cronSecret) {
 async function sendTwilioSms(to, body) {
   const sid   = process.env.TWILIO_ACCOUNT_SID;
   const token = process.env.TWILIO_AUTH_TOKEN;
-  const from  = process.env.TWILIO_PHONE_NUMBER;
+  // Support both naming conventions — TWILIO_FROM_NUMBER is the canonical
+  // one used by the Next.js sms.ts lib; TWILIO_PHONE_NUMBER is the legacy
+  // Railway var. Fall back to either.
+  const from  = process.env.TWILIO_FROM_NUMBER || process.env.TWILIO_PHONE_NUMBER;
   if (!sid || !token || !from) {
-    return { ok: false, detail: 'Twilio env vars missing on Railway (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_PHONE_NUMBER)' };
+    return { ok: false, detail: 'Twilio env vars missing on Railway (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM_NUMBER)' };
   }
   try {
     const form = new URLSearchParams({ From: from, To: to, Body: body });
@@ -187,12 +190,18 @@ async function sendTwilioSms(to, body) {
   }
 }
 
+function parseIso(v) {
+  if (!v || typeof v !== 'string') return null;
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? null : d;
+}
+
 /**
  * Main entry — called once per tick from scraper.js.
  *
  * Every tick:
  *  1. Ping doctor.
- *  2. Read watchdog state from Firestore.
+ *  2. Read watchdog state from scraper_status.
  *  3. On failure: increment counter. If counter >= threshold and enough time
  *     has passed since last alert and we're inside business hours, SMS.
  *  4. On success: if we'd alerted and this is the first success, SMS recovery.
@@ -201,9 +210,9 @@ async function sendTwilioSms(to, body) {
  * All errors swallowed and logged — the caller is the main scraper tick and
  * must never crash because of watchdog issues.
  */
-async function runVercelWatchdog({ timezone }) {
+async function runVercelWatchdog({ supabase, timezone }) {
   const cronSecret = process.env.CRON_SECRET;
-  const alertPhone = process.env.OPS_ALERT_PHONE;
+  const alertPhone = process.env.MANAGER_PHONE || process.env.OPS_ALERT_PHONE;
 
   if (!cronSecret) {
     log('CRON_SECRET not set on Railway — watchdog is a no-op. Add CRON_SECRET env var on Railway to enable.');
@@ -211,27 +220,22 @@ async function runVercelWatchdog({ timezone }) {
   }
 
   // Ping first so network errors are always visible in Railway logs even if
-  // Firestore is unhappy.
+  // Supabase is unhappy.
   const result = await pingDoctor(cronSecret);
 
-  // Load & update state. Wrapped in try/catch so Firestore blips don't silence
+  // Load & update state. Wrapped in try/catch so Supabase blips don't silence
   // the watchdog — we can still log.
-  const db = getFirestore();
-  const stateRef = db.collection('scraperStatus').doc('vercelWatchdog');
-
   let state = {};
   try {
-    const snap = await stateRef.get();
-    state = snap.exists ? snap.data() || {} : {};
+    state = await getStatus(supabase, 'vercel_watchdog');
   } catch (err) {
     log(`state read failed: ${err.message} — continuing with empty state`);
   }
 
   const now = new Date();
+  const nowIso = now.toISOString();
   const prevCount = Number.isFinite(state.consecutiveFailures) ? state.consecutiveFailures : 0;
-  const prevAlertedAt = state.lastAlertedAt && typeof state.lastAlertedAt.toDate === 'function'
-    ? state.lastAlertedAt.toDate()
-    : null;
+  const prevAlertedAt = parseIso(state.lastAlertedAt);
   const wasAlerted = state.alertActive === true;
 
   // ── SUCCESS path ───────────────────────────────────────────────────────
@@ -239,7 +243,7 @@ async function runVercelWatchdog({ timezone }) {
     log(`doctor ok (prevCount=${prevCount}${wasAlerted ? ', was alerted' : ''})`);
 
     const patch = {
-      lastCheckAt: now,
+      lastCheckAt: nowIso,
       lastStatus: 'ok',
       consecutiveFailures: 0,
       alertActive: false,
@@ -252,11 +256,11 @@ async function runVercelWatchdog({ timezone }) {
         'Staxis Vercel: recovered. /api/admin/doctor is green again.'
       );
       if (!smsRes.ok) log(`recovery SMS failed: ${smsRes.detail}`);
-      patch.lastRecoverySmsAt = now;
+      patch.lastRecoverySmsAt = nowIso;
       patch.lastRecoverySmsOk = smsRes.ok;
     }
 
-    try { await stateRef.set(patch, { merge: true }); }
+    try { await mergeStatus(supabase, 'vercel_watchdog', patch); }
     catch (err) { log(`state write (ok) failed: ${err.message}`); }
     return;
   }
@@ -266,7 +270,7 @@ async function runVercelWatchdog({ timezone }) {
   log(`doctor ${result.status}: ${result.detail} (consecutive=${newCount})`);
 
   const patch = {
-    lastCheckAt: now,
+    lastCheckAt: nowIso,
     lastStatus: result.status,
     lastDetail: result.detail,
     consecutiveFailures: newCount,
@@ -278,7 +282,7 @@ async function runVercelWatchdog({ timezone }) {
   const shouldAlert = result.status === 'auth_mismatch' || newCount >= FAILURE_THRESHOLD;
 
   if (!shouldAlert) {
-    try { await stateRef.set(patch, { merge: true }); }
+    try { await mergeStatus(supabase, 'vercel_watchdog', patch); }
     catch (err) { log(`state write (fail) failed: ${err.message}`); }
     return;
   }
@@ -293,7 +297,7 @@ async function runVercelWatchdog({ timezone }) {
   if (wasAlerted && hoursSinceAlert < REALERT_INTERVAL_MS) {
     // Already alerted about this recently — stay quiet.
     patch.alertActive = true;
-    try { await stateRef.set(patch, { merge: true }); }
+    try { await mergeStatus(supabase, 'vercel_watchdog', patch); }
     catch (err) { log(`state write (debounce) failed: ${err.message}`); }
     return;
   }
@@ -303,7 +307,7 @@ async function runVercelWatchdog({ timezone }) {
     // will pick this up.
     patch.alertActive = true;
     patch.pendingAlertSinceCount = newCount;
-    try { await stateRef.set(patch, { merge: true }); }
+    try { await mergeStatus(supabase, 'vercel_watchdog', patch); }
     catch (err) { log(`state write (offhours) failed: ${err.message}`); }
     log(`alert suppressed (outside business hours ${ALERT_WINDOW_START}:00–${ALERT_WINDOW_END}:00)`);
     return;
@@ -311,9 +315,9 @@ async function runVercelWatchdog({ timezone }) {
 
   // Send alert.
   if (!alertPhone) {
-    log(`ALERT would have fired but OPS_ALERT_PHONE is not set: ${result.detail}`);
+    log(`ALERT would have fired but MANAGER_PHONE/OPS_ALERT_PHONE is not set: ${result.detail}`);
     patch.alertActive = true;
-    try { await stateRef.set(patch, { merge: true }); }
+    try { await mergeStatus(supabase, 'vercel_watchdog', patch); }
     catch (err) { log(`state write (no-phone) failed: ${err.message}`); }
     return;
   }
@@ -326,7 +330,7 @@ async function runVercelWatchdog({ timezone }) {
 
   const smsRes = await sendTwilioSms(alertPhone, body);
   patch.alertActive = true;
-  patch.lastAlertedAt = now;
+  patch.lastAlertedAt = nowIso;
   patch.lastAlertedBody = body;
   patch.lastAlertSmsOk = smsRes.ok;
   if (!smsRes.ok) {
@@ -335,7 +339,7 @@ async function runVercelWatchdog({ timezone }) {
     log(`ALERT sent: ${body}`);
   }
 
-  try { await stateRef.set(patch, { merge: true }); }
+  try { await mergeStatus(supabase, 'vercel_watchdog', patch); }
   catch (err) { log(`state write (alert) failed: ${err.message}`); }
 }
 

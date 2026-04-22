@@ -22,13 +22,17 @@ The doctor endpoint tests every critical dependency in parallel and returns a re
 
 ---
 
-## Firebase service account key rotation
+## Supabase service_role key rotation
+
+(Successor to the legacy Firebase service account rotation procedure.
+Firebase was removed on 2026-04-22; the old Firebase section is preserved
+as a comment at the bottom of this file in case we ever need the history.)
 
 ### Symptom
 - GitHub Actions "Scraper Health Check" emails with workflow failure
-- Doctor endpoint `firebase_admin_auth` check returns `fail`
-- `firebase-admin.ts` throws `Firebase Admin auth failed on Vercel: 16 UNAUTHENTICATED`
-- Scraper crash-loops on Railway with `Firebase auth failed at startup`
+- Doctor endpoint `supabase_admin_auth` check returns `fail`
+- `supabase-admin.ts` throws `Supabase Admin auth failed on Vercel: JWT expired / Invalid API key`
+- Scraper crash-loops on Railway with `Supabase auth failed at startup`
 
 ### Diagnosis
 ```bash
@@ -36,22 +40,22 @@ The doctor endpoint tests every critical dependency in parallel and returns a re
 curl -H "Authorization: Bearer $CRON_SECRET" \
   https://hotelops-ai.vercel.app/api/admin/doctor | python3 -m json.tool
 
-# Look at firebase_admin_auth check. If it's "fail", Vercel's key is bad.
+# Look at supabase_admin_auth check. If it's "fail", Vercel's key is bad.
 # If Vercel is fine but scraper-health shows heartbeat_dead, Railway's is bad.
 
-# 2. Which key is currently active in GCP?
-# Browse: https://console.cloud.google.com/iam-admin/serviceaccounts/details/101644913363325978984/keys?project=hotelops-ai
-# Make a note of which keys exist and which are active.
+# 2. Is the current key valid?
+# Browse: Supabase Dashboard → Project Settings → API → service_role
+# Compare the first 8 chars of the dashboard key vs the one in Vercel/Railway env.
 ```
 
 ### Fix
-Full playbook lives in `Second Brain/05 Personal/[C] Recovery Codes & Credentials.md` → "How to rotate this key in the future". Short version:
+Full playbook lives in `Second Brain/05 Personal/[C] Recovery Codes & Credentials.md`. Short version:
 
-1. Firebase Console → Project Settings → Service Accounts → Generate new private key → download JSON
-2. Extract `private_key` from the JSON (keep literal `\n` escape sequences)
-3. **Update Railway** → `hotelops-scraper` → Variables → `FIREBASE_PRIVATE_KEY`. Auto-redeploys.
-4. **Update Vercel** → `staxis` → Settings → Environment Variables → `FIREBASE_ADMIN_PRIVATE_KEY`. Click Redeploy.
-5. Verify BOTH platforms work (see Verify below) before deleting the old key ID from GCP IAM.
+1. Supabase Dashboard → Project Settings → API → **Reset service_role key** (old key dies instantly; Supabase rotates atomically, no grace period — plan this for a maintenance window).
+2. Copy the new key.
+3. **Update Railway** → `hotelops-scraper` → Variables → `SUPABASE_SERVICE_ROLE_KEY`. Auto-redeploys.
+4. **Update Vercel** → `staxis` → Settings → Environment Variables → `SUPABASE_SERVICE_ROLE_KEY`. Click Redeploy.
+5. Verify BOTH platforms work (see Verify below).
 
 ### Verify
 ```bash
@@ -67,8 +71,8 @@ curl -H "Authorization: Bearer $CRON_SECRET" \
 ```
 
 ### Prevention
-- **`firebase-admin.ts`** fails loudly at module load if env vars are missing, and `verifyFirebaseAuth()` throws a specific error if the key is stale.
-- **`scraper.js`** does a preflight Firestore read at startup and `process.exit(1)` if it fails, so Railway crash-loops visibly instead of silently running with bad credentials.
+- **`supabase-admin.ts`** fails loudly at module load if env vars are missing, and `verifySupabaseAdmin()` throws a specific error if the key is stale.
+- **`scraper.js`** does a preflight Postgres read at startup and `process.exit(1)` if it fails, so Railway crash-loops visibly instead of silently running with bad credentials.
 - **Daily drift check workflow** runs every morning at 8am Central and compares Vercel auth vs Railway scraper health. Catches cross-platform rotation drift within 24h.
 - **Post-deploy smoke test** runs after every push to main and calls the doctor endpoint. Catches a botched Vercel env var change within 3 minutes.
 
@@ -79,7 +83,7 @@ curl -H "Authorization: Bearer $CRON_SECRET" \
 ### Symptom
 - SMS: "Staxis scraper DOWN — no heartbeat for X min. Check Railway deployment."
 - `scraper-health` endpoint returns `condition: heartbeat_dead`
-- Doctor `firestore_heartbeat` check returns `fail` with "stale"
+- Doctor `scraper_heartbeat` check returns `fail` with "stale"
 - Maria reports PMS numbers are stuck on the dashboard
 
 ### Diagnosis
@@ -90,7 +94,7 @@ curl -H "Authorization: Bearer $CRON_SECRET" \
 
 # 2. Railway → hotelops-scraper → Deployments → click latest → Logs.
 #    Look for:
-#      - "Firebase auth failed at startup" → bad FIREBASE_PRIVATE_KEY, see Firebase rotation runbook
+#      - "Supabase auth failed at startup" → bad SUPABASE_SERVICE_ROLE_KEY, see Supabase rotation runbook
 #      - "CA login failed" → bad CA_PASSWORD, rotate on Railway
 #      - crash loop with memory errors → Railway resource issue
 #      - no recent logs at all → service was manually stopped / deploy stuck
@@ -98,14 +102,14 @@ curl -H "Authorization: Bearer $CRON_SECRET" \
 
 ### Fix
 
-**If Firebase auth startup error:** follow Firebase key rotation runbook above.
+**If Supabase auth startup error:** follow Supabase service_role key rotation runbook above.
 
 **If CA login failed:** Twilio/CA pw change. Update `CA_PASSWORD` on Railway → auto-redeploy.
 
 **If service stopped/crashed with no actionable error:**
 1. Railway → hotelops-scraper → Deployments
 2. Click latest deployment → "Redeploy" button
-3. Watch logs for `Firebase auth verified ✓` to confirm startup
+3. Watch logs for `Supabase auth verified ✓` to confirm startup
 
 **If Railway itself is down:**
 - Check https://status.railway.app/
@@ -128,7 +132,7 @@ curl -H "Authorization: Bearer $CRON_SECRET" \
 ### Symptom
 - App loads but cron routes return 500
 - Doctor `env_vars` check lists missing/empty vars
-- Pages that need Firebase Admin throw on first request
+- Pages that need Supabase Admin throw on first request
 - Post-deploy smoke test workflow failed
 
 ### Diagnosis
@@ -216,7 +220,7 @@ curl -i -H "Authorization: Bearer $CRON_SECRET" \
 
 ### Fix
 - If doctor returns 401: CRON_SECRET on Railway doesn't match Vercel. Update Railway's `CRON_SECRET` env var to match Vercel's current value.
-- If doctor returns 503 with a specific red check: follow the runbook for that check (firebase auth / env vars / etc).
+- If doctor returns 503 with a specific red check: follow the runbook for that check (supabase auth / env vars / etc).
 - If doctor is unreachable: Vercel platform outage, wait it out. Watchdog will auto-recover when Vercel returns.
 
 ### Verify
@@ -244,7 +248,7 @@ curl -i -H "Authorization: Bearer $CRON_SECRET" \
 Depends on what broke — usually one of:
 - CRON_SECRET mismatch → see section above
 - Vercel deploy broken → see section above
-- Firebase key rotation → see section above
+- Supabase service_role key rotation → see section above
 - Actual scraper/dashboard issue → `scraper-health` response `condition` field tells you
 
 ### Verify
@@ -268,7 +272,7 @@ Re-run the failed workflow from the GitHub UI (`Re-run all jobs` button). It sho
 # 1. Is Vercel up? https://www.vercel-status.com/
 # 2. Is GitHub up? https://www.githubstatus.com/
 # 3. Is Railway up? https://status.railway.app/
-# 4. Is Firebase up? https://status.firebase.google.com/
+# 4. Is Supabase up? https://status.supabase.com/
 # 5. Can you hit Vercel at all?
 curl -I https://hotelops-ai.vercel.app/
 ```

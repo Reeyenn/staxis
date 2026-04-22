@@ -1,26 +1,25 @@
 /**
- * GET /api/admin/diagnose?uid=&pid=
+ * GET /api/admin/diagnose?pid=
  *
  * Read-only snapshot for debugging the SMS flow:
- *   - Last 20 webhookLog entries (every inbound SMS hit and its lookup result)
- *   - Last 10 shiftConfirmations for the given uid/pid (status + staffPhone)
+ *   - Last 20 webhook_log entries (every inbound SMS hit + its lookup result)
+ *   - Last 10 shift_confirmations for the given property (status + staff_phone)
+ *   - Twilio number config + recent messages (inbound + outbound)
+ *
+ * Legacy `uid` query param accepted but ignored.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import admin from '@/lib/firebase-admin';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 
 export async function GET(req: NextRequest) {
   try {
     const url = new URL(req.url);
-    const uid = url.searchParams.get('uid');
     const pid = url.searchParams.get('pid');
-    if (!uid || !pid) {
-      return NextResponse.json({ error: 'need ?uid=&pid=' }, { status: 400 });
+    if (!pid) {
+      return NextResponse.json({ error: 'need ?pid=' }, { status: 400 });
     }
 
-    const db = admin.firestore();
-
-    // Also hit Twilio's REST API to check how the toll-free number is actually
-    // configured — specifically the SmsUrl/SmsMethod for inbound-SMS webhooks.
+    // ── Twilio REST helpers ────────────────────────────────────────────────
     async function getTwilioNumbers(): Promise<unknown> {
       try {
         const sid = process.env.TWILIO_ACCOUNT_SID;
@@ -47,9 +46,6 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Pull recent messages from Twilio's message log so we can see if inbound
-    // replies are even reaching Twilio. Direction "inbound" = received by our
-    // number; outbound-api = sent by our app.
     async function getTwilioMessages(): Promise<unknown> {
       try {
         const sid = process.env.TWILIO_ACCOUNT_SID;
@@ -63,8 +59,8 @@ export async function GET(req: NextRequest) {
         const json = await res.json() as { messages?: Array<Record<string, unknown>> };
         return (json.messages ?? []).map(m => ({
           sid: m.sid,
-          direction: m.direction,            // 'inbound' | 'outbound-api'
-          status: m.status,                  // 'delivered' | 'undelivered' | 'received' | 'failed' | ...
+          direction: m.direction,
+          status: m.status,
           errorCode: m.error_code,
           errorMessage: m.error_message,
           from: m.from,
@@ -77,37 +73,40 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const [logSnap, confSnap, twilioNumbers, twilioMessages] = await Promise.all([
-      db.collection('webhookLog').orderBy('ts', 'desc').limit(20).get(),
-      db.collection('users').doc(uid)
-        .collection('properties').doc(pid)
-        .collection('shiftConfirmations').get(),
+    const [logsRes, confsRes, twilioNumbers, twilioMessages] = await Promise.all([
+      supabaseAdmin
+        .from('webhook_log')
+        .select('id, ts, source, payload')
+        .order('ts', { ascending: false })
+        .limit(20),
+      supabaseAdmin
+        .from('shift_confirmations')
+        .select('token, staff_name, staff_phone, status, shift_date, sent_at, responded_at')
+        .eq('property_id', pid)
+        .order('sent_at', { ascending: false, nullsFirst: false })
+        .limit(10),
       getTwilioNumbers(),
       getTwilioMessages(),
     ]);
 
-    const logs = logSnap.docs.map(d => {
-      const x = d.data();
-      return {
-        ...x,
-        ts: x.ts?.toDate?.()?.toISOString() ?? null,
-      };
-    });
+    const webhookLogs = (logsRes.data ?? []).map(r => ({
+      id: r.id,
+      ts: r.ts,
+      source: r.source,
+      ...(r.payload as Record<string, unknown>),
+    }));
 
-    const confs = confSnap.docs.map(d => {
-      const x = d.data();
-      return {
-        docId: d.id,
-        staffName: x.staffName,
-        staffPhone: x.staffPhone,
-        status: x.status,
-        shiftDate: x.shiftDate,
-        sentAt: x.sentAt?.toDate?.()?.toISOString() ?? null,
-        respondedAt: x.respondedAt?.toDate?.()?.toISOString() ?? null,
-      };
-    }).sort((a, b) => (b.sentAt ?? '').localeCompare(a.sentAt ?? '')).slice(0, 10);
+    const confirmations = (confsRes.data ?? []).map(r => ({
+      token: r.token,
+      staffName: r.staff_name,
+      staffPhone: r.staff_phone,
+      status: r.status,
+      shiftDate: r.shift_date,
+      sentAt: r.sent_at,
+      respondedAt: r.responded_at,
+    }));
 
-    return NextResponse.json({ webhookLogs: logs, confirmations: confs, twilioNumbers, twilioMessages });
+    return NextResponse.json({ webhookLogs, confirmations, twilioNumbers, twilioMessages });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

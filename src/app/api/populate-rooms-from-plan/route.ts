@@ -2,32 +2,33 @@
  * POST /api/populate-rooms-from-plan
  *
  * Manual "load all 74 rooms from the CSV" button on the Rooms tab.
- * Reads planSnapshots/{date} (the last CSV pull at 6am or 7pm) and seeds
- * every room in that snapshot into rooms/{date}_{roomNumber} so the Rooms
- * tab grid shows the full property, not just the 15 rooms Maria assigned.
+ * Reads plan_snapshots(property_id=pid, date=date) (the last CSV pull at 6am or
+ * 7pm) and seeds every room in that snapshot into the `rooms` table so the
+ * Rooms tab grid shows the full property, not just the 15 rooms Maria assigned.
  *
  * Behavior:
- *   • NEW doc (doesn't exist yet) → create with type + status from CSV
- *   • EXISTING doc → overwrite type + status from CSV, clear stale
- *     timestamps/notes; PRESERVE assignedTo/assignedName/isDnd/stayover*
- *     so Maria's Send-shift-confirmations work and HK progress are not lost.
+ *   • NEW row (doesn't exist yet) → create with type + status from CSV
+ *   • EXISTING row → overwrite type + status from CSV, clear stale progress;
+ *     PRESERVE assigned_to/assigned_name/is_dnd/stayover_* so Maria's Send
+ *     shift confirmations work and HK progress are not lost.
  *
  * This endpoint is fired only when the user clicks the button. Nothing
  * calls it automatically.
  *
- * Body: { uid, pid, date }
+ * Body: { pid, date, uid?: string }  (uid ignored — legacy)
  */
 import { NextRequest, NextResponse } from 'next/server';
-import admin from '@/lib/firebase-admin';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import { isValidDateStr } from '@/lib/utils';
 
 interface RequestBody {
-  uid: string;
   pid: string;
   date: string;
+  /** Legacy — ignored. */
+  uid?: string;
 }
 
-// CSV room → Room.type
+// CSV room → rooms.type
 // Mirrors send-shift-confirmations' logic so both endpoints agree.
 //   stayType === 'C/O'             → 'checkout'   (↗ icon)
 //   status === 'OCC'               → 'stayover'   (🔒 icon; covers "Stay" AND
@@ -43,79 +44,83 @@ function mapRoomType(
   return 'vacant';
 }
 
-// CSV `condition` → RoomStatus. Anything other than a literal "Clean" is dirty.
+// CSV `condition` → rooms.status. Anything other than a literal "Clean" is dirty.
 function mapRoomStatus(condition: string | null | undefined): 'clean' | 'dirty' {
   return condition === 'Clean' ? 'clean' : 'dirty';
 }
 
+type PlanRoom = {
+  number: string;
+  roomType?: string;
+  status?: string | null;          // OCC / VAC / OOO
+  condition?: string | null;       // Clean / Dirty
+  stayType?: string | null;        // "Stay" | "C/O" | null
+  service?: string | null;         // Full / None (Choice brand cycle, ignored)
+  stayoverDay?: number | null;
+  stayoverMinutes?: number | null;
+  arrival?: string | null;
+};
+
 export async function POST(req: NextRequest) {
   try {
     const body: RequestBody = await req.json();
-    const { uid, pid, date } = body;
+    const { pid, date } = body;
 
-    if (!uid || !pid || !date) {
-      return NextResponse.json({ error: 'Missing uid, pid, or date' }, { status: 400 });
+    if (!pid || !date) {
+      return NextResponse.json({ error: 'Missing pid or date' }, { status: 400 });
     }
     if (!isValidDateStr(date)) {
       return NextResponse.json({ error: 'Invalid date (expected YYYY-MM-DD)' }, { status: 400 });
     }
 
-    const db = admin.firestore();
-
     // Pull the plan snapshot for this date — that's the last CSV pull.
-    const planSnapRef = db
-      .collection('users').doc(uid)
-      .collection('properties').doc(pid)
-      .collection('planSnapshots').doc(date);
-    const planSnap = await planSnapRef.get();
+    const { data: planRow, error: planErr } = await supabaseAdmin
+      .from('plan_snapshots')
+      .select('rooms, pulled_at')
+      .eq('property_id', pid)
+      .eq('date', date)
+      .maybeSingle();
 
-    if (!planSnap.exists) {
+    if (planErr) throw planErr;
+
+    if (!planRow) {
       return NextResponse.json(
-        { error: `No planSnapshots/${date} doc found — no CSV has been pulled for that date yet.` },
+        { error: `No plan_snapshots row found for (${pid}, ${date}) — no CSV has been pulled for that date yet.` },
         { status: 404 },
       );
     }
 
-    const planData = planSnap.data() as {
-      rooms?: Array<{
-        number: string;
-        roomType?: string;
-        status?: string | null;          // OCC / VAC / OOO
-        condition?: string | null;       // Clean / Dirty
-        stayType?: string | null;        // "Stay" | "C/O" | null
-        service?: string | null;         // Full / None (Choice brand cycle, ignored)
-        stayoverDay?: number | null;
-        stayoverMinutes?: number;
-        arrival?: string | null;
-      }>;
-      pulledAt?: FirebaseFirestore.Timestamp;
-    };
-    const csvRooms = planData.rooms ?? [];
-
+    const csvRooms = ((planRow.rooms ?? []) as PlanRoom[]);
     if (csvRooms.length === 0) {
       return NextResponse.json(
-        { error: `planSnapshots/${date} has no rooms array — CSV pull may have failed.` },
+        { error: `plan_snapshots row has no rooms array — CSV pull may have failed.` },
         { status: 404 },
       );
     }
 
-    // Pull existing room docs for this date so we can preserve assignments.
-    const existingSnap = await db
-      .collection('users').doc(uid)
-      .collection('properties').doc(pid)
-      .collection('rooms')
-      .where('date', '==', date)
-      .get();
+    // Pull existing room rows for this date so we can preserve assignments.
+    const { data: existing, error: existErr } = await supabaseAdmin
+      .from('rooms')
+      .select('id, number')
+      .eq('property_id', pid)
+      .eq('date', date);
+    if (existErr) throw existErr;
 
-    const existingByNumber = new Map<string, FirebaseFirestore.QueryDocumentSnapshot>();
-    existingSnap.forEach(doc => {
-      const num = (doc.data().number ?? '') as string;
-      if (num) existingByNumber.set(num, doc);
-    });
+    const existingByNumber = new Map<string, { id: string }>();
+    for (const r of (existing ?? [])) {
+      if (r.number) existingByNumber.set(r.number as string, { id: r.id as string });
+    }
 
-    const batch = db.batch();
     let created = 0;
     let updated = 0;
+
+    // Split into two arrays: rows to insert vs rows to update. This lets us
+    // issue one insert (efficient) and parallel updates (preserves the
+    // per-row PRESERVE semantics for assigned_to/is_dnd/etc.).
+    const toInsert: Array<Record<string, unknown>> = [];
+    // PromiseLike (not Promise) — Supabase query-builder chains are
+    // thenables; Promise.all accepts PromiseLike.
+    const updates: PromiseLike<unknown>[] = [];
 
     for (const csv of csvRooms) {
       const num = csv.number;
@@ -124,60 +129,80 @@ export async function POST(req: NextRequest) {
       const type = mapRoomType(csv.stayType, csv.status);
       const status = mapRoomStatus(csv.condition);
 
-      const docId = `${date}_${num}`;
-      const ref = db
-        .collection('users').doc(uid)
-        .collection('properties').doc(pid)
-        .collection('rooms').doc(docId);
-
-      const existing = existingByNumber.get(num);
-      if (existing) {
+      const row = existingByNumber.get(num);
+      if (row) {
         // Overwrite type + status with CSV baseline. Clear stale progress
-        // timestamps (fresh baseline). Preserve assignedTo/assignedName so
-        // Maria's shift Send is not blown away. Preserve isDnd flags.
-        batch.update(ref, {
+        // timestamps (fresh baseline). Preserve assigned_to/assigned_name so
+        // Maria's shift Send is not blown away. Preserve is_dnd flags.
+        const patch: Record<string, unknown> = {
           type,
           status,
-          startedAt:   null,
-          completedAt: null,
-          issueNote:   admin.firestore.FieldValue.delete(),
-          helpRequested: false,
-          stayoverDay:     csv.stayoverDay ?? admin.firestore.FieldValue.delete(),
-          stayoverMinutes: csv.stayoverMinutes ?? admin.firestore.FieldValue.delete(),
-          arrival:         csv.arrival ?? admin.firestore.FieldValue.delete(),
-          _lastPopulatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          _lastPopulatedFrom: 'populate-rooms-button',
-        });
-        updated++;
-      } else {
-        // New doc — seed everything.
-        const payload: Record<string, unknown> = {
-          number:     num,
-          type,
-          status,
-          priority:   'standard',
-          date,
-          propertyId: pid,
-          _seededBy:  'populate-rooms-button',
-          _seededAt:  admin.firestore.FieldValue.serverTimestamp(),
+          started_at:   null,
+          completed_at: null,
+          issue_note:   null,
+          help_requested: false,
         };
         if (csv.stayoverDay !== null && csv.stayoverDay !== undefined) {
-          payload.stayoverDay = csv.stayoverDay;
+          patch.stayover_day = csv.stayoverDay;
+        } else {
+          patch.stayover_day = null;
         }
-        if (csv.stayoverMinutes !== undefined) {
-          payload.stayoverMinutes = csv.stayoverMinutes;
+        if (csv.stayoverMinutes !== null && csv.stayoverMinutes !== undefined) {
+          patch.stayover_minutes = csv.stayoverMinutes;
+        } else {
+          patch.stayover_minutes = null;
+        }
+        if (csv.arrival !== null && csv.arrival !== undefined) {
+          patch.arrival = csv.arrival;
+        } else {
+          patch.arrival = null;
+        }
+        updates.push(
+          supabaseAdmin
+            .from('rooms')
+            .update(patch)
+            .eq('id', row.id)
+            .then(({ error }) => { if (error) throw error; }),
+        );
+        updated++;
+      } else {
+        // New row — seed everything.
+        const payload: Record<string, unknown> = {
+          property_id: pid,
+          number: num,
+          date,
+          type,
+          status,
+          priority: 'standard',
+        };
+        if (csv.stayoverDay !== null && csv.stayoverDay !== undefined) {
+          payload.stayover_day = csv.stayoverDay;
+        }
+        if (csv.stayoverMinutes !== null && csv.stayoverMinutes !== undefined) {
+          payload.stayover_minutes = csv.stayoverMinutes;
         }
         if (csv.arrival) {
           payload.arrival = csv.arrival;
         }
-        batch.set(ref, payload);
+        toInsert.push(payload);
         created++;
       }
     }
 
-    await batch.commit();
+    // Insert the new ones in one batch. On-conflict upsert guards against a
+    // racy double-click creating duplicates.
+    if (toInsert.length > 0) {
+      const { error: insErr } = await supabaseAdmin
+        .from('rooms')
+        .upsert(toInsert, { onConflict: 'property_id,date,number' });
+      if (insErr) throw insErr;
+    }
 
-    const pulledAt = planData.pulledAt?.toDate?.()?.toISOString() ?? null;
+    if (updates.length > 0) {
+      await Promise.all(updates);
+    }
+
+    const pulledAt = planRow.pulled_at ? String(planRow.pulled_at) : null;
 
     return NextResponse.json({
       ok: true,

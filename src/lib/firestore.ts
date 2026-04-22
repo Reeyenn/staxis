@@ -1,22 +1,22 @@
-import {
-  doc,
-  collection,
-  getDoc,
-  getDocs,
-  setDoc,
-  updateDoc,
-  deleteDoc,
-  addDoc,
-  query,
-  where,
-  orderBy,
-  onSnapshot,
-  Timestamp,
-  serverTimestamp,
-  DocumentReference,
-  CollectionReference,
-} from 'firebase/firestore';
-import { db } from './firebase';
+// ═══════════════════════════════════════════════════════════════════════════
+// Data access layer — Supabase/Postgres.
+//
+// File name is kept as `firestore.ts` as a deliberate no-op rename so that
+// every existing `import { ... } from '@/lib/firestore'` in the codebase
+// continues to work without edits. The implementation has been entirely
+// rewritten on top of Supabase (Postgres + Realtime). Function signatures
+// are preserved exactly — the `uid` first arg is accepted for backward
+// compatibility and ignored, because scoping is now by `property_id` plus
+// RLS (authenticated user's JWT identifies them; service-role key bypasses
+// RLS for scraper/cron/admin routes).
+//
+// All real-time listeners use Supabase Realtime's `postgres_changes`
+// channel. Each subscribe* helper does an initial fetch, pushes the result
+// to the callback, then subscribes to subsequent INSERT/UPDATE/DELETE
+// events and re-fetches so the caller always sees a consistent snapshot.
+// ═══════════════════════════════════════════════════════════════════════════
+
+import { supabase } from './supabase';
 import type {
   Property,
   StaffMember,
@@ -38,606 +38,1193 @@ import type {
   LandscapingTask,
 } from '@/types';
 
-// ─── Path helpers ──────────────────────────────────────────────────────────
+// ─── tiny utilities ─────────────────────────────────────────────────────────
 
-export const userRef = (uid: string) => doc(db, 'users', uid);
-export const propertiesRef = (uid: string) => collection(db, 'users', uid, 'properties');
-export const propertyRef = (uid: string, pid: string) => doc(db, 'users', uid, 'properties', pid);
-export const staffRef = (uid: string, pid: string) => collection(db, 'users', uid, 'properties', pid, 'staff');
-export const staffDocRef = (uid: string, pid: string, sid: string) => doc(db, 'users', uid, 'properties', pid, 'staff', sid);
-export const publicAreasRef = (uid: string, pid: string) => collection(db, 'users', uid, 'properties', pid, 'publicAreas');
-export const publicAreaDocRef = (uid: string, pid: string, aid: string) => doc(db, 'users', uid, 'properties', pid, 'publicAreas', aid);
-export const laundryConfigRef = (uid: string, pid: string) => collection(db, 'users', uid, 'properties', pid, 'laundryConfig');
-export const laundryDocRef = (uid: string, pid: string, lid: string) => doc(db, 'users', uid, 'properties', pid, 'laundryConfig', lid);
-export const dailyLogsRef = (uid: string, pid: string) => collection(db, 'users', uid, 'properties', pid, 'dailyLogs');
-export const dailyLogRef = (uid: string, pid: string, date: string) => doc(db, 'users', uid, 'properties', pid, 'dailyLogs', date);
-export const roomsRef = (uid: string, pid: string) => collection(db, 'users', uid, 'properties', pid, 'rooms');
-export const roomDocRef = (uid: string, pid: string, rid: string) => doc(db, 'users', uid, 'properties', pid, 'rooms', rid);
+const toDate = (v: unknown): Date | null => {
+  if (v == null) return null;
+  if (v instanceof Date) return v;
+  if (typeof v === 'string' || typeof v === 'number') {
+    const d = new Date(v);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  return null;
+};
 
-// ─── User ──────────────────────────────────────────────────────────────────
+const toISO = (v: unknown): string | null => {
+  const d = toDate(v);
+  return d ? d.toISOString() : null;
+};
 
-export async function createOrUpdateUser(uid: string, data: Partial<UserProfile>) {
-  await setDoc(userRef(uid), { ...data, updatedAt: serverTimestamp() }, { merge: true });
+function dropUndefined<T extends object>(obj: T): Partial<T> {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as Partial<T>;
+}
+
+function logErr(tag: string, err: unknown): void {
+  const msg = err instanceof Error ? err.message : String(err);
+  // eslint-disable-next-line no-console
+  console.error(`[Supabase] ${tag}:`, msg);
+}
+
+// ─── Column mappers ────────────────────────────────────────────────────────
+
+function toPropertyRow(p: Partial<Property>): Record<string, unknown> {
+  return dropUndefined({
+    name: p.name,
+    total_rooms: p.totalRooms,
+    avg_occupancy: p.avgOccupancy,
+    hourly_wage: p.hourlyWage,
+    checkout_minutes: p.checkoutMinutes,
+    stayover_minutes: p.stayoverMinutes,
+    stayover_day1_minutes: p.stayoverDay1Minutes,
+    stayover_day2_minutes: p.stayoverDay2Minutes,
+    prep_minutes_per_activity: p.prepMinutesPerActivity,
+    shift_minutes: p.shiftMinutes,
+    total_staff_on_roster: p.totalStaffOnRoster,
+    weekly_budget: p.weeklyBudget,
+    morning_briefing_time: p.morningBriefingTime,
+    evening_forecast_time: p.eveningForecastTime,
+    pms_type: p.pmsType,
+    pms_url: p.pmsUrl,
+    pms_connected: p.pmsConnected,
+    last_synced_at: toISO(p.lastSyncedAt),
+  });
+}
+
+function fromPropertyRow(r: Record<string, unknown>): Property {
+  return {
+    id: String(r.id),
+    name: String(r.name ?? ''),
+    totalRooms: Number(r.total_rooms ?? 0),
+    avgOccupancy: Number(r.avg_occupancy ?? 0),
+    hourlyWage: Number(r.hourly_wage ?? 15),
+    checkoutMinutes: Number(r.checkout_minutes ?? 30),
+    stayoverMinutes: Number(r.stayover_minutes ?? 20),
+    stayoverDay1Minutes: r.stayover_day1_minutes == null ? undefined : Number(r.stayover_day1_minutes),
+    stayoverDay2Minutes: r.stayover_day2_minutes == null ? undefined : Number(r.stayover_day2_minutes),
+    prepMinutesPerActivity: Number(r.prep_minutes_per_activity ?? 5),
+    shiftMinutes: Number(r.shift_minutes ?? 480),
+    totalStaffOnRoster: Number(r.total_staff_on_roster ?? 0),
+    weeklyBudget: r.weekly_budget == null ? undefined : Number(r.weekly_budget),
+    morningBriefingTime: (r.morning_briefing_time as string) ?? undefined,
+    eveningForecastTime: (r.evening_forecast_time as string) ?? undefined,
+    pmsType: (r.pms_type as string) ?? undefined,
+    pmsUrl: (r.pms_url as string) ?? undefined,
+    pmsConnected: (r.pms_connected as boolean) ?? undefined,
+    lastSyncedAt: toDate(r.last_synced_at),
+    createdAt: toDate(r.created_at) ?? new Date(),
+  };
+}
+
+function toStaffRow(s: Partial<StaffMember>): Record<string, unknown> {
+  return dropUndefined({
+    name: s.name,
+    phone: s.phone,
+    phone_lookup: s.phone ? s.phone.replace(/\D/g, '').slice(-10) : undefined,
+    language: s.language,
+    is_senior: s.isSenior,
+    department: s.department,
+    hourly_wage: s.hourlyWage,
+    scheduled_today: s.scheduledToday,
+    weekly_hours: s.weeklyHours,
+    max_weekly_hours: s.maxWeeklyHours,
+    max_days_per_week: s.maxDaysPerWeek,
+    days_worked_this_week: s.daysWorkedThisWeek,
+    vacation_dates: s.vacationDates,
+    is_active: s.isActive,
+    schedule_priority: s.schedulePriority,
+    is_scheduling_manager: s.isSchedulingManager,
+  });
+}
+
+function fromStaffRow(r: Record<string, unknown>): StaffMember {
+  return {
+    id: String(r.id),
+    name: String(r.name ?? ''),
+    phone: (r.phone as string) ?? undefined,
+    language: (r.language as 'en' | 'es') ?? 'en',
+    isSenior: Boolean(r.is_senior),
+    department: (r.department as StaffMember['department']) ?? undefined,
+    hourlyWage: r.hourly_wage == null ? undefined : Number(r.hourly_wage),
+    scheduledToday: Boolean(r.scheduled_today),
+    weeklyHours: Number(r.weekly_hours ?? 0),
+    maxWeeklyHours: Number(r.max_weekly_hours ?? 40),
+    maxDaysPerWeek: r.max_days_per_week == null ? undefined : Number(r.max_days_per_week),
+    daysWorkedThisWeek: r.days_worked_this_week == null ? undefined : Number(r.days_worked_this_week),
+    vacationDates: (r.vacation_dates as string[]) ?? undefined,
+    isActive: r.is_active == null ? undefined : Boolean(r.is_active),
+    schedulePriority: (r.schedule_priority as StaffMember['schedulePriority']) ?? undefined,
+    isSchedulingManager: r.is_scheduling_manager == null ? undefined : Boolean(r.is_scheduling_manager),
+  };
+}
+
+function toRoomRow(room: Partial<Room> & { propertyId?: string }): Record<string, unknown> {
+  return dropUndefined({
+    property_id: room.propertyId,
+    number: room.number,
+    date: room.date,
+    type: room.type,
+    priority: room.priority,
+    status: room.status,
+    assigned_to: room.assignedTo,
+    assigned_name: room.assignedName,
+    started_at: toISO(room.startedAt),
+    completed_at: toISO(room.completedAt),
+    issue_note: room.issueNote,
+    inspected_by: room.inspectedBy,
+    inspected_at: toISO(room.inspectedAt),
+    is_dnd: room.isDnd,
+    dnd_note: room.dndNote,
+    arrival: room.arrival,
+    stayover_day: room.stayoverDay,
+    stayover_minutes: room.stayoverMinutes,
+    help_requested: room.helpRequested,
+    checklist: room.checklist,
+    photo_url: room.photoUrl,
+  });
+}
+
+function fromRoomRow(r: Record<string, unknown>): Room {
+  return {
+    id: String(r.id),
+    number: String(r.number ?? ''),
+    type: (r.type as Room['type']) ?? 'checkout',
+    priority: (r.priority as Room['priority']) ?? 'standard',
+    status: (r.status as Room['status']) ?? 'dirty',
+    assignedTo: (r.assigned_to as string) ?? undefined,
+    assignedName: (r.assigned_name as string) ?? undefined,
+    startedAt: toDate(r.started_at),
+    completedAt: toDate(r.completed_at),
+    date: String(r.date ?? ''),
+    propertyId: String(r.property_id ?? ''),
+    issueNote: (r.issue_note as string) ?? undefined,
+    inspectedBy: (r.inspected_by as string) ?? undefined,
+    inspectedAt: toDate(r.inspected_at),
+    isDnd: r.is_dnd == null ? undefined : Boolean(r.is_dnd),
+    dndNote: (r.dnd_note as string) ?? undefined,
+    arrival: (r.arrival as string) ?? undefined,
+    stayoverDay: r.stayover_day == null ? undefined : Number(r.stayover_day),
+    stayoverMinutes: r.stayover_minutes == null ? undefined : Number(r.stayover_minutes),
+    helpRequested: r.help_requested == null ? undefined : Boolean(r.help_requested),
+    checklist: (r.checklist as Record<string, boolean>) ?? undefined,
+    photoUrl: (r.photo_url as string) ?? undefined,
+  };
+}
+
+function toPublicAreaRow(a: Partial<PublicArea>): Record<string, unknown> {
+  return dropUndefined({
+    name: a.name,
+    floor: a.floor,
+    locations: a.locations,
+    frequency_days: a.frequencyDays,
+    minutes_per_clean: a.minutesPerClean,
+    start_date: a.startDate,
+    only_when_rented: a.onlyWhenRented,
+    is_rented_today: a.isRentedToday,
+  });
+}
+
+function fromPublicAreaRow(r: Record<string, unknown>): PublicArea {
+  return {
+    id: String(r.id),
+    name: String(r.name ?? ''),
+    floor: String(r.floor ?? ''),
+    locations: Number(r.locations ?? 1),
+    frequencyDays: Number(r.frequency_days ?? 1),
+    minutesPerClean: Number(r.minutes_per_clean ?? 0),
+    startDate: String(r.start_date ?? ''),
+    onlyWhenRented: r.only_when_rented == null ? undefined : Boolean(r.only_when_rented),
+    isRentedToday: r.is_rented_today == null ? undefined : Boolean(r.is_rented_today),
+  };
+}
+
+function toLaundryRow(c: Partial<LaundryCategory>): Record<string, unknown> {
+  return dropUndefined({
+    name: c.name,
+    units_per_checkout: c.unitsPerCheckout,
+    two_bed_multiplier: c.twoBedMultiplier,
+    stayover_factor: c.stayoverFactor,
+    room_equivs_per_load: c.roomEquivsPerLoad,
+    minutes_per_load: c.minutesPerLoad,
+  });
+}
+
+function fromLaundryRow(r: Record<string, unknown>): LaundryCategory {
+  return {
+    id: String(r.id),
+    name: String(r.name ?? ''),
+    unitsPerCheckout: Number(r.units_per_checkout ?? 0),
+    twoBedMultiplier: Number(r.two_bed_multiplier ?? 1),
+    stayoverFactor: Number(r.stayover_factor ?? 0),
+    roomEquivsPerLoad: Number(r.room_equivs_per_load ?? 1),
+    minutesPerLoad: Number(r.minutes_per_load ?? 60),
+  };
+}
+
+function toDailyLogRow(l: Partial<DailyLog> & { propertyId?: string }): Record<string, unknown> {
+  return dropUndefined({
+    property_id: l.propertyId,
+    date: l.date,
+    occupied: l.occupied,
+    checkouts: l.checkouts,
+    two_bed_checkouts: l.twoBedCheckouts,
+    stayovers: l.stayovers,
+    vips: l.vips,
+    early_checkins: l.earlyCheckins,
+    room_minutes: l.roomMinutes,
+    public_area_minutes: l.publicAreaMinutes,
+    laundry_minutes: l.laundryMinutes,
+    total_minutes: l.totalMinutes,
+    recommended_staff: l.recommendedStaff,
+    actual_staff: l.actualStaff,
+    hourly_wage: l.hourlyWage,
+    labor_cost: l.laborCost,
+    labor_saved: l.laborSaved,
+    start_time: l.startTime,
+    completion_time: l.completionTime,
+    public_areas_due_today: l.publicAreasDueToday,
+    laundry_loads: l.laundryLoads,
+    rooms_completed: l.roomsCompleted,
+    avg_turnaround_minutes: l.avgTurnaroundMinutes,
+  });
+}
+
+function fromDailyLogRow(r: Record<string, unknown>): DailyLog {
+  return {
+    date: String(r.date ?? ''),
+    hotelId: String(r.property_id ?? ''),
+    occupied: Number(r.occupied ?? 0),
+    checkouts: Number(r.checkouts ?? 0),
+    twoBedCheckouts: Number(r.two_bed_checkouts ?? 0),
+    stayovers: Number(r.stayovers ?? 0),
+    vips: Number(r.vips ?? 0),
+    earlyCheckins: Number(r.early_checkins ?? 0),
+    roomMinutes: Number(r.room_minutes ?? 0),
+    publicAreaMinutes: Number(r.public_area_minutes ?? 0),
+    laundryMinutes: Number(r.laundry_minutes ?? 0),
+    totalMinutes: Number(r.total_minutes ?? 0),
+    recommendedStaff: Number(r.recommended_staff ?? 0),
+    actualStaff: Number(r.actual_staff ?? 0),
+    hourlyWage: r.hourly_wage == null ? undefined : Number(r.hourly_wage),
+    laborCost: Number(r.labor_cost ?? 0),
+    laborSaved: Number(r.labor_saved ?? 0),
+    startTime: String(r.start_time ?? ''),
+    completionTime: String(r.completion_time ?? ''),
+    publicAreasDueToday: (r.public_areas_due_today as string[]) ?? [],
+    laundryLoads: (r.laundry_loads as DailyLog['laundryLoads']) ?? { towels: 0, sheets: 0, comforters: 0 },
+    roomsCompleted: r.rooms_completed == null ? undefined : Number(r.rooms_completed),
+    avgTurnaroundMinutes: r.avg_turnaround_minutes == null ? undefined : Number(r.avg_turnaround_minutes),
+  };
+}
+
+function toWorkOrderRow(o: Partial<WorkOrder>): Record<string, unknown> {
+  return dropUndefined({
+    property_id: o.propertyId,
+    room_number: o.roomNumber,
+    description: o.description,
+    severity: o.severity,
+    status: o.status,
+    submitted_by: o.submittedBy,
+    submitted_by_name: o.submittedByName,
+    assigned_to: o.assignedTo,
+    assigned_name: o.assignedName,
+    photo_url: o.photoUrl,
+    notes: o.notes,
+    blocked_room: o.blockedRoom,
+    source: o.source,
+    ca_work_order_number: o.caWorkOrderNumber,
+    ca_from_date: o.caFromDate,
+    ca_to_date: o.caToDate,
+    resolved_at: toISO(o.resolvedAt),
+  });
+}
+
+function fromWorkOrderRow(r: Record<string, unknown>): WorkOrder {
+  return {
+    id: String(r.id),
+    propertyId: String(r.property_id ?? ''),
+    roomNumber: String(r.room_number ?? ''),
+    description: String(r.description ?? ''),
+    severity: (r.severity as WorkOrder['severity']) ?? 'low',
+    status: (r.status as WorkOrder['status']) ?? 'submitted',
+    submittedBy: (r.submitted_by as string) ?? undefined,
+    submittedByName: (r.submitted_by_name as string) ?? undefined,
+    assignedTo: (r.assigned_to as string) ?? undefined,
+    assignedName: (r.assigned_name as string) ?? undefined,
+    photoUrl: (r.photo_url as string) ?? undefined,
+    notes: (r.notes as string) ?? undefined,
+    blockedRoom: r.blocked_room == null ? undefined : Boolean(r.blocked_room),
+    source: (r.source as WorkOrder['source']) ?? undefined,
+    caWorkOrderNumber: (r.ca_work_order_number as string) ?? undefined,
+    caFromDate: (r.ca_from_date as string) ?? undefined,
+    caToDate: (r.ca_to_date as string) ?? undefined,
+    createdAt: toDate(r.created_at),
+    updatedAt: toDate(r.updated_at),
+    resolvedAt: toDate(r.resolved_at),
+  };
+}
+
+function fromPreventiveRow(r: Record<string, unknown>): PreventiveTask {
+  return {
+    id: String(r.id),
+    propertyId: String(r.property_id ?? ''),
+    name: String(r.name ?? ''),
+    frequencyDays: Number(r.frequency_days ?? 1),
+    lastCompletedAt: toDate(r.last_completed_at),
+    lastCompletedBy: (r.last_completed_by as string) ?? undefined,
+    notes: (r.notes as string) ?? undefined,
+    createdAt: toDate(r.created_at),
+  };
+}
+
+function toPreventiveRow(t: Partial<PreventiveTask>): Record<string, unknown> {
+  return dropUndefined({
+    property_id: t.propertyId,
+    name: t.name,
+    frequency_days: t.frequencyDays,
+    last_completed_at: toISO(t.lastCompletedAt),
+    last_completed_by: t.lastCompletedBy,
+    notes: t.notes,
+  });
+}
+
+function fromLandscapingRow(r: Record<string, unknown>): LandscapingTask {
+  return {
+    id: String(r.id),
+    propertyId: String(r.property_id ?? ''),
+    name: String(r.name ?? ''),
+    season: (r.season as LandscapingTask['season']) ?? 'year-round',
+    frequencyDays: Number(r.frequency_days ?? 1),
+    lastCompletedAt: toDate(r.last_completed_at),
+    lastCompletedBy: (r.last_completed_by as string) ?? undefined,
+    notes: (r.notes as string) ?? undefined,
+    createdAt: toDate(r.created_at),
+  };
+}
+
+function toLandscapingRow(t: Partial<LandscapingTask>): Record<string, unknown> {
+  return dropUndefined({
+    property_id: t.propertyId,
+    name: t.name,
+    season: t.season,
+    frequency_days: t.frequencyDays,
+    last_completed_at: toISO(t.lastCompletedAt),
+    last_completed_by: t.lastCompletedBy,
+    notes: t.notes,
+  });
+}
+
+function fromInventoryRow(r: Record<string, unknown>): InventoryItem {
+  return {
+    id: String(r.id),
+    propertyId: String(r.property_id ?? ''),
+    name: String(r.name ?? ''),
+    category: (r.category as InventoryItem['category']) ?? 'housekeeping',
+    currentStock: Number(r.current_stock ?? 0),
+    parLevel: Number(r.par_level ?? 0),
+    reorderAt: r.reorder_at == null ? undefined : Number(r.reorder_at),
+    unit: String(r.unit ?? ''),
+    notes: (r.notes as string) ?? undefined,
+    updatedAt: toDate(r.updated_at),
+    usagePerCheckout: r.usage_per_checkout == null ? undefined : Number(r.usage_per_checkout),
+    usagePerStayover: r.usage_per_stayover == null ? undefined : Number(r.usage_per_stayover),
+    reorderLeadDays: r.reorder_lead_days == null ? undefined : Number(r.reorder_lead_days),
+    vendorName: (r.vendor_name as string) ?? undefined,
+    lastOrderedAt: toDate(r.last_ordered_at),
+  };
+}
+
+function toInventoryRow(i: Partial<InventoryItem>): Record<string, unknown> {
+  return dropUndefined({
+    property_id: i.propertyId,
+    name: i.name,
+    category: i.category,
+    current_stock: i.currentStock,
+    par_level: i.parLevel,
+    reorder_at: i.reorderAt,
+    unit: i.unit,
+    notes: i.notes,
+    usage_per_checkout: i.usagePerCheckout,
+    usage_per_stayover: i.usagePerStayover,
+    reorder_lead_days: i.reorderLeadDays,
+    vendor_name: i.vendorName,
+    last_ordered_at: toISO(i.lastOrderedAt),
+  });
+}
+
+function fromInspectionRow(r: Record<string, unknown>): Inspection {
+  return {
+    id: String(r.id),
+    propertyId: String(r.property_id ?? ''),
+    name: String(r.name ?? ''),
+    dueMonth: String(r.due_month ?? ''),
+    frequencyMonths: Number(r.frequency_months ?? 0),
+    frequencyDays: r.frequency_days == null ? undefined : Number(r.frequency_days),
+    lastInspectedDate: (r.last_inspected_date as string) ?? undefined,
+    notes: (r.notes as string) ?? undefined,
+    createdAt: toDate(r.created_at),
+    updatedAt: toDate(r.updated_at),
+  };
+}
+
+function toInspectionRow(i: Partial<Inspection>): Record<string, unknown> {
+  return dropUndefined({
+    property_id: i.propertyId,
+    name: i.name,
+    due_month: i.dueMonth,
+    frequency_months: i.frequencyMonths,
+    frequency_days: i.frequencyDays,
+    last_inspected_date: i.lastInspectedDate,
+    notes: i.notes,
+  });
+}
+
+function fromHandoffRow(r: Record<string, unknown>): HandoffEntry {
+  return {
+    id: String(r.id),
+    propertyId: String(r.property_id ?? ''),
+    shiftType: (r.shift_type as HandoffEntry['shiftType']) ?? 'morning',
+    author: String(r.author ?? ''),
+    notes: String(r.notes ?? ''),
+    acknowledged: Boolean(r.acknowledged),
+    acknowledgedBy: (r.acknowledged_by as string) ?? undefined,
+    createdAt: toDate(r.created_at),
+    acknowledgedAt: toDate(r.acknowledged_at),
+  };
+}
+
+function fromGuestRequestRow(r: Record<string, unknown>): GuestRequest {
+  return {
+    id: String(r.id),
+    propertyId: String(r.property_id ?? ''),
+    roomNumber: String(r.room_number ?? ''),
+    type: (r.type as GuestRequest['type']) ?? 'other',
+    notes: (r.notes as string) ?? undefined,
+    status: (r.status as GuestRequest['status']) ?? 'pending',
+    assignedTo: (r.assigned_to as string) ?? undefined,
+    assignedName: (r.assigned_name as string) ?? undefined,
+    createdAt: toDate(r.created_at),
+    completedAt: toDate(r.completed_at),
+  };
+}
+
+function toGuestRequestRow(g: Partial<GuestRequest>): Record<string, unknown> {
+  return dropUndefined({
+    property_id: g.propertyId,
+    room_number: g.roomNumber,
+    type: g.type,
+    notes: g.notes,
+    status: g.status,
+    assigned_to: g.assignedTo,
+    assigned_name: g.assignedName,
+    completed_at: toISO(g.completedAt),
+  });
+}
+
+function fromShiftConfirmationRow(r: Record<string, unknown>): ShiftConfirmation {
+  return {
+    id: String(r.token ?? r.id ?? ''),
+    uid: '',
+    pid: String(r.property_id ?? ''),
+    staffId: String(r.staff_id ?? ''),
+    staffName: String(r.staff_name ?? ''),
+    staffPhone: String(r.staff_phone ?? ''),
+    shiftDate: String(r.shift_date ?? ''),
+    status: (r.status as ShiftConfirmation['status']) ?? 'sent',
+    language: (r.language as 'en' | 'es') ?? 'en',
+    sentAt: toDate(r.sent_at),
+    respondedAt: toDate(r.responded_at),
+    smsSent: Boolean(r.sms_sent),
+    smsError: (r.sms_error as string) ?? undefined,
+  };
+}
+
+function fromManagerNotificationRow(r: Record<string, unknown>): ManagerNotification {
+  return {
+    id: String(r.id),
+    uid: '',
+    pid: String(r.property_id ?? ''),
+    type: (r.type as ManagerNotification['type']) ?? 'no_response',
+    message: String(r.message ?? ''),
+    staffName: (r.staff_name as string) ?? undefined,
+    replacementName: (r.replacement_name as string) ?? undefined,
+    shiftDate: String(r.shift_date ?? ''),
+    read: Boolean(r.read),
+    createdAt: toDate(r.created_at),
+  };
+}
+
+function fromDeepCleanRecordRow(r: Record<string, unknown>): DeepCleanRecord {
+  return {
+    id: String(r.room_number ?? ''),
+    roomNumber: String(r.room_number ?? ''),
+    lastDeepClean: String(r.last_deep_clean ?? ''),
+    cleanedBy: (r.cleaned_by as string) ?? undefined,
+    cleanedByTeam: (r.cleaned_by_team as string[]) ?? undefined,
+    notes: (r.notes as string) ?? undefined,
+    status: (r.status as DeepCleanRecord['status']) ?? undefined,
+    assignedAt: (r.assigned_at as string) ?? undefined,
+    completedAt: (r.completed_at as string) ?? undefined,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Realtime helper: initial fetch + postgres_changes subscription
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Postgres Realtime delivers one row per event. Instead of diff-merging on
+// the client, each change triggers a cheap re-fetch so the callback always
+// receives the full, consistent list — mirrors Firestore's `onSnapshot`
+// semantics exactly.
+//
+// `filter` is a Postgres-level filter (e.g. `property_id=eq.xxx`). `doFetch`
+// is the initial + refresh loader. Returns an unsubscribe function.
+function subscribeTable<T>(
+  channelName: string,
+  table: string,
+  filter: string | null,
+  doFetch: () => Promise<T[]>,
+  callback: (rows: T[]) => void,
+): () => void {
+  let active = true;
+
+  const fire = () => {
+    if (!active) return;
+    doFetch()
+      .then(rows => { if (active) callback(rows); })
+      .catch(err => logErr(`Listener error in ${channelName}`, err));
+  };
+
+  fire();
+
+  const channel = supabase
+    .channel(channelName)
+    .on(
+      'postgres_changes' as never,
+      filter ? { event: '*', schema: 'public', table, filter } : { event: '*', schema: 'public', table },
+      fire,
+    )
+    .subscribe();
+
+  return () => {
+    active = false;
+    supabase.removeChannel(channel);
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// User — the Firestore `users/{uid}` profile doc doesn't have a Postgres
+// counterpart; user state lives in `auth.users` now. These helpers are
+// retained as soft no-ops so legacy callers compile without change.
+// ═══════════════════════════════════════════════════════════════════════════
+
+export async function createOrUpdateUser(_uid: string, _data: Partial<UserProfile>): Promise<void> {
+  // no-op: Supabase Auth owns the user record
 }
 
 export async function getUser(uid: string): Promise<UserProfile | null> {
-  const snap = await getDoc(userRef(uid));
-  if (!snap.exists()) return null;
-  return { uid, ...snap.data() } as UserProfile;
+  // Best-effort: synthesize a minimal profile from the auth session. Callers
+  // that relied on rich Firestore-side profile fields should use Supabase Auth
+  // getUser() directly going forward.
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user || user.id !== uid) return null;
+  return {
+    uid: user.id,
+    email: user.email ?? '',
+    displayName: (user.user_metadata?.display_name as string) ?? user.email ?? '',
+    createdAt: toDate(user.created_at) ?? new Date(),
+  };
 }
 
-// ─── Properties ────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// Properties
+// ═══════════════════════════════════════════════════════════════════════════
 
-export async function getProperties(uid: string): Promise<Property[]> {
-  const snap = await getDocs(propertiesRef(uid));
-  return snap.docs.map(d => ({ id: d.id, ...d.data() } as Property));
+export async function getProperties(_uid: string): Promise<Property[]> {
+  const { data, error } = await supabase.from('properties').select('*');
+  if (error) { logErr('getProperties', error); throw error; }
+  return (data ?? []).map(fromPropertyRow);
 }
 
-export async function getProperty(uid: string, pid: string): Promise<Property | null> {
-  const snap = await getDoc(propertyRef(uid, pid));
-  if (!snap.exists()) return null;
-  return { id: snap.id, ...snap.data() } as Property;
+export async function getProperty(_uid: string, pid: string): Promise<Property | null> {
+  const { data, error } = await supabase.from('properties').select('*').eq('id', pid).maybeSingle();
+  if (error) { logErr('getProperty', error); throw error; }
+  return data ? fromPropertyRow(data) : null;
 }
 
-export async function createProperty(uid: string, data: Omit<Property, 'id' | 'createdAt'>): Promise<string> {
-  const ref = await addDoc(propertiesRef(uid), { ...data, createdAt: serverTimestamp() });
-  return ref.id;
+export async function createProperty(_uid: string, data: Omit<Property, 'id' | 'createdAt'>): Promise<string> {
+  const row = toPropertyRow(data);
+  const { data: { user } } = await supabase.auth.getUser();
+  if (user?.id) row.owner_id = user.id;
+  const { data: inserted, error } = await supabase
+    .from('properties').insert(row).select('id').single();
+  if (error) { logErr('createProperty', error); throw error; }
+  return String(inserted.id);
 }
 
-export async function updateProperty(uid: string, pid: string, data: Partial<Property>) {
-  await updateDoc(propertyRef(uid, pid), { ...data, updatedAt: serverTimestamp() });
+export async function updateProperty(_uid: string, pid: string, data: Partial<Property>): Promise<void> {
+  const { error } = await supabase.from('properties').update(toPropertyRow(data)).eq('id', pid);
+  if (error) { logErr('updateProperty', error); throw error; }
 }
 
-// ─── Staff ─────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// Staff
+// ═══════════════════════════════════════════════════════════════════════════
 
-export async function getStaff(uid: string, pid: string): Promise<StaffMember[]> {
-  const snap = await getDocs(staffRef(uid, pid));
-  return snap.docs.map(d => ({ id: d.id, ...d.data() } as StaffMember));
+export async function getStaff(_uid: string, pid: string): Promise<StaffMember[]> {
+  const { data, error } = await supabase.from('staff').select('*').eq('property_id', pid);
+  if (error) { logErr('getStaff', error); throw error; }
+  return (data ?? []).map(fromStaffRow);
 }
 
-/** Real-time staff listener - fires immediately with cached data, then again
- *  when the network response arrives. Use this instead of getStaff to avoid
- *  the race where the Firestore cache returns [] before server data resolves. */
 export function subscribeToStaff(
-  uid: string,
-  pid: string,
-  callback: (staff: StaffMember[]) => void
+  _uid: string, pid: string,
+  callback: (staff: StaffMember[]) => void,
 ): () => void {
-  return onSnapshot(staffRef(uid, pid), snap => {
-    callback(snap.docs.map(d => ({ id: d.id, ...d.data() } as StaffMember)));
-  }, error => {
-    console.error('[Firestore] Listener error in subscribeToStaff:', error.message);
-  });
+  return subscribeTable<StaffMember>(
+    `staff:${pid}`, 'staff', `property_id=eq.${pid}`,
+    async () => {
+      const { data, error } = await supabase.from('staff').select('*').eq('property_id', pid);
+      if (error) throw error;
+      return (data ?? []).map(fromStaffRow);
+    },
+    callback,
+  );
 }
 
-export async function addStaffMember(uid: string, pid: string, data: Omit<StaffMember, 'id'>): Promise<string> {
+export async function addStaffMember(_uid: string, pid: string, data: Omit<StaffMember, 'id'>): Promise<string> {
   try {
-    const ref = await addDoc(staffRef(uid, pid), data);
-    return ref.id;
-  } catch (error: any) {
-    console.error('[Firestore] addStaffMember failed:', error.message);
-    throw error;
-  }
+    const row = { ...toStaffRow(data), property_id: pid };
+    const { data: inserted, error } = await supabase
+      .from('staff').insert(row).select('id').single();
+    if (error) throw error;
+    return String(inserted.id);
+  } catch (err) { logErr('addStaffMember', err); throw err; }
 }
 
-export async function updateStaffMember(uid: string, pid: string, sid: string, data: Partial<StaffMember>) {
+export async function updateStaffMember(_uid: string, _pid: string, sid: string, data: Partial<StaffMember>): Promise<void> {
   try {
-    await updateDoc(staffDocRef(uid, pid, sid), data);
-  } catch (error: any) {
-    console.error('[Firestore] updateStaffMember failed:', error.message);
-    throw error;
-  }
+    const { error } = await supabase.from('staff').update(toStaffRow(data)).eq('id', sid);
+    if (error) throw error;
+  } catch (err) { logErr('updateStaffMember', err); throw err; }
 }
 
-export async function deleteStaffMember(uid: string, pid: string, sid: string) {
+export async function deleteStaffMember(_uid: string, _pid: string, sid: string): Promise<void> {
   try {
-    await deleteDoc(staffDocRef(uid, pid, sid));
-  } catch (error: any) {
-    console.error('[Firestore] deleteStaffMember failed:', error.message);
-    throw error;
-  }
+    const { error } = await supabase.from('staff').delete().eq('id', sid);
+    if (error) throw error;
+  } catch (err) { logErr('deleteStaffMember', err); throw err; }
 }
 
-export async function saveStaffFcmToken(uid: string, pid: string, sid: string, fcmToken: string) {
-  await updateDoc(staffDocRef(uid, pid, sid), { fcmToken });
+/** No-op in Supabase world — FCM push has been dropped in favor of Twilio SMS.
+ * Retained so legacy callers compile without edits. */
+export async function saveStaffFcmToken(_uid: string, _pid: string, _sid: string, _fcmToken: string): Promise<void> {
+  // intentionally no-op
 }
 
-// ─── Public Areas ──────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// Public Areas
+// ═══════════════════════════════════════════════════════════════════════════
 
-export async function getPublicAreas(uid: string, pid: string): Promise<PublicArea[]> {
-  const snap = await getDocs(publicAreasRef(uid, pid));
-  return snap.docs.map(d => ({ id: d.id, ...d.data() } as PublicArea));
+export async function getPublicAreas(_uid: string, pid: string): Promise<PublicArea[]> {
+  const { data, error } = await supabase.from('public_areas').select('*').eq('property_id', pid);
+  if (error) { logErr('getPublicAreas', error); throw error; }
+  return (data ?? []).map(fromPublicAreaRow);
 }
 
-export async function setPublicArea(uid: string, pid: string, area: PublicArea) {
-  await setDoc(publicAreaDocRef(uid, pid, area.id), area);
+export async function setPublicArea(_uid: string, pid: string, area: PublicArea): Promise<void> {
+  const row = { ...toPublicAreaRow(area), id: area.id, property_id: pid };
+  const { error } = await supabase.from('public_areas').upsert(row);
+  if (error) { logErr('setPublicArea', error); throw error; }
 }
 
-export async function deletePublicArea(uid: string, pid: string, aid: string) {
-  await deleteDoc(publicAreaDocRef(uid, pid, aid));
+export async function deletePublicArea(_uid: string, _pid: string, aid: string): Promise<void> {
+  const { error } = await supabase.from('public_areas').delete().eq('id', aid);
+  if (error) { logErr('deletePublicArea', error); throw error; }
 }
 
-export async function bulkSetPublicAreas(uid: string, pid: string, areas: PublicArea[]) {
-  const writes = areas.map(a => setDoc(publicAreaDocRef(uid, pid, a.id), a));
-  await Promise.all(writes);
+export async function bulkSetPublicAreas(_uid: string, pid: string, areas: PublicArea[]): Promise<void> {
+  const rows = areas.map(a => ({ ...toPublicAreaRow(a), id: a.id, property_id: pid }));
+  const { error } = await supabase.from('public_areas').upsert(rows);
+  if (error) { logErr('bulkSetPublicAreas', error); throw error; }
 }
 
-// ─── Laundry Config ────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// Laundry Config
+// ═══════════════════════════════════════════════════════════════════════════
 
-export async function getLaundryConfig(uid: string, pid: string): Promise<LaundryCategory[]> {
-  const snap = await getDocs(laundryConfigRef(uid, pid));
-  return snap.docs.map(d => ({ id: d.id, ...d.data() } as LaundryCategory));
+export async function getLaundryConfig(_uid: string, pid: string): Promise<LaundryCategory[]> {
+  const { data, error } = await supabase.from('laundry_config').select('*').eq('property_id', pid);
+  if (error) { logErr('getLaundryConfig', error); throw error; }
+  return (data ?? []).map(fromLaundryRow);
 }
 
-export async function setLaundryCategory(uid: string, pid: string, cat: LaundryCategory) {
-  await setDoc(laundryDocRef(uid, pid, cat.id), cat);
+export async function setLaundryCategory(_uid: string, pid: string, cat: LaundryCategory): Promise<void> {
+  const row = { ...toLaundryRow(cat), id: cat.id, property_id: pid };
+  const { error } = await supabase.from('laundry_config').upsert(row);
+  if (error) { logErr('setLaundryCategory', error); throw error; }
 }
 
-// ─── Daily Logs ────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// Daily Logs
+// ═══════════════════════════════════════════════════════════════════════════
 
-export async function getDailyLog(uid: string, pid: string, date: string): Promise<DailyLog | null> {
-  const snap = await getDoc(dailyLogRef(uid, pid, date));
-  if (!snap.exists()) return null;
-  return snap.data() as DailyLog;
+export async function getDailyLog(_uid: string, pid: string, date: string): Promise<DailyLog | null> {
+  const { data, error } = await supabase
+    .from('daily_logs').select('*')
+    .eq('property_id', pid).eq('date', date).maybeSingle();
+  if (error) { logErr('getDailyLog', error); throw error; }
+  return data ? fromDailyLogRow(data) : null;
 }
 
-export async function saveDailyLog(uid: string, pid: string, log: DailyLog) {
+export async function saveDailyLog(_uid: string, pid: string, log: DailyLog): Promise<void> {
   try {
-    await setDoc(dailyLogRef(uid, pid, log.date), log);
-  } catch (error: any) {
-    console.error('[Firestore] saveDailyLog failed:', error.message);
-    throw error;
-  }
+    const row = { ...toDailyLogRow({ ...log, propertyId: pid }), property_id: pid, date: log.date };
+    const { error } = await supabase
+      .from('daily_logs').upsert(row, { onConflict: 'property_id,date' });
+    if (error) throw error;
+  } catch (err) { logErr('saveDailyLog', err); throw err; }
 }
 
-export async function getRecentDailyLogs(uid: string, pid: string, days = 30): Promise<DailyLog[]> {
-  const snap = await getDocs(dailyLogsRef(uid, pid));
-  const logs = snap.docs.map(d => d.data() as DailyLog);
-  return logs
-    .sort((a, b) => b.date.localeCompare(a.date))
-    .slice(0, days);
+export async function getRecentDailyLogs(_uid: string, pid: string, days = 30): Promise<DailyLog[]> {
+  const { data, error } = await supabase
+    .from('daily_logs').select('*')
+    .eq('property_id', pid)
+    .order('date', { ascending: false })
+    .limit(days);
+  if (error) { logErr('getRecentDailyLogs', error); throw error; }
+  return (data ?? []).map(fromDailyLogRow);
 }
 
-// ─── Rooms (real-time) ─────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// Rooms (real-time)
+// ═══════════════════════════════════════════════════════════════════════════
 
 export function subscribeToRooms(
-  uid: string,
-  pid: string,
-  date: string,
-  callback: (rooms: Room[]) => void
-) {
-  const q = query(roomsRef(uid, pid), where('date', '==', date));
-  return onSnapshot(q, snap => {
-    const rooms = snap.docs.map(d => ({ id: d.id, ...d.data() } as Room));
-    callback(rooms);
-  }, error => {
-    console.error('[Firestore] Listener error in subscribeToRooms:', error.message);
-  });
-}
-
-/**
- * Real-time subscription to ALL rooms in a property (no date filter).
- * Used by the Rooms tab so it can show today's rooms when today has a shift,
- * or auto-fall-back to the nearest upcoming / most recent shift date.
- */
-export function subscribeToAllRooms(
-  uid: string,
-  pid: string,
-  callback: (rooms: Room[]) => void
-) {
-  return onSnapshot(roomsRef(uid, pid), snap => {
-    const rooms = snap.docs.map(d => ({ id: d.id, ...d.data() } as Room));
-    callback(rooms);
-  }, error => {
-    console.error('[Firestore] Listener error in subscribeToAllRooms:', error.message);
-  });
-}
-
-export async function addRoom(uid: string, pid: string, room: Omit<Room, 'id'>): Promise<string> {
-  try {
-    const ref = await addDoc(roomsRef(uid, pid), room);
-    return ref.id;
-  } catch (error: any) {
-    console.error('[Firestore] addRoom failed:', error.message);
-    throw error;
-  }
-}
-
-export async function updateRoom(uid: string, pid: string, rid: string, data: Partial<Room>) {
-  // Strip undefined - Firestore rejects undefined field values
-  const clean = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
-  await updateDoc(roomDocRef(uid, pid, rid), clean);
-}
-
-export async function deleteRoom(uid: string, pid: string, rid: string) {
-  await deleteDoc(roomDocRef(uid, pid, rid));
-}
-
-export async function bulkAddRooms(uid: string, pid: string, rooms: Omit<Room, 'id'>[]) {
-  try {
-    const writes = rooms.map(r => addDoc(roomsRef(uid, pid), r));
-    await Promise.all(writes);
-  } catch (error: any) {
-    console.error('[Firestore] bulkAddRooms failed:', error.message);
-    throw error;
-  }
-}
-
-/** One-time fetch of rooms for a specific date (no real-time listener) */
-export async function getRoomsForDate(uid: string, pid: string, date: string): Promise<Room[]> {
-  const q = query(roomsRef(uid, pid), where('date', '==', date));
-  const snap = await getDocs(q);
-  return snap.docs.map(d => ({ id: d.id, ...d.data() } as Room));
-}
-
-/**
- * Copy yesterday's rooms into today - reset all to 'dirty', clear timestamps & inspection data.
- * Returns the number of rooms carried over.
- */
-export async function carryOverRooms(uid: string, pid: string, fromDate: string, toDate: string): Promise<number> {
-  const yesterday = await getRoomsForDate(uid, pid, fromDate);
-  if (yesterday.length === 0) return 0;
-  const writes = yesterday.map(r =>
-    addDoc(roomsRef(uid, pid), {
-      number:       r.number,
-      type:         r.type,
-      priority:     r.priority,
-      status:       'dirty',
-      date:         toDate,
-      propertyId:   r.propertyId,
-      // intentionally omit: assignedTo, assignedName, startedAt, completedAt, inspectedBy, inspectedAt, issueNote
-    })
+  _uid: string, pid: string, date: string,
+  callback: (rooms: Room[]) => void,
+): () => void {
+  return subscribeTable<Room>(
+    `rooms:${pid}:${date}`, 'rooms', `property_id=eq.${pid}`,
+    async () => {
+      const { data, error } = await supabase
+        .from('rooms').select('*')
+        .eq('property_id', pid).eq('date', date);
+      if (error) throw error;
+      return (data ?? []).map(fromRoomRow);
+    },
+    callback,
   );
-  await Promise.all(writes);
+}
+
+export function subscribeToAllRooms(
+  _uid: string, pid: string,
+  callback: (rooms: Room[]) => void,
+): () => void {
+  return subscribeTable<Room>(
+    `rooms-all:${pid}`, 'rooms', `property_id=eq.${pid}`,
+    async () => {
+      const { data, error } = await supabase.from('rooms').select('*').eq('property_id', pid);
+      if (error) throw error;
+      return (data ?? []).map(fromRoomRow);
+    },
+    callback,
+  );
+}
+
+export async function addRoom(_uid: string, pid: string, room: Omit<Room, 'id'>): Promise<string> {
+  try {
+    const row = { ...toRoomRow({ ...room, propertyId: pid }), property_id: pid };
+    const { data: inserted, error } = await supabase
+      .from('rooms').insert(row).select('id').single();
+    if (error) throw error;
+    return String(inserted.id);
+  } catch (err) { logErr('addRoom', err); throw err; }
+}
+
+export async function updateRoom(_uid: string, _pid: string, rid: string, data: Partial<Room>): Promise<void> {
+  const { error } = await supabase.from('rooms').update(toRoomRow(data)).eq('id', rid);
+  if (error) { logErr('updateRoom', error); throw error; }
+}
+
+export async function deleteRoom(_uid: string, _pid: string, rid: string): Promise<void> {
+  const { error } = await supabase.from('rooms').delete().eq('id', rid);
+  if (error) { logErr('deleteRoom', error); throw error; }
+}
+
+export async function bulkAddRooms(_uid: string, pid: string, rooms: Omit<Room, 'id'>[]): Promise<void> {
+  try {
+    if (rooms.length === 0) return;
+    const rows = rooms.map(r => ({ ...toRoomRow({ ...r, propertyId: pid }), property_id: pid }));
+    const { error } = await supabase.from('rooms').insert(rows);
+    if (error) throw error;
+  } catch (err) { logErr('bulkAddRooms', err); throw err; }
+}
+
+export async function getRoomsForDate(_uid: string, pid: string, date: string): Promise<Room[]> {
+  const { data, error } = await supabase
+    .from('rooms').select('*').eq('property_id', pid).eq('date', date);
+  if (error) { logErr('getRoomsForDate', error); throw error; }
+  return (data ?? []).map(fromRoomRow);
+}
+
+export async function carryOverRooms(_uid: string, pid: string, fromDate: string, toDate: string): Promise<number> {
+  const yesterday = await getRoomsForDate(_uid, pid, fromDate);
+  if (yesterday.length === 0) return 0;
+  const rows = yesterday.map(r => ({
+    property_id: pid,
+    number: r.number,
+    type: r.type,
+    priority: r.priority,
+    status: 'dirty',
+    date: toDate,
+  }));
+  const { error } = await supabase.from('rooms').insert(rows);
+  if (error) { logErr('carryOverRooms', error); throw error; }
   return yesterday.length;
 }
 
-// ─── Work Orders ────────────────────────────────────────────────────────────
-
-export const workOrdersRef = (uid: string, pid: string) =>
-  collection(db, 'users', uid, 'properties', pid, 'workOrders');
-export const workOrderDocRef = (uid: string, pid: string, wid: string) =>
-  doc(db, 'users', uid, 'properties', pid, 'workOrders', wid);
+// ═══════════════════════════════════════════════════════════════════════════
+// Work Orders
+// ═══════════════════════════════════════════════════════════════════════════
 
 export function subscribeToWorkOrders(
-  uid: string,
-  pid: string,
-  callback: (orders: WorkOrder[]) => void
-) {
-  const q = query(workOrdersRef(uid, pid), orderBy('createdAt', 'desc'));
-  return onSnapshot(q, snap => {
-    const orders = snap.docs.map(d => {
-      const data = d.data();
-      return {
-        id: d.id,
-        ...data,
-        createdAt: data.createdAt?.toDate?.() ?? null,
-        updatedAt: data.updatedAt?.toDate?.() ?? null,
-        resolvedAt: data.resolvedAt?.toDate?.() ?? null,
-      } as WorkOrder;
-    });
-    callback(orders);
-  }, error => {
-    console.error('[Firestore] Listener error in subscribeToWorkOrders:', error.message);
-  });
+  _uid: string, pid: string,
+  callback: (orders: WorkOrder[]) => void,
+): () => void {
+  return subscribeTable<WorkOrder>(
+    `work_orders:${pid}`, 'work_orders', `property_id=eq.${pid}`,
+    async () => {
+      const { data, error } = await supabase
+        .from('work_orders').select('*')
+        .eq('property_id', pid)
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      return (data ?? []).map(fromWorkOrderRow);
+    },
+    callback,
+  );
 }
 
 export async function addWorkOrder(
-  uid: string,
-  pid: string,
-  order: Omit<WorkOrder, 'id' | 'createdAt' | 'updatedAt'>
+  _uid: string, pid: string,
+  order: Omit<WorkOrder, 'id' | 'createdAt' | 'updatedAt'>,
 ): Promise<string> {
   try {
-    // Firestore rejects undefined values - strip them before writing
-    const clean = Object.fromEntries(
-      Object.entries(order).filter(([, v]) => v !== undefined)
-    );
-    const ref = await addDoc(workOrdersRef(uid, pid), {
-      ...clean,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-    return ref.id;
-  } catch (error: any) {
-    console.error('[Firestore] addWorkOrder failed:', error.message);
-    throw error;
-  }
+    const row = { ...toWorkOrderRow({ ...order, propertyId: pid }), property_id: pid };
+    const { data: inserted, error } = await supabase
+      .from('work_orders').insert(row).select('id').single();
+    if (error) throw error;
+    return String(inserted.id);
+  } catch (err) { logErr('addWorkOrder', err); throw err; }
 }
 
 export async function updateWorkOrder(
-  uid: string,
-  pid: string,
-  wid: string,
-  data: Partial<WorkOrder>
-) {
+  _uid: string, _pid: string, wid: string, data: Partial<WorkOrder>,
+): Promise<void> {
   try {
-    await updateDoc(workOrderDocRef(uid, pid, wid), {
-      ...data,
-      updatedAt: serverTimestamp(),
-    });
-  } catch (error: any) {
-    console.error('[Firestore] updateWorkOrder failed:', error.message);
-    throw error;
-  }
+    const { error } = await supabase.from('work_orders').update(toWorkOrderRow(data)).eq('id', wid);
+    if (error) throw error;
+  } catch (err) { logErr('updateWorkOrder', err); throw err; }
 }
 
-export async function deleteWorkOrder(uid: string, pid: string, wid: string) {
-  await deleteDoc(workOrderDocRef(uid, pid, wid));
+export async function deleteWorkOrder(_uid: string, _pid: string, wid: string): Promise<void> {
+  const { error } = await supabase.from('work_orders').delete().eq('id', wid);
+  if (error) { logErr('deleteWorkOrder', error); throw error; }
 }
 
-// ─── Preventive Maintenance Tasks ──────────────────────────────────────────
-
-export const preventiveTasksRef = (uid: string, pid: string) =>
-  collection(db, 'users', uid, 'properties', pid, 'preventiveTasks');
-export const preventiveTaskDocRef = (uid: string, pid: string, tid: string) =>
-  doc(db, 'users', uid, 'properties', pid, 'preventiveTasks', tid);
+// ═══════════════════════════════════════════════════════════════════════════
+// Preventive Maintenance Tasks
+// ═══════════════════════════════════════════════════════════════════════════
 
 export function subscribeToPreventiveTasks(
-  uid: string,
-  pid: string,
-  callback: (tasks: PreventiveTask[]) => void
-) {
-  return onSnapshot(preventiveTasksRef(uid, pid), snap => {
-    const tasks = snap.docs.map(d => ({ id: d.id, ...d.data() } as PreventiveTask));
-    callback(tasks);
-  }, error => {
-    console.error('[Firestore] Listener error in subscribeToPreventiveTasks:', error.message);
-  });
+  _uid: string, pid: string,
+  callback: (tasks: PreventiveTask[]) => void,
+): () => void {
+  return subscribeTable<PreventiveTask>(
+    `preventive_tasks:${pid}`, 'preventive_tasks', `property_id=eq.${pid}`,
+    async () => {
+      const { data, error } = await supabase
+        .from('preventive_tasks').select('*').eq('property_id', pid);
+      if (error) throw error;
+      return (data ?? []).map(fromPreventiveRow);
+    },
+    callback,
+  );
 }
 
 export async function addPreventiveTask(
-  uid: string,
-  pid: string,
-  task: Omit<PreventiveTask, 'id' | 'createdAt'>
+  _uid: string, pid: string,
+  task: Omit<PreventiveTask, 'id' | 'createdAt'>,
 ): Promise<string> {
-  const clean = Object.fromEntries(Object.entries(task).filter(([, v]) => v !== undefined));
-  const ref = await addDoc(preventiveTasksRef(uid, pid), { ...clean, createdAt: serverTimestamp() });
-  return ref.id;
+  const row = { ...toPreventiveRow({ ...task, propertyId: pid }), property_id: pid };
+  const { data: inserted, error } = await supabase
+    .from('preventive_tasks').insert(row).select('id').single();
+  if (error) { logErr('addPreventiveTask', error); throw error; }
+  return String(inserted.id);
 }
 
 export async function updatePreventiveTask(
-  uid: string,
-  pid: string,
-  tid: string,
-  data: Partial<PreventiveTask>
-) {
-  const clean = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
-  await updateDoc(preventiveTaskDocRef(uid, pid, tid), clean);
+  _uid: string, _pid: string, tid: string, data: Partial<PreventiveTask>,
+): Promise<void> {
+  const { error } = await supabase.from('preventive_tasks').update(toPreventiveRow(data)).eq('id', tid);
+  if (error) { logErr('updatePreventiveTask', error); throw error; }
 }
 
-export async function deletePreventiveTask(uid: string, pid: string, tid: string) {
-  await deleteDoc(preventiveTaskDocRef(uid, pid, tid));
+export async function deletePreventiveTask(_uid: string, _pid: string, tid: string): Promise<void> {
+  const { error } = await supabase.from('preventive_tasks').delete().eq('id', tid);
+  if (error) { logErr('deletePreventiveTask', error); throw error; }
 }
 
-// ─── Landscaping Tasks ────────────────────────────────────────────────────
-
-export const landscapingTasksRef = (uid: string, pid: string) =>
-  collection(db, 'users', uid, 'properties', pid, 'landscapingTasks');
-export const landscapingTaskDocRef = (uid: string, pid: string, tid: string) =>
-  doc(db, 'users', uid, 'properties', pid, 'landscapingTasks', tid);
+// ═══════════════════════════════════════════════════════════════════════════
+// Landscaping Tasks
+// ═══════════════════════════════════════════════════════════════════════════
 
 export function subscribeToLandscapingTasks(
-  uid: string,
-  pid: string,
-  callback: (tasks: LandscapingTask[]) => void
-) {
-  return onSnapshot(landscapingTasksRef(uid, pid), snap => {
-    const tasks = snap.docs.map(d => ({ id: d.id, ...d.data() } as LandscapingTask));
-    callback(tasks);
-  }, error => {
-    console.error('[Firestore] Listener error in subscribeToLandscapingTasks:', error.message);
-  });
+  _uid: string, pid: string,
+  callback: (tasks: LandscapingTask[]) => void,
+): () => void {
+  return subscribeTable<LandscapingTask>(
+    `landscaping_tasks:${pid}`, 'landscaping_tasks', `property_id=eq.${pid}`,
+    async () => {
+      const { data, error } = await supabase
+        .from('landscaping_tasks').select('*').eq('property_id', pid);
+      if (error) throw error;
+      return (data ?? []).map(fromLandscapingRow);
+    },
+    callback,
+  );
 }
 
 export async function addLandscapingTask(
-  uid: string,
-  pid: string,
-  task: Omit<LandscapingTask, 'id' | 'createdAt'>
+  _uid: string, pid: string,
+  task: Omit<LandscapingTask, 'id' | 'createdAt'>,
 ): Promise<string> {
-  const clean = Object.fromEntries(Object.entries(task).filter(([, v]) => v !== undefined));
-  const ref = await addDoc(landscapingTasksRef(uid, pid), { ...clean, createdAt: serverTimestamp() });
-  return ref.id;
+  const row = { ...toLandscapingRow({ ...task, propertyId: pid }), property_id: pid };
+  const { data: inserted, error } = await supabase
+    .from('landscaping_tasks').insert(row).select('id').single();
+  if (error) { logErr('addLandscapingTask', error); throw error; }
+  return String(inserted.id);
 }
 
 export async function updateLandscapingTask(
-  uid: string,
-  pid: string,
-  tid: string,
-  data: Partial<LandscapingTask>
-) {
-  const clean = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
-  await updateDoc(landscapingTaskDocRef(uid, pid, tid), clean);
+  _uid: string, _pid: string, tid: string, data: Partial<LandscapingTask>,
+): Promise<void> {
+  const { error } = await supabase.from('landscaping_tasks').update(toLandscapingRow(data)).eq('id', tid);
+  if (error) { logErr('updateLandscapingTask', error); throw error; }
 }
 
-export async function deleteLandscapingTask(uid: string, pid: string, tid: string) {
-  await deleteDoc(landscapingTaskDocRef(uid, pid, tid));
+export async function deleteLandscapingTask(_uid: string, _pid: string, tid: string): Promise<void> {
+  const { error } = await supabase.from('landscaping_tasks').delete().eq('id', tid);
+  if (error) { logErr('deleteLandscapingTask', error); throw error; }
 }
 
-// ─── Inventory / Supply Tracking ───────────────────────────────────────────
-
-export const inventoryRef = (uid: string, pid: string) =>
-  collection(db, 'users', uid, 'properties', pid, 'inventory');
-export const inventoryDocRef = (uid: string, pid: string, iid: string) =>
-  doc(db, 'users', uid, 'properties', pid, 'inventory', iid);
+// ═══════════════════════════════════════════════════════════════════════════
+// Inventory
+// ═══════════════════════════════════════════════════════════════════════════
 
 export function subscribeToInventory(
-  uid: string, pid: string,
-  callback: (items: InventoryItem[]) => void
-) {
-  return onSnapshot(inventoryRef(uid, pid), snap => {
-    callback(snap.docs.map(d => ({ id: d.id, ...d.data() } as InventoryItem)));
-  }, error => {
-    console.error('[Firestore] Listener error in subscribeToInventory:', error.message);
-  });
+  _uid: string, pid: string,
+  callback: (items: InventoryItem[]) => void,
+): () => void {
+  return subscribeTable<InventoryItem>(
+    `inventory:${pid}`, 'inventory', `property_id=eq.${pid}`,
+    async () => {
+      const { data, error } = await supabase
+        .from('inventory').select('*').eq('property_id', pid);
+      if (error) throw error;
+      return (data ?? []).map(fromInventoryRow);
+    },
+    callback,
+  );
 }
 
 export async function addInventoryItem(
-  uid: string, pid: string,
-  item: Omit<InventoryItem, 'id' | 'updatedAt'>
+  _uid: string, pid: string,
+  item: Omit<InventoryItem, 'id' | 'updatedAt'>,
 ): Promise<string> {
-  const clean = Object.fromEntries(Object.entries(item).filter(([, v]) => v !== undefined));
-  const ref = await addDoc(inventoryRef(uid, pid), { ...clean, updatedAt: serverTimestamp() });
-  return ref.id;
+  const row = { ...toInventoryRow({ ...item, propertyId: pid }), property_id: pid };
+  const { data: inserted, error } = await supabase
+    .from('inventory').insert(row).select('id').single();
+  if (error) { logErr('addInventoryItem', error); throw error; }
+  return String(inserted.id);
 }
 
 export async function updateInventoryItem(
-  uid: string, pid: string, iid: string,
-  data: Partial<InventoryItem>
-) {
-  const clean = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
-  await updateDoc(inventoryDocRef(uid, pid, iid), { ...clean, updatedAt: serverTimestamp() });
+  _uid: string, _pid: string, iid: string, data: Partial<InventoryItem>,
+): Promise<void> {
+  const { error } = await supabase.from('inventory').update(toInventoryRow(data)).eq('id', iid);
+  if (error) { logErr('updateInventoryItem', error); throw error; }
 }
 
-export async function deleteInventoryItem(uid: string, pid: string, iid: string) {
-  await deleteDoc(inventoryDocRef(uid, pid, iid));
+export async function deleteInventoryItem(_uid: string, _pid: string, iid: string): Promise<void> {
+  const { error } = await supabase.from('inventory').delete().eq('id', iid);
+  if (error) { logErr('deleteInventoryItem', error); throw error; }
 }
 
-// ─── Inspections ──────────────────────────────────────────────────────────
-
-export const inspectionsRef = (uid: string, pid: string) =>
-  collection(db, 'users', uid, 'properties', pid, 'inspections');
-export const inspectionDocRef = (uid: string, pid: string, iid: string) =>
-  doc(db, 'users', uid, 'properties', pid, 'inspections', iid);
+// ═══════════════════════════════════════════════════════════════════════════
+// Inspections
+// ═══════════════════════════════════════════════════════════════════════════
 
 export function subscribeToInspections(
-  uid: string, pid: string,
-  callback: (items: Inspection[]) => void
-) {
-  return onSnapshot(inspectionsRef(uid, pid), snap => {
-    callback(snap.docs.map(d => ({ id: d.id, ...d.data() } as Inspection)));
-  }, error => {
-    console.error('[Firestore] Listener error in subscribeToInspections:', error.message);
-  });
+  _uid: string, pid: string,
+  callback: (items: Inspection[]) => void,
+): () => void {
+  return subscribeTable<Inspection>(
+    `inspections:${pid}`, 'inspections', `property_id=eq.${pid}`,
+    async () => {
+      const { data, error } = await supabase
+        .from('inspections').select('*').eq('property_id', pid);
+      if (error) throw error;
+      return (data ?? []).map(fromInspectionRow);
+    },
+    callback,
+  );
 }
 
 export async function addInspection(
-  uid: string, pid: string,
-  item: Omit<Inspection, 'id' | 'createdAt' | 'updatedAt'>
+  _uid: string, pid: string,
+  item: Omit<Inspection, 'id' | 'createdAt' | 'updatedAt'>,
 ): Promise<string> {
-  const clean = Object.fromEntries(Object.entries(item).filter(([, v]) => v !== undefined));
-  const ref = await addDoc(inspectionsRef(uid, pid), { ...clean, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
-  return ref.id;
+  const row = { ...toInspectionRow({ ...item, propertyId: pid }), property_id: pid };
+  const { data: inserted, error } = await supabase
+    .from('inspections').insert(row).select('id').single();
+  if (error) { logErr('addInspection', error); throw error; }
+  return String(inserted.id);
 }
 
 export async function updateInspection(
-  uid: string, pid: string, iid: string,
-  data: Partial<Inspection>
-) {
-  const clean = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
-  await updateDoc(inspectionDocRef(uid, pid, iid), { ...clean, updatedAt: serverTimestamp() });
+  _uid: string, _pid: string, iid: string, data: Partial<Inspection>,
+): Promise<void> {
+  const { error } = await supabase.from('inspections').update(toInspectionRow(data)).eq('id', iid);
+  if (error) { logErr('updateInspection', error); throw error; }
 }
 
-export async function deleteInspection(uid: string, pid: string, iid: string) {
-  await deleteDoc(inspectionDocRef(uid, pid, iid));
+export async function deleteInspection(_uid: string, _pid: string, iid: string): Promise<void> {
+  const { error } = await supabase.from('inspections').delete().eq('id', iid);
+  if (error) { logErr('deleteInspection', error); throw error; }
 }
 
-// ─── Shift Handoff Log ─────────────────────────────────────────────────────
-
-export const handoffRef = (uid: string, pid: string) =>
-  collection(db, 'users', uid, 'properties', pid, 'handoffLogs');
-export const handoffDocRef = (uid: string, pid: string, hid: string) =>
-  doc(db, 'users', uid, 'properties', pid, 'handoffLogs', hid);
+// ═══════════════════════════════════════════════════════════════════════════
+// Handoff Logs
+// ═══════════════════════════════════════════════════════════════════════════
 
 export function subscribeToHandoffLogs(
-  uid: string, pid: string,
-  callback: (entries: HandoffEntry[]) => void
-) {
-  const q = query(handoffRef(uid, pid), orderBy('createdAt', 'desc'));
-  return onSnapshot(q, snap => {
-    callback(snap.docs.map(d => ({ id: d.id, ...d.data() } as HandoffEntry)));
-  }, error => {
-    console.error('[Firestore] Listener error in subscribeToHandoffLogs:', error.message);
-  });
+  _uid: string, pid: string,
+  callback: (entries: HandoffEntry[]) => void,
+): () => void {
+  return subscribeTable<HandoffEntry>(
+    `handoff_logs:${pid}`, 'handoff_logs', `property_id=eq.${pid}`,
+    async () => {
+      const { data, error } = await supabase
+        .from('handoff_logs').select('*')
+        .eq('property_id', pid)
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      return (data ?? []).map(fromHandoffRow);
+    },
+    callback,
+  );
 }
 
 export async function addHandoffEntry(
-  uid: string, pid: string,
-  entry: Omit<HandoffEntry, 'id' | 'createdAt'>
+  _uid: string, pid: string,
+  entry: Omit<HandoffEntry, 'id' | 'createdAt'>,
 ): Promise<string> {
-  const clean = Object.fromEntries(Object.entries(entry).filter(([, v]) => v !== undefined));
-  const ref = await addDoc(handoffRef(uid, pid), { ...clean, createdAt: serverTimestamp() });
-  return ref.id;
+  const row = dropUndefined({
+    property_id: pid,
+    shift_type: entry.shiftType,
+    author: entry.author,
+    notes: entry.notes,
+    acknowledged: entry.acknowledged,
+    acknowledged_by: entry.acknowledgedBy,
+    acknowledged_at: toISO(entry.acknowledgedAt),
+  });
+  const { data: inserted, error } = await supabase
+    .from('handoff_logs').insert(row).select('id').single();
+  if (error) { logErr('addHandoffEntry', error); throw error; }
+  return String(inserted.id);
 }
 
 export async function acknowledgeHandoffEntry(
-  uid: string, pid: string, hid: string, by: string
-) {
-  await updateDoc(handoffDocRef(uid, pid, hid), {
-    acknowledged: true,
-    acknowledgedBy: by,
-    acknowledgedAt: serverTimestamp(),
-  });
+  _uid: string, _pid: string, hid: string, by: string,
+): Promise<void> {
+  const { error } = await supabase
+    .from('handoff_logs')
+    .update({ acknowledged: true, acknowledged_by: by, acknowledged_at: new Date().toISOString() })
+    .eq('id', hid);
+  if (error) { logErr('acknowledgeHandoffEntry', error); throw error; }
 }
 
-// ─── Guest Requests ────────────────────────────────────────────────────────
-
-export const guestRequestsRef = (uid: string, pid: string) =>
-  collection(db, 'users', uid, 'properties', pid, 'guestRequests');
-export const guestRequestDocRef = (uid: string, pid: string, gid: string) =>
-  doc(db, 'users', uid, 'properties', pid, 'guestRequests', gid);
+// ═══════════════════════════════════════════════════════════════════════════
+// Guest Requests
+// ═══════════════════════════════════════════════════════════════════════════
 
 export function subscribeToGuestRequests(
-  uid: string, pid: string,
-  callback: (requests: GuestRequest[]) => void
-) {
-  const q = query(guestRequestsRef(uid, pid), orderBy('createdAt', 'desc'));
-  return onSnapshot(q, snap => {
-    callback(snap.docs.map(d => ({ id: d.id, ...d.data() } as GuestRequest)));
-  }, error => {
-    console.error('[Firestore] Listener error in subscribeToGuestRequests:', error.message);
-  });
+  _uid: string, pid: string,
+  callback: (requests: GuestRequest[]) => void,
+): () => void {
+  return subscribeTable<GuestRequest>(
+    `guest_requests:${pid}`, 'guest_requests', `property_id=eq.${pid}`,
+    async () => {
+      const { data, error } = await supabase
+        .from('guest_requests').select('*')
+        .eq('property_id', pid)
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      return (data ?? []).map(fromGuestRequestRow);
+    },
+    callback,
+  );
 }
 
 export async function addGuestRequest(
-  uid: string, pid: string,
-  req: Omit<GuestRequest, 'id' | 'createdAt'>
+  _uid: string, pid: string,
+  req: Omit<GuestRequest, 'id' | 'createdAt'>,
 ): Promise<string> {
-  const clean = Object.fromEntries(Object.entries(req).filter(([, v]) => v !== undefined));
-  const ref = await addDoc(guestRequestsRef(uid, pid), { ...clean, createdAt: serverTimestamp() });
-  return ref.id;
+  const row = { ...toGuestRequestRow({ ...req, propertyId: pid }), property_id: pid };
+  const { data: inserted, error } = await supabase
+    .from('guest_requests').insert(row).select('id').single();
+  if (error) { logErr('addGuestRequest', error); throw error; }
+  return String(inserted.id);
 }
 
 export async function updateGuestRequest(
-  uid: string, pid: string, gid: string,
-  data: Partial<GuestRequest>
-) {
-  const clean = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
-  await updateDoc(guestRequestDocRef(uid, pid, gid), clean);
+  _uid: string, _pid: string, gid: string, data: Partial<GuestRequest>,
+): Promise<void> {
+  const { error } = await supabase.from('guest_requests').update(toGuestRequestRow(data)).eq('id', gid);
+  if (error) { logErr('updateGuestRequest', error); throw error; }
 }
 
-export async function deleteGuestRequest(uid: string, pid: string, gid: string) {
-  await deleteDoc(guestRequestDocRef(uid, pid, gid));
+export async function deleteGuestRequest(_uid: string, _pid: string, gid: string): Promise<void> {
+  const { error } = await supabase.from('guest_requests').delete().eq('id', gid);
+  if (error) { logErr('deleteGuestRequest', error); throw error; }
 }
 
-// ─── Plan Snapshots (CSV scraper data) ─────────────────────────────────────
-
-export const planSnapshotRef = (uid: string, pid: string, date: string) =>
-  doc(db, 'users', uid, 'properties', pid, 'planSnapshots', date);
+// ═══════════════════════════════════════════════════════════════════════════
+// Plan Snapshots (CSV scraper data)
+// ═══════════════════════════════════════════════════════════════════════════
 
 export interface PlanSnapshot {
   date: string;
-  pulledAt: any; // Firestore Timestamp
+  pulledAt: Date | null;
   pullType: 'evening' | 'morning';
   totalRooms: number;
   checkouts: number;
   stayovers: number;
-  // 2-day stayover cycle (new — replaces fullServiceStayovers/noneServiceStayovers)
-  stayoverDay1: number;         // odd day of stay (1/3/5…) → light clean, 15 min
-  stayoverDay2: number;         // even day of stay (2/4/6…) → full clean, 20 min
-  stayoverArrivalDay: number;   // day 0 — arriving today, skipped (TBD)
-  stayoverUnknown: number;      // missing arrival date on CSV
+  stayoverDay1: number;
+  stayoverDay2: number;
+  stayoverArrivalDay: number;
+  stayoverUnknown: number;
   arrivals: number;
   vacantClean: number;
   vacantDirty: number;
   ooo: number;
-  // Workload breakdown (minutes)
   checkoutMinutes: number;
   stayoverDay1Minutes: number;
   stayoverDay2Minutes: number;
   vacantDirtyMinutes: number;
   totalCleaningMinutes: number;
   recommendedHKs: number;
-  // Room number arrays
   checkoutRoomNumbers: string[];
   stayoverDay1RoomNumbers: string[];
   stayoverDay2RoomNumbers: string[];
@@ -659,49 +1246,66 @@ export interface PlanSnapshot {
     arrival: string | null;
     departure: string | null;
     lastClean: string | null;
-    stayoverDay?: number | null;    // 0 (arrival), 1, 2, 3, …; undefined for non-stayovers
-    stayoverMinutes?: number;       // 0, 15, or 20 for stayovers; undefined otherwise
+    stayoverDay?: number | null;
+    stayoverMinutes?: number;
   }>;
 }
 
-export function subscribeToPlanSnapshot(
-  uid: string,
-  pid: string,
-  date: string,
-  callback: (snapshot: PlanSnapshot | null) => void
-) {
-  return onSnapshot(planSnapshotRef(uid, pid, date), snap => {
-    if (!snap.exists()) {
-      callback(null);
-      return;
-    }
-    const data = snap.data();
-    callback({
-      ...data,
-      pulledAt: data.pulledAt?.toDate?.() ?? null,
-    } as PlanSnapshot);
-  }, error => {
-    console.error('[Firestore] Listener error in subscribeToPlanSnapshot:', error.message);
-  });
+function fromPlanSnapshotRow(r: Record<string, unknown>): PlanSnapshot {
+  return {
+    date: String(r.date ?? ''),
+    pulledAt: toDate(r.pulled_at),
+    pullType: (r.pull_type as PlanSnapshot['pullType']) ?? 'evening',
+    totalRooms: Number(r.total_rooms ?? 0),
+    checkouts: Number(r.checkouts ?? 0),
+    stayovers: Number(r.stayovers ?? 0),
+    stayoverDay1: Number(r.stayover_day1 ?? 0),
+    stayoverDay2: Number(r.stayover_day2 ?? 0),
+    stayoverArrivalDay: Number(r.stayover_arrival_day ?? 0),
+    stayoverUnknown: Number(r.stayover_unknown ?? 0),
+    arrivals: Number(r.arrivals ?? 0),
+    vacantClean: Number(r.vacant_clean ?? 0),
+    vacantDirty: Number(r.vacant_dirty ?? 0),
+    ooo: Number(r.ooo ?? 0),
+    checkoutMinutes: Number(r.checkout_minutes ?? 0),
+    stayoverDay1Minutes: Number(r.stayover_day1_minutes ?? 0),
+    stayoverDay2Minutes: Number(r.stayover_day2_minutes ?? 0),
+    vacantDirtyMinutes: Number(r.vacant_dirty_minutes ?? 0),
+    totalCleaningMinutes: Number(r.total_cleaning_minutes ?? 0),
+    recommendedHKs: Number(r.recommended_hks ?? 0),
+    checkoutRoomNumbers: (r.checkout_room_numbers as string[]) ?? [],
+    stayoverDay1RoomNumbers: (r.stayover_day1_room_numbers as string[]) ?? [],
+    stayoverDay2RoomNumbers: (r.stayover_day2_room_numbers as string[]) ?? [],
+    stayoverArrivalRoomNumbers: (r.stayover_arrival_room_numbers as string[]) ?? [],
+    arrivalRoomNumbers: (r.arrival_room_numbers as string[]) ?? [],
+    vacantCleanRoomNumbers: (r.vacant_clean_room_numbers as string[]) ?? [],
+    vacantDirtyRoomNumbers: (r.vacant_dirty_room_numbers as string[]) ?? [],
+    oooRoomNumbers: (r.ooo_room_numbers as string[]) ?? [],
+    rooms: (r.rooms as PlanSnapshot['rooms']) ?? [],
+  };
 }
 
-// ─── Dashboard numbers (CA View pages — In House / Arrivals / Departures) ────
-// Scraper refreshes this every 15 min 5am–11pm from Choice Advantage's View
-// pages. Shared across all properties for now (single-property deploy) — lives
-// at the top-level scraperStatus/dashboard doc rather than under a property.
-//
-// Contract with the scraper:
-//   • Success-field writes (inHouse/arrivals/departures/pulledAt) are atomic
-//     — all three numbers come from a single consistent CA snapshot or none
-//     of them get updated. See scraper/dashboard-pull.js.
-//   • Failures write ONLY to errorCode / errorMessage / erroredAt. Last good
-//     numbers stay put so Maria keeps seeing "25 in house, last updated 4:01
-//     PM" instead of a spooky blank screen — but `pulledAt` grows stale and
-//     the UI shows a warning banner once it crosses the staleness threshold.
-//   • errorCode is drawn from a fixed vocabulary (see dashboard-pull.js
-//     ERROR_CODES). UI and alert cron branch on code, never on error text.
+export function subscribeToPlanSnapshot(
+  _uid: string, pid: string, date: string,
+  callback: (snapshot: PlanSnapshot | null) => void,
+): () => void {
+  return subscribeTable<PlanSnapshot>(
+    `plan_snapshots:${pid}:${date}`, 'plan_snapshots', `property_id=eq.${pid}`,
+    async () => {
+      const { data, error } = await supabase
+        .from('plan_snapshots').select('*')
+        .eq('property_id', pid).eq('date', date).maybeSingle();
+      if (error) throw error;
+      return data ? [fromPlanSnapshotRow(data)] : [];
+    },
+    (rows) => callback(rows[0] ?? null),
+  );
+}
 
-// Fixed vocabulary — must match scraper/dashboard-pull.js ERROR_CODES.
+// ═══════════════════════════════════════════════════════════════════════════
+// Dashboard numbers (CA View pages) — scraper_status/dashboard row
+// ═══════════════════════════════════════════════════════════════════════════
+
 export type DashboardErrorCode =
   | 'login_failed'
   | 'session_expired'
@@ -720,119 +1324,90 @@ export interface DashboardNumbers {
   arrivalsGuests?:   number | null;
   departuresGuests?: number | null;
   pulledAt: Date | null;
-
-  // Error fields: only set if the LAST attempted pull failed. Cleared on the
-  // next successful pull.
   errorCode:    DashboardErrorCode | null;
   errorMessage: string | null;
-  errorPage:    string | null;   // which View page failed (inHouse/arrivals/departures)
+  errorPage:    string | null;
   erroredAt:    Date | null;
-
-  // Legacy field — kept for backwards compat with any old consumer that
-  // still reads `error`. New UI code should use errorCode instead.
   error: string | null;
 }
 
-// Maria's staleness tolerance. The scraper pulls every 15 min, so anything
-// over 20 is either "one pull got skipped" (could be normal) and over 45 is
-// definitely broken. We start warning at 25 min — enough buffer for one
-// slow pull, tight enough that a silent failure becomes visible within half
-// an hour instead of hours.
 export const DASHBOARD_STALE_MINUTES = 25;
 
 export type DashboardFreshness = 'fresh' | 'stale' | 'error' | 'unknown';
 
-/**
- * Derive a single status for the UI to render. Centralised so the Schedule
- * tab, the admin diagnostics page, and any future alert surface all agree
- * on what "stale" means.
- */
 export function dashboardFreshness(
   d: DashboardNumbers | null,
-  nowMs: number = Date.now()
+  nowMs: number = Date.now(),
 ): DashboardFreshness {
   if (!d) return 'unknown';
-  // A current error code beats staleness — even if the last good numbers are
-  // 5 minutes old, if CA is actively failing right now we should say so.
   if (d.errorCode) return 'error';
   if (!d.pulledAt) return 'unknown';
   const ageMs = nowMs - d.pulledAt.getTime();
   return ageMs > DASHBOARD_STALE_MINUTES * 60_000 ? 'stale' : 'fresh';
 }
 
+function dashboardFromJson(d: Record<string, unknown> | null): DashboardNumbers | null {
+  if (!d) return null;
+  return {
+    inHouse:    typeof d.inHouse    === 'number' ? d.inHouse    : null,
+    arrivals:   typeof d.arrivals   === 'number' ? d.arrivals   : null,
+    departures: typeof d.departures === 'number' ? d.departures : null,
+    inHouseGuests:    typeof d.inHouseGuests    === 'number' ? d.inHouseGuests    : null,
+    arrivalsGuests:   typeof d.arrivalsGuests   === 'number' ? d.arrivalsGuests   : null,
+    departuresGuests: typeof d.departuresGuests === 'number' ? d.departuresGuests : null,
+    pulledAt:     toDate(d.pulledAt),
+    errorCode:    typeof d.errorCode    === 'string' ? d.errorCode as DashboardErrorCode : null,
+    errorMessage: typeof d.errorMessage === 'string' ? d.errorMessage : null,
+    errorPage:    typeof d.errorPage    === 'string' ? d.errorPage    : null,
+    erroredAt:    toDate(d.erroredAt),
+    error:        typeof d.error === 'string' ? d.error : null,
+  };
+}
+
 export function subscribeToDashboardNumbers(
-  callback: (nums: DashboardNumbers | null) => void
-) {
-  const ref = doc(db, 'scraperStatus', 'dashboard');
-  return onSnapshot(ref, snap => {
-    if (!snap.exists()) { callback(null); return; }
-    const d = snap.data() as Record<string, unknown>;
-    const toDate = (v: unknown) =>
-      (v as { toDate?: () => Date } | undefined)?.toDate?.() ?? null;
-    callback({
-      inHouse:    typeof d.inHouse    === 'number' ? d.inHouse    : null,
-      arrivals:   typeof d.arrivals   === 'number' ? d.arrivals   : null,
-      departures: typeof d.departures === 'number' ? d.departures : null,
-      inHouseGuests:    typeof d.inHouseGuests    === 'number' ? d.inHouseGuests    : null,
-      arrivalsGuests:   typeof d.arrivalsGuests   === 'number' ? d.arrivalsGuests   : null,
-      departuresGuests: typeof d.departuresGuests === 'number' ? d.departuresGuests : null,
-      pulledAt:     toDate(d.pulledAt),
-      errorCode:    typeof d.errorCode    === 'string' ? d.errorCode as DashboardErrorCode : null,
-      errorMessage: typeof d.errorMessage === 'string' ? d.errorMessage : null,
-      errorPage:    typeof d.errorPage    === 'string' ? d.errorPage    : null,
-      erroredAt:    toDate(d.erroredAt),
-      error:        typeof d.error === 'string' ? d.error : null,
-    });
-  }, error => {
-    console.error('[Firestore] Listener error in subscribeToDashboardNumbers:', error.message);
-  });
+  callback: (nums: DashboardNumbers | null) => void,
+): () => void {
+  return subscribeTable<DashboardNumbers>(
+    'scraper_status:dashboard', 'scraper_status', `key=eq.dashboard`,
+    async () => {
+      const { data, error } = await supabase
+        .from('scraper_status').select('data').eq('key', 'dashboard').maybeSingle();
+      if (error) throw error;
+      const parsed = dashboardFromJson((data?.data as Record<string, unknown>) ?? null);
+      return parsed ? [parsed] : [];
+    },
+    (rows) => callback(rows[0] ?? null),
+  );
 }
 
-// ─── Per-date dashboard snapshots (frozen history for past-date tabs) ────────
-// Scraper overwrites dashboardByDate/{YYYY-MM-DD} on every successful pull.
-// The *last* pull of the day before midnight becomes the permanent snapshot
-// for that date — the UI reads this when Maria clicks back to a past date,
-// so she sees what the hotel looked like that day instead of the live numbers.
-//
-// This is a ONE-SHOT read (getDoc), not a subscription. Past-date data never
-// changes once the day is over, so there's nothing to listen for. For today's
-// tab we still use subscribeToDashboardNumbers above.
-export async function getDashboardForDate(
-  dateStr: string,
-): Promise<DashboardNumbers | null> {
+export async function getDashboardForDate(dateStr: string): Promise<DashboardNumbers | null> {
   try {
-    const ref = doc(db, 'dashboardByDate', dateStr);
-    const snap = await getDoc(ref);
-    if (!snap.exists()) return null;
-    const d = snap.data() as Record<string, unknown>;
-    const toDate = (v: unknown) =>
-      (v as { toDate?: () => Date } | undefined)?.toDate?.() ?? null;
+    const { data, error } = await supabase
+      .from('dashboard_by_date').select('*').eq('date', dateStr).maybeSingle();
+    if (error) throw error;
+    if (!data) return null;
+    const r = data as Record<string, unknown>;
     return {
-      inHouse:    typeof d.inHouse    === 'number' ? d.inHouse    : null,
-      arrivals:   typeof d.arrivals   === 'number' ? d.arrivals   : null,
-      departures: typeof d.departures === 'number' ? d.departures : null,
-      inHouseGuests:    typeof d.inHouseGuests    === 'number' ? d.inHouseGuests    : null,
-      arrivalsGuests:   typeof d.arrivalsGuests   === 'number' ? d.arrivalsGuests   : null,
-      departuresGuests: typeof d.departuresGuests === 'number' ? d.departuresGuests : null,
-      pulledAt:     toDate(d.pulledAt),
-      errorCode:    typeof d.errorCode    === 'string' ? d.errorCode as DashboardErrorCode : null,
-      errorMessage: typeof d.errorMessage === 'string' ? d.errorMessage : null,
-      errorPage:    typeof d.errorPage    === 'string' ? d.errorPage    : null,
-      erroredAt:    toDate(d.erroredAt),
-      error:        typeof d.error === 'string' ? d.error : null,
+      inHouse:    typeof r.in_house    === 'number' ? r.in_house    : null,
+      arrivals:   typeof r.arrivals    === 'number' ? r.arrivals    : null,
+      departures: typeof r.departures  === 'number' ? r.departures  : null,
+      inHouseGuests:    typeof r.in_house_guests    === 'number' ? r.in_house_guests    : null,
+      arrivalsGuests:   typeof r.arrivals_guests    === 'number' ? r.arrivals_guests    : null,
+      departuresGuests: typeof r.departures_guests  === 'number' ? r.departures_guests  : null,
+      pulledAt:     toDate(r.pulled_at),
+      errorCode:    typeof r.error_code    === 'string' ? r.error_code as DashboardErrorCode : null,
+      errorMessage: typeof r.error_message === 'string' ? r.error_message : null,
+      errorPage:    typeof r.error_page    === 'string' ? r.error_page    : null,
+      erroredAt:    toDate(r.errored_at),
+      error:        null,
     };
-  } catch (err) {
-    console.error('[Firestore] getDashboardForDate error:', (err as Error).message);
-    return null;
-  }
+  } catch (err) { logErr('getDashboardForDate', err); return null; }
 }
 
-// ─── Schedule Assignments (Maria's HK-to-room assignments, survives CSV overwrites) ──
+// ═══════════════════════════════════════════════════════════════════════════
+// Schedule Assignments (Maria's HK→room assignments)
+// ═══════════════════════════════════════════════════════════════════════════
 
-export const scheduleAssignmentsRef = (uid: string, pid: string, date: string) =>
-  doc(db, 'users', uid, 'properties', pid, 'scheduleAssignments', date);
-
-/** One entry in the CSV room snapshot — just enough to diff the CSV between pulls. */
 export interface CsvRoomSnapshot {
   number: string;
   type: 'checkout' | 'stayover';
@@ -840,46 +1415,45 @@ export interface CsvRoomSnapshot {
 
 export interface ScheduleAssignments {
   date: string;
-  /** Map of roomId (`${date}_${number}`) → staffId. Rooms not in the map are unassigned. */
   roomAssignments: Record<string, string>;
-  /** Staff IDs Maria picked for this shift (even if they have 0 rooms yet). */
   crew: string[];
-  /** Map of roomId → staffName (snapshot so we don't re-join against staff docs). */
   staffNames?: Record<string, string>;
-  /** The rooms that existed in the CSV at the time Maria last saved — used to diff after 6am pull. */
   csvRoomSnapshot?: CsvRoomSnapshot[];
-  /** ISO timestamp of the CSV pull that was live when Maria last saved. */
   csvPulledAt?: string | null;
-  updatedAt: any;
+  updatedAt: Date | null;
+}
+
+function fromScheduleAssignmentsRow(r: Record<string, unknown>): ScheduleAssignments {
+  return {
+    date: String(r.date ?? ''),
+    roomAssignments: (r.room_assignments as Record<string, string>) ?? {},
+    crew: (r.crew as string[]) ?? [],
+    staffNames: (r.staff_names as Record<string, string>) ?? {},
+    csvRoomSnapshot: (r.csv_room_snapshot as CsvRoomSnapshot[]) ?? [],
+    csvPulledAt: (r.csv_pulled_at as string | null) ?? null,
+    updatedAt: toDate(r.updated_at),
+  };
 }
 
 export function subscribeToScheduleAssignments(
-  uid: string,
-  pid: string,
-  date: string,
+  _uid: string, pid: string, date: string,
   callback: (sa: ScheduleAssignments | null) => void,
-) {
-  return onSnapshot(scheduleAssignmentsRef(uid, pid, date), snap => {
-    if (!snap.exists()) { callback(null); return; }
-    const data = snap.data() as ScheduleAssignments;
-    callback({
-      date: data.date,
-      roomAssignments: data.roomAssignments ?? {},
-      crew: data.crew ?? [],
-      staffNames: data.staffNames ?? {},
-      csvRoomSnapshot: data.csvRoomSnapshot ?? [],
-      csvPulledAt: data.csvPulledAt ?? null,
-      updatedAt: data.updatedAt?.toDate?.() ?? null,
-    });
-  }, error => {
-    console.error('[Firestore] Listener error in subscribeToScheduleAssignments:', error.message);
-  });
+): () => void {
+  return subscribeTable<ScheduleAssignments>(
+    `schedule_assignments:${pid}:${date}`, 'schedule_assignments', `property_id=eq.${pid}`,
+    async () => {
+      const { data, error } = await supabase
+        .from('schedule_assignments').select('*')
+        .eq('property_id', pid).eq('date', date).maybeSingle();
+      if (error) throw error;
+      return data ? [fromScheduleAssignmentsRow(data)] : [];
+    },
+    (rows) => callback(rows[0] ?? null),
+  );
 }
 
 export async function saveScheduleAssignments(
-  uid: string,
-  pid: string,
-  date: string,
+  _uid: string, pid: string, date: string,
   payload: {
     roomAssignments: Record<string, string>;
     crew: string[];
@@ -888,128 +1462,99 @@ export async function saveScheduleAssignments(
     csvPulledAt?: string | null;
   },
 ): Promise<void> {
-  const doc: Record<string, any> = {
+  const row: Record<string, unknown> = {
+    property_id: pid,
     date,
-    roomAssignments: payload.roomAssignments,
+    room_assignments: payload.roomAssignments,
     crew: payload.crew,
-    staffNames: payload.staffNames ?? {},
-    updatedAt: serverTimestamp(),
+    staff_names: payload.staffNames ?? {},
+    updated_at: new Date().toISOString(),
   };
-  if (payload.csvRoomSnapshot !== undefined) doc.csvRoomSnapshot = payload.csvRoomSnapshot;
-  if (payload.csvPulledAt !== undefined) doc.csvPulledAt = payload.csvPulledAt;
-  await setDoc(scheduleAssignmentsRef(uid, pid, date), doc, { merge: true });
+  if (payload.csvRoomSnapshot !== undefined) row.csv_room_snapshot = payload.csvRoomSnapshot;
+  if (payload.csvPulledAt !== undefined) row.csv_pulled_at = payload.csvPulledAt;
+  const { error } = await supabase
+    .from('schedule_assignments').upsert(row, { onConflict: 'property_id,date' });
+  if (error) { logErr('saveScheduleAssignments', error); throw error; }
 }
 
 export async function getScheduleAssignments(
-  uid: string, pid: string, date: string,
+  _uid: string, pid: string, date: string,
 ): Promise<ScheduleAssignments | null> {
-  const snap = await getDoc(scheduleAssignmentsRef(uid, pid, date));
-  if (!snap.exists()) return null;
-  const data = snap.data() as ScheduleAssignments;
-  return {
-    date: data.date,
-    roomAssignments: data.roomAssignments ?? {},
-    crew: data.crew ?? [],
-    staffNames: data.staffNames ?? {},
-    csvRoomSnapshot: data.csvRoomSnapshot ?? [],
-    csvPulledAt: data.csvPulledAt ?? null,
-    updatedAt: data.updatedAt?.toDate?.() ?? null,
-  };
+  const { data, error } = await supabase
+    .from('schedule_assignments').select('*')
+    .eq('property_id', pid).eq('date', date).maybeSingle();
+  if (error) { logErr('getScheduleAssignments', error); throw error; }
+  return data ? fromScheduleAssignmentsRow(data) : null;
 }
 
-// ─── Shift Confirmations ────────────────────────────────────────────────────
-
-export const shiftConfirmationsRef = (uid: string, pid: string) =>
-  collection(db, 'users', uid, 'properties', pid, 'shiftConfirmations');
-export const shiftConfirmationDocRef = (uid: string, pid: string, token: string) =>
-  doc(db, 'users', uid, 'properties', pid, 'shiftConfirmations', token);
+// ═══════════════════════════════════════════════════════════════════════════
+// Shift Confirmations
+// ═══════════════════════════════════════════════════════════════════════════
 
 export function subscribeToShiftConfirmations(
-  uid: string,
-  pid: string,
-  shiftDate: string,
-  callback: (confirmations: ShiftConfirmation[]) => void
-) {
-  const q = query(shiftConfirmationsRef(uid, pid), where('shiftDate', '==', shiftDate));
-  return onSnapshot(q, snap => {
-    callback(snap.docs.map(d => {
-      const data = d.data();
-      return {
-        id: d.id,
-        ...data,
-        sentAt: data.sentAt?.toDate?.() ?? null,
-        respondedAt: data.respondedAt?.toDate?.() ?? null,
-      } as ShiftConfirmation;
-    }));
-  }, error => {
-    console.error('[Firestore] Listener error in subscribeToShiftConfirmations:', error.message);
-  });
+  _uid: string, pid: string, shiftDate: string,
+  callback: (confirmations: ShiftConfirmation[]) => void,
+): () => void {
+  return subscribeTable<ShiftConfirmation>(
+    `shift_confirmations:${pid}:${shiftDate}`, 'shift_confirmations', `property_id=eq.${pid}`,
+    async () => {
+      const { data, error } = await supabase
+        .from('shift_confirmations').select('*')
+        .eq('property_id', pid).eq('shift_date', shiftDate);
+      if (error) throw error;
+      return (data ?? []).map(fromShiftConfirmationRow);
+    },
+    callback,
+  );
 }
 
 export async function getShiftConfirmationsForDate(
-  uid: string, pid: string, shiftDate: string
+  _uid: string, pid: string, shiftDate: string,
 ): Promise<ShiftConfirmation[]> {
-  const q = query(shiftConfirmationsRef(uid, pid), where('shiftDate', '==', shiftDate));
-  const snap = await getDocs(q);
-  return snap.docs.map(d => {
-    const data = d.data();
-    return {
-      id: d.id,
-      ...data,
-      sentAt: data.sentAt?.toDate?.() ?? null,
-      respondedAt: data.respondedAt?.toDate?.() ?? null,
-    } as ShiftConfirmation;
-  });
+  const { data, error } = await supabase
+    .from('shift_confirmations').select('*')
+    .eq('property_id', pid).eq('shift_date', shiftDate);
+  if (error) { logErr('getShiftConfirmationsForDate', error); throw error; }
+  return (data ?? []).map(fromShiftConfirmationRow);
 }
 
-// ─── Manager Notifications ──────────────────────────────────────────────────
-
-export const managerNotificationsRef = (uid: string, pid: string) =>
-  collection(db, 'users', uid, 'properties', pid, 'managerNotifications');
-export const managerNotificationDocRef = (uid: string, pid: string, nid: string) =>
-  doc(db, 'users', uid, 'properties', pid, 'managerNotifications', nid);
+// ═══════════════════════════════════════════════════════════════════════════
+// Manager Notifications
+// ═══════════════════════════════════════════════════════════════════════════
 
 export function subscribeToManagerNotifications(
-  uid: string,
-  pid: string,
-  callback: (notifications: ManagerNotification[]) => void
-) {
-  const q = query(managerNotificationsRef(uid, pid), orderBy('createdAt', 'desc'));
-  return onSnapshot(q, snap => {
-    callback(snap.docs.map(d => {
-      const data = d.data();
-      return {
-        id: d.id,
-        ...data,
-        createdAt: data.createdAt?.toDate?.() ?? null,
-      } as ManagerNotification;
-    }));
-  }, error => {
-    console.error('[Firestore] Listener error in subscribeToManagerNotifications:', error.message);
-  });
-}
-
-export async function markNotificationRead(uid: string, pid: string, nid: string) {
-  await updateDoc(managerNotificationDocRef(uid, pid, nid), { read: true });
-}
-
-export async function markAllNotificationsRead(uid: string, pid: string) {
-  const snap = await getDocs(
-    query(managerNotificationsRef(uid, pid), where('read', '==', false))
+  _uid: string, pid: string,
+  callback: (notifications: ManagerNotification[]) => void,
+): () => void {
+  return subscribeTable<ManagerNotification>(
+    `manager_notifications:${pid}`, 'manager_notifications', `property_id=eq.${pid}`,
+    async () => {
+      const { data, error } = await supabase
+        .from('manager_notifications').select('*')
+        .eq('property_id', pid)
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      return (data ?? []).map(fromManagerNotificationRow);
+    },
+    callback,
   );
-  await Promise.all(snap.docs.map(d => updateDoc(d.ref, { read: true })));
 }
 
-// ─── Deep Cleaning Config & Records ───────────────────────────────────────
+export async function markNotificationRead(_uid: string, _pid: string, nid: string): Promise<void> {
+  const { error } = await supabase.from('manager_notifications').update({ read: true }).eq('id', nid);
+  if (error) { logErr('markNotificationRead', error); throw error; }
+}
 
-export const deepCleanConfigRef = (uid: string, pid: string) =>
-  doc(db, 'users', uid, 'properties', pid, 'config', 'deepClean');
+export async function markAllNotificationsRead(_uid: string, pid: string): Promise<void> {
+  const { error } = await supabase
+    .from('manager_notifications').update({ read: true })
+    .eq('property_id', pid).eq('read', false);
+  if (error) { logErr('markAllNotificationsRead', error); throw error; }
+}
 
-export const deepCleanRecordsRef = (uid: string, pid: string) =>
-  collection(db, 'users', uid, 'properties', pid, 'deepCleanRecords');
-
-export const deepCleanRecordDocRef = (uid: string, pid: string, rid: string) =>
-  doc(db, 'users', uid, 'properties', pid, 'deepCleanRecords', rid);
+// ═══════════════════════════════════════════════════════════════════════════
+// Deep Cleaning Config & Records
+// ═══════════════════════════════════════════════════════════════════════════
 
 const DEFAULT_DEEP_CLEAN_CONFIG: DeepCleanConfig = {
   frequencyDays: 90,
@@ -1017,68 +1562,165 @@ const DEFAULT_DEEP_CLEAN_CONFIG: DeepCleanConfig = {
   targetPerWeek: 5,
 };
 
-export async function getDeepCleanConfig(uid: string, pid: string): Promise<DeepCleanConfig> {
-  const snap = await getDoc(deepCleanConfigRef(uid, pid));
-  if (!snap.exists()) return { ...DEFAULT_DEEP_CLEAN_CONFIG };
-  return snap.data() as DeepCleanConfig;
+export async function getDeepCleanConfig(_uid: string, pid: string): Promise<DeepCleanConfig> {
+  const { data, error } = await supabase
+    .from('deep_clean_config').select('*').eq('property_id', pid).maybeSingle();
+  if (error) { logErr('getDeepCleanConfig', error); throw error; }
+  if (!data) return { ...DEFAULT_DEEP_CLEAN_CONFIG };
+  return {
+    frequencyDays: Number(data.frequency_days ?? 90),
+    minutesPerRoom: Number(data.minutes_per_room ?? 60),
+    targetPerWeek: Number(data.target_per_week ?? 5),
+  };
 }
 
-export async function setDeepCleanConfig(uid: string, pid: string, config: DeepCleanConfig) {
-  await setDoc(deepCleanConfigRef(uid, pid), config);
+export async function setDeepCleanConfig(_uid: string, pid: string, config: DeepCleanConfig): Promise<void> {
+  const row = {
+    property_id: pid,
+    frequency_days: config.frequencyDays,
+    minutes_per_room: config.minutesPerRoom,
+    target_per_week: config.targetPerWeek,
+  };
+  const { error } = await supabase.from('deep_clean_config').upsert(row);
+  if (error) { logErr('setDeepCleanConfig', error); throw error; }
 }
 
-export async function getDeepCleanRecords(uid: string, pid: string): Promise<DeepCleanRecord[]> {
-  const snap = await getDocs(deepCleanRecordsRef(uid, pid));
-  return snap.docs.map(d => ({ id: d.id, ...d.data() } as DeepCleanRecord));
+export async function getDeepCleanRecords(_uid: string, pid: string): Promise<DeepCleanRecord[]> {
+  const { data, error } = await supabase
+    .from('deep_clean_records').select('*').eq('property_id', pid);
+  if (error) { logErr('getDeepCleanRecords', error); throw error; }
+  return (data ?? []).map(fromDeepCleanRecordRow);
 }
 
-export async function setDeepCleanRecord(uid: string, pid: string, record: DeepCleanRecord) {
-  await setDoc(deepCleanRecordDocRef(uid, pid, record.id), record);
+export async function setDeepCleanRecord(_uid: string, pid: string, record: DeepCleanRecord): Promise<void> {
+  const row = dropUndefined({
+    property_id: pid,
+    room_number: record.roomNumber,
+    last_deep_clean: record.lastDeepClean,
+    cleaned_by: record.cleanedBy,
+    cleaned_by_team: record.cleanedByTeam,
+    notes: record.notes,
+    status: record.status,
+    assigned_at: record.assignedAt,
+    completed_at: record.completedAt,
+  });
+  const { error } = await supabase
+    .from('deep_clean_records').upsert(row, { onConflict: 'property_id,room_number' });
+  if (error) { logErr('setDeepCleanRecord', error); throw error; }
 }
 
 export async function markRoomDeepCleaned(
-  uid: string, pid: string, roomNumber: string, cleanedBy?: string, notes?: string
-) {
+  _uid: string, pid: string, roomNumber: string, cleanedBy?: string, notes?: string,
+): Promise<void> {
   const today = new Date().toLocaleDateString('en-CA');
-  const record: DeepCleanRecord = {
-    id: roomNumber,
-    roomNumber,
-    lastDeepClean: today,
+  const row = dropUndefined({
+    property_id: pid,
+    room_number: roomNumber,
+    last_deep_clean: today,
     status: 'completed',
-    completedAt: today,
-    ...(cleanedBy ? { cleanedBy } : {}),
-    ...(notes ? { notes } : {}),
-  };
-  await setDoc(deepCleanRecordDocRef(uid, pid, roomNumber), record);
+    completed_at: today,
+    cleaned_by: cleanedBy,
+    notes,
+  });
+  const { error } = await supabase
+    .from('deep_clean_records').upsert(row, { onConflict: 'property_id,room_number' });
+  if (error) { logErr('markRoomDeepCleaned', error); throw error; }
 }
 
 export async function assignRoomDeepClean(
-  uid: string, pid: string, roomNumber: string, team: string[]
-) {
+  _uid: string, pid: string, roomNumber: string, team: string[],
+): Promise<void> {
   const today = new Date().toLocaleDateString('en-CA');
-  const existing = await getDoc(deepCleanRecordDocRef(uid, pid, roomNumber));
-  const prev = existing.exists() ? (existing.data() as DeepCleanRecord) : null;
-  const record: DeepCleanRecord = {
-    id: roomNumber,
-    roomNumber,
-    lastDeepClean: prev?.lastDeepClean ?? '',
-    cleanedByTeam: team,
+  // Preserve prior lastDeepClean if the row already exists.
+  const { data: existing } = await supabase
+    .from('deep_clean_records').select('last_deep_clean')
+    .eq('property_id', pid).eq('room_number', roomNumber).maybeSingle();
+  const row = {
+    property_id: pid,
+    room_number: roomNumber,
+    last_deep_clean: (existing?.last_deep_clean as string) ?? '',
+    cleaned_by_team: team,
     status: 'in_progress',
-    assignedAt: today,
+    assigned_at: today,
   };
-  await setDoc(deepCleanRecordDocRef(uid, pid, roomNumber), record, { merge: true });
+  const { error } = await supabase
+    .from('deep_clean_records').upsert(row, { onConflict: 'property_id,room_number' });
+  if (error) { logErr('assignRoomDeepClean', error); throw error; }
 }
 
 export async function completeRoomDeepClean(
-  uid: string, pid: string, roomNumber: string, team: string[]
-) {
+  _uid: string, pid: string, roomNumber: string, team: string[],
+): Promise<void> {
   const today = new Date().toLocaleDateString('en-CA');
-  const record: Partial<DeepCleanRecord> = {
-    lastDeepClean: today,
-    cleanedByTeam: team,
-    cleanedBy: team.join(', '),
+  const row = {
+    property_id: pid,
+    room_number: roomNumber,
+    last_deep_clean: today,
+    cleaned_by_team: team,
+    cleaned_by: team.join(', '),
     status: 'completed',
-    completedAt: today,
+    completed_at: today,
   };
-  await setDoc(deepCleanRecordDocRef(uid, pid, roomNumber), record, { merge: true });
+  const { error } = await supabase
+    .from('deep_clean_records').upsert(row, { onConflict: 'property_id,room_number' });
+  if (error) { logErr('completeRoomDeepClean', error); throw error; }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Housekeeper / Laundry staff-facing helpers
+//
+// These power /housekeeper/[id] and /laundry/[id] — the HK-facing pages
+// where one staff member sees only their own assigned rooms (across any
+// date, not just today). Previously the pages ran a Firestore
+// collectionGroup('rooms') query with where('assignedTo','==',staffId).
+// Here we expose the equivalent on top of the `rooms` Postgres table.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Subscribe to every room (across all dates) assigned to a given staff
+ * member at a given property. Callback is invoked with the initial
+ * snapshot and again on every INSERT/UPDATE/DELETE to `rooms`.
+ */
+export function subscribeToRoomsForStaff(
+  pid: string,
+  staffId: string,
+  callback: (rooms: Room[]) => void,
+): () => void {
+  return subscribeTable<Room>(
+    `rooms-hk:${pid}:${staffId}`,
+    'rooms',
+    `property_id=eq.${pid}`,
+    async () => {
+      const { data, error } = await supabase
+        .from('rooms').select('*')
+        .eq('property_id', pid)
+        .eq('assigned_to', staffId);
+      if (error) throw error;
+      return (data ?? []).map(fromRoomRow);
+    },
+    callback,
+  );
+}
+
+/**
+ * Fetch a single staff member by id, scoped to a property.
+ * Returns null if not found. Used by the HK-facing pages to read the
+ * staff member's saved `language` preference on first render.
+ */
+export async function getStaffMember(pid: string, sid: string): Promise<StaffMember | null> {
+  const { data, error } = await supabase
+    .from('staff').select('*')
+    .eq('property_id', pid).eq('id', sid).maybeSingle();
+  if (error) { logErr('getStaffMember', error); throw error; }
+  return data ? fromStaffRow(data) : null;
+}
+
+/**
+ * Persist a staff member's language choice. Small convenience wrapper
+ * over updateStaffMember — lets the HK-facing language toggle stay
+ * one line.
+ */
+export async function saveStaffLanguage(sid: string, language: 'en' | 'es'): Promise<void> {
+  const { error } = await supabase.from('staff').update({ language }).eq('id', sid);
+  if (error) { logErr('saveStaffLanguage', error); throw error; }
 }

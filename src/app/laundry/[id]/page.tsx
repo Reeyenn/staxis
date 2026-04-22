@@ -2,10 +2,14 @@
 
 import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-import { auth } from '@/lib/firebase';
 import { todayStr } from '@/lib/utils';
-import { getPublicAreas, getLaundryConfig, subscribeToRooms } from '@/lib/firestore';
+import {
+  getPublicAreas,
+  getLaundryConfig,
+  subscribeToRooms,
+  getStaffMember,
+  saveStaffLanguage,
+} from '@/lib/firestore';
 import { isAreaDueToday, calcLaundryMinutes } from '@/lib/calculations';
 import type { PublicArea, LaundryCategory, Room } from '@/types';
 import { format } from 'date-fns';
@@ -13,8 +17,6 @@ import { es as esLocale } from 'date-fns/locale';
 import { CheckCircle, Globe } from 'lucide-react';
 import { t } from '@/lib/translations';
 import type { Language } from '@/lib/translations';
-import { getDoc, doc, updateDoc } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
 
 export default function LaundryPersonPage({ params }: { params: Promise<{ id: string }> }) {
   const { id: laundryPersonId } = React.use(params);
@@ -37,47 +39,27 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
   const [completedAreas, setCompletedAreas] = useState<Set<string>>(new Set());
   const [completedLoads, setCompletedLoads] = useState<Set<string>>(new Set());
 
-  // Seed the page language from Firestore on mount.
-  // Primary source: staff doc (`staff/{laundryPersonId}.language`) set by
-  // Maria in the Staff modal. Fallback: legacy `staffPrefs/{id}` for folks
-  // who self-selected via SMS before we started mirroring to the staff doc.
+  // Seed the page language from the staff row on mount. Source of truth is
+  // the `language` column on the staff table (written by Maria in the Staff
+  // modal, and by this page when the HK hits the language toggle). Legacy
+  // Firestore `staffPrefs/{id}` is gone.
   useEffect(() => {
-    if (!laundryPersonId) return;
+    if (!laundryPersonId || !pid) return;
     let cancelled = false;
 
     (async () => {
-      if (uid && pid) {
-        try {
-          const staffRef = doc(db, 'users', uid, 'properties', pid, 'staff', laundryPersonId);
-          const snap = await getDoc(staffRef);
-          if (!cancelled && snap.exists()) {
-            const s = snap.data() as { language?: 'en' | 'es' };
-            if (s.language === 'es' || s.language === 'en') {
-              setLang(s.language);
-              return;
-            }
-          }
-        } catch (err) {
-          console.error('[laundry] staff doc lang load failed:', err);
-        }
-      }
-
       try {
-        const prefRef = doc(db, 'staffPrefs', laundryPersonId);
-        const snap = await getDoc(prefRef);
-        if (!cancelled && snap.exists()) {
-          const pref = snap.data() as { language?: 'en' | 'es' };
-          if (pref.language === 'es' || pref.language === 'en') {
-            setLang(pref.language);
-          }
+        const s = await getStaffMember(pid, laundryPersonId);
+        if (!cancelled && s && (s.language === 'es' || s.language === 'en')) {
+          setLang(s.language);
         }
       } catch (err) {
-        console.error('[laundry] staffPrefs load failed:', err);
+        console.error('[laundry] staff row lang load failed:', err);
       }
     })();
 
     return () => { cancelled = true; };
-  }, [laundryPersonId, uid, pid]);
+  }, [laundryPersonId, pid]);
 
   // Load laundry person name from staff list
   useEffect(() => {
@@ -113,36 +95,15 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
       });
   }, [uid, pid]);
 
-  // Subscribe to rooms for today
+  // Subscribe to rooms for today. No auth dance — the Supabase browser client
+  // uses the anon key and the capability URL (uid+pid+staffId) is the access
+  // token for this page.
   useEffect(() => {
     if (!uid || !pid) return;
-
-    const subscribe = () => {
-      subscribeToRooms(uid, pid, today, (data: Room[]) => {
-        setRooms(data);
-      });
-    };
-
-    // Wait for Firebase auth to resolve before deciding to sign in anonymously.
-    // `auth.currentUser` is unreliable on initial render (reads null even when
-    // a session is being restored from IndexedDB), and calling signInAnonymously
-    // in that window would clobber an admin's session across all tabs.
-    let started = false;
-    const unsubAuth = onAuthStateChanged(auth, (user) => {
-      if (started) return;
-      started = true;
-      if (user) {
-        subscribe();
-      } else {
-        signInAnonymously(auth)
-          .then(subscribe)
-          .catch(err => {
-            console.error('[laundry] Anonymous auth failed:', err);
-          });
-      }
+    const unsub = subscribeToRooms(uid, pid, today, (data: Room[]) => {
+      setRooms(data);
     });
-
-    return () => unsubAuth();
+    return () => unsub();
   }, [uid, pid, today]);
 
   // Calculate today's date for area filtering
@@ -230,12 +191,9 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
             onClick={async () => {
               const next: Language = lang === 'en' ? 'es' : 'en';
               setLang(next);
-              if (uid && pid && laundryPersonId) {
+              if (laundryPersonId) {
                 try {
-                  await updateDoc(
-                    doc(db, 'users', uid, 'properties', pid, 'staff', laundryPersonId),
-                    { language: next },
-                  );
+                  await saveStaffLanguage(laundryPersonId, next);
                 } catch (err) {
                   console.error('[laundry] lang persist failed:', err);
                 }

@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import admin from '@/lib/firebase-admin';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 
 interface SmsEntry {
   phone: string;          // E.164 format, e.g. +15551234567
   name:  string;
   rooms: string[];
-  housekeeperId?: string; // Firestore staff document ID - used to build personal room link
+  housekeeperId?: string; // staff.id — used to build personal room link
 }
 
 /** Normalise a phone number to E.164. Strips non-digits and prepends +1 for 10-digit US numbers. */
@@ -18,21 +18,19 @@ function toE164(raw: string): string | null {
   return null;
 }
 
-
 export async function POST(req: NextRequest) {
   try {
     const reqBody = await req.json();
 
-    // Handle both array format and object format with uid/pid
+    // Handle both array format (legacy) and object format with uid/pid.
     let entries: SmsEntry[];
-    let uid: string | undefined;
     let pid: string | undefined;
 
     if (Array.isArray(reqBody)) {
       entries = reqBody;
     } else {
       entries = reqBody.entries ?? [];
-      uid = reqBody.uid;
+      // uid still accepted for back-compat but ignored; pid is the scoping key.
       pid = reqBody.pid;
     }
 
@@ -41,10 +39,13 @@ export async function POST(req: NextRequest) {
     }
 
     let hotelName = 'Your Hotel';
-    if (uid && pid) {
-      const db = admin.firestore();
-      const propSnap = await db.collection('users').doc(uid).collection('properties').doc(pid).get();
-      hotelName = propSnap.data()?.name || 'Your Hotel';
+    if (pid) {
+      const { data: prop } = await supabaseAdmin
+        .from('properties')
+        .select('name')
+        .eq('id', pid)
+        .maybeSingle();
+      hotelName = prop?.name || 'Your Hotel';
     }
 
     const results = await Promise.allSettled(

@@ -7,17 +7,23 @@
  *
  * The only reply we act on is a language switch:
  *
- *   ESPAÑOL → mirror lang='es' to staffPrefs + staff doc + confirmation doc,
+ *   ESPAÑOL → mirror language='es' to staff row + shift_confirmation row,
  *             then resend the link SMS in Spanish.
- *   ENGLISH → mirror lang='en' and resend the link SMS in English.
+ *   ENGLISH → mirror language='en' and resend the link SMS in English.
  *   anything else → friendly "got your message, open your link" ack.
  *
  * Every code path returns an empty TwiML <Response/> so Twilio doesn't send
  * its own auto-reply on top of ours.
+ *
+ * Lookup path (Supabase):
+ *   1. Normalise inbound From → E.164 (and also try a few common variants).
+ *   2. Find the staff row with `phone_lookup` matching any of those variants.
+ *   3. Find the newest `shift_confirmations` row for that staff_id with status
+ *      in ('sent','pending'). That's the shift the reply belongs to.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import admin from '@/lib/firebase-admin';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 
 // Twilio expects TwiML (XML), not JSON. An empty <Response/> tells Twilio
@@ -53,30 +59,28 @@ function normalise(text: string): string {
 const ES_SET = new Set(['ESPANOL', 'ESPAÑOL', 'SPANISH', 'ESP']);
 const EN_SET = new Set(['ENGLISH', 'INGLES', 'INGLÉS', 'EN']);
 
-type ShiftConfirmation = {
-  uid: string;
-  pid: string;
-  staffId: string;
-  staffName: string;
-  staffPhone: string;
-  shiftDate: string;
-  status: 'sent' | 'pending' | 'confirmed' | 'declined';
-  language: 'en' | 'es';
-  hkUrl?: string;
-  hotelName?: string;
-};
-
-// Debug: write every webhook hit (and the final lookup outcome) to a
-// top-level `webhookLog` collection so we can diagnose failures end-to-end.
-async function logHit(entry: Record<string, unknown>): Promise<void> {
+// Debug: write every webhook hit (and the final lookup outcome) to the
+// `webhook_log` table so we can diagnose failures end-to-end.
+async function logHit(payload: Record<string, unknown>): Promise<void> {
   try {
-    await admin.firestore().collection('webhookLog').add({
-      ...entry,
-      ts: admin.firestore.FieldValue.serverTimestamp(),
+    await supabaseAdmin.from('webhook_log').insert({
+      source: 'twilio-sms-reply',
+      payload,
     });
   } catch (e) {
     console.error('logHit failed:', e);
   }
+}
+
+/** Best-effort: return the hotel's public base URL for links embedded in SMS.
+ *  Mirrors whatever /api/send-shift-confirmations used on the outbound leg. */
+function resolveBaseUrl(): string {
+  return (
+    process.env.NEXT_PUBLIC_APP_URL ||
+    process.env.NEXT_PUBLIC_SITE_URL ||
+    process.env.NEXT_PUBLIC_BASE_URL ||
+    'https://hotelops-ai.vercel.app'
+  );
 }
 
 export async function POST(req: NextRequest) {
@@ -119,13 +123,11 @@ export async function POST(req: NextRequest) {
     if (!phone164) return twimlOk();
 
     const reply = normalise(text);
-    const db = admin.firestore();
 
-    // Find the most recent open shiftConfirmation for this phone via the
-    // top-level `phoneLookup/{phone164}` index that /api/send-shift-confirmations
-    // writes on every send. Direct get — no collectionGroup, no composite
-    // index, no FAILED_PRECONDITION. Last-write-wins: newest send for this
-    // phone is always what replies match.
+    // Try a few likely phone_lookup values. The column is normalised on write
+    // via `toE164(phone)`, so phone164 is the canonical match — but we also
+    // try legacy shapes (raw, 10-digit, leading-1) in case older rows were
+    // written before the normalisation was consistent.
     const digits = fromNumber.replace(/\D/g, '');
     const tenDigit = digits.length >= 10 ? digits.slice(-10) : digits;
     const variants = Array.from(new Set([
@@ -135,83 +137,95 @@ export async function POST(req: NextRequest) {
       `1${tenDigit}`,
     ].filter(Boolean) as string[]));
 
-    let checkDoc: FirebaseFirestore.DocumentSnapshot | null = null;
-    const tried: string[] = [];
-    let lookupError: string | null = null;
-    let resolvedPath: string | null = null;
-    try {
-      for (const v of variants) {
-        tried.push(v);
-        const lookupSnap = await db.collection('phoneLookup').doc(v).get();
-        if (!lookupSnap.exists) continue;
-        const lookupData = lookupSnap.data() as { path?: string } | undefined;
-        const path = lookupData?.path;
-        if (!path) continue;
-        resolvedPath = path;
-        const docSnap = await db.doc(path).get();
-        if (!docSnap.exists) continue;
-        const docData = docSnap.data() as { status?: string } | undefined;
-        // 'sent' is the new default. 'pending' is legacy from the old yes/no
-        // flow — treat it the same for lookup purposes so legacy docs still
-        // match. 'confirmed' / 'declined' are resolved states — ignore.
-        if (docData?.status !== 'sent' && docData?.status !== 'pending') continue;
-        checkDoc = docSnap;
-        break;
-      }
-    } catch (e) {
-      lookupError = String(e);
+    // 1) Find the staff row. `.in('phone_lookup', variants)` returns any staff
+    //    whose normalised phone matches one of our candidates.
+    const { data: staffMatches, error: staffErr } = await supabaseAdmin
+      .from('staff')
+      .select('id, property_id, name, language')
+      .in('phone_lookup', variants);
+
+    if (staffErr) {
+      await logHit({ stage: 'staff_lookup_error', error: staffErr.message });
+      return twimlOk();
+    }
+
+    // Ambiguity: if two different staff rows match the same number (shouldn't
+    // happen, but defensive), pick the most recently-updated one.
+    let staff = (staffMatches ?? [])[0] ?? null;
+    if ((staffMatches ?? []).length > 1) {
+      const { data: newest } = await supabaseAdmin
+        .from('staff')
+        .select('id, property_id, name, language')
+        .in('phone_lookup', variants)
+        .order('updated_at', { ascending: false })
+        .limit(1);
+      if (newest && newest[0]) staff = newest[0];
+    }
+
+    if (!staff) {
+      await logHit({ stage: 'no_staff_match', variants });
+      return twimlOk();
+    }
+
+    // 2) Find the newest open shift_confirmation for this staff_id.
+    const { data: confs, error: confErr } = await supabaseAdmin
+      .from('shift_confirmations')
+      .select('token, property_id, staff_id, staff_name, staff_phone, shift_date, status, language')
+      .eq('staff_id', staff.id)
+      .in('status', ['sent', 'pending'])
+      .order('sent_at', { ascending: false, nullsFirst: false })
+      .limit(1);
+
+    if (confErr) {
+      await logHit({ stage: 'conf_lookup_error', error: confErr.message });
+      return twimlOk();
+    }
+
+    const conf = (confs ?? [])[0];
+    if (!conf) {
+      await logHit({ stage: 'no_open_confirmation', staffId: staff.id });
+      return twimlOk();
     }
 
     await logHit({
       stage: 'after_lookup',
       reply,
       phone164,
-      fromNumber,
-      variantsTried: tried,
-      matched: !!checkDoc,
-      matchedDocPath: checkDoc?.ref.path ?? null,
-      resolvedPath,
-      lookupError,
+      staffId: staff.id,
+      token: conf.token,
+      shiftDate: conf.shift_date,
     });
 
-    if (!checkDoc) {
-      // Nothing open for this phone — drop silently; Twilio still needs 200.
-      return twimlOk();
-    }
-    const data = checkDoc.data() as ShiftConfirmation;
-    const { uid, pid, staffName, shiftDate } = data;
-    const firstName = (staffName ?? 'there').split(' ')[0];
-    const hotelName = data.hotelName || 'the hotel';
+    // Hotel name for signoff. One extra round-trip, but cheap.
+    const { data: prop } = await supabaseAdmin
+      .from('properties')
+      .select('name')
+      .eq('id', conf.property_id)
+      .maybeSingle();
+    const hotelName = prop?.name || 'the hotel';
 
-    // Render the same minimal link SMS that /api/send-shift-confirmations
-    // sends. Used when the HK toggles language — we resend in the new lang.
+    const firstName = (conf.staff_name ?? staff.name ?? 'there').split(' ')[0];
+    const baseUrl = resolveBaseUrl();
+    const hkUrl = `${baseUrl}/housekeeper/${staff.id}?pid=${encodeURIComponent(conf.property_id as string)}`;
+
     const renderLinkMessage = (targetLang: 'en' | 'es'): string => {
-      const hkUrl = data.hkUrl ?? '';
-      const label = formatShiftDate(shiftDate, targetLang);
+      const label = formatShiftDate(conf.shift_date as string, targetLang);
       return targetLang === 'es'
         ? `Hola ${firstName}! Tu lista para ${label}:\n${hkUrl}\n\nFor English, reply ENGLISH\n\n– ${hotelName}`
         : `Hi ${firstName}! Your list for ${label}:\n${hkUrl}\n\nPara español, responde ESPAÑOL\n\n– ${hotelName}`;
     };
 
     const mirrorLang = async (next: 'en' | 'es'): Promise<void> => {
-      // Mirror the language onto three places so everything stays in sync:
-      // the legacy staffPrefs doc (kept for backward compat), the staff
-      // doc (canonical — what the admin Staff modal reads/writes and what
-      // the HK personal page seeds from), and the current confirmation.
-      await db.collection('staffPrefs').doc(data.staffId).set(
-        { language: next, updatedAt: admin.firestore.FieldValue.serverTimestamp() },
-        { merge: true },
-      );
-      try {
-        await db
-          .collection('users').doc(uid)
-          .collection('properties').doc(pid)
-          .collection('staff').doc(data.staffId)
-          .update({ language: next });
-      } catch (err) {
-        console.error(`[sms-reply] staff doc lang mirror (${next}) failed:`, err);
-      }
-      await checkDoc!.ref.update({ language: next });
+      // Mirror the language onto both places so everything stays in sync:
+      // the staff row (canonical — what the admin Staff modal reads/writes
+      // and what the HK personal page seeds from) and the current
+      // shift_confirmation row.
+      const [{ error: staffUpdErr }, { error: confUpdErr }] = await Promise.all([
+        supabaseAdmin.from('staff').update({ language: next }).eq('id', staff!.id),
+        supabaseAdmin.from('shift_confirmations').update({ language: next }).eq('token', conf.token as string),
+      ]);
+      if (staffUpdErr) console.error('[sms-reply] staff language update failed:', staffUpdErr.message);
+      if (confUpdErr) console.error('[sms-reply] confirmation language update failed:', confUpdErr.message);
     };
 
     // ── ESPAÑOL — switch to Spanish and resend the link ─────────────────────
@@ -229,7 +243,7 @@ export async function POST(req: NextRequest) {
     }
 
     // ── Anything else — friendly ack, point at their link ───────────────────
-    const lang: 'en' | 'es' = data.language ?? 'en';
+    const lang: 'en' | 'es' = (conf.language as 'en' | 'es') ?? 'en';
     const hint = lang === 'es'
       ? `¡Gracias, ${firstName}! Abre tu enlace para ver tu lista.\n– ${hotelName}`
       : `Thanks, ${firstName}! Open your link to see your list.\n– ${hotelName}`;

@@ -1,20 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
-import admin from '@/lib/firebase-admin';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
-import type { StaffMember } from '@/types';
 
 /**
  * POST /api/help-request
  *
  * Triggered when a housekeeper taps "Need Help" on their mobile page.
  * Sends ONE SMS to the single staff member flagged as the property's
- * Scheduling Manager (`isSchedulingManager: true` on their staff doc).
+ * Scheduling Manager (is_scheduling_manager = true on their staff row).
  *
  * No broadcasts. No department-based routing. One person, one text.
  * If no scheduling manager is flagged, the request is a no-op (sent = 0).
  *
  * Payload:
- *   uid        – auth user id (property owner)
+ *   uid        – retained for back-compat; no longer required for scoping
+ *                (RLS + pid are enough under Supabase)
  *   pid        – property id
  *   staffName  – name of the housekeeper asking for help (shown in the SMS)
  *   roomNumber – room the housekeeper is in
@@ -33,53 +33,43 @@ function toE164(raw: string): string | null {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { uid, pid, staffName, roomNumber, language } = body;
+    const { pid, staffName, roomNumber, language } = body;
 
-    if (!uid || !pid || !staffName || !roomNumber) {
+    if (!pid || !staffName || !roomNumber) {
       return NextResponse.json(
         { error: 'Missing required fields' },
         { status: 400 }
       );
     }
 
-    const db = admin.firestore();
+    // Fetch property name and scheduling manager in parallel.
+    const [{ data: prop }, { data: managers, error: mgrErr }] = await Promise.all([
+      supabaseAdmin.from('properties').select('name').eq('id', pid).maybeSingle(),
+      supabaseAdmin
+        .from('staff')
+        .select('id, name, phone, is_active, is_scheduling_manager')
+        .eq('property_id', pid)
+        .eq('is_scheduling_manager', true)
+        .limit(1),
+    ]);
 
-    // Get property name
-    const propSnap = await db
-      .collection('users')
-      .doc(uid)
-      .collection('properties')
-      .doc(pid)
-      .get();
+    if (mgrErr) {
+      console.error('[help-request] staff query failed', mgrErr);
+      return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    }
 
-    const propertyName = propSnap.data()?.name || 'Your Hotel';
+    const propertyName = prop?.name || 'Your Hotel';
 
-    // Find the single Scheduling Manager for this property.
-    // There is only ever one per property — the Staff page enforces that
-    // invariant via a swap-confirm modal.
-    const managerSnap = await db
-      .collection('users')
-      .doc(uid)
-      .collection('properties')
-      .doc(pid)
-      .collection('staff')
-      .where('isSchedulingManager', '==', true)
-      .limit(1)
-      .get();
-
-    if (managerSnap.empty) {
+    if (!managers || managers.length === 0) {
       console.warn(
         `[help-request] No scheduling manager flagged for property ${pid}. Help request from ${staffName} in Room ${roomNumber} was not routed.`
       );
       return NextResponse.json({ sent: 0, failed: 0, reason: 'no-scheduling-manager' });
     }
 
-    const manager = {
-      id: managerSnap.docs[0].id,
-      ...managerSnap.docs[0].data(),
-    } as StaffMember & { id: string };
+    const manager = managers[0];
 
-    if (!manager.phone || manager.isActive === false) {
+    if (!manager.phone || manager.is_active === false) {
       console.warn(
         `[help-request] Scheduling manager ${manager.name} is inactive or has no phone. Help request not routed.`
       );

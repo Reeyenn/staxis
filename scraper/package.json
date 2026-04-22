@@ -1,7 +1,7 @@
 {
   "name": "hotelops-scraper",
   "version": "1.0.0",
-  "description": "Choice Advantage → Firebase scraper for HotelOps AI",
+  "description": "Choice Advantage -> Supabase scraper for HotelOps AI / Staxis",
   "main": "scraper.js",
   "scripts": {
     "start": "node scraper.js",
@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "playwright": "1.58.2",
-    "firebase-admin": "^13.7.0",
+    "@supabase/supabase-js": "^2.47.0",
     "dotenv": "^17.3.1"
   }
 }

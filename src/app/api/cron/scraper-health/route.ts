@@ -8,20 +8,22 @@
  * becomes an SMS to Reeyen within the same business day — not a "why are
  * the numbers wrong" phone call from Maria three hours later.
  *
- * Three signals, all fed by the Railway scraper writing to Firestore:
+ * Three signals, all fed by the Railway scraper writing to Supabase
+ * scraper_status rows:
  *
- *   1. scraperStatus/heartbeat.at  — proves the Node process is alive and
- *      looping. Updated every tick (5 min).
- *   2. scraperStatus/dashboard.pulledAt  — proves the CA→Firestore pipeline
- *      is producing fresh numbers. Updated every successful dashboard pull
- *      (should be every 15 min 5am–11pm local).
- *   3. scraperStatus/dashboard.errorCode  — set when the last pull failed.
- *      The code tells us *why* (login_failed vs timeout vs selector_miss)
- *      so we can send an actionable SMS instead of a generic "broken" page.
+ *   1. scraper_status[heartbeat].value.at  — proves the Node process is
+ *      alive and looping. Updated every tick (5 min).
+ *   2. scraper_status[dashboard].value.pulledAt  — proves the CA→Supabase
+ *      pipeline is producing fresh numbers. Updated every successful
+ *      dashboard pull (should be every 15 min 5am–11pm local).
+ *   3. scraper_status[dashboard].value.errorCode  — set when the last pull
+ *      failed. The code tells us *why* (login_failed vs timeout vs
+ *      selector_miss) so we can send an actionable SMS instead of a
+ *      generic "broken" page.
  *
  * Alert de-duplication:
  *   We don't want to text Reeyen every 30 min while the scraper is down
- *   overnight. State lives in scraperStatus/alertState:
+ *   overnight. State lives in scraper_status[alertState].value:
  *     • lastAlertedCode   — which condition we most recently alerted on
  *     • lastAlertedAt     — when that alert fired
  *     • resolvedAt        — when we sent the "resolved" ping
@@ -37,7 +39,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import admin, { verifyFirebaseAuth } from '@/lib/firebase-admin';
+import { supabaseAdmin, verifySupabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 
 export const runtime = 'nodejs';
@@ -66,9 +68,6 @@ const ALERT_WINDOW_END   = 22;  // 10pm local
 const TIMEZONE = 'America/Chicago';
 
 // ─── Message bank ────────────────────────────────────────────────────────
-// Each condition maps to a single, action-oriented SMS. The goal is that
-// Reeyen can read the text on his phone and know immediately what to do
-// without opening Railway logs.
 type AlertCondition =
   | 'heartbeat_dead'
   | 'login_failed'
@@ -79,7 +78,7 @@ type AlertCondition =
   | 'validation_failed'
   | 'ca_unreachable'
   | 'unknown_error'
-  | 'stale_no_error';  // pulledAt is old but no errorCode — suggests scraper hung silently
+  | 'stale_no_error';
 
 function alertMessage(cond: AlertCondition, ctx: AlertContext): string {
   const last = ctx.pulledAtStr ? ` (last good numbers ${ctx.pulledAtStr})` : '';
@@ -115,8 +114,6 @@ type AlertContext = {
   errorMessage: string | null;
 };
 
-// Map the scraper's errorCode to an alert condition. Some codes are alert-
-// worthy on the first occurrence (login_failed), others only if they persist.
 function mapErrorToCondition(code: string | null): AlertCondition | null {
   switch (code) {
     case 'login_failed':       return 'login_failed';
@@ -137,7 +134,6 @@ function localHour(nowMs: number, tz: string): number {
   const h = new Intl.DateTimeFormat('en-US', {
     hour: 'numeric', hour12: false, timeZone: tz,
   }).format(new Date(nowMs));
-  // en-US formatter returns "0" through "23" or "24" for midnight edge cases
   return parseInt(h, 10) % 24;
 }
 
@@ -146,46 +142,76 @@ function minutesAgo(date: Date | null, nowMs: number): number | null {
   return Math.floor((nowMs - date.getTime()) / 60_000);
 }
 
-function tsToDate(v: unknown): Date | null {
-  const t = (v as { toDate?: () => Date } | undefined)?.toDate?.();
-  return t instanceof Date ? t : null;
+// Parse an ISO string or Date into a Date. Postgres returns timestamptz
+// as ISO strings in JSON responses.
+function parseDate(v: unknown): Date | null {
+  if (v == null) return null;
+  if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
+  if (typeof v === 'string') {
+    const d = new Date(v);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  return null;
+}
+
+// Fetch a single scraper_status row's data jsonb. Returns {} if missing.
+async function getStatus(key: string): Promise<Record<string, unknown>> {
+  const { data, error } = await supabaseAdmin
+    .from('scraper_status')
+    .select('data, updated_at')
+    .eq('key', key)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return {};
+  const value = (data.data ?? {}) as Record<string, unknown>;
+  // Surface updated_at alongside value so callers that want a fallback
+  // timestamp (when value.at is absent) can use it.
+  return { ...value, _updated_at: data.updated_at };
+}
+
+// Upsert a scraper_status row with merged jsonb data. Supabase jsonb
+// doesn't have a native "merge" op, so we read-modify-write client-side.
+async function mergeStatus(key: string, patch: Record<string, unknown>): Promise<void> {
+  const current: Record<string, unknown> = await getStatus(key).catch(() => ({}));
+  // Strip out our synthetic _updated_at before round-tripping.
+  const { _updated_at: _, ...currentClean } = current;
+  void _;
+  const merged = { ...currentClean, ...patch };
+  const { error } = await supabaseAdmin
+    .from('scraper_status')
+    .upsert({ key, data: merged, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+  if (error) throw error;
 }
 
 // ─── Handler ─────────────────────────────────────────────────────────────
 
 async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCondition | 'ok'; detail: string }> {
-  // Preflight the service account key. If this throws, the catch in GET()
+  // Preflight the service_role key. If this throws, the catch in GET()
   // returns the specific error message to GitHub Actions — which then emails
   // Reeyen the exact fix instead of a generic "workflow failed". Memoized,
   // so only the first request per cold-start pays the round-trip.
-  await verifyFirebaseAuth();
+  await verifySupabaseAdmin();
 
-  const db = admin.firestore();
   const nowMs = Date.now();
 
-  // Read all three status docs in parallel.
-  const [dashboardSnap, heartbeatSnap, alertStateSnap] = await Promise.all([
-    db.collection('scraperStatus').doc('dashboard').get(),
-    db.collection('scraperStatus').doc('heartbeat').get(),
-    db.collection('scraperStatus').doc('alertState').get(),
+  // Read all three status rows in parallel.
+  const [dashboard, heartbeat, alertState] = await Promise.all([
+    getStatus('dashboard'),
+    getStatus('heartbeat'),
+    getStatus('alertState'),
   ]);
 
-  const dashboard  = dashboardSnap.exists  ? dashboardSnap.data()  ?? {} : {};
-  const heartbeat  = heartbeatSnap.exists  ? heartbeatSnap.data()  ?? {} : {};
-  const alertState = alertStateSnap.exists ? alertStateSnap.data() ?? {} : {};
-
-  const pulledAt   = tsToDate(dashboard.pulledAt);
-  const heartbeatAt = tsToDate(heartbeat.at);
-  const errorCode  = typeof dashboard.errorCode === 'string' ? dashboard.errorCode : null;
+  // heartbeat.at is an ISO string set by the scraper; fall back to row's
+  // updated_at if the value payload is malformed.
+  const heartbeatAt = parseDate(heartbeat.at) ?? parseDate(heartbeat._updated_at);
+  const pulledAt    = parseDate(dashboard.pulledAt) ?? parseDate(dashboard._updated_at);
+  const errorCode    = typeof dashboard.errorCode === 'string' ? dashboard.errorCode : null;
   const errorMessage = typeof dashboard.errorMessage === 'string' ? dashboard.errorMessage : null;
 
   const pulledMinAgo    = minutesAgo(pulledAt, nowMs);
   const heartbeatMinAgo = minutesAgo(heartbeatAt, nowMs);
 
   // ── Determine current condition ────────────────────────────────────
-  // Priority order: heartbeat-dead beats everything (if process is dead,
-  // everything else is consequence). Then explicit errorCode wins. Then
-  // stale-without-error as the fallback.
   let condition: AlertCondition | null = null;
 
   if (heartbeatAt === null || (heartbeatMinAgo !== null && heartbeatMinAgo > HEARTBEAT_DEAD_MIN)) {
@@ -193,8 +219,6 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
   } else if (errorCode) {
     condition = mapErrorToCondition(errorCode);
   } else if (pulledAt && pulledMinAgo !== null && pulledMinAgo > DASHBOARD_STALE_MIN) {
-    // Only flag stale-no-error during active hours — the scraper legitimately
-    // stops pulling at 11pm, so "last pull 8 hours ago" at 7am is expected.
     const hour = localHour(nowMs, TIMEZONE);
     if (hour >= 5 && hour < 23) {
       condition = 'stale_no_error';
@@ -202,9 +226,6 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
   }
 
   // ── Recovery detection ─────────────────────────────────────────────
-  // If we previously alerted but things are healthy now, send one recovery
-  // text and clear the state. This is the one case where we DO send a text
-  // without an error — Reeyen asked for confirmation that things are back.
   const prevCondition = typeof alertState.lastAlertedCode === 'string'
     ? alertState.lastAlertedCode as AlertCondition : null;
   const alreadyResolved = alertState.resolvedAt != null;
@@ -216,7 +237,7 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
       heartbeatMinutesAgo: heartbeatMinAgo,
       errorMessage,
     };
-    const alertPhone = process.env.OPS_ALERT_PHONE;
+    const alertPhone = process.env.MANAGER_PHONE || process.env.OPS_ALERT_PHONE;
     if (alertPhone) {
       try {
         await sendSms(
@@ -227,26 +248,22 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
         console.error('[scraper-health] recovery SMS failed', (err as Error).message);
       }
     }
-    await db.collection('scraperStatus').doc('alertState').set({
-      resolvedAt: new Date(),
-      lastCheckAt: new Date(),
-    }, { merge: true });
+    await mergeStatus('alertState', {
+      resolvedAt: new Date().toISOString(),
+      lastCheckAt: new Date().toISOString(),
+    });
     return { alerted: true, condition: 'ok', detail: 'recovered from ' + prevCondition };
   }
 
-  // No condition and nothing to recover — bump lastCheckAt and exit.
   if (!condition) {
-    await db.collection('scraperStatus').doc('alertState').set({
-      lastCheckAt: new Date(),
-    }, { merge: true });
+    await mergeStatus('alertState', {
+      lastCheckAt: new Date().toISOString(),
+    });
     return { alerted: false, condition: 'ok', detail: 'all green' };
   }
 
   // ── De-duplication ─────────────────────────────────────────────────
-  // Only send if (a) no alert yet for this condition, (b) condition
-  // changed, or (c) enough time has passed since the last alert of the
-  // same condition.
-  const lastAlertedAt = tsToDate(alertState.lastAlertedAt);
+  const lastAlertedAt = parseDate(alertState.lastAlertedAt);
   const hoursSinceLastAlert = lastAlertedAt
     ? (nowMs - lastAlertedAt.getTime()) / 3_600_000
     : Infinity;
@@ -255,24 +272,19 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
   const enoughTimePassed = hoursSinceLastAlert >= REALERT_INTERVAL_HR;
 
   if (!conditionChanged && !enoughTimePassed) {
-    // Same problem we already alerted about, less than 6h ago → stay quiet.
-    await db.collection('scraperStatus').doc('alertState').set({
-      lastCheckAt: new Date(),
-    }, { merge: true });
+    await mergeStatus('alertState', {
+      lastCheckAt: new Date().toISOString(),
+    });
     return { alerted: false, condition, detail: 'debounced' };
   }
 
   // ── Business-hours gate ────────────────────────────────────────────
-  // Don't buzz his phone overnight. If the problem persists, we'll catch
-  // it on the 6am run.
   const hour = localHour(nowMs, TIMEZONE);
   if (hour < ALERT_WINDOW_START || hour >= ALERT_WINDOW_END) {
-    // Track the condition internally so that when we DO send an alert at
-    // 6am, de-dup still works.
-    await db.collection('scraperStatus').doc('alertState').set({
+    await mergeStatus('alertState', {
       pendingCondition: condition,
-      lastCheckAt: new Date(),
-    }, { merge: true });
+      lastCheckAt: new Date().toISOString(),
+    });
     return { alerted: false, condition, detail: 'outside alert window' };
   }
 
@@ -284,7 +296,7 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
     errorMessage,
   };
   const message = alertMessage(condition, ctx);
-  const alertPhone = process.env.OPS_ALERT_PHONE;
+  const alertPhone = process.env.MANAGER_PHONE || process.env.OPS_ALERT_PHONE;
 
   let smsSent = false;
   if (alertPhone) {
@@ -295,26 +307,23 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
       console.error('[scraper-health] SMS send failed', (err as Error).message);
     }
   } else {
-    console.warn('[scraper-health] OPS_ALERT_PHONE env var not set — alert would fire:', message);
+    console.warn('[scraper-health] MANAGER_PHONE env var not set — alert would fire:', message);
   }
 
-  await db.collection('scraperStatus').doc('alertState').set({
+  await mergeStatus('alertState', {
     lastAlertedCode: condition,
-    lastAlertedAt:   new Date(),
+    lastAlertedAt: new Date().toISOString(),
     lastAlertedMessage: message,
     lastAlertedSmsSent: smsSent,
-    lastCheckAt:     new Date(),
-    resolvedAt:      null,  // clear so the NEXT recovery triggers a recovery text
+    lastCheckAt: new Date().toISOString(),
+    resolvedAt: null,  // clear so the NEXT recovery triggers a recovery text
     pendingCondition: null,
-  }, { merge: true });
+  });
 
   return { alerted: smsSent, condition, detail: message };
 }
 
 export async function GET(req: NextRequest) {
-  // Auth — Vercel cron sets Authorization: Bearer $CRON_SECRET when
-  // CRON_SECRET is configured. If unset, allow the route for manual testing
-  // (we want a way to ping it from the browser during setup).
   const secret = process.env.CRON_SECRET;
   if (secret) {
     const auth = req.headers.get('authorization');
@@ -335,7 +344,6 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// Allow manual POST trigger too — useful for "test my alert config" from curl.
 export async function POST(req: NextRequest) {
   return GET(req);
 }

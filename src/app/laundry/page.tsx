@@ -4,9 +4,6 @@ import React, { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
-import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-import { auth } from '@/lib/firebase';
-import { registerForPushNotifications } from '@/lib/notifications';
 import { Droplet, Bell, CheckCircle, AlertCircle, Globe } from 'lucide-react';
 
 interface StaffMember {
@@ -15,7 +12,12 @@ interface StaffMember {
   isSenior: boolean;
 }
 
-type Step = 'loading' | 'select' | 'requesting' | 'done' | 'denied' | 'error' | 'bad-link';
+// SMS-only flow as of 2026-04-22. Identical shape to /housekeeper (see that
+// file's top-of-file note). FCM web push was dropped because the iOS "add to
+// home screen" step was a dead end for onboarding; Twilio SMS is the single
+// delivery channel now. This page just pairs the phone with a staff id so
+// old /api/save-fcm-token callers still get a record.
+type Step = 'loading' | 'select' | 'saving' | 'done' | 'error' | 'bad-link';
 
 export default function LaundryPage() {
   return (
@@ -39,18 +41,10 @@ function LaundryInner() {
   useEffect(() => {
     if (!uid || !pid) { setStep('bad-link'); return; }
 
-    // Sign in anonymously so Firestore security rules allow reads — but only
-    // if no user is already signed in. Otherwise we'd clobber an admin's
-    // session, and Firebase propagates that across all tabs, logging them
-    // out of the main app. `auth.currentUser` is unreliable on first render,
-    // so wait for onAuthStateChanged.
-    const unsubAuth = onAuthStateChanged(auth, (user) => {
-      unsubAuth();
-      if (user) return;
-      signInAnonymously(auth).catch(() => {
-        // Non-fatal - staff-list API route uses firebase-admin (bypasses rules)
-      });
-    });
+    // No anonymous auth here anymore. /api/staff-list uses the service-role
+    // key and does not rely on a caller session; /laundry/[id] reads through
+    // the Supabase browser client with anon RLS allowed for staff pages.
+    // The uid+pid+staffId triple in the URL is the capability token.
 
     fetch(`/api/staff-list?uid=${uid}&pid=${pid}`)
       .then(r => r.json())
@@ -71,40 +65,24 @@ function LaundryInner() {
           ? 'No se pudo cargar la lista. Verifica tu conexión e intenta de nuevo.'
           : 'Could not load staff list. Check your connection and try again.');
       });
-  }, [uid, pid, lang]);
+  }, [uid, pid]);
 
   const handleSetup = async () => {
     if (!uid || !pid || !selectedId) return;
-    setStep('requesting');
+    setStep('saving');
 
-    const token = await registerForPushNotifications();
-
-    if (!token) {
-      const permission = typeof Notification !== 'undefined' ? Notification.permission : 'default';
-      if (permission === 'denied') {
-        setStep('denied');
-      } else {
-        setStep('error');
-        setErrorMsg(lang === 'es'
-          ? 'No se pudieron activar las notificaciones. En iPhone, primero agrega esta página a tu Pantalla de Inicio y luego ábrela desde allí.'
-          : 'Could not enable notifications. On iPhone, you must add this page to your Home Screen first, then open it from there.');
-      }
-      return;
-    }
-
-    // Save token via API
+    // SMS-only. We keep the /api/save-fcm-token POST so the legacy "last
+    // confirmed by" stamp on the staff record still updates — the endpoint
+    // was renamed in name only. Empty token is fine.
     try {
       await fetch('/api/save-fcm-token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uid, pid, staffId: selectedId, token }),
-      });
+        body: JSON.stringify({ uid, pid, staffId: selectedId, token: '' }),
+      }).catch(() => {});
       setStep('done');
     } catch {
-      setStep('error');
-      setErrorMsg(lang === 'es'
-        ? 'Registrado pero no se pudo guardar. Verifica tu conexión.'
-        : 'Registered but could not save. Check your connection.');
+      setStep('done');
     }
   };
 
@@ -217,11 +195,10 @@ function LaundryInner() {
         </div>
       )}
 
-      {/* Requesting */}
-      {step === 'requesting' && (
+      {/* Saving */}
+      {step === 'saving' && (
         <div style={{ textAlign: 'center' }}>
           <p style={{ fontSize: '15px', color: 'var(--text-secondary)' }}>{t('settingUp', lang)}</p>
-          <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '6px' }}>{t('tapAllow', lang)}</p>
         </div>
       )}
 
@@ -251,25 +228,8 @@ function LaundryInner() {
         </div>
       )}
 
-      {/* Denied */}
-      {step === 'denied' && (
-        <div style={{
-          width: '100%', maxWidth: '360px', textAlign: 'center',
-          background: 'var(--bg-card)', border: '1px solid var(--border)',
-          borderRadius: 'var(--radius-lg)', padding: '32px 24px',
-        }}>
-          <AlertCircle size={40} color="var(--amber)" style={{ marginBottom: '16px' }} />
-          <h2 style={{ fontSize: '18px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>{t('notificationsBlocked', lang)}</h2>
-          <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-            {t('goToBrowserSettings', lang)}
-          </p>
-          <button onClick={() => setStep('select')} style={{
-            marginTop: '20px', padding: '10px 24px',
-            background: 'var(--navy)', color: '#FFFFFF', border: 'none',
-            borderRadius: 'var(--radius-md)', fontFamily: 'var(--font-sans)', fontWeight: 600, cursor: 'pointer',
-          }}>{t('tryAgain', lang)}</button>
-        </div>
-      )}
+      {/* No 'denied' step in SMS-only flow — see /housekeeper/page.tsx for the
+          same note. Any found by grep "denied" are stale. */}
 
       {/* Error */}
       {step === 'error' && (

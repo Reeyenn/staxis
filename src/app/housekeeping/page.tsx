@@ -1817,10 +1817,14 @@ function ScheduleSection() {
             {planSnapshot?.pulledAt && (() => {
               const CSV_STALE_MINUTES = 75;
               const CSV_ERROR_MINUTES = 180;
+              // Supabase timestamptz already comes back as a Date via fromSnapshotRow.
+              // The old .toDate() fallback was for Firestore Timestamp; no longer needed.
               const csvPulledAt: Date | null =
                 planSnapshot.pulledAt instanceof Date
                   ? planSnapshot.pulledAt
-                  : (planSnapshot.pulledAt?.toDate?.() ?? null);
+                  : typeof planSnapshot.pulledAt === 'string'
+                  ? new Date(planSnapshot.pulledAt)
+                  : null;
               if (!csvPulledAt) return null;
               const csvMinutesAgo = Math.max(0, Math.round((nowMs - csvPulledAt.getTime()) / 60_000));
               const timeStr = csvPulledAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });

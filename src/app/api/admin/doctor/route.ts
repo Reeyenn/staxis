@@ -21,21 +21,21 @@
  *      message must name the exact env var / system / fix to run.
  *   2. Never 500. Even catastrophic failures return JSON with ok:false
  *      so that curl|jq pipelines work.
- *   3. Read-only. Never writes to Firestore, never sends SMS, never
+ *   3. Read-only. Never writes to Postgres, never sends SMS, never
  *      mutates state. Safe to hammer in a loop.
  *   4. Fast. Every check runs in parallel, aggressive timeouts, cached
  *      where reasonable.
  *
  * ─── What's checked ──────────────────────────────────────────────────────
  *
- *   env_vars            — every required env var is present and non-empty
- *   firebase_admin_auth — preflight Firestore read using the service
- *                         account key (catches stale/revoked keys)
- *   firestore_heartbeat — scraperStatus/heartbeat doc exists and is fresh
- *   firestore_dashboard — scraperStatus/dashboard doc exists
- *   twilio_credentials  — Twilio REST API accepts our sid+token
- *   cron_secret_shape   — CRON_SECRET is set and looks like a secret
- *                         (not accidentally left as "changeme")
+ *   env_vars                — every required env var is present and non-empty
+ *   supabase_admin_auth     — preflight read using the service_role key
+ *                             (catches stale/revoked keys)
+ *   supabase_heartbeat      — scraper_status/heartbeat row exists and fresh
+ *   supabase_dashboard      — scraper_status/dashboard row exists
+ *   twilio_credentials      — Twilio REST API accepts our sid+token
+ *   cron_secret_shape       — CRON_SECRET is set and looks like a secret
+ *                             (not accidentally left as "changeme")
  *
  * ─── Auth ────────────────────────────────────────────────────────────────
  * Same Bearer-CRON_SECRET pattern as the cron routes — so CI and drift-
@@ -47,7 +47,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import admin from '@/lib/firebase-admin';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -90,12 +90,12 @@ type DoctorReport = {
 type CheckFn = () => Promise<Omit<Check, 'name' | 'durationMs'>>;
 
 const checks: Array<[string, CheckFn]> = [
-  ['env_vars',            checkEnvVars],
-  ['firebase_admin_auth', checkFirebaseAdminAuth],
-  ['firestore_heartbeat', checkFirestoreHeartbeat],
-  ['firestore_dashboard', checkFirestoreDashboard],
-  ['twilio_credentials',  checkTwilioCredentials],
-  ['cron_secret_shape',   checkCronSecretShape],
+  ['env_vars',             checkEnvVars],
+  ['supabase_admin_auth',  checkSupabaseAdminAuth],
+  ['supabase_heartbeat',   checkSupabaseHeartbeat],
+  ['supabase_dashboard',   checkSupabaseDashboard],
+  ['twilio_credentials',   checkTwilioCredentials],
+  ['cron_secret_shape',    checkCronSecretShape],
 ];
 
 // ─── Individual checks ───────────────────────────────────────────────────
@@ -108,22 +108,19 @@ const checks: Array<[string, CheckFn]> = [
  * HERE TOO — otherwise a missing var silently becomes undefined at runtime.
  */
 const REQUIRED_ENV_VARS: Array<{ name: string; group: string }> = [
-  // Firebase Admin (server-side)
-  { name: 'FIREBASE_ADMIN_CLIENT_EMAIL',        group: 'firebase-admin' },
-  { name: 'FIREBASE_ADMIN_PRIVATE_KEY',         group: 'firebase-admin' },
-  { name: 'NEXT_PUBLIC_FIREBASE_PROJECT_ID',    group: 'firebase-admin' },
-  // Firebase client (exposed to browser, prefixed NEXT_PUBLIC_)
-  { name: 'NEXT_PUBLIC_FIREBASE_API_KEY',       group: 'firebase-client' },
-  { name: 'NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN',   group: 'firebase-client' },
-  { name: 'NEXT_PUBLIC_FIREBASE_APP_ID',        group: 'firebase-client' },
+  // Supabase (client-safe)
+  { name: 'NEXT_PUBLIC_SUPABASE_URL',          group: 'supabase' },
+  { name: 'NEXT_PUBLIC_SUPABASE_ANON_KEY',     group: 'supabase' },
+  // Supabase (server-only — service_role bypasses RLS, NEVER exposed to browser)
+  { name: 'SUPABASE_SERVICE_ROLE_KEY',         group: 'supabase-admin' },
   // Twilio
-  { name: 'TWILIO_ACCOUNT_SID',                 group: 'twilio' },
-  { name: 'TWILIO_AUTH_TOKEN',                  group: 'twilio' },
-  { name: 'TWILIO_PHONE_NUMBER',                group: 'twilio' },
+  { name: 'TWILIO_ACCOUNT_SID',                group: 'twilio' },
+  { name: 'TWILIO_AUTH_TOKEN',                 group: 'twilio' },
+  { name: 'TWILIO_FROM_NUMBER',                group: 'twilio' },
   // Ops alert phone (without this, alerts silently no-op — the exact failure mode we're trying to prevent)
-  { name: 'OPS_ALERT_PHONE',                    group: 'alerts' },
+  { name: 'MANAGER_PHONE',                     group: 'alerts' },
   // Shared secret for cron auth
-  { name: 'CRON_SECRET',                        group: 'cron' },
+  { name: 'CRON_SECRET',                       group: 'cron' },
 ];
 
 async function checkEnvVars(): Promise<Omit<Check, 'name' | 'durationMs'>> {
@@ -157,40 +154,50 @@ async function checkEnvVars(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   };
 }
 
-async function checkFirebaseAdminAuth(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  // We don't import verifyFirebaseAuth here because it's memoized — and we
-  // want this check to actually test auth on every call, not cache. So we
-  // replicate the preflight: a cheap authenticated Firestore read.
+async function checkSupabaseAdminAuth(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  // Cheapest authenticated query: read one row from a table that always
+  // exists (scraper_status). If the service_role key is revoked/stale
+  // Supabase returns an auth error that we surface with a specific fix.
   try {
-    await admin.firestore().collection('scraperStatus').doc('heartbeat').get();
+    const { error } = await supabaseAdmin
+      .from('scraper_status')
+      .select('key')
+      .limit(1);
+    if (error) throw error;
     return {
       status: 'ok',
-      detail: 'service account key accepted by Firestore',
+      detail: 'service_role key accepted by Supabase',
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return {
       status: 'fail',
-      detail: `Firebase Admin auth failed: ${msg}`,
-      fix: 'Service account key is likely stale/revoked. Firebase Console → Project Settings → Service Accounts → Generate new private key. Update BOTH Vercel (FIREBASE_ADMIN_PRIVATE_KEY) AND Railway (FIREBASE_PRIVATE_KEY). See RUNBOOKS.md → Firebase Key Rotation.',
+      detail: `Supabase Admin auth failed: ${msg}`,
+      fix: 'SUPABASE_SERVICE_ROLE_KEY is likely stale/revoked. Supabase Dashboard → Project Settings → API → Reset service_role key. Update BOTH Vercel (SUPABASE_SERVICE_ROLE_KEY) AND Railway (SUPABASE_SERVICE_ROLE_KEY). See RUNBOOKS.md → Supabase Key Rotation.',
     };
   }
 }
 
-async function checkFirestoreHeartbeat(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+async function checkSupabaseHeartbeat(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {
-    const snap = await admin.firestore().collection('scraperStatus').doc('heartbeat').get();
-    if (!snap.exists) {
+    const { data, error } = await supabaseAdmin
+      .from('scraper_status')
+      .select('data, updated_at')
+      .eq('key', 'heartbeat')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) {
       return {
         status: 'warn',
-        detail: 'scraperStatus/heartbeat doc does not exist yet (scraper may not have run)',
-        fix: 'Check Railway: is the hotelops-scraper service running? Look for "Firebase auth verified ✓" in Railway logs.',
+        detail: 'scraper_status.heartbeat row does not exist yet (scraper may not have run)',
+        fix: 'Check Railway: is the hotelops-scraper service running? Look for "Supabase auth verified ✓" in Railway logs.',
       };
     }
-    const data = snap.data() ?? {};
-    const at = (data.at as { toDate?: () => Date } | undefined)?.toDate?.();
-    if (!at) {
-      return { status: 'warn', detail: 'heartbeat doc exists but has no "at" timestamp field' };
+    // data column is jsonb: { at: ISO string } or timestamp in updated_at.
+    const value = (data.data ?? {}) as { at?: string };
+    const at = value.at ? new Date(value.at) : (data.updated_at ? new Date(data.updated_at) : null);
+    if (!at || isNaN(at.getTime())) {
+      return { status: 'warn', detail: 'heartbeat row exists but has no parseable timestamp' };
     }
     const minAgo = Math.floor((Date.now() - at.getTime()) / 60_000);
     if (minAgo > 20) {
@@ -210,40 +217,44 @@ async function checkFirestoreHeartbeat(): Promise<Omit<Check, 'name' | 'duration
   } catch (err) {
     return {
       status: 'fail',
-      detail: `Firestore read failed: ${err instanceof Error ? err.message : String(err)}`,
+      detail: `Supabase read failed: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
 }
 
-async function checkFirestoreDashboard(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+async function checkSupabaseDashboard(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {
-    const snap = await admin.firestore().collection('scraperStatus').doc('dashboard').get();
-    if (!snap.exists) {
+    const { data, error } = await supabaseAdmin
+      .from('scraper_status')
+      .select('data, updated_at')
+      .eq('key', 'dashboard')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) {
       return {
         status: 'warn',
-        detail: 'scraperStatus/dashboard doc does not exist yet (scraper may not have completed a pull)',
+        detail: 'scraper_status.dashboard row does not exist yet (scraper may not have completed a pull)',
       };
     }
-    const data = snap.data() ?? {};
-    const pulledAt = (data.pulledAt as { toDate?: () => Date } | undefined)?.toDate?.();
-    const errorCode = typeof data.errorCode === 'string' ? data.errorCode : null;
+    const value = (data.data ?? {}) as { pulledAt?: string; errorCode?: string };
+    const errorCode = typeof value.errorCode === 'string' ? value.errorCode : null;
 
-    // We don't alert here — that's scraper-health's job. Just surface state.
     if (errorCode) {
       return {
         status: 'warn',
         detail: `dashboard errorCode=${errorCode} (scraper-health handles alerting — this is just FYI)`,
       };
     }
-    if (pulledAt) {
+    const pulledAt = value.pulledAt ? new Date(value.pulledAt) : (data.updated_at ? new Date(data.updated_at) : null);
+    if (pulledAt && !isNaN(pulledAt.getTime())) {
       const minAgo = Math.floor((Date.now() - pulledAt.getTime()) / 60_000);
       return { status: 'ok', detail: `last successful pull ${minAgo} min ago` };
     }
-    return { status: 'warn', detail: 'dashboard doc exists but has no pulledAt' };
+    return { status: 'warn', detail: 'dashboard row exists but has no pulledAt' };
   } catch (err) {
     return {
       status: 'fail',
-      detail: `Firestore read failed: ${err instanceof Error ? err.message : String(err)}`,
+      detail: `Supabase read failed: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
 }

@@ -1,16 +1,19 @@
 /**
  * POST /api/admin/normalize-confirmation-phones
  *
- * One-off migration. Walks every pending `shiftConfirmations` doc and rewrites
- * `staffPhone` to E.164 if it isn't already. Needed because the first version
- * of /api/send-shift-confirmations stored whatever the user typed (e.g.
- * "4098282023", "(409) 828-2023") which the SMS-reply lookup can't always
- * match against Twilio's E.164 `From`.
+ * One-off migration. Walks every open `shift_confirmations` row and rewrites
+ * `staff_phone` to E.164 if it isn't already. Needed because the first
+ * version of /api/send-shift-confirmations stored whatever the user typed
+ * (e.g. "4098282023", "(409) 828-2023") which the SMS-reply lookup can't
+ * always match against Twilio's E.164 `From`.
+ *
+ * Also normalizes `staff.phone_lookup` as a side-effect so sms-reply can
+ * resolve via either path.
  *
  * Safe to call repeatedly. Returns counts so you can see what it did.
  */
 import { NextResponse } from 'next/server';
-import admin from '@/lib/firebase-admin';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 
 function toE164(raw: string): string | null {
   if (!raw) return null;
@@ -23,9 +26,10 @@ function toE164(raw: string): string | null {
 
 export async function POST() {
   try {
-    const db = admin.firestore();
-    // Pull every shiftConfirmation (no status filter → no composite index needed).
-    const snap = await db.collectionGroup('shiftConfirmations').get();
+    const { data: confs, error } = await supabaseAdmin
+      .from('shift_confirmations')
+      .select('token, status, staff_phone');
+    if (error) throw error;
 
     let scanned = 0;
     let rewritten = 0;
@@ -33,23 +37,32 @@ export async function POST() {
     let nonPending = 0;
     const examples: Array<{ from: string; to: string; status: string }> = [];
 
-    const batch = db.batch();
-    snap.docs.forEach(doc => {
-      scanned += 1;
-      const data = doc.data();
-      const status = (data.status ?? 'pending') as string;
-      if (status !== 'pending') { nonPending += 1; return; }
+    // PromiseLike — see backfill-phonelookup for the same-shaped comment.
+    const updates: PromiseLike<unknown>[] = [];
 
-      const current = (data.staffPhone ?? '') as string;
+    for (const row of (confs ?? [])) {
+      scanned += 1;
+      const status = (row.status as string) ?? 'sent';
+      // Only normalise "open" rows — resolved ones are historical.
+      if (status !== 'pending' && status !== 'sent') { nonPending += 1; continue; }
+
+      const current = (row.staff_phone as string) ?? '';
       const normalized = toE164(current);
-      if (!normalized) { skipped += 1; return; }
-      if (normalized === current) { skipped += 1; return; }
-      batch.update(doc.ref, { staffPhone: normalized });
+      if (!normalized) { skipped += 1; continue; }
+      if (normalized === current) { skipped += 1; continue; }
+
+      updates.push(
+        supabaseAdmin
+          .from('shift_confirmations')
+          .update({ staff_phone: normalized })
+          .eq('token', row.token as string)
+          .then(({ error: upErr }) => { if (upErr) throw upErr; }),
+      );
       rewritten += 1;
       if (examples.length < 10) examples.push({ from: current, to: normalized, status });
-    });
+    }
 
-    if (rewritten > 0) await batch.commit();
+    if (updates.length > 0) await Promise.all(updates);
 
     return NextResponse.json({ scanned, nonPending, rewritten, skipped, examples });
   } catch (err) {

@@ -6,14 +6,16 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "seed": "node scripts/seed-supabase.js",
+    "seed:reset": "node scripts/seed-supabase.js --reset"
   },
   "dependencies": {
+    "@supabase/ssr": "^0.5.2",
+    "@supabase/supabase-js": "^2.47.0",
     "bcryptjs": "^3.0.3",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
-    "firebase": "^11.6.0",
-    "firebase-admin": "^13.7.0",
     "lucide-react": "^0.511.0",
     "next": "^16.2.1",
     "react": "^19.0.0",

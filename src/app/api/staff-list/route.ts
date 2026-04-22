@@ -1,26 +1,54 @@
 import { NextRequest, NextResponse } from 'next/server';
-import admin from '@/lib/firebase-admin';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 
-// Public endpoint - returns scheduled staff for a given property so
-// housekeepers can register their device without needing an account.
+// Public endpoint — returns the staff scheduled to work today for a given
+// property. Used by the housekeeper mobile page to let someone identify who
+// they are (no login required — the URL encodes the property).
+//
+// Legacy `uid` query param is accepted for URL back-compat but ignored: the
+// old Firestore layout keyed data under users/{uid}/properties/{pid}/... so
+// the UI baked uid into bookmarks. Under Supabase, `pid` alone is enough
+// (property_id is the real scoping key).
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
-  const uid = searchParams.get('uid');
   const pid = searchParams.get('pid');
 
-  if (!uid || !pid) {
-    return NextResponse.json({ error: 'Missing uid or pid' }, { status: 400 });
+  if (!pid) {
+    return NextResponse.json({ error: 'Missing pid' }, { status: 400 });
   }
 
-  const snap = await admin.firestore()
-    .collection('users').doc(uid)
-    .collection('properties').doc(pid)
-    .collection('staff')
-    .get();
+  const { data, error } = await supabaseAdmin
+    .from('staff')
+    .select('*')
+    .eq('property_id', pid)
+    .eq('scheduled_today', true);
 
-  const staff = snap.docs
-    .map(d => ({ id: d.id, ...d.data() }))
-    .filter((s: any) => s.scheduledToday);
+  if (error) {
+    console.error('[staff-list] query failed', error);
+    return NextResponse.json({ error: 'Failed to load staff' }, { status: 500 });
+  }
 
-  return NextResponse.json(staff);
+  // Translate snake_case → camelCase for the client (it expects the legacy
+  // Firestore shape). Only the fields the client actually reads are mapped;
+  // extra fields pass through under their snake_case names and will be
+  // ignored harmlessly by current callers.
+  const mapped = (data ?? []).map(s => ({
+    id: s.id,
+    name: s.name,
+    phone: s.phone,
+    language: s.language,
+    isSenior: s.is_senior,
+    department: s.department,
+    scheduledToday: s.scheduled_today,
+    hourlyWage: s.hourly_wage,
+    weeklyHours: s.weekly_hours,
+    maxWeeklyHours: s.max_weekly_hours,
+    maxDaysPerWeek: s.max_days_per_week,
+    daysWorkedThisWeek: s.days_worked_this_week,
+    isActive: s.is_active,
+    schedulePriority: s.schedule_priority,
+    isSchedulingManager: s.is_scheduling_manager,
+  }));
+
+  return NextResponse.json(mapped);
 }

@@ -1,5 +1,5 @@
 /**
- * HotelOps AI — CSV Schedule Runner
+ * HotelOps AI / Staxis — CSV Schedule Runner
  *
  * Runs on Railway. Stays alive and runs two things off the same tick loop:
  *
@@ -7,13 +7,13 @@
  *      Choice Advantage. Before 7pm the pull writes to today's snapshot
  *      (pullType='morning'); 7pm and later it writes to tomorrow's snapshot
  *      (pullType='evening') so the next-day plan starts filling in as the
- *      PMS churns through check-ins. csv-scraper merges new pulls on top of
- *      the existing snapshot, so each hourly pull refines the same doc.
+ *      PMS churns through check-ins. csv-scraper upserts each pull into the
+ *      same (property_id, date) row, so each hourly pull refines the plan.
  *
  *   2. Dashboard number pulls (every 15 min, 5am–11pm) — grabs in-house,
  *      arrivals, and departures counts from Choice Advantage's View pages
- *      and writes them to scraperStatus/dashboard for the Schedule tab.
- *      See dashboard-pull.js.
+ *      and writes them to scraper_status[key='dashboard'] for the Schedule
+ *      tab. See dashboard-pull.js.
  *
  * Removed (intentionally):
  *   • Every-15-min live PMS scrape — was noise on the Rooms tab and is
@@ -27,18 +27,22 @@
  *
  * Property: Comfort Suites Beaumont TX (TXA32)
  * PMS: choiceADVANTAGE (SkyTouch Technology)
+ * Storage: Supabase Postgres (replaces Firebase/Firestore as of 2026-04-22)
  */
 
 require('dotenv').config();
 const { chromium } = require('playwright');
-const { initializeApp, cert } = require('firebase-admin/app');
-const { getFirestore } = require('firebase-admin/firestore');
 const path = require('path');
 const fs = require('fs');
 const { runCSVScrape } = require('./csv-scraper');
 const { pullDashboardNumbers, ScraperError, ERROR_CODES } = require('./dashboard-pull');
 const { pullOOOWorkOrders } = require('./ooo-pull');
 const { runVercelWatchdog } = require('./vercel-watchdog');
+const {
+  createSupabase,
+  verifySupabaseAuth,
+  mergeStatus,
+} = require('./supabase-helpers');
 
 // ─── Config ────────────────────────────────────────────────────────────────
 
@@ -48,13 +52,13 @@ const CONFIG = {
   CA_USERNAME:  process.env.CA_USERNAME,
   CA_PASSWORD:  process.env.CA_PASSWORD,
 
-  // Firebase
-  FIREBASE_PROJECT_ID:   process.env.FIREBASE_PROJECT_ID,
-  FIREBASE_CLIENT_EMAIL: process.env.FIREBASE_CLIENT_EMAIL,
-  FIREBASE_PRIVATE_KEY:  (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
+  // Supabase
+  SUPABASE_URL:              process.env.SUPABASE_URL,
+  SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
 
-  // HotelOps
-  USER_ID:     process.env.HOTELOPS_USER_ID,
+  // HotelOps / Staxis
+  // Single property per scraper deploy. PROPERTY_ID is the uuid of the
+  // properties row this scraper belongs to.
   PROPERTY_ID: process.env.HOTELOPS_PROPERTY_ID,
 
   // Timezone — Railway runs UTC; set to hotel's local timezone so date
@@ -69,17 +73,19 @@ const CONFIG = {
   SESSION_FILE: path.join(__dirname, '.session.json'),
 };
 
-// ─── Firebase init ─────────────────────────────────────────────────────────
+// ─── Supabase init ─────────────────────────────────────────────────────────
+// createSupabase throws at module load if SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY
+// are missing. That's intentional — the scraper has nowhere to write without
+// them, so crash-loop + scraper-health SMS alert is the right failure mode.
 
-initializeApp({
-  credential: cert({
-    projectId:   CONFIG.FIREBASE_PROJECT_ID,
-    clientEmail: CONFIG.FIREBASE_CLIENT_EMAIL,
-    privateKey:  CONFIG.FIREBASE_PRIVATE_KEY,
-  }),
-});
-
-const db = getFirestore();
+const supabase = (() => {
+  try {
+    return createSupabase();
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] FATAL: ${err.message}`);
+    process.exit(1);
+  }
+})();
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -99,72 +105,38 @@ function log(msg) {
 }
 
 // ─── Status reporting ──────────────────────────────────────────────────────
-// Scraper writes to Firestore so the app can warn users when the scraper is
-// down or a scrape has failed. Paths:
-//   scraperStatus/heartbeat  — bumped every tick (proves the loop is alive)
-//   scraperStatus/morning    — last morning scrape result (success or error)
-//   scraperStatus/evening    — last evening scrape result (success or error)
+// Scraper writes to scraper_status so the app can warn users when the scraper
+// is down or a scrape has failed. Keys:
+//   scraper_status[key='heartbeat']  — bumped every tick (proves the loop is alive)
+//   scraper_status[key='morning']    — last morning scrape result (success or error)
+//   scraper_status[key='evening']    — last evening scrape result (success or error)
 // All writes are best-effort (try/catch) — status reporting must never crash
 // the main loop.
 
 async function writeHeartbeat() {
   try {
-    await db.collection('scraperStatus').doc('heartbeat').set({
-      at: new Date(),
-      localHour: localHour(),
-      today: todayISO(),
+    await mergeStatus(supabase, 'heartbeat', {
+      at:              new Date().toISOString(),
+      localHour:       localHour(),
+      today:           todayISO(),
       // Version string so future-me can tell "is this an old scraper deploy
       // still running somehow?" at a glance without digging into Railway.
-      scraperVersion: 'atomic-v1',
-      timezone: CONFIG.TIMEZONE,
-      tickMinutes: CONFIG.TICK_MINUTES,
-    }, { merge: true });
+      scraperVersion:  'supabase-v1',
+      timezone:        CONFIG.TIMEZONE,
+      tickMinutes:     CONFIG.TICK_MINUTES,
+    });
   } catch (err) {
     log(`Heartbeat write failed: ${err.message}`);
   }
 }
 
-// ─── Firebase auth preflight ───────────────────────────────────────────────
-// The Admin SDK's writes are wrapped in try/catch inside tick() so a
-// transient Firestore outage can't crash the loop. But that also means if
-// the service account key is *revoked or rotated* on us, every write
-// silently fails with "16 UNAUTHENTICATED" forever while the container stays
-// up — Railway keeps reporting "service online", but nothing lands in
-// Firestore and the app's dashboard goes stale. We learned this the hard
-// way on 2026-04-20: scraper died at 3:47 PM, we didn't notice for 8+ hours.
-//
-// This preflight does a cheap authenticated read at startup so that case
-// crashes the process instead. Railway's crash-loop + the scraper-health
-// cron's stale-heartbeat SMS alert will surface it within minutes.
-async function verifyFirebaseAuth() {
-  const missing = [];
-  if (!CONFIG.FIREBASE_PROJECT_ID)   missing.push('FIREBASE_PROJECT_ID');
-  if (!CONFIG.FIREBASE_CLIENT_EMAIL) missing.push('FIREBASE_CLIENT_EMAIL');
-  if (!CONFIG.FIREBASE_PRIVATE_KEY)  missing.push('FIREBASE_PRIVATE_KEY');
-  if (missing.length) {
-    log(`FATAL: Missing Firebase env vars on Railway: ${missing.join(', ')}`);
-    process.exit(1);
-  }
-  try {
-    // Known doc — reading it forces an OAuth exchange. If the key is
-    // revoked, the Admin SDK fails with "16 UNAUTHENTICATED" right here.
-    await db.collection('scraperStatus').doc('heartbeat').get();
-    log('Firebase auth verified ✓');
-  } catch (err) {
-    log(`FATAL: Firebase auth failed at startup: ${err.message}`);
-    log('This usually means FIREBASE_PRIVATE_KEY on Railway is stale or the service account key was revoked.');
-    log('Fix: Firebase Console → Project Settings → Service Accounts → Generate new private key, then update Railway env vars.');
-    process.exit(1);
-  }
-}
-
 async function writeScrapeStatus(pullType, status, extra = {}) {
   try {
-    await db.collection('scraperStatus').doc(pullType).set({
-      at: new Date(),
+    await mergeStatus(supabase, pullType, {
+      at:     new Date().toISOString(),
       status, // 'success' | 'error'
       ...extra,
-    }, { merge: true });
+    });
   } catch (err) {
     log(`Status write (${pullType}) failed: ${err.message}`);
   }
@@ -282,13 +254,12 @@ async function runCSVScrapeFresh(page, pullType, relogin) {
   }
 
   const scrapeConfig = {
-    USER_ID:     CONFIG.USER_ID,
     PROPERTY_ID: CONFIG.PROPERTY_ID,
     TIMEZONE:    CONFIG.TIMEZONE,
   };
 
   try {
-    const snapshot = await runCSVScrape(page, db, scrapeConfig, pullType, log);
+    const snapshot = await runCSVScrape(page, supabase, scrapeConfig, pullType, log);
     await writeScrapeStatus(pullType, 'success', {
       date: snapshot?.date || todayISO(),
       totalRooms: snapshot?.totalRooms ?? null,
@@ -306,7 +277,7 @@ async function runCSVScrapeFresh(page, pullType, relogin) {
       log(`${pullType} scrape lost session mid-run — re-logging and retrying once...`);
       try {
         await relogin();
-        const snapshot = await runCSVScrape(page, db, scrapeConfig, pullType, log);
+        const snapshot = await runCSVScrape(page, supabase, scrapeConfig, pullType, log);
         await writeScrapeStatus(pullType, 'success', {
           date: snapshot?.date || todayISO(),
           totalRooms: snapshot?.totalRooms ?? null,
@@ -334,7 +305,7 @@ async function runCSVScrapeFresh(page, pullType, relogin) {
 // ─── Dashboard number pull scheduler ───────────────────────────────────────
 // Every 15 min between 5am and 11pm local, grab in-house/arrivals/departures
 // counts off Choice Advantage's View pages and write them to
-// scraperStatus/dashboard for the Schedule tab to display live.
+// scraper_status[key='dashboard'] for the Schedule tab to display live.
 //
 // Uses the same logged-in page as the CSV pull. On session expiry, calls
 // relogin() and retries once (mirrors the CSV pull's retry pattern).
@@ -351,13 +322,13 @@ const DASHBOARD_INTERVAL_MS = 15 * 60 * 1000;
  *   • everything else → one-shot. Retrying a selector_miss or validation
  *     failure gives us the same wrong answer 2x, masked as "flaky".
  *
- * The inner pullDashboardNumbers already wrote the error state to Firestore
- * on the first throw, so we don't need to re-write it here — we just need to
- * decide whether a retry makes sense.
+ * The inner pullDashboardNumbers already wrote the error state on the first
+ * throw, so we don't need to re-write it here — we just need to decide
+ * whether a retry makes sense.
  */
 async function runDashboardPullFresh(page, relogin) {
   try {
-    return await pullDashboardNumbers(page, db, log);
+    return await pullDashboardNumbers(page, supabase, log);
   } catch (err) {
     const code = err instanceof ScraperError ? err.code : ERROR_CODES.UNKNOWN;
 
@@ -367,14 +338,14 @@ async function runDashboardPullFresh(page, relogin) {
         await relogin();
       } catch (loginErr) {
         // Re-login itself failed (likely login_failed). Leave the original
-        // session_expired error in Firestore — but surface the login failure
-        // too, because that's the real underlying problem now.
+        // session_expired error in scraper_status — but surface the login
+        // failure too, because that's the real underlying problem now.
         log(`Re-login FAILED after session expiry: ${loginErr.message}`);
-        await db.collection('scraperStatus').doc('dashboard').set({
+        await mergeStatus(supabase, 'dashboard', {
           errorCode:    loginErr instanceof ScraperError ? loginErr.code : ERROR_CODES.UNKNOWN,
           errorMessage: `Re-login failed after session expiry: ${loginErr.message}`.slice(0, 500),
-          erroredAt:    new Date(),
-        }, { merge: true }).catch(() => {});
+          erroredAt:    new Date().toISOString(),
+        }).catch(() => {});
         return null;
       }
 
@@ -382,7 +353,7 @@ async function runDashboardPullFresh(page, relogin) {
       // first and we don't retry again. (Don't want infinite loops on a
       // persistently sad CA.)
       try {
-        return await pullDashboardNumbers(page, db, log);
+        return await pullDashboardNumbers(page, supabase, log);
       } catch (retryErr) {
         log(`Dashboard pull retry FAILED: [${retryErr.code || 'unknown'}] ${retryErr.message}`);
         return null;
@@ -390,7 +361,7 @@ async function runDashboardPullFresh(page, relogin) {
     }
 
     // Non-retryable code paths. pullDashboardNumbers already wrote the error
-    // to Firestore, so we just log and return.
+    // to scraper_status, so we just log and return.
     log(`Dashboard pull error [${code}]: ${err.message}`);
     return null;
   }
@@ -407,19 +378,19 @@ async function maybeRunDashboardPull(page, relogin) {
 
   const result = await runDashboardPullFresh(page, relogin);
   // Mark the timestamp whether success or failure — a failed pull is logged
-  // to Firestore and we don't want to retry every 5 min tick on a down CA.
+  // to scraper_status and we don't want to retry every 5 min tick on a down CA.
   lastDashboardPullAt = now;
   return result;
 }
 
 // ─── OOO Work Order Sync (15-min cadence, piggybacks on dashboard tick) ────
 //
-// Mirrors CA's room-level Out-of-Order list into our own workOrders
-// collection so Maria sees rooms blocked by the front desk (deep clean, AC
-// broken, maintenance) alongside housekeeper-submitted tickets.
+// Mirrors CA's room-level Out-of-Order list into our own work_orders table
+// so Maria sees rooms blocked by the front desk (deep clean, AC broken,
+// maintenance) alongside housekeeper-submitted tickets.
 //
 // Isolated from the dashboard pull in its own try/catch so a CA OOO outage
-// (or a Firestore write blip) can never take the dashboard numbers down.
+// (or a Supabase write blip) can never take the dashboard numbers down.
 // Same cadence (15 min) — which means its own timestamp tracker so a
 // failure on one pull doesn't cost us a dashboard pull or vice versa.
 let lastOOOPullAt = 0;
@@ -433,12 +404,11 @@ async function maybeRunOOOPull(page, relogin) {
   if (now - lastOOOPullAt < OOO_INTERVAL_MS) return;
 
   const config = {
-    USER_ID:     CONFIG.USER_ID,
     PROPERTY_ID: CONFIG.PROPERTY_ID,
   };
 
   try {
-    await pullOOOWorkOrders(page, db, config, log);
+    await pullOOOWorkOrders(page, supabase, config, log);
   } catch (err) {
     const code = err instanceof ScraperError ? err.code : ERROR_CODES.UNKNOWN;
     // Same narrow retry as dashboard: only re-login on session_expired.
@@ -446,7 +416,7 @@ async function maybeRunOOOPull(page, relogin) {
       log(`OOO pull lost session — re-logging and retrying once...`);
       try {
         await relogin();
-        await pullOOOWorkOrders(page, db, config, log);
+        await pullOOOWorkOrders(page, supabase, config, log);
       } catch (retryErr) {
         log(`OOO pull retry FAILED: [${retryErr.code || 'unknown'}] ${retryErr.message}`);
       }
@@ -467,8 +437,8 @@ async function maybeRunCSVPull(page, relogin) {
   const now = Date.now();
   if (now - lastCSVPullAt < CSV_INTERVAL_MS) return;
 
-  // Before 7pm → 'morning' (writes to today's planSnapshot).
-  // 7pm and later → 'evening' (writes to tomorrow's planSnapshot so the next
+  // Before 7pm → 'morning' (writes to today's plan_snapshot).
+  // 7pm and later → 'evening' (writes to tomorrow's plan_snapshot so the next
   // day's plan starts filling in as the PMS churns through check-ins).
   const pullType = hour < 19 ? 'morning' : 'evening';
 
@@ -480,14 +450,14 @@ async function maybeRunCSVPull(page, relogin) {
 // ─── Main loop ─────────────────────────────────────────────────────────────
 
 async function run() {
-  log('=== HotelOps AI CSV Runner starting ===');
-  log(`Property: ${CONFIG.PROPERTY_ID} | User: ${CONFIG.USER_ID}`);
+  log('=== HotelOps AI / Staxis CSV Runner starting ===');
+  log(`Property: ${CONFIG.PROPERTY_ID}`);
   log(`Timezone: ${CONFIG.TIMEZONE} | Local hour: ${localHour()} | Today: ${todayISO()}`);
   log(`Tick every ${CONFIG.TICK_MINUTES} min — CSV pulls hourly 5am–11pm, dashboard numbers + OOO work orders every 15 min 5am–11pm`);
 
-  // Verify Firebase credentials BEFORE launching Playwright. If creds are
+  // Verify Supabase credentials BEFORE launching Playwright. If creds are
   // stale/revoked, crash loud now instead of writing garbage for hours.
-  await verifyFirebaseAuth();
+  await verifySupabaseAuth(supabase, log);
 
   const browser = await chromium.launch({
     headless: process.env.HEADED !== 'true',
@@ -508,8 +478,7 @@ async function run() {
   if (process.env.CSV_TEST_ON_STARTUP === 'true') {
     log('CSV_TEST_ON_STARTUP enabled — running immediate CSV scrape...');
     try {
-      await runCSVScrape(page, db, {
-        USER_ID:     CONFIG.USER_ID,
+      await runCSVScrape(page, supabase, {
         PROPERTY_ID: CONFIG.PROPERTY_ID,
         TIMEZONE:    CONFIG.TIMEZONE,
       }, 'morning', log);
@@ -551,7 +520,7 @@ async function run() {
     // scraper tick. Watchdog already swallows its own errors internally;
     // this is belt-and-suspenders.
     try {
-      await runVercelWatchdog({ timezone: CONFIG.TIMEZONE });
+      await runVercelWatchdog({ supabase, timezone: CONFIG.TIMEZONE });
     } catch (err) {
       log(`watchdog crashed (non-fatal): ${err.message}`);
     }

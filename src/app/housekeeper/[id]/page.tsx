@@ -3,18 +3,11 @@
 import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import {
-  collectionGroup,
-  doc,
-  getDoc,
-  query,
-  where,
-  onSnapshot,
-  updateDoc,
-  Timestamp,
-  DocumentReference,
-} from 'firebase/firestore';
-import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-import { db, auth } from '@/lib/firebase';
+  subscribeToRoomsForStaff,
+  updateRoom,
+  getStaffMember,
+  saveStaffLanguage,
+} from '@/lib/firestore';
 import { todayStr } from '@/lib/utils';
 import type { Room, RoomStatus } from '@/types';
 import { format } from 'date-fns';
@@ -23,18 +16,14 @@ import { CheckCircle, AlertTriangle } from 'lucide-react';
 import { t } from '@/lib/translations';
 import type { Language } from '@/lib/translations';
 
-type RoomWithRef = Room & { _ref: DocumentReference };
-
-function firestoreToDate(v: unknown): Date {
-  if (v && typeof (v as { toDate?: unknown }).toDate === 'function') {
-    return (v as { toDate: () => Date }).toDate();
-  }
-  return new Date(v as string | number);
-}
+// Rooms come off Supabase via `subscribeToRoomsForStaff` fully shaped as our
+// canonical Room type — no Firestore DocumentReference to carry around.
+// Per-room mutations all go through `updateRoom(_, _, room.id, patch)`.
+type RoomRow = Room;
 
 const PRIORITY_SCORE: Record<string, number> = { vip: 0, early: 1, standard: 2 };
 
-function sortRooms(rooms: RoomWithRef[]): RoomWithRef[] {
+function sortRooms(rooms: RoomRow[]): RoomRow[] {
   return [...rooms].sort((a, b) => {
     if (a.type !== b.type) {
       if (a.type === 'checkout') return -1;
@@ -65,7 +54,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   // self-selected via SMS before we wired up the staff-doc write path.
   const [lang, setLang] = useState<Language>('en');
 
-  const [rooms, setRooms] = useState<RoomWithRef[]>([]);
+  const [rooms, setRooms] = useState<RoomRow[]>([]);
   const [activeDate, setActiveDate] = useState<string>(today);
   const [loading, setLoading] = useState(true);
   const [savingRoomId, setSavingRoomId] = useState<string | null>(null);
@@ -77,145 +66,76 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   const [savingHelp, setSavingHelp] = useState<string | null>(null);
   const [resettingRoomId, setResettingRoomId] = useState<string | null>(null);
 
-  // Seed the page language from Firestore on mount.
-  // Primary source: the staff doc (`staff/{housekeeperId}.language`) — that's
-  // what Maria sets via the Staff modal and what drives everything we
-  // design going forward. Fallback: legacy `staffPrefs/{housekeeperId}` doc,
-  // written by the SMS ESPAÑOL/ENGLISH handler for HKs who self-selected
-  // before we started mirroring to the staff doc.
+  // Seed the page language from the staff row on mount.
+  // The staff table has a `language` column that Maria sets via the Staff
+  // modal (and that this page writes back to when the HK hits the lang
+  // toggle). Legacy `staffPrefs/{id}` doc from the Firestore era is gone.
   useEffect(() => {
-    if (!housekeeperId) return;
+    if (!housekeeperId || !pid) return;
     let cancelled = false;
 
     (async () => {
-      // 1) Try the staff doc first (needs uid + pid from the query string).
-      if (uid && pid) {
-        try {
-          const staffRef = doc(db, 'users', uid, 'properties', pid, 'staff', housekeeperId);
-          const snap = await getDoc(staffRef);
-          if (!cancelled && snap.exists()) {
-            const s = snap.data() as { language?: 'en' | 'es' };
-            if (s.language === 'es' || s.language === 'en') {
-              setLang(s.language);
-              return;
-            }
-          }
-        } catch (err) {
-          console.error('[housekeeper] staff doc lang load failed:', err);
-        }
-      }
-
-      // 2) Fallback to the legacy staffPrefs doc.
       try {
-        const prefRef = doc(db, 'staffPrefs', housekeeperId);
-        const snap = await getDoc(prefRef);
-        if (!cancelled && snap.exists()) {
-          const pref = snap.data() as { language?: 'en' | 'es' };
-          if (pref.language === 'es' || pref.language === 'en') {
-            setLang(pref.language);
-          }
+        const s = await getStaffMember(pid, housekeeperId);
+        if (!cancelled && s && (s.language === 'es' || s.language === 'en')) {
+          setLang(s.language);
         }
       } catch (err) {
-        console.error('[housekeeper] staffPrefs load failed:', err);
+        console.error('[housekeeper] staff row lang load failed:', err);
       }
     })();
 
     return () => { cancelled = true; };
-  }, [housekeeperId, uid, pid]);
+  }, [housekeeperId, pid]);
 
   useEffect(() => {
-    let unsub: (() => void) | undefined;
+    if (!housekeeperId || !pid) return;
 
-    const subscribeToRooms = () => {
-      const q = query(
-        collectionGroup(db, 'rooms'),
-        where('assignedTo', '==', housekeeperId),
-      );
-
-      unsub = onSnapshot(
-        q,
-        snap => {
-          // Grab every room assigned to this HK, then pick the right date
-          // bucket to display. Previously this always filtered to `today` —
-          // which broke when Maria sent assignments for tomorrow's shift:
-          // the rooms existed in Firestore but the page saw zero matches.
-          //
-          // New behavior: prefer today's rooms if there are any; otherwise
-          // fall back to the nearest upcoming shift date. If there's no
-          // future date either, fall back to the most recent past date so
-          // HKs can still see their just-completed shift.
-          const all = snap.docs.map(d => ({ id: d.id, _ref: d.ref, ...d.data() } as RoomWithRef));
-
-          const byDate = new Map<string, RoomWithRef[]>();
-          for (const r of all) {
-            if (!r.date) continue;
-            const list = byDate.get(r.date) ?? [];
-            list.push(r);
-            byDate.set(r.date, list);
-          }
-
-          // Pick the date bucket to display
-          let chosenDate = today;
-          if (byDate.has(today)) {
-            chosenDate = today;
-          } else {
-            const future = [...byDate.keys()].filter(d => d > today).sort();
-            if (future.length > 0) {
-              chosenDate = future[0]; // nearest upcoming shift
-            } else {
-              const past = [...byDate.keys()].filter(d => d < today).sort().reverse();
-              if (past.length > 0) chosenDate = past[0];
-            }
-          }
-
-          setActiveDate(chosenDate);
-          setRooms(sortRooms(byDate.get(chosenDate) ?? []));
-          setLoading(false);
-        },
-        error => {
-          console.error('[housekeeper] Firestore error:', error);
-          setLoading(false);
-        },
-      );
-    };
-
-    // Wait for Firebase to resolve the auth state before deciding whether to
-    // sign in anonymously. `auth.currentUser` is unreliable on first render —
-    // it reads null even when a real session is being restored from IndexedDB.
-    // Calling signInAnonymously during that window would clobber an admin's
-    // session and, because Firebase propagates auth changes across all tabs,
-    // log them out of the admin app. This pattern only signs in anonymously
-    // after Firebase confirms there is genuinely no user.
-    let started = false;
-    const unsubAuth = onAuthStateChanged(auth, (user) => {
-      if (started) return;
-      if (user) {
-        started = true;
-        subscribeToRooms();
-      } else {
-        started = true;
-        signInAnonymously(auth)
-          .then(subscribeToRooms)
-          .catch(err => {
-            console.error('[housekeeper] Anonymous auth failed:', err);
-            setLoading(false);
-          });
+    // Subscribe to every room assigned to this HK (any date), then pick the
+    // right date bucket to display. Previously we always filtered to
+    // today — which broke when Maria sent assignments for tomorrow's shift:
+    // the rooms existed but the page saw zero matches.
+    //
+    // Behavior: prefer today's rooms; else nearest upcoming shift; else the
+    // most recent past date (so HKs can still see their just-completed shift).
+    const unsub = subscribeToRoomsForStaff(pid, housekeeperId, (all) => {
+      const byDate = new Map<string, RoomRow[]>();
+      for (const r of all) {
+        if (!r.date) continue;
+        const list = byDate.get(r.date) ?? [];
+        list.push(r);
+        byDate.set(r.date, list);
       }
+
+      let chosenDate = today;
+      if (byDate.has(today)) {
+        chosenDate = today;
+      } else {
+        const future = [...byDate.keys()].filter(d => d > today).sort();
+        if (future.length > 0) {
+          chosenDate = future[0];
+        } else {
+          const past = [...byDate.keys()].filter(d => d < today).sort().reverse();
+          if (past.length > 0) chosenDate = past[0];
+        }
+      }
+
+      setActiveDate(chosenDate);
+      setRooms(sortRooms(byDate.get(chosenDate) ?? []));
+      setLoading(false);
     });
 
-    return () => {
-      unsub?.();
-      unsubAuth();
-    };
-  }, [housekeeperId, today]);
+    return () => { unsub(); };
+  }, [housekeeperId, pid, today]);
 
   // ── Start room (dirty → in_progress) ──────────────────────────────────────
-  const handleStartRoom = async (room: RoomWithRef) => {
+  const handleStartRoom = async (room: RoomRow) => {
+    if (!uid || !pid) return;
     setSavingRoomId(room.id);
     try {
-      await updateDoc(room._ref, {
+      await updateRoom(uid, pid, room.id, {
         status: 'in_progress' as RoomStatus,
-        startedAt: Timestamp.now(),
+        startedAt: new Date(),
       });
     } catch (err) {
       console.error('[housekeeper] start room error:', err);
@@ -225,10 +145,11 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   };
 
   // ── Stop room (in_progress → dirty, clear startedAt) ──────────────────────
-  const handleStopRoom = async (room: RoomWithRef) => {
+  const handleStopRoom = async (room: RoomRow) => {
+    if (!uid || !pid) return;
     setSavingRoomId(room.id);
     try {
-      await updateDoc(room._ref, {
+      await updateRoom(uid, pid, room.id, {
         status: 'dirty' as RoomStatus,
         startedAt: null,
       });
@@ -241,18 +162,19 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
 
   // ── Finish room (in_progress → clean) ─────────────────────────────────────
   // Requires hold-to-confirm on the button - accidental taps are ignored.
-  const handleFinishRoom = async (room: RoomWithRef) => {
+  const handleFinishRoom = async (room: RoomRow) => {
+    if (!uid || !pid) return;
     setSavingRoomId(room.id);
     try {
-      const updates: Record<string, unknown> = {
+      const updates: Partial<Room> = {
         status: 'clean' as RoomStatus,
-        completedAt: Timestamp.now(),
+        completedAt: new Date(),
       };
       // Safety net: write startedAt if somehow missing
       if (!room.startedAt) {
-        updates.startedAt = Timestamp.now();
+        updates.startedAt = new Date();
       }
-      await updateDoc(room._ref, updates);
+      await updateRoom(uid, pid, room.id, updates);
     } catch (err) {
       console.error('[housekeeper] finish room error:', err);
     } finally {
@@ -261,13 +183,16 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   };
 
   // ── Toggle DND on a room ────────────────────────────────────────────────────
-  const handleToggleDnd = async (room: RoomWithRef) => {
+  const handleToggleDnd = async (room: RoomRow) => {
+    if (!uid || !pid) return;
     setSavingDnd(room.id);
     try {
       const newDnd = !room.isDnd;
-      await updateDoc(room._ref, {
+      await updateRoom(uid, pid, room.id, {
         isDnd: newDnd,
-        ...(newDnd ? { dndNote: `Marked DND by housekeeper at ${new Date().toLocaleTimeString()}` } : { dndNote: '' }),
+        dndNote: newDnd
+          ? `Marked DND by housekeeper at ${new Date().toLocaleTimeString()}`
+          : '',
       });
     } catch (err) {
       console.error('[housekeeper] toggle DND error:', err);
@@ -277,14 +202,17 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   };
 
   // ── Need Help - alert Maria ───────────────────────────────────────────────
-  const handleNeedHelp = async (room: RoomWithRef) => {
+  const handleNeedHelp = async (room: RoomRow) => {
     if (helpSent.has(room.id)) return; // already sent for this room
+    if (!uid || !pid) return;
     setSavingHelp(room.id);
     try {
-      await updateDoc(room._ref, {
+      // helpRequestedAt / helpRequestedBy are legacy Firestore-only fields
+      // that the Postgres schema doesn't carry — the SMS alert below is
+      // the authoritative notification channel, so we only flip the
+      // `helpRequested` flag here for the UI state.
+      await updateRoom(uid, pid, room.id, {
         helpRequested: true,
-        helpRequestedAt: Timestamp.now(),
-        helpRequestedBy: housekeeperId,
       });
       setHelpSent(prev => new Set(prev).add(room.id));
 
@@ -317,6 +245,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   // ── Report Issue ───────────────────────────────────────────────────────────
   const handleSubmitIssue = async () => {
     if (!issueRoomId || !issueNote.trim()) return;
+    if (!uid || !pid) return;
     setSavingIssue(true);
     const room = rooms.find(r => r.id === issueRoomId);
     if (!room) {
@@ -325,7 +254,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       return;
     }
     try {
-      await updateDoc(room._ref, { issueNote: issueNote.trim() });
+      await updateRoom(uid, pid, room.id, { issueNote: issueNote.trim() });
       setIssueRoomId(null);
       setIssueNote('');
     } catch (err) {
@@ -336,10 +265,11 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   };
 
   // ── Reset room (clean/inspected → dirty, clear times) ─────────────────────
-  const handleResetRoom = async (room: RoomWithRef) => {
+  const handleResetRoom = async (room: RoomRow) => {
+    if (!uid || !pid) return;
     setResettingRoomId(room.id);
     try {
-      await updateDoc(room._ref, {
+      await updateRoom(uid, pid, room.id, {
         status: 'dirty' as RoomStatus,
         startedAt: null,
         completedAt: null,
@@ -429,15 +359,12 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
             onClick={async () => {
               const next: Language = lang === 'en' ? 'es' : 'en';
               setLang(next);
-              // Persist to the staff doc so Maria's staff modal stays in
+              // Persist to the staff row so Maria's staff modal stays in
               // sync with whatever this HK picked. Best-effort; silent on
               // failure since the UI already updated locally.
-              if (uid && pid && housekeeperId) {
+              if (housekeeperId) {
                 try {
-                  await updateDoc(
-                    doc(db, 'users', uid, 'properties', pid, 'staff', housekeeperId),
-                    { language: next },
-                  );
+                  await saveStaffLanguage(housekeeperId, next);
                 } catch (err) {
                   console.error('[housekeeper] lang persist failed:', err);
                 }
@@ -658,7 +585,7 @@ function RoomCard({
   onToggleDnd,
   onNeedHelp,
 }: {
-  room: RoomWithRef;
+  room: RoomRow;
   lang: Language;
   index: number;
   isSaving: boolean;
@@ -764,7 +691,7 @@ function RoomCard({
           {/* Show startedAt time when in progress */}
           {isInProgress && room.startedAt && (
             <span style={{ fontSize: '11px', color: 'var(--navy-light, #2563EB)', fontWeight: 600 }}>
-              {t('start', lang)}: {format(firestoreToDate(room.startedAt), 'h:mm a')}
+              {t('start', lang)}: {format(new Date(room.startedAt), 'h:mm a')}
             </span>
           )}
         </div>
@@ -855,7 +782,7 @@ function RoomCard({
           </span>
           {room.completedAt && (
             <span style={{ fontSize: '13px', color: 'var(--green)', opacity: 0.65, marginLeft: '2px' }}>
-              {format(firestoreToDate(room.completedAt), 'h:mm a')}
+              {format(new Date(room.completedAt), 'h:mm a')}
             </span>
           )}
           <span style={{ color: 'var(--green)', opacity: 0.3, fontSize: '14px', margin: '0 2px' }}>·</span>

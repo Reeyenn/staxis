@@ -1,27 +1,29 @@
 /**
  * POST /api/sync-room-assignments
  *
- * Mirrors the room-level `assignedTo`/`assignedName` writes that
+ * Mirrors the room-level `assigned_to`/`assigned_name` writes that
  * /api/send-shift-confirmations does — BUT without sending any SMS or
- * touching shiftConfirmations.
+ * touching shift_confirmations.
  *
  * Called by the Schedule tab's debounced autosave so that every drag-and-drop
- * change is reflected on the `rooms` docs themselves in real time. This fixes
+ * change is reflected on the `rooms` rows themselves in real time. This fixes
  * the bug where clicking the crew-row "Link" button before hitting Send would
  * open the HK's page with stale (or no) rooms — because the HK page queries
- * `collectionGroup('rooms') where assignedTo == staffId` and only the Send
- * flow used to write that field.
+ * `rooms where assigned_to = staffId` and only the Send flow used to write
+ * that field.
  *
  * Body:
  *   {
- *     uid, pid, shiftDate,                    // required
+ *     pid, shiftDate,                           // required
  *     staff: [
- *       { staffId, staffName, assignedRooms }  // room NUMBERS, same shape Send uses
- *     ]
+ *       { staffId, staffName, assignedRooms }  // room NUMBERS
+ *     ],
+ *     allowClearAll?: boolean,                  // bypass "all empty" failsafe
+ *     uid?: string,                             // legacy — ignored
  *   }
  */
 import { NextRequest, NextResponse } from 'next/server';
-import admin from '@/lib/firebase-admin';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import { isValidDateStr } from '@/lib/utils';
 
 interface StaffEntry {
@@ -31,18 +33,21 @@ interface StaffEntry {
 }
 
 interface RequestBody {
-  uid: string;
   pid: string;
   shiftDate: string;
   staff: StaffEntry[];
+  allowClearAll?: boolean;
+  uid?: string;
 }
+
+type PlanRoom = { number: string; stayType?: string | null };
 
 function deriveRoomType(
   number: string,
-  snapData: { rooms?: Array<{ number: string; stayType?: string | null }> } | null,
+  planRooms: PlanRoom[] | null,
 ): 'checkout' | 'stayover' {
-  if (!snapData?.rooms) return 'checkout';
-  const match = snapData.rooms.find(r => r.number === number);
+  if (!planRooms) return 'checkout';
+  const match = planRooms.find(r => r.number === number);
   if (!match) return 'checkout';
   return match.stayType === 'Stay' ? 'stayover' : 'checkout';
 }
@@ -50,9 +55,9 @@ function deriveRoomType(
 export async function POST(req: NextRequest) {
   try {
     const body: RequestBody = await req.json();
-    const { uid, pid, shiftDate, staff } = body;
+    const { pid, shiftDate, staff } = body;
 
-    if (!uid || !pid || !shiftDate || !Array.isArray(staff)) {
+    if (!pid || !shiftDate || !Array.isArray(staff)) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
     if (!isValidDateStr(shiftDate)) {
@@ -60,28 +65,23 @@ export async function POST(req: NextRequest) {
     }
 
     // ── Failsafe: refuse to wipe all assignments without explicit opt-in ────
-    // A buggy client that sends an empty staff list would otherwise blank
-    // every assignment for the day. Require `allowClearAll: true` to mean it.
     const hasAnyAssignment = staff.some(s => (s.assignedRooms ?? []).length > 0);
-    const allowClearAll = (body as { allowClearAll?: boolean }).allowClearAll === true;
+    const allowClearAll = body.allowClearAll === true;
     if (!hasAnyAssignment && !allowClearAll) {
       return NextResponse.json({
         error: 'Refusing to clear all room assignments without allowClearAll=true',
       }, { status: 400 });
     }
 
-    const db = admin.firestore();
-
     // Pull plan snapshot so we can seed any new (future-date) rooms with the
-    // correct checkout/stayover flag — same behavior as send-shift-confirmations.
-    const planSnap = await db
-      .collection('users').doc(uid)
-      .collection('properties').doc(pid)
-      .collection('planSnapshots').doc(shiftDate)
-      .get();
-    const planSnapData = planSnap.exists
-      ? (planSnap.data() as { rooms?: Array<{ number: string; stayType?: string | null }> })
-      : null;
+    // correct checkout/stayover flag — same behaviour as send-shift-confirmations.
+    const { data: planRow } = await supabaseAdmin
+      .from('plan_snapshots')
+      .select('rooms')
+      .eq('property_id', pid)
+      .eq('date', shiftDate)
+      .maybeSingle();
+    const planRooms = (planRow?.rooms as PlanRoom[] | null) ?? null;
 
     // Build the (roomNumber → who) map.
     const assignmentMap = new Map<string, { staffId: string; staffName: string }>();
@@ -91,79 +91,95 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const roomsForDate = await db
-      .collection('users').doc(uid)
-      .collection('properties').doc(pid)
-      .collection('rooms')
-      .where('date', '==', shiftDate)
-      .get();
+    const { data: existing, error: roomsErr } = await supabaseAdmin
+      .from('rooms')
+      .select('id, number, assigned_to, assigned_name')
+      .eq('property_id', pid)
+      .eq('date', shiftDate);
+    if (roomsErr) throw roomsErr;
 
-    const existingByNumber = new Map<string, FirebaseFirestore.QueryDocumentSnapshot>();
-    roomsForDate.forEach(doc => {
-      const num = (doc.data().number ?? '') as string;
-      if (num) existingByNumber.set(num, doc);
-    });
+    const existingByNumber = new Map<string, {
+      id: string;
+      number: string;
+      assigned_to: string | null;
+      assigned_name: string | null;
+    }>();
+    for (const r of (existing ?? [])) {
+      if (r.number) existingByNumber.set(r.number as string, {
+        id: r.id as string,
+        number: r.number as string,
+        assigned_to: (r.assigned_to as string | null) ?? null,
+        assigned_name: (r.assigned_name as string | null) ?? null,
+      });
+    }
 
-    const batch = db.batch();
+    const toInsert: Array<Record<string, unknown>> = [];
+    // PromiseLike (not Promise) — Supabase query-builder chains are
+    // thenables; Promise.all accepts PromiseLike.
+    const updates: PromiseLike<unknown>[] = [];
     let writes = 0;
 
-    // Upsert assigned rooms
+    // Assign / update rooms that are in the new assignment map.
     for (const [num, who] of assignmentMap) {
-      const docId = `${shiftDate}_${num}`;
-      const ref = db
-        .collection('users').doc(uid)
-        .collection('properties').doc(pid)
-        .collection('rooms').doc(docId);
-
-      const existing = existingByNumber.get(num);
-      if (existing) {
-        const data = existing.data();
-        // Only write if something actually changed — saves writes.
-        if (data.assignedTo !== who.staffId || data.assignedName !== who.staffName) {
-          batch.update(ref, {
-            assignedTo: who.staffId,
-            assignedName: who.staffName,
-          });
+      const row = existingByNumber.get(num);
+      if (row) {
+        if (row.assigned_to !== who.staffId || row.assigned_name !== who.staffName) {
+          updates.push(
+            supabaseAdmin
+              .from('rooms')
+              .update({ assigned_to: who.staffId, assigned_name: who.staffName })
+              .eq('id', row.id)
+              .then(({ error }) => { if (error) throw error; }),
+          );
           writes++;
         }
       } else {
-        batch.set(ref, {
+        toInsert.push({
+          property_id: pid,
           number: num,
-          type: deriveRoomType(num, planSnapData),
+          date: shiftDate,
+          type: deriveRoomType(num, planRooms),
           status: 'dirty',
           priority: 'standard',
-          date: shiftDate,
-          propertyId: pid,
-          assignedTo: who.staffId,
-          assignedName: who.staffName,
-          _seededBy: 'sync-room-assignments',
-          _seededAt: admin.firestore.FieldValue.serverTimestamp(),
+          assigned_to: who.staffId,
+          assigned_name: who.staffName,
         });
         writes++;
       }
     }
 
     // Clear assignments on rooms that USED to be assigned but aren't anymore.
-    for (const [num, doc] of existingByNumber) {
+    for (const [num, row] of existingByNumber) {
       if (assignmentMap.has(num)) continue;
-      const data = doc.data();
-      if (data.assignedTo) {
-        batch.update(doc.ref, { assignedTo: null, assignedName: null });
-        writes++;
-      }
+      if (!row.assigned_to) continue;
+      updates.push(
+        supabaseAdmin
+          .from('rooms')
+          .update({ assigned_to: null, assigned_name: null })
+          .eq('id', row.id)
+          .then(({ error }) => { if (error) throw error; }),
+      );
+      writes++;
     }
 
-    if (writes > 0) await batch.commit();
+    if (toInsert.length > 0) {
+      const { error: insErr } = await supabaseAdmin
+        .from('rooms')
+        .upsert(toInsert, { onConflict: 'property_id,date,number' });
+      if (insErr) throw insErr;
+    }
+    if (updates.length > 0) {
+      await Promise.all(updates);
+    }
 
     return NextResponse.json({ ok: true, writes });
   } catch (err) {
     console.error('sync-room-assignments error:', err);
     try {
-      await admin.firestore().collection('errorLogs').add({
-        route: '/api/sync-room-assignments',
-        error: err instanceof Error ? err.message : String(err),
+      await supabaseAdmin.from('error_logs').insert({
+        source: '/api/sync-room-assignments',
+        message: err instanceof Error ? err.message : String(err),
         stack: err instanceof Error ? err.stack ?? null : null,
-        ts: admin.firestore.FieldValue.serverTimestamp(),
       });
     } catch {}
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

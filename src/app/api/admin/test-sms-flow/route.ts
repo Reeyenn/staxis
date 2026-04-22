@@ -1,18 +1,22 @@
 /**
  * POST /api/admin/test-sms-flow
  *
- * Standalone end-to-end tester for the YES/NO flow. Creates a single
- * shiftConfirmation doc under a known uid/pid/staffId, fires the SMS,
- * and returns the doc ID so you can watch it flip when you reply.
+ * Standalone end-to-end tester for the inbound-SMS reply flow. Inserts a
+ * single `shift_confirmations` row for a real staff member, fires an SMS,
+ * and returns the token so you can watch it flip when you reply.
  *
  * Body:
- *   { uid, pid, phone, language?, name? }
+ *   { pid, staffId, phone, language?, name? }
  *
  * Deliberately NOT gated — safe to ship because it only writes a pending
- * doc and sends one text. Delete this route once the flow is verified.
+ * confirmation and sends one text. The staff_id must reference a real row
+ * in the staff table (the table has a FK constraint). Delete this route
+ * once the flow is verified.
+ *
+ * Legacy `uid` body field is accepted but ignored.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import admin from '@/lib/firebase-admin';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 
 function toE164(raw: string): string | null {
@@ -26,81 +30,88 @@ function toE164(raw: string): string | null {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({})) as {
-      uid?: string; pid?: string; phone?: string;
+      pid?: string; staffId?: string; phone?: string;
       language?: 'en' | 'es'; name?: string;
+      uid?: string;
     };
-    const { uid, pid, phone } = body;
+    const { pid, staffId, phone } = body;
     const language = body.language ?? 'en';
     const name = body.name ?? 'Test';
 
-    if (!uid || !pid || !phone) {
-      return NextResponse.json({ error: 'Need uid, pid, phone' }, { status: 400 });
+    if (!pid || !staffId || !phone) {
+      return NextResponse.json({ error: 'Need pid, staffId, phone' }, { status: 400 });
     }
     const phone164 = toE164(phone);
     if (!phone164) {
       return NextResponse.json({ error: `Can't normalize phone ${phone} to E.164` }, { status: 400 });
     }
 
-    const db = admin.firestore();
-    const propSnap = await db.collection('users').doc(uid).collection('properties').doc(pid).get();
-    const hotelName = propSnap.data()?.name || 'the hotel';
+    // Confirm the staff row exists and belongs to this property.
+    const { data: staffRow, error: staffErr } = await supabaseAdmin
+      .from('staff')
+      .select('id, name, property_id')
+      .eq('id', staffId)
+      .eq('property_id', pid)
+      .maybeSingle();
+    if (staffErr) throw staffErr;
+    if (!staffRow) {
+      return NextResponse.json(
+        { error: `No staff row found for id=${staffId} + property_id=${pid}. Pass a real staffId.` },
+        { status: 404 },
+      );
+    }
 
-    // Synthetic staffId — unique per test run. Not tied to any real staff doc.
-    const staffId = `test_${Date.now()}`;
+    const { data: prop } = await supabaseAdmin
+      .from('properties')
+      .select('name')
+      .eq('id', pid)
+      .maybeSingle();
+    const hotelName = prop?.name || 'the hotel';
+
     const shiftDate = new Date().toISOString().slice(0, 10); // today
-    const docId = `${shiftDate}_${staffId}`;
+    const token = `TEST_${shiftDate}_${staffId}_${Date.now()}`;
 
-    // Build a real hkUrl so the YES confirmation reply shows the link the
-    // housekeeper would actually click. Uses the request's origin so it
-    // works on whatever domain the app is deployed to.
+    // Insert the confirmation row.
+    const { error: insErr } = await supabaseAdmin
+      .from('shift_confirmations')
+      .insert({
+        token,
+        property_id: pid,
+        staff_id: staffId,
+        staff_name: name,
+        staff_phone: phone164,
+        shift_date: shiftDate,
+        status: 'pending',
+        language,
+        sent_at: new Date().toISOString(),
+        sms_sent: false,
+      });
+    if (insErr) throw insErr;
+
+    // Update staff.phone_lookup so sms-reply can resolve this phone.
+    await supabaseAdmin
+      .from('staff')
+      .update({ phone_lookup: phone164 })
+      .eq('id', staffId);
+
     const origin = new URL(req.url).origin;
-    const hkUrl = `${origin}/housekeeper/${staffId}`;
-
-    const confirmRef = db
-      .collection('users').doc(uid)
-      .collection('properties').doc(pid)
-      .collection('shiftConfirmations').doc(docId);
-
-    await confirmRef.set({
-      uid, pid,
-      staffId,
-      staffName: name,
-      staffPhone: phone164,
-      shiftDate,
-      status: 'pending',
-      language,
-      assignedRooms: [],
-      assignedAreas: [],
-      hkUrl,
-      hotelName,
-      sentAt: admin.firestore.FieldValue.serverTimestamp(),
-      respondedAt: null,
-      smsSent: false,
-      isTest: true,
-    });
-
-    // Same phoneLookup write as the real send endpoint so the webhook can
-    // find this synthetic doc without a collectionGroup query.
-    await db.collection('phoneLookup').doc(phone164).set({
-      path: confirmRef.path,
-      uid, pid, staffId,
-      shiftDate,
-      isTest: true,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
+    const hkUrl = `${origin}/housekeeper/${staffId}?pid=${encodeURIComponent(pid)}`;
 
     const message = language === 'es'
-      ? `[TEST] Hola ${name}! ¿Puedes venir mañana?\nResponde SÍ o NO.\n– ${hotelName}`
-      : `[TEST] Hi ${name}! Can you come in tomorrow?\nReply YES or NO.\n– ${hotelName}`;
+      ? `[TEST] Hola ${name}! Tu lista de prueba:\n${hkUrl}\n– ${hotelName}`
+      : `[TEST] Hi ${name}! Your test list:\n${hkUrl}\n– ${hotelName}`;
 
     await sendSms(phone164, message);
-    await confirmRef.update({ smsSent: true });
+    await supabaseAdmin
+      .from('shift_confirmations')
+      .update({ sms_sent: true })
+      .eq('token', token);
 
     return NextResponse.json({
       ok: true,
-      docPath: `users/${uid}/properties/${pid}/shiftConfirmations/${docId}`,
+      token,
       staffPhone: phone164,
-      instructions: 'Reply YES or NO to the text you just got. Then GET this same URL again with ?check=' + docId + ' to see the doc status.',
+      instructions: `Reply ENGLISH or ESPAÑOL to the text to flip language. Then GET this same URL again with ?check=${encodeURIComponent(token)} to see the row.`,
     });
   } catch (err) {
     console.error('test-sms-flow error:', err);
@@ -109,24 +120,24 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
-  // ?check=<docId> → return the current status of that doc.
+  // ?check=<token> → return the current state of that confirmation row.
   const url = new URL(req.url);
   const check = url.searchParams.get('check');
-  const uid = url.searchParams.get('uid');
-  const pid = url.searchParams.get('pid');
-  if (!check || !uid || !pid) {
-    return NextResponse.json({ error: 'Need ?check=<docId>&uid=<>&pid=<>' }, { status: 400 });
+  if (!check) {
+    return NextResponse.json({ error: 'Need ?check=<token>' }, { status: 400 });
   }
-  const db = admin.firestore();
-  const snap = await db
-    .collection('users').doc(uid)
-    .collection('properties').doc(pid)
-    .collection('shiftConfirmations').doc(check).get();
-  if (!snap.exists) return NextResponse.json({ error: 'not found' }, { status: 404 });
-  const d = snap.data()!;
+  const { data, error } = await supabaseAdmin
+    .from('shift_confirmations')
+    .select('token, status, staff_phone, language, responded_at')
+    .eq('token', check)
+    .maybeSingle();
+  if (error) return NextResponse.json({ error: String(error.message) }, { status: 500 });
+  if (!data) return NextResponse.json({ error: 'not found' }, { status: 404 });
   return NextResponse.json({
-    status: d.status,
-    staffPhone: d.staffPhone,
-    respondedAt: d.respondedAt?.toDate?.()?.toISOString() ?? null,
+    token: data.token,
+    status: data.status,
+    staffPhone: data.staff_phone,
+    language: data.language,
+    respondedAt: data.responded_at,
   });
 }

@@ -1,33 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
-import admin from '@/lib/firebase-admin';
 
-export async function POST(req: NextRequest) {
-  // Guard: admin SDK must be initialized (requires server env vars)
-  if (!admin.apps.length) {
-    console.error('save-fcm-token: Firebase Admin SDK not initialized');
-    return NextResponse.json(
-      { error: 'Server not configured - token could not be saved' },
-      { status: 503 }
-    );
-  }
-
-  const { uid, pid, staffId, token } = await req.json();
-  if (!uid || !pid || !staffId || !token) {
-    return NextResponse.json({ error: 'Missing fields' }, { status: 400 });
-  }
-
-  try {
-    await admin.firestore()
-      .collection('users').doc(uid)
-      .collection('properties').doc(pid)
-      .collection('staff').doc(staffId)
-      .update({ fcmToken: token });
-    return NextResponse.json({ ok: true });
-  } catch (err) {
-    console.error('save-fcm-token: failed to save token', err);
-    return NextResponse.json(
-      { error: 'Failed to save token' },
-      { status: 500 }
-    );
-  }
+/**
+ * DEPRECATED — FCM push was removed during the Supabase migration.
+ *
+ * Notifications to housekeepers are now SMS-only via Twilio. The mobile
+ * housekeeper page no longer requests an FCM token, so this endpoint should
+ * never be called in practice. We keep the route alive as a 410 Gone so
+ * stale client bundles in the wild fail loudly rather than silently 404 on
+ * every page load.
+ *
+ * Clean-up task: once we confirm no clients are still POSTing here (check
+ * Vercel logs for 30 days), this file can be deleted.
+ */
+export async function POST(_req: NextRequest) {
+  return NextResponse.json(
+    {
+      error: 'Endpoint deprecated',
+      message:
+        'FCM push notifications were retired. Housekeepers now receive Twilio SMS. ' +
+        'If you are seeing this error, refresh the page to load the latest client bundle.',
+    },
+    { status: 410 },
+  );
 }

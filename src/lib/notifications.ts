@@ -1,49 +1,36 @@
-import { getMessaging, getToken } from 'firebase/messaging';
-import app from './firebase';
+// ═══════════════════════════════════════════════════════════════════════════
+// Client-side notification helpers.
+//
+// Design note — SMS-only as of 2026-04-22:
+// Firebase Cloud Messaging (web push) was dropped alongside the Firestore
+// migration. Housekeepers reliably carry SMS-capable phones but rarely
+// re-open PWAs, and FCM on iOS required installing the page to the home
+// screen first — a user-hostile onboarding step we never got around. Every
+// notification path now goes through Twilio.
+//
+// `registerForPushNotifications` is retained as a no-op so legacy callers
+// (the /housekeeper/setup flow) compile unchanged during the migration.
+// It always resolves to `null` to signal "no push available"; callers
+// should fall back to their SMS flow.
+//
+// `sendAssignmentNotifications` is a thin alias over `sendSmsNotifications`
+// so the Smart Assign CTA in the housekeeping dashboard keeps working.
+// New code should call `sendSmsNotifications` directly.
+// ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Requests notification permission and returns an FCM token.
- * Call this on the housekeeper's phone after they select their name.
- * Returns null if permission was denied or any error occurred.
- *
- * Key fix: explicitly registers the service worker before calling getToken()
- * so FCM can always find it, even on first load before the SW is cached.
+ * LEGACY / NO-OP. Kept for backwards compatibility with the /housekeeper
+ * onboarding page. Always returns null — push is no longer supported.
+ * Callers should treat a null return as "push unavailable" and proceed
+ * with their SMS path.
  */
 export async function registerForPushNotifications(): Promise<string | null> {
-  try {
-    // Must be in a browser that supports notifications
-    if (typeof window === 'undefined' || !('Notification' in window)) return null;
-    if (!('serviceWorker' in navigator)) return null;
-
-    const permission = await Notification.requestPermission();
-    if (permission !== 'granted') return null;
-
-    const vapidKey = process.env.NEXT_PUBLIC_FIREBASE_VAPID_KEY;
-    if (!vapidKey) {
-      console.error('NEXT_PUBLIC_FIREBASE_VAPID_KEY is not set');
-      return null;
-    }
-
-    // Explicitly register (or re-use) the FCM service worker.
-    // Passing serviceWorkerRegistration to getToken prevents FCM from
-    // trying to auto-register it, which can silently fail on first load.
-    const swReg = await navigator.serviceWorker.register(
-      '/firebase-messaging-sw.js',
-      { scope: '/' }
-    );
-
-    const messaging = getMessaging(app);
-    const token = await getToken(messaging, { vapidKey, serviceWorkerRegistration: swReg });
-    return token || null;
-  } catch (err) {
-    console.error('Push registration failed:', err);
-    return null;
-  }
+  return null;
 }
 
 /**
- * Sends SMS room assignment notifications via Twilio.
- * Called alongside sendAssignmentNotifications after Smart Assign.
+ * Send SMS room-assignment notifications via Twilio.
+ * Invoked after Smart Assign. Skips staff with no phone number on file.
  */
 export async function sendSmsNotifications(
   assignments: Record<string, string[]>,   // staffId → room numbers[]
@@ -76,38 +63,16 @@ export async function sendSmsNotifications(
 }
 
 /**
- * Sends push notification room assignments to all assigned housekeepers.
- * Called by the GM after Smart Assign runs.
- *
- * assignments: map of staffId → array of room numbers they were assigned
- * staffNames:  map of staffId → display name
- * staffTokens: map of staffId → FCM token (pulled from staff records)
+ * LEGACY — kept so the Smart Assign CTA in housekeeping/page.tsx keeps
+ * compiling. Now an alias for `sendSmsNotifications`. The old signature
+ * took `staffTokens` (FCM tokens); we map that positionally to
+ * `staffPhones` for zero behavioral change at call-sites that already
+ * pass phone numbers. New code should call `sendSmsNotifications` directly.
  */
 export async function sendAssignmentNotifications(
   assignments: Record<string, string[]>,
-  staffNames: Record<string, string>,
-  staffTokens: Record<string, string>,
+  staffNames:  Record<string, string>,
+  staffPhones: Record<string, string>,
 ): Promise<{ sent: number; failed: number }> {
-  const entries = Object.entries(assignments).filter(([staffId]) => staffTokens[staffId]);
-  if (entries.length === 0) return { sent: 0, failed: 0 };
-
-  const res = await fetch('/api/notify-housekeepers', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(
-      entries.map(([staffId, rooms]) => ({
-        token: staffTokens[staffId],
-        name: staffNames[staffId] ?? 'Housekeeper',
-        rooms,
-      }))
-    ),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    console.error(`notify-housekeepers HTTP ${res.status}:`, text);
-    return { sent: 0, failed: entries.length };
-  }
-
-  return res.json() as Promise<{ sent: number; failed: number }>;
+  return sendSmsNotifications(assignments, staffNames, staffPhones);
 }

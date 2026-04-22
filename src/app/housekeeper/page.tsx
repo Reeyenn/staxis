@@ -4,9 +4,6 @@ import React, { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
-import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-import { auth } from '@/lib/firebase';
-import { registerForPushNotifications } from '@/lib/notifications';
 import { BedDouble, Bell, CheckCircle, AlertCircle, Globe } from 'lucide-react';
 
 interface StaffMember {
@@ -15,7 +12,14 @@ interface StaffMember {
   isSenior: boolean;
 }
 
-type Step = 'loading' | 'select' | 'requesting' | 'done' | 'denied' | 'error' | 'bad-link';
+// SMS-only flow as of 2026-04-22. Previously this page requested notification
+// permission and registered a Firebase Cloud Messaging token; we dropped FCM
+// entirely because housekeepers reliably receive Twilio SMS to the staff
+// phone number on file, and the PWA "add to home screen" dance required for
+// iOS push was a hostile onboarding step that nobody completed. This page
+// now just pairs the phone with a staff id — room assignments and alerts
+// arrive via SMS from /api/notify-housekeepers-sms.
+type Step = 'loading' | 'select' | 'saving' | 'done' | 'error' | 'bad-link';
 
 export default function HousekeeperPage() {
   return (
@@ -39,23 +43,11 @@ function HousekeeperInner() {
   useEffect(() => {
     if (!uid || !pid) { setStep('bad-link'); return; }
 
-    // Sign in anonymously so Firestore security rules allow room reads/updates.
-    // Housekeepers don't have Google accounts - anonymous auth gives them a
-    // real Firebase auth token without requiring any login UI.
-    //
-    // But only sign in anonymously if there is genuinely no user. Otherwise
-    // we'd clobber an admin's session — Firebase propagates auth changes
-    // across all tabs, so an admin viewing this page would be silently
-    // logged out of the main app. Wait for onAuthStateChanged to resolve
-    // first; `auth.currentUser` is unreliable on initial render.
-    const unsubAuth = onAuthStateChanged(auth, (user) => {
-      unsubAuth();
-      if (user) return;
-      signInAnonymously(auth).catch(() => {
-        // Non-fatal - staff-list API route uses firebase-admin (bypasses rules)
-        // and the [id] page will retry on its own useEffect.
-      });
-    });
+    // No anonymous auth here anymore. The staff-list API uses the service-role
+    // key and does not rely on the caller's session. Room reads/writes from
+    // /housekeeper/[id] go through the Supabase browser client with RLS off
+    // for anon reads (staff-facing pages are publicly-linkable by design —
+    // the uid+pid+staffId triple in the URL is the capability token).
 
     fetch(`/api/staff-list?uid=${uid}&pid=${pid}`)
       .then(r => r.json())
@@ -80,36 +72,23 @@ function HousekeeperInner() {
 
   const handleSetup = async () => {
     if (!uid || !pid || !selectedId) return;
-    setStep('requesting');
+    setStep('saving');
 
-    const token = await registerForPushNotifications();
-
-    if (!token) {
-      const permission = typeof Notification !== 'undefined' ? Notification.permission : 'default';
-      if (permission === 'denied') {
-        setStep('denied');
-      } else {
-        setStep('error');
-        setErrorMsg(lang === 'es'
-          ? 'No se pudieron activar las notificaciones. En iPhone, primero agrega esta página a tu Pantalla de Inicio y luego ábrela desde allí.'
-          : 'Could not enable notifications. On iPhone, you must add this page to your Home Screen first, then open it from there.');
-      }
-      return;
-    }
-
-    // Save token via API
+    // SMS-only: no push token to register. Hit the same endpoint with an
+    // empty token so the staff record still gets stamped with the selected
+    // id (legacy call sites read it); body shape preserved for compat.
+    // If the endpoint errors we still advance to `done` — the housekeeper
+    // is already paired via their SMS number on the staff roster; this
+    // click is mostly a "yes I'm this person" UI confirmation now.
     try {
       await fetch('/api/save-fcm-token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uid, pid, staffId: selectedId, token }),
-      });
+        body: JSON.stringify({ uid, pid, staffId: selectedId, token: '' }),
+      }).catch(() => {});
       setStep('done');
     } catch {
-      setStep('error');
-      setErrorMsg(lang === 'es'
-        ? 'Registrado pero no se pudo guardar. Verifica tu conexión.'
-        : 'Registered but could not save. Check your connection.');
+      setStep('done');
     }
   };
 
@@ -222,11 +201,10 @@ function HousekeeperInner() {
         </div>
       )}
 
-      {/* Requesting */}
-      {step === 'requesting' && (
+      {/* Saving */}
+      {step === 'saving' && (
         <div style={{ textAlign: 'center' }}>
           <p style={{ fontSize: '15px', color: 'var(--text-secondary)' }}>{t('settingUp', lang)}</p>
-          <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '6px' }}>{t('tapAllow', lang)}</p>
         </div>
       )}
 
@@ -256,25 +234,8 @@ function HousekeeperInner() {
         </div>
       )}
 
-      {/* Denied */}
-      {step === 'denied' && (
-        <div style={{
-          width: '100%', maxWidth: '360px', textAlign: 'center',
-          background: 'var(--bg-card)', border: '1px solid var(--border)',
-          borderRadius: 'var(--radius-lg)', padding: '32px 24px',
-        }}>
-          <AlertCircle size={40} color="var(--amber)" style={{ marginBottom: '16px' }} />
-          <h2 style={{ fontSize: '18px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>{t('notificationsBlocked', lang)}</h2>
-          <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-            {t('goToBrowserSettings', lang)}
-          </p>
-          <button onClick={() => setStep('select')} style={{
-            marginTop: '20px', padding: '10px 24px',
-            background: 'var(--navy-light)', color: '#FFFFFF', border: 'none',
-            borderRadius: 'var(--radius-md)', fontFamily: 'var(--font-sans)', fontWeight: 600, cursor: 'pointer',
-          }}>{t('tryAgain', lang)}</button>
-        </div>
-      )}
+      {/* No 'denied' step in SMS-only flow — kept here as a comment so
+          anyone searching the old FCM-era UI states finds the delete. */}
 
       {/* Error */}
       {step === 'error' && (

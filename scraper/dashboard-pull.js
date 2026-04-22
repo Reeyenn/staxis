@@ -2,7 +2,8 @@
  * HotelOps AI — Dashboard Number Pull
  *
  * Pulls three operational numbers from Choice Advantage's View pages and
- * writes them to scraperStatus/dashboard for display on the Schedule tab:
+ * writes them to scraper_status[key='dashboard'] for display on the Schedule
+ * tab:
  *   • View → In House    → Room Count (currently occupied rooms)
  *   • View → Arrivals    → Room Count (arrivals still pending check-in)
  *   • View → Departures  → Room Count (departures still pending check-out)
@@ -16,13 +17,15 @@
  * housekeeper she doesn't need, or miss one she does. So the contract here is:
  *
  *   1. ATOMIC. We pull all three pages into memory, validate them, and only
- *      then write to scraperStatus/dashboard. A partial pull (In House
- *      succeeds, Arrivals fails) NEVER overwrites the last good snapshot.
+ *      then merge into scraper_status[key='dashboard']. A partial pull
+ *      (In House succeeds, Arrivals fails) NEVER overwrites the last good
+ *      snapshot.
  *
  *   2. LAST-GOOD PRESERVATION. On any failure, the success fields on the
- *      dashboard doc are left alone. The UI keeps showing the last successful
- *      numbers but can tell they're stale via pulledAt. Only the error fields
- *      (errorCode, errorMessage, erroredAt) get touched.
+ *      dashboard jsonb are left alone (mergeStatus only touches keys we
+ *      pass). The UI keeps showing the last successful numbers but can tell
+ *      they're stale via pulledAt. Only the error fields (errorCode,
+ *      errorMessage, erroredAt) get touched.
  *
  *   3. TYPED ERRORS. Every failure maps to one of a fixed set of error codes
  *      — login_failed, selector_miss, timeout, parse_error, session_expired,
@@ -54,7 +57,7 @@
  * So we target by label text and walk to the next <li>'s .CHI_Data.
  */
 
-const { FieldValue } = require('firebase-admin/firestore');
+const { mergeStatus, incrementCounter } = require('./supabase-helpers');
 
 const VIEW_PAGES = [
   { key: 'inHouse',    url: 'https://www.choiceadvantage.com/choicehotels/ViewInHouseList.init' },
@@ -137,8 +140,8 @@ async function readCounts(page) {
 
 /**
  * Pull the three View pages into a local map. Throws a ScraperError on the
- * first failure — does NOT write anything to Firestore. The caller is
- * responsible for the Firestore write (so the atomicity guarantee lives at
+ * first failure — does NOT write anything to Supabase. The caller is
+ * responsible for the Supabase write (so the atomicity guarantee lives at
  * exactly one layer).
  */
 async function fetchAllViewPages(page, log) {
@@ -238,11 +241,11 @@ async function fetchAllViewPages(page, log) {
 }
 
 /**
- * Firestore's set() doesn't accept undefined values. Make sure our
- * diagnostics object is safe to write — turn undefineds into nulls and
- * truncate long strings.
+ * Make a diagnostics object safe to write into jsonb — turn undefineds into
+ * nulls and truncate long strings. Postgres jsonb tolerates all JSON but we
+ * keep the size bounded so a broken page doesn't bloat the status row.
  */
-function sanitizeForFirestore(obj) {
+function sanitizeForJsonb(obj) {
   const out = {};
   for (const [k, v] of Object.entries(obj || {})) {
     if (v === undefined) {
@@ -259,21 +262,21 @@ function sanitizeForFirestore(obj) {
 }
 
 /**
- * Navigate the three View pages in sequence and write the numbers to
- * scraperStatus/dashboard ATOMICALLY — all three succeed or nothing is
- * written to the success fields. On failure, the error fields are updated
+ * Navigate the three View pages in sequence and merge the numbers into
+ * scraper_status[key='dashboard'] ATOMICALLY — all three succeed or nothing
+ * is written to the success fields. On failure, the error fields are updated
  * and the last good numbers stay put.
  *
  * Returns the written payload on success. On failure, writes the error to
- * the dashboard doc's error fields AND re-throws a typed ScraperError so
+ * the dashboard row's error fields AND re-throws a typed ScraperError so
  * the caller (scraper.js) can decide whether to retry with re-login.
  */
-async function pullDashboardNumbers(page, db, log) {
+async function pullDashboardNumbers(page, supabase, log) {
   let result;
   try {
     result = await fetchAllViewPages(page, log);
   } catch (err) {
-    // Failure path — update only the error fields. Never touch the last-
+    // Failure path — merge only the error fields. Never touch the last-
     // known-good numbers. The UI will render them as stale once pulledAt
     // gets old enough, and the health-check cron will text Reeyen.
     const code = err instanceof ScraperError ? err.code : ERROR_CODES.UNKNOWN;
@@ -282,23 +285,25 @@ async function pullDashboardNumbers(page, db, log) {
 
     log(`Dashboard pull FAILED [${code}] ${err.message}`);
 
-    await db.collection('scraperStatus').doc('dashboard').set({
+    await mergeStatus(supabase, 'dashboard', {
       errorCode:       code,
       errorMessage:    String(err.message || '').slice(0, 500),
       errorPage:       failurePage,
-      erroredAt:       new Date(),
-      lastDiagnostics: diagnostics ? sanitizeForFirestore(diagnostics) : null,
-    }, { merge: true }).catch(writeErr => {
+      erroredAt:       new Date().toISOString(),
+      lastDiagnostics: diagnostics ? sanitizeForJsonb(diagnostics) : null,
+    }).catch(writeErr => {
       log(`Failed to write error state: ${writeErr.message}`);
     });
 
     // Separately bump a failure counter — weekly digest uses this to report
     // "672/672 pulls succeeded" without needing an append-only history table.
-    await db.collection('scraperStatus').doc('dashboardCounters').set({
-      lastFailureAt:  new Date(),
-      lastFailureCode: code,
-      totalFailures:  FieldValue.increment(1),
-    }, { merge: true }).catch(() => {});
+    await incrementCounter(supabase, 'dashboard_counters', {
+      deltas: { totalFailures: 1 },
+      extras: {
+        lastFailureAt:   new Date().toISOString(),
+        lastFailureCode: code,
+      },
+    }).catch(() => {});
 
     // Re-throw so the caller can attempt re-login + retry on session_expired.
     // Retry is a concern of the outer layer, not this one.
@@ -306,8 +311,9 @@ async function pullDashboardNumbers(page, db, log) {
   }
 
   // Success path — write all the success fields AND clear the error fields
-  // in one atomic set({ merge: true }). Clearing error fields is important:
-  // a stale errorCode from last week would otherwise mislead the health check.
+  // in one merge. Clearing error fields is important: a stale errorCode from
+  // last week would otherwise mislead the health check.
+  const nowIso = new Date().toISOString();
   const payload = {
     inHouse:    result.inHouse.roomCount,
     arrivals:   result.arrivals.roomCount,
@@ -315,7 +321,7 @@ async function pullDashboardNumbers(page, db, log) {
     inHouseGuests:    result.inHouse.guestCount    ?? null,
     arrivalsGuests:   result.arrivals.guestCount   ?? null,
     departuresGuests: result.departures.guestCount ?? null,
-    pulledAt: new Date(),
+    pulledAt: nowIso,
     // Clear error fields on success so alerts reset.
     errorCode:       null,
     errorMessage:    null,
@@ -326,33 +332,47 @@ async function pullDashboardNumbers(page, db, log) {
     error: null,
   };
 
-  await db.collection('scraperStatus').doc('dashboard').set(payload, { merge: true });
+  await mergeStatus(supabase, 'dashboard', payload);
 
-  // Also write to a per-date doc so past date tabs in the UI can show a frozen
-  // end-of-day snapshot instead of whatever the live numbers happen to be.
+  // Also write to dashboard_by_date for the given local date so past-date
+  // tabs in the UI can show a frozen end-of-day snapshot instead of whatever
+  // the live numbers happen to be.
   //
-  // Mechanism: we overwrite dashboardByDate/{YYYY-MM-DD} on every successful
-  // pull. During the day the doc churns — that's fine, the UI only reads it
+  // Mechanism: we upsert dashboard_by_date[date=localDate] on every successful
+  // pull. During the day the row churns — that's fine, the UI only reads it
   // for non-today dates. The *last* successful pull before midnight local time
   // becomes the frozen historical snapshot for that date. No separate cron or
   // append-only log needed. Dates are bucketed by the hotel's local timezone
   // so a pull at 11:45pm Central writes to today, not tomorrow-UTC.
   const timezone = process.env.TIMEZONE || 'America/Chicago';
   const localDate = new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(new Date());
-  await db.collection('dashboardByDate').doc(localDate).set({
-    ...payload,
-    date: localDate,
-  }, { merge: true }).catch(writeErr => {
+  const { error: dbdErr } = await supabase
+    .from('dashboard_by_date')
+    .upsert({
+      date:              localDate,
+      in_house:          payload.inHouse,
+      arrivals:          payload.arrivals,
+      departures:        payload.departures,
+      in_house_guests:   payload.inHouseGuests,
+      arrivals_guests:   payload.arrivalsGuests,
+      departures_guests: payload.departuresGuests,
+      pulled_at:         nowIso,
+      error_code:        null,
+      error_message:     null,
+      error_page:        null,
+      errored_at:        null,
+    }, { onConflict: 'date' });
+  if (dbdErr) {
     // Non-fatal — live dashboard already succeeded. Log and keep going.
-    log(`Failed to write per-date snapshot for ${localDate}: ${writeErr.message}`);
-  });
+    log(`Failed to write per-date snapshot for ${localDate}: ${dbdErr.message}`);
+  }
 
   // Bump the success counter so the weekly digest can report
   // "672/672 pulls succeeded this week" without keeping a log table.
-  await db.collection('scraperStatus').doc('dashboardCounters').set({
-    lastSuccessAt:  new Date(),
-    totalSuccesses: FieldValue.increment(1),
-  }, { merge: true }).catch(() => {});
+  await incrementCounter(supabase, 'dashboard_counters', {
+    deltas: { totalSuccesses: 1 },
+    extras: { lastSuccessAt: nowIso },
+  }).catch(() => {});
 
   log(`Dashboard pull OK — inHouse=${payload.inHouse} arrivals=${payload.arrivals} departures=${payload.departures}`);
   return payload;

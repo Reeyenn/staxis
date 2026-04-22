@@ -1,30 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
-import admin from '@/lib/firebase-admin';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
-import type { StaffMember } from '@/types';
 
 /**
  * POST /api/notify-backup
  *
  * Triggered from the manager's housekeeping board when a "Need Help" flag
  * is on a room and the manager picks a backup housekeeper to send over.
- * Texts the selected backup housekeeper (the one Mario picked), telling
- * them which room to head to.
  *
- * This is a separate endpoint from /api/help-request on purpose:
+ * Separate from /api/help-request on purpose:
  *   - /api/help-request → single text to the Scheduling Manager only.
  *   - /api/notify-backup → single text to one specific housekeeper the
  *                          manager picked from a dropdown.
  *
  * Payload:
- *   uid              – auth user id (property owner)
  *   pid              – property id
- *   backupStaffId    – Firestore staff doc id of the housekeeper being sent
+ *   backupStaffId    – staff.id of the housekeeper being sent
  *   roomNumber       – room the backup is being sent to
  *   language         – 'en' | 'es' (optional, defaults to en)
  */
 
-/** E.164 phone normalization */
 function toE164(raw: string): string | null {
   const digits = raw.replace(/\D/g, '');
   if (digits.length === 10) return `+1${digits}`;
@@ -36,46 +31,41 @@ function toE164(raw: string): string | null {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { uid, pid, backupStaffId, roomNumber, language } = body;
+    const { pid, backupStaffId, roomNumber, language } = body;
 
-    if (!uid || !pid || !backupStaffId || !roomNumber) {
+    if (!pid || !backupStaffId || !roomNumber) {
       return NextResponse.json(
         { error: 'Missing required fields' },
         { status: 400 }
       );
     }
 
-    const db = admin.firestore();
+    // Property name + specific backup staff in parallel.
+    const [{ data: prop }, { data: backup, error: backupErr }] = await Promise.all([
+      supabaseAdmin.from('properties').select('name').eq('id', pid).maybeSingle(),
+      supabaseAdmin
+        .from('staff')
+        .select('id, name, phone, is_active')
+        .eq('id', backupStaffId)
+        .eq('property_id', pid)
+        .maybeSingle(),
+    ]);
 
-    // Property name for the SMS footer.
-    const propSnap = await db
-      .collection('users')
-      .doc(uid)
-      .collection('properties')
-      .doc(pid)
-      .get();
-    const propertyName = propSnap.data()?.name || 'Your Hotel';
+    if (backupErr) {
+      console.error('[notify-backup] staff query failed', backupErr);
+      return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    }
 
-    // Load the specific backup staff member by id.
-    const backupSnap = await db
-      .collection('users')
-      .doc(uid)
-      .collection('properties')
-      .doc(pid)
-      .collection('staff')
-      .doc(backupStaffId)
-      .get();
-
-    if (!backupSnap.exists) {
+    if (!backup) {
       return NextResponse.json(
         { error: 'Backup staff member not found' },
         { status: 404 }
       );
     }
 
-    const backup = { id: backupSnap.id, ...backupSnap.data() } as StaffMember & { id: string };
+    const propertyName = prop?.name || 'Your Hotel';
 
-    if (!backup.phone || backup.isActive === false) {
+    if (!backup.phone || backup.is_active === false) {
       console.warn(
         `[notify-backup] Backup staff ${backup.name} has no phone or is inactive. Not texted.`
       );
