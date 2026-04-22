@@ -488,6 +488,29 @@ export default function MaintenancePage() {
         {activeTab === 'workOrders' ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
+            {/* Blocked-rooms banner — tells Maria at a glance how many rooms
+                are currently flagged as unrentable. Hidden when zero so the
+                UI stays clean on a quiet day. */}
+            {(() => {
+              const blockedCount = orders.filter(o => o.blockedRoom && o.status !== 'resolved').length;
+              if (blockedCount === 0) return null;
+              return (
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: '10px',
+                  padding: '10px 14px', borderRadius: '12px',
+                  background: '#ffdad6', color: '#93000a',
+                  boxShadow: 'inset 0 0 0 1px rgba(186,26,26,0.15)',
+                }}>
+                  <span style={{ fontSize: '18px', lineHeight: 1 }}>⛔</span>
+                  <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 600 }}>
+                    {lang === 'es'
+                      ? `${blockedCount} habitaci${blockedCount === 1 ? 'ón bloqueada' : 'ones bloqueadas'} de renta`
+                      : `${blockedCount} room${blockedCount === 1 ? '' : 's'} blocked from rental`}
+                  </span>
+                </div>
+              );
+            })()}
+
             {/* Filter pills */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', overflowX: 'auto', paddingBottom: '4px' }}>
               {([
@@ -633,138 +656,9 @@ export default function MaintenancePage() {
                         <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid rgba(197,197,212,0.2)', display: 'flex', flexDirection: 'column', gap: '12px' }}
                           onClick={e => e.stopPropagation()}
                         >
-                          {editingId === order.id ? (
-                            /* ─── EDIT MODE ─────────────────────────────── */
-                            <>
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                                <label style={{ fontSize: '12px', fontWeight: 600, color: '#454652', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                                  {lang === 'es' ? 'Habitación' : 'Room'}
-                                </label>
-                                <input
-                                  type="text"
-                                  value={editRoom}
-                                  onChange={e => setEditRoom(e.target.value)}
-                                  placeholder={lang === 'es' ? 'Número de habitación' : 'Room number'}
-                                  style={{
-                                    padding: '10px 14px', fontSize: '14px',
-                                    border: '1px solid rgba(197,197,212,0.4)', borderRadius: '10px',
-                                    fontFamily: "'Inter', sans-serif", color: '#1b1c19',
-                                    background: '#fff', outline: 'none',
-                                  }}
-                                />
-
-                                <label style={{ fontSize: '12px', fontWeight: 600, color: '#454652', textTransform: 'uppercase', letterSpacing: '0.04em', marginTop: '6px' }}>
-                                  {lang === 'es' ? 'Descripción' : 'Description'}
-                                </label>
-                                <textarea
-                                  value={editDesc}
-                                  onChange={e => setEditDesc(e.target.value)}
-                                  rows={2}
-                                  style={{
-                                    padding: '10px 14px', fontSize: '14px',
-                                    border: '1px solid rgba(197,197,212,0.4)', borderRadius: '10px',
-                                    fontFamily: "'Inter', sans-serif", color: '#1b1c19',
-                                    background: '#fff', outline: 'none', resize: 'vertical',
-                                  }}
-                                />
-
-                                <label style={{ fontSize: '12px', fontWeight: 600, color: '#454652', textTransform: 'uppercase', letterSpacing: '0.04em', marginTop: '6px' }}>
-                                  {lang === 'es' ? 'Severidad' : 'Severity'}
-                                </label>
-                                <div style={{ display: 'flex', gap: '8px' }}>
-                                  {(['low', 'medium', 'urgent'] as WorkOrderSeverity[]).map(sev => {
-                                    const active = editSeverity === sev;
-                                    return (
-                                      <button
-                                        key={sev}
-                                        type="button"
-                                        onClick={() => setEditSeverity(sev)}
-                                        style={{
-                                          flex: 1, padding: '8px 12px', fontSize: '12px', fontWeight: 600,
-                                          textTransform: 'uppercase', letterSpacing: '0.04em',
-                                          borderRadius: '9999px', cursor: 'pointer',
-                                          border: active ? '1px solid #364262' : '1px solid rgba(197,197,212,0.3)',
-                                          background: active ? '#364262' : 'transparent',
-                                          color: active ? '#fff' : '#454652',
-                                          fontFamily: "'Inter', sans-serif",
-                                          transition: 'all 150ms',
-                                        }}
-                                      >
-                                        {sevLabel(sev)}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-
-                                <label style={{ fontSize: '12px', fontWeight: 600, color: '#454652', textTransform: 'uppercase', letterSpacing: '0.04em', marginTop: '6px' }}>
-                                  {lang === 'es' ? 'Notas' : 'Notes'}
-                                </label>
-                                <textarea
-                                  value={editNotes}
-                                  onChange={e => setEditNotes(e.target.value)}
-                                  rows={2}
-                                  placeholder={lang === 'es' ? 'Opcional' : 'Optional'}
-                                  style={{
-                                    padding: '10px 14px', fontSize: '14px',
-                                    border: '1px solid rgba(197,197,212,0.4)', borderRadius: '10px',
-                                    fontFamily: "'Inter', sans-serif", color: '#1b1c19',
-                                    background: '#fff', outline: 'none', resize: 'vertical',
-                                  }}
-                                />
-
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px', cursor: 'pointer' }}>
-                                  <input
-                                    type="checkbox"
-                                    checked={editBlockRoom}
-                                    onChange={e => setEditBlockRoom(e.target.checked)}
-                                    style={{ width: '16px', height: '16px', cursor: 'pointer' }}
-                                  />
-                                  <span style={{ fontSize: '13px', color: '#1b1c19' }}>
-                                    {lang === 'es' ? 'Bloquear habitación de renta' : 'Block room from rental'}
-                                  </span>
-                                </label>
-                              </div>
-
-                              {/* Save / Cancel */}
-                              <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
-                                <button
-                                  onClick={handleCancelEdit}
-                                  style={{
-                                    flex: 1, padding: '12px', fontSize: '14px', fontWeight: 600,
-                                    background: 'transparent', color: '#454652',
-                                    border: '1px solid rgba(197,197,212,0.3)',
-                                    borderRadius: '12px', cursor: 'pointer', minHeight: '44px',
-                                    fontFamily: "'Inter', sans-serif",
-                                  }}
-                                >
-                                  {lang === 'es' ? 'Cancelar' : 'Cancel'}
-                                </button>
-                                <button
-                                  onClick={() => handleSaveEdit(order)}
-                                  disabled={!editDesc.trim()}
-                                  style={{
-                                    flex: 1, padding: '12px', fontSize: '14px', fontWeight: 600,
-                                    background: editDesc.trim() ? '#364262' : 'rgba(54,66,98,0.4)',
-                                    color: '#fff', border: 'none',
-                                    borderRadius: '12px', cursor: editDesc.trim() ? 'pointer' : 'not-allowed',
-                                    minHeight: '44px', fontFamily: "'Inter', sans-serif",
-                                  }}
-                                >
-                                  {lang === 'es' ? 'Guardar' : 'Save'}
-                                </button>
-                              </div>
-
-                              {order.source === 'ca_ooo' && (
-                                <p style={{ fontSize: '11px', color: '#757684', fontStyle: 'italic', margin: '4px 0 0', lineHeight: 1.4 }}>
-                                  {lang === 'es'
-                                    ? 'Sincronizado desde Choice Advantage — los cambios pueden sobrescribirse en la próxima sincronización.'
-                                    : 'Synced from Choice Advantage — edits may be overwritten on next sync.'}
-                                </p>
-                              )}
-                            </>
-                          ) : (
-                            /* ─── VIEW MODE ─────────────────────────────── */
-                            <>
+                          {/* View mode — edit flow opens a centered modal, handled
+                              at the page root. */}
+                          <>
                               {order.notes && (
                                 <div style={{
                                   background: 'rgba(245,243,238,0.4)', borderRadius: '12px',
@@ -898,7 +792,6 @@ export default function MaintenancePage() {
                                 </button>
                               </div>
                             </>
-                          )}
                         </div>
                       )}
                     </div>
@@ -1445,6 +1338,196 @@ export default function MaintenancePage() {
           </div>
         </div>
       )}
+
+      {/* ── Edit Work Order Modal ─────────────────────────────────────────
+          Opens when editingId is set (via the Edit button on a card).
+          Mirrors the Create modal's structure so it feels native, plus the
+          iOS-style Block Room toggle Reeyen asked for. */}
+      {editingId && (() => {
+        const order = orders.find(o => o.id === editingId);
+        if (!order) return null;
+        return (
+          <div
+            style={{
+              position: 'fixed', inset: 0, zIndex: 50,
+              background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(4px)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              padding: '20px',
+            }}
+            onClick={e => { if (e.target === e.currentTarget) handleCancelEdit(); }}
+          >
+            <div style={{
+              width: '100%', maxWidth: '500px', maxHeight: '90vh', overflowY: 'auto',
+              background: '#fbf9f4', borderRadius: '24px',
+              padding: '24px',
+              display: 'flex', flexDirection: 'column', gap: '16px',
+              boxShadow: '0 24px 48px rgba(0,0,0,0.12)',
+            }}>
+              {/* Header */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <h2 style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: '18px', color: '#1b1c19' }}>
+                  {lang === 'es' ? 'Editar Orden' : 'Edit Work Order'}
+                </h2>
+                <button onClick={handleCancelEdit} aria-label={lang === 'es' ? 'Cerrar' : 'Close'} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}>
+                  <X size={18} color="#757684" />
+                </button>
+              </div>
+
+              {/* Room # */}
+              <div>
+                <label style={{ fontSize: '12px', fontWeight: 600, color: '#454652', marginBottom: '6px', display: 'block', fontFamily: "'Inter', sans-serif" }}>
+                  {t('roomNumber', lang)}
+                </label>
+                <input
+                  type="text"
+                  value={editRoom}
+                  onChange={e => setEditRoom(e.target.value)}
+                  placeholder="e.g. 302"
+                  style={{
+                    width: '100%', padding: '12px 16px', fontSize: '14px',
+                    border: '1px solid rgba(197,197,212,0.3)', borderRadius: '12px',
+                    background: '#fff', color: '#1b1c19',
+                    fontFamily: "'JetBrains Mono', monospace",
+                    outline: 'none', transition: 'border 150ms',
+                  }}
+                />
+              </div>
+
+              {/* Description */}
+              <div>
+                <label style={{ fontSize: '12px', fontWeight: 600, color: '#454652', marginBottom: '6px', display: 'block', fontFamily: "'Inter', sans-serif" }}>
+                  {lang === 'es' ? 'Descripción' : 'Description'}
+                </label>
+                <textarea
+                  value={editDesc}
+                  onChange={e => setEditDesc(e.target.value)}
+                  rows={3}
+                  style={{
+                    width: '100%', padding: '12px 16px', fontSize: '14px',
+                    border: '1px solid rgba(197,197,212,0.3)', borderRadius: '12px',
+                    background: '#fff', color: '#1b1c19',
+                    fontFamily: "'Inter', sans-serif", resize: 'none',
+                    outline: 'none', transition: 'border 150ms',
+                  }}
+                />
+              </div>
+
+              {/* Severity */}
+              <div>
+                <label style={{ fontSize: '12px', fontWeight: 600, color: '#454652', marginBottom: '6px', display: 'block', fontFamily: "'Inter', sans-serif" }}>
+                  {t('severity', lang)}
+                </label>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  {(['low', 'medium', 'urgent'] as WorkOrderSeverity[]).map(sev => {
+                    const isSelected = editSeverity === sev;
+                    const pillColors: Record<WorkOrderSeverity, { bg: string; color: string }> = {
+                      low: { bg: '#eae8e3', color: '#454652' },
+                      medium: { bg: '#d3e4f8', color: '#506071' },
+                      urgent: { bg: '#ffdad6', color: '#93000a' },
+                    };
+                    return (
+                      <button
+                        key={sev}
+                        onClick={() => setEditSeverity(sev)}
+                        style={{
+                          flex: 1, padding: '10px', border: 'none', borderRadius: '12px',
+                          fontSize: '13px', fontWeight: 600, cursor: 'pointer',
+                          fontFamily: "'Inter', sans-serif",
+                          background: isSelected ? pillColors[sev].bg : '#f5f3ee',
+                          color: isSelected ? pillColors[sev].color : '#757684',
+                          outline: isSelected ? `2px solid ${pillColors[sev].color}` : 'none',
+                          transition: 'all 150ms',
+                        }}
+                      >
+                        {sevLabel(sev)}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Notes */}
+              <div>
+                <label style={{ fontSize: '12px', fontWeight: 600, color: '#454652', marginBottom: '6px', display: 'block', fontFamily: "'Inter', sans-serif" }}>
+                  {lang === 'es' ? 'Notas' : 'Notes'}
+                </label>
+                <textarea
+                  value={editNotes}
+                  onChange={e => setEditNotes(e.target.value)}
+                  rows={2}
+                  placeholder={lang === 'es' ? 'Opcional' : 'Optional'}
+                  style={{
+                    width: '100%', padding: '12px 16px', fontSize: '14px',
+                    border: '1px solid rgba(197,197,212,0.3)', borderRadius: '12px',
+                    background: '#fff', color: '#1b1c19',
+                    fontFamily: "'Inter', sans-serif", resize: 'none',
+                    outline: 'none', transition: 'border 150ms',
+                  }}
+                />
+              </div>
+
+              {/* Block Room — iOS-style slider toggle */}
+              <div
+                onClick={() => setEditBlockRoom(!editBlockRoom)}
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  padding: '12px 16px', borderRadius: '12px',
+                  border: editBlockRoom ? '2px solid #ba1a1a' : '1px solid rgba(197,197,212,0.3)',
+                  background: editBlockRoom ? '#ffdad6' : 'transparent',
+                  cursor: 'pointer', transition: 'all 150ms',
+                }}
+              >
+                <div>
+                  <p style={{ fontSize: '14px', fontWeight: 600, color: editBlockRoom ? '#93000a' : '#1b1c19', margin: 0, fontFamily: "'Inter', sans-serif" }}>
+                    {lang === 'es' ? 'Bloquear Habitación' : 'Block Room'}
+                  </p>
+                  <p style={{ fontSize: '12px', color: '#757684', marginTop: '2px', fontFamily: "'Inter', sans-serif" }}>
+                    {lang === 'es' ? 'No se puede rentar hasta resolver' : "Can't rent until resolved"}
+                  </p>
+                </div>
+                <div style={{
+                  width: '42px', height: '24px', borderRadius: '99px',
+                  background: editBlockRoom ? '#ba1a1a' : 'rgba(0,0,0,0.12)',
+                  position: 'relative', transition: 'background 150ms',
+                  flexShrink: 0,
+                }}>
+                  <div style={{
+                    width: '20px', height: '20px', borderRadius: '50%',
+                    background: '#fff', position: 'absolute', top: '2px',
+                    left: editBlockRoom ? '20px' : '2px',
+                    transition: 'left 150ms',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                  }} />
+                </div>
+              </div>
+
+              {order.source === 'ca_ooo' && (
+                <p style={{ fontSize: '11px', color: '#757684', fontStyle: 'italic', margin: 0, lineHeight: 1.4 }}>
+                  {lang === 'es'
+                    ? 'Sincronizado desde Choice Advantage — los cambios pueden sobrescribirse en la próxima sincronización.'
+                    : 'Synced from Choice Advantage — edits may be overwritten on next sync.'}
+                </p>
+              )}
+
+              {/* Save */}
+              <button
+                onClick={() => handleSaveEdit(order)}
+                disabled={!editDesc.trim()}
+                style={{
+                  width: '100%', padding: '14px', border: 'none',
+                  borderRadius: '12px', cursor: editDesc.trim() ? 'pointer' : 'not-allowed',
+                  background: editDesc.trim() ? '#364262' : '#eae8e3',
+                  color: editDesc.trim() ? '#fff' : '#757684',
+                  fontSize: '14px', fontWeight: 700, fontFamily: "'Inter', sans-serif",
+                  transition: 'all 150ms', minHeight: '48px',
+                }}
+              >
+                {lang === 'es' ? 'Guardar Cambios' : 'Save Changes'}
+              </button>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Add Landscaping Task Modal — Stitch Design ── */}
       {showLsModal && (
