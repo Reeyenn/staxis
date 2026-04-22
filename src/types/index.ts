@@ -308,6 +308,7 @@ export interface PMSSyncLog {
 
 export type WorkOrderStatus = 'submitted' | 'assigned' | 'in_progress' | 'resolved';
 export type WorkOrderSeverity = 'low' | 'medium' | 'urgent';
+export type WorkOrderSource = 'manual' | 'housekeeper' | 'ca_ooo';
 
 export interface WorkOrder {
   id: string;
@@ -323,6 +324,10 @@ export interface WorkOrder {
   photoUrl?: string;          // optional photo attachment
   notes?: string;             // manager notes
   blockedRoom?: boolean;      // true = room is blocked from being rented due to maintenance
+  source?: WorkOrderSource;   // 'ca_ooo' = auto-synced from Choice Advantage Out-of-Order list
+  caWorkOrderNumber?: string; // CA's stable work order number, used to dedup ca_ooo docs
+  caFromDate?: string;        // CA's "fromDate" string (e.g. "4/20/2026") for context
+  caToDate?: string;          // CA's "toDate" string
   createdAt: Date | null;
   updatedAt: Date | null;
   resolvedAt?: Date | null;

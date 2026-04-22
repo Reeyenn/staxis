@@ -37,6 +37,7 @@ const path = require('path');
 const fs = require('fs');
 const { runCSVScrape } = require('./csv-scraper');
 const { pullDashboardNumbers, ScraperError, ERROR_CODES } = require('./dashboard-pull');
+const { pullOOOWorkOrders } = require('./ooo-pull');
 const { runVercelWatchdog } = require('./vercel-watchdog');
 
 // ─── Config ────────────────────────────────────────────────────────────────
@@ -411,6 +412,52 @@ async function maybeRunDashboardPull(page, relogin) {
   return result;
 }
 
+// ─── OOO Work Order Sync (15-min cadence, piggybacks on dashboard tick) ────
+//
+// Mirrors CA's room-level Out-of-Order list into our own workOrders
+// collection so Maria sees rooms blocked by the front desk (deep clean, AC
+// broken, maintenance) alongside housekeeper-submitted tickets.
+//
+// Isolated from the dashboard pull in its own try/catch so a CA OOO outage
+// (or a Firestore write blip) can never take the dashboard numbers down.
+// Same cadence (15 min) — which means its own timestamp tracker so a
+// failure on one pull doesn't cost us a dashboard pull or vice versa.
+let lastOOOPullAt = 0;
+const OOO_INTERVAL_MS = 15 * 60 * 1000;
+
+async function maybeRunOOOPull(page, relogin) {
+  const hour = localHour();
+  if (hour < 5 || hour >= 23) return;
+
+  const now = Date.now();
+  if (now - lastOOOPullAt < OOO_INTERVAL_MS) return;
+
+  const config = {
+    USER_ID:     CONFIG.USER_ID,
+    PROPERTY_ID: CONFIG.PROPERTY_ID,
+  };
+
+  try {
+    await pullOOOWorkOrders(page, db, config, log);
+  } catch (err) {
+    const code = err instanceof ScraperError ? err.code : ERROR_CODES.UNKNOWN;
+    // Same narrow retry as dashboard: only re-login on session_expired.
+    if (code === ERROR_CODES.SESSION_EXPIRED) {
+      log(`OOO pull lost session — re-logging and retrying once...`);
+      try {
+        await relogin();
+        await pullOOOWorkOrders(page, db, config, log);
+      } catch (retryErr) {
+        log(`OOO pull retry FAILED: [${retryErr.code || 'unknown'}] ${retryErr.message}`);
+      }
+    } else {
+      log(`OOO pull error [${code}]: ${err.message}`);
+    }
+  }
+
+  lastOOOPullAt = now;
+}
+
 async function maybeRunCSVPull(page, relogin) {
   const hour = localHour();
   // 5am–10:59pm active window. Same as dashboard pulls — staff aren't
@@ -436,7 +483,7 @@ async function run() {
   log('=== HotelOps AI CSV Runner starting ===');
   log(`Property: ${CONFIG.PROPERTY_ID} | User: ${CONFIG.USER_ID}`);
   log(`Timezone: ${CONFIG.TIMEZONE} | Local hour: ${localHour()} | Today: ${todayISO()}`);
-  log(`Tick every ${CONFIG.TICK_MINUTES} min — CSV pulls hourly 5am–11pm, dashboard numbers every 15 min 5am–11pm`);
+  log(`Tick every ${CONFIG.TICK_MINUTES} min — CSV pulls hourly 5am–11pm, dashboard numbers + OOO work orders every 15 min 5am–11pm`);
 
   // Verify Firebase credentials BEFORE launching Playwright. If creds are
   // stale/revoked, crash loud now instead of writing garbage for hours.
@@ -487,6 +534,7 @@ async function run() {
       await writeHeartbeat();
       await maybeRunCSVPull(page, relogin);
       await maybeRunDashboardPull(page, relogin);
+      await maybeRunOOOPull(page, relogin);
       // Refresh session cookie so we stay logged in
       await context.storageState({ path: CONFIG.SESSION_FILE });
     } catch (err) {
