@@ -240,8 +240,12 @@ export function autoAssignRooms(
   if (available.length === 0) return {};
 
   const assignments: Record<string, string> = {};
-  const staffLoad: Record<string, { minutes: number; floors: Set<string> }> = {};
-  available.forEach(s => { staffLoad[s.id] = { minutes: 0, floors: new Set() }; });
+  // floorCount[staffId][floor] = rooms already assigned to them on that floor.
+  // Driving stickiness off a real count (not just a Set) means a person with
+  // 5 rooms on floor 2 outranks a person with 1 room on floor 2 — important
+  // when one person's filled their floor and others start picking it up.
+  const staffLoad: Record<string, { minutes: number; floors: Map<string, number> }> = {};
+  available.forEach(s => { staffLoad[s.id] = { minutes: 0, floors: new Map() }; });
 
   // Sort by floor first (proximity), then checkouts before stayovers, then room number
   const sortedRooms = [...rooms].sort((a, b) => {
@@ -253,6 +257,9 @@ export function autoAssignRooms(
     return a.number.localeCompare(b.number);
   });
 
+  // Track rooms we couldn't fit under the cap — surfaced as unassigned in the UI
+  // so Reeyen can add another housekeeper or manually stretch someone. Never
+  // pile over the cap silently — that's what produced 10h+ shifts in the past.
   for (const room of sortedRooms) {
     const floor = room.number.length >= 3 ? room.number[0] : '1';
     let baseMins: number;
@@ -265,22 +272,33 @@ export function autoAssignRooms(
     }
     const roomTime = baseMins + prepMins;
 
-    // Find staff who still have capacity
+    // HARD CAP: only consider staff that can take this room without going over
+    // shiftCap (default 7h). If no one has capacity, the room stays unassigned
+    // — NO fallback that silently overloads someone.
     const withCapacity = available.filter(s => staffLoad[s.id].minutes + roomTime <= shiftCap);
-    const pool = withCapacity.length > 0 ? withCapacity : available; // safety fallback
+    if (withCapacity.length === 0) continue; // leave in unassigned pool
 
-    // Prefer someone already on this floor
-    const sameFloor = pool.filter(s => staffLoad[s.id].floors.has(floor));
+    // Prefer whoever already owns the most rooms on this floor (stickiness =
+    // one person per floor when possible). Ties break on LEAST total load
+    // today — this spreads work evenly instead of piling onto one person.
+    let best: StaffMember | null = null;
+    let bestFloorCount = -1;
+    let bestLoad = Infinity;
+    for (const s of withCapacity) {
+      const fc = staffLoad[s.id].floors.get(floor) ?? 0;
+      const load = staffLoad[s.id].minutes;
+      if (fc > bestFloorCount || (fc === bestFloorCount && load < bestLoad)) {
+        bestFloorCount = fc;
+        bestLoad = load;
+        best = s;
+      }
+    }
+    if (!best) continue;
 
-    // From candidates, pick the MOST loaded (fill up before moving to next person)
-    const candidates = sameFloor.length > 0 ? sameFloor : pool;
-    const mostLoaded = candidates.reduce((best, s) =>
-      staffLoad[s.id].minutes > staffLoad[best.id].minutes ? s : best
-    );
-
-    assignments[room.id] = mostLoaded.id;
-    staffLoad[mostLoaded.id].minutes += roomTime;
-    staffLoad[mostLoaded.id].floors.add(floor);
+    assignments[room.id] = best.id;
+    staffLoad[best.id].minutes += roomTime;
+    const fmap = staffLoad[best.id].floors;
+    fmap.set(floor, (fmap.get(floor) ?? 0) + 1);
   }
 
   return assignments;

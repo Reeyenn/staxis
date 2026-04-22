@@ -896,15 +896,17 @@ function ScheduleSection() {
     for (const r of toAssign) {
       const f = getFloor(r.number);
       const mins = minsForRoom(r) + prepPerRoom;
-      // Prefer only staff who have room under the cap. If literally
-      // nobody fits, fall back to the full crew (better to assign than
-      // leave the room in the pool — cap breach shows up as Near Capacity).
+      // HARD CAP: only staff who have room under the cap are eligible. If
+      // nobody fits, the room stays unassigned — the "X rooms still need a
+      // housekeeper" banner surfaces it and Reeyen can add another person or
+      // manually stretch someone. Previous behavior fell back to the full
+      // crew here, which is what produced 10h+ shifts.
       const withCapacity = effectiveCrew.filter(s => (loadByStaff.get(s.id) ?? 0) + mins <= shiftLen);
-      const pool = withCapacity.length > 0 ? withCapacity : effectiveCrew;
+      if (withCapacity.length === 0) continue; // leave in unassigned pool
       let best: string | null = null;
       let bestFloorCount = -1;
       let bestLoad = Infinity;
-      for (const s of pool) {
+      for (const s of withCapacity) {
         const fc = floorCountByStaff.get(s.id)?.get(f) ?? 0;
         const load = loadByStaff.get(s.id) ?? 0;
         if (fc > bestFloorCount || (fc === bestFloorCount && load < bestLoad)) {
@@ -913,7 +915,7 @@ function ScheduleSection() {
           best = s.id;
         }
       }
-      if (!best) break;
+      if (!best) continue;
       next[r.id] = best;
       loadByStaff.set(best, (loadByStaff.get(best) ?? 0) + mins);
       const fmap = floorCountByStaff.get(best)!;
