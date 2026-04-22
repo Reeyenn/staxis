@@ -11,7 +11,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { InspectionsView } from '@/components/InspectionsView';
 import { timeAgo } from '@/lib/utils';
 import {
-  subscribeToWorkOrders, addWorkOrder, updateWorkOrder,
+  subscribeToWorkOrders, addWorkOrder, updateWorkOrder, deleteWorkOrder,
   subscribeToLandscapingTasks, addLandscapingTask, updateLandscapingTask, deleteLandscapingTask,
 } from '@/lib/firestore';
 import type { WorkOrder, WorkOrderSeverity, WorkOrderStatus, StaffMember, LandscapingTask, LandscapingSeason } from '@/types';
@@ -130,6 +130,15 @@ export default function MaintenancePage() {
   const [newDesc, setNewDesc] = useState('');
   const [newSeverity, setNewSeverity] = useState<WorkOrderSeverity>('medium');
   const [newBlockRoom, setNewBlockRoom] = useState(false);
+
+  // Inline-edit state — one order at a time. Fields mirror the create form
+  // so the same severity pills / block toggle logic works.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editRoom, setEditRoom] = useState('');
+  const [editDesc, setEditDesc] = useState('');
+  const [editSeverity, setEditSeverity] = useState<WorkOrderSeverity>('medium');
+  const [editNotes, setEditNotes] = useState('');
+  const [editBlockRoom, setEditBlockRoom] = useState(false);
 
   // Landscaping state
   const [lsTasks, setLsTasks] = useState<LandscapingTask[]>([]);
@@ -260,6 +269,51 @@ export default function MaintenancePage() {
       resolvedAt: new Date(),
     });
   }, [user, activePropertyId]);
+
+  // ─── Edit / delete handlers ──────────────────────────────────────────────
+
+  const handleBeginEdit = useCallback((order: WorkOrder) => {
+    setEditingId(order.id);
+    setEditRoom(order.roomNumber || '');
+    setEditDesc(order.description);
+    setEditSeverity(order.severity);
+    setEditNotes(order.notes || '');
+    setEditBlockRoom(!!order.blockedRoom);
+    setAssigningId(null); // close any open assign dropdown
+  }, []);
+
+  const handleCancelEdit = useCallback(() => {
+    setEditingId(null);
+  }, []);
+
+  const handleSaveEdit = useCallback(async (order: WorkOrder) => {
+    if (!user || !activePropertyId || !editDesc.trim()) return;
+    // NOTE: ca_ooo work orders are re-synced from Choice Advantage every 15
+    // min — description/severity/notes edits will be overwritten on the next
+    // scrape. That's by design (CA is source of truth). If Reeyen wants
+    // sticky edits on synced rows we'd need a `managerOverride` flag.
+    await updateWorkOrder(user.uid, activePropertyId, order.id, {
+      roomNumber:  editRoom.trim(),
+      description: editDesc.trim(),
+      severity:    editSeverity,
+      notes:       editNotes.trim() || '',
+      blockedRoom: editBlockRoom,
+    });
+    setEditingId(null);
+    setToast((lang === 'es' ? 'Actualizado' : 'Updated') + ' \u2713');
+  }, [user, activePropertyId, editRoom, editDesc, editSeverity, editNotes, editBlockRoom, lang]);
+
+  const handleDeleteOrder = useCallback(async (order: WorkOrder) => {
+    if (!user || !activePropertyId) return;
+    const confirmMsg = lang === 'es'
+      ? '¿Eliminar esta orden de trabajo? No se puede deshacer.'
+      : `Delete this work order? This can't be undone.`;
+    if (!window.confirm(confirmMsg)) return;
+    await deleteWorkOrder(user.uid, activePropertyId, order.id);
+    setExpandedId(null);
+    setEditingId(null);
+    setToast((lang === 'es' ? 'Eliminado' : 'Deleted') + ' \u2713');
+  }, [user, activePropertyId, lang]);
 
   // ─── Landscaping handlers ───────────────────────────────────────────────
 
@@ -579,106 +633,271 @@ export default function MaintenancePage() {
                         <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid rgba(197,197,212,0.2)', display: 'flex', flexDirection: 'column', gap: '12px' }}
                           onClick={e => e.stopPropagation()}
                         >
-                          {order.notes && (
-                            <div style={{
-                              background: 'rgba(245,243,238,0.4)', borderRadius: '12px',
-                              padding: '12px 16px',
-                            }}>
-                              <p style={{ fontSize: '14px', color: '#1b1c19', lineHeight: 1.6, fontStyle: 'italic', margin: 0 }}>
-                                &ldquo;{order.notes}&rdquo;
-                              </p>
-                            </div>
-                          )}
-                          <div style={{ fontSize: '12px', color: '#757684', display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                            {order.createdAt && <span>{lang === 'es' ? 'Creado' : 'Created'}: {formatShortDate(toJsDate(order.createdAt))}</span>}
-                            {order.updatedAt && <span>{lang === 'es' ? 'Actualizado' : 'Updated'}: {formatShortDate(toJsDate(order.updatedAt))}</span>}
-                            {order.resolvedAt && <span>{lang === 'es' ? 'Resuelto' : 'Resolved'}: {formatShortDate(toJsDate(order.resolvedAt))}</span>}
-                          </div>
+                          {editingId === order.id ? (
+                            /* ─── EDIT MODE ─────────────────────────────── */
+                            <>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                <label style={{ fontSize: '12px', fontWeight: 600, color: '#454652', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                                  {lang === 'es' ? 'Habitación' : 'Room'}
+                                </label>
+                                <input
+                                  type="text"
+                                  value={editRoom}
+                                  onChange={e => setEditRoom(e.target.value)}
+                                  placeholder={lang === 'es' ? 'Número de habitación' : 'Room number'}
+                                  style={{
+                                    padding: '10px 14px', fontSize: '14px',
+                                    border: '1px solid rgba(197,197,212,0.4)', borderRadius: '10px',
+                                    fontFamily: "'Inter', sans-serif", color: '#1b1c19',
+                                    background: '#fff', outline: 'none',
+                                  }}
+                                />
 
-                          {/* Action buttons */}
-                          {order.status === 'submitted' && (
-                            <div style={{ position: 'relative' }}>
-                              <button
-                                onClick={() => setAssigningId(assigningId === order.id ? null : order.id)}
-                                style={{
-                                  width: '100%', padding: '12px', fontSize: '14px', fontWeight: 600,
-                                  background: '#364262', color: '#fff', border: 'none',
-                                  borderRadius: '12px', cursor: 'pointer', minHeight: '44px',
-                                  fontFamily: "'Inter', sans-serif",
-                                  transition: 'background 150ms',
-                                }}
-                              >
-                                {t('assign', lang)}
-                              </button>
-                              {assigningId === order.id && (
-                                <div style={{
-                                  marginTop: '8px', borderRadius: '12px',
-                                  border: '1px solid rgba(197,197,212,0.2)', background: '#fff',
-                                  maxHeight: '180px', overflowY: 'auto',
-                                  boxShadow: '0 4px 16px rgba(0,0,0,0.08)',
-                                }}>
-                                  {assignableStaff.length === 0 ? (
-                                    <p style={{ padding: '16px', fontSize: '13px', color: '#757684', textAlign: 'center' }}>
-                                      {t('noStaff', lang)}
-                                    </p>
-                                  ) : (
-                                    assignableStaff.map(member => (
+                                <label style={{ fontSize: '12px', fontWeight: 600, color: '#454652', textTransform: 'uppercase', letterSpacing: '0.04em', marginTop: '6px' }}>
+                                  {lang === 'es' ? 'Descripción' : 'Description'}
+                                </label>
+                                <textarea
+                                  value={editDesc}
+                                  onChange={e => setEditDesc(e.target.value)}
+                                  rows={2}
+                                  style={{
+                                    padding: '10px 14px', fontSize: '14px',
+                                    border: '1px solid rgba(197,197,212,0.4)', borderRadius: '10px',
+                                    fontFamily: "'Inter', sans-serif", color: '#1b1c19',
+                                    background: '#fff', outline: 'none', resize: 'vertical',
+                                  }}
+                                />
+
+                                <label style={{ fontSize: '12px', fontWeight: 600, color: '#454652', textTransform: 'uppercase', letterSpacing: '0.04em', marginTop: '6px' }}>
+                                  {lang === 'es' ? 'Severidad' : 'Severity'}
+                                </label>
+                                <div style={{ display: 'flex', gap: '8px' }}>
+                                  {(['low', 'medium', 'urgent'] as WorkOrderSeverity[]).map(sev => {
+                                    const active = editSeverity === sev;
+                                    return (
                                       <button
-                                        key={member.id}
-                                        onClick={() => handleAssign(order, member)}
+                                        key={sev}
+                                        type="button"
+                                        onClick={() => setEditSeverity(sev)}
                                         style={{
-                                          width: '100%', padding: '12px 16px', border: 'none',
-                                          background: 'transparent', cursor: 'pointer',
-                                          textAlign: 'left', fontSize: '14px', color: '#1b1c19',
-                                          borderBottom: '1px solid rgba(197,197,212,0.15)',
-                                          minHeight: '44px', fontFamily: "'Inter', sans-serif",
-                                          transition: 'background 100ms',
+                                          flex: 1, padding: '8px 12px', fontSize: '12px', fontWeight: 600,
+                                          textTransform: 'uppercase', letterSpacing: '0.04em',
+                                          borderRadius: '9999px', cursor: 'pointer',
+                                          border: active ? '1px solid #364262' : '1px solid rgba(197,197,212,0.3)',
+                                          background: active ? '#364262' : 'transparent',
+                                          color: active ? '#fff' : '#454652',
+                                          fontFamily: "'Inter', sans-serif",
+                                          transition: 'all 150ms',
                                         }}
-                                        onMouseEnter={e => { (e.target as HTMLElement).style.background = 'rgba(218,226,255,0.3)'; }}
-                                        onMouseLeave={e => { (e.target as HTMLElement).style.background = 'transparent'; }}
                                       >
-                                        {member.name}
-                                        {member.department && (
-                                          <span style={{ fontSize: '12px', color: '#757684', marginLeft: '8px' }}>
-                                            {member.department}
-                                          </span>
-                                        )}
+                                        {sevLabel(sev)}
                                       </button>
-                                    ))
+                                    );
+                                  })}
+                                </div>
+
+                                <label style={{ fontSize: '12px', fontWeight: 600, color: '#454652', textTransform: 'uppercase', letterSpacing: '0.04em', marginTop: '6px' }}>
+                                  {lang === 'es' ? 'Notas' : 'Notes'}
+                                </label>
+                                <textarea
+                                  value={editNotes}
+                                  onChange={e => setEditNotes(e.target.value)}
+                                  rows={2}
+                                  placeholder={lang === 'es' ? 'Opcional' : 'Optional'}
+                                  style={{
+                                    padding: '10px 14px', fontSize: '14px',
+                                    border: '1px solid rgba(197,197,212,0.4)', borderRadius: '10px',
+                                    fontFamily: "'Inter', sans-serif", color: '#1b1c19',
+                                    background: '#fff', outline: 'none', resize: 'vertical',
+                                  }}
+                                />
+
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px', cursor: 'pointer' }}>
+                                  <input
+                                    type="checkbox"
+                                    checked={editBlockRoom}
+                                    onChange={e => setEditBlockRoom(e.target.checked)}
+                                    style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+                                  />
+                                  <span style={{ fontSize: '13px', color: '#1b1c19' }}>
+                                    {lang === 'es' ? 'Bloquear habitación de renta' : 'Block room from rental'}
+                                  </span>
+                                </label>
+                              </div>
+
+                              {/* Save / Cancel */}
+                              <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                                <button
+                                  onClick={handleCancelEdit}
+                                  style={{
+                                    flex: 1, padding: '12px', fontSize: '14px', fontWeight: 600,
+                                    background: 'transparent', color: '#454652',
+                                    border: '1px solid rgba(197,197,212,0.3)',
+                                    borderRadius: '12px', cursor: 'pointer', minHeight: '44px',
+                                    fontFamily: "'Inter', sans-serif",
+                                  }}
+                                >
+                                  {lang === 'es' ? 'Cancelar' : 'Cancel'}
+                                </button>
+                                <button
+                                  onClick={() => handleSaveEdit(order)}
+                                  disabled={!editDesc.trim()}
+                                  style={{
+                                    flex: 1, padding: '12px', fontSize: '14px', fontWeight: 600,
+                                    background: editDesc.trim() ? '#364262' : 'rgba(54,66,98,0.4)',
+                                    color: '#fff', border: 'none',
+                                    borderRadius: '12px', cursor: editDesc.trim() ? 'pointer' : 'not-allowed',
+                                    minHeight: '44px', fontFamily: "'Inter', sans-serif",
+                                  }}
+                                >
+                                  {lang === 'es' ? 'Guardar' : 'Save'}
+                                </button>
+                              </div>
+
+                              {order.source === 'ca_ooo' && (
+                                <p style={{ fontSize: '11px', color: '#757684', fontStyle: 'italic', margin: '4px 0 0', lineHeight: 1.4 }}>
+                                  {lang === 'es'
+                                    ? 'Sincronizado desde Choice Advantage — los cambios pueden sobrescribirse en la próxima sincronización.'
+                                    : 'Synced from Choice Advantage — edits may be overwritten on next sync.'}
+                                </p>
+                              )}
+                            </>
+                          ) : (
+                            /* ─── VIEW MODE ─────────────────────────────── */
+                            <>
+                              {order.notes && (
+                                <div style={{
+                                  background: 'rgba(245,243,238,0.4)', borderRadius: '12px',
+                                  padding: '12px 16px',
+                                }}>
+                                  <p style={{ fontSize: '14px', color: '#1b1c19', lineHeight: 1.6, fontStyle: 'italic', margin: 0 }}>
+                                    &ldquo;{order.notes}&rdquo;
+                                  </p>
+                                </div>
+                              )}
+                              <div style={{ fontSize: '12px', color: '#757684', display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                                {order.createdAt && <span>{lang === 'es' ? 'Creado' : 'Created'}: {formatShortDate(toJsDate(order.createdAt))}</span>}
+                                {order.updatedAt && <span>{lang === 'es' ? 'Actualizado' : 'Updated'}: {formatShortDate(toJsDate(order.updatedAt))}</span>}
+                                {order.resolvedAt && <span>{lang === 'es' ? 'Resuelto' : 'Resolved'}: {formatShortDate(toJsDate(order.resolvedAt))}</span>}
+                              </div>
+
+                              {/* Primary status action button */}
+                              {order.status === 'submitted' && (
+                                <div style={{ position: 'relative' }}>
+                                  <button
+                                    onClick={() => setAssigningId(assigningId === order.id ? null : order.id)}
+                                    style={{
+                                      width: '100%', padding: '12px', fontSize: '14px', fontWeight: 600,
+                                      background: '#364262', color: '#fff', border: 'none',
+                                      borderRadius: '12px', cursor: 'pointer', minHeight: '44px',
+                                      fontFamily: "'Inter', sans-serif",
+                                      transition: 'background 150ms',
+                                    }}
+                                  >
+                                    {t('assign', lang)}
+                                  </button>
+                                  {assigningId === order.id && (
+                                    <div style={{
+                                      marginTop: '8px', borderRadius: '12px',
+                                      border: '1px solid rgba(197,197,212,0.2)', background: '#fff',
+                                      maxHeight: '180px', overflowY: 'auto',
+                                      boxShadow: '0 4px 16px rgba(0,0,0,0.08)',
+                                    }}>
+                                      {assignableStaff.length === 0 ? (
+                                        <p style={{ padding: '16px', fontSize: '13px', color: '#757684', textAlign: 'center' }}>
+                                          {t('noStaff', lang)}
+                                        </p>
+                                      ) : (
+                                        assignableStaff.map(member => (
+                                          <button
+                                            key={member.id}
+                                            onClick={() => handleAssign(order, member)}
+                                            style={{
+                                              width: '100%', padding: '12px 16px', border: 'none',
+                                              background: 'transparent', cursor: 'pointer',
+                                              textAlign: 'left', fontSize: '14px', color: '#1b1c19',
+                                              borderBottom: '1px solid rgba(197,197,212,0.15)',
+                                              minHeight: '44px', fontFamily: "'Inter', sans-serif",
+                                              transition: 'background 100ms',
+                                            }}
+                                            onMouseEnter={e => { (e.target as HTMLElement).style.background = 'rgba(218,226,255,0.3)'; }}
+                                            onMouseLeave={e => { (e.target as HTMLElement).style.background = 'transparent'; }}
+                                          >
+                                            {member.name}
+                                            {member.department && (
+                                              <span style={{ fontSize: '12px', color: '#757684', marginLeft: '8px' }}>
+                                                {member.department}
+                                              </span>
+                                            )}
+                                          </button>
+                                        ))
+                                      )}
+                                    </div>
                                   )}
                                 </div>
                               )}
-                            </div>
-                          )}
 
-                          {order.status === 'assigned' && (
-                            <button
-                              onClick={() => handleStartWork(order)}
-                              style={{
-                                width: '100%', padding: '12px', fontSize: '14px', fontWeight: 600,
-                                background: 'rgba(0,101,101,0.08)', color: '#006565', border: 'none',
-                                borderRadius: '12px', cursor: 'pointer', minHeight: '44px',
-                                fontFamily: "'Inter', sans-serif",
-                                transition: 'background 150ms',
-                              }}
-                            >
-                              {t('startWork', lang)}
-                            </button>
-                          )}
+                              {order.status === 'assigned' && (
+                                <button
+                                  onClick={() => handleStartWork(order)}
+                                  style={{
+                                    width: '100%', padding: '12px', fontSize: '14px', fontWeight: 600,
+                                    background: 'rgba(0,101,101,0.08)', color: '#006565', border: 'none',
+                                    borderRadius: '12px', cursor: 'pointer', minHeight: '44px',
+                                    fontFamily: "'Inter', sans-serif",
+                                    transition: 'background 150ms',
+                                  }}
+                                >
+                                  {t('startWork', lang)}
+                                </button>
+                              )}
 
-                          {order.status === 'in_progress' && (
-                            <button
-                              onClick={() => handleResolve(order)}
-                              style={{
-                                width: '100%', padding: '12px', fontSize: '14px', fontWeight: 600,
-                                background: 'rgba(34,197,94,0.08)', color: '#16a34a', border: 'none',
-                                borderRadius: '12px', cursor: 'pointer', minHeight: '44px',
-                                fontFamily: "'Inter', sans-serif",
-                                transition: 'background 150ms',
-                              }}
-                            >
-                              {t('markResolved', lang)}
-                            </button>
+                              {order.status === 'in_progress' && (
+                                <button
+                                  onClick={() => handleResolve(order)}
+                                  style={{
+                                    width: '100%', padding: '12px', fontSize: '14px', fontWeight: 600,
+                                    background: 'rgba(34,197,94,0.08)', color: '#16a34a', border: 'none',
+                                    borderRadius: '12px', cursor: 'pointer', minHeight: '44px',
+                                    fontFamily: "'Inter', sans-serif",
+                                    transition: 'background 150ms',
+                                  }}
+                                >
+                                  {t('markResolved', lang)}
+                                </button>
+                              )}
+
+                              {/* Edit / delete — secondary row, visible in every status */}
+                              <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                                <button
+                                  onClick={() => handleBeginEdit(order)}
+                                  style={{
+                                    flex: 1, padding: '10px', fontSize: '13px', fontWeight: 500,
+                                    background: 'transparent', color: '#454652',
+                                    border: '1px solid rgba(197,197,212,0.3)',
+                                    borderRadius: '10px', cursor: 'pointer', minHeight: '40px',
+                                    fontFamily: "'Inter', sans-serif",
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                                  }}
+                                >
+                                  {lang === 'es' ? 'Editar' : 'Edit'}
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteOrder(order)}
+                                  style={{
+                                    flex: 1, padding: '10px', fontSize: '13px', fontWeight: 500,
+                                    background: 'transparent', color: '#ba1a1a',
+                                    border: '1px solid rgba(186,26,26,0.2)',
+                                    borderRadius: '10px', cursor: 'pointer', minHeight: '40px',
+                                    fontFamily: "'Inter', sans-serif",
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                                  }}
+                                >
+                                  <Trash2 size={14} />
+                                  {lang === 'es' ? 'Eliminar' : 'Delete'}
+                                </button>
+                              </div>
+                            </>
                           )}
                         </div>
                       )}
