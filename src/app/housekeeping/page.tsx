@@ -414,6 +414,10 @@ function ScheduleSection() {
   // Refs used by the hydration flow below (declared early so useEffects can flip them)
   const userEditedCrew = useRef(false);
   const manuallyAdded = useRef<Set<string>>(new Set());
+  // Room IDs that Maria explicitly dragged onto a specific HK. Auto Assign
+  // treats these as "preserved" — never redistributes them. Drag to
+  // __unassigned__ clears the flag (she's un-pinning it).
+  const manuallyAssignedRooms = useRef<Set<string>>(new Set());
   const hasInitialAssign = useRef(false);
 
   // Swap dropdown
@@ -619,15 +623,23 @@ function ScheduleSection() {
     return s;
   }, [workOrders]);
 
-  // workShiftRooms = shiftRooms minus anything currently blocked. Used for all
-  // operational math on this page. shiftRooms (raw CA snapshot) is preserved
-  // for the csvRoomSnapshot so the diff-on-refresh logic still compares apples
-  // to apples with the next CA pull.
+  // workShiftRooms = shiftRooms minus anything Maria can't actually put
+  // on someone's plate:
+  //   1. Blocked (OOO / maintenance) — room is down, nobody enters.
+  //   2. DND — guest flagged "do not disturb" ahead of time (e.g. late
+  //      sleeper, overnight shift worker). HK can't enter until the flag
+  //      comes off, so it shouldn't eat crew capacity at schedule time.
+  //      When the HK flips DND off from their phone mid-day, the room
+  //      re-appears in the next refresh and gets manually dragged in.
+  // shiftRooms (raw CA snapshot) is preserved for the csvRoomSnapshot so
+  // the diff-on-refresh logic still compares apples to apples with the
+  // next CA pull.
   const workShiftRooms = useMemo(
-    () => shiftRooms.filter(r => !blockedRoomNumbers.has(r.number)),
+    () => shiftRooms.filter(r => !blockedRoomNumbers.has(r.number) && !r.isDnd),
     [shiftRooms, blockedRoomNumbers]
   );
-  const blockedCount = shiftRooms.length - workShiftRooms.length;
+  const blockedCount = shiftRooms.filter(r => blockedRoomNumbers.has(r.number)).length;
+  const dndCount = shiftRooms.filter(r => r.isDnd && !blockedRoomNumbers.has(r.number)).length;
 
   const checkouts = workShiftRooms.filter(r => r.type === 'checkout').length;
   const stayovers = workShiftRooms.filter(r => r.type === 'stayover').length;
@@ -888,9 +900,20 @@ function ScheduleSection() {
   const handleAutoRecommend = () => {
     const MIN_WORTHWHILE_MINUTES = 120; // 2h — anything less gets consolidated
 
-    // Preserved rooms = anything a housekeeper already started / finished.
-    // We never move these — even on a clean-slate pass.
-    const isPreserved = (r: Room) => r.status !== 'dirty';
+    // Preserved rooms — we never move these on a clean-slate pass:
+    //   1. Status !== 'dirty' → HK already started, finished, or been
+    //      signed off. Pulling it back is chaos.
+    //   2. Maria manually dragged this room onto a specific HK. She
+    //      overrode the algorithm deliberately, so respect it until she
+    //      un-pins by dragging back to Unassigned.
+    // Still-unassigned rooms with a manual pin (shouldn't happen, but
+    // defensive) get the pin cleared and treated as redistributable.
+    const isPinned = (r: Room) => {
+      if (!manuallyAssignedRooms.current.has(r.id)) return false;
+      const owner = assignments[r.id];
+      return !!owner; // only honor pin if there's an actual owner
+    };
+    const isPreserved = (r: Room) => r.status !== 'dirty' || isPinned(r);
     const preservedRooms = assignableRooms.filter(isPreserved);
     const redistributableRooms = assignableRooms.filter(r => !isPreserved(r));
 
@@ -929,8 +952,19 @@ function ScheduleSection() {
       fmap.set(f, (fmap.get(f) ?? 0) + 1);
     }
 
-    // ── Step 3: sort redistributable rooms by floor, then checkouts first ──
+    // ── Step 3: sort redistributable rooms ──
+    // Order:
+    //   1. VIP rooms first — Maria wants GM's friend's suite done ASAP.
+    //   2. Early-arrival rooms next — guest checking in at noon gets
+    //      their room turned first.
+    //   3. Then floor (so stickiness clusters floors onto one HK).
+    //   4. Then checkouts before stayovers within a floor.
+    //   5. Then room number.
+    const PRI_RANK: Record<string, number> = { vip: 0, early: 1, standard: 2 };
     const toAssign = [...redistributableRooms].sort((a, b) => {
+      const pA = PRI_RANK[a.priority ?? 'standard'] ?? 2;
+      const pB = PRI_RANK[b.priority ?? 'standard'] ?? 2;
+      if (pA !== pB) return pA - pB;
       const fA = getFloor(a.number);
       const fB = getFloor(b.number);
       if (fA !== fB) return fA < fB ? -1 : 1;
@@ -979,6 +1013,12 @@ function ScheduleSection() {
       if (!who) continue;
       preservedByStaff.set(who, (preservedByStaff.get(who) ?? 0) + 1);
     }
+    // Also don't let consolidation move manually-pinned rooms off their
+    // HK — they were placed there intentionally.
+    const pinnedSet = new Set<string>();
+    for (const r of assignableRooms) {
+      if (isPinned(r)) pinnedSet.add(r.id);
+    }
 
     // Iterate repeatedly: moving rooms can push another HK below the
     // threshold, or free capacity on the recipient. Cap at crew.length
@@ -990,8 +1030,11 @@ function ScheduleSection() {
         if (giverLoad >= MIN_WORTHWHILE_MINUTES) continue;
         if (giverLoad === 0) continue; // nothing to move — will be pruned
         if ((preservedByStaff.get(giver.id) ?? 0) > 0) continue; // don't disturb in-progress
-        // Find every redistributable room currently assigned to giver.
-        const giverRooms = redistributableRooms.filter(r => next[r.id] === giver.id);
+        // Find every redistributable, non-pinned room currently assigned
+        // to giver. (Pinned rooms survive consolidation too.)
+        const giverRooms = redistributableRooms.filter(r =>
+          next[r.id] === giver.id && !pinnedSet.has(r.id)
+        );
         if (giverRooms.length === 0) continue;
         // Try to move each room to another HK under cap. Sort smallest
         // rooms first so if some fit and some don't, we at least offload
@@ -1072,7 +1115,9 @@ function ScheduleSection() {
     // anyone is still over cap (shouldn't happen with hard cap, but a
     // safety signal for dev).
     const stillUnassigned = redistributableRooms.filter(r => !next[r.id]).length;
-    const overCap = effectiveCrew.filter(s => (loadByStaff.get(s.id) ?? 0) > shiftLen).length;
+    const overCapList = effectiveCrew
+      .filter(s => (loadByStaff.get(s.id) ?? 0) > shiftLen)
+      .map(s => s.name.split(' ')[0]); // first name is enough for a toast
 
     const parts: string[] = [];
     if (additions.length > 0) {
@@ -1090,10 +1135,12 @@ function ScheduleSection() {
         ? `${stillUnassigned} sin asignar (añade personal)`
         : `${stillUnassigned} unassigned (add staff)`);
     }
-    if (overCap > 0) {
+    if (overCapList.length > 0) {
+      // Hard cap should prevent this. If it fires, a pinned room pushed
+      // someone over — show who so Maria can un-pin or stretch manually.
       parts.push(lang === 'es'
-        ? `⚠︎ ${overCap} sobre el límite`
-        : `⚠︎ ${overCap} over cap`);
+        ? `⚠︎ sobre el límite: ${overCapList.join(', ')}`
+        : `⚠︎ over cap: ${overCapList.join(', ')}`);
     }
     const toastMsg = parts.length > 0
       ? (lang === 'es'
@@ -1259,14 +1306,19 @@ function ScheduleSection() {
         if (prev?.dropTarget && prev.roomId) {
           const fromStaffId = assignments[prev.roomId];
           if (prev.dropTarget === '__unassigned__') {
-            // Move to unassigned
+            // Move to unassigned — also un-pin any manual assignment
+            // flag, so Auto Assign is free to place it.
             if (fromStaffId) {
               setAssignments(a => { const updated = { ...a }; delete updated[prev.roomId]; return updated; });
+              manuallyAssignedRooms.current.delete(prev.roomId);
               const fromName = selectedCrew.find(s => s.id === fromStaffId)?.name ?? '?';
               showMoveToast(lang === 'es' ? `${prev.roomNumber} movida de ${fromName} a Sin Asignar` : `Moved ${prev.roomNumber} from ${fromName} to Unassigned`);
             }
           } else if (fromStaffId !== prev.dropTarget) {
             setAssignments(a => ({ ...a, [prev.roomId]: prev.dropTarget! }));
+            // Maria explicitly placed this room. Pin it so the next
+            // Auto Assign doesn't yank it back for load-balancing.
+            manuallyAssignedRooms.current.add(prev.roomId);
             const fromName = fromStaffId ? (selectedCrew.find(s => s.id === fromStaffId)?.name ?? '?') : (lang === 'es' ? 'Sin Asignar' : 'Unassigned');
             const toName = selectedCrew.find(s => s.id === prev.dropTarget)?.name ?? '?';
             showMoveToast(lang === 'es' ? `${prev.roomNumber} movida de ${fromName} a ${toName}` : `Moved ${prev.roomNumber} from ${fromName} to ${toName}`);
@@ -1898,14 +1950,30 @@ function ScheduleSection() {
               const isDropHover = dragState?.dropTarget === member.id && dragState?.roomId && assignments[dragState.roomId] !== member.id;
               const coCount = memberRooms.filter(r => r.type === 'checkout').length;
               const soCount = memberRooms.length - coCount;
-              const isNearCapacity = mins > shiftLen * 0.85;
+              // Three-state capacity gauge so Maria can see at a glance
+              // who's stretched. Over cap should be impossible via Auto
+              // Assign (hard cap), but can still happen if a room was
+              // manually dragged onto someone already at 6h 55m.
+              const isOverCap     = mins > shiftLen;
+              const isNearCapacity = !isOverCap && mins > shiftLen * 0.85;
               const statusLabel = memberRooms.length === 0
                 ? (lang === 'es' ? 'Disponible' : 'Available')
-                : isNearCapacity
-                  ? (lang === 'es' ? 'Casi lleno' : 'Near Capacity')
-                  : (lang === 'es' ? 'Asignado' : 'Assigned');
-              const statusBg = memberRooms.length === 0 ? '#d3e4f8' : isNearCapacity ? '#ffdad6' : '#eae8e3';
-              const statusColor = memberRooms.length === 0 ? '#0c1d2b' : isNearCapacity ? '#93000a' : '#454652';
+                : isOverCap
+                  ? (lang === 'es' ? 'Sobre el límite' : 'Over Cap')
+                  : isNearCapacity
+                    ? (lang === 'es' ? 'Casi lleno' : 'Near Capacity')
+                    : (lang === 'es' ? 'Asignado' : 'Assigned');
+              // Over cap = deep red. Near = amber. Assigned = neutral.
+              const statusBg = memberRooms.length === 0
+                ? '#d3e4f8'
+                : isOverCap ? '#ffdad6'
+                : isNearCapacity ? '#fef3c7'
+                : '#eae8e3';
+              const statusColor = memberRooms.length === 0
+                ? '#0c1d2b'
+                : isOverCap ? '#7f1d1d'
+                : isNearCapacity ? '#92400e'
+                : '#454652';
 
               // The badge next to each crew member's name is simple now:
               //   - sent         → "Link Sent" (green)
@@ -1966,7 +2034,11 @@ function ScheduleSection() {
                       <div style={{
                         position: 'absolute', bottom: 0, right: 0,
                         width: '16px', height: '16px', borderRadius: '50%',
-                        background: memberRooms.length === 0 ? '#22c55e' : isNearCapacity ? '#ef4444' : '#f59e0b',
+                        background: memberRooms.length === 0
+                          ? '#22c55e'
+                          : isOverCap ? '#dc2626'
+                          : isNearCapacity ? '#f59e0b'
+                          : '#0ea5e9',
                         border: '4px solid #fff',
                       }} />
                     </div>
@@ -2105,7 +2177,8 @@ function ScheduleSection() {
                       </p>
                       <p style={{
                         fontFamily: 'var(--font-mono)', fontSize: '20px', fontWeight: 500,
-                        color: isNearCapacity ? '#ba1a1a' : '#364262', margin: 0,
+                        color: isOverCap ? '#7f1d1d' : isNearCapacity ? '#b45309' : '#364262',
+                        margin: 0,
                       }}>
                         {timeLabel}
                       </p>
