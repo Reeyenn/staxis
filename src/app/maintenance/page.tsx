@@ -14,7 +14,7 @@ import {
   subscribeToWorkOrders, addWorkOrder, updateWorkOrder, deleteWorkOrder,
   subscribeToLandscapingTasks, addLandscapingTask, updateLandscapingTask, deleteLandscapingTask,
 } from '@/lib/firestore';
-import type { WorkOrder, WorkOrderSeverity, WorkOrderStatus, StaffMember, LandscapingTask, LandscapingSeason } from '@/types';
+import type { WorkOrder, WorkOrderSeverity, WorkOrderStatus, LandscapingTask, LandscapingSeason } from '@/types';
 import {
   Plus, X, Trash2, Wrench, CheckCircle2, Check, Clock, ChevronDown, ChevronUp,
   TreePine, Leaf, Sun, Snowflake, Flower2,
@@ -119,9 +119,7 @@ export default function MaintenancePage() {
   }, []);
   const [orders, setOrders] = useState<WorkOrder[]>([]);
   const [filter, setFilter] = useState<FilterKey>('all');
-  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [assigningId, setAssigningId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -247,16 +245,6 @@ export default function MaintenancePage() {
     }
   }, [user, activePropertyId, newRoom, newDesc, newSeverity, submitting, lang]);
 
-  const handleAssign = useCallback(async (order: WorkOrder, member: StaffMember) => {
-    if (!user || !activePropertyId) return;
-    await updateWorkOrder(user.uid, activePropertyId, order.id, {
-      status: 'assigned',
-      assignedTo: member.id,
-      assignedName: member.name,
-    });
-    setAssigningId(null);
-  }, [user, activePropertyId]);
-
   const handleStartWork = useCallback(async (order: WorkOrder) => {
     if (!user || !activePropertyId) return;
     await updateWorkOrder(user.uid, activePropertyId, order.id, { status: 'in_progress' });
@@ -279,7 +267,6 @@ export default function MaintenancePage() {
     setEditSeverity(order.severity);
     setEditNotes(order.notes || '');
     setEditBlockRoom(!!order.blockedRoom);
-    setAssigningId(null); // close any open assign dropdown
   }, []);
 
   const handleCancelEdit = useCallback(() => {
@@ -310,7 +297,6 @@ export default function MaintenancePage() {
       : `Delete this work order? This can't be undone.`;
     if (!window.confirm(confirmMsg)) return;
     await deleteWorkOrder(user.uid, activePropertyId, order.id);
-    setExpandedId(null);
     setEditingId(null);
     setToast((lang === 'es' ? 'Eliminado' : 'Deleted') + ' \u2713');
   }, [user, activePropertyId, lang]);
@@ -403,8 +389,6 @@ export default function MaintenancePage() {
     return map[s];
   };
 
-  const maintenanceStaff = staff.filter(s => s.department === 'maintenance' && s.isActive !== false);
-  const assignableStaff = maintenanceStaff.length > 0 ? maintenanceStaff : staff.filter(s => s.isActive !== false);
 
   // ─── AI Insight computation ─────────────────────────────────────────────
   const aiInsightText = (() => {
@@ -552,7 +536,6 @@ export default function MaintenancePage() {
                 </div>
               ) : (
                 filteredOrders.map(order => {
-                  const isExpanded = expandedId === order.id;
                   const isUrgent = order.severity === 'urgent';
 
                   const sevPillStyle: Record<WorkOrderSeverity, { bg: string; color: string }> = {
@@ -579,7 +562,7 @@ export default function MaintenancePage() {
                         cursor: 'pointer',
                         transition: 'all 200ms cubic-bezier(0.2,0,0,1)',
                       }}
-                      onClick={() => setExpandedId(isExpanded ? null : order.id)}
+                      onClick={() => handleBeginEdit(order)}
                     >
                       {/* Top row: room number + title + severity pill */}
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '2px' }}>
@@ -591,7 +574,7 @@ export default function MaintenancePage() {
                           )}
                           <div>
                             <h3 style={{ fontFamily: "'Inter', sans-serif", fontSize: '16px', fontWeight: 600, color: '#1b1c19', lineHeight: 1.3, margin: 0 }}>
-                              {order.description.length > 40 && !isExpanded ? order.description.slice(0, 40) + '…' : order.description}
+                              {order.description.length > 40 ? order.description.slice(0, 40) + '…' : order.description}
                             </h3>
                             <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#454652', margin: '2px 0 0' }}>
                               {lang === 'es' ? 'Reportado' : 'Reported'} {timeAgo(toJsDate(order.createdAt))} {order.submittedByName ? `${lang === 'es' ? 'por' : 'by'} ${order.submittedByName}` : ''}
@@ -639,8 +622,8 @@ export default function MaintenancePage() {
                         </div>
                       )}
 
-                      {/* Notes quote block */}
-                      {order.notes && !isExpanded && (
+                      {/* Notes preview */}
+                      {order.notes && (
                         <div style={{
                           background: 'rgba(245,243,238,0.4)', borderRadius: '12px',
                           padding: '12px 16px', marginTop: '16px',
@@ -648,150 +631,6 @@ export default function MaintenancePage() {
                           <p style={{ fontSize: '14px', color: '#1b1c19', lineHeight: 1.6, fontStyle: 'italic', margin: 0 }}>
                             &ldquo;{order.notes}&rdquo;
                           </p>
-                        </div>
-                      )}
-
-                      {/* Expanded details */}
-                      {isExpanded && (
-                        <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid rgba(197,197,212,0.2)', display: 'flex', flexDirection: 'column', gap: '12px' }}
-                          onClick={e => e.stopPropagation()}
-                        >
-                          {/* View mode — edit flow opens a centered modal, handled
-                              at the page root. */}
-                          <>
-                              {order.notes && (
-                                <div style={{
-                                  background: 'rgba(245,243,238,0.4)', borderRadius: '12px',
-                                  padding: '12px 16px',
-                                }}>
-                                  <p style={{ fontSize: '14px', color: '#1b1c19', lineHeight: 1.6, fontStyle: 'italic', margin: 0 }}>
-                                    &ldquo;{order.notes}&rdquo;
-                                  </p>
-                                </div>
-                              )}
-                              <div style={{ fontSize: '12px', color: '#757684', display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                                {order.createdAt && <span>{lang === 'es' ? 'Creado' : 'Created'}: {formatShortDate(toJsDate(order.createdAt))}</span>}
-                                {order.updatedAt && <span>{lang === 'es' ? 'Actualizado' : 'Updated'}: {formatShortDate(toJsDate(order.updatedAt))}</span>}
-                                {order.resolvedAt && <span>{lang === 'es' ? 'Resuelto' : 'Resolved'}: {formatShortDate(toJsDate(order.resolvedAt))}</span>}
-                              </div>
-
-                              {/* Primary status action button */}
-                              {order.status === 'submitted' && (
-                                <div style={{ position: 'relative' }}>
-                                  <button
-                                    onClick={() => setAssigningId(assigningId === order.id ? null : order.id)}
-                                    style={{
-                                      width: '100%', padding: '12px', fontSize: '14px', fontWeight: 600,
-                                      background: '#364262', color: '#fff', border: 'none',
-                                      borderRadius: '12px', cursor: 'pointer', minHeight: '44px',
-                                      fontFamily: "'Inter', sans-serif",
-                                      transition: 'background 150ms',
-                                    }}
-                                  >
-                                    {t('assign', lang)}
-                                  </button>
-                                  {assigningId === order.id && (
-                                    <div style={{
-                                      marginTop: '8px', borderRadius: '12px',
-                                      border: '1px solid rgba(197,197,212,0.2)', background: '#fff',
-                                      maxHeight: '180px', overflowY: 'auto',
-                                      boxShadow: '0 4px 16px rgba(0,0,0,0.08)',
-                                    }}>
-                                      {assignableStaff.length === 0 ? (
-                                        <p style={{ padding: '16px', fontSize: '13px', color: '#757684', textAlign: 'center' }}>
-                                          {t('noStaff', lang)}
-                                        </p>
-                                      ) : (
-                                        assignableStaff.map(member => (
-                                          <button
-                                            key={member.id}
-                                            onClick={() => handleAssign(order, member)}
-                                            style={{
-                                              width: '100%', padding: '12px 16px', border: 'none',
-                                              background: 'transparent', cursor: 'pointer',
-                                              textAlign: 'left', fontSize: '14px', color: '#1b1c19',
-                                              borderBottom: '1px solid rgba(197,197,212,0.15)',
-                                              minHeight: '44px', fontFamily: "'Inter', sans-serif",
-                                              transition: 'background 100ms',
-                                            }}
-                                            onMouseEnter={e => { (e.target as HTMLElement).style.background = 'rgba(218,226,255,0.3)'; }}
-                                            onMouseLeave={e => { (e.target as HTMLElement).style.background = 'transparent'; }}
-                                          >
-                                            {member.name}
-                                            {member.department && (
-                                              <span style={{ fontSize: '12px', color: '#757684', marginLeft: '8px' }}>
-                                                {member.department}
-                                              </span>
-                                            )}
-                                          </button>
-                                        ))
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-
-                              {order.status === 'assigned' && (
-                                <button
-                                  onClick={() => handleStartWork(order)}
-                                  style={{
-                                    width: '100%', padding: '12px', fontSize: '14px', fontWeight: 600,
-                                    background: 'rgba(0,101,101,0.08)', color: '#006565', border: 'none',
-                                    borderRadius: '12px', cursor: 'pointer', minHeight: '44px',
-                                    fontFamily: "'Inter', sans-serif",
-                                    transition: 'background 150ms',
-                                  }}
-                                >
-                                  {t('startWork', lang)}
-                                </button>
-                              )}
-
-                              {order.status === 'in_progress' && (
-                                <button
-                                  onClick={() => handleResolve(order)}
-                                  style={{
-                                    width: '100%', padding: '12px', fontSize: '14px', fontWeight: 600,
-                                    background: 'rgba(34,197,94,0.08)', color: '#16a34a', border: 'none',
-                                    borderRadius: '12px', cursor: 'pointer', minHeight: '44px',
-                                    fontFamily: "'Inter', sans-serif",
-                                    transition: 'background 150ms',
-                                  }}
-                                >
-                                  {t('markResolved', lang)}
-                                </button>
-                              )}
-
-                              {/* Edit / delete — secondary row, visible in every status */}
-                              <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
-                                <button
-                                  onClick={() => handleBeginEdit(order)}
-                                  style={{
-                                    flex: 1, padding: '10px', fontSize: '13px', fontWeight: 500,
-                                    background: 'transparent', color: '#454652',
-                                    border: '1px solid rgba(197,197,212,0.3)',
-                                    borderRadius: '10px', cursor: 'pointer', minHeight: '40px',
-                                    fontFamily: "'Inter', sans-serif",
-                                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-                                  }}
-                                >
-                                  {lang === 'es' ? 'Editar' : 'Edit'}
-                                </button>
-                                <button
-                                  onClick={() => handleDeleteOrder(order)}
-                                  style={{
-                                    flex: 1, padding: '10px', fontSize: '13px', fontWeight: 500,
-                                    background: 'transparent', color: '#ba1a1a',
-                                    border: '1px solid rgba(186,26,26,0.2)',
-                                    borderRadius: '10px', cursor: 'pointer', minHeight: '40px',
-                                    fontFamily: "'Inter', sans-serif",
-                                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-                                  }}
-                                >
-                                  <Trash2 size={14} />
-                                  {lang === 'es' ? 'Eliminar' : 'Delete'}
-                                </button>
-                              </div>
-                            </>
                         </div>
                       )}
                     </div>
@@ -1509,6 +1348,36 @@ export default function MaintenancePage() {
                 </p>
               )}
 
+              {/* Status progression — Start Work / Mark Resolved shows based
+                  on current status. Submitted stays put until one of these
+                  is clicked; Reeyen asked to drop the Assign flow. */}
+              {order.status === 'assigned' && (
+                <button
+                  onClick={() => { handleStartWork(order); setEditingId(null); }}
+                  style={{
+                    width: '100%', padding: '12px', fontSize: '14px', fontWeight: 600,
+                    background: 'rgba(0,101,101,0.08)', color: '#006565', border: 'none',
+                    borderRadius: '12px', cursor: 'pointer', minHeight: '44px',
+                    fontFamily: "'Inter', sans-serif",
+                  }}
+                >
+                  {t('startWork', lang)}
+                </button>
+              )}
+              {order.status === 'in_progress' && (
+                <button
+                  onClick={() => { handleResolve(order); setEditingId(null); }}
+                  style={{
+                    width: '100%', padding: '12px', fontSize: '14px', fontWeight: 600,
+                    background: 'rgba(34,197,94,0.08)', color: '#16a34a', border: 'none',
+                    borderRadius: '12px', cursor: 'pointer', minHeight: '44px',
+                    fontFamily: "'Inter', sans-serif",
+                  }}
+                >
+                  {t('markResolved', lang)}
+                </button>
+              )}
+
               {/* Save */}
               <button
                 onClick={() => handleSaveEdit(order)}
@@ -1523,6 +1392,22 @@ export default function MaintenancePage() {
                 }}
               >
                 {lang === 'es' ? 'Guardar Cambios' : 'Save Changes'}
+              </button>
+
+              {/* Delete — destructive, sits at the bottom of the modal */}
+              <button
+                onClick={() => handleDeleteOrder(order)}
+                style={{
+                  width: '100%', padding: '12px', border: '1px solid rgba(186,26,26,0.25)',
+                  borderRadius: '12px', cursor: 'pointer',
+                  background: 'transparent', color: '#ba1a1a',
+                  fontSize: '13px', fontWeight: 500, fontFamily: "'Inter', sans-serif",
+                  transition: 'all 150ms', minHeight: '40px',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                }}
+              >
+                <Trash2 size={14} />
+                {lang === 'es' ? 'Eliminar Orden' : 'Delete Work Order'}
               </button>
             </div>
           </div>
