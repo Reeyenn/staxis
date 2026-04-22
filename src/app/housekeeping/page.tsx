@@ -432,9 +432,13 @@ function ScheduleSection() {
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Drag-and-drop state (pointer events — works for both mouse + touch)
+  // `floating: true` means the user tapped a pill and it's now stuck to the
+  // cursor waiting for a second click to drop. `floating: false|undefined`
+  // means a classic press-and-drag is in progress.
   const [dragState, setDragState] = useState<{
     roomId: string; roomNumber: string; roomType: string; stayoverDay?: number;
     ghost: { x: number; y: number }; dropTarget: string | null;
+    floating?: boolean;
   } | null>(null);
   const crewCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const dragRef = useRef<{
@@ -1403,14 +1407,60 @@ function ScheduleSection() {
     return null;
   }, []);
 
+  const showMoveToast = useCallback((msg: string) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setMoveToast(msg);
+    toastTimer.current = setTimeout(() => setMoveToast(null), 4000);
+  }, []);
+
+  // Shared commit path used by both press-and-drag release and click-to-drop.
+  // Reads fromStaffId out of the current assignments, writes the new target,
+  // pins the room as a manual placement (so Auto Assign won't move it), and
+  // surfaces a move toast. No-op if the target is the same as the source.
+  const commitRoomTo = useCallback((roomId: string, roomNumber: string, target: string | null) => {
+    if (!roomId || !target) return;
+    const fromStaffId = assignments[roomId];
+    if (target === '__unassigned__') {
+      if (!fromStaffId) return; // already unassigned
+      setAssignments(a => { const updated = { ...a }; delete updated[roomId]; return updated; });
+      manuallyAssignedRooms.current.delete(roomId);
+      const fromName = selectedCrew.find(s => s.id === fromStaffId)?.name ?? '?';
+      showMoveToast(lang === 'es' ? `${roomNumber} movida de ${fromName} a Sin Asignar` : `Moved ${roomNumber} from ${fromName} to Unassigned`);
+      return;
+    }
+    if (fromStaffId === target) return; // dropped back on source
+    setAssignments(a => ({ ...a, [roomId]: target }));
+    manuallyAssignedRooms.current.add(roomId);
+    const fromName = fromStaffId ? (selectedCrew.find(s => s.id === fromStaffId)?.name ?? '?') : (lang === 'es' ? 'Sin Asignar' : 'Unassigned');
+    const toName = selectedCrew.find(s => s.id === target)?.name ?? '?';
+    showMoveToast(lang === 'es' ? `${roomNumber} movida de ${fromName} a ${toName}` : `Moved ${roomNumber} from ${fromName} to ${toName}`);
+  }, [assignments, selectedCrew, lang, showMoveToast]);
+
   const onPillPointerDown = useCallback((e: React.PointerEvent<HTMLButtonElement>, room: Room) => {
-    // Capture pointer so all subsequent move/up events come to this element
+    // Stop the window-level pointerdown (attached while floating) from also
+    // running — the pill handler owns this click.
+    e.stopPropagation();
+
+    // If we're already floating from a previous click, this click is a drop
+    // onto this pill's crew card (or back onto the source pill). Commit and
+    // exit floating mode. Do NOT start a new drag.
+    if (dragState?.floating && dragState.roomId) {
+      const target = findDropTarget(e.clientX, e.clientY);
+      commitRoomTo(dragState.roomId, dragState.roomNumber, target);
+      setDragState(null);
+      dragRef.current = { roomId: null, roomNumber: '', roomType: '', startX: 0, startY: 0, active: false };
+      return;
+    }
+
+    // Otherwise start press-and-drag tracking. If the pointer moves past the
+    // threshold before release, we enter classic drag mode; if it releases
+    // without moving, pointerup will switch into click-float mode.
     e.currentTarget.setPointerCapture(e.pointerId);
     dragRef.current = {
       roomId: room.id, roomNumber: room.number, roomType: room.type, stayoverDay: room.stayoverDay,
       startX: e.clientX, startY: e.clientY, active: false,
     };
-  }, []);
+  }, [dragState, findDropTarget, commitRoomTo]);
 
   const onPillPointerMove = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
     const d = dragRef.current;
@@ -1429,53 +1479,88 @@ function ScheduleSection() {
     });
   }, [findDropTarget]);
 
-  const showMoveToast = useCallback((msg: string) => {
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    setMoveToast(msg);
-    toastTimer.current = setTimeout(() => setMoveToast(null), 4000);
-  }, []);
-
   const onPillPointerUp = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
     try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
     const d = dragRef.current;
+    // Press-and-drag path: pointer moved past threshold before release.
     if (d.active && d.roomId) {
       setDragState(prev => {
-        if (prev?.dropTarget && prev.roomId) {
-          const fromStaffId = assignments[prev.roomId];
-          if (prev.dropTarget === '__unassigned__') {
-            // Move to unassigned — also un-pin any manual assignment
-            // flag, so Auto Assign is free to place it.
-            if (fromStaffId) {
-              setAssignments(a => { const updated = { ...a }; delete updated[prev.roomId]; return updated; });
-              manuallyAssignedRooms.current.delete(prev.roomId);
-              const fromName = selectedCrew.find(s => s.id === fromStaffId)?.name ?? '?';
-              showMoveToast(lang === 'es' ? `${prev.roomNumber} movida de ${fromName} a Sin Asignar` : `Moved ${prev.roomNumber} from ${fromName} to Unassigned`);
-            }
-          } else if (fromStaffId !== prev.dropTarget) {
-            setAssignments(a => ({ ...a, [prev.roomId]: prev.dropTarget! }));
-            // Maria explicitly placed this room. Pin it so the next
-            // Auto Assign doesn't yank it back for load-balancing.
-            manuallyAssignedRooms.current.add(prev.roomId);
-            const fromName = fromStaffId ? (selectedCrew.find(s => s.id === fromStaffId)?.name ?? '?') : (lang === 'es' ? 'Sin Asignar' : 'Unassigned');
-            const toName = selectedCrew.find(s => s.id === prev.dropTarget)?.name ?? '?';
-            showMoveToast(lang === 'es' ? `${prev.roomNumber} movida de ${fromName} a ${toName}` : `Moved ${prev.roomNumber} from ${fromName} to ${toName}`);
-          }
+        if (prev?.roomId && prev.dropTarget) {
+          commitRoomTo(prev.roomId, prev.roomNumber, prev.dropTarget);
         }
         return null;
       });
-    } else {
-      setDragState(null);
+      dragRef.current = { roomId: null, roomNumber: '', roomType: '', startX: 0, startY: 0, active: false };
+      return;
+    }
+
+    // Click-to-pickup path: pointer released without moving. Enter floating
+    // mode — the pill sticks to the cursor until the next click commits it.
+    if (d.roomId && !dragState?.floating) {
+      setDragState({
+        roomId: d.roomId, roomNumber: d.roomNumber, roomType: d.roomType, stayoverDay: d.stayoverDay,
+        ghost: { x: e.clientX, y: e.clientY },
+        dropTarget: findDropTarget(e.clientX, e.clientY),
+        floating: true,
+      });
     }
     dragRef.current = { roomId: null, roomNumber: '', roomType: '', startX: 0, startY: 0, active: false };
-  }, [assignments, selectedCrew, showMoveToast]);
+  }, [dragState, findDropTarget, commitRoomTo]);
 
   // If the browser cancels the pointer (e.g. interrupted by scroll, app switch),
-  // clear all drag state so the ghost doesn't stay stuck on screen.
+  // clear any in-flight press-drag state — but leave `floating` mode alone
+  // (floating rooms should persist across scroll gestures).
   const onPillPointerCancel = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
     try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
-    setDragState(null);
+    if (dragRef.current.active) {
+      setDragState(prev => (prev?.floating ? prev : null));
+    }
     dragRef.current = { roomId: null, roomNumber: '', roomType: '', startX: 0, startY: 0, active: false };
   }, []);
+
+  // Floating mode: while a pill is stuck to the cursor, we need window-level
+  // listeners so the ghost follows the pointer everywhere (not just over the
+  // pill's original crew card) and so clicks on empty space cancel cleanly.
+  // Clicks on pills are handled by the pill's own onPointerDown (which stops
+  // propagation); this effect picks up everything else.
+  useEffect(() => {
+    if (!dragState?.floating) return;
+
+    const onMove = (e: PointerEvent) => {
+      const dt = findDropTarget(e.clientX, e.clientY);
+      setDragState(prev => (prev && prev.floating
+        ? { ...prev, ghost: { x: e.clientX, y: e.clientY }, dropTarget: dt }
+        : prev));
+    };
+
+    const onDown = (e: PointerEvent) => {
+      // If the click is on a room pill, the pill's own handler runs and
+      // stops propagation; this listener won't fire. So anything that
+      // reaches here is a click on empty space or a crew card / unassigned
+      // box. findDropTarget tells us which (if any).
+      const target = findDropTarget(e.clientX, e.clientY);
+      setDragState(prev => {
+        if (!prev || !prev.floating) return prev;
+        if (target) {
+          commitRoomTo(prev.roomId, prev.roomNumber, target);
+        }
+        return null;
+      });
+    };
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setDragState(null);
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerdown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerdown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [dragState?.floating, findDropTarget, commitRoomTo]);
 
   return (
     <div style={{ padding: '16px 24px 200px', background: 'var(--bg)', minHeight: 'calc(100vh - 180px)', display: 'flex', flexDirection: 'column', gap: '20px' }}>
