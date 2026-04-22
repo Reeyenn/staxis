@@ -1233,6 +1233,113 @@ function ScheduleSection() {
       if (!movedThisPass) break;
     }
 
+    // ── Step 5b: aggressive cross-floor consolidation ──
+    // Same-floor consolidation (Step 5) keeps everyone on one floor but
+    // leaves HKs half-loaded when a floor is light. This pass is willing
+    // to break the floor rule *only when doing so eliminates a whole HK*.
+    // Scattering rooms across floors for no net HK reduction is worse
+    // than sticking to one floor — so we only commit moves that fully
+    // empty the giver. Try smallest-load HKs first.
+    for (let pass = 0; pass < effectiveCrew.length; pass++) {
+      // Recompute sort each pass — loads change as we eliminate HKs.
+      const candidates = [...effectiveCrew]
+        .filter(s => (loadByStaff.get(s.id) ?? 0) > 0)
+        .filter(s => (preservedByStaff.get(s.id) ?? 0) === 0)
+        .sort((a, b) => (loadByStaff.get(a.id) ?? 0) - (loadByStaff.get(b.id) ?? 0));
+      let eliminatedThisPass = false;
+      for (const giver of candidates) {
+        const giverRooms = redistributableRooms.filter(r =>
+          next[r.id] === giver.id && !pinnedSet.has(r.id),
+        );
+        if (giverRooms.length === 0) continue;
+
+        // Try to place every giver room on some other HK without ever
+        // going over cap. Big rooms first — if there's a tight slot, we
+        // want to claim it with the big one while space still exists.
+        const withSize = giverRooms
+          .map(r => ({ r, mins: minsForRoom(r) + prepPerRoom }))
+          .sort((a, b) => b.mins - a.mins);
+        const moves: Array<{ room: Room; mins: number; to: string }> = [];
+        const simLoad = new Map(loadByStaff);
+        const simFloorCount = new Map<string, Map<string, number>>();
+        floorCountByStaff.forEach((m, k) => simFloorCount.set(k, new Map(m)));
+        let allFit = true;
+        for (const { r, mins } of withSize) {
+          const f = getFloor(r.number);
+          const recipients = effectiveCrew.filter(s =>
+            s.id !== giver.id &&
+            (simLoad.get(s.id) ?? 0) + mins <= shiftLen,
+          );
+          if (recipients.length === 0) { allFit = false; break; }
+          // Prefer recipient already on this floor (zero walk penalty).
+          // Ties broken by lowest current load (spread, not pile).
+          let pick: string | null = null;
+          let pickFc = -1;
+          let pickLoad = Infinity;
+          for (const s of recipients) {
+            const fc = simFloorCount.get(s.id)?.get(f) ?? 0;
+            const load = simLoad.get(s.id) ?? 0;
+            if (fc > pickFc || (fc === pickFc && load < pickLoad)) {
+              pickFc = fc;
+              pickLoad = load;
+              pick = s.id;
+            }
+          }
+          if (!pick) { allFit = false; break; }
+          moves.push({ room: r, mins, to: pick });
+          simLoad.set(pick, (simLoad.get(pick) ?? 0) + mins);
+          simLoad.set(giver.id, (simLoad.get(giver.id) ?? 0) - mins);
+          const fmapTo = simFloorCount.get(pick)!;
+          fmapTo.set(f, (fmapTo.get(f) ?? 0) + 1);
+          const fmapFrom = simFloorCount.get(giver.id)!;
+          fmapFrom.set(f, Math.max(0, (fmapFrom.get(f) ?? 0) - 1));
+        }
+        // All of giver's rooms fit on others → commit and mark giver
+        // empty. They'll get pruned from the crew by Step 6.
+        if (allFit && moves.length > 0) {
+          for (const mv of moves) next[mv.room.id] = mv.to;
+          simLoad.forEach((v, k) => loadByStaff.set(k, v));
+          simFloorCount.forEach((m, k) => floorCountByStaff.set(k, m));
+          eliminatedThisPass = true;
+          break; // sort order is now stale, restart outer loop
+        }
+      }
+      if (!eliminatedThisPass) break;
+    }
+
+    // ── Step 5c: retry previously-unassigned rooms ──
+    // Eliminating an HK can free capacity on their former crew-mates.
+    // More useful, though: it can free capacity on the *other* HKs on
+    // the same floor because the eliminated HK's floor mates no longer
+    // have to share with a second HK. Give every unassigned room one
+    // more shot at landing somewhere.
+    const nowUnassigned = redistributableRooms.filter(r => !next[r.id]);
+    for (const r of nowUnassigned) {
+      const mins = minsForRoom(r) + prepPerRoom;
+      const f = getFloor(r.number);
+      const recipients = effectiveCrew.filter(s =>
+        (loadByStaff.get(s.id) ?? 0) + mins <= shiftLen,
+      );
+      if (recipients.length === 0) continue;
+      let pick: string | null = null;
+      let pickFc = -1;
+      let pickLoad = Infinity;
+      for (const s of recipients) {
+        const fc = floorCountByStaff.get(s.id)?.get(f) ?? 0;
+        const load = loadByStaff.get(s.id) ?? 0;
+        if (fc > pickFc || (fc === pickFc && load < pickLoad)) {
+          pickFc = fc;
+          pickLoad = load;
+          pick = s.id;
+        }
+      }
+      if (!pick) continue;
+      next[r.id] = pick;
+      loadByStaff.set(pick, (loadByStaff.get(pick) ?? 0) + mins);
+      const fmap = floorCountByStaff.get(pick)!;
+      fmap.set(f, (fmap.get(f) ?? 0) + 1);
+    }
+
     // ── Step 6: drop anyone with 0 rooms after distribution + consolidation ──
     const usedStaffIds = new Set(
       Object.values(next).filter((v): v is string => !!v)
