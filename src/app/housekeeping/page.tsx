@@ -961,6 +961,10 @@ function ScheduleSection() {
       floorCountByStaff.set(s.id, new Map());
     }
     const next: Record<string, string> = {};
+    // Track which floor each HK is locked to. If a HK has preserved rooms,
+    // they're effectively locked to that floor already — record it so the
+    // new-floor distribution can't add rooms from a different floor.
+    const hkFloor = new Map<string, string>();
     for (const r of preservedRooms) {
       const who = assignments[r.id];
       if (!who || !loadByStaff.has(who)) continue;
@@ -970,54 +974,167 @@ function ScheduleSection() {
       const f = getFloor(r.number);
       const fmap = floorCountByStaff.get(who)!;
       fmap.set(f, (fmap.get(f) ?? 0) + 1);
+      // First preserved room wins the HK's floor lock. If that HK has more
+      // preserved rooms on another floor (rare — only happens if Maria
+      // manually assigned across floors earlier), they're still locked to
+      // the first one seen here and the others stay on whichever HK they
+      // already had.
+      if (!hkFloor.has(who)) hkFloor.set(who, f);
     }
 
-    // ── Step 3: sort redistributable rooms ──
-    // Order:
-    //   1. VIP rooms first — Maria wants GM's friend's suite done ASAP.
-    //   2. Early-arrival rooms next — guest checking in at noon gets
-    //      their room turned first.
-    //   3. Then floor (so stickiness clusters floors onto one HK).
-    //   4. Then checkouts before stayovers within a floor.
-    //   5. Then room number.
+    // ── Step 3: group redistributable rooms by floor ──
+    // Maria's hard rule: each housekeeper works ONE floor. Mixing floors
+    // means extra walking between rooms, dragging cart & linen across the
+    // building — so we cluster by floor before anything else and only split
+    // a floor across multiple HKs if a single HK can't cover it under cap.
+    //
+    // Within a floor, rooms are sorted so the split (if any) is clean:
+    //   1. VIP / early-arrival first — Maria wants those done ASAP
+    //   2. Checkouts before stayovers (checkouts dominate cart loadout)
+    //   3. Then by room number (natural walking order down the hall)
     const PRI_RANK: Record<string, number> = { vip: 0, early: 1, standard: 2 };
-    const toAssign = [...redistributableRooms].sort((a, b) => {
-      const pA = PRI_RANK[a.priority ?? 'standard'] ?? 2;
-      const pB = PRI_RANK[b.priority ?? 'standard'] ?? 2;
-      if (pA !== pB) return pA - pB;
-      const fA = getFloor(a.number);
-      const fB = getFloor(b.number);
-      if (fA !== fB) return fA < fB ? -1 : 1;
-      if (a.type !== b.type) return a.type === 'checkout' ? -1 : 1;
-      return (parseInt(a.number.replace(/\D/g, '')) || 0) - (parseInt(b.number.replace(/\D/g, '')) || 0);
+    const roomsByFloor = new Map<string, Room[]>();
+    for (const r of redistributableRooms) {
+      const f = getFloor(r.number);
+      const list = roomsByFloor.get(f) ?? [];
+      list.push(r);
+      roomsByFloor.set(f, list);
+    }
+    for (const list of roomsByFloor.values()) {
+      list.sort((a, b) => {
+        const pA = PRI_RANK[a.priority ?? 'standard'] ?? 2;
+        const pB = PRI_RANK[b.priority ?? 'standard'] ?? 2;
+        if (pA !== pB) return pA - pB;
+        if (a.type !== b.type) return a.type === 'checkout' ? -1 : 1;
+        return (parseInt(a.number.replace(/\D/g, '')) || 0) - (parseInt(b.number.replace(/\D/g, '')) || 0);
+      });
+    }
+
+    // Floor-level metadata: total minutes of dirty work per floor. Used to
+    // (a) decide how many HKs a floor needs, (b) order floors biggest-first
+    // so the hardest floor claims HKs before smaller ones.
+    const minsByFloor = new Map<string, number>();
+    for (const [f, list] of roomsByFloor) {
+      const total = list.reduce((s, r) => s + minsForRoom(r) + prepPerRoom, 0);
+      minsByFloor.set(f, total);
+    }
+    const sortedFloors = [...roomsByFloor.keys()].sort((a, b) => {
+      // Floors with preserved work come first (HKs already locked there need
+      // their remaining floor-mates pulled in first). Then biggest load.
+      const aLocked = [...hkFloor.values()].includes(a) ? 1 : 0;
+      const bLocked = [...hkFloor.values()].includes(b) ? 1 : 0;
+      if (aLocked !== bLocked) return bLocked - aLocked;
+      return (minsByFloor.get(b) ?? 0) - (minsByFloor.get(a) ?? 0);
     });
 
-    // ── Step 4: one-person-per-floor with HARD CAP ──
-    // For each room: prefer the HK who already owns the most rooms on that
-    // floor (floor stickiness). Tiebreak on least load. Only consider HKs
-    // who have room under the cap. If nobody fits, the room stays unassigned.
-    for (const r of toAssign) {
-      const f = getFloor(r.number);
-      const mins = minsForRoom(r) + prepPerRoom;
-      const withCapacity = effectiveCrew.filter(s => (loadByStaff.get(s.id) ?? 0) + mins <= shiftLen);
-      if (withCapacity.length === 0) continue; // leave in unassigned pool
-      let best: string | null = null;
-      let bestFloorCount = -1;
-      let bestLoad = Infinity;
-      for (const s of withCapacity) {
-        const fc = floorCountByStaff.get(s.id)?.get(f) ?? 0;
-        const load = loadByStaff.get(s.id) ?? 0;
-        if (fc > bestFloorCount || (fc === bestFloorCount && load < bestLoad)) {
-          bestFloorCount = fc;
-          bestLoad = load;
-          best = s.id;
-        }
+    // ── Step 4: assign each floor to HK(s), then split rooms contiguously ──
+    //
+    // Per floor:
+    //   1. Find HKs already locked to this floor (preserved rooms). They're in.
+    //   2. If their remaining capacity covers the floor, done — one HK per floor.
+    //   3. If not, pull in more HKs from the unassigned pool until covered.
+    //   4. Split the floor's sorted room list into contiguous chunks of
+    //      roughly equal minutes and assign each chunk to an HK.
+    //
+    // A chunk can't exceed shiftLen (hard cap). If rooms don't fit even
+    // after adding every HK, the leftovers stay unassigned — Maria sees
+    // them in the Unassigned bucket and can manually place them or add
+    // more crew.
+    const hksByFloor = new Map<string, string[]>(); // floor -> ordered HK ids
+
+    for (const f of sortedFloors) {
+      const rooms = roomsByFloor.get(f)!;
+      const totalMins = minsByFloor.get(f) ?? 0;
+
+      // (1) Pre-locked HKs for this floor (have preserved rooms here).
+      const lockedHKs = effectiveCrew.filter(s => hkFloor.get(s.id) === f);
+
+      // (2)+(3) Figure out total HKs needed. Start with locked, add from
+      // the unassigned pool until the floor's total mins is covered by
+      // remaining capacity.
+      const chosen: typeof effectiveCrew = [...lockedHKs];
+      const remainingCap = () => chosen.reduce(
+        (sum, s) => sum + Math.max(0, shiftLen - (loadByStaff.get(s.id) ?? 0)),
+        0,
+      );
+      const unassignedPool = effectiveCrew
+        .filter(s => !hkFloor.has(s.id))
+        .sort((a, b) => (loadByStaff.get(a.id) ?? 0) - (loadByStaff.get(b.id) ?? 0));
+      for (const hk of unassignedPool) {
+        if (remainingCap() >= totalMins) break;
+        chosen.push(hk);
+        hkFloor.set(hk.id, f);
       }
-      if (!best) continue;
-      next[r.id] = best;
-      loadByStaff.set(best, (loadByStaff.get(best) ?? 0) + mins);
-      const fmap = floorCountByStaff.get(best)!;
-      fmap.set(f, (fmap.get(f) ?? 0) + 1);
+      // Degenerate case: more floors than HKs. Borrow the least-loaded
+      // already-assigned HK as a last resort rather than leaving a whole
+      // floor unassigned. Adjacent-floor preference (closer floor numbers
+      // = less walking) breaks ties so e.g. an HK on floor 3 picks up
+      // floor 4 before an HK on floor 1 does.
+      if (chosen.length === 0) {
+        const floorNum = parseInt(f) || 0;
+        const fallback = effectiveCrew
+          .filter(s => (loadByStaff.get(s.id) ?? 0) < shiftLen)
+          .sort((a, b) => {
+            const aFloor = hkFloor.get(a.id);
+            const bFloor = hkFloor.get(b.id);
+            const aDist = aFloor ? Math.abs((parseInt(aFloor) || 0) - floorNum) : 99;
+            const bDist = bFloor ? Math.abs((parseInt(bFloor) || 0) - floorNum) : 99;
+            if (aDist !== bDist) return aDist - bDist;
+            return (loadByStaff.get(a.id) ?? 0) - (loadByStaff.get(b.id) ?? 0);
+          });
+        if (fallback.length > 0) chosen.push(fallback[0]);
+      }
+      if (chosen.length === 0) continue; // still no HKs — rooms stay unassigned
+
+      // Make sure locked HKs also get the floor-lock registered (in case
+      // they weren't already — e.g. they had an in-progress room but we
+      // didn't see it in preserved seeding).
+      for (const s of lockedHKs) hkFloor.set(s.id, f);
+      hksByFloor.set(f, chosen.map(s => s.id));
+
+      // (4) Split the sorted rooms into contiguous chunks. Target: equal
+      // minutes per HK, respecting each HK's remaining capacity. Use a
+      // simple "fill current HK to target, then advance" approach — keeps
+      // each HK's rooms contiguous in the room number order, which matches
+      // the physical walking path down the hallway.
+      const targetPerHK = chosen.length > 0 ? totalMins / chosen.length : totalMins;
+      let hkIdx = 0;
+      let chunkMins = 0;
+      for (const r of rooms) {
+        const mins = minsForRoom(r) + prepPerRoom;
+        // Advance to next HK if current chunk has reached its share AND
+        // there's another HK to advance to. This is what keeps the split
+        // contiguous and balanced.
+        if (
+          hkIdx + 1 < chosen.length &&
+          chunkMins >= targetPerHK
+        ) {
+          hkIdx++;
+          chunkMins = 0;
+        }
+        // Also advance if adding this room would exceed the current HK's
+        // hard cap — prevents cap violations when preserved rooms already
+        // ate into one HK's capacity unevenly.
+        if (
+          hkIdx + 1 < chosen.length &&
+          (loadByStaff.get(chosen[hkIdx].id) ?? 0) + mins > shiftLen
+        ) {
+          hkIdx++;
+          chunkMins = 0;
+        }
+
+        const pick = chosen[hkIdx];
+        if ((loadByStaff.get(pick.id) ?? 0) + mins > shiftLen) {
+          // Can't fit even on the current HK and no more HKs to roll onto.
+          // Leave the room unassigned — Maria gets to decide.
+          continue;
+        }
+        next[r.id] = pick.id;
+        loadByStaff.set(pick.id, (loadByStaff.get(pick.id) ?? 0) + mins);
+        chunkMins += mins;
+        const fmap = floorCountByStaff.get(pick.id)!;
+        fmap.set(f, (fmap.get(f) ?? 0) + 1);
+      }
     }
 
     // ── Step 5: consolidation pass ──
