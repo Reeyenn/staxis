@@ -1294,29 +1294,82 @@ function ScheduleSection() {
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px', position: 'relative', zIndex: 10 }}>
             {/* CSV caption — Active Checkouts / Stayovers / Staff Needed all
                 come from the hourly CSV pull (see scraper/scraper.js
-                maybeRunCSVPull). Shows the last successful pull time so Maria
-                knows how fresh the numbers are. Goes amber after 75 min
-                (hourly cadence + one missed-pull buffer). */}
+                maybeRunCSVPull). Three visual states, mirroring the PMS
+                block below so Maria sees consistent warnings across both
+                data sources:
+                  • fresh (≤75 min):   grey "CSV updated X:XX" caption
+                  • stale (75–180):    amber banner, numbers may lag (1–2
+                                       missed hourly pulls, usually transient)
+                  • error (>180 min):  red banner, scraper is probably down
+                                       (3+ missed pulls — watchdog SMS will
+                                       have already fired by this point) */}
             {planSnapshot?.pulledAt && (() => {
               const CSV_STALE_MINUTES = 75;
+              const CSV_ERROR_MINUTES = 180;
               const csvPulledAt: Date | null =
                 planSnapshot.pulledAt instanceof Date
                   ? planSnapshot.pulledAt
                   : (planSnapshot.pulledAt?.toDate?.() ?? null);
               if (!csvPulledAt) return null;
               const csvMinutesAgo = Math.max(0, Math.round((nowMs - csvPulledAt.getTime()) / 60_000));
-              const csvStale = csvMinutesAgo > CSV_STALE_MINUTES;
               const timeStr = csvPulledAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+              const csvState: 'fresh' | 'stale' | 'error' =
+                csvMinutesAgo > CSV_ERROR_MINUTES ? 'error' :
+                csvMinutesAgo > CSV_STALE_MINUTES ? 'stale' :
+                'fresh';
+
+              if (csvState === 'fresh') {
+                return (
+                  <p style={{ fontSize: '11px', color: '#94a3b8', margin: 0 }}>
+                    {lang === 'es' ? `CSV actualizado ${timeStr}` : `CSV updated ${timeStr}`}
+                  </p>
+                );
+              }
+
+              if (csvState === 'stale') {
+                return (
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: '8px',
+                    padding: '8px 12px', borderRadius: '8px',
+                    background: 'rgba(245, 158, 11, 0.12)',
+                    border: '1px solid rgba(217, 119, 6, 0.35)',
+                    fontSize: '12px', color: '#78350f', fontWeight: 500,
+                    maxWidth: '440px', textAlign: 'center',
+                  }}>
+                    <AlertTriangle size={14} style={{ color: '#b45309', flexShrink: 0 }} />
+                    <span>
+                      {lang === 'es'
+                        ? `CSV antiguo — última actualización ${timeStr} (hace ${csvMinutesAgo} min). Debería actualizarse cada hora.`
+                        : `CSV stale — last updated ${timeStr} (${csvMinutesAgo} min ago). Should pull hourly.`}
+                    </span>
+                  </div>
+                );
+              }
+
+              // error state — 3+ missed hourly pulls
               return (
-                <p style={{ fontSize: '11px', color: csvStale ? '#b45309' : '#94a3b8', margin: 0 }}>
-                  {csvStale
-                    ? (lang === 'es'
-                        ? `CSV antiguo — última actualización ${timeStr} (hace ${csvMinutesAgo} min)`
-                        : `CSV stale — last updated ${timeStr} (${csvMinutesAgo} min ago)`)
-                    : (lang === 'es'
-                        ? `CSV actualizado ${timeStr}`
-                        : `CSV updated ${timeStr}`)}
-                </p>
+                <div style={{
+                  display: 'flex', alignItems: 'flex-start', gap: '8px',
+                  padding: '8px 12px', borderRadius: '8px',
+                  background: 'rgba(220, 38, 38, 0.10)',
+                  border: '1px solid rgba(220, 38, 38, 0.35)',
+                  fontSize: '12px', color: '#7f1d1d', fontWeight: 500,
+                  maxWidth: '440px',
+                }}>
+                  <AlertTriangle size={14} style={{ color: '#b91c1c', flexShrink: 0, marginTop: '2px' }} />
+                  <div style={{ textAlign: 'left' }}>
+                    <div>
+                      {lang === 'es'
+                        ? 'Falla la actualización del CSV — Reeyen fue notificado.'
+                        : 'CSV pull failing — Reeyen has been notified.'}
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#991b1b', fontWeight: 400, marginTop: '2px' }}>
+                      {lang === 'es'
+                        ? `Últimos números buenos a las ${timeStr} (hace ${csvMinutesAgo} min).`
+                        : `Last good numbers at ${timeStr} (${csvMinutesAgo} min ago).`}
+                    </div>
+                  </div>
+                </div>
               );
             })()}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, auto)', gap: '40px' }}>
