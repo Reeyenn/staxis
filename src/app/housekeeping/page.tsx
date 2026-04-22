@@ -1407,6 +1407,32 @@ function ScheduleSection() {
                   {`${lang === 'es' ? 'PMS actualizado' : 'PMS updated'} ${dashboardNums.pulledAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`}
                 </p>
               )}
+              {/* CSV caption — the checkouts/stayovers/room-list data refreshes
+                  once per hour (see scraper/scraper.js maybeRunCSVPull), so a
+                  separate timestamp is needed. Always show if we have one;
+                  stale after CSV_STALE_MINUTES = hourly + one missed pull. */}
+              {planSnapshot?.pulledAt && (() => {
+                const CSV_STALE_MINUTES = 75;
+                const csvPulledAt: Date | null =
+                  planSnapshot.pulledAt instanceof Date
+                    ? planSnapshot.pulledAt
+                    : (planSnapshot.pulledAt?.toDate?.() ?? null);
+                if (!csvPulledAt) return null;
+                const csvMinutesAgo = Math.max(0, Math.round((nowMs - csvPulledAt.getTime()) / 60_000));
+                const csvStale = csvMinutesAgo > CSV_STALE_MINUTES;
+                const timeStr = csvPulledAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+                return (
+                  <p style={{ fontSize: '11px', color: csvStale ? '#b45309' : '#94a3b8', margin: 0 }}>
+                    {csvStale
+                      ? (lang === 'es'
+                          ? `CSV antiguo — última actualización ${timeStr} (hace ${csvMinutesAgo} min)`
+                          : `CSV stale — last updated ${timeStr} (${csvMinutesAgo} min ago)`)
+                      : (lang === 'es'
+                          ? `CSV actualizado ${timeStr}`
+                          : `CSV updated ${timeStr}`)}
+                  </p>
+                );
+              })()}
               {freshness === 'stale' && (
                 <div style={{
                   display: 'flex', alignItems: 'center', gap: '8px',
