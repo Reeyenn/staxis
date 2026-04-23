@@ -431,6 +431,101 @@ Heartbeat should be <10 min old. Then verify numbers are flowing: check the Sche
 
 ---
 
+## Can't log in after seed (GoTrue NULL token bug)
+
+### Symptom
+- Sign-in form at `/signin` accepts username + password, spinner runs, returns "Invalid username or password" — **even when the password is objectively correct**.
+- Directly hitting `POST /auth/v1/token?grant_type=password` on the Supabase project returns `500 "Database error querying schema"`.
+- `GET /auth/v1/admin/users` and `GET /auth/v1/admin/users/<uid>` both return `500 "Database error loading user"` or `"Database error finding users"`.
+- Supabase Dashboard → Authentication → Users still lists the user fine (dashboard uses a different path), so it *looks* like the user exists but just has the wrong password. Misleading.
+- Auth logs (Supabase Dashboard → Logs → Auth) show: `"error finding user: sql: Scan error on column index 3, name \"confirmation_token\": converting NULL to string is unsupported"`.
+
+### Diagnosis
+Check if any token columns on the user row are NULL:
+
+```sql
+select id, email,
+       (confirmation_token         is null) as ct_null,
+       (email_change               is null) as ec_null,
+       (email_change_token_new     is null) as ecn_null,
+       (email_change_token_current is null) as ecc_null,
+       (recovery_token             is null) as rt_null,
+       (phone_change               is null) as pc_null,
+       (phone_change_token         is null) as pct_null,
+       (reauthentication_token     is null) as rat_null
+  from auth.users;
+```
+
+If ANY `*_null` column is `true`, you're hitting this bug.
+
+Root cause: `supa.auth.admin.createUser(...)` (which `scripts/seed-supabase.js` uses) creates rows with NULL in these columns. GoTrue's Go code scans them into `string` (not `sql.NullString`), so every subsequent auth request 500s. The normal `auth.signUp(...)` flow defaults them to `''` and avoids this, but the admin path is what we use for seeded users.
+
+### Fix
+
+**Apply migration `0005_normalize_auth_tokens.sql`** (already in `supabase/migrations/`). It does two things:
+1. UPDATEs all existing rows with `COALESCE(col, '')`.
+2. Installs a `BEFORE INSERT OR UPDATE` trigger on `auth.users` that rewrites NULL → `''` on write, so new users created via any path (including `supa.auth.admin.createUser`) don't hit this again.
+
+To apply to a live project via the Supabase Dashboard → SQL Editor, paste the contents of `supabase/migrations/0005_normalize_auth_tokens.sql` and run.
+
+If the user's password was never successfully set (e.g. seed ran before you had `STAXIS_ADMIN_PASSWORD` in `.env.local`, so the password hash is bogus), reset it via SQL using pgcrypto:
+
+```sql
+update auth.users
+  set encrypted_password = crypt('<new-password-here>', gen_salt('bf', 10)),
+      updated_at = now()
+where email = 'reeyen@staxis.local';
+```
+
+`crypt(… , gen_salt('bf', 10))` is the exact hash format GoTrue uses internally, so the resulting hash is interchangeable.
+
+### Verify
+After applying 0005:
+
+```sql
+-- No NULL token columns anywhere:
+select count(*) filter (where confirmation_token is null) +
+       count(*) filter (where email_change is null) +
+       count(*) filter (where recovery_token is null) as total_nulls
+  from auth.users;
+-- Expected: 0
+
+-- Trigger exists:
+select tgname from pg_trigger
+  where tgrelid = 'auth.users'::regclass
+    and tgname = 'staxis_normalize_auth_tokens_trg';
+-- Expected: one row.
+```
+
+Then test login end-to-end:
+
+```javascript
+// Paste in browser console on https://hotelops-ai.vercel.app (or Supabase dashboard):
+await fetch('https://<proj>.supabase.co/auth/v1/token?grant_type=password', {
+  method: 'POST',
+  headers: { apikey: '<anon-or-service-role>', 'Content-Type': 'application/json' },
+  body: JSON.stringify({ email: 'reeyen@staxis.local', password: '<new-pw>' }),
+}).then(r => r.json());
+// Expected: object with access_token, refresh_token, user. NOT a 500.
+```
+
+And the actual UI: https://hotelops-ai.vercel.app/signin — should redirect to `/property-selector` on success.
+
+### Prevention
+- **Migration 0005 trigger** — catches any future row that would have been inserted with NULL tokens. Defense-in-depth even if Supabase patches GoTrue upstream.
+- **Comment in seed-supabase.js** — points future readers at the migration so they don't re-discover this by hand.
+- **This runbook** — when someone hits "can't log in" on a fresh install, they find this in 30 seconds instead of an hour.
+- Not yet implemented: a doctor check that pokes `/auth/v1/token` with a known bogus password and expects a clean 400 (not 500). Would catch this bug in CI immediately. Worth adding if this class of bug bites again.
+
+### Timeline (2026-04-23 incident)
+- ~00:08 UTC — Reeyen runs seed, admin user created with NULL tokens. Login untested.
+- ~05:10 UTC — Reeyen first tries to log in. Auth fails silently with "Invalid username or password" regardless of password. No email (synthetic `@staxis.local`) so magic-link reset doesn't work either.
+- ~05:25 UTC — Discovered the 500s via direct admin API calls, which led to reading Auth Logs and seeing the NULL scan error.
+- ~05:30 UTC — Migration 0005 written + applied. Login verified working same-session.
+- Total: ~20 min diagnosis, <10 min to fix. Next time: 0 min, because this runbook exists.
+
+---
+
 ## Meta: how to add a new failure mode to this doc
 
 Every time something breaks and takes more than 30 min to fix, come back and add a section here with Symptom / Diagnosis / Fix / Verify / Prevention. This file only pays for itself if we update it.

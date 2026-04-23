@@ -197,6 +197,14 @@ function die(step, err) {
   }
 
   // ── Step 1: admin auth user ─────────────────────────────────────────────
+  // Note: supa.auth.admin.createUser leaves confirmation_token / recovery_token /
+  // email_change / phone_change / reauthentication_token as NULL in auth.users.
+  // GoTrue's Go code then 500s on every subsequent login with "Database error
+  // loading user" because it scans those columns into non-nullable strings.
+  // Migration 0005_normalize_auth_tokens.sql installs a BEFORE INSERT trigger
+  // that rewrites NULL → '' on auth.users, so the user we create below is
+  // immediately usable. If that migration hasn't been applied yet, login will
+  // fail — apply it first. See RUNBOOKS.md § "Can't log in after seed".
   log('admin', `ensuring auth user ${ADMIN.email}…`);
   let adminUserId;
   {
