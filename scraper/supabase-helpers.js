@@ -24,12 +24,17 @@
 const { createClient } = require('@supabase/supabase-js');
 
 function createSupabase() {
-  const url = process.env.SUPABASE_URL;
+  // Accept either naming convention. Vercel uses NEXT_PUBLIC_SUPABASE_URL
+  // (so the browser bundle can read it) and that same var name got copied
+  // onto Railway to keep the rotation playbook simple. But older scraper
+  // builds read SUPABASE_URL. Take whichever is set — prefer the explicit
+  // server-only SUPABASE_URL if both exist.
+  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) {
     throw new Error(
       `Supabase env vars missing: ${[
-        !url && 'SUPABASE_URL',
+        !url && 'SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL)',
         !key && 'SUPABASE_SERVICE_ROLE_KEY',
       ].filter(Boolean).join(', ')}`,
     );

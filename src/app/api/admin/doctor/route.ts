@@ -106,8 +106,16 @@ const checks: Array<[string, CheckFn]> = [
  *
  * If you add a new required env var anywhere in the Vercel code, ADD IT
  * HERE TOO — otherwise a missing var silently becomes undefined at runtime.
+ *
+ * `altNames` — some vars have historical aliases that runtime code still
+ * accepts via `process.env.X || process.env.Y`. The doctor must mirror that
+ * fallback exactly, otherwise it reports false-positive failures for vars
+ * that are actually working. Specifically:
+ *   - sms.ts accepts TWILIO_FROM_NUMBER || TWILIO_PHONE_NUMBER
+ *   - cron routes accept MANAGER_PHONE || OPS_ALERT_PHONE
+ * See the "Env var naming reconciliation" commit for history.
  */
-const REQUIRED_ENV_VARS: Array<{ name: string; group: string }> = [
+const REQUIRED_ENV_VARS: Array<{ name: string; altNames?: string[]; group: string }> = [
   // Supabase (client-safe)
   { name: 'NEXT_PUBLIC_SUPABASE_URL',          group: 'supabase' },
   { name: 'NEXT_PUBLIC_SUPABASE_ANON_KEY',     group: 'supabase' },
@@ -116,31 +124,65 @@ const REQUIRED_ENV_VARS: Array<{ name: string; group: string }> = [
   // Twilio
   { name: 'TWILIO_ACCOUNT_SID',                group: 'twilio' },
   { name: 'TWILIO_AUTH_TOKEN',                 group: 'twilio' },
-  { name: 'TWILIO_FROM_NUMBER',                group: 'twilio' },
+  { name: 'TWILIO_FROM_NUMBER', altNames: ['TWILIO_PHONE_NUMBER'], group: 'twilio' },
   // Ops alert phone (without this, alerts silently no-op — the exact failure mode we're trying to prevent)
-  { name: 'MANAGER_PHONE',                     group: 'alerts' },
+  { name: 'MANAGER_PHONE',      altNames: ['OPS_ALERT_PHONE'],      group: 'alerts' },
   // Shared secret for cron auth
   { name: 'CRON_SECRET',                       group: 'cron' },
 ];
 
+/**
+ * Look up an env var by its canonical name OR any of its alt-names. Returns
+ * the first non-empty value found, or undefined. Mirrors the `X || Y`
+ * pattern the runtime code uses, so the doctor never reports a var as
+ * missing when a fallback is actually set.
+ */
+function readEnvWithFallback(v: { name: string; altNames?: string[] }): {
+  value: string | undefined;
+  resolvedName: string | undefined;
+} {
+  const names = [v.name, ...(v.altNames ?? [])];
+  for (const n of names) {
+    const val = process.env[n];
+    if (val !== undefined && val.trim() !== '') {
+      return { value: val, resolvedName: n };
+    }
+  }
+  return { value: undefined, resolvedName: undefined };
+}
+
 async function checkEnvVars(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   const missing: string[] = [];
   const empty: string[] = [];
+  const usingAlt: string[] = [];
 
   for (const v of REQUIRED_ENV_VARS) {
-    const val = process.env[v.name];
-    if (val === undefined) {
-      missing.push(v.name);
-    } else if (val.trim() === '') {
-      empty.push(v.name);
+    // First check if the canonical name is set but empty (distinct failure mode).
+    const canonical = process.env[v.name];
+    const { value, resolvedName } = readEnvWithFallback(v);
+
+    if (value === undefined) {
+      // Nothing set under any accepted name.
+      const allNames = v.altNames?.length
+        ? `${v.name} (or ${v.altNames.join(', ')})`
+        : v.name;
+      if (canonical !== undefined && canonical.trim() === '') {
+        empty.push(allNames);
+      } else {
+        missing.push(allNames);
+      }
+    } else if (resolvedName && resolvedName !== v.name) {
+      // Working, but only via an alt-name. Flag as a warning-worthy note
+      // in the detail string — still counts as ok for the overall status.
+      usingAlt.push(`${v.name}=>${resolvedName}`);
     }
   }
 
   if (missing.length === 0 && empty.length === 0) {
-    return {
-      status: 'ok',
-      detail: `all ${REQUIRED_ENV_VARS.length} required env vars present`,
-    };
+    const detail = usingAlt.length
+      ? `all ${REQUIRED_ENV_VARS.length} required env vars present (using alt names: ${usingAlt.join(', ')})`
+      : `all ${REQUIRED_ENV_VARS.length} required env vars present`;
+    return { status: 'ok', detail };
   }
 
   const parts: string[] = [];

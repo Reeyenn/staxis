@@ -52,8 +52,8 @@ const CONFIG = {
   CA_USERNAME:  process.env.CA_USERNAME,
   CA_PASSWORD:  process.env.CA_PASSWORD,
 
-  // Supabase
-  SUPABASE_URL:              process.env.SUPABASE_URL,
+  // Supabase — accept either naming convention (see supabase-helpers.js)
+  SUPABASE_URL:              process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL,
   SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
 
   // HotelOps / Staxis
