@@ -662,7 +662,13 @@ function ScheduleSection() {
     () => shiftRooms.filter(r => !blockedRoomNumbers.has(r.number) && !r.isDnd),
     [shiftRooms, blockedRoomNumbers]
   );
-  const blockedCount = shiftRooms.filter(r => blockedRoomNumbers.has(r.number)).length;
+  // Count every open blocked work order for the property — NOT just blocked
+  // rooms that also happen to be in today's shift. Multi-day OOO blocks (e.g.
+  // a room deep-cleaned 4/22 → 4/30) get stripped out of the daily CA CSV, so
+  // intersecting with shiftRooms would silently miss them. This stat mirrors
+  // the "OOO" counter on ChoiceAdvantage, which counts the whole work-order
+  // list regardless of day.
+  const blockedCount = blockedRoomNumbers.size;
   const dndCount = shiftRooms.filter(r => r.isDnd && !blockedRoomNumbers.has(r.number)).length;
 
   const checkouts = workShiftRooms.filter(r => r.type === 'checkout').length;
