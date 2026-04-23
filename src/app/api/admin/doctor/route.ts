@@ -151,6 +151,51 @@ function readEnvWithFallback(v: { name: string; altNames?: string[] }): {
   return { value: undefined, resolvedName: undefined };
 }
 
+/**
+ * Serialize an unknown thrown value into a useful human string.
+ *
+ * `String(err)` on a plain object returns the string "[object Object]" —
+ * which is exactly what started surfacing in the doctor output once we
+ * moved off Firebase (whose SDK throws Error subclasses) onto Supabase
+ * (whose `PostgrestError` is a plain object { message, details, hint, code,
+ * status }). The old `err instanceof Error ? err.message : String(err)`
+ * pattern silently dropped every real error message.
+ *
+ * This helper:
+ *   - unwraps Error instances via .message
+ *   - extracts .message from plain object-shaped errors (Supabase, Twilio,
+ *     fetch responses that get rethrown as objects)
+ *   - appends .code / .hint / .status when present so we can diagnose
+ *     without a second round-trip
+ *   - falls back to JSON.stringify before String() as a last resort so we
+ *     never leak literal "[object Object]" into a dashboard again
+ */
+function errToString(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'string') return err;
+  if (err !== null && typeof err === 'object') {
+    const e = err as Record<string, unknown>;
+    const message = typeof e.message === 'string' ? e.message : null;
+    const code    = typeof e.code    === 'string' ? e.code    : null;
+    const hint    = typeof e.hint    === 'string' ? e.hint    : null;
+    const status  = typeof e.status  === 'number' ? e.status  : null;
+    if (message) {
+      const extra: string[] = [];
+      if (code)   extra.push(`code=${code}`);
+      if (hint)   extra.push(`hint=${hint}`);
+      if (status) extra.push(`status=${status}`);
+      return extra.length ? `${message} (${extra.join(', ')})` : message;
+    }
+    // No .message — try to serialize the whole object. Guard against
+    // circular refs, and trim to keep the response sane.
+    try {
+      const s = JSON.stringify(err);
+      if (s && s !== '{}') return s.length > 300 ? `${s.slice(0, 300)}...` : s;
+    } catch { /* fall through */ }
+  }
+  return String(err);
+}
+
 async function checkEnvVars(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   const missing: string[] = [];
   const empty: string[] = [];
@@ -211,10 +256,9 @@ async function checkSupabaseAdminAuth(): Promise<Omit<Check, 'name' | 'durationM
       detail: 'service_role key accepted by Supabase',
     };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
     return {
       status: 'fail',
-      detail: `Supabase Admin auth failed: ${msg}`,
+      detail: `Supabase Admin auth failed: ${errToString(err)}`,
       fix: 'SUPABASE_SERVICE_ROLE_KEY is likely stale/revoked. Supabase Dashboard → Project Settings → API → Reset service_role key. Update BOTH Vercel (SUPABASE_SERVICE_ROLE_KEY) AND Railway (SUPABASE_SERVICE_ROLE_KEY). See RUNBOOKS.md → Supabase Key Rotation.',
     };
   }
@@ -259,7 +303,7 @@ async function checkSupabaseHeartbeat(): Promise<Omit<Check, 'name' | 'durationM
   } catch (err) {
     return {
       status: 'fail',
-      detail: `Supabase read failed: ${err instanceof Error ? err.message : String(err)}`,
+      detail: `Supabase read failed: ${errToString(err)}`,
     };
   }
 }
@@ -296,7 +340,7 @@ async function checkSupabaseDashboard(): Promise<Omit<Check, 'name' | 'durationM
   } catch (err) {
     return {
       status: 'fail',
-      detail: `Supabase read failed: ${err instanceof Error ? err.message : String(err)}`,
+      detail: `Supabase read failed: ${errToString(err)}`,
     };
   }
 }
@@ -342,8 +386,7 @@ async function checkTwilioCredentials(): Promise<Omit<Check, 'name' | 'durationM
       detail: `Twilio account "${json.friendly_name ?? '?'}" active`,
     };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { status: 'fail', detail: `Twilio API call failed: ${msg}` };
+    return { status: 'fail', detail: `Twilio API call failed: ${errToString(err)}` };
   }
 }
 
