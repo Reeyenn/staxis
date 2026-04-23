@@ -10,6 +10,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { errToString } from '@/lib/utils';
 
 export async function GET(req: NextRequest) {
   try {
@@ -42,7 +43,7 @@ export async function GET(req: NextRequest) {
           sid: n.sid,
         }));
       } catch (e) {
-        return { error: String(e) };
+        return { error: errToString(e) };
       }
     }
 
@@ -69,7 +70,7 @@ export async function GET(req: NextRequest) {
           body: (m.body as string ?? '').slice(0, 120),
         }));
       } catch (e) {
-        return { error: String(e) };
+        return { error: errToString(e) };
       }
     }
 
@@ -108,6 +109,8 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ webhookLogs, confirmations, twilioNumbers, twilioMessages });
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    const msg = errToString(err);
+    console.error('[admin/diagnose] error:', msg);
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

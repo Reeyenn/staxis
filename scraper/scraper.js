@@ -455,6 +455,28 @@ async function run() {
   log(`Timezone: ${CONFIG.TIMEZONE} | Local hour: ${localHour()} | Today: ${todayISO()}`);
   log(`Tick every ${CONFIG.TICK_MINUTES} min — CSV pulls hourly 5am–11pm, dashboard numbers + OOO work orders every 15 min 5am–11pm`);
 
+  // ─── Required env var preflight ─────────────────────────────────────────
+  // If HOTELOPS_PROPERTY_ID is missing on Railway, every write ends up with
+  // property_id=undefined and Maria's dashboard silently shows zero rooms
+  // with no error. Fail LOUD here so Railway crash-loops and scraper-health
+  // SMS fires within 15 min instead of quietly writing garbage all night.
+  // CA_USERNAME / CA_PASSWORD check the same class of silent-drift bug.
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const preflightFailures = [];
+  if (!CONFIG.PROPERTY_ID) {
+    preflightFailures.push('HOTELOPS_PROPERTY_ID is not set');
+  } else if (!UUID_RE.test(CONFIG.PROPERTY_ID)) {
+    preflightFailures.push(`HOTELOPS_PROPERTY_ID is not a valid UUID (got "${CONFIG.PROPERTY_ID}")`);
+  }
+  if (!CONFIG.CA_USERNAME) preflightFailures.push('CA_USERNAME is not set');
+  if (!CONFIG.CA_PASSWORD) preflightFailures.push('CA_PASSWORD is not set');
+  if (preflightFailures.length > 0) {
+    console.error(`[${new Date().toISOString()}] FATAL: missing/invalid required env vars:`);
+    for (const f of preflightFailures) console.error(`  • ${f}`);
+    console.error('Fix: set these in Railway → Variables → Redeploy. See RUNBOOKS.md § "Railway env var drift".');
+    process.exit(1);
+  }
+
   // Verify Supabase credentials BEFORE launching Playwright. If creds are
   // stale/revoked, crash loud now instead of writing garbage for hours.
   await verifySupabaseAuth(supabase, log);

@@ -10,6 +10,7 @@
  */
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { errToString } from '@/lib/utils';
 
 function toE164(raw: string): string | null {
   const digits = raw.replace(/\D/g, '');
@@ -65,8 +66,9 @@ export async function POST() {
       examples,
     });
   } catch (err) {
-    console.error('backfill-phonelookup error:', err);
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    const msg = errToString(err);
+    console.error('backfill-phonelookup error:', msg);
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
 

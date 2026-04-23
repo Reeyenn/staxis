@@ -25,6 +25,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
+import { errToString } from '@/lib/utils';
 
 // Twilio expects TwiML (XML), not JSON. An empty <Response/> tells Twilio
 // "handled, send no auto-reply" — we've fired our own sendSms() already.
@@ -68,7 +69,7 @@ async function logHit(payload: Record<string, unknown>): Promise<void> {
       payload,
     });
   } catch (e) {
-    console.error('logHit failed:', e);
+    console.error('logHit failed:', errToString(e));
   }
 }
 
@@ -251,9 +252,10 @@ export async function POST(req: NextRequest) {
 
     return twimlOk();
   } catch (err) {
-    console.error('sms-reply error:', err);
+    const msg = errToString(err);
+    console.error('sms-reply error:', msg);
     try {
-      await logHit({ stage: 'handler_error', error: String(err) });
+      await logHit({ stage: 'handler_error', error: msg });
     } catch {}
     // Always 200 so Twilio doesn't retry
     return twimlOk();

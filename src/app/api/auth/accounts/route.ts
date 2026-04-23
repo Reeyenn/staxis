@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { errToString } from '@/lib/utils';
 
 // ─── Admin CRUD on the accounts table ──────────────────────────────────────
 // Guarded by the `x-account-id` header → accounts.role === 'admin' check.
@@ -184,7 +185,7 @@ export async function POST(req: NextRequest) {
     .single();
 
   if (insErr || !inserted) {
-    console.error('[accounts:POST] accounts insert failed, rolling back auth user', insErr);
+    console.error('[accounts:POST] accounts insert failed, rolling back auth user', errToString(insErr));
     // Roll back the auth user so we don't leak orphaned auth rows.
     await supabaseAdmin.auth.admin.deleteUser(authData.user.id).catch(() => {});
     return NextResponse.json({ error: 'Failed to create account record' }, { status: 500 });
@@ -301,7 +302,7 @@ export async function DELETE(req: NextRequest) {
   // Delete the auth user — the FK cascade removes the accounts row too.
   const { error: delErr } = await supabaseAdmin.auth.admin.deleteUser(target.data_user_id);
   if (delErr) {
-    console.error('[accounts:DELETE] auth.admin.deleteUser failed', delErr);
+    console.error('[accounts:DELETE] auth.admin.deleteUser failed', errToString(delErr));
     // If auth user was already gone, at least clean up the accounts row so
     // the admin isn't stuck with a zombie. PostgrestFilterBuilder is a
     // thenable but has no .catch — wrap in try/await.

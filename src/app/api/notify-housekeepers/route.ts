@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
+import { errToString } from '@/lib/utils';
 
 /**
  * POST /api/notify-housekeepers
@@ -119,13 +120,14 @@ export async function POST(req: NextRequest) {
 
     results.forEach((r, i) => {
       if (r.status === 'rejected') {
-        console.error(`SMS failed for ${entries[i].name}:`, (r as PromiseRejectedResult).reason);
+        console.error(`SMS failed for ${entries[i].name}:`, errToString((r as PromiseRejectedResult).reason));
       }
     });
 
     return NextResponse.json({ sent, failed });
   } catch (err) {
-    console.error('notify-housekeepers error:', err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    const msg = errToString(err);
+    console.error('notify-housekeepers error:', msg);
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

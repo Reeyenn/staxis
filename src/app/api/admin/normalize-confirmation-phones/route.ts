@@ -14,6 +14,7 @@
  */
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { errToString } from '@/lib/utils';
 
 function toE164(raw: string): string | null {
   if (!raw) return null;
@@ -66,8 +67,9 @@ export async function POST() {
 
     return NextResponse.json({ scanned, nonPending, rewritten, skipped, examples });
   } catch (err) {
-    console.error('normalize-confirmation-phones error:', err);
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    const msg = errToString(err);
+    console.error('normalize-confirmation-phones error:', msg);
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
 

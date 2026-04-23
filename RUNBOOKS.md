@@ -292,6 +292,145 @@ curl -I https://hotelops-ai.vercel.app/
 
 ---
 
+## Supabase JWT key expiration
+
+**Symptom:** Doctor check `supabase_jwt_expiry` shows WARN (expires within 30 days) or FAIL (already expired). If already expired: every admin route starts returning 500 within minutes, the app UI shows "Failed to fetch" errors, and `supabase_admin_auth` also flips red.
+
+**Diagnosis:**
+```bash
+# Decode the exp claim of either key (the middle base64url segment):
+node -e 'const [,p]=process.env.KEY.split("."); console.log(new Date(JSON.parse(Buffer.from(p.replace(/-/g,"+").replace(/_/g,"/"),"base64").toString()).exp*1000).toISOString())' \
+  KEY="<paste-key-here>"
+```
+The legacy Supabase JWT format (`eyJhbGci…`) has an `exp` claim, typically ~10 years from issuance. If you see this check in the WARN tier, schedule rotation on a calm day — not during an outage.
+
+**Fix:**
+1. Supabase Dashboard → Project Settings → API → Legacy API Keys → **Reset** service_role key (and anon key if it's also nearing expiry). Old keys die instantly.
+2. Vercel → Project Settings → Environment Variables → update `SUPABASE_SERVICE_ROLE_KEY` (and `NEXT_PUBLIC_SUPABASE_ANON_KEY` if rotated) → Redeploy.
+3. Railway → hotelops-scraper → Variables → update `SUPABASE_SERVICE_ROLE_KEY` → auto-redeploys.
+4. Wait for both deploys to finish (Vercel ~2 min, Railway ~90 sec).
+
+**Verify:**
+```bash
+curl -H "Authorization: Bearer $CRON_SECRET" https://hotelops-ai.vercel.app/api/admin/doctor | jq '.checks[] | select(.name=="supabase_jwt_expiry")'
+```
+Should show `status: "ok"` with fresh expiry (~10 years).
+
+**Prevention:** The doctor's `supabase_jwt_expiry` check warns 30 days ahead. The Railway vercel-watchdog polls doctor every 5 min, so even if GitHub Actions is down, you get SMS within a day of the WARN flipping on.
+
+---
+
+## MANAGER_PHONE missing or malformed on one platform
+
+**Symptom:** Scraper crashes or hits an error but you never get an SMS alert. GitHub Actions workflow for scraper-health shows green. Doctor check `alert_phone_shape` is red or skipped.
+
+**Diagnosis:** Compare `MANAGER_PHONE` (or `OPS_ALERT_PHONE`) values:
+- Vercel → Project Settings → Environment Variables.
+- Railway → hotelops-scraper → Variables.
+Both should be set and identical, in E.164 format (`+12816669887`, no spaces, no parens).
+
+The `alert_phone_shape` doctor check catches malformed values on Vercel. It CANNOT check Railway directly — for that, look at Railway → Deployments → Logs and search `[watchdog] CRON_SECRET not set` (the watchdog silently no-ops if CRON_SECRET is missing, but we don't have a similar check for MANAGER_PHONE).
+
+**Fix:**
+1. On whichever platform is missing / malformed, set `MANAGER_PHONE` to Reeyen's actual cell in E.164.
+2. Trigger a redeploy on that platform so the new env takes effect.
+
+**Verify:**
+Trigger a known-fail condition (easiest: `curl -X POST https://hotelops-ai.vercel.app/api/cron/scraper-health -H "Authorization: Bearer $CRON_SECRET"` while forcing a fake condition — or just wait until the next real scraper error). Confirm you get an SMS.
+
+**Prevention:** `alert_phone_shape` doctor check validates Vercel-side at every doctor call. For Railway-side drift, the daily-drift-check workflow catches it indirectly (if Railway scraper fails and tries to alert, the SMS send errors into the scraper logs — add a Railway log-based alarm if this keeps biting).
+
+---
+
+## GitHub Actions cron silently disabled
+
+**Symptom:** No workflow emails for 2+ days. Manual check of the Actions tab shows one or more workflows marked "This scheduled workflow has been disabled" or simply not running. Doctor check `scraper_health_cron` is red (lastCheckAt >25h stale).
+
+**Common causes:**
+- GitHub auto-disables scheduled workflows on public repos after 60 days of no repo activity.
+- Actions tab setting changed from "Allow all actions" to a more restrictive mode.
+- Actions billing lapsed (free tier exhausted for private repos).
+- PAT used by any action expired (less common for our workflows — they use `secrets.CRON_SECRET` directly).
+
+**Diagnosis:**
+```bash
+gh workflow list --repo Reeyenn/staxis
+# Look for "disabled_manually" / "disabled_inactivity" status.
+```
+Or visually: Actions tab → left sidebar → each workflow should show recent runs. If a workflow's header shows "This workflow has been disabled. Enable workflow", that's the culprit.
+
+**Fix:**
+1. In the Actions tab, click the workflow → "Enable workflow" button (top-right banner).
+2. Manually trigger one run to reset lastCheckAt: `gh workflow run scraper-health-cron.yml`.
+3. Refresh doctor: `curl -H "Authorization: Bearer $CRON_SECRET" https://hotelops-ai.vercel.app/api/admin/doctor | jq '.checks[] | select(.name=="scraper_health_cron")'` — should flip to ok.
+
+**Prevention:**
+- Doctor's `scraper_health_cron` check fails if lastCheckAt >25h. Railway vercel-watchdog polls doctor every 5 min, so within a few minutes of the cron going silent, you get an SMS.
+- Push a small commit to main every ~55 days if this repo goes quiet for a stretch — keeps the 60-day auto-disable from tripping.
+
+---
+
+## Railway env var drift
+
+**Symptom:** Vercel doctor is green but Railway scraper behavior is off. Examples: scraper heartbeat is fresh (so the process is alive), but dashboard numbers never update (scraper can't log into Choice Advantage because `CA_USERNAME` / `CA_PASSWORD` drifted); or app UI shows zero rooms on Schedule tab (`HOTELOPS_PROPERTY_ID` missing → scraper writes rows with null property_id).
+
+**Diagnosis:**
+Compare env vars across platforms:
+- Vercel → Project → Settings → Environment Variables.
+- Railway → hotelops-scraper → Variables.
+
+Keys that MUST match on both:
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `CRON_SECRET`
+
+Keys that live ONLY on Railway (scraper-side):
+- `CA_USERNAME`, `CA_PASSWORD` — Choice Advantage credentials.
+- `HOTELOPS_PROPERTY_ID` — the property UUID the scraper writes to.
+- `TIMEZONE` — defaults to `America/Chicago` if unset (OK to rely on default).
+- `MANAGER_PHONE` — alert target. Silent no-op if missing.
+
+Keys that live ONLY on Vercel:
+- `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` — client bundle.
+- `TWILIO_*` — all of them.
+- `MANAGER_PHONE` — also set here for the scraper-health / scraper-weekly-digest endpoints.
+
+Check Railway logs for the preflight block the scraper prints at startup. If you see `FATAL: missing/invalid required env vars`, that's your answer.
+
+**Fix:**
+1. Set the missing variable on Railway.
+2. Railway auto-redeploys when a variable changes — wait ~90 sec.
+3. Check Railway logs: you should see `=== HotelOps AI / Staxis CSV Runner starting ===` without any `FATAL` lines after it.
+
+**Verify:**
+```bash
+curl -H "Authorization: Bearer $CRON_SECRET" https://hotelops-ai.vercel.app/api/admin/doctor | jq '.checks[] | select(.name=="supabase_heartbeat")'
+```
+Heartbeat should be <10 min old. Then verify numbers are flowing: check the Schedule tab in the app.
+
+**Prevention:** The scraper now preflights `HOTELOPS_PROPERTY_ID`, `CA_USERNAME`, `CA_PASSWORD` at startup and `process.exit(1)` if any are missing or malformed — this turns silent writes-with-nulls into visible Railway crash-loops. Daily drift check catches the cross-platform Supabase key + CRON_SECRET class of drift.
+
+---
+
+## Supabase Realtime / platform outage
+
+**Symptom:** App loads but dashboard data never refreshes live — Maria has to F5 to see updates. Connecting the dots: the Schedule tab's auto-updating card counts stop changing even when a housekeeper marks a room. Browser DevTools Network tab shows failed WebSocket connections to `<project>.supabase.co/realtime/v1/websocket`.
+
+**Diagnosis:**
+1. Check https://status.supabase.com/ — is Realtime listed as degraded?
+2. Confirm it's not a client-side issue: have Reeyen open the app on a different network (phone hotspot).
+3. The doctor's `supabase_admin_auth` check will stay green during a Realtime-only outage (REST API is a separate service), so doctor alone isn't enough here.
+
+**Fix:** This is almost always a Supabase-platform issue, not ours. Wait for Supabase to resolve. Meanwhile, the app still works in "polling" mode — it's just not live.
+
+**Verify:** Open DevTools → Network → WS. Reconnect attempts should succeed once Supabase recovers. Real-time counters in the app start updating again.
+
+**Prevention:** This is the hardest class to catch proactively. Options if it starts happening repeatedly:
+- Subscribe to Supabase status page email alerts.
+- Consider adding client-side fallback polling (every 30s) when the WebSocket has been disconnected for >60s.
+- Add a Realtime probe to doctor (open a test subscription, confirm CHANNEL_OK within 5s). Not yet implemented — the WebSocket API requires more scaffolding than the other checks.
+
+---
+
 ## Meta: how to add a new failure mode to this doc
 
 Every time something breaks and takes more than 30 min to fix, come back and add a section here with Symptom / Diagnosis / Fix / Verify / Prevention. This file only pays for itself if we update it.

@@ -18,7 +18,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
-import { isValidDateStr } from '@/lib/utils';
+import { isValidDateStr, errToString } from '@/lib/utils';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -245,7 +245,7 @@ export async function POST(req: NextRequest) {
           try {
             await sendSms(phone164, msg);
           } catch (err) {
-            console.error(`Morning resend SMS failed for ${hk.staff_name}:`, err);
+            console.error(`Morning resend SMS failed for ${hk.staff_name}:`, errToString(err));
           }
         }
         updatedCount++;
@@ -283,7 +283,7 @@ export async function POST(req: NextRequest) {
           updated_at: nowIso,
         }, { onConflict: 'property_id,date' });
     } catch (e) {
-      console.error('[morning-resend] schedule_assignments mirror failed:', e);
+      console.error('[morning-resend] schedule_assignments mirror failed:', errToString(e));
     }
 
     return NextResponse.json({
@@ -293,7 +293,8 @@ export async function POST(req: NextRequest) {
     });
 
   } catch (err) {
-    console.error('morning-resend error:', err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    const msg = errToString(err);
+    console.error('morning-resend error:', msg);
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

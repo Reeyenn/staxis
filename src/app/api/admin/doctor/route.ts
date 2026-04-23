@@ -31,9 +31,19 @@
  *   env_vars                — every required env var is present and non-empty
  *   supabase_admin_auth     — preflight read using the service_role key
  *                             (catches stale/revoked keys)
+ *   supabase_jwt_expiry     — decodes the anon + service_role JWTs and
+ *                             warns if the exp claim is within 30 days
+ *                             (silent auth failure is the #1 future-break risk)
+ *   supabase_rls_enabled    — verifies RLS is still enabled on every
+ *                             user-facing table (catches accidental
+ *                             `ALTER TABLE … DISABLE ROW LEVEL SECURITY`)
  *   supabase_heartbeat      — scraper_status/heartbeat row exists and fresh
  *   supabase_dashboard      — scraper_status/dashboard row exists
+ *   scraper_health_cron     — GitHub Actions' scraper-health cron last ran
+ *                             within 25h (catches silently-disabled workflows)
  *   twilio_credentials      — Twilio REST API accepts our sid+token
+ *   alert_phone_shape       — MANAGER_PHONE is in E.164 format so
+ *                             sendSms() won't silently drop alerts
  *   cron_secret_shape       — CRON_SECRET is set and looks like a secret
  *                             (not accidentally left as "changeme")
  *
@@ -91,12 +101,16 @@ type DoctorReport = {
 type CheckFn = () => Promise<Omit<Check, 'name' | 'durationMs'>>;
 
 const checks: Array<[string, CheckFn]> = [
-  ['env_vars',             checkEnvVars],
-  ['supabase_admin_auth',  checkSupabaseAdminAuth],
-  ['supabase_heartbeat',   checkSupabaseHeartbeat],
-  ['supabase_dashboard',   checkSupabaseDashboard],
-  ['twilio_credentials',   checkTwilioCredentials],
-  ['cron_secret_shape',    checkCronSecretShape],
+  ['env_vars',              checkEnvVars],
+  ['supabase_admin_auth',   checkSupabaseAdminAuth],
+  ['supabase_jwt_expiry',   checkSupabaseJwtExpiry],
+  ['supabase_rls_enabled',  checkSupabaseRlsEnabled],
+  ['supabase_heartbeat',    checkSupabaseHeartbeat],
+  ['supabase_dashboard',    checkSupabaseDashboard],
+  ['scraper_health_cron',   checkScraperHealthCronLiveness],
+  ['twilio_credentials',    checkTwilioCredentials],
+  ['alert_phone_shape',     checkAlertPhoneShape],
+  ['cron_secret_shape',     checkCronSecretShape],
 ];
 
 // ─── Individual checks ───────────────────────────────────────────────────
@@ -220,6 +234,165 @@ async function checkSupabaseAdminAuth(): Promise<Omit<Check, 'name' | 'durationM
   }
 }
 
+/**
+ * Decode a Supabase legacy JWT (HS256, base64url payload) without verifying
+ * the signature. We ONLY care about the `exp` claim here — the signature is
+ * verified by Supabase itself on every request. Returns null if the token
+ * isn't a decodable JWT (e.g. new `sb_secret_*` format, which doesn't have
+ * an exp because it's an opaque API key).
+ */
+function decodeJwtExp(token: string | undefined): number | null {
+  if (!token) return null;
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;                 // not a JWT shape
+  try {
+    // base64url → base64
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    // atob handles base64; decodeURIComponent+escape trick gives us UTF-8.
+    const json = Buffer.from(b64, 'base64').toString('utf8');
+    const claims = JSON.parse(json) as { exp?: number };
+    return typeof claims.exp === 'number' ? claims.exp : null;
+  } catch {
+    return null;
+  }
+}
+
+async function checkSupabaseJwtExpiry(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  // The legacy Supabase keys are long-lived JWTs (typically ~10 years). When
+  // they finally expire, Supabase starts rejecting every admin/anon request
+  // with 401 and the app looks mysteriously broken. Warn ahead of time so
+  // rotation can happen on a calm Tuesday, not at 2am during an outage.
+  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const now = Math.floor(Date.now() / 1000);
+  const WARN_WINDOW_SEC = 30 * 86400;                  // 30 days
+
+  const probes: Array<{ label: string; token: string | undefined }> = [
+    { label: 'anon',         token: anon },
+    { label: 'service_role', token: service },
+  ];
+
+  const issues: string[] = [];
+  const okLines: string[] = [];
+  const opaque: string[] = [];
+
+  for (const p of probes) {
+    if (!p.token) {
+      // env_vars check will already flag this as missing — don't double-count.
+      opaque.push(`${p.label}: not set`);
+      continue;
+    }
+    const exp = decodeJwtExp(p.token);
+    if (exp === null) {
+      // New `sb_secret_*` / `sb_publishable_*` keys are opaque API keys with
+      // no exp. They rotate under a different model; treat as OK.
+      opaque.push(`${p.label}: opaque API key (no exp claim)`);
+      continue;
+    }
+    const secUntil = exp - now;
+    const daysUntil = Math.floor(secUntil / 86400);
+    if (secUntil <= 0) {
+      issues.push(`${p.label} EXPIRED (exp=${new Date(exp * 1000).toISOString()})`);
+    } else if (secUntil < WARN_WINDOW_SEC) {
+      issues.push(`${p.label} expires in ${daysUntil} days`);
+    } else {
+      okLines.push(`${p.label}: ${daysUntil}d remaining`);
+    }
+  }
+
+  if (issues.some(i => i.includes('EXPIRED'))) {
+    return {
+      status: 'fail',
+      detail: issues.join('; '),
+      fix: 'Supabase Dashboard → Project Settings → API → Reset keys. Update Vercel (NEXT_PUBLIC_SUPABASE_ANON_KEY + SUPABASE_SERVICE_ROLE_KEY) AND Railway (SUPABASE_SERVICE_ROLE_KEY). See RUNBOOKS.md → JWT expiration.',
+    };
+  }
+  if (issues.length > 0) {
+    return {
+      status: 'warn',
+      detail: issues.join('; '),
+      fix: 'Rotate Supabase keys before expiry. Supabase Dashboard → Project Settings → API → Reset keys. Update Vercel + Railway.',
+    };
+  }
+  const parts = [...okLines, ...opaque].filter(Boolean);
+  return { status: 'ok', detail: parts.join('; ') || 'keys valid' };
+}
+
+/**
+ * Critical tables where a disabled RLS policy = data leak (anon users can
+ * read every row across every property). If this check flips to fail, stop
+ * everything and fix immediately.
+ *
+ * Adding a new user-facing table? Add it here too.
+ */
+const RLS_REQUIRED_TABLES = [
+  'accounts',
+  'properties',
+  'staff',
+  'rooms',
+  'shift_confirmations',
+  'schedule_assignments',
+  'plan_snapshots',
+];
+
+async function checkSupabaseRlsEnabled(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  // pg_class.relrowsecurity is true iff RLS is currently enabled on the
+  // table. We read via the service_role client which bypasses RLS to see
+  // the raw pg_catalog state. If a developer ran `ALTER TABLE … DISABLE
+  // ROW LEVEL SECURITY` for debugging and forgot to re-enable it, this
+  // catches it before anon users start reading PII.
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('pg_tables_rls_status')
+      .select('tablename, rowsecurity')
+      .in('tablename', RLS_REQUIRED_TABLES);
+    if (error) {
+      // The view may not exist yet (migration 0003 adds it). Fall back to
+      // a single-table probe — if RLS is off on any critical table the
+      // service_role client still reads it (service_role bypasses RLS by
+      // design), so the only way to verify from application code is via a
+      // dedicated catalog view. Without the view, degrade to a warn.
+      return {
+        status: 'warn',
+        detail: `pg_tables_rls_status view not available (${errToString(error)}). Run migration 0003_rls_status_view.sql.`,
+        fix: 'Apply supabase/migrations/0003_rls_status_view.sql in the Supabase SQL editor so the doctor can verify RLS state.',
+      };
+    }
+    const byName = new Map<string, boolean>();
+    for (const row of (data ?? [])) {
+      byName.set(row.tablename as string, !!row.rowsecurity);
+    }
+    const missing: string[] = [];
+    const disabled: string[] = [];
+    for (const name of RLS_REQUIRED_TABLES) {
+      if (!byName.has(name)) { missing.push(name); continue; }
+      if (byName.get(name) !== true) disabled.push(name);
+    }
+    if (disabled.length > 0) {
+      return {
+        status: 'fail',
+        detail: `RLS DISABLED on: ${disabled.join(', ')} — anon users may be able to read these tables`,
+        fix: `ALTER TABLE ${disabled.join(', ')} ENABLE ROW LEVEL SECURITY;`,
+      };
+    }
+    if (missing.length > 0) {
+      return {
+        status: 'warn',
+        detail: `tables missing from pg_catalog: ${missing.join(', ')} (expected after migration)`,
+      };
+    }
+    return {
+      status: 'ok',
+      detail: `RLS enabled on all ${RLS_REQUIRED_TABLES.length} critical tables`,
+    };
+  } catch (err) {
+    return {
+      status: 'fail',
+      detail: `RLS check failed: ${errToString(err)}`,
+    };
+  }
+}
+
 async function checkSupabaseHeartbeat(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {
     const { data, error } = await supabaseAdmin
@@ -301,6 +474,72 @@ async function checkSupabaseDashboard(): Promise<Omit<Check, 'name' | 'durationM
   }
 }
 
+async function checkScraperHealthCronLiveness(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  // scraper-health runs every 15 min via GitHub Actions. On each invocation
+  // it writes `lastCheckAt` into scraper_status.alertState. If that field
+  // is more than 25h stale, the GitHub Actions cron has been silently
+  // disabled (possible causes: 60-day inactivity auto-disable on public
+  // repos, repo transfer, revoked PAT, Actions billing lapse, someone
+  // toggling it in the UI). When that happens scraper-health alerts stop
+  // firing entirely — the single worst silent failure mode for this app.
+  //
+  // The Railway vercel-watchdog polls this doctor endpoint every 5 min, so
+  // a fail here triggers an SMS within minutes even if GitHub Actions is
+  // completely dead. That's the whole point of having TWO independent
+  // platforms watch each other.
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('scraper_status')
+      .select('data')
+      .eq('key', 'alertState')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data?.data) {
+      return {
+        status: 'warn',
+        detail: 'scraper_status.alertState row not populated yet — scraper-health has never run',
+        fix: 'Trigger .github/workflows/scraper-health-cron.yml manually once, then confirm it completes.',
+      };
+    }
+    const value = data.data as { lastCheckAt?: string };
+    if (!value.lastCheckAt) {
+      return {
+        status: 'warn',
+        detail: 'alertState.lastCheckAt not set — scraper-health may not have completed a full run',
+      };
+    }
+    const last = new Date(value.lastCheckAt);
+    if (isNaN(last.getTime())) {
+      return { status: 'warn', detail: `lastCheckAt is not a valid date: ${value.lastCheckAt}` };
+    }
+    const minAgo = Math.floor((Date.now() - last.getTime()) / 60_000);
+    // scraper-health runs every 15 min, so anything over 60 min means the
+    // cron is degraded; over 25h (1500 min) means it's dead.
+    if (minAgo > 25 * 60) {
+      return {
+        status: 'fail',
+        detail: `scraper-health cron hasn't run in ${Math.floor(minAgo / 60)}h — GitHub Actions is likely silently disabled`,
+        fix: 'GitHub → Reeyenn/staxis → Actions → Post-deploy smoke test / Scraper Health Check: verify the workflows aren\'t disabled. Also check Actions → Settings → General → "Actions permissions" isn\'t restricted. See RUNBOOKS.md → GitHub Actions cron disabled.',
+      };
+    }
+    if (minAgo > 60) {
+      return {
+        status: 'warn',
+        detail: `scraper-health last ran ${minAgo} min ago (normal cadence is every 15 min)`,
+      };
+    }
+    return {
+      status: 'ok',
+      detail: `scraper-health cron ran ${minAgo} min ago`,
+    };
+  } catch (err) {
+    return {
+      status: 'fail',
+      detail: `scraper-health liveness check failed: ${errToString(err)}`,
+    };
+  }
+}
+
 async function checkTwilioCredentials(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   const sid = process.env.TWILIO_ACCOUNT_SID;
   const tok = process.env.TWILIO_AUTH_TOKEN;
@@ -344,6 +583,43 @@ async function checkTwilioCredentials(): Promise<Omit<Check, 'name' | 'durationM
   } catch (err) {
     return { status: 'fail', detail: `Twilio API call failed: ${errToString(err)}` };
   }
+}
+
+async function checkAlertPhoneShape(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  // MANAGER_PHONE is read by scraper-health, scraper-weekly-digest, and the
+  // Railway vercel-watchdog. If it's missing or malformed, alerts silently
+  // no-op — which is the exact class of failure the alerting system was
+  // supposed to catch in the first place. env_vars already checks it's set;
+  // this check validates it's *usable*.
+  const phone = process.env.MANAGER_PHONE || process.env.OPS_ALERT_PHONE;
+  if (!phone) {
+    return {
+      status: 'skipped',
+      detail: 'MANAGER_PHONE missing (reported by env_vars check)',
+    };
+  }
+  // Accept E.164: +[country code][digits], 11–15 digits total.
+  const e164 = /^\+[1-9]\d{10,14}$/;
+  if (!e164.test(phone.trim())) {
+    return {
+      status: 'fail',
+      detail: `MANAGER_PHONE is not in E.164 format (got "${phone}"). Twilio will reject sends.`,
+      fix: 'Set MANAGER_PHONE to E.164 format on Vercel, e.g. "+12816669887". No spaces, no parens, starts with +.',
+    };
+  }
+  // Placeholder sanity.
+  const placeholders = ['+10000000000', '+15555555555', '+1234567890'];
+  if (placeholders.includes(phone.trim())) {
+    return {
+      status: 'fail',
+      detail: `MANAGER_PHONE is a placeholder (${phone}). Real alerts will be silently sent to /dev/null.`,
+      fix: 'Set MANAGER_PHONE to Reeyen\'s actual cell on Vercel AND Railway.',
+    };
+  }
+  return {
+    status: 'ok',
+    detail: `MANAGER_PHONE is valid E.164 (${phone.slice(0, 2)}…${phone.slice(-4)})`,
+  };
 }
 
 async function checkCronSecretShape(): Promise<Omit<Check, 'name' | 'durationMs'>> {

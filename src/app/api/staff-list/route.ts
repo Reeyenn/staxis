@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { errToString } from '@/lib/utils';
 
 // Public endpoint — returns the staff scheduled to work today for a given
 // property. Used by the housekeeper mobile page to let someone identify who
@@ -24,8 +25,9 @@ export async function GET(req: NextRequest) {
     .eq('scheduled_today', true);
 
   if (error) {
-    console.error('[staff-list] query failed', error);
-    return NextResponse.json({ error: 'Failed to load staff' }, { status: 500 });
+    const msg = errToString(error);
+    console.error('[staff-list] query failed', msg);
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 
   // Translate snake_case → camelCase for the client (it expects the legacy

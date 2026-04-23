@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
+import { errToString } from '@/lib/utils';
 
 /**
  * POST /api/notify-backup
@@ -89,14 +90,15 @@ export async function POST(req: NextRequest) {
     } catch (err) {
       console.error(
         `[notify-backup] SMS failed for ${backup.name} (${backup.phone}):`,
-        err
+        errToString(err)
       );
       return NextResponse.json({ sent: 0, failed: 1 });
     }
   } catch (err) {
-    console.error('[notify-backup] error:', err);
+    const msg = errToString(err);
+    console.error('[notify-backup] error:', msg);
     return NextResponse.json(
-      { error: 'Internal server error' },
+      { error: msg },
       { status: 500 }
     );
   }

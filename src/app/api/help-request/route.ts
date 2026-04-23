@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
+import { errToString } from '@/lib/utils';
 
 /**
  * POST /api/help-request
@@ -93,14 +94,15 @@ export async function POST(req: NextRequest) {
     } catch (err) {
       console.error(
         `[help-request] SMS failed for scheduling manager ${manager.name} (${manager.phone}):`,
-        err
+        errToString(err)
       );
       return NextResponse.json({ sent: 0, failed: 1 });
     }
   } catch (err) {
-    console.error('[help-request] error:', err);
+    const msg = errToString(err);
+    console.error('[help-request] error:', msg);
     return NextResponse.json(
-      { error: 'Internal server error' },
+      { error: msg },
       { status: 500 }
     );
   }

@@ -25,6 +25,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
+import { errToString } from '@/lib/utils';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -121,7 +122,7 @@ async function runDigest(): Promise<{ sent: boolean; detail: string }> {
       await sendSms(alertPhone, message);
       smsSent = true;
     } catch (err) {
-      console.error('[scraper-weekly-digest] SMS send failed', (err as Error).message);
+      console.error('[scraper-weekly-digest] SMS send failed', errToString(err));
     }
   } else {
     console.warn('[scraper-weekly-digest] MANAGER_PHONE/OPS_ALERT_PHONE env var not set — digest would say:', message);
@@ -151,9 +152,10 @@ export async function GET(req: NextRequest) {
     const result = await runDigest();
     return NextResponse.json({ ok: true, ...result });
   } catch (err) {
-    console.error('[scraper-weekly-digest] handler threw', err);
+    const msg = errToString(err);
+    console.error('[scraper-weekly-digest] handler threw', msg);
     return NextResponse.json(
-      { ok: false, error: (err as Error).message },
+      { ok: false, error: msg },
       { status: 500 }
     );
   }

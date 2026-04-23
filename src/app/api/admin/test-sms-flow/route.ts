@@ -18,6 +18,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
+import { errToString } from '@/lib/utils';
 
 function toE164(raw: string): string | null {
   const digits = raw.replace(/\D/g, '');
@@ -114,8 +115,9 @@ export async function POST(req: NextRequest) {
       instructions: `Reply ENGLISH or ESPAÑOL to the text to flip language. Then GET this same URL again with ?check=${encodeURIComponent(token)} to see the row.`,
     });
   } catch (err) {
-    console.error('test-sms-flow error:', err);
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    const msg = errToString(err);
+    console.error('test-sms-flow error:', msg);
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
 
@@ -131,7 +133,7 @@ export async function GET(req: NextRequest) {
     .select('token, status, staff_phone, language, responded_at')
     .eq('token', check)
     .maybeSingle();
-  if (error) return NextResponse.json({ error: String(error.message) }, { status: 500 });
+  if (error) return NextResponse.json({ error: errToString(error) }, { status: 500 });
   if (!data) return NextResponse.json({ error: 'not found' }, { status: 404 });
   return NextResponse.json({
     token: data.token,

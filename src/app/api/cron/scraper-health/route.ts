@@ -41,6 +41,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin, verifySupabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
+import { errToString } from '@/lib/utils';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -245,7 +246,7 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
           `Staxis scraper: recovered. PMS numbers are flowing again${ctx.pulledAtStr ? ` (last pull ${ctx.pulledAtStr})` : ''}.`
         );
       } catch (err) {
-        console.error('[scraper-health] recovery SMS failed', (err as Error).message);
+        console.error('[scraper-health] recovery SMS failed', errToString(err));
       }
     }
     await mergeStatus('alertState', {
@@ -304,7 +305,7 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
       await sendSms(alertPhone, message);
       smsSent = true;
     } catch (err) {
-      console.error('[scraper-health] SMS send failed', (err as Error).message);
+      console.error('[scraper-health] SMS send failed', errToString(err));
     }
   } else {
     console.warn('[scraper-health] MANAGER_PHONE env var not set — alert would fire:', message);
@@ -336,9 +337,10 @@ export async function GET(req: NextRequest) {
     const result = await runHealthCheck();
     return NextResponse.json({ ok: true, ...result });
   } catch (err) {
-    console.error('[scraper-health] handler threw', err);
+    const msg = errToString(err);
+    console.error('[scraper-health] handler threw', msg);
     return NextResponse.json(
-      { ok: false, error: (err as Error).message },
+      { ok: false, error: msg },
       { status: 500 }
     );
   }

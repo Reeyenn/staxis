@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
+import { errToString } from '@/lib/utils';
 
 interface SmsEntry {
   phone: string;          // E.164 format, e.g. +15551234567
@@ -71,13 +72,14 @@ export async function POST(req: NextRequest) {
 
     results.forEach((r, i) => {
       if (r.status === 'rejected') {
-        console.error(`SMS failed for ${entries[i].name} (${entries[i].phone}):`, r.reason);
+        console.error(`SMS failed for ${entries[i].name} (${entries[i].phone}):`, errToString(r.reason));
       }
     });
 
     return NextResponse.json({ sent, failed });
   } catch (err) {
-    console.error('notify-housekeepers-sms error:', err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    const msg = errToString(err);
+    console.error('notify-housekeepers-sms error:', msg);
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

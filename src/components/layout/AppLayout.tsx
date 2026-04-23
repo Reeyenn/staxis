@@ -21,13 +21,19 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     ? `Offline - ${pendingCount} ${t('changesQueued', lang)}`
     : t('offline', lang);
 
-  // Register FCM service worker for push notifications
+  // Notifications migrated from FCM → Twilio SMS in 2026-04 Supabase migration.
+  // Any previously-installed /firebase-messaging-sw.js is unregistered on mount
+  // so stale browsers stop fetching a file that no longer ships with the app.
   useEffect(() => {
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker
-        .register('/firebase-messaging-sw.js', { scope: '/' })
-        .catch((err) => console.warn('SW registration failed:', err));
-    }
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.getRegistrations()
+      .then(regs => {
+        regs.forEach(reg => {
+          const url = reg.active?.scriptURL ?? reg.installing?.scriptURL ?? reg.waiting?.scriptURL ?? '';
+          if (url.includes('firebase-messaging-sw')) reg.unregister().catch(() => { /* best effort */ });
+        });
+      })
+      .catch(() => { /* best effort — old browsers */ });
   }, []);
 
   return (
