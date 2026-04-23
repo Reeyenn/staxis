@@ -20,7 +20,7 @@
 // and are enforced by RLS (properties.owner_id = auth.uid() and
 // user_owns_property() for the 22 per-property tables).
 
-import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { createClient, type LockFunc, type SupabaseClient } from '@supabase/supabase-js';
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -34,6 +34,27 @@ if (!url || !anonKey) {
     'Fix: Vercel Project Settings → Environment Variables, then redeploy.'
   );
 }
+
+// In-process lock: serialize concurrent auth calls inside a single tab via a
+// Promise chain. Replaces Supabase's default `navigator.locks`-based lock,
+// which has a pathological failure mode when AuthProvider (or any component
+// calling `supabase.auth.*`) re-mounts before the previous holder finished —
+// the lock sits unreleased for a full 5 seconds until gotrue-js force-steals
+// it, producing a visible "Sign in just hangs and spins" bug. The console
+// warning is: `Lock "lock:staxis-auth" was not released within 5000ms`.
+//
+// Why in-process is safe: we don't do cross-tab session coordination. Each
+// tab owns its own localStorage session; on sign-in/out we want the local
+// operation to serialize, not wait for other tabs. If you ever add a
+// BroadcastChannel-based cross-tab sync, revisit this.
+let __authLockChain: Promise<unknown> = Promise.resolve();
+const inProcessLock: LockFunc = (_name, _acquireTimeout, fn) => {
+  const myTurn = __authLockChain.then(() => fn());
+  // Swallow rejections in the chain so one failed call doesn't poison all
+  // future lock acquisitions.
+  __authLockChain = myTurn.catch(() => {});
+  return myTurn;
+};
 
 // Singleton across HMR reloads — new client per render would drop the
 // auth session listener and cause onAuthStateChange to miss events.
@@ -59,6 +80,8 @@ export const supabase: SupabaseClient =
       // existing sessions.
       storageKey: 'staxis-auth',
       flowType: 'pkce',
+      // See `inProcessLock` above — fixes the navigator.locks deadlock.
+      lock: inProcessLock,
     },
   });
 
