@@ -12,7 +12,7 @@ import {
   getDeepCleanConfig, getDeepCleanRecords,
   subscribeToWorkOrders,
   subscribeToHandoffLogs,
-} from '@/lib/firestore';
+} from '@/lib/db';
 import { getOverdueRooms, calcDndFreedMinutes, suggestDeepCleans } from '@/lib/calculations';
 import { todayStr } from '@/lib/utils';
 import type { Room, DeepCleanConfig, DeepCleanRecord, WorkOrder, HandoffEntry } from '@/types';

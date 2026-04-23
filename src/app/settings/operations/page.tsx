@@ -9,7 +9,7 @@ import {
   getPublicAreas, setPublicArea, deletePublicArea,
   getDeepCleanConfig, setDeepCleanConfig,
   getDeepCleanRecords, markRoomDeepCleaned,
-} from '@/lib/firestore';
+} from '@/lib/db';
 import { getDefaultPublicAreas } from '@/lib/defaults';
 import { daysSinceDeepClean } from '@/lib/calculations';
 import { t } from '@/lib/translations';

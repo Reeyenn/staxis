@@ -7,7 +7,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import { AppLayout } from '@/components/layout/AppLayout';
-import { subscribeToRooms, updateRoom } from '@/lib/firestore';
+import { subscribeToRooms, updateRoom } from '@/lib/db';
 import { todayStr } from '@/lib/utils';
 import type { Room } from '@/types';
 

@@ -23,9 +23,9 @@ import {
   subscribeToDashboardNumbers,
   getDashboardForDate,
   subscribeToWorkOrders,
-} from '@/lib/firestore';
-import type { PlanSnapshot, ScheduleAssignments, CsvRoomSnapshot, DashboardNumbers } from '@/lib/firestore';
-import { dashboardFreshness, DASHBOARD_STALE_MINUTES } from '@/lib/firestore';
+} from '@/lib/db';
+import type { PlanSnapshot, ScheduleAssignments, CsvRoomSnapshot, DashboardNumbers } from '@/lib/db';
+import { dashboardFreshness, DASHBOARD_STALE_MINUTES } from '@/lib/db';
 import { getPublicAreasDueToday, calcPublicAreaMinutes, autoAssignRooms, getOverdueRooms, calcDndFreedMinutes, suggestDeepCleans } from '@/lib/calculations';
 import { getDefaultPublicAreas } from '@/lib/defaults';
 import type { PublicArea } from '@/types';
@@ -4597,7 +4597,7 @@ function DeepCleanSection() {
     if (!uid || !pid || !editDate) return;
     setSaving(true);
     try {
-      const { setDeepCleanRecord } = await import('@/lib/firestore');
+      const { setDeepCleanRecord } = await import('@/lib/db');
       const existing = records[roomNumber];
       await setDeepCleanRecord(uid, pid, {
         id: roomNumber, roomNumber,

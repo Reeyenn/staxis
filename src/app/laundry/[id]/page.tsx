@@ -9,7 +9,7 @@ import {
   subscribeToRooms,
   getStaffMember,
   saveStaffLanguage,
-} from '@/lib/firestore';
+} from '@/lib/db';
 import { isAreaDueToday, calcLaundryMinutes } from '@/lib/calculations';
 import type { PublicArea, LaundryCategory, Room } from '@/types';
 import { format } from 'date-fns';

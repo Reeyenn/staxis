@@ -7,7 +7,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import {
   subscribeToInspections, addInspection, updateInspection, deleteInspection,
-} from '@/lib/firestore';
+} from '@/lib/db';
 import type { Inspection } from '@/types';
 import {
   Plus, ClipboardCheck, AlertTriangle, Check, Calendar, Trash2, ChevronRight, X,

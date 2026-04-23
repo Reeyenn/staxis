@@ -7,7 +7,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import { AppLayout } from '@/components/layout/AppLayout';
-import { getRecentDailyLogs } from '@/lib/firestore';
+import { getRecentDailyLogs } from '@/lib/db';
 import { formatDate } from '@/lib/utils';
 import type { DailyLog } from '@/types';
 import {

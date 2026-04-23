@@ -6,7 +6,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import { AppLayout } from '@/components/layout/AppLayout';
-import { addStaffMember, updateStaffMember, deleteStaffMember } from '@/lib/firestore';
+import { addStaffMember, updateStaffMember, deleteStaffMember } from '@/lib/db';
 import { generateId } from '@/lib/utils';
 import type { StaffMember } from '@/types';
 import { Modal } from '@/components/ui/Modal';

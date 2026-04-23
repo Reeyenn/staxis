@@ -11,7 +11,7 @@ import {
   bulkSetPublicAreas,
   setLaundryCategory,
   subscribeToStaff,
-} from '@/lib/firestore';
+} from '@/lib/db';
 import { getDefaultPublicAreas, getDefaultLaundryCategories } from '@/lib/defaults';
 import { format } from 'date-fns';
 import type { Property, StaffMember, PublicArea, LaundryCategory } from '@/types';

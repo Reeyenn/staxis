@@ -4,7 +4,7 @@ import React, { useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { AppLayout } from '@/components/layout/AppLayout';
-import { updateProperty } from '@/lib/firestore';
+import { updateProperty } from '@/lib/db';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import { Wifi, WifiOff, Shield, Zap, AlertCircle, CheckCircle, ChevronDown } from 'lucide-react';

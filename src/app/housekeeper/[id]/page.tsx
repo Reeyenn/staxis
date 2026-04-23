@@ -7,7 +7,7 @@ import {
   updateRoom,
   getStaffMember,
   saveStaffLanguage,
-} from '@/lib/firestore';
+} from '@/lib/db';
 import { todayStr } from '@/lib/utils';
 import type { Room, RoomStatus } from '@/types';
 import { format } from 'date-fns';

@@ -1,14 +1,14 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // Data access layer — Supabase/Postgres.
 //
-// File name is kept as `firestore.ts` as a deliberate no-op rename so that
-// every existing `import { ... } from '@/lib/firestore'` in the codebase
-// continues to work without edits. The implementation has been entirely
-// rewritten on top of Supabase (Postgres + Realtime). Function signatures
-// are preserved exactly — the `uid` first arg is accepted for backward
-// compatibility and ignored, because scoping is now by `property_id` plus
-// RLS (authenticated user's JWT identifies them; service-role key bypasses
-// RLS for scraper/cron/admin routes).
+// This is the single entry point every page uses to read/write app data.
+// The public function surface (subscribeToRooms, updateRoom, getStaffMember,
+// etc.) is stable — callers don't care which database is underneath.
+//
+// The `uid` first arg on many functions is a legacy parameter from the old
+// Firestore era, accepted for backward compatibility and ignored, because
+// scoping is now by `property_id` plus RLS (authenticated user's JWT
+// identifies them; service-role key bypasses RLS for scraper/cron/admin).
 //
 // All real-time listeners use Supabase Realtime's `postgres_changes`
 // channel. Each subscribe* helper does an initial fetch, pushes the result

@@ -11,8 +11,8 @@ import {
   subscribeToShiftConfirmations, subscribeToManagerNotifications,
   markNotificationRead, markAllNotificationsRead,
   subscribeToPlanSnapshot,
-} from '@/lib/firestore';
-import type { PlanSnapshot } from '@/lib/firestore';
+} from '@/lib/db';
+import type { PlanSnapshot } from '@/lib/db';
 import type { StaffMember, StaffDepartment, ShiftConfirmation, ManagerNotification, ConfirmationStatus } from '@/types';
 import {
   Users, Plus, Pencil, Trash2, Star, Clock,

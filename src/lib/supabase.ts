@@ -33,10 +33,8 @@ export const supabase: SupabaseClient =
 
 if (typeof window !== 'undefined') g.__supabaseBrowser = supabase;
 
-// Back-compat named exports so legacy `import { auth, db } from '@/lib/firebase'`
-// can be swapped for `import { auth, db } from '@/lib/supabase'` as a cheap
-// drop-in. `auth` is the supabase.auth namespace; `db` is the whole client
-// (used to reach into tables via .from()).
+// Named exports: `auth` is the supabase.auth namespace; `db` is the whole
+// client (used to reach into tables via .from()).
 export const auth = supabase.auth;
 export const db = supabase;
 

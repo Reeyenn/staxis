@@ -13,7 +13,7 @@ import { timeAgo } from '@/lib/utils';
 import {
   subscribeToWorkOrders, addWorkOrder, updateWorkOrder, deleteWorkOrder,
   subscribeToLandscapingTasks, addLandscapingTask, updateLandscapingTask, deleteLandscapingTask,
-} from '@/lib/firestore';
+} from '@/lib/db';
 import type { WorkOrder, WorkOrderSeverity, WorkOrderStatus, LandscapingTask, LandscapingSeason } from '@/types';
 import {
   Plus, X, Trash2, Wrench, CheckCircle2, Check, Clock, ChevronDown, ChevronUp,

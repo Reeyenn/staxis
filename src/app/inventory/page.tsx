@@ -9,7 +9,7 @@ import { t } from '@/lib/translations';
 import { AppLayout } from '@/components/layout/AppLayout';
 import {
   subscribeToInventory, addInventoryItem, updateInventoryItem, deleteInventoryItem,
-} from '@/lib/firestore';
+} from '@/lib/db';
 import type { InventoryItem, InventoryCategory } from '@/types';
 import {
   Plus, Package, ClipboardCheck, Clock, AlertTriangle, Check, Info,

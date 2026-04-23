@@ -5,7 +5,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
-import { updateProperty, createProperty } from '@/lib/firestore';
+import { updateProperty, createProperty } from '@/lib/db';
 import { t } from '@/lib/translations';
 import { Building2, Plus, Check } from 'lucide-react';
 import Link from 'next/link';
