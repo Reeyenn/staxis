@@ -12,6 +12,8 @@ import {
   getDeepCleanConfig, getDeepCleanRecords,
   subscribeToWorkOrders,
   subscribeToHandoffLogs,
+  subscribeToDashboardNumbers,
+  type DashboardNumbers,
 } from '@/lib/db';
 import { getOverdueRooms, calcDndFreedMinutes, suggestDeepCleans } from '@/lib/calculations';
 import { todayStr } from '@/lib/utils';
@@ -39,6 +41,7 @@ export default function DashboardPage() {
   const [reservationCount, setReservationCount] = useState(0);
   const [adr, setAdr] = useState(0);
   const [editingField, setEditingField] = useState<string | null>(null);
+  const [dashboardNums, setDashboardNums] = useState<DashboardNumbers | null>(null);
 
   // Hero banner images — randomly picked on each page load
   const HERO_IMAGES = [
@@ -98,6 +101,29 @@ export default function DashboardPage() {
     if (!user || !activePropertyId) return;
     return subscribeToHandoffLogs(user.uid, activePropertyId, setHandoffs);
   }, [user, activePropertyId]);
+
+  // Subscribe to the scraper-written dashboard numbers (CA View pages:
+  // In House, Arrivals still pending, Departures still pending). Refreshes
+  // every ~15 min via the scraper tick.
+  useEffect(() => {
+    return subscribeToDashboardNumbers(setDashboardNums);
+  }, []);
+
+  // Mirror the scraper's live numbers into the stat-card state. This card
+  // was originally a manual-entry card (InlineEdit still works for manual
+  // override), but leaving it at zero by default was silently wrong — the
+  // PMS data was being scraped to Supabase all along, the page just never
+  // read it. Skip the mirror while the user is actively editing that field
+  // so a mid-typing scraper tick doesn't clobber their input.
+  useEffect(() => {
+    if (!dashboardNums) return;
+    if (typeof dashboardNums.arrivals === 'number' && editingField !== 'arrivals') {
+      setArrivals(dashboardNums.arrivals);
+    }
+    if (typeof dashboardNums.inHouse === 'number' && editingField !== 'in-house') {
+      setInHouseGuests(dashboardNums.inHouse);
+    }
+  }, [dashboardNums, editingField]);
 
   const openOrders = workOrders.filter(o => o.status !== 'resolved');
   const urgentOrders = openOrders.filter(o => o.severity === 'urgent');
