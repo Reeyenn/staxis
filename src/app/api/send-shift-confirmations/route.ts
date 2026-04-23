@@ -370,10 +370,11 @@ export async function POST(req: NextRequest) {
               .eq('token', token);
             return { staffId, status: 'sent', isUpdate };
           } catch (smsErr) {
-            const errMsg = smsErr instanceof Error ? smsErr.message : String(smsErr);
+            // Use errToString so Supabase-shaped errors (plain objects) don't
+            // stringify to "[object Object]" in the sms_error column.
             await supabaseAdmin
               .from('shift_confirmations')
-              .update({ sms_sent: false, sms_error: errMsg })
+              .update({ sms_sent: false, sms_error: errToString(smsErr) })
               .eq('token', token);
             throw smsErr;
           }

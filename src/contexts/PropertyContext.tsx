@@ -74,10 +74,11 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   };
 
   // Load properties list.
-  // After account-based login, the Firestore SDK's internal auth listener may
-  // not have processed the new custom-token session yet when this effect fires.
-  // If the first attempt fails with a permissions error, retry once after a
-  // short delay to give Firestore time to pick up the auth change.
+  // After sign-in there may be a brief delay before the RLS context
+  // (auth.uid() in Postgres) catches up with the Supabase client's JWT —
+  // typically a few hundred ms. If the first attempt fails with a permission
+  // error, retry with a short backoff so the user isn't greeted by a
+  // spurious "No properties found" screen during that window.
   useEffect(() => {
     if (!user) {
       setLoading(false);
@@ -101,11 +102,31 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         setActivePropertyIdState(pid);
       } catch (err) {
         if (cancelled) return;
-        const errStr = String(err).toLowerCase();
-        const isPermErr = errStr.includes('permission') || errStr.includes('unauthorized') || errStr.includes('unauthenticated');
-        // Firestore auth may not be synced yet — retry with increasing delay
+        // Detect Supabase/PostgREST permission errors.
+        //   - PGRST301 = JWT-related (missing/invalid/expired auth)
+        //   - PGRST116 = no rows returned where one expected (not really perm,
+        //     but symptomatic of an auth race where RLS hid the row)
+        //   - '42501' = Postgres "insufficient_privilege"
+        //   - Text fallbacks for anything that doesn't bubble a code.
+        //
+        // Firestore-era strings ('permission', 'unauthorized',
+        // 'unauthenticated') kept as a safety net but will rarely match
+        // Supabase responses.
+        const e = err as { code?: string; message?: string } | undefined;
+        const code = String(e?.code ?? '').toUpperCase();
+        const errStr = String(e?.message ?? err).toLowerCase();
+        const isPermErr =
+          code === 'PGRST301' ||
+          code === 'PGRST116' ||
+          code === '42501' ||
+          errStr.includes('policy') ||
+          errStr.includes('jwt') ||
+          errStr.includes('permission') ||
+          errStr.includes('unauthorized') ||
+          errStr.includes('unauthenticated');
+        // Retry with short backoff: 200ms, 500ms, 1s.
         if (retries > 0 && isPermErr) {
-          const delay = (4 - retries) * 1000; // 1s, 2s, 3s
+          const delay = retries === 3 ? 200 : retries === 2 ? 500 : 1000;
           await new Promise(r => setTimeout(r, delay));
           if (!cancelled) return loadProps(retries - 1);
         }

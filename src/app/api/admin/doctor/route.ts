@@ -104,6 +104,7 @@ const checks: Array<[string, CheckFn]> = [
   ['env_vars',              checkEnvVars],
   ['supabase_admin_auth',   checkSupabaseAdminAuth],
   ['supabase_jwt_expiry',   checkSupabaseJwtExpiry],
+  ['supabase_anon_key',     checkSupabaseAnonKeyShape],
   ['supabase_rls_enabled',  checkSupabaseRlsEnabled],
   ['supabase_heartbeat',    checkSupabaseHeartbeat],
   ['supabase_dashboard',    checkSupabaseDashboard],
@@ -649,6 +650,86 @@ async function checkCronSecretShape(): Promise<Omit<Check, 'name' | 'durationMs'
   return {
     status: 'ok',
     detail: `CRON_SECRET present (${secret.length} chars)`,
+  };
+}
+
+/**
+ * supabase_anon_key — validates that NEXT_PUBLIC_SUPABASE_ANON_KEY is a
+ * well-formed JWT with role=anon.
+ *
+ * Why this matters: the anon key gets bundled into every client-side page.
+ * If someone mis-pastes it in Vercel (missing a few chars in the middle),
+ * every browser request fails with 401 "Invalid API key" before auth is
+ * even checked — but the front-end error handler surfaces it as the
+ * generic "Invalid username or password", making it look like a password
+ * problem. This check catches a corrupt anon key at every deploy instead
+ * of you discovering it by failing to log in.
+ *
+ * History: 2026-04-23 — Reeyen couldn't log in for hours because 3
+ * characters were missing from the Vercel anon key's JWT payload.
+ */
+async function checkSupabaseAnonKeyShape(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!key) {
+    return {
+      status: 'fail',
+      detail: 'NEXT_PUBLIC_SUPABASE_ANON_KEY is not set',
+      fix: 'Vercel → Project Settings → Environment Variables → NEXT_PUBLIC_SUPABASE_ANON_KEY. Get the value from Supabase Dashboard → Project Settings → API → Project API Keys → anon/public. Redeploy after saving.',
+    };
+  }
+
+  const parts = key.split('.');
+  if (parts.length !== 3) {
+    return {
+      status: 'fail',
+      detail: `anon key has ${parts.length} parts, expected 3 (header.payload.signature). Likely truncated or corrupt.`,
+      fix: 'Re-copy the full anon key from Supabase Dashboard → Project Settings → API and paste it into Vercel. Watch for accidentally dropping characters — the key is ~200 chars long.',
+    };
+  }
+
+  let payload: { role?: string; iss?: string; ref?: string; exp?: number } | null = null;
+  try {
+    let b = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    while (b.length % 4) b += '=';
+    payload = JSON.parse(Buffer.from(b, 'base64').toString('utf8'));
+  } catch {
+    return {
+      status: 'fail',
+      detail: 'anon key JWT payload is not valid base64/JSON — corrupted mid-string.',
+      fix: 'Re-copy from Supabase Dashboard → Project Settings → API.',
+    };
+  }
+
+  if (payload?.role !== 'anon') {
+    return {
+      status: 'fail',
+      detail: `anon key has role="${payload?.role ?? 'missing'}" instead of "anon". Might be the service_role key pasted into the wrong slot.`,
+      fix: 'Swap the values — the service_role key goes in SUPABASE_SERVICE_ROLE_KEY (server-only), the anon key goes in NEXT_PUBLIC_SUPABASE_ANON_KEY (bundled into client).',
+    };
+  }
+
+  // Compare project ref to the URL env var — catch mismatched projects
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
+  const urlRef = url.match(/https:\/\/([a-z0-9]+)\.supabase\.co/)?.[1];
+  if (urlRef && payload.ref && urlRef !== payload.ref) {
+    return {
+      status: 'fail',
+      detail: `anon key is for project "${payload.ref}" but NEXT_PUBLIC_SUPABASE_URL points at "${urlRef}". Wrong key for this project.`,
+      fix: 'Fetch the anon key from THIS project\'s Supabase dashboard, not a different one.',
+    };
+  }
+
+  if (payload.exp && payload.exp * 1000 < Date.now()) {
+    return {
+      status: 'fail',
+      detail: `anon key expired at ${new Date(payload.exp * 1000).toISOString()}`,
+      fix: 'Rotate the key in Supabase → Project Settings → API → Reset anon key. Then update Vercel and redeploy.',
+    };
+  }
+
+  return {
+    status: 'ok',
+    detail: `anon key valid (role=anon, ref=${payload.ref}, ${key.length} chars)`,
   };
 }
 

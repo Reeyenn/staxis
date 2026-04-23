@@ -526,6 +526,86 @@ And the actual UI: https://hotelops-ai.vercel.app/signin — should redirect to 
 
 ---
 
+## "Invalid username or password" even with the correct password
+
+### Symptom
+- Sign-in form at `/signin` rejects every login attempt with "Invalid username or password" — even brand-new passwords you just set via admin API.
+- Direct API calls with the service_role key work fine (`/auth/v1/token` returns 200), so the user + password are valid.
+- App's own `supabase.auth.signInWithPassword(...)` call from the browser console returns `{ error: "Invalid API key", status: 401 }`.
+
+### Diagnosis
+In the signed-in page's DevTools console:
+```javascript
+const supa = window.__supabaseBrowser;
+const key = supa.supabaseKey;
+console.log({ len: key.length, dots: key.split('.').length });
+// Expected: len ~208 (typical Supabase anon key), dots=3.
+// If len < 200 or dots !== 3, the anon key is corrupt.
+```
+
+Or decode the bundled anon key's JWT payload:
+```javascript
+const parts = supa.supabaseKey.split('.');
+let b = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+while (b.length % 4) b += '=';
+JSON.parse(atob(b));
+// Expected: { iss: "supabase", ref: "<project-ref>", role: "anon", iat, exp }
+// If base64-decode throws, the payload is truncated or corrupt.
+```
+
+### Root cause
+`NEXT_PUBLIC_SUPABASE_ANON_KEY` in **Vercel** env vars was pasted incorrectly — a few characters dropped in the middle of the JWT payload. Every browser request sends the corrupt key, Supabase responds 401 "Invalid API key" before checking credentials, the app surfaces that as a generic "Invalid username or password" error.
+
+### Fix
+1. Pull the correct anon key:
+   - Supabase Dashboard → Project Settings → API → Project API Keys → `anon / public`.
+   - Copy the **full** key (they're ~200+ chars; scroll horizontally).
+2. Vercel Dashboard → `staxis` → Settings → Environment Variables → `NEXT_PUBLIC_SUPABASE_ANON_KEY` → Edit → paste → Save.
+3. Redeploy (the prompt Vercel shows after saving).
+4. Re-verify with the DevTools snippet above.
+
+### Prevention
+- **Doctor check `anon_key_shape`** now parses `NEXT_PUBLIC_SUPABASE_ANON_KEY` from Vercel at every deploy and fails red if it's not a valid JWT with `role:"anon"`. Post-deploy smoke test catches this within 3 minutes of the bad deploy.
+- **Next time** a "my password doesn't work" report comes in, run doctor first. If `anon_key_shape` is red, this is the issue — takes 2 minutes to fix.
+
+---
+
+## "No properties found" right after signing in
+
+### Symptom
+- User signs in successfully (lands on `/property-selector`, sees their username).
+- Property list is empty: "No properties found / Your account doesn't have access to any properties yet."
+- But there IS data — the service role sees it, SQL editor sees it, my `accounts` row exists and has the right `property_access` UUIDs.
+
+### Diagnosis
+In DevTools console on the property-selector page:
+```javascript
+const supa = window.__supabaseBrowser;
+const { data: { session } } = await supa.auth.getSession();
+console.log('token len:', session?.access_token?.length);
+// Expected: ~800+ chars. If 0 or undefined, the session was lost during
+// page navigation — the classic @supabase/ssr-without-middleware symptom.
+```
+
+### Root cause (historical, fixed 2026-04-23)
+`src/lib/supabase.ts` was using `createBrowserClient` from `@supabase/ssr`. That function defaults to a cookie-based storage backend designed for Next.js middleware-driven SSR. Without the required middleware setup, it silently loses the access_token on client-side page navigation — `getSession()` returns a partial session (user populated, token empty) and every subsequent RLS query returns `[]`.
+
+### Fix
+Use `createClient` from `@supabase/supabase-js` directly with explicit localStorage persistence (current state of `src/lib/supabase.ts` as of commit `1c41fee`). If someone ever reverts to `createBrowserClient` without also adding Next.js auth middleware, this breaks again.
+
+### Verify
+```javascript
+// After sign-in, check that localStorage has the session:
+Object.keys(localStorage).filter(k => k.includes('staxis-auth') || k.includes('sb-'));
+// Expected: at least one key with a long value. If empty, persistence is broken.
+```
+
+### Prevention
+- **Stale error-matching in PropertyContext** used Firestore error strings (`'permission'`, `'unauthenticated'`) to trigger a retry. Those strings never match Supabase responses, so transient RLS errors weren't retried. Fixed in commit `1c41fee` to also check `PGRST301`, `PGRST116`, `42501`, `policy`, `jwt` substrings.
+- Doctor doesn't currently check client-side auth persistence (it's a client-only failure mode). Possible future addition: a tiny checked-in Playwright smoke test in CI that logs in, lands on /property-selector, asserts the property list is non-empty.
+
+---
+
 ## Meta: how to add a new failure mode to this doc
 
 Every time something breaks and takes more than 30 min to fix, come back and add a section here with Symptom / Diagnosis / Fix / Verify / Prevention. This file only pays for itself if we update it.

@@ -821,7 +821,7 @@ export function subscribeToRooms(
   callback: (rooms: Room[]) => void,
 ): () => void {
   return subscribeTable<Room>(
-    `rooms:${pid}:${date}`, 'rooms', `property_id=eq.${pid}`,
+    `rooms:${pid}:${date}`, 'rooms', `property_id=eq.${pid},date=eq.${date}`,
     async () => {
       const { data, error } = await supabase
         .from('rooms').select('*')
@@ -1307,7 +1307,7 @@ export function subscribeToPlanSnapshot(
   callback: (snapshot: PlanSnapshot | null) => void,
 ): () => void {
   return subscribeTable<PlanSnapshot>(
-    `plan_snapshots:${pid}:${date}`, 'plan_snapshots', `property_id=eq.${pid}`,
+    `plan_snapshots:${pid}:${date}`, 'plan_snapshots', `property_id=eq.${pid},date=eq.${date}`,
     async () => {
       const { data, error } = await supabase
         .from('plan_snapshots').select('*')
@@ -1457,7 +1457,7 @@ export function subscribeToScheduleAssignments(
   callback: (sa: ScheduleAssignments | null) => void,
 ): () => void {
   return subscribeTable<ScheduleAssignments>(
-    `schedule_assignments:${pid}:${date}`, 'schedule_assignments', `property_id=eq.${pid}`,
+    `schedule_assignments:${pid}:${date}`, 'schedule_assignments', `property_id=eq.${pid},date=eq.${date}`,
     async () => {
       const { data, error } = await supabase
         .from('schedule_assignments').select('*')
@@ -1513,7 +1513,7 @@ export function subscribeToShiftConfirmations(
   callback: (confirmations: ShiftConfirmation[]) => void,
 ): () => void {
   return subscribeTable<ShiftConfirmation>(
-    `shift_confirmations:${pid}:${shiftDate}`, 'shift_confirmations', `property_id=eq.${pid}`,
+    `shift_confirmations:${pid}:${shiftDate}`, 'shift_confirmations', `property_id=eq.${pid},shift_date=eq.${shiftDate}`,
     async () => {
       const { data, error } = await supabase
         .from('shift_confirmations').select('*')
@@ -1706,7 +1706,7 @@ export function subscribeToRoomsForStaff(
   return subscribeTable<Room>(
     `rooms-hk:${pid}:${staffId}`,
     'rooms',
-    `property_id=eq.${pid}`,
+    `property_id=eq.${pid},assigned_to=eq.${staffId}`,
     async () => {
       const { data, error } = await supabase
         .from('rooms').select('*')
