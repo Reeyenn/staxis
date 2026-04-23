@@ -1,6 +1,7 @@
 # HotelOps AI — Choice Advantage Scraper
 
-Playwright script that logs into Choice Advantage every 15 minutes and writes live room status data to Firebase Firestore.
+Playwright script that logs into Choice Advantage every 15 minutes and writes
+live room status data to Supabase Postgres. Deployed to Railway.
 
 ## Setup
 
@@ -18,23 +19,25 @@ cp .env.example .env
 |---|---|
 | `CA_USERNAME` | `bcobbs.txa32` |
 | `CA_PASSWORD` | (get from hotel) |
-| `FIREBASE_PROJECT_ID` | From Firebase Console |
-| `FIREBASE_CLIENT_EMAIL` | From Service Account |
-| `FIREBASE_PRIVATE_KEY` | From Service Account |
-| `HOTELOPS_USER_ID` | Firebase UID of the hotel owner account |
-| `HOTELOPS_PROPERTY_ID` | Firestore property doc ID for Comfort Suites |
+| `NEXT_PUBLIC_SUPABASE_URL` | Project URL from Supabase → Project Settings → API |
+| `SUPABASE_SERVICE_ROLE_KEY` | service_role key from Supabase (server-only — do not expose to browsers) |
+| `HOTELOPS_USER_ID` | `data_user_id` (auth.users.id UUID) of the hotel owner account |
+| `HOTELOPS_PROPERTY_ID` | `properties.id` UUID for Comfort Suites |
+| `CRON_SECRET` | Cross-platform watchdog secret — must match Vercel + GitHub Actions |
 
-## Getting Firebase Credentials
+## Getting Supabase Credentials
 
-1. Firebase Console → Project Settings → Service Accounts
-2. Click "Generate new private key"
-3. Copy `project_id`, `client_email`, `private_key` into `.env`
+1. Supabase Dashboard → your project → Project Settings → API
+2. Copy **Project URL** into `NEXT_PUBLIC_SUPABASE_URL`
+3. Copy **service_role** key into `SUPABASE_SERVICE_ROLE_KEY`
+   (never ship this to the browser — it bypasses Row Level Security)
 
 ## Getting HOTELOPS_USER_ID and PROPERTY_ID
 
 1. Log into HotelOps AI as the hotel owner
-2. Firebase Console → Firestore → users → (find the doc) → properties → (find Comfort Suites doc)
-3. Copy both IDs into `.env`
+2. Supabase Dashboard → Table Editor:
+   - `accounts` → find your row → copy `data_user_id` into `HOTELOPS_USER_ID`
+   - `properties` → find the Comfort Suites row → copy `id` into `HOTELOPS_PROPERTY_ID`
 
 ## Run locally
 
@@ -46,33 +49,37 @@ HEADED=true node scraper.js
 
 ## Deploy to Railway
 
-1. Create new Railway project
-2. Point to this `/scraper` directory (or push as separate repo)
+1. Create a new Railway project
+2. Point to this `/scraper` directory (or push as a separate repo)
 3. Add all env variables in Railway dashboard
 4. Railway uses `railway.toml` for build/start commands automatically
 
-## What it writes to Firestore
+## What it writes to Supabase
 
-Path: `users/{uid}/properties/{pid}/rooms/{YYYY-MM-DD}_{roomNumber}`
+Table: `rooms`
 
-Each room document:
+Each row looks like:
+
 ```json
 {
+  "property_id": "uuid",
+  "date": "2026-04-22",
   "number": "101",
-  "type": "checkout",        // checkout | stayover | vacant
-  "status": "dirty",         // dirty | clean
+  "type": "checkout",
+  "status": "dirty",
   "priority": "standard",
-  "assignedTo": null,
-  "assignedName": null,
-  "date": "2026-03-25",
-  "propertyId": "...",
-  "isDnd": false,
-  "_caRoomType": "SNQQ",
-  "_caRoomStatus": "Vacant",
-  "_caService": "Check Out",
-  "_lastSyncedAt": "..."
+  "assigned_to": null,
+  "assigned_name": null,
+  "is_dnd": false,
+  "_ca_room_type": "SNQQ",
+  "_ca_room_status": "Vacant",
+  "_ca_service": "Check Out",
+  "_last_synced_at": "2026-04-22T15:00:00Z"
 }
 ```
+
+Unique constraint: `(property_id, date, number)` — the scraper uses an upsert
+on this key, so re-running the same scrape is idempotent.
 
 ## Error handling
 
@@ -80,3 +87,15 @@ Each room document:
 - 0 rooms scraped → logs warning, does not crash
 - Any error → logged, process continues to next interval
 - Outside 6am–10pm → skips silently
+
+## Failsafes (cross-platform)
+
+- **Preflight:** scraper reads `scraper_status` on boot — if Supabase is
+  unreachable or the service_role key is wrong, the process exits 1 and
+  Railway crash-loops visibly.
+- **Vercel watchdog:** every 5 min the scraper pings
+  `hotelops-ai.vercel.app/api/admin/doctor` with `Authorization: Bearer
+  $CRON_SECRET`. Three consecutive failures (or an `auth_mismatch` on the
+  first hit) trigger SMS alerts. Gracefully no-ops if `CRON_SECRET` is
+  missing. Wrapped in its own try/catch so watchdog bugs can never crash
+  the main scraper loop.

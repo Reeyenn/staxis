@@ -214,8 +214,8 @@ export default function PMSPage() {
             <Shield size={14} color="var(--text-muted)" style={{ flexShrink: 0, marginTop: '1px' }} />
             <p style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
               {lang === 'es'
-                ? 'Tus credenciales se encriptan y almacenan de forma segura en Firebase. Solo las usa el agente de sincronización de Staxis para leer datos de ocupación — nunca se comparten ni se venden.'
-                : 'Your credentials are encrypted and stored securely in Firebase. They are only used by the Staxis sync agent to read occupancy data - never shared or sold.'}
+                ? 'Tus credenciales se encriptan y almacenan de forma segura en Supabase. Solo las usa el agente de sincronización de Staxis para leer datos de ocupación — nunca se comparten ni se venden.'
+                : 'Your credentials are encrypted and stored securely in Supabase. They are only used by the Staxis sync agent to read occupancy data - never shared or sold.'}
             </p>
           </div>
         </div>

@@ -8,9 +8,9 @@
 #
 # What it does:
 #   Every 15 minutes, curls the production endpoint /api/cron/scraper-health.
-#   That endpoint reads Firestore scraperStatus docs, detects staleness or
-#   explicit error codes, and fires an SMS to OPS_ALERT_PHONE with a
-#   specific, actionable message.
+#   That endpoint reads the scraper_status Postgres table (Supabase), detects
+#   staleness or explicit error codes, and fires an SMS to OPS_ALERT_PHONE
+#   with a specific, actionable message.
 #
 # Required GitHub Secrets:
 #   CRON_SECRET — same value as the CRON_SECRET env var in Vercel. Used as

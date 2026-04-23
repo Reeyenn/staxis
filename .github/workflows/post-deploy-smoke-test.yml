@@ -12,7 +12,7 @@
 #     1. Waits for Vercel to finish the deploy (polls until /api/admin/doctor
 #        returns, capped at 5 minutes).
 #     2. Calls /api/admin/doctor — which tests EVERY critical dependency
-#        (env vars, Firebase Admin auth, Twilio creds, CRON_SECRET, etc.).
+#        (env vars, Supabase Admin auth, Twilio creds, CRON_SECRET, etc.).
 #     3. If anything in doctor is 'fail', this workflow fails → GitHub
 #        emails Reeyen within 3 minutes of the bad deploy.
 #

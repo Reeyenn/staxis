@@ -1,19 +1,23 @@
 # Daily credential & platform drift check
 #
 # Why this exists:
-#   The Apr 20/21 incident happened because the Firebase service account
-#   key was rotated on Railway but the corresponding Vercel env var held
-#   a stale copy for ~20 hours. scraper-health-cron passes while the
-#   warm Lambda container has cached valid creds, then fails the moment
+#   The Apr 20/21 incident happened because a service-role credential
+#   was rotated on Railway but the corresponding Vercel env var held a
+#   stale copy for ~20 hours. scraper-health-cron passes while the warm
+#   Lambda container has cached valid creds, then fails the moment
 #   Vercel cycles the container. This workflow runs a DIFFERENT kind of
 #   check — one that can't be masked by container warmth.
 #
+#   The underlying bug class still applies post-Supabase migration:
+#   SUPABASE_SERVICE_ROLE_KEY can drift between Vercel and Railway in
+#   exactly the same way.
+#
 # What it does (once a day, 8am Central):
-#   1. Hits /api/admin/doctor on Vercel. This forces a fresh Firestore
-#      auth round-trip and returns a structured report.
-#   2. Hits /api/cron/scraper-health on Vercel. This reads scraperStatus
-#      docs that the Railway scraper writes — so it indirectly proves
-#      Railway's Firebase key is working too.
+#   1. Hits /api/admin/doctor on Vercel. This forces a fresh Supabase
+#      Admin auth round-trip and returns a structured report.
+#   2. Hits /api/cron/scraper-health on Vercel. This reads scraper_status
+#      rows that the Railway scraper writes — so it indirectly proves
+#      Railway's Supabase service_role key is working too.
 #   3. Cross-references: if doctor says Vercel auth is healthy BUT
 #      scraper-health says the heartbeat is stale, that's drift — Railway
 #      is dead while Vercel is fine. If doctor says Vercel auth is
@@ -113,7 +117,7 @@ jobs:
           echo ""
 
           # 200 with ok:true means scraper is alive AND Vercel auth is fine
-          # enough to read Firestore. Anything else = some layer is broken.
+          # enough to read Supabase. Anything else = some layer is broken.
           if [ "$http_code" = "200" ]; then
             cond=$(python3 -c "
           import json

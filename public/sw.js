@@ -1,7 +1,8 @@
-// Kill-switch service worker — v2
+// Kill-switch service worker — v3
 // Clears the stale hotelops-v1 cache that was blocking JS bundle updates,
 // then unregisters itself so future requests go directly to Vercel's CDN.
-// The firebase-messaging-sw.js handles FCM push notifications separately.
+// (FCM web push was retired in the Supabase migration; housekeepers now
+// receive Twilio SMS instead, so there is no push service worker anymore.)
 
 self.addEventListener('install', () => self.skipWaiting());
 

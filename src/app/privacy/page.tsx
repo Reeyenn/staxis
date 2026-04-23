@@ -96,7 +96,7 @@ export default function PrivacyPage() {
           </p>
           <ul>
             <li><strong>Twilio</strong> — SMS delivery (phone numbers and message content)</li>
-            <li><strong>Google Firebase / Firestore</strong> — data storage and authentication</li>
+            <li><strong>Supabase</strong> — data storage and authentication</li>
             <li><strong>Vercel</strong> — application hosting</li>
           </ul>
           <p>
