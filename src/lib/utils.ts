@@ -25,8 +25,26 @@ export function yesterdayStr(): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: APP_TIMEZONE }).format(d);
 }
 
+/**
+ * Generate an ID for use as a primary key on a Supabase/Postgres `uuid`
+ * column. Used by client-side seeding paths (PropertyContext default
+ * public areas + laundry categories). Must be a real UUID v4 — the
+ * previous Firestore-era 9-char base36 string produced by
+ * `Math.random().toString(36).slice(2, 11)` got rejected by Postgres
+ * as `invalid input syntax for type uuid`, silently breaking first
+ * load of any new property.
+ */
 export function generateId(): string {
-  return Math.random().toString(36).slice(2, 11);
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  // RFC 4122 v4 fallback — only hit in ancient browsers / SSR without
+  // Web Crypto (e.g. Node < 14.17).
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }
 
 export function formatCurrency(n: number): string {
