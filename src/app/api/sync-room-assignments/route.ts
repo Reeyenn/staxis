@@ -24,7 +24,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { isValidDateStr } from '@/lib/utils';
+import { isValidDateStr, errToString } from '@/lib/utils';
 
 interface StaffEntry {
   staffId: string;
@@ -178,7 +178,7 @@ export async function POST(req: NextRequest) {
     try {
       await supabaseAdmin.from('error_logs').insert({
         source: '/api/sync-room-assignments',
-        message: err instanceof Error ? err.message : String(err),
+        message: errToString(err),
         stack: err instanceof Error ? err.stack ?? null : null,
       });
     } catch {}

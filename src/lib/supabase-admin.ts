@@ -71,7 +71,24 @@ export async function verifySupabaseAdmin(): Promise<void> {
         if (error) throw error;
       } catch (err) {
         authPreflight = null; // allow retry on next request
-        const msg = err instanceof Error ? err.message : String(err);
+        // Supabase's PostgrestError is a plain object, not an Error subclass
+        // — String(err) on it returns literal "[object Object]" and hides the
+        // real failure mode. Extract .message / .code / .hint manually so the
+        // diagnostic in the thrown error is actually useful.
+        let msg: string;
+        if (err instanceof Error) {
+          msg = err.message;
+        } else if (err !== null && typeof err === 'object') {
+          const e = err as Record<string, unknown>;
+          const parts: string[] = [];
+          if (typeof e.message === 'string') parts.push(e.message);
+          if (typeof e.code    === 'string') parts.push(`code=${e.code}`);
+          if (typeof e.hint    === 'string') parts.push(`hint=${e.hint}`);
+          if (typeof e.status  === 'number') parts.push(`status=${e.status}`);
+          msg = parts.length ? parts.join(' ') : JSON.stringify(err);
+        } else {
+          msg = String(err);
+        }
         throw new Error(
           `Supabase Admin auth failed on Vercel: ${msg}. ` +
           `SUPABASE_SERVICE_ROLE_KEY is likely stale or revoked. ` +

@@ -29,7 +29,7 @@ import { dashboardFreshness, DASHBOARD_STALE_MINUTES } from '@/lib/firestore';
 import { getPublicAreasDueToday, calcPublicAreaMinutes, autoAssignRooms, getOverdueRooms, calcDndFreedMinutes, suggestDeepCleans } from '@/lib/calculations';
 import { getDefaultPublicAreas } from '@/lib/defaults';
 import type { PublicArea } from '@/types';
-import { todayStr } from '@/lib/utils';
+import { todayStr, errToString } from '@/lib/utils';
 import type { Room, RoomStatus, RoomType, RoomPriority, StaffMember, DeepCleanRecord, DeepCleanConfig, ShiftConfirmation, ConfirmationStatus, WorkOrder } from '@/types';
 import { format, subDays } from 'date-fns';
 import {
@@ -3177,7 +3177,7 @@ function RoomsSection() {
           : `Loaded ${created + updated} rooms (${created} new, ${updated} updated)`);
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errToString(err);
       setToastMessage(lang === 'es' ? `Error: ${msg}` : `Error: ${msg}`);
     } finally {
       setPopulating(false);

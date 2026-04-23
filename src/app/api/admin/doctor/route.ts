@@ -48,6 +48,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { errToString } from '@/lib/utils';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -149,51 +150,6 @@ function readEnvWithFallback(v: { name: string; altNames?: string[] }): {
     }
   }
   return { value: undefined, resolvedName: undefined };
-}
-
-/**
- * Serialize an unknown thrown value into a useful human string.
- *
- * `String(err)` on a plain object returns the string "[object Object]" —
- * which is exactly what started surfacing in the doctor output once we
- * moved off Firebase (whose SDK throws Error subclasses) onto Supabase
- * (whose `PostgrestError` is a plain object { message, details, hint, code,
- * status }). The old `err instanceof Error ? err.message : String(err)`
- * pattern silently dropped every real error message.
- *
- * This helper:
- *   - unwraps Error instances via .message
- *   - extracts .message from plain object-shaped errors (Supabase, Twilio,
- *     fetch responses that get rethrown as objects)
- *   - appends .code / .hint / .status when present so we can diagnose
- *     without a second round-trip
- *   - falls back to JSON.stringify before String() as a last resort so we
- *     never leak literal "[object Object]" into a dashboard again
- */
-function errToString(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  if (typeof err === 'string') return err;
-  if (err !== null && typeof err === 'object') {
-    const e = err as Record<string, unknown>;
-    const message = typeof e.message === 'string' ? e.message : null;
-    const code    = typeof e.code    === 'string' ? e.code    : null;
-    const hint    = typeof e.hint    === 'string' ? e.hint    : null;
-    const status  = typeof e.status  === 'number' ? e.status  : null;
-    if (message) {
-      const extra: string[] = [];
-      if (code)   extra.push(`code=${code}`);
-      if (hint)   extra.push(`hint=${hint}`);
-      if (status) extra.push(`status=${status}`);
-      return extra.length ? `${message} (${extra.join(', ')})` : message;
-    }
-    // No .message — try to serialize the whole object. Guard against
-    // circular refs, and trim to keep the response sane.
-    try {
-      const s = JSON.stringify(err);
-      if (s && s !== '{}') return s.length > 300 ? `${s.slice(0, 300)}...` : s;
-    } catch { /* fall through */ }
-  }
-  return String(err);
 }
 
 async function checkEnvVars(): Promise<Omit<Check, 'name' | 'durationMs'>> {
@@ -437,7 +393,7 @@ async function runAllChecks(): Promise<DoctorReport> {
         return {
           name,
           status: 'fail',
-          detail: `check threw: ${err instanceof Error ? err.message : String(err)}`,
+          detail: `check threw: ${errToString(err)}`,
           durationMs: Date.now() - t0,
         };
       }
@@ -485,7 +441,7 @@ export async function GET(req: NextRequest) {
       {
         ok: false,
         error: 'doctor itself crashed',
-        detail: err instanceof Error ? err.message : String(err),
+        detail: errToString(err),
         timestamp: new Date().toISOString(),
       },
       { status: 500 }

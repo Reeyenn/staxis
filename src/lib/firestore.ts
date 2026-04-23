@@ -60,7 +60,24 @@ function dropUndefined<T extends object>(obj: T): Partial<T> {
 }
 
 function logErr(tag: string, err: unknown): void {
-  const msg = err instanceof Error ? err.message : String(err);
+  // Supabase PostgrestError is a plain object ({ message, details, hint,
+  // code }), not an Error subclass — String(err) returns "[object Object]"
+  // and hides the actual failure, which is the worst possible outcome in
+  // a logger. Extract .message + .code + .hint + .details manually.
+  let msg: string;
+  if (err instanceof Error) {
+    msg = err.message;
+  } else if (err !== null && typeof err === 'object') {
+    const e = err as Record<string, unknown>;
+    const parts: string[] = [];
+    if (typeof e.message === 'string') parts.push(e.message);
+    if (typeof e.code    === 'string') parts.push(`code=${e.code}`);
+    if (typeof e.hint    === 'string') parts.push(`hint=${e.hint}`);
+    if (typeof e.details === 'string') parts.push(`details=${e.details}`);
+    msg = parts.length ? parts.join(' ') : JSON.stringify(err);
+  } else {
+    msg = String(err);
+  }
   // eslint-disable-next-line no-console
   console.error(`[Supabase] ${tag}:`, msg);
 }

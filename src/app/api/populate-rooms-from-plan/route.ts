@@ -19,7 +19,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { isValidDateStr } from '@/lib/utils';
+import { isValidDateStr, errToString } from '@/lib/utils';
 
 interface RequestBody {
   pid: string;
@@ -213,7 +213,7 @@ export async function POST(req: NextRequest) {
       csvPulledAt: pulledAt,
     });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errToString(err);
     console.error('[populate-rooms-from-plan] Error:', msg);
     return NextResponse.json({ error: msg }, { status: 500 });
   }

@@ -80,3 +80,45 @@ export function timeAgo(date: Date | null | undefined): string {
 export function isValidDateStr(s: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(new Date(s).getTime());
 }
+
+/**
+ * Serialize an unknown thrown value into a useful human string.
+ *
+ * `String(err)` on a plain object returns the literal "[object Object]" —
+ * exactly what started surfacing in prod after we moved off Firebase (whose
+ * SDK throws Error subclasses) onto Supabase (whose PostgrestError is a
+ * plain object { message, details, hint, code, status }). The pattern
+ * `err instanceof Error ? err.message : String(err)` silently dropped every
+ * real error message.
+ *
+ * Use this helper in EVERY catch block where the error is going to be shown
+ * or logged. Extracts .message / .code / .hint / .status / .details from
+ * plain object-shaped errors (Supabase, Twilio, fetch rethrows) and falls
+ * back to JSON.stringify → String() so "[object Object]" can never reach a
+ * dashboard or error_logs row again.
+ */
+export function errToString(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'string') return err;
+  if (err !== null && typeof err === 'object') {
+    const e = err as Record<string, unknown>;
+    const message = typeof e.message === 'string' ? e.message : null;
+    const code    = typeof e.code    === 'string' ? e.code    : null;
+    const hint    = typeof e.hint    === 'string' ? e.hint    : null;
+    const details = typeof e.details === 'string' ? e.details : null;
+    const status  = typeof e.status  === 'number' ? e.status  : null;
+    if (message) {
+      const extra: string[] = [];
+      if (code)    extra.push(`code=${code}`);
+      if (hint)    extra.push(`hint=${hint}`);
+      if (status)  extra.push(`status=${status}`);
+      if (details) extra.push(`details=${details}`);
+      return extra.length ? `${message} (${extra.join(', ')})` : message;
+    }
+    try {
+      const s = JSON.stringify(err);
+      if (s && s !== '{}') return s.length > 300 ? `${s.slice(0, 300)}...` : s;
+    } catch { /* fall through */ }
+  }
+  return String(err);
+}
