@@ -245,6 +245,11 @@ async function runVercelWatchdog({ supabase, timezone }) {
     const patch = {
       lastCheckAt: nowIso,
       lastStatus: 'ok',
+      // Clear the stale detail string from whatever prior failure was the last
+      // thing to set it. Without this, a recovered row shows
+      //   lastStatus: 'ok', lastDetail: 'failing: foo_check'
+      // which is contradictory and scares whoever's staring at scraper_status.
+      lastDetail: null,
       consecutiveFailures: 0,
       alertActive: false,
     };
