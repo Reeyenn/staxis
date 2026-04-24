@@ -291,6 +291,32 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   const allDone = total > 0 && done === total;
   const progressPct = total > 0 ? Math.round((done / total) * 100) : 0;
 
+  // Missing pid means the SMS/shared link was mangled or hand-typed without
+  // the ?pid=... query string. Without this guard the useEffect above returns
+  // early, never calls setLoading(false), and the spinner runs forever —
+  // which on a housekeeper's phone reads as "the app is broken." Render a
+  // concrete error instead so they can flag it to Maria.
+  if (!pid || !housekeeperId) {
+    return (
+      <div style={{
+        minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        flexDirection: 'column', gap: '12px', padding: '24px',
+        background: 'var(--bg)', fontFamily: 'var(--font-sans, system-ui, -apple-system, sans-serif)',
+        textAlign: 'center',
+      }}>
+        <AlertTriangle size={32} color="var(--red, #EF4444)" />
+        <p style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
+          {lang === 'es' ? 'Enlace incompleto' : 'Incomplete link'}
+        </p>
+        <p style={{ fontSize: '14px', color: 'var(--text-muted)', maxWidth: '320px', margin: 0 }}>
+          {lang === 'es'
+            ? 'Pídele a tu encargada el enlace completo. Falta el identificador de la propiedad.'
+            : 'Ask your manager for the full link. The property ID is missing.'}
+        </p>
+      </div>
+    );
+  }
+
   if (loading) {
     return (
       <div style={{

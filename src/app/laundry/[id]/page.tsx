@@ -14,7 +14,7 @@ import { isAreaDueToday, calcLaundryMinutes } from '@/lib/calculations';
 import type { PublicArea, LaundryCategory, Room } from '@/types';
 import { format } from 'date-fns';
 import { es as esLocale } from 'date-fns/locale';
-import { CheckCircle, Globe } from 'lucide-react';
+import { CheckCircle, Globe, AlertTriangle } from 'lucide-react';
 import { t } from '@/lib/translations';
 import type { Language } from '@/lib/translations';
 
@@ -141,6 +141,31 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
   const allDone = totalTasks > 0 && completedTasks === totalTasks;
 
   const firstName = laundryPersonName.split(' ')[0] || 'Laundry';
+
+  // Missing uid or pid means a mangled SMS/shared link — useEffects below
+  // return early without ever setting loading=false, so without this guard
+  // the spinner runs forever on the laundry person's phone. Render a concrete
+  // error instead.
+  if (!pid || !uid || !laundryPersonId) {
+    return (
+      <div style={{
+        minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        flexDirection: 'column', gap: '12px', padding: '24px',
+        background: 'var(--blue-dim, #F0F9FF)', fontFamily: 'system-ui, -apple-system, sans-serif',
+        textAlign: 'center',
+      }}>
+        <AlertTriangle size={32} color="var(--red, #EF4444)" />
+        <p style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
+          {lang === 'es' ? 'Enlace incompleto' : 'Incomplete link'}
+        </p>
+        <p style={{ fontSize: '14px', color: 'var(--text-muted)', maxWidth: '320px', margin: 0 }}>
+          {lang === 'es'
+            ? 'Pídele a tu encargada el enlace completo. Faltan parámetros.'
+            : 'Ask your manager for the full link. Parameters are missing.'}
+        </p>
+      </div>
+    );
+  }
 
   if (loading) {
     return (
