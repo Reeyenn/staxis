@@ -190,18 +190,26 @@ export default function MaintenancePage() {
   // ─── Filtered & sorted orders ────────────────────────────────────────────
 
   const filteredOrders = useMemo(() => {
-    // Default ("all") hides resolved — otherwise the same physical room can
-    // appear multiple times when a ca_ooo work order auto-resolves and a new
-    // one re-opens for the same room (different caWorkOrderNumber). Resolved
-    // items are still accessible under the "Resolved" filter for audit.
-    let list = orders.filter(o => o.status !== 'resolved');
-    if (filter === 'urgent') list = list.filter(o => o.severity === 'urgent');
+    // "All" means all — open AND resolved. Previously "all" was an alias for
+    // "open" (filtering out resolved) so the pill label lied and the "All"
+    // and "Open" pills showed identical counts. The original concern was
+    // duplicate rooms when a ca_ooo work order auto-resolves and a new one
+    // opens for the same room — but newest-first sort + the visible
+    // BLOCKED/RESOLVED status tag make that readable, and anyone clicking
+    // "All" expects to see everything.
+    let list: WorkOrder[] = orders;
+    if (filter === 'open') list = orders.filter(o => o.status !== 'resolved');
+    else if (filter === 'urgent') list = orders.filter(o => o.severity === 'urgent' && o.status !== 'resolved');
     else if (filter === 'resolved') list = orders.filter(o => o.status === 'resolved');
 
     return [...list].sort((a, b) => {
       const sevOrder: Record<WorkOrderSeverity, number> = { urgent: 0, medium: 1, low: 2 };
       if (a.status !== 'resolved' && b.status !== 'resolved') {
         if (sevOrder[a.severity] !== sevOrder[b.severity]) return sevOrder[a.severity] - sevOrder[b.severity];
+      }
+      // Open before resolved when mixed ("All" view).
+      if ((a.status === 'resolved') !== (b.status === 'resolved')) {
+        return a.status === 'resolved' ? 1 : -1;
       }
       const aTime = toJsDate(a.createdAt)?.getTime() ?? 0;
       const bTime = toJsDate(b.createdAt)?.getTime() ?? 0;
@@ -210,9 +218,7 @@ export default function MaintenancePage() {
   }, [orders, filter]);
 
   const filterCounts = useMemo(() => ({
-    // "All" count reflects the default view (non-resolved) so the pill count
-    // matches what's actually shown.
-    all: orders.filter(o => o.status !== 'resolved').length,
+    all: orders.length,
     open: orders.filter(o => o.status !== 'resolved').length,
     urgent: orders.filter(o => o.severity === 'urgent' && o.status !== 'resolved').length,
     resolved: orders.filter(o => o.status === 'resolved').length,
