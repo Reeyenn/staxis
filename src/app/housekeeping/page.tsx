@@ -2371,7 +2371,12 @@ function ScheduleSection() {
                     padding: '24px',
                     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                     gap: '24px', transition: 'all 0.15s',
-                    flexWrap: 'wrap',
+                    // Intentionally NOT wrapping: when a heavy crew member had
+                    // 19+ pills, the RIGHT block got too wide to fit next to
+                    // LEFT and the whole block wrapped down, making the page
+                    // look broken. The RIGHT block now uses flex:1 + min-width:0
+                    // so pills wrap internally without punting the whole row.
+                    // Mobile (<600px) switches to column direction via CSS.
                   }}
                 >
                   {/* Left: avatar + info */}
@@ -2511,22 +2516,30 @@ function ScheduleSection() {
                           {lang === 'es' ? 'Quitar' : 'Remove'}
                         </button>
                       </div>
+                      {/* Checkouts / Stayovers counts live in the LEFT column
+                          (below Link / Copy / status) so they stay anchored to
+                          the crew member instead of floating around the pill
+                          strip and wrapping awkwardly when the pill count is
+                          high. */}
+                      {memberRooms.length > 0 && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginTop: '6px' }}>
+                          <span style={{ fontSize: '12px', fontWeight: 600, color: '#364262', fontFamily: 'var(--font-sans)' }}>
+                            {coCount} {lang === 'es' ? 'Salidas' : 'Checkout'}{coCount !== 1 && lang !== 'es' ? 's' : ''}
+                          </span>
+                          <span style={{ fontSize: '12px', fontWeight: 600, color: '#757684', fontFamily: 'var(--font-sans)' }}>
+                            {soCount} {lang === 'es' ? 'Continuaciones' : 'Stayover'}{soCount !== 1 && lang !== 'es' ? 's' : ''}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
 
-                  {/* Right: checkouts/stayovers + workload + room tiles */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '48px', flexWrap: 'wrap' }}>
-                    {memberRooms.length > 0 && (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '1px', flexShrink: 0, textAlign: 'right' }}>
-                        <span style={{ fontSize: '12px', fontWeight: 600, color: '#364262', fontFamily: 'var(--font-sans)' }}>
-                          {coCount} {lang === 'es' ? 'Salidas' : 'Checkout'}{coCount !== 1 && lang !== 'es' ? 's' : ''}
-                        </span>
-                        <span style={{ fontSize: '12px', fontWeight: 600, color: '#757684', fontFamily: 'var(--font-sans)' }}>
-                          {soCount} {lang === 'es' ? 'Continuaciones' : 'Stayover'}{soCount !== 1 && lang !== 'es' ? 's' : ''}
-                        </span>
-                      </div>
-                    )}
-                    <div className="sched-crew-stats" style={{ textAlign: 'right' }}>
+                  {/* Right: workload + room tiles. Uses flex:1, min-width:0 so
+                      the block shrinks to the remaining space; pills wrap
+                      internally rather than punting the whole right block to
+                      a new row. */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '24px', flex: '1 1 0', minWidth: 0, justifyContent: 'flex-end' }}>
+                    <div className="sched-crew-stats" style={{ textAlign: 'right', flexShrink: 0 }}>
                       <p style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.15em', fontWeight: 700, color: '#454652', margin: '0 0 2px' }}>
                         {lang === 'es' ? 'Carga' : 'Workload'}
                       </p>
@@ -2538,7 +2551,7 @@ function ScheduleSection() {
                         {timeLabel}
                       </p>
                     </div>
-                    <div className="sched-crew-pills" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignContent: 'flex-start' }}>
+                    <div className="sched-crew-pills" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignContent: 'flex-start', flex: '1 1 0', minWidth: 0, justifyContent: 'flex-end' }}>
                       {memberRooms.map(room => (
                         <button
                           key={room.id}
