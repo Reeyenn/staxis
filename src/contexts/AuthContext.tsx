@@ -18,7 +18,7 @@
 // un-routable so Supabase's deliverability checks can't send mail to it.
 // ───────────────────────────────────────────────────────────────────────────
 
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 
 export interface AppUser {
@@ -88,6 +88,11 @@ async function loadAppUser(authUid: string): Promise<AppUser | null> {
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AppUser | null>(null);
   const [loading, setLoading] = useState(true);
+  // Bumped on every signIn/signOut so async user-loaders from a stale auth
+  // event can detect they've been superseded and skip their setUser. Without
+  // this, a slow listener fetch resolving after a fresh signOut can re-
+  // populate the user and leave the UI logged-in despite an explicit logout.
+  const authVersionRef = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -97,12 +102,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // load. This fires BEFORE the first onAuthStateChange event, so we get
     // an accurate initial user without a flash of logged-out state.
     (async () => {
+      const myVersion = authVersionRef.current;
       try {
         const { data: { session } } = await supabase.auth.getSession();
-        if (!active) return;
+        if (!active || myVersion !== authVersionRef.current) return;
         if (session?.user) {
           const appUser = await loadAppUser(session.user.id);
-          if (!active) return;
+          if (!active || myVersion !== authVersionRef.current) return;
           if (appUser) {
             setUser(appUser);
           } else {
@@ -116,7 +122,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       } catch (err) {
         console.error('AuthContext: getSession failed', err);
-        if (active) setUser(null);
+        if (active && myVersion === authVersionRef.current) setUser(null);
       } finally {
         if (active) {
           resolved = true;
@@ -129,6 +135,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // refresh). SIGNED_IN is what fires after our signInWithPassword call.
     const { data: listener } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (!active) return;
+      const myVersion = authVersionRef.current;
       try {
         if (event === 'SIGNED_OUT' || !session?.user) {
           setUser(null);
@@ -137,7 +144,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // SIGNED_IN, TOKEN_REFRESHED, USER_UPDATED all benefit from a refresh
         // of the AppUser in case role/propertyAccess changed.
         const appUser = await loadAppUser(session.user.id);
-        if (!active) return;
+        // Drop this result if signOut happened while we were loading — the
+        // listener fetch would otherwise repopulate `user` after explicit
+        // logout, leaving the UI silently authenticated.
+        if (!active || myVersion !== authVersionRef.current) return;
         if (appUser) {
           setUser(appUser);
         } else {
@@ -146,17 +156,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       } catch (err) {
         console.error('AuthContext: onAuthStateChange error', err);
-        if (active) setUser(null);
+        if (active && myVersion === authVersionRef.current) setUser(null);
       }
     });
 
     // Safety timeout: if getSession() never resolves (broken localStorage,
-    // network hang), force loading to false after 4s so the sign-in form is
-    // still usable.
+    // network hang), drop loading=false so the rest of the app can render.
+    // We do NOT clear `user` here — getSession may still resolve a moment
+    // later with a real session, and clobbering `user` to null first causes
+    // a flash of the sign-in form when the user is actually authenticated.
+    // The render path can show a "still hydrating" spinner instead.
     const timeout = setTimeout(() => {
       if (!resolved && active) {
         console.warn('AuthContext: session hydration did not resolve within 4s — forcing loading=false');
-        setUser(null);
         setLoading(false);
       }
     }, 4000);
@@ -170,6 +182,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signIn = async (username: string, password: string): Promise<string | null> => {
     try {
+      authVersionRef.current += 1;
       const email = usernameToEmail(username);
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
@@ -204,16 +217,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signOut = async () => {
+    // Bump version FIRST so any in-flight loadAppUser from the listener will
+    // see it's stale by the time it tries to setUser. State change next so
+    // the UI hides protected views even if the network call below fails.
+    authVersionRef.current += 1;
+    setUser(null);
     try {
       sessionStorage.removeItem('hotelops-session-selected');
-      // Remove any legacy Firebase-era keys so a mixed-state browser doesn't
-      // feed stale data back to AuthContext after migration.
+      // Wipe every hotelops-* key so the previous user's hotel selection,
+      // language preference, and any other client-cached scoping data don't
+      // leak to the next person who logs in on the same browser.
       localStorage.removeItem('hotelops-account');
+      localStorage.removeItem('hotelops-active-property');
+      localStorage.removeItem('hotelops-lang');
     } catch {
       // ignore — private browsing / no storage
     }
-    await supabase.auth.signOut();
-    setUser(null);
+    try {
+      await supabase.auth.signOut();
+    } catch (err) {
+      // Network failure on the upstream signOut — fall back to a local-only
+      // sign-out so the session token in this browser is still cleared.
+      console.error('AuthContext: supabase.auth.signOut threw', err);
+      try { await supabase.auth.signOut({ scope: 'local' }); } catch { /* ignore */ }
+    }
   };
 
   return (

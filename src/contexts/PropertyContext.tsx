@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from './AuthContext';
 import {
   getProperties,
@@ -81,6 +81,16 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   // spurious "No properties found" screen during that window.
   useEffect(() => {
     if (!user) {
+      // Clear cached property/staff state on sign-out so the previous
+      // user's hotel data isn't briefly visible to whoever logs in next on
+      // a shared browser. The activePropertyId is also wiped out of
+      // localStorage by AuthContext.signOut().
+      setProperties([]);
+      setActivePropertyIdState(null);
+      setStaff([]);
+      setStaffLoaded(false);
+      setPublicAreas([]);
+      setLaundryConfig([]);
       setLoading(false);
       return;
     }
@@ -229,11 +239,13 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const refreshStaff = async () => {
+  // Memoized so consumers can safely list refreshStaff in useEffect deps
+  // without triggering a re-subscribe on every PropertyProvider render.
+  const refreshStaff = useCallback(async () => {
     if (!user || !activePropertyId) return;
     const list = await getStaff(user.uid, activePropertyId);
     setStaff(list);
-  };
+  }, [user, activePropertyId]);
 
   const refreshPublicAreas = async () => {
     if (!user || !activePropertyId) return;
