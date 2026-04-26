@@ -2,30 +2,23 @@
  * POST /api/admin/normalize-confirmation-phones
  *
  * One-off migration. Walks every open `shift_confirmations` row and rewrites
- * `staff_phone` to E.164 if it isn't already. Needed because the first
- * version of /api/send-shift-confirmations stored whatever the user typed
- * (e.g. "4098282023", "(409) 828-2023") which the SMS-reply lookup can't
- * always match against Twilio's E.164 `From`.
+ * `staff_phone` to E.164 if it isn't already.
  *
- * Also normalizes `staff.phone_lookup` as a side-effect so sms-reply can
- * resolve via either path.
+ * Auth: requires `Authorization: Bearer ${CRON_SECRET}`. Was previously
+ * ungated. The GET-alias was removed — mutating endpoints should not be
+ * triggerable by a link prefetch.
  *
  * Safe to call repeatedly. Returns counts so you can see what it did.
  */
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
+import { toE164 } from '@/lib/phone';
+import { requireCronSecret } from '@/lib/admin-auth';
 
-function toE164(raw: string): string | null {
-  if (!raw) return null;
-  const digits = raw.replace(/\D/g, '');
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
-  if (raw.startsWith('+')) return raw.trim();
-  return null;
-}
-
-export async function POST() {
+export async function POST(req: NextRequest) {
+  const gate = requireCronSecret(req);
+  if (gate) return gate;
   try {
     const { data: confs, error } = await supabaseAdmin
       .from('shift_confirmations')
@@ -73,7 +66,3 @@ export async function POST() {
   }
 }
 
-export async function GET() {
-  // Easier to trigger from a browser — same behaviour as POST.
-  return POST();
-}

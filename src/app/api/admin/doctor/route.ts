@@ -776,14 +776,22 @@ async function runAllChecks(): Promise<DoctorReport> {
 }
 
 export async function GET(req: NextRequest) {
-  // Same auth pattern as cron routes. Permissive when CRON_SECRET is unset
-  // so initial bootstrap works; strict once it's configured.
+  // Bearer-CRON_SECRET auth. Permissive only outside production, so a
+  // dev environment without CRON_SECRET set can still see the report.
+  // In production a missing secret means the endpoint refuses every
+  // request — leaking the diagnostics surface to the world (env vars,
+  // Twilio account state, JWT expiry hints) is a meaningful recon vector.
   const secret = process.env.CRON_SECRET;
   if (secret) {
     const auth = req.headers.get('authorization');
     if (auth !== `Bearer ${secret}`) {
       return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
     }
+  } else if (process.env.NODE_ENV === 'production') {
+    return NextResponse.json(
+      { ok: false, error: 'Server misconfigured: CRON_SECRET not set' },
+      { status: 503 },
+    );
   }
 
   try {

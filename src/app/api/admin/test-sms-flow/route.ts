@@ -1,17 +1,16 @@
 /**
  * POST /api/admin/test-sms-flow
  *
- * Standalone end-to-end tester for the inbound-SMS reply flow. Inserts a
- * single `shift_confirmations` row for a real staff member, fires an SMS,
- * and returns the token so you can watch it flip when you reply.
+ * Gated end-to-end tester for the inbound-SMS reply flow. Inserts a single
+ * `shift_confirmations` row for a real staff member, fires an SMS, and
+ * returns the token so you can watch it flip when you reply.
  *
  * Body:
  *   { pid, staffId, phone, language?, name? }
  *
- * Deliberately NOT gated — safe to ship because it only writes a pending
- * confirmation and sends one text. The staff_id must reference a real row
- * in the staff table (the table has a FK constraint). Delete this route
- * once the flow is verified.
+ * Auth: requires `Authorization: Bearer ${CRON_SECRET}` like all admin
+ * endpoints. Previously ungated, which let anyone send Twilio-billed SMS
+ * to any phone number that knew a real staff_id.
  *
  * Legacy `uid` body field is accepted but ignored.
  */
@@ -19,16 +18,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
-
-function toE164(raw: string): string | null {
-  const digits = raw.replace(/\D/g, '');
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
-  if (raw.startsWith('+')) return raw.trim();
-  return null;
-}
+import { toE164 } from '@/lib/phone';
+import { requireCronSecret } from '@/lib/admin-auth';
 
 export async function POST(req: NextRequest) {
+  const gate = requireCronSecret(req);
+  if (gate) return gate;
   try {
     const body = await req.json().catch(() => ({})) as {
       pid?: string; staffId?: string; phone?: string;
@@ -122,6 +117,8 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
+  const gate = requireCronSecret(req);
+  if (gate) return gate;
   // ?check=<token> → return the current state of that confirmation row.
   const url = new URL(req.url);
   const check = url.searchParams.get('check');

@@ -11,8 +11,31 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
+import { requireCronSecret } from '@/lib/admin-auth';
+
+// Redact a phone number for log display: keep last 4 digits, mask the rest.
+function redactPhone(p: unknown): string {
+  if (typeof p !== 'string' || !p) return '';
+  const digits = p.replace(/\D/g, '');
+  if (digits.length < 4) return '***';
+  return `***${digits.slice(-4)}`;
+}
+
+function redactPayload(payload: unknown): Record<string, unknown> {
+  if (!payload || typeof payload !== 'object') return {};
+  const obj = { ...(payload as Record<string, unknown>) };
+  for (const key of ['From', 'To', 'staff_phone', 'phone', 'from', 'to']) {
+    if (typeof obj[key] === 'string') obj[key] = redactPhone(obj[key]);
+  }
+  if (typeof obj.Body === 'string' && obj.Body.length > 60) {
+    obj.Body = `${(obj.Body as string).slice(0, 60)}...`;
+  }
+  return obj;
+}
 
 export async function GET(req: NextRequest) {
+  const gate = requireCronSecret(req);
+  if (gate) return gate;
   try {
     const url = new URL(req.url);
     const pid = url.searchParams.get('pid');
@@ -75,6 +98,10 @@ export async function GET(req: NextRequest) {
     }
 
     const [logsRes, confsRes, twilioNumbers, twilioMessages] = await Promise.all([
+      // webhook_log doesn't carry a property_id column today, so we can't
+      // scope across properties at the SQL level. The redactPayload step
+      // below removes phone numbers and truncates message bodies so what
+      // comes back is safe even if it spans hotels.
       supabaseAdmin
         .from('webhook_log')
         .select('id, ts, source, payload')
@@ -94,13 +121,13 @@ export async function GET(req: NextRequest) {
       id: r.id,
       ts: r.ts,
       source: r.source,
-      ...(r.payload as Record<string, unknown>),
+      ...redactPayload(r.payload),
     }));
 
     const confirmations = (confsRes.data ?? []).map(r => ({
       token: r.token,
       staffName: r.staff_name,
-      staffPhone: r.staff_phone,
+      staffPhone: redactPhone(r.staff_phone),
       status: r.status,
       shiftDate: r.shift_date,
       sentAt: r.sent_at,

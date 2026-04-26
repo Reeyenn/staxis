@@ -1,26 +1,26 @@
 /**
- * GET or POST /api/admin/backfill-phonelookup
+ * POST /api/admin/backfill-phonelookup
  *
- * Backfills `staff.phone_lookup` for every staff row that has a `phone` but no
- * `phone_lookup`. Under the Supabase model there's no separate phoneLookup
- * table — /api/sms-reply matches the inbound phone against `staff.phone_lookup`
- * and then finds the newest open `shift_confirmations` for that staff member.
+ * One-time migration tool. Walks every staff row and rewrites
+ * `phone_lookup` to E.164 if it doesn't already match. Used after the
+ * `toStaffRow` format change to bring legacy last-10-digit values up to
+ * the new canonical format.
+ *
+ * Auth: requires `Authorization: Bearer ${CRON_SECRET}`. Was previously
+ * ungated. The GET-alias was removed — mutating endpoints should not be
+ * triggerable by an `<img>` or link prefetch.
  *
  * Safe to call repeatedly. Returns counts + examples so you can verify.
  */
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
+import { toE164 } from '@/lib/phone';
+import { requireCronSecret } from '@/lib/admin-auth';
 
-function toE164(raw: string): string | null {
-  const digits = raw.replace(/\D/g, '');
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
-  if (raw.startsWith('+')) return raw.trim();
-  return null;
-}
-
-export async function POST() {
+export async function POST(req: NextRequest) {
+  const gate = requireCronSecret(req);
+  if (gate) return gate;
   try {
     const { data: staff, error } = await supabaseAdmin
       .from('staff')
@@ -72,6 +72,3 @@ export async function POST() {
   }
 }
 
-export async function GET() {
-  return POST();
-}
