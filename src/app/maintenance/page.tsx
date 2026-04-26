@@ -112,11 +112,11 @@ export default function MaintenancePage() {
   });
   const setActiveTab = useCallback((tab: TabKey) => {
     setActiveTabState(tab);
-    if (typeof window === 'undefined') return;
-    const url = new URL(window.location.href);
-    url.searchParams.set('tab', tab);
-    window.history.replaceState({}, '', url.toString());
-  }, []);
+    // router.replace keeps Next's internal state in sync — using
+    // window.history.replaceState directly desyncs from the router so the
+    // browser back button can land on a URL whose tab the page no longer shows.
+    router.replace(`?tab=${tab}`, { scroll: false });
+  }, [router]);
   const [orders, setOrders] = useState<WorkOrder[]>([]);
   const [filter, setFilter] = useState<FilterKey>('all');
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -249,7 +249,7 @@ export default function MaintenancePage() {
     } finally {
       setSubmitting(false);
     }
-  }, [user, activePropertyId, newRoom, newDesc, newSeverity, submitting, lang]);
+  }, [user, activePropertyId, newRoom, newDesc, newSeverity, newBlockRoom, submitting, lang]);
 
   const handleStartWork = useCallback(async (order: WorkOrder) => {
     if (!user || !activePropertyId) return;
@@ -1011,22 +1011,30 @@ export default function MaintenancePage() {
 
       {/* ── FAB (Work Orders tab only) ── */}
       {activeTab === 'workOrders' && (
-        <button
-          onClick={() => setShowCreateModal(true)}
-          aria-label={t('newWorkOrder', lang)}
-          style={{
-            position: 'fixed', bottom: '32px', right: '32px', zIndex: 30,
-            width: '56px', height: '56px', borderRadius: '50%',
-            background: '#364262', color: '#fff', border: 'none',
-            cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-            boxShadow: '0 4px 16px rgba(54,66,98,0.35)',
-            transition: 'transform 200ms cubic-bezier(0.2,0,0,1)',
-          }}
-          onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.1)'; }}
-          onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; }}
-        >
-          <Plus size={24} strokeWidth={2.5} />
-        </button>
+        <>
+          {/* CSS :hover instead of JS so touch devices don't get stuck on
+              the scaled-up state (mouseleave never fires on tap). */}
+          <style>{`
+            .maintenance-fab { transform: scale(1); transition: transform 200ms cubic-bezier(0.2,0,0,1); }
+            @media (hover: hover) {
+              .maintenance-fab:hover { transform: scale(1.1); }
+            }
+          `}</style>
+          <button
+            onClick={() => setShowCreateModal(true)}
+            aria-label={t('newWorkOrder', lang)}
+            className="maintenance-fab"
+            style={{
+              position: 'fixed', bottom: '32px', right: '32px', zIndex: 30,
+              width: '56px', height: '56px', borderRadius: '50%',
+              background: '#364262', color: '#fff', border: 'none',
+              cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              boxShadow: '0 4px 16px rgba(54,66,98,0.35)',
+            }}
+          >
+            <Plus size={24} strokeWidth={2.5} />
+          </button>
+        </>
       )}
 
       {/* ── Create Work Order Modal ── */}

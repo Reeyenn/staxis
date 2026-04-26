@@ -64,35 +64,38 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
   // Load laundry person name from staff list
   useEffect(() => {
     if (!uid || !pid || !laundryPersonId) return;
-
+    let cancelled = false;
     fetch(`/api/staff-list?uid=${uid}&pid=${pid}`)
       .then(r => r.json())
       .then((data: Array<{ id: string; name: string }>) => {
+        if (cancelled) return;
         const person = data.find(s => s.id === laundryPersonId);
-        if (person) {
-          setLaundryPersonName(person.name);
-        }
+        if (person) setLaundryPersonName(person.name);
       })
       .catch(err => console.error('[laundry] staff name load failed:', err));
+    return () => { cancelled = true; };
   }, [uid, pid, laundryPersonId]);
 
   // Load public areas and laundry config
   useEffect(() => {
     if (!uid || !pid) return;
-
+    let cancelled = false;
     Promise.all([
       getPublicAreas(uid, pid),
       getLaundryConfig(uid, pid),
     ])
       .then(([areas, config]) => {
+        if (cancelled) return;
         setPublicAreas(areas);
         setLaundryConfig(config);
         setLoading(false);
       })
       .catch(err => {
+        if (cancelled) return;
         console.error('[laundry] load config error:', err);
         setLoading(false);
       });
+    return () => { cancelled = true; };
   }, [uid, pid]);
 
   // Subscribe to rooms for today. No auth dance — the Supabase browser client
@@ -100,10 +103,11 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
   // token for this page.
   useEffect(() => {
     if (!uid || !pid) return;
+    let cancelled = false;
     const unsub = subscribeToRooms(uid, pid, today, (data: Room[]) => {
-      setRooms(data);
+      if (!cancelled) setRooms(data);
     });
-    return () => unsub();
+    return () => { cancelled = true; unsub(); };
   }, [uid, pid, today]);
 
   // Calculate today's date for area filtering

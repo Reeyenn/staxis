@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, Suspense } from 'react';
+import React, { useState, useEffect, useCallback, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
@@ -38,14 +38,14 @@ function LaundryInner() {
   const [step,       setStep]       = useState<Step>('loading');
   const [errorMsg,   setErrorMsg]   = useState('');
 
-  useEffect(() => {
+  // Extracted into a callback so the "Try Again" button can invoke the
+  // same load path as the initial mount — previously the retry button only
+  // re-set the loading step, which the effect's [uid, pid] deps refused to
+  // honor (no input had actually changed), leaving the spinner forever.
+  const loadStaff = useCallback(() => {
     if (!uid || !pid) { setStep('bad-link'); return; }
-
-    // No anonymous auth here anymore. /api/staff-list uses the service-role
-    // key and does not rely on a caller session; /laundry/[id] reads through
-    // the Supabase browser client with anon RLS allowed for staff pages.
-    // The uid+pid+staffId triple in the URL is the capability token.
-
+    setStep('loading');
+    setErrorMsg('');
     fetch(`/api/staff-list?uid=${uid}&pid=${pid}`)
       .then(r => r.json())
       .then(data => {
@@ -65,7 +65,9 @@ function LaundryInner() {
           ? 'No se pudo cargar la lista. Verifica tu conexión e intenta de nuevo.'
           : 'Could not load staff list. Check your connection and try again.');
       });
-  }, [uid, pid]);
+  }, [uid, pid, lang]);
+
+  useEffect(() => { loadStaff(); }, [loadStaff]);
 
   const handleSetup = async () => {
     if (!uid || !pid || !selectedId) return;
@@ -241,7 +243,7 @@ function LaundryInner() {
           <AlertCircle size={40} color="var(--red)" style={{ marginBottom: '16px' }} />
           <h2 style={{ fontSize: '18px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>{t('somethingWentWrong', lang)}</h2>
           <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>{errorMsg}</p>
-          <button onClick={() => { setStep('loading'); }} style={{
+          <button onClick={loadStaff} style={{
             marginTop: '20px', padding: '10px 24px',
             background: 'var(--navy)', color: '#FFFFFF', border: 'none',
             borderRadius: 'var(--radius-md)', fontFamily: 'var(--font-sans)', fontWeight: 600, cursor: 'pointer',

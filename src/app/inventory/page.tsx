@@ -103,10 +103,17 @@ export default function InventoryPage() {
   const [lowStockAlert, setLowStockAlert] = useState<InventoryItem[] | null>(null);
 
   const seededRef = useRef(false);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
-    setTimeout(() => setToast(null), 2500);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(null), 2500);
+  }, []);
+
+  // Clear any pending toast timer on unmount to avoid setState on unmounted.
+  useEffect(() => () => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
   }, []);
 
   // Auth guard

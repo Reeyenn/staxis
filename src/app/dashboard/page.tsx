@@ -83,13 +83,19 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!user || !activePropertyId) return;
+    // `cancelled` flag stops a stale fetch from overwriting state when the
+    // user switches properties mid-load — without it, property A's deep-clean
+    // data could land after property B's screen had already mounted.
+    let cancelled = false;
     Promise.all([
       getDeepCleanConfig(user.uid, activePropertyId),
       getDeepCleanRecords(user.uid, activePropertyId),
     ]).then(([config, records]) => {
+      if (cancelled) return;
       setDcConfig(config);
       setDcRecords(records);
     });
+    return () => { cancelled = true; };
   }, [user, activePropertyId]);
 
   useEffect(() => {
@@ -249,37 +255,12 @@ export default function DashboardPage() {
     );
   }
 
-  /* ── Inline editable number ── */
-  const InlineEdit = ({ value, onChange, fieldKey, prefix }: {
-    value: number; onChange: (v: number) => void; fieldKey: string; prefix?: string;
-  }) => {
-    const isEditing = editingField === fieldKey;
-    if (isEditing) {
-      return (
-        <input
-          type="number"
-          autoFocus
-          value={value || ''}
-          onChange={e => onChange(parseInt(e.target.value) || 0)}
-          onBlur={() => setEditingField(null)}
-          onKeyDown={e => { if (e.key === 'Enter') setEditingField(null); }}
-          style={{
-            width: '64px', fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '15px',
-            border: '2px solid var(--navy)', borderRadius: '6px', padding: '2px 6px',
-            background: 'var(--bg)', color: 'var(--text-primary)', outline: 'none',
-          }}
-        />
-      );
-    }
-    return (
-      <span
-        onClick={(e) => { e.stopPropagation(); setEditingField(fieldKey); }}
-        style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '15px', color: 'var(--text-primary)', cursor: 'pointer', borderBottom: '1px dashed var(--border)' }}
-      >
-        {value > 0 ? `${prefix || ''}${value}` : '—'}
-      </span>
-    );
-  };
+  /* ── Inline editable number ── delegated to top-level <InlineEdit/> below.
+   * Defining the component inside this render function (which is what we
+   * used to do) gave it a fresh identity every render, so React unmounted
+   * and remounted the <input> on every keystroke → focus and characters lost
+   * mid-typing. Top-level component + prop-passed editingField fixes it.
+   */
 
   /* ── Labor cost calculation ── */
   const wage = activeProperty?.hourlyWage || 12;
@@ -560,6 +541,8 @@ export default function DashboardPage() {
                         value={arrivals}
                         onChange={setArrivals}
                         fieldKey="arrivals"
+                        editingField={editingField}
+                        setEditingField={setEditingField}
                       />
                     </div>
                     {/* Reservations */}
@@ -571,6 +554,8 @@ export default function DashboardPage() {
                         value={reservationCount}
                         onChange={setReservationCount}
                         fieldKey="reservations"
+                        editingField={editingField}
+                        setEditingField={setEditingField}
                       />
                     </div>
                     {/* In-House */}
@@ -582,6 +567,8 @@ export default function DashboardPage() {
                         value={inHouseGuests}
                         onChange={setInHouseGuests}
                         fieldKey="in-house"
+                        editingField={editingField}
+                        setEditingField={setEditingField}
                       />
                     </div>
                   </div>
@@ -608,6 +595,8 @@ export default function DashboardPage() {
                         value={adr}
                         onChange={setAdr}
                         fieldKey="adr"
+                        editingField={editingField}
+                        setEditingField={setEditingField}
                       />
                     </div>
                   </div>
@@ -762,5 +751,47 @@ export default function DashboardPage() {
 
       </div>
     </AppLayout>
+  );
+}
+
+/* Top-level InlineEdit so React preserves the <input> instance across
+ * re-renders. Defining it inside DashboardPage gave it a fresh identity
+ * each render, so typing into the editor lost focus and characters. */
+function InlineEdit({
+  value, onChange, fieldKey, prefix, editingField, setEditingField,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+  fieldKey: string;
+  prefix?: string;
+  editingField: string | null;
+  setEditingField: (k: string | null) => void;
+}) {
+  const isEditing = editingField === fieldKey;
+  if (isEditing) {
+    return (
+      <input
+        type="number"
+        autoFocus
+        aria-label={fieldKey}
+        value={value || ''}
+        onChange={e => onChange(parseInt(e.target.value) || 0)}
+        onBlur={() => setEditingField(null)}
+        onKeyDown={e => { if (e.key === 'Enter') setEditingField(null); }}
+        style={{
+          width: '64px', fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '15px',
+          border: '2px solid var(--navy)', borderRadius: '6px', padding: '2px 6px',
+          background: 'var(--bg)', color: 'var(--text-primary)', outline: 'none',
+        }}
+      />
+    );
+  }
+  return (
+    <span
+      onClick={(e) => { e.stopPropagation(); setEditingField(fieldKey); }}
+      style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '15px', color: 'var(--text-primary)', cursor: 'pointer', borderBottom: '1px dashed var(--border)' }}
+    >
+      {value > 0 ? `${prefix || ''}${value}` : '—'}
+    </span>
   );
 }

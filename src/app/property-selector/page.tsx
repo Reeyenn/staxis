@@ -42,7 +42,10 @@ export default function PropertySelectorPage() {
     await signOut();
   };
 
-  const isLoading = authLoading || propLoading;
+  // Treat "no user" as still-loading too — otherwise the unauth redirect
+  // useEffect fires AFTER the render path, briefly showing the "No
+  // properties found" empty state to a logged-out user before navigation.
+  const isLoading = authLoading || propLoading || !user;
 
   if (isLoading) {
     return (

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
@@ -117,6 +117,18 @@ export default function FrontDeskPage() {
   const [processing, setProcessing] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = useCallback((msg: string) => {
+    setToast(msg);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(null), 2500);
+  }, []);
+
+  // Clear any pending toast timer on unmount to avoid setState on unmounted.
+  useEffect(() => () => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+  }, []);
 
   // Material Symbols font is loaded globally via globals.css
 
@@ -179,14 +191,12 @@ export default function FrontDeskPage() {
     try {
       await updateRoom(user.uid, activePropertyId, selectedRoom.id, { type: 'checkout' });
       setSelectedRoom(null);
-      setToast(lang === 'es'
+      showToast(lang === 'es'
         ? `Habitación ${selectedRoom.number} marcada como Salida Anticipada`
         : `Room ${selectedRoom.number} marked as Early Checkout`);
-      setTimeout(() => setToast(null), 2500);
     } catch (error) {
       console.error('Error marking early checkout:', error);
-      setToast(lang === 'es' ? 'Error al procesar' : 'Error processing request');
-      setTimeout(() => setToast(null), 2500);
+      showToast(lang === 'es' ? 'Error al procesar' : 'Error processing request');
     } finally { setProcessing(false); }
   };
 
@@ -196,14 +206,12 @@ export default function FrontDeskPage() {
     try {
       await updateRoom(user.uid, activePropertyId, selectedRoom.id, { type: 'stayover' });
       setSelectedRoom(null);
-      setToast(lang === 'es'
+      showToast(lang === 'es'
         ? `Habitación ${selectedRoom.number} marcada como Extensión`
         : `Room ${selectedRoom.number} marked as Extension`);
-      setTimeout(() => setToast(null), 2500);
     } catch (error) {
       console.error('Error marking extension:', error);
-      setToast(lang === 'es' ? 'Error al procesar' : 'Error processing request');
-      setTimeout(() => setToast(null), 2500);
+      showToast(lang === 'es' ? 'Error al procesar' : 'Error processing request');
     } finally { setProcessing(false); }
   };
 

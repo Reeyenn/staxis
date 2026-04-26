@@ -82,7 +82,7 @@ export default function SignInPage() {
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            <label style={{
+            <label htmlFor="signin-username" style={{
               fontSize: '12px', fontWeight: 600, letterSpacing: '0.04em',
               color: 'var(--text-secondary)', textTransform: 'uppercase',
               fontFamily: 'var(--font-sans)',
@@ -90,6 +90,7 @@ export default function SignInPage() {
               {t('username', lang)}
             </label>
             <input
+              id="signin-username"
               type="text"
               value={username}
               onChange={e => { setUsername(e.target.value); setError(''); }}
@@ -113,7 +114,7 @@ export default function SignInPage() {
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            <label style={{
+            <label htmlFor="signin-password" style={{
               fontSize: '12px', fontWeight: 600, letterSpacing: '0.04em',
               color: 'var(--text-secondary)', textTransform: 'uppercase',
               fontFamily: 'var(--font-sans)',
@@ -121,6 +122,7 @@ export default function SignInPage() {
               {t('password', lang)}
             </label>
             <input
+              id="signin-password"
               type="password"
               value={password}
               onChange={e => { setPassword(e.target.value); setError(''); }}

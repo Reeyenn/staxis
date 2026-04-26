@@ -93,15 +93,17 @@ export function Header() {
         {/* Right controls */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px', minWidth: 0 }}>
 
-          {/* Notifications bell */}
+          {/* Notifications bell — disabled until the feature ships */}
           <button
+            disabled
+            aria-label="Notifications (not yet available)"
             style={{
               padding: '8px', borderRadius: '8px', border: 'none',
-              background: 'transparent', cursor: 'pointer',
+              background: 'transparent', cursor: 'not-allowed',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               transition: 'background 0.15s',
+              opacity: 0.4,
             }}
-            onClick={() => {}}
           >
             <Bell size={20} color="#364262" />
           </button>

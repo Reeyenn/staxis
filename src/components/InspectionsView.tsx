@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
@@ -105,7 +105,10 @@ export function InspectionsView() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [editModal, setEditModal] = useState<Inspection | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [seeded, setSeeded] = useState(false);
+  // Ref (not state) so the guard flips synchronously before the parallel writes
+  // — prevents a second snapshot callback from seeding duplicates.
+  const seededRef = useRef(false);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Load Material Symbols Outlined font
   useEffect(() => {
@@ -118,7 +121,13 @@ export function InspectionsView() {
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
-    setTimeout(() => setToast(null), 2500);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(null), 2500);
+  }, []);
+
+  // Clear any pending toast timer on unmount to avoid setState on unmounted.
+  useEffect(() => () => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
   }, []);
 
   // Subscribe
@@ -127,17 +136,20 @@ export function InspectionsView() {
     let isFirst = true;
     const unsub = subscribeToInspections(user.uid, activePropertyId, (items) => {
       setInspections(items);
-      if (isFirst && items.length === 0 && !seeded) {
-        setSeeded(true);
-        DEFAULT_INSPECTIONS.forEach(def => {
-          addInspection(user.uid, activePropertyId, { ...def, propertyId: activePropertyId })
-            .catch(err => console.error('[inspections] seed default failed:', err));
-        });
+      if (isFirst && items.length === 0 && !seededRef.current) {
+        // Flip the ref synchronously BEFORE awaiting writes — a second snapshot
+        // callback firing mid-await would otherwise re-enter and double-seed.
+        seededRef.current = true;
+        Promise.all(
+          DEFAULT_INSPECTIONS.map(def =>
+            addInspection(user.uid, activePropertyId, { ...def, propertyId: activePropertyId })
+          )
+        ).catch(err => console.error('[inspections] seed default failed:', err));
       }
       isFirst = false;
     });
     return unsub;
-  }, [user, activePropertyId, seeded]);
+  }, [user, activePropertyId]);
 
   // Sort: overdue first, then due, then notset, then upcoming
   const sorted = useMemo(() => {
