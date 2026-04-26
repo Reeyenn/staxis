@@ -420,6 +420,22 @@ export default function StaffPage() {
       } finally {
         if (timeoutId) clearTimeout(timeoutId);
       }
+      // Force-refresh the staff list from the DB so the next modal-open
+      // shows the value we just saved. We can't rely on the realtime
+      // postgres_changes channel for this — it sometimes doesn't fire on
+      // self-originated UPDATEs (e.g. when the row's RLS policy depends on
+      // a column we just changed, the channel filter rejects the event).
+      // Without this explicit refresh, the local `staff` array stays at
+      // the pre-save snapshot, so reopening the same staff member shows an
+      // empty Phone field even though the DB has the new value — which
+      // reads as "the save didn't work" until the user reloads the tab.
+      try {
+        await refreshStaff();
+      } catch (refreshErr) {
+        // Don't block the success path on a refresh failure — the write
+        // already landed. Just log and let realtime catch up eventually.
+        console.warn('[staff] refreshStaff after save failed:', refreshErr);
+      }
       setShowModal(false);
     } catch (err) {
       // Surface the failure inline instead of swallowing it. Logged with a
