@@ -271,7 +271,7 @@ function sanitizeForJsonb(obj) {
  * the dashboard row's error fields AND re-throws a typed ScraperError so
  * the caller (scraper.js) can decide whether to retry with re-login.
  */
-async function pullDashboardNumbers(page, supabase, log) {
+async function pullDashboardNumbers(page, supabase, log, timezone) {
   let result;
   try {
     result = await fetchAllViewPages(page, log);
@@ -344,8 +344,8 @@ async function pullDashboardNumbers(page, supabase, log) {
   // becomes the frozen historical snapshot for that date. No separate cron or
   // append-only log needed. Dates are bucketed by the hotel's local timezone
   // so a pull at 11:45pm Central writes to today, not tomorrow-UTC.
-  const timezone = process.env.TIMEZONE || 'America/Chicago';
-  const localDate = new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(new Date());
+  const tz = timezone || process.env.TIMEZONE || 'America/Chicago';
+  const localDate = new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date());
   const { error: dbdErr } = await supabase
     .from('dashboard_by_date')
     .upsert({

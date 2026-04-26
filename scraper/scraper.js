@@ -212,9 +212,22 @@ async function login(page) {
         const el = document.querySelector('.CHI_Error, .error, [class*="rror"]');
         return el ? el.textContent.trim().slice(0, 200) : null;
       }).catch(() => null);
+      // Sanitize the CA error: it can echo back the username verbatim, which
+      // ends up in scraper_status.errorMessage and Railway logs. Extract only
+      // known phrases so the propagated message is safe to surface.
+      const sanitizedReason = (() => {
+        if (!caMessage) return null;
+        const lower = caMessage.toLowerCase();
+        if (lower.includes('locked'))   return 'account locked';
+        if (lower.includes('disabled')) return 'account disabled';
+        if (lower.includes('expired'))  return 'password expired';
+        if (lower.includes('incorrect') || lower.includes('invalid')) return 'credentials incorrect';
+        if (lower.includes('too many')) return 'too many attempts';
+        return null;
+      })();
       throw new ScraperError(
         ERROR_CODES.LOGIN_FAILED,
-        `Credentials rejected at ${page.url()}${caMessage ? ` — CA said: "${caMessage}"` : ''}`,
+        `Credentials rejected at ${page.url()}${sanitizedReason ? ` — ${sanitizedReason}` : ''}`,
         { diagnostics: { caMessage, url: page.url() } }
       );
     }
@@ -328,7 +341,7 @@ const DASHBOARD_INTERVAL_MS = 15 * 60 * 1000;
  */
 async function runDashboardPullFresh(page, relogin) {
   try {
-    return await pullDashboardNumbers(page, supabase, log);
+    return await pullDashboardNumbers(page, supabase, log, CONFIG.TIMEZONE);
   } catch (err) {
     const code = err instanceof ScraperError ? err.code : ERROR_CODES.UNKNOWN;
 
@@ -353,7 +366,7 @@ async function runDashboardPullFresh(page, relogin) {
       // first and we don't retry again. (Don't want infinite loops on a
       // persistently sad CA.)
       try {
-        return await pullDashboardNumbers(page, supabase, log);
+        return await pullDashboardNumbers(page, supabase, log, CONFIG.TIMEZONE);
       } catch (retryErr) {
         log(`Dashboard pull retry FAILED: [${retryErr.code || 'unknown'}] ${retryErr.message}`);
         return null;
@@ -377,9 +390,10 @@ async function maybeRunDashboardPull(page, relogin) {
   if (now - lastDashboardPullAt < DASHBOARD_INTERVAL_MS) return;
 
   const result = await runDashboardPullFresh(page, relogin);
-  // Mark the timestamp whether success or failure — a failed pull is logged
-  // to scraper_status and we don't want to retry every 5 min tick on a down CA.
-  lastDashboardPullAt = now;
+  // Only bump the timestamp on success — matches CSV pull semantics. A failed
+  // pull retries on the next tick; pullDashboardNumbers preserves last-good
+  // values internally so we're not overwriting good data on retry.
+  if (result !== null) lastDashboardPullAt = now;
   return result;
 }
 
@@ -407,8 +421,10 @@ async function maybeRunOOOPull(page, relogin) {
     PROPERTY_ID: CONFIG.PROPERTY_ID,
   };
 
+  let ok = false;
   try {
     await pullOOOWorkOrders(page, supabase, config, log);
+    ok = true;
   } catch (err) {
     const code = err instanceof ScraperError ? err.code : ERROR_CODES.UNKNOWN;
     // Same narrow retry as dashboard: only re-login on session_expired.
@@ -417,6 +433,7 @@ async function maybeRunOOOPull(page, relogin) {
       try {
         await relogin();
         await pullOOOWorkOrders(page, supabase, config, log);
+        ok = true;
       } catch (retryErr) {
         log(`OOO pull retry FAILED: [${retryErr.code || 'unknown'}] ${retryErr.message}`);
       }
@@ -425,7 +442,9 @@ async function maybeRunOOOPull(page, relogin) {
     }
   }
 
-  lastOOOPullAt = now;
+  // Only bump the timestamp on success — matches CSV pull semantics. A failed
+  // pull retries on the next tick.
+  if (ok) lastOOOPullAt = now;
 }
 
 async function maybeRunCSVPull(page, relogin) {
@@ -481,20 +500,32 @@ async function run() {
   // stale/revoked, crash loud now instead of writing garbage for hours.
   await verifySupabaseAuth(supabase, log);
 
-  const browser = await chromium.launch({
-    headless: process.env.HEADED !== 'true',
-    args: ['--no-sandbox', '--disable-setuid-sandbox'], // needed on Railway/Linux
-  });
+  // Wrap browser launch + login in try/finally. If login throws after the
+  // launch (CA password change, network blip, etc.) we'd otherwise leak a
+  // Chromium process per crash-loop iteration — Railway eventually OOMs.
+  let browser;
+  let context;
+  let page;
+  try {
+    browser = await chromium.launch({
+      headless: process.env.HEADED !== 'true',
+      args: ['--no-sandbox', '--disable-setuid-sandbox'], // needed on Railway/Linux
+    });
 
-  // Persistent context keeps cookies/session across runs
-  const context = await browser.newContext({
-    storageState: fs.existsSync(CONFIG.SESSION_FILE) ? CONFIG.SESSION_FILE : undefined,
-  });
+    // Persistent context keeps cookies/session across runs
+    context = await browser.newContext({
+      storageState: fs.existsSync(CONFIG.SESSION_FILE) ? CONFIG.SESSION_FILE : undefined,
+    });
 
-  const page = await context.newPage();
+    page = await context.newPage();
 
-  await login(page);
-  await context.storageState({ path: CONFIG.SESSION_FILE });
+    await login(page);
+    await context.storageState({ path: CONFIG.SESSION_FILE });
+  } catch (err) {
+    log(`Startup FAILED: ${err.message}`);
+    try { await browser?.close(); } catch (_) {}
+    process.exit(1);
+  }
 
   // Optional: on startup, pull today's CSV immediately — useful for smoke tests.
   if (process.env.CSV_TEST_ON_STARTUP === 'true') {
@@ -548,11 +579,40 @@ async function run() {
     }
   }
 
-  // First tick immediately, then on interval
-  await tick();
-
+  // Self-scheduling tick loop. Avoid setInterval(tick, …) because tick is
+  // async and setInterval doesn't await — slow ticks would overlap on the
+  // shared Playwright page. The isTicking guard + setTimeout chain
+  // guarantees ticks are strictly serial.
   const tickMs = CONFIG.TICK_MINUTES * 60 * 1000;
-  setInterval(tick, tickMs);
+  let isTicking = false;
+
+  async function scheduledTick() {
+    if (isTicking) {
+      // Shouldn't happen with setTimeout chaining, but harmless belt-and-suspenders.
+      log('Skipping tick — previous tick still running');
+      setTimeout(scheduledTick, tickMs);
+      return;
+    }
+    isTicking = true;
+    try {
+      await tick();
+    } catch (err) {
+      // tick already wraps its body in try/catch but be defensive.
+      log(`tick threw: ${err.message}`);
+    } finally {
+      isTicking = false;
+      setTimeout(scheduledTick, tickMs);
+    }
+  }
+
+  // First tick immediately, then schedule the next
+  isTicking = true;
+  try {
+    await tick();
+  } finally {
+    isTicking = false;
+    setTimeout(scheduledTick, tickMs);
+  }
 
   log(`CSV runner running. Next tick in ${CONFIG.TICK_MINUTES} minutes.`);
 }

@@ -87,7 +87,11 @@ function classifyStayover(arrivalStr, dateISO) {
  *                    Arrival, Departure, Last Clean
  */
 function parseCSV(csvText) {
-  const lines = csvText.trim().split('\n');
+  // Strip a UTF-8 BOM (CA's CSV export sometimes includes one) and split on
+  // both \r\n and \n — Excel/Windows-encoded exports use CRLF, and a stray
+  // \r at end-of-line was previously included in the last column's value,
+  // breaking exact-match status comparisons like `r.stayType === 'C/O'`.
+  const lines = csvText.replace(/^\uFEFF/, '').trim().split(/\r?\n/);
   if (lines.length < 2) return [];
 
   const rooms = [];
@@ -110,12 +114,21 @@ function parseCSV(csvText) {
     // Skip if no room number
     if (!room || !room.match(/^\d{3,4}$/)) continue;
 
+    // parseInt + radix + finite check. parseInt('5x', 10) is 5, parseInt('', 10)
+    // is NaN — both fall back to 0. The `|| 0` previously hid NaN but didn't
+    // distinguish "actually missing" from "garbage in the cell"; `Number.isFinite`
+    // is the explicit guard.
+    const toCount = (raw) => {
+      const n = parseInt(raw, 10);
+      return Number.isFinite(n) ? n : 0;
+    };
+
     rooms.push({
       number: room,
       roomType: type,                          // SNQQ, SNK, HSNK, etc.
       people: people || null,
-      adults: parseInt(adults) || 0,
-      children: parseInt(children) || 0,
+      adults: toCount(adults),
+      children: toCount(children),
       status: status,                          // OCC, VAC, OOO
       condition: condition,                    // Clean, Dirty
       stayType: stayCO || null,                // Stay, C/O, or blank
@@ -379,12 +392,17 @@ async function downloadCSVFromCA(page, log) {
     csvText = fs.readFileSync(downloadPath, 'utf-8');
     log(`[CSV] Downloaded ${csvText.length} bytes`);
   } else if (popup) {
-    // CSV opened in new tab — grab the page content
+    // CSV opened in new tab — grab the page content. Wrap in try/finally so
+    // an evaluate() throw doesn't leak the popup tab (compounds over hours
+    // until the browser context is bloated with stale tabs).
     log('[CSV] Got popup/new tab');
-    await popup.waitForLoadState('domcontentloaded', { timeout: 15000 });
-    csvText = await popup.evaluate(() => document.body.innerText || document.body.textContent || '');
-    await popup.close();
-    log(`[CSV] Got ${csvText.length} bytes from popup`);
+    try {
+      await popup.waitForLoadState('domcontentloaded', { timeout: 15000 });
+      csvText = await popup.evaluate(() => document.body.innerText || document.body.textContent || '');
+      log(`[CSV] Got ${csvText.length} bytes from popup`);
+    } finally {
+      try { await popup.close(); } catch (_) {}
+    }
   } else {
     // Neither — try reading from current page (maybe it loaded inline)
     log('[CSV] No download or popup — trying to read from current page');
@@ -501,7 +519,7 @@ async function writeRoomStayoverDays(supabase, config, snapshot, log) {
     const patch = { arrival: r.arrival ?? null };
     if (typeof r.stayoverDay !== 'undefined')    patch.stayover_day     = r.stayoverDay;
     if (typeof r.stayoverMinutes !== 'undefined') patch.stayover_minutes = r.stayoverMinutes;
-    updates.push(
+    updates.push(() =>
       supabase
         .from('rooms')
         .update(patch)
@@ -511,10 +529,20 @@ async function writeRoomStayoverDays(supabase, config, snapshot, log) {
     );
   }
 
-  const results = await Promise.all(updates.map(q => q.then(r => r, err => ({ error: err }))));
+  // Chunked concurrency: 10 PostgREST requests at a time. The unbounded
+  // Promise.all could fan out 70+ parallel updates and trigger Supabase rate
+  // limiting / connection pool exhaustion under load. Batches of 10 are
+  // small enough to be safe and big enough to keep the merge fast.
+  const CHUNK_SIZE = 10;
   let errored = 0;
-  for (const r of results) {
-    if (r?.error) errored++;
+  for (let i = 0; i < updates.length; i += CHUNK_SIZE) {
+    const batch = updates.slice(i, i + CHUNK_SIZE);
+    const results = await Promise.all(
+      batch.map(makeQuery => makeQuery().then(r => r, err => ({ error: err })))
+    );
+    for (const r of results) {
+      if (r?.error) errored++;
+    }
   }
   log(`[CSV] Merged stayover cycle fields into rooms (${updates.length} attempted, ${errored} errored — missing rows are no-ops)`);
 }
@@ -538,12 +566,22 @@ async function runCSVScrape(page, supabase, config, pullType, log) {
   // Determine target date:
   // Evening (7pm) pull → planning for TOMORROW
   // Morning (6am) pull → confirming for TODAY
+  //
+  // Tomorrow is computed by formatting today as a YYYY-MM-DD in the hotel's
+  // local TZ and then incrementing the calendar day. Adding 86,400,000 ms to
+  // a Date and re-formatting silently produces the *same* calendar day on
+  // spring-forward DST mornings (when local "tomorrow at the same wall clock"
+  // is only 23h away) — the evening pull would then write tomorrow's plan
+  // to today's row. UTC date arithmetic on the formatted string sidesteps DST.
+  const todayLocal = new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(new Date());
   let targetDate;
   if (pullType === 'evening') {
-    const tmr = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    targetDate = new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(tmr);
+    const [y, m, d] = todayLocal.split('-').map(n => parseInt(n, 10));
+    // Date.UTC + 1 day, then re-format. en-CA gives YYYY-MM-DD for any TZ.
+    const next = new Date(Date.UTC(y, m - 1, d + 1, 12)); // noon UTC for safety
+    targetDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'UTC' }).format(next);
   } else {
-    targetDate = new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(new Date());
+    targetDate = todayLocal;
   }
 
   log(`[CSV] Target date: ${targetDate} (${pullType} pull)`);

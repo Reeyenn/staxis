@@ -160,6 +160,10 @@ async function reconcileOOO(supabase, config, ooo, log) {
   for (const w of ooo) {
     const caKey = String(w.workOrderNumber || '');
     if (!caKey) continue; // no stable ID = can't dedup safely, skip
+    // Skip work orders with no room identifier — `String(undefined || '')`
+    // produces an empty string which would land in work_orders.room_number
+    // and surface in the UI as a phantom OOO row attached to room "".
+    if (!w.roomNumber && !w.item) continue;
     caKeys.add(caKey);
 
     const payload = {
