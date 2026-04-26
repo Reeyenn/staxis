@@ -20,7 +20,7 @@
 // and are enforced by RLS (properties.owner_id = auth.uid() and
 // user_owns_property() for the 22 per-property tables).
 
-import { createClient, type LockFunc, type SupabaseClient } from '@supabase/supabase-js';
+import { createClient, processLock, type SupabaseClient } from '@supabase/supabase-js';
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -35,26 +35,27 @@ if (!url || !anonKey) {
   );
 }
 
-// In-process lock: serialize concurrent auth calls inside a single tab via a
-// Promise chain. Replaces Supabase's default `navigator.locks`-based lock,
-// which has a pathological failure mode when AuthProvider (or any component
-// calling `supabase.auth.*`) re-mounts before the previous holder finished —
-// the lock sits unreleased for a full 5 seconds until gotrue-js force-steals
-// it, producing a visible "Sign in just hangs and spins" bug. The console
-// warning is: `Lock "lock:staxis-auth" was not released within 5000ms`.
+// In-process lock: serialize concurrent auth calls inside a single tab.
+// Uses Supabase's own `processLock` (re-exported from supabase-js → auth-js).
+// This is the SDK's hand-rolled in-process serializer with proper timeout
+// handling — calls to `_acquireLock(0, …)` (the auto-refresh "skip if held"
+// path) reject quickly with a timeout error instead of queueing forever, and
+// hung holders don't permanently wedge the queue.
 //
-// Why in-process is safe: we don't do cross-tab session coordination. Each
-// tab owns its own localStorage session; on sign-in/out we want the local
-// operation to serialize, not wait for other tabs. If you ever add a
-// BroadcastChannel-based cross-tab sync, revisit this.
-let __authLockChain: Promise<unknown> = Promise.resolve();
-const inProcessLock: LockFunc = (_name, _acquireTimeout, fn) => {
-  const myTurn = __authLockChain.then(() => fn());
-  // Swallow rejections in the chain so one failed call doesn't poison all
-  // future lock acquisitions.
-  __authLockChain = myTurn.catch(() => {});
-  return myTurn;
-};
+// History: a previous revision implemented this lock manually as a single
+// `__authLockChain` Promise that ignored `acquireTimeout` and chained
+// every call. If any call's `fn()` ever failed to resolve (e.g. a stalled
+// token-refresh fetch), every subsequent DB call hung forever — which
+// surfaced as "every Save button stays on Saving… for 15s". Switching to
+// `processLock` fixes it because `processLock` races each acquire against
+// a timeout, so a stuck holder is bypassed in seconds rather than blocking
+// the tab indefinitely.
+//
+// Why not the default `navigatorLock`: navigator.locks is cross-tab-aware,
+// which on its own is fine — but it produces a noisy "Lock not released
+// within 5000ms" console warning during AuthProvider re-mounts in dev.
+// We don't do cross-tab coordination anywhere (each tab owns its own
+// localStorage session), so an in-process lock is sufficient and quieter.
 
 // Singleton across HMR reloads — new client per render would drop the
 // auth session listener and cause onAuthStateChange to miss events.
@@ -80,8 +81,10 @@ export const supabase: SupabaseClient =
       // existing sessions.
       storageKey: 'staxis-auth',
       flowType: 'pkce',
-      // See `inProcessLock` above — fixes the navigator.locks deadlock.
-      lock: inProcessLock,
+      // See lock comment above — `processLock` from supabase-js. Do NOT
+      // replace with a hand-rolled Promise chain; that ignores
+      // acquireTimeout and can deadlock on a single stalled fetch.
+      lock: processLock,
     },
   });
 
