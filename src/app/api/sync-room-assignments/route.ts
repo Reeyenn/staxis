@@ -25,6 +25,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { isValidDateStr, errToString } from '@/lib/utils';
+import { requireSession } from '@/lib/api-auth';
 
 interface StaffEntry {
   staffId: string;
@@ -54,7 +55,8 @@ function deriveRoomType(
 
 export async function POST(req: NextRequest) {
   try {
-    const body: RequestBody = await req.json();
+    const body = await req.json().catch(() => null) as RequestBody | null;
+    if (!body) return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
     const { pid, shiftDate, staff } = body;
 
     if (!pid || !shiftDate || !Array.isArray(staff)) {
@@ -63,6 +65,8 @@ export async function POST(req: NextRequest) {
     if (!isValidDateStr(shiftDate)) {
       return NextResponse.json({ error: 'Invalid shiftDate' }, { status: 400 });
     }
+    const session = await requireSession(req, { pid });
+    if (session instanceof NextResponse) return session;
 
     // ── Failsafe: refuse to wipe all assignments without explicit opt-in ────
     const hasAnyAssignment = staff.some(s => (s.assignedRooms ?? []).length > 0);

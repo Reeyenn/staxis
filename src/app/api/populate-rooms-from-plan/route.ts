@@ -20,6 +20,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { isValidDateStr, errToString } from '@/lib/utils';
+import { requireSession } from '@/lib/api-auth';
 
 interface RequestBody {
   pid: string;
@@ -63,7 +64,8 @@ type PlanRoom = {
 
 export async function POST(req: NextRequest) {
   try {
-    const body: RequestBody = await req.json();
+    const body = await req.json().catch(() => null) as RequestBody | null;
+    if (!body) return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
     const { pid, date } = body;
 
     if (!pid || !date) {
@@ -72,6 +74,8 @@ export async function POST(req: NextRequest) {
     if (!isValidDateStr(date)) {
       return NextResponse.json({ error: 'Invalid date (expected YYYY-MM-DD)' }, { status: 400 });
     }
+    const session = await requireSession(req, { pid });
+    if (session instanceof NextResponse) return session;
 
     // Pull the plan snapshot for this date — that's the last CSV pull.
     const { data: planRow, error: planErr } = await supabaseAdmin

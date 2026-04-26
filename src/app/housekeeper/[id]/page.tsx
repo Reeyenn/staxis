@@ -130,10 +130,14 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
 
   // ── Start room (dirty → in_progress) ──────────────────────────────────────
   const handleStartRoom = async (room: RoomRow) => {
-    if (!uid || !pid) return;
+    // The SMS link only carries `pid` (no `uid`), and `updateRoom` ignores
+    // the legacy uid arg, so action handlers only need pid + housekeeperId
+    // to function. The earlier `!uid` check made every Start/Stop/Finish/
+    // Help/Issue/Reset/DND button silently no-op when opened from the SMS.
+    if (!pid) return;
     setSavingRoomId(room.id);
     try {
-      await updateRoom(uid, pid, room.id, {
+      await updateRoom(uid ?? '', pid, room.id, {
         status: 'in_progress' as RoomStatus,
         startedAt: new Date(),
       });
@@ -146,10 +150,10 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
 
   // ── Stop room (in_progress → dirty, clear startedAt) ──────────────────────
   const handleStopRoom = async (room: RoomRow) => {
-    if (!uid || !pid) return;
+    if (!pid) return;
     setSavingRoomId(room.id);
     try {
-      await updateRoom(uid, pid, room.id, {
+      await updateRoom(uid ?? '', pid, room.id, {
         status: 'dirty' as RoomStatus,
         startedAt: null,
       });
@@ -163,7 +167,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   // ── Finish room (in_progress → clean) ─────────────────────────────────────
   // Requires hold-to-confirm on the button - accidental taps are ignored.
   const handleFinishRoom = async (room: RoomRow) => {
-    if (!uid || !pid) return;
+    if (!pid) return;
     setSavingRoomId(room.id);
     try {
       const updates: Partial<Room> = {
@@ -174,7 +178,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       if (!room.startedAt) {
         updates.startedAt = new Date();
       }
-      await updateRoom(uid, pid, room.id, updates);
+      await updateRoom(uid ?? '', pid, room.id, updates);
     } catch (err) {
       console.error('[housekeeper] finish room error:', err);
     } finally {
@@ -184,11 +188,11 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
 
   // ── Toggle DND on a room ────────────────────────────────────────────────────
   const handleToggleDnd = async (room: RoomRow) => {
-    if (!uid || !pid) return;
+    if (!pid) return;
     setSavingDnd(room.id);
     try {
       const newDnd = !room.isDnd;
-      await updateRoom(uid, pid, room.id, {
+      await updateRoom(uid ?? '', pid, room.id, {
         isDnd: newDnd,
         dndNote: newDnd
           ? `Marked DND by housekeeper at ${new Date().toLocaleTimeString()}`
@@ -204,14 +208,14 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   // ── Need Help - alert Maria ───────────────────────────────────────────────
   const handleNeedHelp = async (room: RoomRow) => {
     if (helpSent.has(room.id)) return; // already sent for this room
-    if (!uid || !pid) return;
+    if (!pid) return;
     setSavingHelp(room.id);
     try {
       // helpRequestedAt / helpRequestedBy are legacy Firestore-only fields
       // that the Postgres schema doesn't carry — the SMS alert below is
       // the authoritative notification channel, so we only flip the
       // `helpRequested` flag here for the UI state.
-      await updateRoom(uid, pid, room.id, {
+      await updateRoom(uid ?? '', pid, room.id, {
         helpRequested: true,
       });
       setHelpSent(prev => new Set(prev).add(room.id));
@@ -220,12 +224,14 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       // /api/help-request looks up the single staff member with
       // isSchedulingManager=true and texts them — no broadcasts, no
       // front desk fallback. Best-effort, don't block on failure.
-      if (uid && pid) {
+      // staffId is taken from the URL path param (`housekeeperId`) so the
+      // request works whether or not the legacy `?uid=` query param is set.
+      if (pid) {
         fetch('/api/help-request', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            uid,
+            staffId: housekeeperId,
             pid,
             staffName: room.assignedName || 'Housekeeper',
             roomNumber: room.number,
@@ -245,7 +251,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   // ── Report Issue ───────────────────────────────────────────────────────────
   const handleSubmitIssue = async () => {
     if (!issueRoomId || !issueNote.trim()) return;
-    if (!uid || !pid) return;
+    if (!pid) return;
     setSavingIssue(true);
     const room = rooms.find(r => r.id === issueRoomId);
     if (!room) {
@@ -254,7 +260,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       return;
     }
     try {
-      await updateRoom(uid, pid, room.id, { issueNote: issueNote.trim() });
+      await updateRoom(uid ?? '', pid, room.id, { issueNote: issueNote.trim() });
       setIssueRoomId(null);
       setIssueNote('');
     } catch (err) {
@@ -266,10 +272,10 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
 
   // ── Reset room (clean/inspected → dirty, clear times) ─────────────────────
   const handleResetRoom = async (room: RoomRow) => {
-    if (!uid || !pid) return;
+    if (!pid) return;
     setResettingRoomId(room.id);
     try {
-      await updateRoom(uid, pid, room.id, {
+      await updateRoom(uid ?? '', pid, room.id, {
         status: 'dirty' as RoomStatus,
         startedAt: null,
         completedAt: null,

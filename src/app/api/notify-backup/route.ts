@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
+import { toE164 } from '@/lib/phone';
+import { requireSession } from '@/lib/api-auth';
 
 /**
  * POST /api/notify-backup
@@ -21,17 +23,10 @@ import { errToString } from '@/lib/utils';
  *   language         – 'en' | 'es' (optional, defaults to en)
  */
 
-function toE164(raw: string): string | null {
-  const digits = raw.replace(/\D/g, '');
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
-  if (raw.startsWith('+')) return raw.trim();
-  return null;
-}
-
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
+    const body = await req.json().catch(() => null);
+    if (!body) return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
     const { pid, backupStaffId, roomNumber, language } = body;
 
     if (!pid || !backupStaffId || !roomNumber) {
@@ -40,6 +35,8 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
+    const session = await requireSession(req, { pid });
+    if (session instanceof NextResponse) return session;
 
     // Property name + specific backup staff in parallel.
     const [{ data: prop }, { data: backup, error: backupErr }] = await Promise.all([

@@ -30,6 +30,7 @@ import { getPublicAreasDueToday, calcPublicAreaMinutes, autoAssignRooms, getOver
 import { getDefaultPublicAreas } from '@/lib/defaults';
 import type { PublicArea } from '@/types';
 import { todayStr, errToString } from '@/lib/utils';
+import { authHeaders } from '@/lib/api-client';
 import type { Room, RoomStatus, RoomType, RoomPriority, StaffMember, DeepCleanRecord, DeepCleanConfig, ShiftConfirmation, ConfirmationStatus, WorkOrder } from '@/types';
 import { format, subDays } from 'date-fns';
 import {
@@ -451,7 +452,7 @@ function ScheduleSection() {
 
   useEffect(() => {
     if (uid && pid && staff.length === 0) refreshStaff();
-  }, [uid, pid]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [uid, pid, staff.length, refreshStaff]);
 
   // Schedule tab reads ONLY from the CSV pull (planSnapshots). The 15-min rooms scraper
   // is intentionally ignored here — it powers the Rooms tab's live view during the day.
@@ -833,11 +834,17 @@ function ScheduleSection() {
           .filter(r => assignments[r.id] === s.id)
           .map(r => r.number),
       }));
-      fetch('/api/sync-room-assignments', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uid, pid, shiftDate, staff: staffPayload }),
-      }).catch(err => console.error('[Schedule] sync room assignments failed:', err));
+      (async () => {
+        try {
+          await fetch('/api/sync-room-assignments', {
+            method: 'POST',
+            headers: await authHeaders(true),
+            body: JSON.stringify({ uid, pid, shiftDate, staff: staffPayload }),
+          });
+        } catch (err) {
+          console.error('[Schedule] sync room assignments failed:', err);
+        }
+      })();
     }, 400);
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
   }, [uid, pid, shiftDate, assignments, selectedCrew, scheduleAssignmentsLoaded, currentCsvSnapshot, currentCsvPulledAt]);
@@ -1440,7 +1447,7 @@ function ScheduleSection() {
         };
       });
       const res = await fetch('/api/send-shift-confirmations', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: await authHeaders(true),
         body: JSON.stringify({ uid, pid, shiftDate, baseUrl, staff: staffPayload }),
       });
       // The subscribeToShiftConfirmations effect will pick up the new docs
@@ -3177,7 +3184,7 @@ function RoomsSection() {
     try {
       const res = await fetch('/api/populate-rooms-from-plan', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await authHeaders(true),
         body: JSON.stringify({
           uid:  user.uid,
           pid:  activePropertyId,
@@ -3312,7 +3319,7 @@ function RoomsSection() {
     try {
       await fetch('/api/notify-backup', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await authHeaders(true),
         body: JSON.stringify({
           uid: user.uid, pid: activePropertyId,
           backupStaffId,

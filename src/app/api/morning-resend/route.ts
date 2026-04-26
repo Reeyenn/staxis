@@ -19,16 +19,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { isValidDateStr, errToString } from '@/lib/utils';
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-function toE164(raw: string): string | null {
-  const digits = raw.replace(/\D/g, '');
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
-  if (raw.startsWith('+')) return raw.trim();
-  return null;
-}
+import { toE164 } from '@/lib/phone';
+import { requireCronSecret } from '@/lib/admin-auth';
 
 interface RoomRow {
   id: string;
@@ -84,13 +76,19 @@ function smartAssignRooms(rooms: RoomRow[], numHousekeepers: number): HKSlot[] {
 // ─── Route handler ────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
+  // 6am cron — guarded by the same Bearer-CRON_SECRET pattern as the other
+  // cron endpoints. Was previously open, which let a stranger trigger a
+  // mass-SMS for any property they could name.
+  const gate = requireCronSecret(req);
+  if (gate) return gate;
   try {
-    const body = await req.json() as {
+    const body = await req.json().catch(() => null) as {
       pid: string;
       shiftDate: string;
       baseUrl: string;
       uid?: string;
-    };
+    } | null;
+    if (!body) return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
     const { pid, shiftDate, baseUrl } = body;
 
     if (!pid || !shiftDate) {
@@ -109,13 +107,17 @@ export async function POST(req: NextRequest) {
       .maybeSingle();
     const hotelName = prop?.name || 'Your Hotel';
 
-    // ── 1. Load confirmed HKs for this shift date ────────────────────────────
+    // ── 1. Load HKs for this shift date ──────────────────────────────────────
+    // The new send-shift-confirmations flow leaves rows in 'sent' status
+    // (Maria confirms availability in person at 3pm — no YES required).
+    // Filtering on 'confirmed' alone skipped the whole crew, so the resend
+    // never ran. Accept any non-declined open status.
     const { data: confirmed, error: confErr } = await supabaseAdmin
       .from('shift_confirmations')
       .select('token, staff_id, staff_name, staff_phone, language')
       .eq('property_id', pid)
       .eq('shift_date', shiftDate)
-      .eq('status', 'confirmed');
+      .in('status', ['sent', 'pending', 'confirmed']);
 
     if (confErr) throw confErr;
 
@@ -166,11 +168,13 @@ export async function POST(req: NextRequest) {
     }
 
     // ── 4. For each confirmed HK, check if rooms changed, send update if so ─
-    let updatedCount = 0;
     const nowIso = new Date().toISOString();
 
+    // Each task returns whether it actually updated this HK's assignment.
+    // We compute the count from the resolved results so a per-HK throw
+    // can't leave the count out of sync with the writes that landed.
     const results = await Promise.allSettled(
-      confirmed.map(async (hk, idx) => {
+      confirmed.map(async (hk, idx): Promise<boolean> => {
         const newRooms = newAssignments[idx]?.rooms ?? [];
 
         // Find the current "assigned to this staff on this date" set so we
@@ -186,7 +190,7 @@ export async function POST(req: NextRequest) {
           nrSorted.length !== oldRooms.length ||
           nrSorted.some((r, i) => r !== oldRooms[i]);
 
-        if (!changed) return;
+        if (!changed) return false;
 
         // Push the new assignments down to the rooms table. For each room
         // assigned to this HK, set assigned_to = staff_id. For each room
@@ -248,13 +252,18 @@ export async function POST(req: NextRequest) {
             console.error(`Morning resend SMS failed for ${hk.staff_name}:`, errToString(err));
           }
         }
-        updatedCount++;
+        return true;
       })
     );
 
     // Log any per-HK failures but don't fail the whole request.
+    let updatedCount = 0;
     for (const r of results) {
-      if (r.status === 'rejected') console.error('[morning-resend] HK rejection:', r.reason);
+      if (r.status === 'rejected') {
+        console.error('[morning-resend] HK rejection:', r.reason);
+      } else if (r.value) {
+        updatedCount++;
+      }
     }
 
     // Mirror the new assignments into schedule_assignments so the UI stays in

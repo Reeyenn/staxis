@@ -36,21 +36,24 @@ export async function sendSmsNotifications(
   assignments: Record<string, string[]>,   // staffId → room numbers[]
   staffNames:  Record<string, string>,     // staffId → name
   staffPhones: Record<string, string>,     // staffId → phone number
+  pid: string,                             // property id — required for auth scoping
 ): Promise<{ sent: number; failed: number }> {
   const entries = Object.entries(assignments).filter(([staffId]) => staffPhones[staffId]);
   if (entries.length === 0) return { sent: 0, failed: 0 };
 
+  const { authHeaders } = await import('./api-client');
   const res = await fetch('/api/notify-housekeepers-sms', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(
-      entries.map(([staffId, rooms]) => ({
+    headers: await authHeaders(true),
+    body: JSON.stringify({
+      pid,
+      entries: entries.map(([staffId, rooms]) => ({
         phone:          staffPhones[staffId],
         name:           staffNames[staffId] ?? 'Housekeeper',
         rooms,
         housekeeperId:  staffId,
-      }))
-    ),
+      })),
+    }),
   });
 
   if (!res.ok) {
@@ -73,6 +76,7 @@ export async function sendAssignmentNotifications(
   assignments: Record<string, string[]>,
   staffNames:  Record<string, string>,
   staffPhones: Record<string, string>,
+  pid: string,
 ): Promise<{ sent: number; failed: number }> {
-  return sendSmsNotifications(assignments, staffNames, staffPhones);
+  return sendSmsNotifications(assignments, staffNames, staffPhones, pid);
 }

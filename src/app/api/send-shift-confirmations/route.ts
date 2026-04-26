@@ -34,6 +34,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { isValidDateStr, errToString } from '@/lib/utils';
+import { toE164 } from '@/lib/phone';
+import { requireSession } from '@/lib/api-auth';
+
+// Strip phone numbers out of an error string before persisting to error_logs
+// so PII doesn't accumulate in the dashboard. Catches +CC followed by 7+
+// digits (E.164) and bare 10-digit US sequences with optional separators.
+function redactPhonesInError(s: string): string {
+  return s
+    .replace(/\+\d{7,15}/g, '+***')
+    .replace(/(?<!\d)\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}(?!\d)/g, '***-***-****');
+}
 
 interface StaffEntry {
   staffId: string;
@@ -71,14 +82,6 @@ function deriveRoomType(
   return match.stayType === 'Stay' ? 'stayover' : 'checkout';
 }
 
-function toE164(raw: string): string | null {
-  const digits = raw.replace(/\D/g, '');
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
-  if (raw.startsWith('+')) return raw.trim();
-  return null;
-}
-
 function formatShiftDate(dateStr: string, lang: 'en' | 'es'): string {
   const [year, month, day] = dateStr.split('-').map(Number);
   const d = new Date(year, month - 1, day);
@@ -89,14 +92,30 @@ function formatShiftDate(dateStr: string, lang: 'en' | 'es'): string {
 }
 
 /** Deterministic token for shift_confirmations. Re-clicking Send upserts the
- *  same row rather than creating duplicates. */
+ *  same row rather than creating duplicates.
+ *
+ *  TODO(security): the URL `/housekeeper/[id]?pid=X` is currently a
+ *  capability based on guessable IDs. To plug that, add a random
+ *  `link_token` column (per staff or per confirmation), include it in the
+ *  SMS link, and verify it on the HK page actions. Defer until we can
+ *  ship the schema migration in lockstep with the URL/page change. */
 function buildToken(shiftDate: string, staffId: string): string {
   return `${shiftDate}_${staffId}`;
 }
 
+function validateStaffEntry(e: unknown): e is StaffEntry {
+  if (!e || typeof e !== 'object') return false;
+  const o = e as Record<string, unknown>;
+  return typeof o.staffId === 'string' && o.staffId.length > 0
+    && typeof o.name === 'string' && o.name.length > 0
+    && (o.phone === undefined || typeof o.phone === 'string')
+    && (o.language === 'en' || o.language === 'es');
+}
+
 export async function POST(req: NextRequest) {
   try {
-    const body: RequestBody = await req.json();
+    const body = await req.json().catch(() => null) as RequestBody | null;
+    if (!body) return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
     const { pid, shiftDate, baseUrl, staff } = body;
 
     if (!pid || !shiftDate || !staff?.length) {
@@ -105,6 +124,14 @@ export async function POST(req: NextRequest) {
     if (!isValidDateStr(shiftDate)) {
       return NextResponse.json({ error: 'Invalid shiftDate (expected YYYY-MM-DD)' }, { status: 400 });
     }
+    if (!Array.isArray(staff) || !staff.every(validateStaffEntry)) {
+      return NextResponse.json(
+        { error: 'staff must be an array of {staffId, name, phone?, language: "en"|"es"} entries' },
+        { status: 400 },
+      );
+    }
+    const session = await requireSession(req, { pid });
+    if (session instanceof NextResponse) return session;
 
     // ── Failsafe: refuse to Send with zero real assignments across the crew.
     // A buggy client that sends an empty staff list would otherwise fire
@@ -230,7 +257,13 @@ export async function POST(req: NextRequest) {
       }
 
       if (updates.length > 0) {
-        await Promise.all(updates);
+        // allSettled so a single transient row-update failure doesn't abort
+        // the entire request after some rows already wrote — leaving Maria
+        // looking at a 500 with half the crew assigned. We still surface
+        // the first error so the caller knows something went wrong.
+        const results = await Promise.allSettled(updates);
+        const firstReject = results.find(r => r.status === 'rejected');
+        if (firstReject) throw (firstReject as PromiseRejectedResult).reason;
       }
     }
 
@@ -341,16 +374,9 @@ export async function POST(req: NextRequest) {
             }, { onConflict: 'token' });
           if (upsertErr) throw upsertErr;
 
-          // Keep the staff row's phone_lookup column in sync so /api/sms-reply
-          // can resolve an inbound number back to the staff member. Best-effort
-          // — don't fail the send if this write fails.
-          supabaseAdmin
-            .from('staff')
-            .update({ phone_lookup: phone164 })
-            .eq('id', staffId)
-            .then(({ error }) => {
-              if (error) console.warn('[send-shift-confirmations] phone_lookup update failed:', error.message);
-            });
+          // phone_lookup is owned by the Staff edit page → toStaffRow now
+          // writes E.164 directly, so the previous fire-and-forget repair
+          // here is no longer needed (and was racing the response anyway).
 
           const firstName = name.split(' ')[0];
           const dateLabel = formatShiftDate(shiftDate, language);
@@ -395,12 +421,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ sent, failed, skipped, updated, fresh, perStaff });
   } catch (err) {
     console.error('send-shift-confirmations error:', err);
-    // Persist the error so we can diagnose without shell logs.
+    // Persist the error so we can diagnose without shell logs. Phone numbers
+    // and stack frames can carry PII, so redact before writing.
     try {
       await supabaseAdmin.from('error_logs').insert({
         source: '/api/send-shift-confirmations',
-        message: errToString(err),
-        stack: err instanceof Error ? err.stack ?? null : null,
+        message: redactPhonesInError(errToString(err)),
+        stack: err instanceof Error && err.stack
+          ? redactPhonesInError(err.stack)
+          : null,
       });
     } catch {}
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

@@ -13,6 +13,7 @@ import {
   subscribeToPlanSnapshot,
 } from '@/lib/db';
 import type { PlanSnapshot } from '@/lib/db';
+import { authHeaders } from '@/lib/api-client';
 import type { StaffMember, StaffDepartment, ShiftConfirmation, ManagerNotification, ConfirmationStatus } from '@/types';
 import {
   Users, Plus, Pencil, Trash2, Star, Clock,
@@ -235,7 +236,7 @@ export default function StaffPage() {
   /* ── Data subscriptions ── */
   useEffect(() => {
     if (uid && pid && staff.length === 0) refreshStaff();
-  }, [uid, pid]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [uid, pid, staff.length, refreshStaff]);
 
   useEffect(() => {
     if (!uid || !pid) return;
@@ -457,7 +458,7 @@ export default function StaffPage() {
       }));
       await fetch('/api/send-shift-confirmations', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await authHeaders(true),
         body: JSON.stringify({ uid, pid, shiftDate, baseUrl, staff: staffPayload }),
       });
       setSent(true);

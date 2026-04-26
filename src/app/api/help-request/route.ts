@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
+import { toE164 } from '@/lib/phone';
+import { verifyStaffBelongsToProperty } from '@/lib/api-auth';
 
 /**
  * POST /api/help-request
@@ -22,25 +24,26 @@ import { errToString } from '@/lib/utils';
  *   language   – 'en' | 'es' (optional, defaults to en)
  */
 
-/** E.164 phone normalization */
-function toE164(raw: string): string | null {
-  const digits = raw.replace(/\D/g, '');
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
-  if (raw.startsWith('+')) return raw.trim();
-  return null;
-}
-
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
+    const body = await req.json().catch(() => null);
+    if (!body) return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+    // `uid` from the HK page IS the staff id (it's the [id] path param).
+    // Accept it as `staffId` going forward; fall back to `uid` for back-compat.
     const { pid, staffName, roomNumber, language } = body;
+    const staffId: string | undefined = body.staffId ?? body.uid;
 
     if (!pid || !staffName || !roomNumber) {
       return NextResponse.json(
         { error: 'Missing required fields' },
         { status: 400 }
       );
+    }
+    // Public-link sanity check: only allow help-requests where the staff
+    // member actually exists for this property. Stops a stranger who scrapes
+    // a single pid from spamming help SMS to the scheduling manager.
+    if (!staffId || !(await verifyStaffBelongsToProperty(staffId, pid))) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     // Fetch property name and scheduling manager in parallel.

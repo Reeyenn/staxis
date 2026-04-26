@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
+import { toE164 } from '@/lib/phone';
+import { requireSession } from '@/lib/api-auth';
 
 /**
  * POST /api/notify-housekeepers
@@ -35,17 +37,10 @@ interface NotifyEntry {
   housekeeperId?: string;
 }
 
-function toE164(raw: string): string | null {
-  const digits = raw.replace(/\D/g, '');
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
-  if (raw.startsWith('+')) return raw.trim();
-  return null;
-}
-
 export async function POST(req: NextRequest) {
   try {
-    const reqBody = await req.json();
+    const reqBody = await req.json().catch(() => null);
+    if (!reqBody) return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
 
     let entries: NotifyEntry[];
     let pid: string | undefined;
@@ -59,6 +54,11 @@ export async function POST(req: NextRequest) {
     if (!Array.isArray(entries) || entries.length === 0) {
       return NextResponse.json({ error: 'No entries provided' }, { status: 400 });
     }
+    if (!pid) {
+      return NextResponse.json({ error: 'pid is required' }, { status: 400 });
+    }
+    const session = await requireSession(req, { pid });
+    if (session instanceof NextResponse) return session;
 
     // Resolve missing phones from staff table in one batched query.
     const missingPhoneIds = entries
