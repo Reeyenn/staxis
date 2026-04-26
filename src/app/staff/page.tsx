@@ -209,6 +209,24 @@ export default function StaffPage() {
   const [editMember, setEditMember] = useState<StaffMember | null>(null);
   const [form, setForm] = useState<StaffFormData>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
+  // Error message surfaced inside the Add/Edit modal when a save fails or
+  // times out. Without this, a failed save was completely invisible — the
+  // request would hang or 4xx and the user would only see "Saving..." with
+  // no explanation, and the modal couldn't be reopened cleanly because
+  // `saving` stayed true. See `performSave` + `closeModal` for the matching
+  // recovery paths.
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  // Centralized modal close. ALWAYS use this instead of `setShowModal(false)`
+  // directly so we can't ever leave `saving` or `saveError` dangling. A
+  // dangling `saving=true` was the source of the "every staff member I open
+  // shows 'Saving...'" bug — once the flag stuck true it bled across opens
+  // because the modal state is not unmounted between members.
+  const closeModal = () => {
+    setShowModal(false);
+    setSaving(false);
+    setSaveError(null);
+  };
   // In-app confirmation popup for Scheduling Manager swaps. When set, the
   // swap-confirm modal is rendered over everything else. null = no swap pending.
   const [swapConfirm, setSwapConfirm] = useState<
@@ -332,6 +350,8 @@ export default function StaffPage() {
   const openAdd = () => {
     setEditMember(null);
     setForm({ ...EMPTY_FORM, department: deptFilter !== 'all' ? deptFilter : 'housekeeping' });
+    setSaveError(null);
+    setSaving(false);
     setShowModal(true);
   };
 
@@ -346,6 +366,12 @@ export default function StaffPage() {
       isActive: member.isActive ?? true,
       isSchedulingManager: member.isSchedulingManager === true,
     });
+    // Belt-and-suspenders: clear stale save state when opening any member.
+    // closeModal() should already have reset these, but if the modal was
+    // dismissed via some other path (route change, error in render) we want
+    // the next open to start clean.
+    setSaveError(null);
+    setSaving(false);
     setShowModal(true);
   };
 
@@ -355,6 +381,7 @@ export default function StaffPage() {
   const performSave = async () => {
     if (!uid || !pid || !form.name.trim()) return;
     setSaving(true);
+    setSaveError(null);
     try {
       const vacationDates = form.vacationDates.split('\n').map(s => s.trim()).filter(s => /^\d{4}-\d{2}-\d{2}$/.test(s));
       // NOTE: `phone` is included unconditionally (even when empty). With the
@@ -370,10 +397,39 @@ export default function StaffPage() {
         vacationDates, isActive: form.isActive,
         isSchedulingManager: form.isSchedulingManager,
       };
-      if (editMember) await updateStaffMember(uid, pid, editMember.id, data);
-      else await addStaffMember(uid, pid, { ...data, scheduledToday: false, weeklyHours: 0 });
+      // ── Hard timeout on the Supabase write ────────────────────────────────
+      // The post-Supabase migration introduced an in-process auth lock chain
+      // (src/lib/supabase.ts). When that chain wedges (or RLS silently blocks
+      // the row, or the network stalls), `supabase.from(...).update().eq(...)`
+      // can return a Promise that *never* resolves. Without a timeout, the
+      // `await` here would hang indefinitely, the `finally` would never run,
+      // and `saving` would stay true forever — which is exactly the "Saving..."
+      // stuck state Reeyen reported on the staff edit modal.
+      const writePromise = editMember
+        ? updateStaffMember(uid, pid, editMember.id, data)
+        : addStaffMember(uid, pid, { ...data, scheduledToday: false, weeklyHours: 0 });
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(
+          () => reject(new Error('Save timed out after 15s. Check your connection and try again.')),
+          15000,
+        );
+      });
+      try {
+        await Promise.race([writePromise, timeoutPromise]);
+      } finally {
+        if (timeoutId) clearTimeout(timeoutId);
+      }
       setShowModal(false);
-    } finally { setSaving(false); }
+    } catch (err) {
+      // Surface the failure inline instead of swallowing it. Logged with a
+      // searchable prefix so we can grep for it in DevTools.
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[staff] save failed:', err);
+      setSaveError(msg || 'Save failed. Please try again.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleSave = async () => {
@@ -1271,7 +1327,7 @@ export default function StaffPage() {
             position: 'fixed', inset: 0, zIndex: 1000,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             background: 'rgba(27,28,25,0.4)', backdropFilter: 'blur(8px)',
-          }} onClick={() => setShowModal(false)}>
+          }} onClick={() => closeModal()}>
             <div onClick={e => e.stopPropagation()} style={{
               background: '#fbf9f4', borderRadius: '24px',
               width: '90%', maxWidth: '480px', maxHeight: '85vh', overflowY: 'auto',
@@ -1281,7 +1337,7 @@ export default function StaffPage() {
                 <h2 style={{ margin: 0, fontFamily: 'Inter, sans-serif', fontWeight: 700, fontSize: '20px', color: '#1b1c19' }}>
                   {editMember ? `${t('editStaff', lang)} ${editMember.name}` : t('addStaffMember', lang)}
                 </h2>
-                <button onClick={() => setShowModal(false)} style={{ background: '#eae8e3', border: 'none', borderRadius: '50%', width: '32px', height: '32px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <button onClick={() => closeModal()} style={{ background: '#eae8e3', border: 'none', borderRadius: '50%', width: '32px', height: '32px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <span className="material-symbols-outlined" style={{ fontSize: '18px', color: '#454652' }}>close</span>
                 </button>
               </div>
@@ -1391,7 +1447,7 @@ export default function StaffPage() {
 
                 {/* Delete button (edit mode only) */}
                 {editMember && (
-                  <button onClick={() => { setShowModal(false); handleDelete(editMember); }} style={{
+                  <button onClick={() => { closeModal(); handleDelete(editMember); }} style={{
                     padding: '12px', border: '1px solid rgba(186,26,26,0.2)', background: 'rgba(186,26,26,0.05)',
                     color: '#ba1a1a', borderRadius: '9999px', fontWeight: 600, fontSize: '14px',
                     cursor: 'pointer', fontFamily: 'Inter, sans-serif',
@@ -1402,8 +1458,19 @@ export default function StaffPage() {
                   </button>
                 )}
 
+                {saveError && (
+                  <div role="alert" style={{
+                    padding: '10px 14px', background: 'rgba(186,26,26,0.08)',
+                    border: '1px solid rgba(186,26,26,0.25)', borderRadius: '12px',
+                    color: '#ba1a1a', fontSize: '13px', fontFamily: 'Inter, sans-serif',
+                    lineHeight: 1.4,
+                  }}>
+                    {saveError}
+                  </div>
+                )}
+
                 <div style={{ display: 'flex', gap: '12px', marginTop: '4px' }}>
-                  <button onClick={() => setShowModal(false)} style={{
+                  <button onClick={() => closeModal()} style={{
                     flex: 1, padding: '14px', border: '1px solid #d5d2ca', background: 'transparent',
                     color: '#454652', borderRadius: '9999px', fontWeight: 600, fontSize: '14px',
                     cursor: 'pointer', fontFamily: 'Inter, sans-serif',
