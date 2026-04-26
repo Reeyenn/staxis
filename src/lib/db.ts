@@ -133,10 +133,21 @@ function fromPropertyRow(r: Record<string, unknown>): Property {
 }
 
 function toStaffRow(s: Partial<StaffMember>): Record<string, unknown> {
+  // phone_lookup mirrors the digit-only tail of phone for SMS reverse-lookup.
+  // Three cases:
+  //   - phone undefined  → caller didn't touch phone, leave phone_lookup alone
+  //   - phone is ''      → caller cleared phone, also clear phone_lookup so a
+  //                         stale value doesn't keep an old SMS match alive
+  //                         after the staff member's number was removed
+  //   - phone has digits → recompute phone_lookup from the new digits
+  const phoneLookup =
+    s.phone === undefined ? undefined :
+    s.phone === ''        ? null :
+    s.phone.replace(/\D/g, '').slice(-10);
   return dropUndefined({
     name: s.name,
     phone: s.phone,
-    phone_lookup: s.phone ? s.phone.replace(/\D/g, '').slice(-10) : undefined,
+    phone_lookup: phoneLookup,
     language: s.language,
     is_senior: s.isSenior,
     department: s.department,
