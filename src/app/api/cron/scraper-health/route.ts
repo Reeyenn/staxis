@@ -170,18 +170,51 @@ async function getStatus(key: string): Promise<Record<string, unknown>> {
   return { ...value, _updated_at: data.updated_at };
 }
 
-// Upsert a scraper_status row with merged jsonb data. Supabase jsonb
-// doesn't have a native "merge" op, so we read-modify-write client-side.
+// Upsert a scraper_status row with merged jsonb data. Supabase jsonb has
+// no native "merge" op, so we read-modify-write client-side — which races
+// when GitHub-Actions and a manual run hit at the same moment, clobbering
+// counters and `lastAlertedAt` so duplicate or missed alerts result.
+//
+// Guard with optimistic locking on `updated_at`: read the timestamp, attempt
+// the update only if it hasn't moved since we read. Lost races retry; after
+// a few retries we surface an error rather than scribble blindly.
 async function mergeStatus(key: string, patch: Record<string, unknown>): Promise<void> {
-  const current: Record<string, unknown> = await getStatus(key).catch(() => ({}));
-  // Strip out our synthetic _updated_at before round-tripping.
-  const { _updated_at: _, ...currentClean } = current;
-  void _;
-  const merged = { ...currentClean, ...patch };
-  const { error } = await supabaseAdmin
-    .from('scraper_status')
-    .upsert({ key, data: merged, updated_at: new Date().toISOString() }, { onConflict: 'key' });
-  if (error) throw error;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const { data: row, error: selErr } = await supabaseAdmin
+      .from('scraper_status')
+      .select('data, updated_at')
+      .eq('key', key)
+      .maybeSingle();
+    if (selErr) throw selErr;
+
+    const currentClean = (row?.data as Record<string, unknown> | null) ?? {};
+    const merged = { ...currentClean, ...patch };
+    const newUpdatedAt = new Date().toISOString();
+
+    if (!row) {
+      const { error: insErr } = await supabaseAdmin
+        .from('scraper_status')
+        .insert({ key, data: merged, updated_at: newUpdatedAt });
+      if (!insErr) return;
+      // Someone else inserted between our select and insert — retry as an
+      // update on the next loop iteration.
+      const code = (insErr as { code?: string }).code;
+      if (code !== '23505' /* unique_violation */) throw insErr;
+    } else {
+      const { data: updated, error: updErr } = await supabaseAdmin
+        .from('scraper_status')
+        .update({ data: merged, updated_at: newUpdatedAt })
+        .eq('key', key)
+        .eq('updated_at', row.updated_at as string)
+        .select('key');
+      if (updErr) throw updErr;
+      if (updated && updated.length > 0) return;
+      // Optimistic lock failed — another writer landed between read and
+      // update. Loop and try again with the fresh row.
+    }
+    await new Promise(r => setTimeout(r, 50 * (attempt + 1)));
+  }
+  throw new Error(`mergeStatus(${key}) failed after 4 contended retries`);
 }
 
 // ─── Handler ─────────────────────────────────────────────────────────────

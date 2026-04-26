@@ -61,15 +61,41 @@ async function getStatus(key: string): Promise<Record<string, unknown>> {
   return { ...(data.data as Record<string, unknown>), _updated_at: data.updated_at };
 }
 
+// Optimistic-lock merge — see scraper-health/route.ts mergeStatus for the
+// rationale. Two concurrent invocations would otherwise clobber each other.
 async function mergeStatus(key: string, patch: Record<string, unknown>): Promise<void> {
-  const current: Record<string, unknown> = await getStatus(key).catch(() => ({}));
-  const { _updated_at: _, ...clean } = current;
-  void _;
-  const merged = { ...clean, ...patch };
-  const { error } = await supabaseAdmin
-    .from('scraper_status')
-    .upsert({ key, data: merged, updated_at: new Date().toISOString() }, { onConflict: 'key' });
-  if (error) throw error;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const { data: row, error: selErr } = await supabaseAdmin
+      .from('scraper_status')
+      .select('data, updated_at')
+      .eq('key', key)
+      .maybeSingle();
+    if (selErr) throw selErr;
+
+    const currentClean = (row?.data as Record<string, unknown> | null) ?? {};
+    const merged = { ...currentClean, ...patch };
+    const newUpdatedAt = new Date().toISOString();
+
+    if (!row) {
+      const { error: insErr } = await supabaseAdmin
+        .from('scraper_status')
+        .insert({ key, data: merged, updated_at: newUpdatedAt });
+      if (!insErr) return;
+      const code = (insErr as { code?: string }).code;
+      if (code !== '23505') throw insErr;
+    } else {
+      const { data: updated, error: updErr } = await supabaseAdmin
+        .from('scraper_status')
+        .update({ data: merged, updated_at: newUpdatedAt })
+        .eq('key', key)
+        .eq('updated_at', row.updated_at as string)
+        .select('key');
+      if (updErr) throw updErr;
+      if (updated && updated.length > 0) return;
+    }
+    await new Promise(r => setTimeout(r, 50 * (attempt + 1)));
+  }
+  throw new Error(`mergeStatus(${key}) failed after 4 contended retries`);
 }
 
 async function runDigest(): Promise<{ sent: boolean; detail: string }> {
