@@ -127,27 +127,57 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     // Subscribe to subsequent auth state changes (sign-in, sign-out, token
     // refresh). SIGNED_IN is what fires after our signInWithPassword call.
-    const { data: listener } = supabase.auth.onAuthStateChange(async (event, session) => {
+    //
+    // ⚠️ DEADLOCK WARNING — read before editing this callback.
+    // Supabase's docs (GoTrueClient.onAuthStateChange) explicitly warn:
+    //
+    //   > A callback can be an async function and it runs synchronously
+    //   > during the processing of the changes causing the event. You can
+    //   > easily create a dead-lock by using `await` on a call to another
+    //   > method of the Supabase library.
+    //   > - Avoid using async functions as callbacks.
+    //   > - Do not use other Supabase functions in the callback function.
+    //   > - If you must, dispatch the functions once the callback has
+    //   >   finished executing via setTimeout(..., 0).
+    //
+    // The deadlock: this callback runs WHILE the auth lock is held. If we
+    // await `loadAppUser` (which calls `sb.from('accounts').select()`), the
+    // PostgREST builder calls `_getAccessToken` → `auth.getSession()` →
+    // tries to acquire the same lock. With a stalled token-refresh in
+    // flight, every save in the app then sits at "Saving…" until the
+    // 5s lock-acquire timeout fires — exactly the symptom Reeyen reported
+    // on 2026-04-26.
+    //
+    // Fix: keep the callback synchronous (return immediately, no await on
+    // any supabase.* method) and dispatch the supabase calls into the
+    // next tick. The lock has already been released by then, so the
+    // re-entrant call path is gone.
+    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
       if (!active) return;
-      try {
-        if (event === 'SIGNED_OUT' || !session?.user) {
-          setUser(null);
-          return;
-        }
-        // SIGNED_IN, TOKEN_REFRESHED, USER_UPDATED all benefit from a refresh
-        // of the AppUser in case role/propertyAccess changed.
-        const appUser = await loadAppUser(session.user.id);
-        if (!active) return;
-        if (appUser) {
-          setUser(appUser);
-        } else {
-          await supabase.auth.signOut();
-          setUser(null);
-        }
-      } catch (err) {
-        console.error('AuthContext: onAuthStateChange error', err);
-        if (active) setUser(null);
+      // Synchronous bookkeeping is fine here; only DEFER the supabase calls.
+      if (event === 'SIGNED_OUT' || !session?.user) {
+        setUser(null);
+        return;
       }
+      const uid = session.user.id;
+      // Dispatched into the next tick so the auth lock is released before
+      // we touch any supabase.* method. See deadlock warning above.
+      setTimeout(async () => {
+        if (!active) return;
+        try {
+          const appUser = await loadAppUser(uid);
+          if (!active) return;
+          if (appUser) {
+            setUser(appUser);
+          } else {
+            await supabase.auth.signOut();
+            setUser(null);
+          }
+        } catch (err) {
+          console.error('AuthContext: onAuthStateChange deferred handler error', err);
+          if (active) setUser(null);
+        }
+      }, 0);
     });
 
     // Safety timeout: if getSession() never resolves (broken localStorage,
