@@ -17,6 +17,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { supabase } from './supabase';
+import { toE164 } from './phone';
 import type {
   Property,
   StaffMember,
@@ -133,10 +134,14 @@ function fromPropertyRow(r: Record<string, unknown>): Property {
 }
 
 function toStaffRow(s: Partial<StaffMember>): Record<string, unknown> {
+  // phone_lookup is the canonical match column for inbound SMS reply
+  // routing — it MUST be E.164 so /api/sms-reply can compare directly to
+  // Twilio's normalized `From`. Was previously last-10-digits, which broke
+  // matching for any staff added through the API routes (E.164 writes).
   return dropUndefined({
     name: s.name,
     phone: s.phone,
-    phone_lookup: s.phone ? s.phone.replace(/\D/g, '').slice(-10) : undefined,
+    phone_lookup: s.phone ? toE164(s.phone) : undefined,
     language: s.language,
     is_senior: s.isSenior,
     department: s.department,

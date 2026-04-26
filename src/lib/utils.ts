@@ -94,9 +94,17 @@ export function timeAgo(date: Date | null | undefined): string {
   return `${days}d ago`;
 }
 
-/** Validate YYYY-MM-DD date string */
+/**
+ * Validate a YYYY-MM-DD date string. Rejects rolled-over inputs like
+ * `2024-13-99` that V8's Date parser silently turns into a valid future date,
+ * which would otherwise let bad shift dates leak in and write rooms under a
+ * phantom calendar day no UI ever queries.
+ */
 export function isValidDateStr(s: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(new Date(s).getTime());
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const [y, m, d] = s.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
 }
 
 /**
