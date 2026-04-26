@@ -18,19 +18,31 @@ import { errToString } from '@/lib/utils';
 
 type AccountRole = 'admin' | 'owner' | 'staff';
 
+const MIN_PASSWORD_LEN = 8;
+
 function syntheticEmail(username: string): string {
   return `${username.toLowerCase().trim()}@staxis.local`;
 }
 
-// Admin check: the x-account-id header must correspond to an accounts row
-// with role='admin'. Returns the admin's accounts row on success, null on
-// failure. We also verify via Supabase Auth that the bearer token matches
-// that same account so the header can't be spoofed.
+// Admin check: requires both `x-account-id` header AND a verified Supabase
+// Auth bearer token whose user id matches that account's data_user_id.
+// Returns the admin's accounts row on success, null on failure.
+//
+// The bearer token is mandatory — the previous "legacy fallback" that
+// accepted the header alone meant anyone who knew an admin's accountId UUID
+// could become that admin. Bearer-only also kills CSRF (Authorization
+// headers aren't auto-attached cross-origin).
 async function verifyAdmin(req: NextRequest) {
   const accountId = req.headers.get('x-account-id');
   if (!accountId) return null;
 
-  // Look up the account row (service role bypasses RLS).
+  const authHeader = req.headers.get('authorization');
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!token) return null;
+
+  const { data: userData, error: userErr } = await supabaseAdmin.auth.getUser(token);
+  if (userErr || !userData.user) return null;
+
   const { data: account, error: acctErr } = await supabaseAdmin
     .from('accounts')
     .select('id, role, data_user_id')
@@ -38,24 +50,32 @@ async function verifyAdmin(req: NextRequest) {
     .maybeSingle();
 
   if (acctErr || !account || account.role !== 'admin') return null;
-
-  // Additionally check that the request is authenticated as this account's
-  // auth user. Without this, a staff user who knows an admin's accountId
-  // could spoof the header and escalate privileges.
-  const authHeader = req.headers.get('authorization');
-  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  if (token) {
-    const { data: userData, error: userErr } = await supabaseAdmin.auth.getUser(token);
-    if (userErr || userData.user?.id !== account.data_user_id) {
-      return null;
-    }
-  }
-  // If no Authorization header is present (legacy calls), fall back to the
-  // x-account-id check alone. This matches the Firebase-era behavior and
-  // keeps current settings page working pre-hardening; can be tightened
-  // once all callers include Authorization.
+  if (userData.user.id !== account.data_user_id) return null;
 
   return account;
+}
+
+// Returns true when the named account is the only remaining admin — used to
+// block self-demotion / last-admin deletion that would lock everyone out.
+async function isLastAdmin(accountId: string): Promise<boolean> {
+  const { count, error } = await supabaseAdmin
+    .from('accounts')
+    .select('id', { head: true, count: 'exact' })
+    .eq('role', 'admin');
+  if (error || count === null) return false;
+  if (count > 1) return false;
+  // Exactly one admin left — confirm it's this one.
+  const { data: row } = await supabaseAdmin
+    .from('accounts')
+    .select('id')
+    .eq('id', accountId)
+    .eq('role', 'admin')
+    .maybeSingle();
+  return !!row;
+}
+
+async function safeJson(req: NextRequest): Promise<Record<string, unknown> | null> {
+  try { return await req.json(); } catch { return null; }
 }
 
 // Translate an accounts row to the public-facing shape consumed by
@@ -102,7 +122,9 @@ export async function POST(req: NextRequest) {
   const caller = await verifyAdmin(req);
   if (!caller) return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
 
-  const body = await req.json();
+  const body = await safeJson(req);
+  if (!body) return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+
   const { username, password, displayName, role, propertyAccess } = body as {
     username: string;
     password: string;
@@ -114,6 +136,12 @@ export async function POST(req: NextRequest) {
   if (!username || !password || !role) {
     return NextResponse.json(
       { error: 'username, password, and role are required' },
+      { status: 400 },
+    );
+  }
+  if (typeof password !== 'string' || password.length < MIN_PASSWORD_LEN) {
+    return NextResponse.json(
+      { error: `Password must be at least ${MIN_PASSWORD_LEN} characters` },
       { status: 400 },
     );
   }
@@ -199,7 +227,9 @@ export async function PUT(req: NextRequest) {
   const caller = await verifyAdmin(req);
   if (!caller) return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
 
-  const body = await req.json();
+  const body = await safeJson(req);
+  if (!body) return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+
   const { accountId, displayName, role, propertyAccess, password } = body as {
     accountId: string;
     displayName?: string;
@@ -217,6 +247,14 @@ export async function PUT(req: NextRequest) {
       { status: 400 },
     );
   }
+  if (password !== undefined) {
+    if (typeof password !== 'string' || password.length < MIN_PASSWORD_LEN) {
+      return NextResponse.json(
+        { error: `Password must be at least ${MIN_PASSWORD_LEN} characters` },
+        { status: 400 },
+      );
+    }
+  }
 
   // Fetch the target account so we know its data_user_id for the password
   // update path.
@@ -228,6 +266,17 @@ export async function PUT(req: NextRequest) {
 
   if (fetchErr || !target) {
     return NextResponse.json({ error: 'Account not found' }, { status: 404 });
+  }
+
+  // Block demoting the last remaining admin — would lock everyone out of
+  // /api/auth/accounts with no in-app recovery path.
+  if (role !== undefined && role !== 'admin' && target.role === 'admin') {
+    if (await isLastAdmin(accountId)) {
+      return NextResponse.json(
+        { error: 'Cannot demote the last admin' },
+        { status: 400 },
+      );
+    }
   }
 
   // Build the accounts-table update.
@@ -291,7 +340,7 @@ export async function DELETE(req: NextRequest) {
 
   const { data: target, error: fetchErr } = await supabaseAdmin
     .from('accounts')
-    .select('data_user_id')
+    .select('data_user_id, role')
     .eq('id', accountId)
     .maybeSingle();
 
@@ -299,17 +348,34 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ error: 'Account not found' }, { status: 404 });
   }
 
+  // Block deleting the last remaining admin.
+  if (target.role === 'admin' && await isLastAdmin(accountId)) {
+    return NextResponse.json(
+      { error: 'Cannot delete the last admin' },
+      { status: 400 },
+    );
+  }
+
   // Delete the auth user — the FK cascade removes the accounts row too.
   const { error: delErr } = await supabaseAdmin.auth.admin.deleteUser(target.data_user_id);
   if (delErr) {
     console.error('[accounts:DELETE] auth.admin.deleteUser failed', errToString(delErr));
     // If auth user was already gone, at least clean up the accounts row so
-    // the admin isn't stuck with a zombie. PostgrestFilterBuilder is a
-    // thenable but has no .catch — wrap in try/await.
+    // the admin isn't stuck with a zombie. Track whether the cleanup
+    // succeeded so we surface a clearer error if it didn't.
+    let cleanupErr: unknown = null;
     try {
-      await supabaseAdmin.from('accounts').delete().eq('id', accountId);
-    } catch { /* best effort — primary goal was deleting the auth user */ }
-    return NextResponse.json({ error: 'Failed to delete account' }, { status: 500 });
+      const { error } = await supabaseAdmin.from('accounts').delete().eq('id', accountId);
+      cleanupErr = error;
+    } catch (e) { cleanupErr = e; }
+    if (cleanupErr) {
+      console.error('[accounts:DELETE] cleanup of accounts row also failed', errToString(cleanupErr));
+      return NextResponse.json(
+        { error: 'Failed to delete account; manual cleanup may be required' },
+        { status: 500 },
+      );
+    }
+    return NextResponse.json({ error: 'Failed to delete auth user; accounts row removed' }, { status: 500 });
   }
 
   return NextResponse.json({ success: true });

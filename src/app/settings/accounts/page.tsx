@@ -7,7 +7,19 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
+import { supabase } from '@/lib/supabase';
 import { Users, Plus, Trash2, Pencil, X, Check, ChevronLeft, Shield, User } from 'lucide-react';
+
+// /api/auth/accounts requires both x-account-id AND a verified Supabase
+// bearer token — this helper fetches the current session token so each
+// admin call is properly authenticated.
+async function authedHeaders(accountId: string, withJson = false): Promise<HeadersInit> {
+  const { data: { session } } = await supabase.auth.getSession();
+  const headers: Record<string, string> = { 'x-account-id': accountId };
+  if (session?.access_token) headers.authorization = `Bearer ${session.access_token}`;
+  if (withJson) headers['Content-Type'] = 'application/json';
+  return headers;
+}
 
 interface AccountRow {
   accountId: string;
@@ -61,7 +73,7 @@ export default function AccountsPage() {
     setLoading(true);
     try {
       const res = await fetch('/api/auth/accounts', {
-        headers: { 'x-account-id': user.accountId },
+        headers: await authedHeaders(user.accountId),
       });
       if (!res.ok) throw new Error('Failed to load accounts');
       const data = await res.json();
@@ -108,7 +120,7 @@ export default function AccountsPage() {
       if (editingId) {
         const res = await fetch('/api/auth/accounts', {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json', 'x-account-id': user.accountId },
+          headers: await authedHeaders(user.accountId, true),
           body: JSON.stringify({
             accountId: editingId,
             displayName: form.displayName || form.username,
@@ -125,7 +137,7 @@ export default function AccountsPage() {
       } else {
         const res = await fetch('/api/auth/accounts', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-account-id': user.accountId },
+          headers: await authedHeaders(user.accountId, true),
           body: JSON.stringify({
             username: form.username.trim(),
             displayName: form.displayName || form.username,
@@ -158,7 +170,7 @@ export default function AccountsPage() {
     try {
       const res = await fetch(`/api/auth/accounts?accountId=${accountId}`, {
         method: 'DELETE',
-        headers: { 'x-account-id': user.accountId },
+        headers: await authedHeaders(user.accountId),
       });
       if (!res.ok) {
         const d = await res.json();
