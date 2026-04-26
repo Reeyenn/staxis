@@ -13,7 +13,6 @@ import {
   subscribeToStaff,
 } from '@/lib/db';
 import { getDefaultPublicAreas, getDefaultLaundryCategories } from '@/lib/defaults';
-import { format } from 'date-fns';
 import type { Property, StaffMember, PublicArea, LaundryCategory } from '@/types';
 import { generateId } from '@/lib/utils';
 
@@ -169,7 +168,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
 
     // ── Rest of property data (one-time fetch) ─────────────────────────────
     (async () => {
-      // Load areas + laundry config in a separate try/catch so a migration
+      // Load areas + laundry config in a separate try/catch so a load
       // failure never affects staff loading.
       try {
         const [areas, laundry] = await Promise.all([
@@ -179,36 +178,34 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
 
         if (cancelled) return;
 
-        // Seed defaults if empty
+        // First-time seed only. If the property has zero rows of either kind,
+        // we treat it as a brand-new property and lay down the defaults once.
+        // Otherwise we trust whatever's in the DB — the user owns their data.
+        //
+        // History: there used to be auto-"migration" passes here that
+        // re-seeded defaults if a row's minutesPerLoad >= 60 or if all
+        // non-daily areas had today as startDate. Both used `generateId()`
+        // for every default and called `setLaundryCategory` /
+        // `bulkSetPublicAreas` (both upserts on `id`). Because the IDs were
+        // fresh on every load, the upserts were effectively INSERTs and
+        // every page load duplicated the seed. Result: a property with 3
+        // canonical laundry rows had grown to 196 (and 23 areas to 48).
+        // The fix is to never auto-write here — initial seeding already
+        // happens in scripts/seed-supabase.js.
         if (areas.length === 0) {
           const defaults = getDefaultPublicAreas().map(a => ({ ...a, id: generateId() }));
           await bulkSetPublicAreas(user.uid, activePropertyId!, defaults);
           if (!cancelled) setPublicAreas(defaults);
         } else {
-          setPublicAreas(areas);
+          if (!cancelled) setPublicAreas(areas);
         }
 
-        // Migrate bad laundry defaults: if any category has minutesPerLoad >= 60,
-        // it was seeded with the old incorrect values - reset to fixed defaults.
-        const laundryNeedsMigration = laundry.length === 0 || laundry.some(c => c.minutesPerLoad >= 60);
-        if (laundryNeedsMigration) {
+        if (laundry.length === 0) {
           const defaults = getDefaultLaundryCategories().map(c => ({ ...c, id: generateId() }));
           await Promise.all(defaults.map(c => setLaundryCategory(user.uid, activePropertyId!, c)));
           if (!cancelled) setLaundryConfig(defaults);
         } else {
           if (!cancelled) setLaundryConfig(laundry);
-        }
-
-        // Migrate bad public area defaults: if all non-daily areas have today as startDate,
-        // they were seeded without staggering - reset to fixed defaults.
-        const todayStr = format(new Date(), 'yyyy-MM-dd');
-        const nonDailyAreas = areas.filter(a => a.frequencyDays > 1 && !a.onlyWhenRented);
-        const areasNeedMigration = areas.length > 0 && nonDailyAreas.length > 0 &&
-          nonDailyAreas.every(a => a.startDate === todayStr);
-        if (areasNeedMigration) {
-          const defaults = getDefaultPublicAreas().map(a => ({ ...a, id: generateId() }));
-          await bulkSetPublicAreas(user.uid, activePropertyId!, defaults);
-          if (!cancelled) setPublicAreas(defaults);
         }
       } catch (err) {
         console.error('PropertyContext: failed to load areas/laundry config', err);
