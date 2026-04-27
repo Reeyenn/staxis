@@ -1,5 +1,14 @@
 import type { Config } from "tailwindcss";
 
+// ⚠️ This project ships only Tailwind's pre-defined base utility classes.
+// There is NO JIT compiler at build time. That means:
+//   • Class names must be string literals in source (`className="p-4"`).
+//   • Dynamic class names (`className={`p-${size}`}`) silently drop styles
+//     at runtime — Tailwind's content scanner can't see them.
+//   • If you need conditional classes, use a literal-class lookup table:
+//       const SIZES = { sm: 'p-2', md: 'p-4', lg: 'p-6' } as const;
+//       <div className={SIZES[size]} />
+
 const config: Config = {
   content: [
     "./src/pages/**/*.{js,ts,jsx,tsx,mdx}",

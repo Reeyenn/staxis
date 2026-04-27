@@ -606,6 +606,123 @@ Object.keys(localStorage).filter(k => k.includes('staxis-auth') || k.includes('s
 
 ---
 
+## Choice Advantage forced a SkyTouch migration consent screen
+
+### Symptom
+- Scraper dashboard pulls all return `session_expired` even after a fresh login.
+- Dashboard shows "Something unexpected happened pulling PMS data".
+- Railway logs show `After settle — now at: https://www.choiceadvantage.com/choicehotels/Login.do` immediately after a successful login.
+- CSV pulls fail with `Could not click Housekeeping Check-off List`.
+
+### Diagnosis
+After login, CA parks the user on `/Login.do` with three visible links:
+- `Logout` (`#logoutLink`)
+- `training bulletin` pointing at `skytouch.my.salesforce.com`
+- `Continue` (`#migrationSubmit`)
+
+Without clicking Continue, every protected URL (View*.init, ReportViewStart.init) bounces back to `/Login.do`. The scraper had no concept of this intermediate step, so login() returned "ok" while the page was actually still gated.
+
+The CSV pull's selector miss is a downstream effect — the link inventory dump (`csv-link-dump.html`) shows only Logout / training bulletin / Continue, no Housekeeping link.
+
+### Fix
+- Already shipped in `ce82c6d`: login() detects `#migrationSubmit` after the post-login settle and clicks it (with the same plain → force → JS-direct escalation as clickLoginButton).
+- If CA changes the migration UX again, look for the link inventory dump in `scraper/csv-link-dump.html` to see what selectors are actually on the page.
+
+### Verify
+Tail Railway logs for `CA migration consent screen detected — clicking #migrationSubmit`.
+
+### Prevention
+- New code path is gated on element presence (`#migrationSubmit` exists), not URL. When CA eventually retires the migration screen the code becomes a no-op without a redeploy.
+- The `selector-helpers.js` `dumpFile` pattern is now reused everywhere — every selector miss writes a debuggable HTML inventory. If CA throws another consent screen, we'll see what links it has within minutes.
+
+---
+
+## Playwright "execution context was destroyed, most likely because of a navigation"
+
+### Symptom
+- Scraper logs show `page.evaluate: Execution context was destroyed, most likely because of a navigation`.
+- The same error fires across login + dashboard + OOO + CSV pulls simultaneously.
+- Process is alive (heartbeat fresh) but every tick fails with the same error.
+
+### Diagnosis
+CA does chained JS-based redirects after page load (e.g. `Login.init` → `Welcome.init` → `user_authenticated.jsp`). `page.goto()` with `waitUntil:'domcontentloaded'` returns once the initial DOM is loaded, BEFORE the JS redirects fire. The next `page.evaluate()` then races against an in-flight navigation, the Playwright execution context dies mid-call, and every dependent pull (login, dashboard, OOO, CSV) fails identically because they all use page.evaluate against the same shared page object.
+
+### Fix
+- All page.goto calls use `goWithSettle` (scraper/page-helpers.js) which adds `waitForLoadState('load')` + `waitForLoadState('networkidle')` so chained redirects finish before we touch the DOM.
+- All page.evaluate calls use `safeEval` which retries up to 3 times on the specific "Execution context was destroyed" error, calling settlePage between attempts.
+- If you see this error after the fixes are in place, check whether a new code path bypasses `goWithSettle` or `safeEval`. There should be NO raw `page.goto` or `page.evaluate` calls in the scraper — every navigation must go through goWithSettle and every evaluate must go through safeEval.
+
+### Verify
+After deploy, tail Railway logs for `Login page URL:` followed (within a few seconds) by `Filled username` — no execution-context errors in between.
+
+### Prevention
+- selector-helpers.js + page-helpers.js consolidate the navigation/evaluate patterns so future code can't easily re-introduce the bug.
+
+---
+
+## "Alert would have fired but MANAGER_PHONE/OPS_ALERT_PHONE is not set"
+
+### Symptom
+- Scraper or watchdog detects a real outage, but no SMS reaches your phone.
+- Railway logs show `ALERT would have fired but MANAGER_PHONE/OPS_ALERT_PHONE is not set`.
+- OR Vercel function logs show `[scraper-health] MANAGER_PHONE env var not set — alert would fire`.
+- `/api/admin/doctor` returns `watchdog_alert_path` with status `fail` and details pointing to the missing var.
+
+### Diagnosis
+The alerting infrastructure runs on TWO platforms:
+- **Vercel cron** (`/api/cron/scraper-health`) reads scraper_status, decides if the scraper is dead, sends SMS via Twilio.
+- **Railway watchdog** (`scraper/vercel-watchdog.js`) pings Vercel's doctor every 5 min, sends SMS if Vercel itself is down.
+
+Each platform sends SMS independently and reads `MANAGER_PHONE` from its OWN process.env. Setting it on Vercel only doesn't help the Railway watchdog; setting it on Railway only doesn't help the Vercel cron. When unset, the SMS path no-ops with a `console.warn` and writes `alertSuppressedReason` to scraper_status. Doctor's `watchdog_alert_path` check reads that marker and surfaces it as a hard failure — it can't read Railway's `process.env` directly but it can read shared Postgres.
+
+### Fix
+1. Set `MANAGER_PHONE=+1XXXXXXXXXX` (E.164 format) on **both** Vercel and Railway:
+   - Vercel: Project Settings → Environment Variables → add → redeploy
+   - Railway: hotelops-scraper → Variables → add → auto-redeploys
+2. Verify via doctor:
+```bash
+curl -H "Authorization: Bearer $CRON_SECRET" https://hotelops-ai.vercel.app/api/admin/doctor | jq '.checks[] | select(.name == "watchdog_alert_path")'
+```
+Expected: `status: ok`.
+
+### Verify
+Force an alert manually (e.g. take Vercel down for 10 min, or set `CRON_SECRET` to gibberish on Railway temporarily). You should get an SMS within 15 min.
+
+### Prevention
+- Doctor's `watchdog_alert_path` check now hard-fails when either platform's alerter says "tried, couldn't deliver".
+- The post-deploy smoke-test workflow runs the doctor on every push to main and emails Reeyen if any check is failing.
+
+---
+
+## Env var configuration matrix
+
+The scraper, app, and crons run on three platforms. Every env var below is required on at least one of them; some are required on multiple. Drift between platforms has caused multiple incidents (Apr 21 Firebase auth, Apr 27 silent SMS).
+
+| Env var                       | Vercel | Railway | GitHub Actions | Notes |
+|-------------------------------|:------:|:-------:|:--------------:|-------|
+| `CRON_SECRET`                 | ✅     | ✅      | ✅             | All three must match. Doctor's `cron_secret_shape` checks Vercel; rotation playbook is in this doc. |
+| `MANAGER_PHONE`               | ✅     | ✅      |                | E.164 format. Both platforms required — Vercel cron AND Railway watchdog need to send SMS. Doctor's `watchdog_alert_path` reads scraper_status to verify Railway has it. |
+| `OPS_ALERT_PHONE`             | (alt)  | (alt)   |                | Legacy alias; either name works. |
+| `NEXT_PUBLIC_SUPABASE_URL`    | ✅     | ✅      |                | Same value on both. |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | ✅   |         |                | Browser/anon path. |
+| `SUPABASE_SERVICE_ROLE_KEY`   | ✅     | ✅      |                | Same value on both. Rotation = update both, then verify via doctor. |
+| `TWILIO_ACCOUNT_SID`          | ✅     | ✅      |                | Both platforms send SMS. |
+| `TWILIO_AUTH_TOKEN`           | ✅     | ✅      |                | Same. |
+| `TWILIO_FROM_NUMBER`          | ✅     | ✅      |                | E.164. Alt name `TWILIO_PHONE_NUMBER`. |
+| `CA_USERNAME`                 |        | ✅      |                | Choice Advantage login. Railway-only. |
+| `CA_PASSWORD`                 |        | ✅      |                | Same. |
+| `HOTELOPS_PROPERTY_ID`        |        | ✅      |                | UUID of the property this scraper deploy belongs to. |
+| `TIMEZONE`                    |        | ✅      |                | IANA zone, defaults to `America/Chicago`. |
+| `TICK_MINUTES`                |        | ✅      |                | Defaults to 5. |
+
+When adding a new env var:
+1. Add to `REQUIRED_ENV_VARS` in `src/app/api/admin/doctor/route.ts` if it's needed on Vercel.
+2. Add to scraper preflight (`scraper/scraper.js` `preflightFailures`) if it's needed on Railway.
+3. Update this table.
+4. Update `.env.local.example` if it's used in local dev.
+
+---
+
 ## Meta: how to add a new failure mode to this doc
 
 Every time something breaks and takes more than 30 min to fix, come back and add a section here with Symptom / Diagnosis / Fix / Verify / Prevention. This file only pays for itself if we update it.
