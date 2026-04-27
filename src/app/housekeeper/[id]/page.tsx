@@ -23,17 +23,33 @@ type RoomRow = Room;
 
 const PRIORITY_SCORE: Record<string, number> = { vip: 0, early: 1, standard: 2 };
 
+/**
+ * Order the housekeeper's room list by physical walking path through the
+ * building, not by room type or priority.
+ *
+ * Previously the sort was: type-first (checkouts → stayovers → vacant),
+ * then priority, then number. That meant a HK with rooms 416/417/419 (C/O)
+ * AND 101/112 (stayovers) saw 416 → 417 → 419 → 101 → 112: walk to floor
+ * 4, then come down to floor 1, then back upstairs for the next assignment.
+ * They asked for natural numerical order so they can clean a floor at a
+ * time and not zig-zag the building.
+ *
+ * New order: room number ascending. Type and priority become display
+ * concerns only — the card colors and badges still highlight VIP / early /
+ * stayover, but the LIST order is purely by number. parseInt handles
+ * both "101" and "101A" (treats them as 101; tiebreak by raw string).
+ */
 function sortRooms(rooms: RoomRow[]): RoomRow[] {
   return [...rooms].sort((a, b) => {
-    if (a.type !== b.type) {
-      if (a.type === 'checkout') return -1;
-      if (b.type === 'checkout') return 1;
-      if (a.type === 'stayover') return -1;
-      return 1;
-    }
-    const pDiff = (PRIORITY_SCORE[a.priority] ?? 2) - (PRIORITY_SCORE[b.priority] ?? 2);
-    if (pDiff !== 0) return pDiff;
-    return parseInt(a.number, 10) - parseInt(b.number, 10);
+    const an = parseInt(a.number, 10);
+    const bn = parseInt(b.number, 10);
+    // NaN (e.g., "PH" or some non-numeric room label) goes to the end.
+    if (Number.isNaN(an) && Number.isNaN(bn)) return a.number.localeCompare(b.number);
+    if (Number.isNaN(an)) return 1;
+    if (Number.isNaN(bn)) return -1;
+    if (an !== bn) return an - bn;
+    // Tiebreak on the raw string for things like "101", "101A", "101B".
+    return a.number.localeCompare(b.number);
   });
 }
 
