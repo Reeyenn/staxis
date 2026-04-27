@@ -34,9 +34,11 @@ require('dotenv').config();
 const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { runCSVScrape } = require('./csv-scraper');
-const { pullDashboardNumbers, ScraperError, ERROR_CODES } = require('./dashboard-pull');
+const { pullDashboardNumbers } = require('./dashboard-pull');
 const { pullOOOWorkOrders } = require('./ooo-pull');
+const { ScraperError, ERROR_CODES } = require('./scraper-errors');
 const { runVercelWatchdog } = require('./vercel-watchdog');
 const { safeEval, goWithSettle } = require('./page-helpers');
 const { clickFirstMatching, fillFirstMatching } = require('./selector-helpers');
@@ -44,6 +46,7 @@ const {
   createSupabase,
   verifySupabaseAuth,
   mergeStatus,
+  getStatus,
 } = require('./supabase-helpers');
 
 // ─── Config ────────────────────────────────────────────────────────────────
@@ -115,6 +118,23 @@ function log(msg) {
 // All writes are best-effort (try/catch) — status reporting must never crash
 // the main loop.
 
+/**
+ * First 8 hex chars of sha256(CRON_SECRET). Used as a cross-platform identity
+ * fingerprint — Railway writes it to scraper_status[heartbeat], Vercel's
+ * /api/admin/doctor compares it to Vercel's own hash. Mismatch = the secrets
+ * drifted between platforms (rotation only updated one side), and every
+ * cron-secret-protected call between Railway and Vercel will silently 401.
+ *
+ * 8 hex chars = 32 bits of entropy = effectively zero collision risk for
+ * "is the same shared secret on both sides", while leaking nothing about the
+ * actual value if scraper_status ever gets exposed.
+ */
+function cronSecretFingerprint() {
+  const secret = process.env.CRON_SECRET || '';
+  if (!secret) return null;
+  return crypto.createHash('sha256').update(secret).digest('hex').slice(0, 8);
+}
+
 async function writeHeartbeat() {
   try {
     await mergeStatus(supabase, 'heartbeat', {
@@ -126,6 +146,7 @@ async function writeHeartbeat() {
       scraperVersion:  'supabase-v1',
       timezone:        CONFIG.TIMEZONE,
       tickMinutes:     CONFIG.TICK_MINUTES,
+      cronSecretFingerprint: cronSecretFingerprint(),
     });
   } catch (err) {
     log(`Heartbeat write failed: ${err.message}`);
@@ -134,9 +155,19 @@ async function writeHeartbeat() {
 
 async function writeScrapeStatus(pullType, status, extra = {}) {
   try {
+    // Track consecutive failures so the cron can alert on the SECOND miss
+    // (10 min) instead of waiting for the 'pull is too stale' threshold to
+    // trip — the latter took 27+ ticks to surface today's outage. Read
+    // the current count, increment-or-reset, then merge.
+    const prev = await getStatus(supabase, pullType).catch(() => ({}));
+    const prevCount = (prev && typeof prev.consecutiveFailures === 'number')
+      ? prev.consecutiveFailures
+      : 0;
+    const nextCount = status === 'error' ? prevCount + 1 : 0;
     await mergeStatus(supabase, pullType, {
       at:     new Date().toISOString(),
       status, // 'success' | 'error'
+      consecutiveFailures: nextCount,
       ...extra,
     });
   } catch (err) {
@@ -380,7 +411,9 @@ async function runCSVScrapeFresh(page, pullType, relogin) {
     await relogin();
   } catch (loginErr) {
     log(`${pullType} pre-scrape login FAILED: ${loginErr.message}`);
+    const code = loginErr instanceof ScraperError ? loginErr.code : ERROR_CODES.LOGIN_FAILED;
     await writeScrapeStatus(pullType, 'error', {
+      errorCode: code,
       error: `login failed: ${loginErr.message}`,
       date: todayISO(),
     });
@@ -400,14 +433,21 @@ async function runCSVScrapeFresh(page, pullType, relogin) {
       checkouts: snapshot?.checkouts ?? null,
       stayovers: snapshot?.stayovers ?? null,
       recommendedHKs: snapshot?.recommendedHKs ?? null,
+      errorCode: null,
       error: null,
     });
     return true;
   } catch (err) {
-    const msg = err.message || '';
+    // Read the typed code if available (csv-scraper now throws ScraperError
+    // with codes from scraper-errors.js). Fall back to UNKNOWN for any raw
+    // Error that escapes from a code path that hasn't been migrated yet.
+    const code = err instanceof ScraperError ? err.code : ERROR_CODES.UNKNOWN;
     // Belt-and-suspenders: if CA killed the session *during* the scrape itself
-    // (rare but observed), retry once with another fresh login.
-    if (msg.toLowerCase().includes('session expired')) {
+    // (rare but observed), retry once with another fresh login. Match on the
+    // typed code now, with the substring fallback for raw errors.
+    const isSessionExpired = code === ERROR_CODES.SESSION_EXPIRED
+      || (err.message || '').toLowerCase().includes('session expired');
+    if (isSessionExpired) {
       log(`${pullType} scrape lost session mid-run — re-logging and retrying once...`);
       try {
         await relogin();
@@ -415,21 +455,25 @@ async function runCSVScrapeFresh(page, pullType, relogin) {
         await writeScrapeStatus(pullType, 'success', {
           date: snapshot?.date || todayISO(),
           totalRooms: snapshot?.totalRooms ?? null,
+          errorCode: null,
           error: null,
         });
         return true;
       } catch (retryErr) {
-        log(`${pullType} scrape retry FAILED: ${retryErr.message}`);
+        const retryCode = retryErr instanceof ScraperError ? retryErr.code : ERROR_CODES.UNKNOWN;
+        log(`${pullType} scrape retry FAILED [${retryCode}]: ${retryErr.message}`);
         await writeScrapeStatus(pullType, 'error', {
+          errorCode: retryCode,
           error: `retry failed: ${retryErr.message}`,
           date: todayISO(),
         });
         return false;
       }
     }
-    log(`${pullType} CSV pull error: ${msg}`);
+    log(`${pullType} CSV pull error [${code}]: ${err.message}`);
     await writeScrapeStatus(pullType, 'error', {
-      error: msg,
+      errorCode: code,
+      error: err.message,
       date: todayISO(),
     });
     return false;

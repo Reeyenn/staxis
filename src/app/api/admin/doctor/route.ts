@@ -57,6 +57,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { createHash } from 'crypto';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 
@@ -114,6 +115,7 @@ const checks: Array<[string, CheckFn]> = [
   ['twilio_credentials',             checkTwilioCredentials],
   ['alert_phone_shape',              checkAlertPhoneShape],
   ['cron_secret_shape',              checkCronSecretShape],
+  ['cron_secret_cross_platform',     checkCronSecretCrossPlatform],
   ['watchdog_alert_path',            checkWatchdogAlertPath],
 ];
 
@@ -815,8 +817,15 @@ async function checkScraperCsvPull(): Promise<Omit<Check, 'name' | 'durationMs'>
       .from('scraper_status').select('data, updated_at').eq('key', 'morning').maybeSingle();
     const { data: evening } = await supabaseAdmin
       .from('scraper_status').select('data, updated_at').eq('key', 'evening').maybeSingle();
-    const m = (morning?.data ?? {}) as { status?: string; at?: string; error?: string };
-    const e = (evening?.data ?? {}) as { status?: string; at?: string; error?: string };
+    type CsvRow = {
+      status?: string;
+      at?: string;
+      error?: string;
+      errorCode?: string;
+      consecutiveFailures?: number;
+    };
+    const m = (morning?.data ?? {}) as CsvRow;
+    const e = (evening?.data ?? {}) as CsvRow;
     const mAt = m.at ? new Date(m.at).getTime() : 0;
     const eAt = e.at ? new Date(e.at).getTime() : 0;
     const newest = mAt >= eAt ? { ...m, kind: 'morning' as const } : { ...e, kind: 'evening' as const };
@@ -828,11 +837,13 @@ async function checkScraperCsvPull(): Promise<Omit<Check, 'name' | 'durationMs'>
       };
     }
     const ageMin = Math.floor((Date.now() - new Date(newest.at).getTime()) / 60_000);
+    const fails  = newest.consecutiveFailures ?? 0;
     if (newest.status === 'error') {
+      const codePart = newest.errorCode ? ` [${newest.errorCode}]` : '';
       return {
         status: 'fail',
-        detail: `Last ${newest.kind} CSV pull errored ${ageMin}m ago: "${(newest.error ?? '').slice(0, 200)}"`,
-        fix: 'Check Railway logs for scraper/csv-scraper.js. The selector-fallback chain dumps csv-form-dump.html on total miss.',
+        detail: `Last ${newest.kind} CSV pull errored${codePart} ${ageMin}m ago (${fails} consecutive ${fails === 1 ? 'failure' : 'failures'}): "${(newest.error ?? '').slice(0, 200)}"`,
+        fix: 'Check Railway logs for scraper/csv-scraper.js. The selector-fallback chain dumps csv-form-dump.html / csv-link-dump.html on selector miss.',
       };
     }
     if (ageMin > 60) {
@@ -956,6 +967,62 @@ async function checkWatchdogAlertPath(): Promise<Omit<Check, 'name' | 'durationM
       status: 'warn',
       detail: `watchdog alert-path check raised: ${errToString(err)}`,
     };
+  }
+}
+
+/**
+ * Verify Vercel's CRON_SECRET matches Railway's. The doctor runs on Vercel
+ * so it can read process.env.CRON_SECRET locally; Railway writes the first
+ * 8 hex chars of sha256(CRON_SECRET) into scraper_status[heartbeat] every
+ * tick. We hash Vercel's secret the same way and compare.
+ *
+ * Why this matters: CRON_SECRET has to be identical on Vercel + Railway +
+ * GitHub Actions. Rotation drift (someone updated Vercel but forgot
+ * Railway, or vice versa) silently breaks every Railway-to-Vercel watchdog
+ * ping (401 auth_mismatch) AND every GitHub Actions smoke test. Without
+ * this check, the only signal is the watchdog itself logging "auth_mismatch"
+ * — which is silent until a real outage hits.
+ *
+ * Skips if either side hasn't published a fingerprint yet (clean install).
+ */
+async function checkCronSecretCrossPlatform(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const vercelSecret = process.env.CRON_SECRET;
+    if (!vercelSecret) {
+      // env_vars / cron_secret_shape will already flag this — don't double-report.
+      return { status: 'skipped', detail: 'Vercel CRON_SECRET not set (reported elsewhere).' };
+    }
+    const vercelHash = createHash('sha256').update(vercelSecret).digest('hex').slice(0, 8);
+
+    const { data, error } = await supabaseAdmin
+      .from('scraper_status')
+      .select('data, updated_at')
+      .eq('key', 'heartbeat')
+      .maybeSingle();
+    if (error) {
+      return { status: 'warn', detail: `heartbeat read failed: ${errToString(error)}` };
+    }
+    const heartbeat = (data?.data ?? {}) as { cronSecretFingerprint?: string };
+    const railwayHash = heartbeat.cronSecretFingerprint;
+    if (!railwayHash) {
+      return {
+        status: 'skipped',
+        detail: 'Railway has not yet published a CRON_SECRET fingerprint. Wait one tick (~5 min) after the scraper redeploys.',
+      };
+    }
+    if (railwayHash !== vercelHash) {
+      return {
+        status: 'fail',
+        detail: `CRON_SECRET drift detected: Vercel=${vercelHash}, Railway=${railwayHash}.`,
+        fix: 'Pick one secret as canonical. Update on the platform that doesn\'t match: Railway → hotelops-scraper → Variables, or Vercel → Project Settings → Environment Variables. Then redeploy that platform. Don\'t forget GitHub Actions secret too if it diverged.',
+      };
+    }
+    return {
+      status: 'ok',
+      detail: `CRON_SECRET matches across Vercel + Railway (fingerprint ${vercelHash}).`,
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `cross-platform check raised: ${errToString(err)}` };
   }
 }
 

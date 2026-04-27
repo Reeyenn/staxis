@@ -51,9 +51,10 @@ export interface StaffMember {
   daysWorkedThisWeek?: number;  // tracked this week
   vacationDates?: string[];     // YYYY-MM-DD strings
   isActive?: boolean;           // default true (undefined = active)
-  fcmToken?: string;            // FCM device token for push notifications
+  fcmToken?: string;            // FCM device token for push notifications (legacy — FCM was retired 2026-04-22)
   schedulePriority?: SchedulePriority; // 'priority' = auto-selected first, 'normal' = backup, 'excluded' = never auto-selected
   isSchedulingManager?: boolean; // single person who receives shift-confirmation escalation texts. Only one per property.
+  lastPairedAt?: Date | null;   // set by /api/save-fcm-token when the staff member opens their housekeeper/laundry magic link. Manager uses it to spot housekeepers who never opened their device.
 }
 
 // ─── Public Areas ──────────────────────────────────────────────────────────

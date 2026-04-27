@@ -59,6 +59,7 @@
 
 const { mergeStatus, incrementCounter } = require('./supabase-helpers');
 const { safeEval, safeWaitForFunction, goWithSettle } = require('./page-helpers');
+const { ScraperError, ERROR_CODES } = require('./scraper-errors');
 
 const VIEW_PAGES = [
   { key: 'inHouse',    url: 'https://www.choiceadvantage.com/choicehotels/ViewInHouseList.init' },
@@ -66,33 +67,9 @@ const VIEW_PAGES = [
   { key: 'departures', url: 'https://www.choiceadvantage.com/choicehotels/ViewDeparturesList.init' },
 ];
 
-// Fixed vocabulary of error codes. The health-check cron reads these and
-// turns them into specific SMS alerts, so adding a new code means adding a
-// human-readable message in src/app/api/cron/scraper-health/route.ts too.
-const ERROR_CODES = Object.freeze({
-  LOGIN_FAILED:       'login_failed',        // credentials rejected (password change / account lock)
-  SESSION_EXPIRED:    'session_expired',     // mid-pull CA dropped our session
-  SELECTOR_MISS:      'selector_miss',       // expected DOM structure changed
-  TIMEOUT:            'timeout',             // network / page took too long
-  PARSE_ERROR:        'parse_error',         // found the element, couldn't parse a number
-  VALIDATION_FAILED:  'validation_failed',   // number parsed but out of plausible range
-  CA_UNREACHABLE:     'ca_unreachable',      // navigation threw (DNS / 5xx / connection refused)
-  UNKNOWN:            'unknown',             // catch-all — shouldn't happen
-});
-
-/**
- * Typed error so callers (and the health-check cron) can react to specific
- * failure modes instead of string-matching on error messages.
- */
-class ScraperError extends Error {
-  constructor(code, message, { page, diagnostics } = {}) {
-    super(message);
-    this.name = 'ScraperError';
-    this.code = code;
-    this.page = page || null;
-    this.diagnostics = diagnostics || null;
-  }
-}
+// ScraperError + ERROR_CODES live in scraper/scraper-errors.js (shared
+// across dashboard / OOO / CSV / login). Re-export so existing imports of
+// `require('./dashboard-pull').ScraperError` keep working.
 
 // Plausibility bounds — Comfort Suites Beaumont has 61 rooms total. 500 is
 // the safe upper bound for a future multi-property world. Anything outside

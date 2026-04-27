@@ -241,9 +241,19 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
                   : morning;
   const csvPullType: 'morning' | 'evening' =
     csvPull === morning ? 'morning' : 'evening';
-  const csvStatus = typeof csvPull.status === 'string' ? csvPull.status : null;
-  const csvError  = typeof csvPull.error  === 'string' ? csvPull.error  : null;
-  const csvAt     = parseDate(csvPull.at);
+  const csvStatus    = typeof csvPull.status    === 'string' ? csvPull.status    : null;
+  const csvError     = typeof csvPull.error     === 'string' ? csvPull.error     : null;
+  const csvErrorCode = typeof csvPull.errorCode === 'string' ? csvPull.errorCode : null;
+  const csvFailures  = typeof csvPull.consecutiveFailures === 'number' ? csvPull.consecutiveFailures : 0;
+  const csvAt        = parseDate(csvPull.at);
+
+  // 2 consecutive misses (= 10 min of failure) is our alerting threshold.
+  // Why 2: a single transient blip (CA load spike, Playwright Chromium
+  // hiccup) self-recovers on the next 5-min tick, so alerting on 1 would
+  // produce noise. The 2026-04-27 silent outage gave us 27 misses before
+  // the dashboard staleness threshold kicked in — way too long. 2 is the
+  // minimum that distinguishes real failure from transient blip.
+  const CSV_FAILURE_THRESHOLD = 2;
 
   // ── Determine current condition ────────────────────────────────────
   let condition: AlertCondition | null = null;
@@ -252,10 +262,13 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
     condition = 'heartbeat_dead';
   } else if (errorCode) {
     condition = mapErrorToCondition(errorCode);
-  } else if (csvStatus === 'error') {
-    // CSV pull blew up. Treat as a real alert condition — this used to be
-    // silent because the cron only watched dashboard.errorCode.
-    condition = 'csv_pull_failing';
+  } else if (csvStatus === 'error' && csvFailures >= CSV_FAILURE_THRESHOLD) {
+    // CSV pull blew up at least CSV_FAILURE_THRESHOLD times in a row. With
+    // the typed-error rollout (2026-04-27), csvErrorCode flows through too;
+    // login_failed and session_expired on the CSV path map to the same
+    // conditions as their dashboard-pull equivalents so the alert text is
+    // the actionable one rather than the generic 'csv_pull_failing'.
+    condition = csvErrorCode ? mapErrorToCondition(csvErrorCode) ?? 'csv_pull_failing' : 'csv_pull_failing';
   } else if (pulledAt && pulledMinAgo !== null && pulledMinAgo > DASHBOARD_STALE_MIN) {
     const hour = localHour(nowMs, TIMEZONE);
     if (hour >= 5 && hour < 23) {

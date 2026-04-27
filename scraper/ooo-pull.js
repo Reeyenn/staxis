@@ -49,7 +49,7 @@
  * try/catch in scraper.js so a CA OOO outage never kills the dashboard pull.
  */
 
-const { ScraperError, ERROR_CODES } = require('./dashboard-pull');
+const { ScraperError, ERROR_CODES } = require('./scraper-errors');
 const { mergeStatus } = require('./supabase-helpers');
 const { safeEval } = require('./page-helpers');
 

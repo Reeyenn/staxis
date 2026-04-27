@@ -17,6 +17,7 @@ const {
   fillFirstMatching,
   selectFirstMatching,
 } = require('./selector-helpers');
+const { ScraperError, ERROR_CODES } = require('./scraper-errors');
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -296,7 +297,11 @@ async function downloadCSVFromCA(page, log) {
 
   // Check if we got redirected to login
   if (page.url().includes('sign_in') || page.url().includes('Welcome')) {
-    throw new Error('Session expired — need to re-login before CSV pull');
+    throw new ScraperError(
+      ERROR_CODES.SESSION_EXPIRED,
+      `Session expired — redirected to ${page.url()} during CSV pull`,
+      { page: 'csv' },
+    );
   }
   log(`[CSV] On reports page: ${page.url()}`);
 
@@ -499,10 +504,12 @@ async function downloadCSVFromCA(page, log) {
         })).slice(0, 20)
       );
     } catch { /* ignore */ }
-    throw new Error(
+    throw new ScraperError(
+      ERROR_CODES.SELECTOR_MISS,
       `CSV export checkbox not actionable. Tried selectors: ${CSV_SELECTORS.join(' | ')}. ` +
       `Checkboxes on page: ${JSON.stringify(inventory)}. ` +
-      `See csv-form-dump.html for full HTML.`
+      `See csv-form-dump.html for full HTML.`,
+      { page: 'csv', diagnostics: { inventory, url: page.url() } },
     );
   }
 
@@ -592,11 +599,13 @@ async function downloadCSVFromCA(page, log) {
           })).filter(b => b.text).slice(0, 30)
         );
       } catch { /* ignore */ }
-      throw new Error(
+      throw new ScraperError(
+        ERROR_CODES.SELECTOR_MISS,
         `Submit control not actionable on the report form. ` +
         `Tried: ${SUBMIT_SELECTORS.join(' | ')}. ` +
         `Buttons/links visible: ${JSON.stringify(buttonInventory)}. ` +
-        `See csv-form-dump.html for full HTML.`
+        `See csv-form-dump.html for full HTML.`,
+        { page: 'csv', diagnostics: { buttonInventory, url: page.url() } },
       );
     }
   }
@@ -649,7 +658,11 @@ async function downloadCSVFromCA(page, log) {
 
   if (!csvText || csvText.length < 50) {
     await page.screenshot({ path: path.join(__dirname, 'csv-download-fail.png') });
-    throw new Error('CSV download failed — no content received');
+    throw new ScraperError(
+      ERROR_CODES.CSV_DOWNLOAD_FAILED,
+      `CSV download failed — no content received (got ${csvText ? csvText.length : 0} bytes)`,
+      { page: 'csv' },
+    );
   }
 
   // Validate it looks like a CSV (first line should have "Room" header)
@@ -668,9 +681,10 @@ async function downloadCSVFromCA(page, log) {
     const preview = csvText
       .replace(/\s+/g, ' ')
       .substring(0, 600);
-    throw new Error(
-      `Downloaded content is not CSV (got ${csvText.length} bytes). ` +
-      `Preview: ${preview}`
+    throw new ScraperError(
+      ERROR_CODES.CSV_BAD_CONTENT,
+      `Downloaded content is not CSV (got ${csvText.length} bytes). Preview: ${preview}`,
+      { page: 'csv', diagnostics: { length: csvText.length, preview } },
     );
   }
 
@@ -710,7 +724,7 @@ async function writePlanSnapshot(supabase, config, snapshot, log) {
   ) {
     const reason = `degenerate snapshot: totalRooms=${snapshot && snapshot.totalRooms}, totalCleaningMinutes=${snapshot && snapshot.totalCleaningMinutes}, recommendedHKs=${snapshot && snapshot.recommendedHKs}`;
     log(`[CSV] REFUSING TO WRITE — ${reason}`);
-    throw new Error(reason);
+    throw new ScraperError(ERROR_CODES.CSV_VALIDATION_FAILED, reason, { page: 'csv' });
   }
   const row = {
     property_id:                   config.PROPERTY_ID,
@@ -837,7 +851,11 @@ async function runCSVScrape(page, supabase, config, pullType, log) {
     log(`[CSV] Parsed ${rooms.length} rooms from CSV`);
 
     if (rooms.length === 0) {
-      throw new Error('Parsed 0 rooms from CSV — file may be malformed');
+      throw new ScraperError(
+        ERROR_CODES.PARSE_ERROR,
+        'Parsed 0 rooms from CSV — file may be malformed',
+        { page: 'csv' },
+      );
     }
 
     // Sanity guard: Comfort Suites Beaumont has 74 rooms. If we got back
@@ -847,9 +865,11 @@ async function runCSVScrape(page, supabase, config, pullType, log) {
     // fresh-but-wrong.
     const MIN_EXPECTED_ROOMS = parseInt(process.env.MIN_EXPECTED_ROOMS || '60', 10);
     if (rooms.length < MIN_EXPECTED_ROOMS) {
-      throw new Error(
+      throw new ScraperError(
+        ERROR_CODES.VALIDATION_FAILED,
         `Only ${rooms.length} rooms parsed — expected ~74 (min ${MIN_EXPECTED_ROOMS}). ` +
-        `Refusing to overwrite plan_snapshots with suspiciously small dataset.`
+        `Refusing to overwrite plan_snapshots with suspiciously small dataset.`,
+        { page: 'csv', diagnostics: { rooms: rooms.length, min: MIN_EXPECTED_ROOMS } },
       );
     }
 
