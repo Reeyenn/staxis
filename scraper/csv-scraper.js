@@ -463,10 +463,93 @@ async function downloadCSVFromCA(page, log) {
   // Also listen for new popup window (CA sometimes opens CSV in new tab)
   const popupPromise = page.waitForEvent('popup', { timeout: 30000 }).catch(() => null);
 
-  // Click Submit (CA uses an <a> link, not a <button>)
-  const submitBtn = page.locator('a:has-text("Submit")').first();
-  await submitBtn.click();
-  log('[CSV] Clicked Submit');
+  // Click Submit. CA used to render Submit as an <a>, then changed to a
+  // styled <button>, then changed the visible text on us. Same selector-
+  // fragility story as the CSV checkbox. Try a list, fall through on
+  // both selector misses AND click failures, end with a JS-direct click
+  // and finally an exhaustive form submit, then dump diagnostic state.
+  const SUBMIT_SELECTORS = [
+    'a:has-text("Submit"):visible',
+    'button:has-text("Submit"):visible',
+    'input[type="submit"][value*="Submit" i]:visible',
+    'a:has-text("Run Report"):visible',
+    'button:has-text("Run Report"):visible',
+    'a:has-text("Generate"):visible',
+    'button:has-text("Generate"):visible',
+    'a:has-text("Export"):visible',
+    'button:has-text("Export"):visible',
+    'a:has-text("Submit")',           // any matching, ignore visibility
+    'button:has-text("Submit")',
+    'input[type="submit"]',           // generic submit input
+  ];
+
+  async function tryClick(locator) {
+    try { await locator.click({ timeout: 5000 }); return true; } catch { /* try harder */ }
+    try { await locator.click({ timeout: 3000, force: true }); return true; } catch { /* try hardest */ }
+    try {
+      await locator.evaluate((el) => { if (el && typeof el.click === 'function') el.click(); });
+      return true;
+    } catch { return false; }
+  }
+
+  let submitSelectorUsed = null;
+  for (const sel of SUBMIT_SELECTORS) {
+    let candidate;
+    try { candidate = page.locator(sel).first(); } catch { continue; }
+    let count = 0;
+    try { count = await candidate.count(); } catch { continue; }
+    if (count === 0) continue;
+    if (await tryClick(candidate)) {
+      submitSelectorUsed = sel;
+      log(`[CSV] Clicked Submit (selector: ${sel})`);
+      break;
+    }
+    log(`[CSV] submit selector matched but click failed: ${sel} (trying next)`);
+  }
+
+  if (!submitSelectorUsed) {
+    // Last-resort: submit the form via JS directly. Find the form holding
+    // the CSV checkbox and call .submit() on it.
+    let formSubmitted = false;
+    try {
+      formSubmitted = await page.evaluate(() => {
+        const cb = document.querySelector('#CSVcheckbox') || document.querySelector('input[type="checkbox"][id*="CSV" i]');
+        const form = cb ? cb.closest('form') : (document.forms[0] || null);
+        if (form && typeof form.submit === 'function') { form.submit(); return true; }
+        return false;
+      });
+    } catch { /* ignore */ }
+    if (formSubmitted) {
+      submitSelectorUsed = 'form.submit() via JS';
+      log('[CSV] Submitted form directly via JS as last resort');
+    } else {
+      // Dump diagnostics for the upstream alert and bail.
+      try {
+        const html = await page.content();
+        fs.writeFileSync(path.join(__dirname, 'csv-form-dump.html'), html);
+        log('[CSV] saved csv-form-dump.html for selector diagnosis');
+      } catch (e) {
+        log(`[CSV] could not dump form HTML: ${e.message}`);
+      }
+      let buttonInventory = [];
+      try {
+        buttonInventory = await page.evaluate(() =>
+          Array.from(document.querySelectorAll('a, button, input[type="submit"]')).map((el) => ({
+            tag: el.tagName.toLowerCase(),
+            text: (el.textContent || el.value || '').trim().slice(0, 60),
+            id: el.id || null,
+            visible: !!(el.offsetWidth || el.offsetHeight),
+          })).filter(b => b.text).slice(0, 30)
+        );
+      } catch { /* ignore */ }
+      throw new Error(
+        `Submit control not actionable on the report form. ` +
+        `Tried: ${SUBMIT_SELECTORS.join(' | ')}. ` +
+        `Buttons/links visible: ${JSON.stringify(buttonInventory)}. ` +
+        `See csv-form-dump.html for full HTML.`
+      );
+    }
+  }
 
   // Wait for either a download or a popup
   const [download, popup] = await Promise.all([
