@@ -151,6 +151,22 @@ async function writeScrapeStatus(pullType, status, extra = {}) {
 
 async function login(page) {
   log('Logging into Choice Advantage...');
+
+  // Always clear cookies before login. CA's session-cookie state can land us
+  // in a "partial session" that's valid for Welcome.init (the page returns
+  // 'no login form present' so login() bails as 'already logged in') but
+  // expired for the View*.init dashboard URLs and ReportViewStart.init —
+  // produces an infinite session_expired loop where every dashboard / CSV
+  // pull bounces to Login.do, triggers re-login, re-login sees the partial
+  // session and skips the form, dashboard pull bounces again, etc. Clearing
+  // cookies guarantees we always render the login form on first hit.
+  // Observed on 2026-04-27.
+  try {
+    await page.context().clearCookies();
+  } catch (err) {
+    log(`Could not clear cookies (continuing anyway): ${err.message}`);
+  }
+
   try {
     // 'load' (not 'domcontentloaded') so we wait for window.onload and any
     // initial-paint scripts. CA does JS-based redirects after DOMContentLoaded
@@ -175,7 +191,12 @@ async function login(page) {
     return !!document.querySelector('input[name="j_username"]');
   });
   if (!hasLoginForm) {
-    log('Already logged in (no login form present)');
+    // After a clearCookies + goto the login form should always render.
+    // If it doesn't, we're either on a different unexpected page (CA URL
+    // change?) or CA recovered our session from elsewhere. Log and continue
+    // — the downstream pulls will bounce back through here on session_expired
+    // if this assumption is wrong.
+    log('No login form present after fresh navigation — assuming already authenticated by another mechanism');
     return;
   }
 

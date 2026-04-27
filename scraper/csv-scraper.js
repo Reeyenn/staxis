@@ -330,7 +330,34 @@ async function downloadCSVFromCA(page, log) {
         if (ok) { log(`[CSV] ${label} via JS (selector: ${sel})`); return sel; }
       } catch {}
     }
-    throw new Error(`Could not click ${label}. Tried ${selectors.length} selectors. CA layout may have changed.`);
+    // Selector list exhausted — dump a snapshot of every visible link on the
+    // page so the upstream alert is debuggable. Without this, "CA layout may
+    // have changed" is just a vague hand-wave; with it, we can see exactly
+    // what link text/hrefs CA is now serving and add the right selector.
+    let linkInventory = [];
+    try {
+      linkInventory = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('a')).map((el) => ({
+          text: (el.textContent || '').trim().slice(0, 80),
+          href: (el.getAttribute('href') || '').slice(0, 120),
+          id:   el.id || null,
+          visible: !!(el.offsetWidth || el.offsetHeight),
+        })).filter(a => a.text && a.visible).slice(0, 40)
+      );
+    } catch { /* ignore */ }
+    try {
+      const html = await page.content();
+      fs.writeFileSync(path.join(__dirname, 'csv-link-dump.html'), html);
+      log('[CSV] saved csv-link-dump.html for selector diagnosis');
+    } catch (e) {
+      log(`[CSV] could not dump link HTML: ${e.message}`);
+    }
+    throw new Error(
+      `Could not click ${label}. Tried ${selectors.length} selectors. ` +
+      `Visible links on page: ${JSON.stringify(linkInventory)}. ` +
+      `Current URL: ${page.url()}. ` +
+      `CA layout may have changed — see csv-link-dump.html.`
+    );
   }
 
   // ── Helper: fill first matching input ──
