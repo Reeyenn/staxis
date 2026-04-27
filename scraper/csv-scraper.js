@@ -339,16 +339,63 @@ async function downloadCSVFromCA(page, log) {
   await page.selectOption('select[name="sort"]', 'room_number');
   log('[CSV] Set Sort → Room Number');
 
-  // CSV export checkbox
-  const csvBox = page.locator('#CSVcheckbox');
-  if (!(await csvBox.isChecked())) {
-    await csvBox.check();
+  // CSV export checkbox.
+  //
+  // History: Choice Advantage rebrands their report form periodically and
+  // the checkbox `id` has bitten us before. On 2026-04-27 the morning pull
+  // started timing out at `locator.check: Timeout 30000ms exceeded` waiting
+  // for `#CSVcheckbox` because the id had changed.
+  //
+  // Fix: try a list of selectors in order. The first one to resolve wins.
+  // If ALL of them fail, dump page HTML + a screenshot so we can update the
+  // list quickly instead of guessing blind.
+  const CSV_SELECTORS = [
+    '#CSVcheckbox',                                  // legacy id (may still exist)
+    'input[type="checkbox"][id*="CSV" i]',           // any checkbox with CSV in the id
+    'input[type="checkbox"][name*="csv" i]',         // by name
+    'input[type="checkbox"][value*="csv" i]',        // by value
+    'label:has-text("CSV") >> input[type="checkbox"]', // checkbox INSIDE a CSV label
+    'label:has-text("Export") >> input[type="checkbox"]',
+  ];
+  let csvBox = null;
+  let csvSelectorUsed = null;
+  for (const sel of CSV_SELECTORS) {
+    const candidate = page.locator(sel).first();
+    try {
+      if (await candidate.count() > 0) {
+        csvBox = candidate;
+        csvSelectorUsed = sel;
+        break;
+      }
+    } catch {
+      // selector syntax not supported by this Playwright version — skip
+    }
   }
-  log('[CSV] Checked CSV export box');
 
-  // Screenshot for debugging before submit
+  // Screenshot the form NOW (before we click anything) — useful for both
+  // success and failure paths to diagnose layout changes.
   await page.screenshot({ path: path.join(__dirname, 'csv-report-form.png') });
-  log('[CSV] Saved form screenshot');
+
+  if (!csvBox) {
+    // Dump the page HTML so we can scan it offline to find the new selector.
+    try {
+      const html = await page.content();
+      fs.writeFileSync(path.join(__dirname, 'csv-form-dump.html'), html);
+      log('[CSV] saved csv-form-dump.html for selector diagnosis');
+    } catch (e) {
+      log(`[CSV] could not dump form HTML: ${e.message}`);
+    }
+    throw new Error(
+      `CSV export checkbox not found on the report form. ` +
+      `Tried selectors: ${CSV_SELECTORS.join(' | ')}. ` +
+      `Choice Advantage page layout likely changed — see csv-form-dump.html.`
+    );
+  }
+
+  if (!(await csvBox.isChecked())) {
+    await csvBox.check({ timeout: 10000 });
+  }
+  log(`[CSV] Checked CSV export box (selector: ${csvSelectorUsed})`);
 
   // Set up download interception BEFORE clicking Submit
   // CA opens the CSV in a new tab/window or triggers a download

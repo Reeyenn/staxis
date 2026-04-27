@@ -79,7 +79,8 @@ type AlertCondition =
   | 'validation_failed'
   | 'ca_unreachable'
   | 'unknown_error'
-  | 'stale_no_error';
+  | 'stale_no_error'
+  | 'csv_pull_failing';   // morning/evening CSV pull errored (Playwright selector miss, timeout, etc.)
 
 function alertMessage(cond: AlertCondition, ctx: AlertContext): string {
   const last = ctx.pulledAtStr ? ` (last good numbers ${ctx.pulledAtStr})` : '';
@@ -105,6 +106,8 @@ function alertMessage(cond: AlertCondition, ctx: AlertContext): string {
       return `Staxis scraper: Unknown error pulling PMS data.${stale} Check Railway logs — error: "${ctx.errorMessage ?? ''}".${last}`;
     case 'stale_no_error':
       return `Staxis scraper: PMS numbers haven't refreshed in ${ctx.pulledAtMinutesAgo ?? '?'} min but no error reported. Scraper may be hung. Check Railway.`;
+    case 'csv_pull_failing':
+      return `Staxis scraper: CSV pull failing (${ctx.csvPullType ?? '?'}). Last good ${ctx.pulledAtStr ?? 'unknown'}. Error: "${(ctx.errorMessage ?? '').slice(0, 120)}". Check Railway logs and Choice Advantage page layout.`;
   }
 }
 
@@ -113,6 +116,7 @@ type AlertContext = {
   pulledAtMinutesAgo: number | null;
   heartbeatMinutesAgo: number | null;
   errorMessage: string | null;
+  csvPullType?: 'morning' | 'evening';
 };
 
 function mapErrorToCondition(code: string | null): AlertCondition | null {
@@ -195,11 +199,16 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
 
   const nowMs = Date.now();
 
-  // Read all three status rows in parallel.
-  const [dashboard, heartbeat, alertState] = await Promise.all([
+  // Read all the status rows we need in parallel.
+  // 'morning' and 'evening' are the CSV pull statuses — these were missing
+  // from the original health check, which is how the 2026-04-27
+  // 'CSVcheckbox selector miss' bug stayed silent for 3+ hours.
+  const [dashboard, heartbeat, alertState, morning, evening] = await Promise.all([
     getStatus('dashboard'),
     getStatus('heartbeat'),
     getStatus('alertState'),
+    getStatus('morning'),
+    getStatus('evening'),
   ]);
 
   // heartbeat.at is an ISO string set by the scraper; fall back to row's
@@ -212,6 +221,22 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
   const pulledMinAgo    = minutesAgo(pulledAt, nowMs);
   const heartbeatMinAgo = minutesAgo(heartbeatAt, nowMs);
 
+  // CSV pulls — pick whichever is most recent and look at its status.
+  // The scraper only writes one of them per tick (morning before 7pm CT,
+  // evening from 7pm). Whichever has the newer `at` is the one we care about.
+  const morningAt = parseDate(morning.at);
+  const eveningAt = parseDate(evening.at);
+  const csvPull   = (morningAt && eveningAt && morningAt > eveningAt) ? morning
+                  : (morningAt && !eveningAt) ? morning
+                  : (!morningAt && eveningAt) ? evening
+                  : (morningAt && eveningAt) ? evening
+                  : morning;
+  const csvPullType: 'morning' | 'evening' =
+    csvPull === morning ? 'morning' : 'evening';
+  const csvStatus = typeof csvPull.status === 'string' ? csvPull.status : null;
+  const csvError  = typeof csvPull.error  === 'string' ? csvPull.error  : null;
+  const csvAt     = parseDate(csvPull.at);
+
   // ── Determine current condition ────────────────────────────────────
   let condition: AlertCondition | null = null;
 
@@ -219,6 +244,10 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
     condition = 'heartbeat_dead';
   } else if (errorCode) {
     condition = mapErrorToCondition(errorCode);
+  } else if (csvStatus === 'error') {
+    // CSV pull blew up. Treat as a real alert condition — this used to be
+    // silent because the cron only watched dashboard.errorCode.
+    condition = 'csv_pull_failing';
   } else if (pulledAt && pulledMinAgo !== null && pulledMinAgo > DASHBOARD_STALE_MIN) {
     const hour = localHour(nowMs, TIMEZONE);
     if (hour >= 5 && hour < 23) {
@@ -290,11 +319,15 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
   }
 
   // ── Send the alert ─────────────────────────────────────────────────
+  // For csv_pull_failing, prefer the csv pull's own timestamp + error string.
+  const isCsvCondition = condition === 'csv_pull_failing';
+  const refTime = isCsvCondition ? csvAt : pulledAt;
   const ctx: AlertContext = {
-    pulledAtStr: pulledAt ? pulledAt.toLocaleString('en-US', { timeZone: TIMEZONE, hour: 'numeric', minute: '2-digit' }) : null,
-    pulledAtMinutesAgo: pulledMinAgo,
+    pulledAtStr: refTime ? refTime.toLocaleString('en-US', { timeZone: TIMEZONE, hour: 'numeric', minute: '2-digit' }) : null,
+    pulledAtMinutesAgo: minutesAgo(refTime, nowMs),
     heartbeatMinutesAgo: heartbeatMinAgo,
-    errorMessage,
+    errorMessage: isCsvCondition ? csvError : errorMessage,
+    csvPullType: isCsvCondition ? csvPullType : undefined,
   };
   const message = alertMessage(condition, ctx);
   const alertPhone = process.env.MANAGER_PHONE || process.env.OPS_ALERT_PHONE;

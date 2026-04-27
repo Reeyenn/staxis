@@ -1881,8 +1881,8 @@ function ScheduleSection() {
                   <div style={{ textAlign: 'left' }}>
                     <div>
                       {lang === 'es'
-                        ? 'Falla la actualización del CSV — Reeyen fue notificado.'
-                        : 'CSV pull failing — Reeyen has been notified.'}
+                        ? 'Falla la actualización del CSV. Avísale a Reeyen.'
+                        : 'CSV pull failing. Tell Reeyen.'}
                     </div>
                     <div style={{ fontSize: '11px', color: '#991b1b', fontWeight: 400, marginTop: '2px' }}>
                       {lang === 'es'
@@ -1966,20 +1966,20 @@ function ScheduleSection() {
               session_expired:   'Lost Choice Advantage session — retrying. Check back in a minute.',
               selector_miss:     'Choice Advantage page layout changed — Reeyen needs to update the scraper.',
               timeout:           'Choice Advantage was slow to respond — retrying in 15 min.',
-              parse_error:       'Could not read numbers from Choice Advantage. Reeyen has been notified.',
-              validation_failed: 'Choice Advantage returned numbers outside the expected range. Reeyen has been notified.',
+              parse_error:       'Could not read numbers from Choice Advantage. Tell Reeyen.',
+              validation_failed: 'Choice Advantage returned numbers outside the expected range. Tell Reeyen.',
               ca_unreachable:    'Could not reach Choice Advantage. Check the CA website yourself.',
-              unknown:           'Something unexpected happened pulling PMS data. Reeyen has been notified.',
+              unknown:           'Something unexpected happened pulling PMS data. Tell Reeyen.',
             };
             const es: Record<string, string> = {
               login_failed:      'Falló el inicio de sesión en Choice Advantage — la contraseña puede haber cambiado. Avísale a Reeyen.',
               session_expired:   'Sesión de Choice Advantage perdida — reintentando. Revisa en un minuto.',
               selector_miss:     'El diseño de Choice Advantage cambió — Reeyen debe actualizar el scraper.',
               timeout:           'Choice Advantage respondió lento — reintentando en 15 min.',
-              parse_error:       'No se pudieron leer los números de Choice Advantage. Reeyen fue notificado.',
-              validation_failed: 'Choice Advantage devolvió números fuera de rango. Reeyen fue notificado.',
+              parse_error:       'No se pudieron leer los números de Choice Advantage. Avísale a Reeyen.',
+              validation_failed: 'Choice Advantage devolvió números fuera de rango. Avísale a Reeyen.',
               ca_unreachable:    'No se pudo conectar con Choice Advantage. Revisa el sitio directamente.',
-              unknown:           'Ocurrió algo inesperado al obtener los datos del PMS. Reeyen fue notificado.',
+              unknown:           'Ocurrió algo inesperado al obtener los datos del PMS. Avísale a Reeyen.',
             };
             const dict = lang === 'es' ? es : en;
             return dict[code ?? 'unknown'] ?? dict.unknown;
