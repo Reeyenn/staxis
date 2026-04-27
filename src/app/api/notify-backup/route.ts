@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
+import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 
 /**
  * POST /api/notify-backup
@@ -30,6 +31,12 @@ function toE164(raw: string): string | null {
 }
 
 export async function POST(req: NextRequest) {
+  // Auth: require an authenticated Supabase session AND verify the caller
+  // has access to the property they're sending notifications for. Without
+  // this, anyone could POST {pid, backupStaffId, roomNumber} and run our
+  // Twilio meter to zero by texting random staff numbers we look up by id.
+  const session = await requireSession(req);
+  if (!session.ok) return session.response;
   try {
     const body = await req.json();
     const { pid, backupStaffId, roomNumber, language } = body;
@@ -39,6 +46,10 @@ export async function POST(req: NextRequest) {
         { error: 'Missing required fields' },
         { status: 400 }
       );
+    }
+
+    if (!(await userHasPropertyAccess(session.userId, pid))) {
+      return NextResponse.json({ error: 'forbidden' }, { status: 403 });
     }
 
     // Property name + specific backup staff in parallel.

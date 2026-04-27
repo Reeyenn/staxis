@@ -101,17 +101,19 @@ type DoctorReport = {
 type CheckFn = () => Promise<Omit<Check, 'name' | 'durationMs'>>;
 
 const checks: Array<[string, CheckFn]> = [
-  ['env_vars',              checkEnvVars],
-  ['supabase_admin_auth',   checkSupabaseAdminAuth],
-  ['supabase_jwt_expiry',   checkSupabaseJwtExpiry],
-  ['supabase_anon_key',     checkSupabaseAnonKeyShape],
-  ['supabase_rls_enabled',  checkSupabaseRlsEnabled],
-  ['supabase_heartbeat',    checkSupabaseHeartbeat],
-  ['supabase_dashboard',    checkSupabaseDashboard],
-  ['scraper_health_cron',   checkScraperHealthCronLiveness],
-  ['twilio_credentials',    checkTwilioCredentials],
-  ['alert_phone_shape',     checkAlertPhoneShape],
-  ['cron_secret_shape',     checkCronSecretShape],
+  ['env_vars',                       checkEnvVars],
+  ['supabase_admin_auth',            checkSupabaseAdminAuth],
+  ['supabase_jwt_expiry',            checkSupabaseJwtExpiry],
+  ['supabase_anon_key',              checkSupabaseAnonKeyShape],
+  ['supabase_rls_enabled',           checkSupabaseRlsEnabled],
+  ['supabase_realtime_publication',  checkSupabaseRealtimePublication],
+  ['supabase_heartbeat',             checkSupabaseHeartbeat],
+  ['supabase_dashboard',             checkSupabaseDashboard],
+  ['scraper_csv_pull',               checkScraperCsvPull],
+  ['scraper_health_cron',            checkScraperHealthCronLiveness],
+  ['twilio_credentials',             checkTwilioCredentials],
+  ['alert_phone_shape',              checkAlertPhoneShape],
+  ['cron_secret_shape',              checkCronSecretShape],
 ];
 
 // ─── Individual checks ───────────────────────────────────────────────────
@@ -731,6 +733,121 @@ async function checkSupabaseAnonKeyShape(): Promise<Omit<Check, 'name' | 'durati
     status: 'ok',
     detail: `anon key valid (role=anon, ref=${payload.ref}, ${key.length} chars)`,
   };
+}
+
+/**
+ * supabase_realtime_publication — verify every table the app subscribes to
+ * via Supabase Realtime is actually IN the supabase_realtime publication.
+ *
+ * Why this matters: postgres_changes subscriptions silently fail (the
+ * channel state is "joined" but no events ever arrive) when the table is
+ * missing from the publication. We hit this exact bug in 2026-04-26 — the
+ * Firebase→Supabase migration left the publication empty, so every
+ * subscribeTo* in the UI ran silently dead. Without this doctor check,
+ * a future fresh project setup could repeat the same bug for hours.
+ *
+ * Reads pg_publication_tables via a SECURITY DEFINER helper installed in
+ * migration 0007_realtime_publication_doctor.sql (added alongside this).
+ */
+async function checkSupabaseRealtimePublication(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const REQUIRED_TABLES = [
+    'staff', 'rooms', 'work_orders', 'preventive_tasks', 'landscaping_tasks',
+    'inventory', 'inspections', 'handoff_logs', 'guest_requests', 'plan_snapshots',
+    'schedule_assignments', 'shift_confirmations', 'manager_notifications', 'scraper_status',
+  ];
+  try {
+    const { data, error } = await supabaseAdmin.rpc('staxis_realtime_publication_tables');
+    if (error) {
+      // RPC missing? Fall back to a direct query against pg_publication_tables.
+      // This requires the service_role key — which we have via supabaseAdmin.
+      const { data: fallback, error: fbErr } = await supabaseAdmin
+        .from('pg_publication_tables_view' as never)
+        .select('tablename')
+        .eq('pubname', 'supabase_realtime');
+      if (fbErr) {
+        return {
+          status: 'warn',
+          detail: `Couldn't read publication state (rpc + view both failed): ${error.message}`,
+          fix: 'Apply migration 0007_realtime_publication_doctor.sql in Supabase SQL editor.',
+        };
+      }
+      const tables = new Set((fallback ?? []).map((r) => (r as { tablename: string }).tablename));
+      const missing = REQUIRED_TABLES.filter((t) => !tables.has(t));
+      if (missing.length > 0) {
+        return {
+          status: 'fail',
+          detail: `supabase_realtime publication is missing ${missing.length} of ${REQUIRED_TABLES.length} subscribed tables: ${missing.join(', ')}`,
+          fix: 'Re-apply migration 0006_enable_realtime.sql to add the missing tables to the publication.',
+        };
+      }
+      return { status: 'ok', detail: `All ${REQUIRED_TABLES.length} subscribed tables are in supabase_realtime` };
+    }
+    const tables = new Set((data as Array<{ tablename: string }>).map((r) => r.tablename));
+    const missing = REQUIRED_TABLES.filter((t) => !tables.has(t));
+    if (missing.length > 0) {
+      return {
+        status: 'fail',
+        detail: `supabase_realtime publication is missing ${missing.length} of ${REQUIRED_TABLES.length} subscribed tables: ${missing.join(', ')}`,
+        fix: 'Re-apply migration 0006_enable_realtime.sql to add the missing tables to the publication.',
+      };
+    }
+    return { status: 'ok', detail: `All ${REQUIRED_TABLES.length} subscribed tables are in supabase_realtime` };
+  } catch (err) {
+    return {
+      status: 'warn',
+      detail: `realtime publication check raised: ${err instanceof Error ? err.message : String(err)}`,
+      fix: 'Apply migration 0007_realtime_publication_doctor.sql to expose the helper.',
+    };
+  }
+}
+
+/**
+ * scraper_csv_pull — verify the most recent CSV pull (morning OR evening)
+ * was a success, not an error. The `scraper-health` cron now alerts on
+ * morning/evening errors but the doctor doesn't mention them at all,
+ * which means a deploy can land + smoke-test pass while the morning pull
+ * is silently broken.
+ */
+async function checkScraperCsvPull(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data: morning } = await supabaseAdmin
+      .from('scraper_status').select('data, updated_at').eq('key', 'morning').maybeSingle();
+    const { data: evening } = await supabaseAdmin
+      .from('scraper_status').select('data, updated_at').eq('key', 'evening').maybeSingle();
+    const m = (morning?.data ?? {}) as { status?: string; at?: string; error?: string };
+    const e = (evening?.data ?? {}) as { status?: string; at?: string; error?: string };
+    const mAt = m.at ? new Date(m.at).getTime() : 0;
+    const eAt = e.at ? new Date(e.at).getTime() : 0;
+    const newest = mAt >= eAt ? { ...m, kind: 'morning' as const } : { ...e, kind: 'evening' as const };
+    if (!newest.at) {
+      return {
+        status: 'warn',
+        detail: 'No CSV pull on record yet (no morning or evening row in scraper_status).',
+        fix: 'Wait for the next scrape tick on Railway, or check the scraper deployment.',
+      };
+    }
+    const ageMin = Math.floor((Date.now() - new Date(newest.at).getTime()) / 60_000);
+    if (newest.status === 'error') {
+      return {
+        status: 'fail',
+        detail: `Last ${newest.kind} CSV pull errored ${ageMin}m ago: "${(newest.error ?? '').slice(0, 200)}"`,
+        fix: 'Check Railway logs for scraper/csv-scraper.js. The selector-fallback chain dumps csv-form-dump.html on total miss.',
+      };
+    }
+    if (ageMin > 60) {
+      return {
+        status: 'warn',
+        detail: `Last ${newest.kind} CSV pull was ${ageMin}m ago. Scraper may be hung.`,
+        fix: 'Check Railway scraper service is running and the heartbeat is fresh.',
+      };
+    }
+    return { status: 'ok', detail: `Last ${newest.kind} CSV pull succeeded ${ageMin}m ago` };
+  } catch (err) {
+    return {
+      status: 'warn',
+      detail: `csv pull check raised: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
 }
 
 // ─── Handler ─────────────────────────────────────────────────────────────

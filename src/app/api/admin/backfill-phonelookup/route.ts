@@ -8,9 +8,10 @@
  *
  * Safe to call repeatedly. Returns counts + examples so you can verify.
  */
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
+import { requireCronSecret } from '@/lib/api-auth';
 
 function toE164(raw: string): string | null {
   const digits = raw.replace(/\D/g, '');
@@ -20,7 +21,10 @@ function toE164(raw: string): string | null {
   return null;
 }
 
-export async function POST() {
+export async function POST(req: NextRequest) {
+  // Mutates every staff row's phone_lookup. CRON_SECRET-only.
+  const unauthorized = requireCronSecret(req);
+  if (unauthorized) return unauthorized;
   try {
     const { data: staff, error } = await supabaseAdmin
       .from('staff')
@@ -72,6 +76,8 @@ export async function POST() {
   }
 }
 
-export async function GET() {
-  return POST();
+export async function GET(req: NextRequest) {
+  // GET is just a convenience alias for POST so you can hit the URL with
+  // a browser. Same auth gate.
+  return POST(req);
 }

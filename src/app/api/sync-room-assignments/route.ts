@@ -25,6 +25,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { isValidDateStr, errToString } from '@/lib/utils';
+import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 
 interface StaffEntry {
   staffId: string;
@@ -53,6 +54,10 @@ function deriveRoomType(
 }
 
 export async function POST(req: NextRequest) {
+  // Auth: writes to rooms table (assigns/unassigns staff). Without auth
+  // any caller could blank out today's room assignments.
+  const session = await requireSession(req);
+  if (!session.ok) return session.response;
   try {
     const body: RequestBody = await req.json();
     const { pid, shiftDate, staff } = body;
@@ -62,6 +67,9 @@ export async function POST(req: NextRequest) {
     }
     if (!isValidDateStr(shiftDate)) {
       return NextResponse.json({ error: 'Invalid shiftDate' }, { status: 400 });
+    }
+    if (!(await userHasPropertyAccess(session.userId, pid))) {
+      return NextResponse.json({ error: 'forbidden' }, { status: 403 });
     }
 
     // ── Failsafe: refuse to wipe all assignments without explicit opt-in ────

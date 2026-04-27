@@ -1,0 +1,103 @@
+/**
+ * Shared API-route auth helpers.
+ *
+ * We have two distinct auth contexts and they were each previously
+ * inlined or skipped across many routes — this file centralizes both
+ * so adding a new route is one import + one call instead of a
+ * copy-pasted blob that drifts out of sync with the others.
+ *
+ *   1. CRON_SECRET   — admin/maintenance routes hit by GitHub Actions
+ *                       cron, our local curl, or the Railway watchdog.
+ *                       Bearer token in `Authorization` header. If the
+ *                       env var isn't set (dev), pass-through so local
+ *                       devs can still hit the route without ceremony.
+ *
+ *   2. requireSession — user-facing routes triggered from the
+ *                       authenticated UI. Verify a Supabase access
+ *                       token in `Authorization: Bearer …` against
+ *                       the admin client, optionally check that the
+ *                       caller has access to the property in the body.
+ */
+
+import type { NextRequest } from 'next/server';
+import { NextResponse } from 'next/server';
+import { supabaseAdmin } from '@/lib/supabase-admin';
+
+/**
+ * Returns null on success, or a NextResponse the caller should return
+ * to short-circuit with 401. If CRON_SECRET is unset (dev), allows
+ * everything through.
+ */
+export function requireCronSecret(req: NextRequest): NextResponse | null {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) return null;  // dev mode — no secret configured
+  const auth = req.headers.get('authorization') ?? '';
+  if (auth === `Bearer ${secret}`) return null;
+  return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+}
+
+/**
+ * Verify a Supabase user session from the Authorization header.
+ * Returns the user info on success, or a NextResponse the caller
+ * should return to short-circuit with 401.
+ *
+ * The UI must send the access token like:
+ *   const { data: { session } } = await supabase.auth.getSession();
+ *   fetch('/api/...', {
+ *     headers: { Authorization: `Bearer ${session.access_token}` },
+ *     ...
+ *   });
+ */
+export async function requireSession(req: NextRequest): Promise<
+  | { ok: true; userId: string; email: string | null }
+  | { ok: false; response: NextResponse }
+> {
+  const auth = req.headers.get('authorization') ?? '';
+  const m = /^Bearer\s+(.+)$/i.exec(auth.trim());
+  if (!m) {
+    return {
+      ok: false,
+      response: NextResponse.json({ error: 'missing bearer token' }, { status: 401 }),
+    };
+  }
+  const token = m[1];
+  try {
+    const { data, error } = await supabaseAdmin.auth.getUser(token);
+    if (error || !data.user) {
+      return {
+        ok: false,
+        response: NextResponse.json({ error: 'invalid session token' }, { status: 401 }),
+      };
+    }
+    return { ok: true, userId: data.user.id, email: data.user.email ?? null };
+  } catch {
+    return {
+      ok: false,
+      response: NextResponse.json({ error: 'auth verification failed' }, { status: 500 }),
+    };
+  }
+}
+
+/**
+ * Verify the caller has access to a specific property. Used after
+ * requireSession() succeeds — confirms the userId is associated with
+ * the pid via the `accounts` table.
+ *
+ * Returns true if the caller has access, false otherwise. The caller
+ * decides whether to 403 or silently no-op.
+ */
+export async function userHasPropertyAccess(userId: string, pid: string): Promise<boolean> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('accounts')
+      .select('role, property_access')
+      .eq('data_user_id', userId)
+      .maybeSingle();
+    if (error || !data) return false;
+    if (data.role === 'admin') return true;  // admins access every property
+    const access = (data.property_access ?? []) as string[];
+    return access.includes(pid) || access.includes('*');
+  } catch {
+    return false;
+  }
+}

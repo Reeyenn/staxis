@@ -11,8 +11,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
+import { requireCronSecret } from '@/lib/api-auth';
 
 export async function GET(req: NextRequest) {
+  // Lock this endpoint behind CRON_SECRET. It returns recent inbound SMS,
+  // staff phone numbers, shift_confirmations, and Twilio operational
+  // metadata — all PII / sensitive ops data. Open to the internet was
+  // a real leak.
+  const unauthorized = requireCronSecret(req);
+  if (unauthorized) return unauthorized;
   try {
     const url = new URL(req.url);
     const pid = url.searchParams.get('pid');

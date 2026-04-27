@@ -9,6 +9,7 @@ import { t } from '@/lib/translations';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { Modal } from '@/components/ui/Modal';
 import { useSyncContext } from '@/contexts/SyncContext';
+import { fetchWithAuth } from '@/lib/api-fetch';
 import {
   subscribeToRooms, subscribeToAllRooms, updateRoom, addRoom,
   addStaffMember, updateStaffMember, deleteStaffMember,
@@ -833,7 +834,7 @@ function ScheduleSection() {
           .filter(r => assignments[r.id] === s.id)
           .map(r => r.number),
       }));
-      fetch('/api/sync-room-assignments', {
+      fetchWithAuth('/api/sync-room-assignments', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ uid, pid, shiftDate, staff: staffPayload }),
@@ -1439,7 +1440,7 @@ function ScheduleSection() {
           assignedAreas: [] as string[],
         };
       });
-      const res = await fetch('/api/send-shift-confirmations', {
+      const res = await fetchWithAuth('/api/send-shift-confirmations', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ uid, pid, shiftDate, baseUrl, staff: staffPayload }),
       });
@@ -3175,7 +3176,7 @@ function RoomsSection() {
     if (!user || !activePropertyId || populating) return;
     setPopulating(true);
     try {
-      const res = await fetch('/api/populate-rooms-from-plan', {
+      const res = await fetchWithAuth('/api/populate-rooms-from-plan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3310,7 +3311,7 @@ function RoomsSection() {
     // scheduling manager, not a broadcast. Uses /api/notify-backup which is
     // the only path that texts a specific staff member by id.
     try {
-      await fetch('/api/notify-backup', {
+      await fetchWithAuth('/api/notify-backup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

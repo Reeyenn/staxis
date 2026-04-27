@@ -34,6 +34,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { isValidDateStr, errToString } from '@/lib/utils';
+import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 
 interface StaffEntry {
   staffId: string;
@@ -95,6 +96,13 @@ function buildToken(shiftDate: string, staffId: string): string {
 }
 
 export async function POST(req: NextRequest) {
+  // Auth: this route fires bulk SMS to every housekeeper on the crew
+  // and is the highest-Twilio-cost endpoint we have. Without auth, the
+  // POST URL is a denial-of-Twilio-balance attack vector. Require an
+  // authenticated Supabase session and verify the caller has access to
+  // the property they're sending for.
+  const session = await requireSession(req);
+  if (!session.ok) return session.response;
   try {
     const body: RequestBody = await req.json();
     const { pid, shiftDate, baseUrl, staff } = body;
@@ -104,6 +112,9 @@ export async function POST(req: NextRequest) {
     }
     if (!isValidDateStr(shiftDate)) {
       return NextResponse.json({ error: 'Invalid shiftDate (expected YYYY-MM-DD)' }, { status: 400 });
+    }
+    if (!(await userHasPropertyAccess(session.userId, pid))) {
+      return NextResponse.json({ error: 'forbidden' }, { status: 403 });
     }
 
     // ── Failsafe: refuse to Send with zero real assignments across the crew.

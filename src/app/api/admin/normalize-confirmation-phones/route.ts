@@ -12,9 +12,10 @@
  *
  * Safe to call repeatedly. Returns counts so you can see what it did.
  */
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
+import { requireCronSecret } from '@/lib/api-auth';
 
 function toE164(raw: string): string | null {
   if (!raw) return null;
@@ -25,7 +26,10 @@ function toE164(raw: string): string | null {
   return null;
 }
 
-export async function POST() {
+export async function POST(req: NextRequest) {
+  // Mutates shift_confirmations + staff phone columns. CRON_SECRET-only.
+  const unauthorized = requireCronSecret(req);
+  if (unauthorized) return unauthorized;
   try {
     const { data: confs, error } = await supabaseAdmin
       .from('shift_confirmations')
@@ -73,7 +77,7 @@ export async function POST() {
   }
 }
 
-export async function GET() {
-  // Easier to trigger from a browser — same behaviour as POST.
-  return POST();
+export async function GET(req: NextRequest) {
+  // Easier to trigger from a browser — same behaviour and same auth as POST.
+  return POST(req);
 }

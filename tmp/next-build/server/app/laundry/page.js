@@ -1,0 +1,13 @@
+var R=require("../../chunks/ssr/[turbopack]_runtime.js")("server/app/laundry/page.js")
+R.c("server/chunks/ssr/[root-of-the-server]__0zd~fha._.js")
+R.c("server/chunks/ssr/node_modules_next_dist_esm_build_templates_app-page_13xwhpl.js")
+R.c("server/chunks/ssr/[root-of-the-server]__02fw6x1._.js")
+R.c("server/chunks/ssr/[root-of-the-server]__0p6raf8._.js")
+R.c("server/chunks/ssr/src_0lt2-xc._.js")
+R.c("server/chunks/ssr/node_modules_next_dist_client_components_0inhx6q._.js")
+R.c("server/chunks/ssr/node_modules_next_dist_client_components_builtin_forbidden_0ghu-f7.js")
+R.c("server/chunks/ssr/node_modules_next_dist_client_components_builtin_unauthorized_0cjv-23.js")
+R.c("server/chunks/ssr/node_modules_next_dist_client_components_builtin_global-error_0lgvd_..js")
+R.c("server/chunks/ssr/_next-internal_server_app_laundry_page_actions_0.kvhgk.js")
+R.m(56491)
+module.exports=R.m(56491).exports

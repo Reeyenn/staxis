@@ -13,6 +13,7 @@ import {
   subscribeToPlanSnapshot,
 } from '@/lib/db';
 import type { PlanSnapshot } from '@/lib/db';
+import { fetchWithAuth } from '@/lib/api-fetch';
 import type { StaffMember, StaffDepartment, ShiftConfirmation, ManagerNotification, ConfirmationStatus } from '@/types';
 import {
   Users, Plus, Pencil, Trash2, Star, Clock,
@@ -527,7 +528,7 @@ export default function StaffPage() {
       const staffPayload = selected.filter(s => s.phone).map(s => ({
         staffId: s.id, name: s.name, phone: s.phone!, language: s.language,
       }));
-      await fetch('/api/send-shift-confirmations', {
+      await fetchWithAuth('/api/send-shift-confirmations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ uid, pid, shiftDate, baseUrl, staff: staffPayload }),

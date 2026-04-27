@@ -28,13 +28,36 @@ function toE164(raw: string): string | null {
   return null;
 }
 
+// Helper: lazy-import to avoid top-level coupling for routes that don't need it.
+async function gateCronSecret(req: NextRequest) {
+  const { requireCronSecret } = await import('@/lib/api-auth');
+  return requireCronSecret(req);
+}
+
 export async function POST(req: NextRequest) {
+  // Sends real SMS via Twilio + writes a test shift_confirmation row.
+  // Was deliberately ungated for "easy testing" but that means anyone on
+  // the internet can run our Twilio meter to zero. Lock behind CRON_SECRET
+  // — testing is now a `curl -H "Authorization: Bearer $CRON_SECRET"` away.
+  const unauthorized = await gateCronSecret(req);
+  if (unauthorized) return unauthorized;
   try {
-    const body = await req.json().catch(() => ({})) as {
+    // We previously did `req.json().catch(() => ({}))` here which silently
+    // turned malformed JSON into an empty object — admins debugging a
+    // bad payload would see "missing field" errors instead of "your JSON
+    // is invalid". Surface the parse error explicitly.
+    let body: {
       pid?: string; staffId?: string; phone?: string;
-      language?: 'en' | 'es'; name?: string;
-      uid?: string;
+      language?: 'en' | 'es'; name?: string; uid?: string;
     };
+    try {
+      body = await req.json();
+    } catch (parseErr) {
+      return NextResponse.json(
+        { error: `Invalid JSON body: ${parseErr instanceof Error ? parseErr.message : 'parse failed'}` },
+        { status: 400 },
+      );
+    }
     const { pid, staffId, phone } = body;
     const language = body.language ?? 'en';
     const name = body.name ?? 'Test';
@@ -123,6 +146,9 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   // ?check=<token> → return the current state of that confirmation row.
+  // Same auth gate as POST — leaks staff_phone if open.
+  const unauthorized = await gateCronSecret(req);
+  if (unauthorized) return unauthorized;
   const url = new URL(req.url);
   const check = url.searchParams.get('check');
   if (!check) {

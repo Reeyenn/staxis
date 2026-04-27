@@ -1,0 +1,3 @@
+{
+  "/api/populate-rooms-from-plan/route": "app/api/populate-rooms-from-plan/route.js"
+}

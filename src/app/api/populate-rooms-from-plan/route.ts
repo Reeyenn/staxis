@@ -20,6 +20,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { isValidDateStr, errToString } from '@/lib/utils';
+import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 
 interface RequestBody {
   pid: string;
@@ -62,6 +63,10 @@ type PlanRoom = {
 };
 
 export async function POST(req: NextRequest) {
+  // Auth: writes/upserts every room row for the date. Without auth, any
+  // caller could rewrite our rooms table.
+  const session = await requireSession(req);
+  if (!session.ok) return session.response;
   try {
     const body: RequestBody = await req.json();
     const { pid, date } = body;
@@ -71,6 +76,9 @@ export async function POST(req: NextRequest) {
     }
     if (!isValidDateStr(date)) {
       return NextResponse.json({ error: 'Invalid date (expected YYYY-MM-DD)' }, { status: 400 });
+    }
+    if (!(await userHasPropertyAccess(session.userId, pid))) {
+      return NextResponse.json({ error: 'forbidden' }, { status: 403 });
     }
 
     // Pull the plan snapshot for this date — that's the last CSV pull.

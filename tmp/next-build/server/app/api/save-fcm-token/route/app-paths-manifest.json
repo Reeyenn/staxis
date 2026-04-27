@@ -1,0 +1,3 @@
+{
+  "/api/save-fcm-token/route": "app/api/save-fcm-token/route.js"
+}
