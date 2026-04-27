@@ -289,6 +289,10 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
     await mergeStatus('alertState', {
       resolvedAt: new Date().toISOString(),
       lastCheckAt: new Date().toISOString(),
+      // Recovery clears any pending "tried but couldn't deliver" markers.
+      alertSuppressedReason: null,
+      alertSuppressedAt: null,
+      lastSmsError: null,
     });
     return { alerted: true, condition: 'ok', detail: 'recovered from ' + prevCondition };
   }
@@ -341,15 +345,20 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
   const alertPhone = process.env.MANAGER_PHONE || process.env.OPS_ALERT_PHONE;
 
   let smsSent = false;
+  let suppressedReason: string | null = null;
+  let smsError: string | null = null;
   if (alertPhone) {
     try {
       await sendSms(alertPhone, message);
       smsSent = true;
     } catch (err) {
-      console.error('[scraper-health] SMS send failed', errToString(err));
+      smsError = errToString(err);
+      console.error('[scraper-health] SMS send failed', smsError);
+      suppressedReason = 'sms_send_failed';
     }
   } else {
     console.warn('[scraper-health] MANAGER_PHONE env var not set — alert would fire:', message);
+    suppressedReason = 'no_alert_phone_on_vercel';
   }
 
   await mergeStatus('alertState', {
@@ -357,6 +366,15 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
     lastAlertedAt: new Date().toISOString(),
     lastAlertedMessage: message,
     lastAlertedSmsSent: smsSent,
+    // Record why an alert didn't deliver, so /api/admin/doctor's
+    // `watchdog_alert_path` check can see "we tried, we couldn't" and
+    // surface it as a hard failure. Without this, the 2026-04-27 silent
+    // outage repeats: every condition = alert path went to a console.warn
+    // that nobody read. Cleared on the next successful send (smsSent=true
+    // → suppressedReason=null in the patch).
+    alertSuppressedReason: suppressedReason,
+    alertSuppressedAt: suppressedReason ? new Date().toISOString() : null,
+    lastSmsError: smsError,
     lastCheckAt: new Date().toISOString(),
     resolvedAt: null,  // clear so the NEXT recovery triggers a recovery text
     pendingCondition: null,

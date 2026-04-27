@@ -114,6 +114,7 @@ const checks: Array<[string, CheckFn]> = [
   ['twilio_credentials',             checkTwilioCredentials],
   ['alert_phone_shape',              checkAlertPhoneShape],
   ['cron_secret_shape',              checkCronSecretShape],
+  ['watchdog_alert_path',            checkWatchdogAlertPath],
 ];
 
 // ─── Individual checks ───────────────────────────────────────────────────
@@ -846,6 +847,114 @@ async function checkScraperCsvPull(): Promise<Omit<Check, 'name' | 'durationMs'>
     return {
       status: 'warn',
       detail: `csv pull check raised: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
+/**
+ * Read scraper_status['vercel_watchdog'] and verify Railway can actually
+ * deliver SMS alerts. The 2026-04-27 outage was silent for 2.5 hours because
+ * MANAGER_PHONE wasn't set on Railway — Vercel had it, the doctor was green
+ * here, but the watchdog process on Railway logged "ALERT would have fired"
+ * and went to bed. Doctor (running on Vercel) can't read Railway's process.env,
+ * but it CAN read the shared Postgres state — so when the watchdog detects
+ * the no-phone case it stamps `alertSuppressedReason` on its row and we read
+ * that here. This makes "the alerter can't alert" itself an alertable
+ * condition.
+ *
+ * Fails on:
+ *  - alertSuppressedReason set → Railway is currently unable to send SMS
+ *  - lastCheckAt > 15 minutes old → watchdog process is dead on Railway
+ *
+ * Skips when the watchdog row hasn't been written yet (clean install).
+ */
+async function checkWatchdogAlertPath(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    // Read both alert paths in parallel:
+    //   • vercel_watchdog → Railway-side process pinging Vercel
+    //   • alertState     → Vercel-side cron pinging Supabase
+    // Either path being "tried but couldn't deliver SMS" is a hard fail.
+    const [{ data: watchdogRow, error: wErr }, { data: alertRow, error: aErr }] = await Promise.all([
+      supabaseAdmin.from('scraper_status').select('data, updated_at').eq('key', 'vercel_watchdog').maybeSingle(),
+      supabaseAdmin.from('scraper_status').select('data, updated_at').eq('key', 'alertState').maybeSingle(),
+    ]);
+    if (wErr) return { status: 'warn', detail: `vercel_watchdog read failed: ${errToString(wErr)}` };
+    if (aErr) return { status: 'warn', detail: `alertState read failed: ${errToString(aErr)}` };
+
+    const watchdog = (watchdogRow?.data ?? {}) as {
+      lastCheckAt?: string;
+      alertSuppressedReason?: string | null;
+      alertSuppressedAt?: string | null;
+    };
+    const alertState = (alertRow?.data ?? {}) as {
+      alertSuppressedReason?: string | null;
+      alertSuppressedAt?: string | null;
+      lastSmsError?: string | null;
+      lastAlertedCode?: string | null;
+      lastAlertedAt?: string | null;
+    };
+
+    // Vercel cron path: did it try to alert and fail?
+    if (alertState.alertSuppressedReason === 'no_alert_phone_on_vercel') {
+      return {
+        status: 'fail',
+        detail: `Vercel cron tried to alert but MANAGER_PHONE is unset on Vercel. Suppressed at ${alertState.alertSuppressedAt}.`,
+        fix: 'Vercel → Project Settings → Environment Variables → set MANAGER_PHONE=+1XXXXXXXXXX (E.164) → redeploy.',
+      };
+    }
+    if (alertState.alertSuppressedReason === 'sms_send_failed') {
+      return {
+        status: 'fail',
+        detail: `Vercel cron's last alert attempt failed at the Twilio step: ${alertState.lastSmsError ?? 'unknown error'}`,
+        fix: 'Check TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM_NUMBER on Vercel. Also verify the recipient number is valid and not on Twilio\'s suppression list.',
+      };
+    }
+    if (alertState.alertSuppressedReason) {
+      return {
+        status: 'fail',
+        detail: `Vercel cron suppressed an alert for: ${alertState.alertSuppressedReason}`,
+        fix: 'Inspect scraper_status[alertState] in Supabase and the Vercel function logs.',
+      };
+    }
+
+    // Railway watchdog path: alive + alert-capable?
+    if (!watchdog.lastCheckAt) {
+      return {
+        status: 'skipped',
+        detail: 'vercel_watchdog has not run yet — Railway scraper just deployed?',
+      };
+    }
+    const ageMin = Math.floor((Date.now() - new Date(watchdog.lastCheckAt).getTime()) / 60_000);
+    if (ageMin > 15) {
+      return {
+        status: 'fail',
+        detail: `Railway watchdog is dead — last tick ${ageMin}m ago (expected every 5m).`,
+        fix: 'Railway → hotelops-scraper → Deployments. Look for crash loops or missing CRON_SECRET. Without the watchdog, Vercel outages go undetected from Railway side.',
+      };
+    }
+    if (watchdog.alertSuppressedReason === 'no_alert_phone_on_railway') {
+      return {
+        status: 'fail',
+        detail: `Railway watchdog tried to alert but MANAGER_PHONE/OPS_ALERT_PHONE is unset on Railway. Suppressed at ${watchdog.alertSuppressedAt}.`,
+        fix: 'Railway → hotelops-scraper → Variables → add MANAGER_PHONE=+1XXXXXXXXXX (E.164). Same value as on Vercel. Without this, every Vercel outage detected by Railway is silent.',
+      };
+    }
+    if (watchdog.alertSuppressedReason) {
+      return {
+        status: 'fail',
+        detail: `Railway watchdog suppressed an alert for unexpected reason: ${watchdog.alertSuppressedReason}`,
+        fix: 'Inspect scraper_status[vercel_watchdog] in Supabase and the Railway logs.',
+      };
+    }
+
+    return {
+      status: 'ok',
+      detail: `Both alert paths clear (Vercel cron + Railway watchdog ${ageMin}m ago).`,
+    };
+  } catch (err) {
+    return {
+      status: 'warn',
+      detail: `watchdog alert-path check raised: ${errToString(err)}`,
     };
   }
 }

@@ -252,6 +252,10 @@ async function runVercelWatchdog({ supabase, timezone }) {
       lastDetail: null,
       consecutiveFailures: 0,
       alertActive: false,
+      // Also clear the suppressed-alert markers — recovery means whatever
+      // alert we couldn't send is now moot.
+      alertSuppressedReason: null,
+      alertSuppressedAt: null,
     };
 
     // Send recovery SMS only once — transitioning from alerted to ok.
@@ -330,8 +334,16 @@ async function runVercelWatchdog({ supabase, timezone }) {
 
   // Send alert.
   if (!alertPhone) {
+    // CRITICAL: alert phone missing on Railway means every "alert" is silent.
+    // This is exactly the failure mode the alerting system exists to catch.
+    // Write a typed marker so /api/admin/doctor can see this from Vercel
+    // (Vercel can't read Railway's process.env, but it CAN read shared
+    // Postgres) and surface it as a hard failure on the dashboard.
+    // See doctor's `watchdog_alert_path` check.
     log(`ALERT would have fired but MANAGER_PHONE/OPS_ALERT_PHONE is not set: ${result.detail}`);
     patch.alertActive = true;
+    patch.alertSuppressedReason = 'no_alert_phone_on_railway';
+    patch.alertSuppressedAt = nowIso;
     try { await mergeStatus(supabase, 'vercel_watchdog', patch); }
     catch (err) { log(`state write (no-phone) failed: ${err.message}`); }
     return;
@@ -356,6 +368,10 @@ async function runVercelWatchdog({ supabase, timezone }) {
   // (every 5 min) until it lands.
   if (smsRes.ok) {
     patch.lastAlertedAt = nowIso;
+    // Clear the no-phone marker if it was set on a previous tick — the
+    // operator just fixed the env var.
+    patch.alertSuppressedReason = null;
+    patch.alertSuppressedAt = null;
     log(`ALERT sent: ${body}`);
   } else {
     log(`ALERT SMS FAILED: ${smsRes.detail}. Will retry on next tick. Body: ${body}`);
