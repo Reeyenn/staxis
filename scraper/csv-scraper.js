@@ -341,43 +341,93 @@ async function downloadCSVFromCA(page, log) {
 
   // CSV export checkbox.
   //
-  // History: Choice Advantage rebrands their report form periodically and
-  // the checkbox `id` has bitten us before. On 2026-04-27 the morning pull
-  // started timing out at `locator.check: Timeout 30000ms exceeded` waiting
-  // for `#CSVcheckbox` because the id had changed.
+  // History — two distinct breakages from the same root cause:
+  //   1) Some time before 2026-04-27, CA renamed/removed `#CSVcheckbox` and
+  //      the original `csvBox.check()` started timing out at 30s.
+  //   2) After we added a fallback selector list, CA STILL has an element
+  //      with id="CSVcheckbox" sitting in the DOM, but it's hidden or
+  //      disabled — `count() > 0` returns true (selector "matches") but
+  //      `.check()` times out waiting for the element to become actionable.
+  //      My old loop stopped at the first matching count and never tried
+  //      the other selectors, so the fall-through never engaged.
   //
-  // Fix: try a list of selectors in order. The first one to resolve wins.
-  // If ALL of them fail, dump page HTML + a screenshot so we can update the
-  // list quickly instead of guessing blind.
+  // New strategy: try each selector AND attempt to check the box.
+  // Only on full success do we move on. On failure (selector misses,
+  // element not actionable, click blocked, etc.) try the next selector.
+  // If every selector fails, escalate through force-click and finally a
+  // JS-direct `el.checked = true` + dispatch change, then dump the page
+  // HTML for diagnosis.
   const CSV_SELECTORS = [
-    '#CSVcheckbox',                                  // legacy id (may still exist)
-    'input[type="checkbox"][id*="CSV" i]',           // any checkbox with CSV in the id
-    'input[type="checkbox"][name*="csv" i]',         // by name
-    'input[type="checkbox"][value*="csv" i]',        // by value
-    'label:has-text("CSV") >> input[type="checkbox"]', // checkbox INSIDE a CSV label
+    '#CSVcheckbox:visible',                            // legacy id, only if visible
+    '#CSVcheckbox',                                    // legacy id, any
+    'input[type="checkbox"][id*="CSV" i]:visible',
+    'input[type="checkbox"][name*="csv" i]:visible',
+    'input[type="checkbox"][value*="csv" i]:visible',
+    'label:has-text("CSV") >> input[type="checkbox"]',
     'label:has-text("Export") >> input[type="checkbox"]',
+    // Last-resort: any visible checkbox whose nearby text mentions CSV.
+    'input[type="checkbox"]:visible',
   ];
-  let csvBox = null;
-  let csvSelectorUsed = null;
-  for (const sel of CSV_SELECTORS) {
-    const candidate = page.locator(sel).first();
-    try {
-      if (await candidate.count() > 0) {
-        csvBox = candidate;
-        csvSelectorUsed = sel;
-        break;
-      }
-    } catch {
-      // selector syntax not supported by this Playwright version — skip
-    }
-  }
 
-  // Screenshot the form NOW (before we click anything) — useful for both
-  // success and failure paths to diagnose layout changes.
+  // Snapshot the form NOW so we have a screenshot regardless of how this
+  // resolves below.
   await page.screenshot({ path: path.join(__dirname, 'csv-report-form.png') });
 
-  if (!csvBox) {
-    // Dump the page HTML so we can scan it offline to find the new selector.
+  // Try every selector. For each, attempt:
+  //   1) standard .check()
+  //   2) .check({ force: true })  (bypasses actionability checks)
+  //   3) JS-direct checkbox.checked = true + change event
+  // Whichever succeeds wins.
+  async function tryCheck(locator) {
+    try {
+      if (await locator.isChecked()) return true;
+    } catch { /* not a checkbox or detached — fall through */ }
+    try {
+      await locator.check({ timeout: 5000 });
+      return true;
+    } catch { /* try harder */ }
+    try {
+      await locator.check({ timeout: 3000, force: true });
+      return true;
+    } catch { /* try hardest */ }
+    try {
+      await locator.evaluate((el) => {
+        if (el && 'checked' in el) {
+          el.checked = true;
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      });
+      // Verify it actually became checked
+      const ok = await locator.evaluate((el) => !!(el && el.checked));
+      if (ok) return true;
+    } catch { /* nothing left to try */ }
+    return false;
+  }
+
+  let csvSelectorUsed = null;
+  for (const sel of CSV_SELECTORS) {
+    let candidate;
+    try {
+      candidate = page.locator(sel).first();
+    } catch {
+      continue;  // malformed selector — skip
+    }
+    let count = 0;
+    try { count = await candidate.count(); } catch { continue; }
+    if (count === 0) continue;
+
+    if (await tryCheck(candidate)) {
+      csvSelectorUsed = sel;
+      log(`[CSV] Checked CSV export box (selector: ${sel})`);
+      break;
+    }
+    log(`[CSV] selector matched but couldn't be checked: ${sel} (trying next)`);
+  }
+
+  if (!csvSelectorUsed) {
+    // All approaches failed. Dump the page HTML and a screenshot so we can
+    // figure out the new layout offline.
     try {
       const html = await page.content();
       fs.writeFileSync(path.join(__dirname, 'csv-form-dump.html'), html);
@@ -385,17 +435,26 @@ async function downloadCSVFromCA(page, log) {
     } catch (e) {
       log(`[CSV] could not dump form HTML: ${e.message}`);
     }
+    // Also pull a list of every checkbox on the page (id, name, visible)
+    // and include in the error message so the upstream alert is useful.
+    let inventory = [];
+    try {
+      inventory = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('input[type="checkbox"]')).map((el) => ({
+          id: el.id || null,
+          name: el.name || null,
+          value: el.value || null,
+          visible: !!(el.offsetWidth || el.offsetHeight),
+          disabled: !!el.disabled,
+        })).slice(0, 20)
+      );
+    } catch { /* ignore */ }
     throw new Error(
-      `CSV export checkbox not found on the report form. ` +
-      `Tried selectors: ${CSV_SELECTORS.join(' | ')}. ` +
-      `Choice Advantage page layout likely changed — see csv-form-dump.html.`
+      `CSV export checkbox not actionable. Tried selectors: ${CSV_SELECTORS.join(' | ')}. ` +
+      `Checkboxes on page: ${JSON.stringify(inventory)}. ` +
+      `See csv-form-dump.html for full HTML.`
     );
   }
-
-  if (!(await csvBox.isChecked())) {
-    await csvBox.check({ timeout: 10000 });
-  }
-  log(`[CSV] Checked CSV export box (selector: ${csvSelectorUsed})`);
 
   // Set up download interception BEFORE clicking Submit
   // CA opens the CSV in a new tab/window or triggers a download
