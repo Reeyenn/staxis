@@ -76,6 +76,46 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   const [savingHelp, setSavingHelp] = useState<string | null>(null);
   const [resettingRoomId, setResettingRoomId] = useState<string | null>(null);
 
+  // ── Online/offline indicator ────────────────────────────────────────────
+  // Hotels have notoriously patchy wifi — basement laundry rooms, dead
+  // spots between floors, the back stairwell where the AP doesn't reach.
+  // navigator.onLine isn't perfect (it only flips for hard NIC-level
+  // disconnects, not captive portals) but it catches the common case
+  // where wifi just dropped. The banner is persistent, not a toast,
+  // because the HK needs to see "you're offline" the entire time it's
+  // true, not for 4 seconds.
+  const [isOnline, setIsOnline] = useState<boolean>(
+    typeof navigator !== 'undefined' ? navigator.onLine : true,
+  );
+  useEffect(() => {
+    const onOnline = () => setIsOnline(true);
+    const onOffline = () => setIsOnline(false);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, []);
+
+  // ── Action-failed toast ─────────────────────────────────────────────────
+  // Mutations like Start/Stop/Finish/DND/Submit Issue used to silently
+  // log to console and leave the user in the dark. On the back-office
+  // wifi a "Finish Room" tap could fail with no feedback at all — the HK
+  // would assume it saved, walk to the next room, and the manager
+  // dashboard would still show the previous room as dirty. The toast
+  // below surfaces these failures so the HK knows to retry.
+  const [actionError, setActionError] = useState<string | null>(null);
+  const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showActionError = useCallback((msg: string) => {
+    if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+    setActionError(msg);
+    errorTimerRef.current = setTimeout(() => setActionError(null), 4500);
+  }, []);
+  useEffect(() => () => {
+    if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+  }, []);
+
   // Seed the page language from the staff row on mount.
   // The staff table has a `language` column that Maria sets via the Staff
   // modal (and that this page writes back to when the HK hits the lang
@@ -175,6 +215,9 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
         });
       } catch (err) {
         console.error('[housekeeper] start room error:', err);
+        showActionError(lang === 'es'
+          ? 'No se pudo iniciar. Verifica tu conexión.'
+          : 'Couldn\u2019t start room. Check your connection.');
       } finally {
         setSavingRoomId(null);
       }
@@ -193,6 +236,9 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
         });
       } catch (err) {
         console.error('[housekeeper] stop room error:', err);
+        showActionError(lang === 'es'
+          ? 'No se pudo detener. Verifica tu conexión.'
+          : 'Couldn\u2019t stop room. Check your connection.');
       } finally {
         setSavingRoomId(null);
       }
@@ -214,6 +260,9 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
         await updateRoom(uid, pid, room.id, updates);
       } catch (err) {
         console.error('[housekeeper] finish room error:', err);
+        showActionError(lang === 'es'
+          ? 'No se pudo guardar como Limpia. Verifica tu conexi\u00f3n e intenta de nuevo.'
+          : 'Couldn\u2019t mark Clean. Check your connection and try again.');
       } finally {
         setSavingRoomId(null);
       }
@@ -235,6 +284,9 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
         });
       } catch (err) {
         console.error('[housekeeper] toggle DND error:', err);
+        showActionError(lang === 'es'
+          ? 'No se pudo cambiar No Molestar.'
+          : 'Couldn\u2019t toggle Do Not Disturb.');
       } finally {
         setSavingDnd(null);
       }
@@ -330,6 +382,9 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       setIssueNote('');
     } catch (err) {
       console.error('[housekeeper] submit issue error:', err);
+      showActionError(lang === 'es'
+        ? 'No se pudo guardar el problema. T\u00f3calo otra vez.'
+        : 'Couldn\u2019t save the issue. Try again.');
     } finally {
       setSavingIssue(false);
     }
@@ -347,6 +402,9 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       });
     } catch (err) {
       console.error('[housekeeper] reset room error:', err);
+      showActionError(lang === 'es'
+        ? 'No se pudo reiniciar la habitaci\u00f3n.'
+        : 'Couldn\u2019t reset the room.');
     } finally {
       setResettingRoomId(null);
     }
@@ -413,6 +471,66 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       minHeight: '100dvh', background: 'var(--green-bg, #F0FDF4)',
       fontFamily: 'var(--font-sans, system-ui, -apple-system, BlinkMacSystemFont, sans-serif)',
     }}>
+    {/* ── Persistent offline banner ── */}
+    {!isOnline && (
+      <div
+        role="status"
+        aria-live="polite"
+        style={{
+          position: 'fixed',
+          top: 'env(safe-area-inset-top, 0px)',
+          left: 0,
+          right: 0,
+          zIndex: 999,
+          background: '#1F2937',
+          color: '#FBBF24',
+          padding: '8px 16px',
+          fontSize: '13px',
+          fontWeight: 600,
+          textAlign: 'center',
+          letterSpacing: '0.01em',
+        }}
+      >
+        {lang === 'es'
+          ? 'Sin conexi\u00f3n. Tus cambios no se guardar\u00e1n hasta volver a estar en l\u00ednea.'
+          : 'You\u2019re offline. Changes won\u2019t save until you\u2019re back online.'}
+      </div>
+    )}
+
+    {/* ── Action-failed toast ── */}
+    {/* Sits at the top of the viewport; auto-dismisses after 4.5s. We use
+        position:fixed so it doesn't shift the layout, and a large red
+        background so a HK in a dim room can still tell something went
+        wrong. role=alert announces it to screen readers. */}
+    {actionError && (
+      <div
+        role="alert"
+        aria-live="assertive"
+        style={{
+          position: 'fixed',
+          top: 'env(safe-area-inset-top, 12px)',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          zIndex: 1000,
+          maxWidth: 'calc(100vw - 24px)',
+          width: '440px',
+          background: '#DC2626',
+          color: 'white',
+          padding: '12px 16px',
+          borderRadius: '12px',
+          boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
+          fontSize: '14px',
+          fontWeight: 600,
+          lineHeight: 1.35,
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: '10px',
+        }}
+      >
+        <AlertTriangle size={18} style={{ flexShrink: 0, marginTop: '1px' }} />
+        <span style={{ flex: 1 }}>{actionError}</span>
+      </div>
+    )}
     <div style={{
       maxWidth: '768px',
       margin: '0 auto',
