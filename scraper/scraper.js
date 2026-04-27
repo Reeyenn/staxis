@@ -336,6 +336,48 @@ async function login(page) {
     await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
     log(`After settle — now at: ${page.url()}`);
 
+    // ── CA migration consent screen (added 2026-04-27) ────────────────────
+    // CA started gating post-login navigation behind a SkyTouch / Salesforce
+    // migration notice. The post-login page lands on /Login.do with three
+    // visible links: Logout, "training bulletin" (skytouch.salesforce.com),
+    // and a "Continue" button (id=migrationSubmit). Without clicking
+    // Continue, every downstream View*.init / ReportViewStart.init bounces
+    // back to /Login.do as session_expired. Detect via the presence of
+    // #migrationSubmit and click it. Do NOT throw if it's missing — pre-
+    // migration users won't see this screen and we still want login() to
+    // succeed for them.
+    try {
+      const migrationBtn = page.locator('#migrationSubmit').first();
+      const hasMigration = await migrationBtn.count();
+      if (hasMigration > 0) {
+        log('CA migration consent screen detected — clicking #migrationSubmit (Continue)');
+        let clicked = false;
+        try { await migrationBtn.click({ timeout: 5000 }); clicked = true; } catch {}
+        if (!clicked) {
+          try { await migrationBtn.click({ timeout: 3000, force: true }); clicked = true; } catch {}
+        }
+        if (!clicked) {
+          // JS-direct click as last resort. Same pattern as the login button
+          // fallback — works when overlays are intercepting pointer events.
+          try {
+            await migrationBtn.evaluate((el) => { if (el && typeof el.click === 'function') el.click(); });
+            clicked = true;
+          } catch {}
+        }
+        if (clicked) {
+          // Migration dismiss triggers a navigation back to the actual
+          // dashboard. Wait for it to settle.
+          await page.waitForLoadState('load', { timeout: 15000 }).catch(() => {});
+          await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
+          log(`After migration dismiss — now at: ${page.url()}`);
+        } else {
+          log('Failed to click #migrationSubmit after multiple attempts — downstream pulls will likely fail until CA migration UX changes');
+        }
+      }
+    } catch (err) {
+      log(`Migration consent check non-fatal error: ${err.message}`);
+    }
+
     // VERIFY login actually worked. If the login form is still present on the
     // page after a submit, CA rejected our credentials — password was changed
     // or the account was locked. This used to be a silent failure: the scraper
