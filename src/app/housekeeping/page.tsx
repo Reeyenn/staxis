@@ -587,7 +587,12 @@ function ScheduleSection() {
     };
     getPublicAreas(uid, pid).then(async (fetched) => {
       if (fetched.length === 0) setPublicAreas(await seedDefaults());
-      else if (needsReseed(fetched)) { for (const a of fetched) await deletePublicArea(uid, pid, a.id); setPublicAreas(await seedDefaults()); }
+      else if (needsReseed(fetched)) {
+        // Parallel deletes — was sequential which made first-login on a
+        // property with 20+ public areas drag for several seconds.
+        await Promise.all(fetched.map(a => deletePublicArea(uid, pid, a.id)));
+        setPublicAreas(await seedDefaults());
+      }
       else setPublicAreas(fetched);
     }).catch(err => {
       console.error('Error fetching public areas:', err);
@@ -4132,7 +4137,8 @@ function PublicAreasModal({ show, onClose }: { show: boolean; onClose: () => voi
       if (fetched.length === 0) {
         setAreas(await seedDefaults());
       } else if (needsReseed(fetched)) {
-        for (const a of fetched) await deletePublicArea(uid, pid, a.id);
+        // Parallel — see /housekeeping page header for the same pattern.
+        await Promise.all(fetched.map(a => deletePublicArea(uid, pid, a.id)));
         setAreas(await seedDefaults());
       } else {
         setAreas(fetched);

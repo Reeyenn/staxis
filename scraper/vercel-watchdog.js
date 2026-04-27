@@ -349,6 +349,27 @@ async function runVercelWatchdog({ supabase, timezone }) {
     return;
   }
 
+  // Twilio retry backoff: when Twilio itself is down, naive every-5-min
+  // retries during a 30-min outage produce 6 wasted API calls and (worse)
+  // every retry counts against our delivery quota. Skip the send if we
+  // failed recently, with exponential spacing: 5m → 10m → 20m → 40m → cap.
+  // State held in vercel_watchdog row so it survives redeploys.
+  const lastTwilioFailAt = parseIso(state.lastTwilioFailAt);
+  const twilioFailCount  = Number.isFinite(state.twilioFailCount) ? state.twilioFailCount : 0;
+  if (lastTwilioFailAt && twilioFailCount > 0) {
+    const backoffMin = Math.min(5 * Math.pow(2, twilioFailCount - 1), 60);
+    const minSinceFail = (now.getTime() - lastTwilioFailAt.getTime()) / 60_000;
+    if (minSinceFail < backoffMin) {
+      log(`twilio backoff: skipping send (${twilioFailCount} consecutive Twilio failures, ${Math.round(backoffMin - minSinceFail)}m left)`);
+      patch.alertActive = true;
+      patch.alertSuppressedReason = 'twilio_backoff';
+      patch.alertSuppressedAt = nowIso;
+      try { await mergeStatus(supabase, 'vercel_watchdog', patch); }
+      catch (err) { log(`state write (twilio-backoff) failed: ${err.message}`); }
+      return;
+    }
+  }
+
   const body = result.status === 'auth_mismatch'
     ? `Staxis Vercel watchdog: CRON_SECRET mismatch between Railway and Vercel. Update one to match the other, then redeploy.`
     : result.status === 'red'
@@ -369,12 +390,19 @@ async function runVercelWatchdog({ supabase, timezone }) {
   if (smsRes.ok) {
     patch.lastAlertedAt = nowIso;
     // Clear the no-phone marker if it was set on a previous tick — the
-    // operator just fixed the env var.
+    // operator just fixed the env var. Also reset the Twilio backoff state
+    // since a successful send proves Twilio is working again.
     patch.alertSuppressedReason = null;
     patch.alertSuppressedAt = null;
+    patch.lastTwilioFailAt = null;
+    patch.twilioFailCount = 0;
     log(`ALERT sent: ${body}`);
   } else {
-    log(`ALERT SMS FAILED: ${smsRes.detail}. Will retry on next tick. Body: ${body}`);
+    // Increment the Twilio failure counter so the next tick honors the
+    // backoff window (5m → 10m → 20m → 40m → 60m cap).
+    patch.lastTwilioFailAt = nowIso;
+    patch.twilioFailCount = twilioFailCount + 1;
+    log(`ALERT SMS FAILED (count=${patch.twilioFailCount}): ${smsRes.detail}. Backing off. Body: ${body}`);
   }
 
   try { await mergeStatus(supabase, 'vercel_watchdog', patch); }

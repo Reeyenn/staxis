@@ -127,10 +127,83 @@ async function verifySupabaseAuth(supabase, log) {
   }
 }
 
+/**
+ * Append a row to pull_metrics. Best-effort — logs and swallows errors so
+ * a metrics-table outage can never crash the actual pull. The metrics table
+ * is observation-only; the dashboard / scraper_status row is the source of
+ * truth for "is the pull healthy".
+ *
+ *   await writePullMetric(supabase, {
+ *     property_id: 'uuid…',
+ *     pull_type: 'csv_morning',
+ *     ok: false,
+ *     error_code: 'selector_miss',
+ *     total_ms: 14732,
+ *     login_ms: 4012,
+ *     navigate_ms: 2104,
+ *   }, log);
+ */
+async function writePullMetric(supabase, row, log) {
+  try {
+    const { error } = await supabase.from('pull_metrics').insert(row);
+    if (error) throw error;
+  } catch (err) {
+    if (log) log(`pull_metrics write failed (non-fatal): ${err.message || err}`);
+  }
+}
+
+/**
+ * Read the persisted Playwright storageState for a property, if any.
+ * Returns the parsed jsonb blob or null if no row exists / query fails.
+ *
+ * The blob is fed into `browser.newContext({ storageState: ... })` at
+ * scraper boot. Lets a Railway redeploy pick up where the previous
+ * container left off instead of forcing a fresh CA login (saves ~10s
+ * cold start, dodges CA's anti-bot heuristics that fire on rapid logins).
+ */
+async function loadScraperSession(supabase, propertyId, log) {
+  try {
+    const { data, error } = await supabase
+      .from('scraper_session')
+      .select('state, refreshed_at')
+      .eq('property_id', propertyId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return null;
+    if (log) log(`Loaded persisted scraper session (refreshed at ${data.refreshed_at})`);
+    return data.state || null;
+  } catch (err) {
+    if (log) log(`scraper_session load failed (continuing without): ${err.message || err}`);
+    return null;
+  }
+}
+
+/**
+ * Persist Playwright's current storageState() for a property. Best-effort —
+ * a write failure means we lose the redeploy-survival benefit but doesn't
+ * affect the running scraper.
+ */
+async function saveScraperSession(supabase, propertyId, state, log) {
+  try {
+    const { error } = await supabase
+      .from('scraper_session')
+      .upsert(
+        { property_id: propertyId, state, refreshed_at: new Date().toISOString() },
+        { onConflict: 'property_id' },
+      );
+    if (error) throw error;
+  } catch (err) {
+    if (log) log(`scraper_session save failed (non-fatal): ${err.message || err}`);
+  }
+}
+
 module.exports = {
   createSupabase,
   verifySupabaseAuth,
   getStatus,
   mergeStatus,
   incrementCounter,
+  writePullMetric,
+  loadScraperSession,
+  saveScraperSession,
 };

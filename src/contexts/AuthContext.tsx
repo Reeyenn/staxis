@@ -129,7 +129,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // refresh). SIGNED_IN is what fires after our signInWithPassword call.
     //
     // ⚠️ DEADLOCK WARNING — read before editing this callback.
-    // Supabase's docs (GoTrueClient.onAuthStateChange) explicitly warn:
+    // Supabase's docs (GoTrueClient.onAuthStateChange — see
+    // https://supabase.com/docs/reference/javascript/auth-onauthstatechange)
+    // explicitly warn:
     //
     //   > A callback can be an async function and it runs synchronously
     //   > during the processing of the changes causing the event. You can

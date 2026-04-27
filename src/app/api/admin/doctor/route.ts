@@ -117,6 +117,7 @@ const checks: Array<[string, CheckFn]> = [
   ['cron_secret_shape',              checkCronSecretShape],
   ['cron_secret_cross_platform',     checkCronSecretCrossPlatform],
   ['watchdog_alert_path',            checkWatchdogAlertPath],
+  ['scraper_pull_latency',           checkScraperPullLatency],
 ];
 
 // ─── Individual checks ───────────────────────────────────────────────────
@@ -1023,6 +1024,67 @@ async function checkCronSecretCrossPlatform(): Promise<Omit<Check, 'name' | 'dur
     };
   } catch (err) {
     return { status: 'warn', detail: `cross-platform check raised: ${errToString(err)}` };
+  }
+}
+
+/**
+ * Surface sustained pull-latency regressions. Reads the most recent 30
+ * pull_metrics rows per pull_type and warns if the median is more than 2x
+ * the historical baseline. Stays silent on a single slow pull (CA having
+ * a bad afternoon is normal); fires when the slowness is consistent.
+ *
+ * Skips entirely if pull_metrics has <10 rows total (fresh install) or if
+ * the table doesn't exist yet (migration 0011 not applied).
+ */
+async function checkScraperPullLatency(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('pull_metrics')
+      .select('pull_type, total_ms, ok, pulled_at')
+      .order('pulled_at', { ascending: false })
+      .limit(200);
+    if (error) {
+      // Table doesn't exist yet (migration not applied) — graceful skip.
+      if (errToString(error).includes('does not exist')) {
+        return { status: 'skipped', detail: 'pull_metrics table not present (migration 0011 not applied yet).' };
+      }
+      return { status: 'warn', detail: `pull_metrics read failed: ${errToString(error)}` };
+    }
+    if (!data || data.length < 10) {
+      return { status: 'skipped', detail: `pull_metrics has only ${data?.length ?? 0} rows; need >=10 for trend.` };
+    }
+    // Bucket by pull_type, take the most recent 30 successful pulls per
+    // type, compute median. Compare to a baseline (next 30 successful pulls
+    // before that window). 2x slower = warn; 3x slower = fail.
+    type Row = { pull_type: string; total_ms: number; ok: boolean };
+    const buckets: Record<string, Row[]> = {};
+    for (const row of data as Row[]) {
+      if (!row.ok) continue;
+      const k = row.pull_type;
+      buckets[k] = buckets[k] || [];
+      buckets[k].push(row);
+    }
+    const warnings: string[] = [];
+    for (const [pullType, rows] of Object.entries(buckets)) {
+      if (rows.length < 20) continue;
+      const recent = rows.slice(0, 10).map(r => r.total_ms).sort((a, b) => a - b);
+      const baseline = rows.slice(10, 20).map(r => r.total_ms).sort((a, b) => a - b);
+      const recentMedian = recent[Math.floor(recent.length / 2)];
+      const baselineMedian = baseline[Math.floor(baseline.length / 2)];
+      if (recentMedian > 3 * baselineMedian) {
+        warnings.push(`${pullType} 3x+ slower (median ${recentMedian}ms vs baseline ${baselineMedian}ms)`);
+      }
+    }
+    if (warnings.length > 0) {
+      return {
+        status: 'warn',
+        detail: `Pull latency regression: ${warnings.join('; ')}`,
+        fix: 'Check Railway logs for the affected pull type. If sustained, CA may have changed their page weight (more JS, slower auth) — consider tuning waitForLoadState timeouts.',
+      };
+    }
+    return { status: 'ok', detail: `Pull latency within baseline across ${Object.keys(buckets).length} pull types (${data.length} samples).` };
+  } catch (err) {
+    return { status: 'warn', detail: `pull-latency check raised: ${errToString(err)}` };
   }
 }
 

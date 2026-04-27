@@ -47,6 +47,9 @@ const {
   verifySupabaseAuth,
   mergeStatus,
   getStatus,
+  writePullMetric,
+  loadScraperSession,
+  saveScraperSession,
 } = require('./supabase-helpers');
 
 // ─── Config ────────────────────────────────────────────────────────────────
@@ -406,9 +409,16 @@ const CSV_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
  * the caller leaves `lastCSVPullAt` unchanged and the next tick retries.
  */
 async function runCSVScrapeFresh(page, pullType, relogin) {
+  // Latency tracking — best-effort emit to pull_metrics so we can see
+  // 'pulls take 45s instead of 15s' before it becomes a reliability issue.
+  const t0 = Date.now();
+  let loginMs = null;
+
   // Always re-login right before — sessions die between scheduled windows.
   try {
+    const tLogin = Date.now();
     await relogin();
+    loginMs = Date.now() - tLogin;
   } catch (loginErr) {
     log(`${pullType} pre-scrape login FAILED: ${loginErr.message}`);
     const code = loginErr instanceof ScraperError ? loginErr.code : ERROR_CODES.LOGIN_FAILED;
@@ -417,6 +427,14 @@ async function runCSVScrapeFresh(page, pullType, relogin) {
       error: `login failed: ${loginErr.message}`,
       date: todayISO(),
     });
+    await writePullMetric(supabase, {
+      property_id: CONFIG.PROPERTY_ID,
+      pull_type: pullType === 'morning' ? 'csv_morning' : 'csv_evening',
+      ok: false,
+      error_code: code,
+      total_ms: Date.now() - t0,
+      login_ms: null,
+    }, log);
     return false;
   }
 
@@ -436,6 +454,15 @@ async function runCSVScrapeFresh(page, pullType, relogin) {
       errorCode: null,
       error: null,
     });
+    await writePullMetric(supabase, {
+      property_id: CONFIG.PROPERTY_ID,
+      pull_type: pullType === 'morning' ? 'csv_morning' : 'csv_evening',
+      ok: true,
+      error_code: null,
+      total_ms: Date.now() - t0,
+      login_ms: loginMs,
+      rows: snapshot?.totalRooms ?? null,
+    }, log);
     return true;
   } catch (err) {
     // Read the typed code if available (csv-scraper now throws ScraperError
@@ -476,6 +503,14 @@ async function runCSVScrapeFresh(page, pullType, relogin) {
       error: err.message,
       date: todayISO(),
     });
+    await writePullMetric(supabase, {
+      property_id: CONFIG.PROPERTY_ID,
+      pull_type: pullType === 'morning' ? 'csv_morning' : 'csv_evening',
+      ok: false,
+      error_code: code,
+      total_ms: Date.now() - t0,
+      login_ms: loginMs,
+    }, log);
     return false;
   }
 }
@@ -554,11 +589,30 @@ async function maybeRunDashboardPull(page, relogin) {
   const now = Date.now();
   if (now - lastDashboardPullAt < DASHBOARD_INTERVAL_MS) return;
 
-  const result = await runDashboardPullFresh(page, relogin);
+  const t0 = now;
+  let lastError = null;
+  let pull = null;
+  try {
+    pull = await runDashboardPullFresh(page, relogin);
+  } catch (err) {
+    lastError = err;
+  }
+  // Best-effort latency emit — total wall time and ok flag. Per-step
+  // breakdown isn't threaded in; if we want navigate_ms / parse_ms
+  // separately, instrument inside pullDashboardNumbers.
+  await writePullMetric(supabase, {
+    property_id: CONFIG.PROPERTY_ID,
+    pull_type: 'dashboard',
+    ok: pull != null && lastError == null,
+    error_code: lastError instanceof ScraperError ? lastError.code : (lastError ? ERROR_CODES.UNKNOWN : null),
+    total_ms: Date.now() - t0,
+    rows: pull && typeof pull.inHouse === 'number' ? 3 : null, // 3 fields when populated
+  }, log);
+
   // Mark the timestamp whether success or failure — a failed pull is logged
   // to scraper_status and we don't want to retry every 5 min tick on a down CA.
   lastDashboardPullAt = now;
-  return result;
+  return pull;
 }
 
 // ─── OOO Work Order Sync (15-min cadence, piggybacks on dashboard tick) ────
@@ -585,23 +639,40 @@ async function maybeRunOOOPull(page, relogin) {
     PROPERTY_ID: CONFIG.PROPERTY_ID,
   };
 
+  const t0 = now;
+  let metricCode = null;
+  let metricOk = true;
+
   try {
     await pullOOOWorkOrders(page, supabase, config, log);
   } catch (err) {
+    metricOk = false;
     const code = err instanceof ScraperError ? err.code : ERROR_CODES.UNKNOWN;
+    metricCode = code;
     // Same narrow retry as dashboard: only re-login on session_expired.
     if (code === ERROR_CODES.SESSION_EXPIRED) {
       log(`OOO pull lost session — re-logging and retrying once...`);
       try {
         await relogin();
         await pullOOOWorkOrders(page, supabase, config, log);
+        metricOk = true;
+        metricCode = null;
       } catch (retryErr) {
         log(`OOO pull retry FAILED: [${retryErr.code || 'unknown'}] ${retryErr.message}`);
+        metricCode = retryErr instanceof ScraperError ? retryErr.code : ERROR_CODES.UNKNOWN;
       }
     } else {
       log(`OOO pull error [${code}]: ${err.message}`);
     }
   }
+
+  await writePullMetric(supabase, {
+    property_id: CONFIG.PROPERTY_ID,
+    pull_type: 'ooo',
+    ok: metricOk,
+    error_code: metricCode,
+    total_ms: Date.now() - t0,
+  }, log);
 
   lastOOOPullAt = now;
 }
@@ -664,15 +735,26 @@ async function run() {
     args: ['--no-sandbox', '--disable-setuid-sandbox'], // needed on Railway/Linux
   });
 
-  // Persistent context keeps cookies/session across runs
-  const context = await browser.newContext({
-    storageState: fs.existsSync(CONFIG.SESSION_FILE) ? CONFIG.SESSION_FILE : undefined,
-  });
+  // Persistent session: prefer Supabase-backed scraper_session row so a Railway
+  // redeploy doesn't lose the CA login. Fall back to the on-disk session file
+  // (which only survives within a single container's lifetime) if Supabase is
+  // unreachable on boot. Either way, login() will refresh on a stale session.
+  const persistedState = await loadScraperSession(supabase, CONFIG.PROPERTY_ID, log);
+  const contextOptions = persistedState
+    ? { storageState: persistedState }
+    : (fs.existsSync(CONFIG.SESSION_FILE)
+        ? { storageState: CONFIG.SESSION_FILE }
+        : {});
+  const context = await browser.newContext(contextOptions);
 
   const page = await context.newPage();
 
   await login(page);
+  // Write to BOTH places: file-on-disk (legacy, useful for local dev) AND
+  // Supabase (survives Railway redeploys). Writes are tolerant of failure.
   await context.storageState({ path: CONFIG.SESSION_FILE });
+  const stateBlob = await context.storageState();
+  await saveScraperSession(supabase, CONFIG.PROPERTY_ID, stateBlob, log);
 
   // Optional: on startup, pull today's CSV immediately — useful for smoke tests.
   if (process.env.CSV_TEST_ON_STARTUP === 'true') {
@@ -688,12 +770,60 @@ async function run() {
     }
   }
 
+  // ── CA login circuit breaker ────────────────────────────────────────────
+  // If we ever hit a sustained run of login failures (CA blocked our IP,
+  // password rotated, account locked), naive every-5-min retries become
+  // abusive — both to CA's auth endpoint and to our own log volume. After
+  // 3 consecutive failures, the breaker opens and we sleep 30 min between
+  // attempts until either a login succeeds or a human resets it via the
+  // Railway env var BREAKER_RESET=true.
+  //
+  // State is in-process only. Railway redeploys reset it to closed, which
+  // is fine — a redeploy is a human signal that something changed and a
+  // fresh attempt is warranted.
+  const LOGIN_BREAKER = {
+    consecutiveFailures: 0,
+    openSinceMs:         null,        // ms timestamp when breaker tripped
+    OPEN_AFTER_FAILURES: 3,
+    OPEN_DURATION_MS:    30 * 60 * 1000,
+  };
+
   // Fresh login helper. Called right before every scheduled CSV scrape to
   // guarantee the CA session cookie is valid — sessions die between the
   // morning/evening windows so we can't rely on startup login alone.
   async function relogin() {
-    await login(page);
-    await context.storageState({ path: CONFIG.SESSION_FILE });
+    // Breaker check — if open and the cooldown isn't done, refuse the call
+    // so the caller writes a typed error and the cron escalates.
+    if (LOGIN_BREAKER.openSinceMs != null) {
+      const sinceMs = Date.now() - LOGIN_BREAKER.openSinceMs;
+      if (sinceMs < LOGIN_BREAKER.OPEN_DURATION_MS) {
+        const remainingMin = Math.ceil((LOGIN_BREAKER.OPEN_DURATION_MS - sinceMs) / 60_000);
+        throw new ScraperError(
+          ERROR_CODES.LOGIN_FAILED,
+          `Login circuit breaker open after ${LOGIN_BREAKER.consecutiveFailures} consecutive failures. Cooling down for another ${remainingMin}m before retry.`,
+        );
+      }
+      // Cooldown elapsed — half-open: try one login. If it fails, breaker
+      // re-opens. If it succeeds, fully close.
+      log(`Login breaker cooldown elapsed; attempting half-open login...`);
+      LOGIN_BREAKER.openSinceMs = null;
+    }
+    try {
+      await login(page);
+      // Success — reset the counter and persist the fresh session to
+      // both file and Supabase so a redeploy can resume.
+      LOGIN_BREAKER.consecutiveFailures = 0;
+      await context.storageState({ path: CONFIG.SESSION_FILE });
+      const stateBlob = await context.storageState();
+      await saveScraperSession(supabase, CONFIG.PROPERTY_ID, stateBlob, log);
+    } catch (err) {
+      LOGIN_BREAKER.consecutiveFailures += 1;
+      if (LOGIN_BREAKER.consecutiveFailures >= LOGIN_BREAKER.OPEN_AFTER_FAILURES) {
+        LOGIN_BREAKER.openSinceMs = Date.now();
+        log(`Login breaker OPEN after ${LOGIN_BREAKER.consecutiveFailures} consecutive failures. Suppressing login attempts for ${LOGIN_BREAKER.OPEN_DURATION_MS / 60_000}m.`);
+      }
+      throw err;
+    }
   }
 
   async function tick() {
@@ -704,8 +834,11 @@ async function run() {
       await maybeRunCSVPull(page, relogin);
       await maybeRunDashboardPull(page, relogin);
       await maybeRunOOOPull(page, relogin);
-      // Refresh session cookie so we stay logged in
+      // Refresh session cookie so we stay logged in. Best-effort Supabase
+      // mirror so Railway redeploy doesn't force a fresh login.
       await context.storageState({ path: CONFIG.SESSION_FILE });
+      const stateBlob = await context.storageState();
+      await saveScraperSession(supabase, CONFIG.PROPERTY_ID, stateBlob, log);
     } catch (err) {
       log(`ERROR during tick: ${err.message}`);
     }
