@@ -35,6 +35,11 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { isValidDateStr, errToString } from '@/lib/utils';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import {
+  validateUuid, validateString, validateArray, validateDateStr, validateEnum,
+  sanitizeForSms, redactPhone, safeBaseUrl, LIMITS,
+} from '@/lib/api-validate';
+import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 
 interface StaffEntry {
   staffId: string;
@@ -97,25 +102,73 @@ function buildToken(shiftDate: string, staffId: string): string {
 
 export async function POST(req: NextRequest) {
   // Auth: this route fires bulk SMS to every housekeeper on the crew
-  // and is the highest-Twilio-cost endpoint we have. Without auth, the
-  // POST URL is a denial-of-Twilio-balance attack vector. Require an
-  // authenticated Supabase session and verify the caller has access to
-  // the property they're sending for.
+  // and is the highest-Twilio-cost endpoint we have.
   const session = await requireSession(req);
   if (!session.ok) return session.response;
   try {
-    const body: RequestBody = await req.json();
-    const { pid, shiftDate, baseUrl, staff } = body;
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== 'object') {
+      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+    }
+    const b = body as Record<string, unknown>;
 
-    if (!pid || !shiftDate || !staff?.length) {
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+    // Strict validation. Each user-controlled field is checked for type,
+    // length, and shape before it touches a query or an SMS body.
+    const pidV = validateUuid(b.pid, 'pid');
+    if (pidV.error) return NextResponse.json({ error: pidV.error }, { status: 400 });
+    const shiftV = validateDateStr(b.shiftDate, {
+      label: 'shiftDate', allowFutureDays: LIMITS.SHIFT_DATE_FUTURE_DAYS, allowPastDays: 7,
+    });
+    if (shiftV.error) return NextResponse.json({ error: shiftV.error }, { status: 400 });
+    const staffArrV = validateArray<unknown>(b.staff, { max: LIMITS.STAFF_ARRAY_MAX, min: 1, label: 'staff' });
+    if (staffArrV.error) return NextResponse.json({ error: staffArrV.error }, { status: 400 });
+
+    const pid = pidV.value!;
+    const shiftDate = shiftV.value!;
+    const staff: StaffEntry[] = [];
+    for (let i = 0; i < staffArrV.value!.length; i++) {
+      const e = staffArrV.value![i] as Record<string, unknown>;
+      if (!e || typeof e !== 'object') {
+        return NextResponse.json({ error: `staff[${i}] must be an object` }, { status: 400 });
+      }
+      const idV = validateUuid(e.staffId, `staff[${i}].staffId`);
+      if (idV.error) return NextResponse.json({ error: idV.error }, { status: 400 });
+      const nameV = validateString(e.name, { max: LIMITS.STAFF_NAME_MAX, label: `staff[${i}].name` });
+      if (nameV.error) return NextResponse.json({ error: nameV.error }, { status: 400 });
+      const phoneV = typeof e.phone === 'string' ? e.phone : '';
+      const langV = validateEnum(e.language ?? 'en', ['en', 'es'] as const, `staff[${i}].language`);
+      if (langV.error) return NextResponse.json({ error: langV.error }, { status: 400 });
+      const roomsV = validateArray<unknown>(e.assignedRooms ?? [], { max: LIMITS.ASSIGNED_ROOMS_MAX, label: `staff[${i}].assignedRooms` });
+      if (roomsV.error) return NextResponse.json({ error: roomsV.error }, { status: 400 });
+      const areasV = validateArray<unknown>(e.assignedAreas ?? [], { max: LIMITS.ASSIGNED_AREAS_MAX, label: `staff[${i}].assignedAreas` });
+      if (areasV.error) return NextResponse.json({ error: areasV.error }, { status: 400 });
+      // Each room/area string must be short.
+      for (let j = 0; j < (roomsV.value as unknown[]).length; j++) {
+        const r = (roomsV.value as unknown[])[j];
+        if (typeof r !== 'string' || r.length > LIMITS.ROOM_NUMBER_MAX) {
+          return NextResponse.json({ error: `staff[${i}].assignedRooms[${j}] invalid` }, { status: 400 });
+        }
+      }
+      staff.push({
+        staffId: idV.value!,
+        name: sanitizeForSms(nameV.value!),
+        phone: phoneV,
+        language: langV.value as 'en' | 'es',
+        assignedRooms: roomsV.value as string[],
+        assignedAreas: areasV.value as string[],
+      });
     }
-    if (!isValidDateStr(shiftDate)) {
-      return NextResponse.json({ error: 'Invalid shiftDate (expected YYYY-MM-DD)' }, { status: 400 });
-    }
+    const baseUrl = safeBaseUrl(b.baseUrl);
+
     if (!(await userHasPropertyAccess(session.userId, pid))) {
       return NextResponse.json({ error: 'forbidden' }, { status: 403 });
     }
+    if (!isValidDateStr(shiftDate)) {  // belt-and-suspenders, never hits
+      return NextResponse.json({ error: 'Invalid shiftDate' }, { status: 400 });
+    }
+    // Hourly Twilio-bill cap. Maria might re-Send 2-3x; 10/hr is plenty.
+    const limit = await checkAndIncrementRateLimit('send-shift-confirmations', pid);
+    if (!limit.allowed) return rateLimitedResponse(limit.current, limit.cap, limit.retryAfterSec);
 
     // ── Failsafe: refuse to Send with zero real assignments across the crew.
     // A buggy client that sends an empty staff list would otherwise fire
@@ -142,7 +195,9 @@ export async function POST(req: NextRequest) {
         .maybeSingle(),
     ]);
 
-    const hotelName = propRes.data?.name || 'Your Hotel';
+    // Sanitize hotelName for SMS too — it's user-controlled (admins type
+    // it on the Property Settings page) and could contain newlines.
+    const hotelName = sanitizeForSms(propRes.data?.name || 'Your Hotel');
     const planRooms = (planRes.data?.rooms as PlanRoom[] | null) ?? null;
 
     // ── Seed rooms rows with assignments so the HK link page finds them.
@@ -363,7 +418,9 @@ export async function POST(req: NextRequest) {
               if (error) console.warn('[send-shift-confirmations] phone_lookup update failed:', error.message);
             });
 
-          const firstName = name.split(' ')[0];
+          // `name` already passed through sanitizeForSms in the input
+          // validation above, so no newlines or control chars survived.
+          const firstName = name.split(' ')[0] || name;
           const dateLabel = formatShiftDate(shiftDate, language);
 
           // Minimal SMS: name + date + link + language toggle line + hotel
@@ -390,7 +447,10 @@ export async function POST(req: NextRequest) {
             throw smsErr;
           }
         } catch (err) {
-          console.error(`[send-shift-confirmations] failed for ${name}:`, err);
+          // Don't log the raw name — staff names are PII and any trailing
+          // bytes in a malformed payload would reach our log aggregator.
+          // The staffId is enough to identify the row in DB if needed.
+          console.error(`[send-shift-confirmations] failed for staffId=${staffId}: ${errToString(err)}`);
           const reason = err instanceof Error ? err.message : 'sms_error';
           return { staffId, status: 'failed', reason };
         }

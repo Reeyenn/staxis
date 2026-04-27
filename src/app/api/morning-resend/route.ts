@@ -19,6 +19,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { isValidDateStr, errToString } from '@/lib/utils';
+import { validateUuid, validateDateStr, redactPhone, safeBaseUrl, LIMITS } from '@/lib/api-validate';
+import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -101,17 +103,25 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const body = await req.json() as {
-      pid: string;
-      shiftDate: string;
-      baseUrl: string;
-      uid?: string;
-    };
-    const { pid, shiftDate, baseUrl } = body;
-
-    if (!pid || !shiftDate) {
-      return NextResponse.json({ error: 'Missing pid or shiftDate' }, { status: 400 });
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== 'object') {
+      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
     }
+    const b = body as Record<string, unknown>;
+    const pidV = validateUuid(b.pid, 'pid');
+    if (pidV.error) return NextResponse.json({ error: pidV.error }, { status: 400 });
+    const shiftV = validateDateStr(b.shiftDate, {
+      label: 'shiftDate', allowFutureDays: LIMITS.SHIFT_DATE_FUTURE_DAYS, allowPastDays: 7,
+    });
+    if (shiftV.error) return NextResponse.json({ error: shiftV.error }, { status: 400 });
+    const pid = pidV.value!;
+    const shiftDate = shiftV.value!;
+    const baseUrl = safeBaseUrl(b.baseUrl);
+
+    // Cap at 5 morning-resends per property per hour. The cron schedule
+    // calls this once per morning; manual re-runs should be rare.
+    const limit = await checkAndIncrementRateLimit('morning-resend', pid);
+    if (!limit.allowed) return rateLimitedResponse(limit.current, limit.cap, limit.retryAfterSec);
 
     if (!isValidDateStr(shiftDate)) {
       return NextResponse.json({ error: 'Invalid shiftDate format (expected YYYY-MM-DD)' }, { status: 400 });

@@ -85,14 +85,17 @@ export async function POST(req: NextRequest) {
 
     results.forEach((r, i) => {
       if (r.status === 'rejected') {
-        console.error(`SMS failed for ${entries[i].name} (${entries[i].phone}):`, errToString(r.reason));
+        // Redact phone + log staffId-ish position rather than the raw name,
+        // to keep PII out of log aggregators.
+        const redacted = (entries[i].phone ?? '').replace(/\D/g, '').slice(-4);
+        console.error(`[notify-housekeepers-sms] SMS failed entry[${i}] phone=***${redacted}: ${errToString(r.reason)}`);
       }
     });
 
     return NextResponse.json({ sent, failed });
   } catch (err) {
-    const msg = errToString(err);
-    console.error('notify-housekeepers-sms error:', msg);
-    return NextResponse.json({ error: msg }, { status: 500 });
+    // Server-side error detail in log; generic 500 to the caller.
+    console.error('[notify-housekeepers-sms] error:', errToString(err));
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

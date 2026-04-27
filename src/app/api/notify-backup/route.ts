@@ -3,6 +3,10 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import {
+  validateUuid, validateString, validateEnum, sanitizeForSms, redactPhone, LIMITS,
+} from '@/lib/api-validate';
+import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 
 /**
  * POST /api/notify-backup
@@ -38,19 +42,34 @@ export async function POST(req: NextRequest) {
   const session = await requireSession(req);
   if (!session.ok) return session.response;
   try {
-    const body = await req.json();
-    const { pid, backupStaffId, roomNumber, language } = body;
-
-    if (!pid || !backupStaffId || !roomNumber) {
-      return NextResponse.json(
-        { error: 'Missing required fields' },
-        { status: 400 }
-      );
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== 'object') {
+      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
     }
+    const b = body as Record<string, unknown>;
+
+    const pidV = validateUuid(b.pid, 'pid');
+    if (pidV.error) return NextResponse.json({ error: pidV.error }, { status: 400 });
+    const backupV = validateUuid(b.backupStaffId, 'backupStaffId');
+    if (backupV.error) return NextResponse.json({ error: backupV.error }, { status: 400 });
+    const roomV = validateString(b.roomNumber, { max: LIMITS.ROOM_NUMBER_MAX, label: 'roomNumber' });
+    if (roomV.error) return NextResponse.json({ error: roomV.error }, { status: 400 });
+    const langV = b.language == null
+      ? { value: 'en' as const }
+      : validateEnum(b.language, ['en', 'es'] as const, 'language');
+    if (langV.error) return NextResponse.json({ error: langV.error }, { status: 400 });
+
+    const pid = pidV.value!;
+    const backupStaffId = backupV.value!;
+    const roomNumber = sanitizeForSms(roomV.value!);
+    const lang = langV.value!;
 
     if (!(await userHasPropertyAccess(session.userId, pid))) {
       return NextResponse.json({ error: 'forbidden' }, { status: 403 });
     }
+    // Cap at 20 backup-dispatches/hour/property — way over real-world need.
+    const limit = await checkAndIncrementRateLimit('notify-backup', pid);
+    if (!limit.allowed) return rateLimitedResponse(limit.current, limit.cap, limit.retryAfterSec);
 
     // Property name + specific backup staff in parallel.
     const [{ data: prop }, { data: backup, error: backupErr }] = await Promise.all([
@@ -64,52 +83,50 @@ export async function POST(req: NextRequest) {
     ]);
 
     if (backupErr) {
-      console.error('[notify-backup] staff query failed', backupErr);
+      console.error('[notify-backup] staff query failed:', backupErr.message);
       return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
     }
 
     if (!backup) {
-      return NextResponse.json(
-        { error: 'Backup staff member not found' },
-        { status: 404 }
-      );
+      // Don't 404 with a specific "Backup staff member not found" — that
+      // confirms the id format was correct but the row was missing.
+      // Return generic 200 with reason so the UI can show "couldn't reach".
+      return NextResponse.json({ sent: 0, failed: 0, reason: 'unknown-staff' });
     }
 
-    const propertyName = prop?.name || 'Your Hotel';
+    const propertyName = sanitizeForSms(prop?.name || 'Your Hotel');
 
     if (!backup.phone || backup.is_active === false) {
-      console.warn(
-        `[notify-backup] Backup staff ${backup.name} has no phone or is inactive. Not texted.`
-      );
+      console.warn(`[notify-backup] Backup staff (id=${backupStaffId}) has no phone or is inactive`);
       return NextResponse.json({ sent: 0, failed: 0, reason: 'backup-unreachable' });
     }
 
     const e164 = toE164(backup.phone);
     if (!e164) {
-      console.error(`[notify-backup] Invalid phone for backup: ${backup.phone}`);
+      // Redact phone before logging.
+      console.error(`[notify-backup] Invalid phone for backup (id=${backupStaffId}, phone=${redactPhone(backup.phone)})`);
       return NextResponse.json({ sent: 0, failed: 1, reason: 'invalid-phone' });
     }
 
-    const lang = language === 'es' ? 'es' : 'en';
     const message = lang === 'es'
       ? `🙋‍♀️ Por favor ve a ayudar en Habitación ${roomNumber}. – ${propertyName}`
       : `🙋‍♀️ Please head to Room ${roomNumber} to help out. – ${propertyName}`;
 
     try {
       await sendSms(e164, message);
-      return NextResponse.json({ sent: 1, failed: 0, staffName: backup.name });
+      return NextResponse.json({ sent: 1, failed: 0, staffName: sanitizeForSms(backup.name ?? '') });
     } catch (err) {
       console.error(
-        `[notify-backup] SMS failed for ${backup.name} (${backup.phone}):`,
-        errToString(err)
+        `[notify-backup] SMS failed (id=${backupStaffId}, phone=${redactPhone(backup.phone)}): ${errToString(err)}`,
       );
       return NextResponse.json({ sent: 0, failed: 1 });
     }
   } catch (err) {
-    const msg = errToString(err);
-    console.error('[notify-backup] error:', msg);
+    // Don't echo raw error messages back — they can leak Postgres / internal
+    // path info. Log full error server-side, return generic 500 to caller.
+    console.error('[notify-backup] error:', errToString(err));
     return NextResponse.json(
-      { error: msg },
+      { error: 'Internal server error' },
       { status: 500 }
     );
   }

@@ -134,14 +134,16 @@ export async function POST(req: NextRequest) {
 
     results.forEach((r, i) => {
       if (r.status === 'rejected') {
-        console.error(`SMS failed for ${entries[i].name}:`, errToString((r as PromiseRejectedResult).reason));
+        // Don't log full names — PII. Position + redacted phone tail is
+        // enough to triage in Vercel logs.
+        const redacted = (entries[i].phone ?? '').replace(/\D/g, '').slice(-4);
+        console.error(`[notify-housekeepers] SMS failed entry[${i}] phone=***${redacted}: ${errToString((r as PromiseRejectedResult).reason)}`);
       }
     });
 
     return NextResponse.json({ sent, failed });
   } catch (err) {
-    const msg = errToString(err);
-    console.error('notify-housekeepers error:', msg);
-    return NextResponse.json({ error: msg }, { status: 500 });
+    console.error('[notify-housekeepers] error:', errToString(err));
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

@@ -1,0 +1,118 @@
+/**
+ * Per-property hourly rate limit for SMS-firing endpoints.
+ *
+ * Storage: a single Postgres table `api_limits` keyed by
+ * (property_id, endpoint, hour_bucket). On each call we INCREMENT and
+ * compare against a per-endpoint cap. Hits are atomic (a single SQL
+ * upsert) so two concurrent requests can't both squeak under the limit.
+ *
+ * Why Postgres and not Redis: we already have a single Postgres
+ * dependency, and the SMS-fire rate is at most ~1 RPS per property at
+ * peak. The cost of one extra round-trip per SMS is acceptable. If we
+ * ever need higher throughput, swap the body of `checkAndIncrement`
+ * with an Upstash Redis call without touching call sites.
+ *
+ * Migration `0008_api_limits.sql` creates the table.
+ */
+
+import { supabaseAdmin } from '@/lib/supabase-admin';
+
+/** Endpoint identifier — keep these short and stable. */
+export type RateLimitEndpoint =
+  | 'send-shift-confirmations'
+  | 'help-request'
+  | 'notify-backup'
+  | 'morning-resend'
+  | 'sms-reply-resend'
+  | 'test-sms-flow'
+  | 'sync-room-assignments'
+  | 'populate-rooms-from-plan';
+
+/** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
+const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
+  // Maria might re-send shift confirmations 2-3 times if she tweaks the
+  // schedule. 10/hour gives plenty of room without unlimited resend abuse.
+  'send-shift-confirmations': 10,
+  // One HK rarely needs help more than a few times an hour.
+  'help-request':              20,
+  // Manager dispatching backups — same scale.
+  'notify-backup':             20,
+  // Cron route — one or two real calls per day max.
+  'morning-resend':             5,
+  // ENGLISH/ESPAÑOL replies look like loops if abused.
+  'sms-reply-resend':          30,
+  'test-sms-flow':             50,
+  // Schedule autosave is debounced client-side but a runaway tab could
+  // hammer this. 200/hr is "click 3x per minute for an hour" headroom.
+  'sync-room-assignments':    200,
+  'populate-rooms-from-plan':  20,
+};
+
+/**
+ * Check the rate limit for (property_id, endpoint) and increment the hour
+ * counter atomically. Returns:
+ *   { allowed: true }  → call may proceed
+ *   { allowed: false, retryAfterSec, current, cap }  → caller should 429
+ *
+ * If the rate-limit table doesn't exist yet (e.g. running before the
+ * migration is applied), we fail-open with a console warning rather than
+ * blocking all SMS sends. Production should always have the migration
+ * applied; this guard avoids a deploy-order footgun.
+ */
+export async function checkAndIncrementRateLimit(
+  endpoint: RateLimitEndpoint,
+  pid: string,
+): Promise<
+  | { allowed: true }
+  | { allowed: false; retryAfterSec: number; current: number; cap: number }
+> {
+  const cap = HOURLY_CAPS[endpoint];
+  const hourBucket = new Date().toISOString().slice(0, 13);  // "2026-04-27T17"
+  try {
+    // Atomic upsert: increment count, return new value.
+    const { data, error } = await supabaseAdmin.rpc('staxis_api_limit_hit', {
+      p_property_id: pid,
+      p_endpoint: endpoint,
+      p_hour_bucket: hourBucket,
+    });
+    if (error) {
+      console.warn(`[ratelimit] rpc failed (failing open): ${error.message}`);
+      return { allowed: true };
+    }
+    const current = Number(data) || 0;
+    if (current > cap) {
+      // Compute seconds until the next hour bucket.
+      const now = new Date();
+      const nextHour = new Date(now);
+      nextHour.setUTCMinutes(0, 0, 0);
+      nextHour.setUTCHours(now.getUTCHours() + 1);
+      const retryAfterSec = Math.max(1, Math.ceil((nextHour.getTime() - now.getTime()) / 1000));
+      return { allowed: false, retryAfterSec, current, cap };
+    }
+    return { allowed: true };
+  } catch (e) {
+    console.warn(`[ratelimit] threw (failing open): ${e instanceof Error ? e.message : String(e)}`);
+    return { allowed: true };
+  }
+}
+
+/** Convenience: return a NextResponse for a denied limit. */
+export function rateLimitedResponse(
+  current: number,
+  cap: number,
+  retryAfterSec: number,
+): Response {
+  return new Response(
+    JSON.stringify({
+      error: 'rate_limited',
+      detail: `${current}/${cap} for this property in the past hour. Try again in ${retryAfterSec}s.`,
+    }),
+    {
+      status: 429,
+      headers: {
+        'Content-Type': 'application/json',
+        'Retry-After': String(retryAfterSec),
+      },
+    },
+  );
+}
