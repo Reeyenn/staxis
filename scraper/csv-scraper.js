@@ -606,7 +606,22 @@ async function downloadCSVFromCA(page, log) {
   if (!csvText.includes('"Room"') && !csvText.includes('Room,')) {
     await page.screenshot({ path: path.join(__dirname, 'csv-bad-content.png') });
     log(`[CSV] Content preview: ${csvText.substring(0, 200)}`);
-    throw new Error('Downloaded content does not look like a CSV');
+    // Persist the response body so we can read it from outside Railway
+    // (i.e. in Supabase scraper_status when this error bubbles up).
+    try {
+      fs.writeFileSync(path.join(__dirname, 'csv-bad-content.txt'), csvText);
+    } catch { /* best effort */ }
+    // Inline a 600-char preview into the error message so the upstream
+    // scraper_status row carries enough context for us to act on without
+    // logging into Railway. Strip newlines so the alert SMS doesn't
+    // explode on multi-line content.
+    const preview = csvText
+      .replace(/\s+/g, ' ')
+      .substring(0, 600);
+    throw new Error(
+      `Downloaded content is not CSV (got ${csvText.length} bytes). ` +
+      `Preview: ${preview}`
+    );
   }
 
   return csvText;
