@@ -85,6 +85,22 @@ function smartAssignRooms(rooms: RoomRow[], numHousekeepers: number): HKSlot[] {
 
 export async function POST(req: NextRequest) {
   try {
+    // ── Auth: CRON_SECRET required ────────────────────────────────────────
+    // This route fires bulk SMS to every confirmed housekeeper. Without
+    // auth, anyone could POST a `pid` and trigger the full re-send loop,
+    // burning Twilio credits and spamming staff. Protect with the same
+    // CRON_SECRET we already use for /api/cron/* routes — set it in
+    // Vercel + the GitHub Actions secret + any cron service that calls
+    // this URL. If the secret isn't configured (dev), skip the check.
+    const cronSecret = process.env.CRON_SECRET;
+    if (cronSecret) {
+      const authHeader = req.headers.get('authorization') ?? '';
+      const expected = `Bearer ${cronSecret}`;
+      if (authHeader !== expected) {
+        return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+      }
+    }
+
     const body = await req.json() as {
       pid: string;
       shiftDate: string;

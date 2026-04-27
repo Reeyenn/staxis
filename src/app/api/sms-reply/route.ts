@@ -26,6 +26,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
+import twilio from 'twilio';
 
 // Twilio expects TwiML (XML), not JSON. An empty <Response/> tells Twilio
 // "handled, send no auto-reply" — we've fired our own sendSms() already.
@@ -34,6 +35,64 @@ function twimlOk(): NextResponse {
     '<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
     { headers: { 'Content-Type': 'text/xml; charset=utf-8' } },
   );
+}
+
+// 403 forbidden — used when the X-Twilio-Signature check fails. Returning
+// a non-2xx makes Twilio retry, which is what we want for a transient
+// signing-key drift, but the body is irrelevant for the rejection.
+function forbidden(reason: string): NextResponse {
+  return new NextResponse(reason, {
+    status: 403,
+    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+  });
+}
+
+/**
+ * Verify the X-Twilio-Signature header so anyone outside Twilio can't post
+ * to this webhook and trigger SMS sends through our account or spoof a
+ * housekeeper's reply. Twilio computes the signature as
+ *   HMAC-SHA1( authToken, fullUrl + sortedParamsConcatenated )
+ * and base64-encodes it. We delegate to the official `twilio` SDK's
+ * `validateRequest` helper which handles the form-encoded path.
+ *
+ * For JSON bodies we fall back to comparing against the URL with no params
+ * (Twilio's recommended form for non-form-encoded webhooks). In practice
+ * Twilio always posts form-encoded for SMS replies, but we keep the JSON
+ * path so a future migration doesn't break.
+ *
+ * Behind a Vercel proxy the request URL must be reconstructed from the
+ * `X-Forwarded-*` headers — `req.url` is already correct for Next on Vercel,
+ * but we read it explicitly to make the matching obvious.
+ */
+function verifyTwilioSignature(
+  url: string,
+  signature: string | null,
+  params: Record<string, string>,
+): boolean {
+  if (!signature) return false;
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  if (!authToken) return false;
+  try {
+    return twilio.validateRequest(authToken, signature, url, params);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Reconstruct the public URL Twilio used when computing the signature.
+ * On Vercel `req.nextUrl` is the deployed URL (https://hotelops-ai.vercel.app/...)
+ * because Next normalises the proxy headers for us. But we strip out the
+ * `_next/data` and locale prefixes that App Router can sometimes add — the
+ * Twilio dashboard's webhook URL is the bare path.
+ */
+function reconstructWebhookUrl(req: NextRequest): string {
+  // Prefer the X-Forwarded headers so we match exactly what Twilio saw.
+  const proto = req.headers.get('x-forwarded-proto') ?? 'https';
+  const host  = req.headers.get('x-forwarded-host')  ?? req.headers.get('host') ?? new URL(req.url).host;
+  const path  = new URL(req.url).pathname;
+  const search = new URL(req.url).search;
+  return `${proto}://${host}${path}${search}`;
 }
 
 function toE164(raw: string): string | null {
@@ -90,6 +149,9 @@ export async function POST(req: NextRequest) {
     let fromNumber: string | undefined;
     let text: string | undefined;
     let rawBodyForLog = '';
+    // For form-encoded payloads we also build a `params` map so we can pass
+    // it to Twilio's signature validator.
+    let formParams: Record<string, string> = {};
 
     const contentType = req.headers.get('content-type') ?? '';
     if (contentType.includes('application/json')) {
@@ -104,6 +166,34 @@ export async function POST(req: NextRequest) {
       const params = new URLSearchParams(rawBody);
       fromNumber = params.get('From') ?? params.get('fromNumber') ?? undefined;
       text = params.get('Body') ?? params.get('text') ?? undefined;
+      params.forEach((value, key) => { formParams[key] = value; });
+    }
+
+    // ── Twilio signature verification ─────────────────────────────────────
+    // Without this, anyone can POST to this URL with arbitrary `From` /
+    // `Body` and trigger sendSms() callbacks through our Twilio account
+    // (potentially racking up charges and spoofing housekeeper replies).
+    //
+    // The April 16 bug-tracker run found this route was open. Adding it
+    // now via the official `twilio` SDK's `validateRequest`. We skip the
+    // check entirely if TWILIO_AUTH_TOKEN is not set (e.g. in a non-Twilio
+    // dev environment), and we accept JSON requests without a signature
+    // because Twilio doesn't sign JSON SMS webhooks — only the inbound
+    // form-encoded ones, which is the path that matters here.
+    const signatureHeader = req.headers.get('x-twilio-signature');
+    const isFormEncoded = !contentType.includes('application/json');
+    if (isFormEncoded && process.env.TWILIO_AUTH_TOKEN) {
+      const url = reconstructWebhookUrl(req);
+      const ok = verifyTwilioSignature(url, signatureHeader, formParams);
+      if (!ok) {
+        await logHit({
+          stage: 'signature_invalid',
+          url,
+          hasSignatureHeader: !!signatureHeader,
+          fromHeader: fromNumber ?? null,
+        });
+        return forbidden('invalid twilio signature');
+      }
     }
 
     await logHit({
