@@ -39,6 +39,11 @@ const { pullDashboardNumbers, ScraperError, ERROR_CODES } = require('./dashboard
 const { pullOOOWorkOrders } = require('./ooo-pull');
 const { runVercelWatchdog } = require('./vercel-watchdog');
 const {
+  safeEval,
+  settlePage,
+  isExecutionContextDestroyed,
+} = require('./page-helpers');
+const {
   createSupabase,
   verifySupabaseAuth,
   mergeStatus,
@@ -147,16 +152,26 @@ async function writeScrapeStatus(pullType, status, extra = {}) {
 async function login(page) {
   log('Logging into Choice Advantage...');
   try {
-    await page.goto(CONFIG.CA_LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    // 'load' (not 'domcontentloaded') so we wait for window.onload and any
+    // initial-paint scripts. CA does JS-based redirects after DOMContentLoaded
+    // (Login.init → Welcome.init → user_authenticated.jsp), so returning early
+    // and immediately calling page.evaluate dies with "Execution context was
+    // destroyed". Outage on 2026-04-27 — see scraper/page-helpers.js header.
+    await page.goto(CONFIG.CA_LOGIN_URL, { waitUntil: 'load', timeout: 30000 });
   } catch (err) {
     throw new ScraperError(ERROR_CODES.CA_UNREACHABLE, `Login page unreachable: ${err.message}`);
   }
+  // Belt-and-suspenders: if there's a chained JS redirect still in flight
+  // after 'load', settlePage waits for networkidle too. Both timeouts are
+  // soft — we proceed anyway, since safeEval below will retry if the page
+  // is still navigating when we touch the DOM.
+  await settlePage(page);
   log(`Login page URL: ${page.url()}`);
 
   // Detect whether we're actually at the login form via DOM — CA's login
   // URL and authenticated URLs both contain "Welcome", so URL-based
   // detection was returning early without authenticating.
-  const hasLoginForm = await page.evaluate(() => {
+  const hasLoginForm = await safeEval(page, () => {
     return !!document.querySelector('input[name="j_username"]');
   });
   if (!hasLoginForm) {
@@ -245,7 +260,18 @@ async function login(page) {
           // Try force, then JS, before moving on.
           try { await page.click(sel, { timeout: 3000, force: true }); log(`Clicked login button via force (selector: ${sel})`); return sel; } catch {}
           try {
-            const ok = await page.locator(sel).first().evaluate((el) => { if (el && typeof el.click === 'function') { el.click(); return true; } return false; });
+            // Locator.evaluate() on the first match — also susceptible to
+            // execution-context-destroyed if the page navigates mid-call.
+            // Wrap so a transient race here doesn't kill the entire login.
+            let ok = false;
+            for (let attempt = 1; attempt <= 2 && !ok; attempt++) {
+              try {
+                ok = await page.locator(sel).first().evaluate((el) => { if (el && typeof el.click === 'function') { el.click(); return true; } return false; });
+              } catch (jsErr) {
+                if (!isExecutionContextDestroyed(jsErr)) throw jsErr;
+                await settlePage(page, { loadTimeout: 5000, idleTimeout: 2000 });
+              }
+            }
             if (ok) { log(`Clicked login button via JS (selector: ${sel})`); return sel; }
           } catch {}
           log(`Click failed on login selector ${sel}: ${e.message}`);
@@ -253,7 +279,7 @@ async function login(page) {
       }
       // Last-ditch: submit the form directly.
       try {
-        const submitted = await page.evaluate(() => {
+        const submitted = await safeEval(page, () => {
           const pw = document.querySelector('input[type="password"]');
           const form = pw ? pw.closest('form') : (document.forms[0] || null);
           if (form && typeof form.submit === 'function') { form.submit(); return true; }
@@ -281,6 +307,11 @@ async function login(page) {
       }
     }
 
+    // Wait for the post-login page to fully settle (load + networkidle) before
+    // we touch the DOM. This is the same pattern as settlePage but with longer
+    // timeouts because post-login redirects can take longer than the initial
+    // page load.
+    await page.waitForLoadState('load', { timeout: 15000 }).catch(() => {});
     await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
     log(`After settle — now at: ${page.url()}`);
 
@@ -290,13 +321,13 @@ async function login(page) {
     // would loop forever hitting "session expired" because every View page
     // bounced back to the login form. Now it surfaces as a typed error the
     // health-check cron can alert on with "CA password changed".
-    const stillOnLoginForm = await page.evaluate(() =>
+    const stillOnLoginForm = await safeEval(page, () =>
       !!document.querySelector('input[name="j_username"]')
     );
     if (stillOnLoginForm) {
       // Grab the error message CA displays so we can distinguish "wrong
       // password" from "account locked" from "too many attempts" later.
-      const caMessage = await page.evaluate(() => {
+      const caMessage = await safeEval(page, () => {
         const el = document.querySelector('.CHI_Error, .error, [class*="rror"]');
         return el ? el.textContent.trim().slice(0, 200) : null;
       }).catch(() => null);

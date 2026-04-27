@@ -282,17 +282,25 @@ function buildSnapshot(rooms, pullType, dateISO /*, timezone */) {
  */
 async function downloadCSVFromCA(page, log) {
   log('[CSV] Navigating to Reports page...');
-  await page.goto(CA_REPORTS_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  // 'load' (not 'domcontentloaded') so chained JS redirects on the CA reports
+  // landing page have a chance to settle before we touch the DOM. See
+  // scraper/page-helpers.js header for the 2026-04-27 outage rationale.
+  await page.goto(CA_REPORTS_URL, { waitUntil: 'load', timeout: 30000 });
 
   // Check if we got redirected to login
   if (page.url().includes('sign_in') || page.url().includes('Welcome')) {
     throw new Error('Session expired — need to re-login before CSV pull');
   }
 
-  log(`[CSV] On reports page: ${page.url()}`);
-
-  // Wait for the page to fully load
+  // Wait for the page to fully load — INCLUDING any chained JS redirect from
+  // the user_authenticated.jsp landing page to the actual reports page. The
+  // 2026-04-27 outage showed that ReportViewStart.init can land on
+  // user_authenticated.jsp first, then JS-redirect to the real reports page.
+  // Logging the URL BEFORE this settle was the symptom — we'd see
+  // 'user_authenticated.jsp' instead of the reports page and then fail to
+  // find the "Housekeeping Check-off List" link.
   await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+  log(`[CSV] On reports page: ${page.url()}`);
 
   // Dismiss any data discrepancy dialogs. Add :visible filter so a
   // hidden legacy OK button doesn't waste 30s on a non-existent dialog.

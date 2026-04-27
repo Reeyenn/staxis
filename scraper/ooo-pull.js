@@ -51,6 +51,7 @@
 
 const { ScraperError, ERROR_CODES } = require('./dashboard-pull');
 const { mergeStatus } = require('./supabase-helpers');
+const { safeEval } = require('./page-helpers');
 
 const WORK_ORDERS_URL = 'https://www.choiceadvantage.com/choicehotels/WorkOrders.jx';
 
@@ -62,7 +63,11 @@ const WORK_ORDERS_URL = 'https://www.choiceadvantage.com/choicehotels/WorkOrders
 async function fetchOOOWorkOrders(page, log) {
   let body;
   try {
-    body = await page.evaluate(async (url) => {
+    // safeEval retries the fetch-via-evaluate if the page navigates
+    // mid-evaluate (the 2026-04-27 outage signature). Without this, every
+    // OOO pull during a CA redirect dance died with "Execution context
+    // was destroyed" until the scraper process was restarted.
+    body = await safeEval(page, async (url) => {
       const r = await fetch(url, {
         method: 'POST',
         credentials: 'same-origin',

@@ -58,6 +58,7 @@
  */
 
 const { mergeStatus, incrementCounter } = require('./supabase-helpers');
+const { safeEval, safeWaitForFunction, settlePage } = require('./page-helpers');
 
 const VIEW_PAGES = [
   { key: 'inHouse',    url: 'https://www.choiceadvantage.com/choicehotels/ViewInHouseList.init' },
@@ -105,7 +106,7 @@ function isPlausibleCount(n) {
 
 async function collectDiagnostics(page) {
   try {
-    return await page.evaluate(() => ({
+    return await safeEval(page, () => ({
       url:           location.href,
       title:         document.title,
       h1:            (document.querySelector('h1')?.textContent || '').trim(),
@@ -118,7 +119,7 @@ async function collectDiagnostics(page) {
 }
 
 async function readCounts(page) {
-  return await page.evaluate(() => {
+  return await safeEval(page, () => {
     const getCount = (labelText) => {
       const labels = Array.from(document.querySelectorAll('label'));
       const lbl = labels.find(l => l.textContent.trim() === labelText);
@@ -152,7 +153,10 @@ async function fetchAllViewPages(page, log) {
 
     // ── Navigate ──────────────────────────────────────────────────────
     try {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      // 'load' (not 'domcontentloaded') so chained JS redirects on CA View
+      // pages have a chance to settle before we touch the DOM. See
+      // page-helpers.js header for the 2026-04-27 outage that motivated this.
+      await page.goto(url, { waitUntil: 'load', timeout: 30000 });
     } catch (err) {
       throw new ScraperError(
         ERROR_CODES.CA_UNREACHABLE,
@@ -160,6 +164,8 @@ async function fetchAllViewPages(page, log) {
         { page: key }
       );
     }
+    // Belt-and-suspenders: wait for any post-load chained redirects to finish.
+    await settlePage(page, { loadTimeout: 8000, idleTimeout: 5000 });
 
     // ── Session-expiry guards (URL-based + DOM-based) ─────────────────
     // CA sometimes bounces expired sessions to a Welcome page whose URL
@@ -172,7 +178,7 @@ async function fetchAllViewPages(page, log) {
         { page: key, diagnostics: await collectDiagnostics(page) }
       );
     }
-    const onLoginPage = await page.evaluate(() =>
+    const onLoginPage = await safeEval(page, () =>
       !!document.querySelector('input[name="j_username"], input[name="j_password"]')
     );
     if (onLoginPage) {
@@ -187,7 +193,9 @@ async function fetchAllViewPages(page, log) {
     // A generic `ul.CHI_Row_Left label` wait matches 8+ elements on the
     // page and is unreliable. Target the exact label + numeric sibling.
     try {
-      await page.waitForFunction(() => {
+      // safeWaitForFunction retries on "Execution context was destroyed" so
+      // that a chained redirect that fires mid-wait doesn't fail the pull.
+      await safeWaitForFunction(page, () => {
         const labels = Array.from(document.querySelectorAll('label'));
         const rc = labels.find(l => l.textContent.trim() === 'Room Count:');
         if (!rc) return false;
