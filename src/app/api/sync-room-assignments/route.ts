@@ -24,8 +24,12 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { isValidDateStr, errToString } from '@/lib/utils';
+import { errToString } from '@/lib/utils';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import {
+  validateUuid, validateString, validateArray, validateDateStr, LIMITS,
+} from '@/lib/api-validate';
+import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 
 interface StaffEntry {
   staffId: string;
@@ -59,22 +63,65 @@ export async function POST(req: NextRequest) {
   const session = await requireSession(req);
   if (!session.ok) return session.response;
   try {
-    const body: RequestBody = await req.json();
-    const { pid, shiftDate, staff } = body;
+    const body = await req.json().catch(() => null) as RequestBody | null;
+    if (!body || typeof body !== 'object') {
+      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+    }
 
-    if (!pid || !shiftDate || !Array.isArray(staff)) {
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+    // ── Strict validation ───────────────────────────────────────────────────
+    // Goal: anything that ends up on a SQL update or in a `rooms.number`
+    // column has been confirmed to be the right shape and within sane size
+    // limits. Without this, a manager browser bug or a hostile pen-test can
+    // push thousands of rows or unbounded strings through the rooms table.
+    const pidV = validateUuid(body.pid, 'pid');
+    if (pidV.error) return NextResponse.json({ error: pidV.error }, { status: 400 });
+    const dateV = validateDateStr(body.shiftDate, { allowFutureDays: LIMITS.SHIFT_DATE_FUTURE_DAYS, allowPastDays: 14, label: 'shiftDate' });
+    if (dateV.error) return NextResponse.json({ error: dateV.error }, { status: 400 });
+
+    const staffArrV = validateArray<unknown>(body.staff, { max: LIMITS.STAFF_ARRAY_MAX, label: 'staff' });
+    if (staffArrV.error) return NextResponse.json({ error: staffArrV.error }, { status: 400 });
+    const rawStaff = staffArrV.value!;
+
+    const staff: StaffEntry[] = [];
+    for (let i = 0; i < rawStaff.length; i++) {
+      const e = rawStaff[i];
+      if (!e || typeof e !== 'object') {
+        return NextResponse.json({ error: `staff[${i}] not an object` }, { status: 400 });
+      }
+      const ee = e as Record<string, unknown>;
+      const sidV = validateUuid(ee.staffId, `staff[${i}].staffId`);
+      if (sidV.error) return NextResponse.json({ error: sidV.error }, { status: 400 });
+      const nameV = validateString(ee.staffName, { max: LIMITS.STAFF_NAME_MAX, label: `staff[${i}].staffName` });
+      if (nameV.error) return NextResponse.json({ error: nameV.error }, { status: 400 });
+
+      // assignedRooms: optional array of short strings.
+      let rooms: string[] = [];
+      if (ee.assignedRooms != null) {
+        const arr = validateArray<unknown>(ee.assignedRooms, { max: LIMITS.ASSIGNED_ROOMS_MAX, label: `staff[${i}].assignedRooms` });
+        if (arr.error) return NextResponse.json({ error: arr.error }, { status: 400 });
+        for (let j = 0; j < arr.value!.length; j++) {
+          const r = validateString(arr.value![j], { max: LIMITS.ROOM_NUMBER_MAX, label: `staff[${i}].assignedRooms[${j}]` });
+          if (r.error) return NextResponse.json({ error: r.error }, { status: 400 });
+          rooms.push(r.value!);
+        }
+      }
+      staff.push({ staffId: sidV.value!, staffName: nameV.value!, assignedRooms: rooms });
     }
-    if (!isValidDateStr(shiftDate)) {
-      return NextResponse.json({ error: 'Invalid shiftDate' }, { status: 400 });
-    }
+
+    const pid = pidV.value!;
+    const shiftDate = dateV.value!;
+
     if (!(await userHasPropertyAccess(session.userId, pid))) {
       return NextResponse.json({ error: 'forbidden' }, { status: 403 });
     }
+    // 200 syncs/hour/property — comfortably above one active manager
+    // dragging on the schedule board (debounced ~1.5s per change).
+    const limit = await checkAndIncrementRateLimit('sync-room-assignments', pid);
+    if (!limit.allowed) return rateLimitedResponse(limit.current, limit.cap, limit.retryAfterSec);
 
     // ── Failsafe: refuse to wipe all assignments without explicit opt-in ────
     const hasAnyAssignment = staff.some(s => (s.assignedRooms ?? []).length > 0);
-    const allowClearAll = body.allowClearAll === true;
+    const allowClearAll = (body as unknown as Record<string, unknown>).allowClearAll === true;
     if (!hasAnyAssignment && !allowClearAll) {
       return NextResponse.json({
         error: 'Refusing to clear all room assignments without allowClearAll=true',

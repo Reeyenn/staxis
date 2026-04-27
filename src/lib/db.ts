@@ -624,17 +624,57 @@ function subscribeTable<T>(
 
   fire();
 
-  const channel = supabase
+  const filterSpec = filter
+    ? { event: '*', schema: 'public', table, filter }
+    : { event: '*', schema: 'public', table };
+
+  // `let`, not `const`: visibility recovery may swap the channel out for a
+  // fresh one if iOS Safari (or any other mobile browser) silently kills
+  // the WebSocket while the tab is backgrounded.
+  let channel = supabase
     .channel(channelName)
-    .on(
-      'postgres_changes' as never,
-      filter ? { event: '*', schema: 'public', table, filter } : { event: '*', schema: 'public', table },
-      fire,
-    )
+    .on('postgres_changes' as never, filterSpec, fire)
     .subscribe();
+
+  // ── Mobile Safari / phone-wake recovery ────────────────────────────────
+  // Realtime over WebSockets dies silently when iOS Safari throttles a
+  // backgrounded tab. The channel object stays in memory but no events
+  // fire after the tab returns to the foreground. Without recovery, every
+  // page in this app looks frozen until the user hard-refreshes — and
+  // housekeepers, who use this on shared phones in the back office, never
+  // hard-refresh anything.
+  //
+  // On every visibility change back to "visible":
+  //   1. Always refetch — guarantees the UI is correct even if no realtime
+  //      events arrive while we're re-establishing the WebSocket.
+  //   2. If the channel state is 'closed' or 'errored', tear it down and
+  //      create a fresh subscription with the same name + filter so future
+  //      mutations resume propagating.
+  const onVisibility = () => {
+    if (!active) return;
+    if (typeof document === 'undefined' || document.hidden) return;
+    fire();
+    // .state isn't in the public type but is exposed at runtime.
+    type WithState = { state?: string };
+    const state = (channel as unknown as WithState).state;
+    if (state === 'closed' || state === 'errored') {
+      try { supabase.removeChannel(channel); } catch { /* best effort */ }
+      channel = supabase
+        .channel(channelName)
+        .on('postgres_changes' as never, filterSpec, fire)
+        .subscribe();
+    }
+  };
+
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', onVisibility);
+  }
 
   return () => {
     active = false;
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisibility);
+    }
     supabase.removeChannel(channel);
   };
 }

@@ -22,13 +22,30 @@ function syntheticEmail(username: string): string {
   return `${username.toLowerCase().trim()}@staxis.local`;
 }
 
-// Admin check: the x-account-id header must correspond to an accounts row
-// with role='admin'. Returns the admin's accounts row on success, null on
-// failure. We also verify via Supabase Auth that the bearer token matches
-// that same account so the header can't be spoofed.
+/**
+ * Admin check.
+ *
+ * The caller must present BOTH:
+ *   - `x-account-id`: the accounts.id of the row claiming admin
+ *   - `Authorization: Bearer <jwt>`: a valid Supabase access token whose
+ *     user.id matches accounts.data_user_id for that row
+ *
+ * Either alone is insufficient. Previously we accepted x-account-id alone
+ * as a "legacy fallback" — that was a real privilege-escalation hole:
+ * anyone who knew or could guess an admin's UUID could send the header
+ * with no Authorization and impersonate the admin (full create/delete/
+ * password-reset access). The bearer-token requirement is now mandatory.
+ *
+ * Returns the admin's accounts row on success, null on failure.
+ */
 async function verifyAdmin(req: NextRequest) {
   const accountId = req.headers.get('x-account-id');
   if (!accountId) return null;
+
+  // Bearer token is REQUIRED — no fallback. Closes the spoofing backdoor.
+  const authHeader = req.headers.get('authorization');
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!token) return null;
 
   // Look up the account row (service role bypasses RLS).
   const { data: account, error: acctErr } = await supabaseAdmin
@@ -39,21 +56,13 @@ async function verifyAdmin(req: NextRequest) {
 
   if (acctErr || !account || account.role !== 'admin') return null;
 
-  // Additionally check that the request is authenticated as this account's
-  // auth user. Without this, a staff user who knows an admin's accountId
-  // could spoof the header and escalate privileges.
-  const authHeader = req.headers.get('authorization');
-  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  if (token) {
-    const { data: userData, error: userErr } = await supabaseAdmin.auth.getUser(token);
-    if (userErr || userData.user?.id !== account.data_user_id) {
-      return null;
-    }
+  // Verify the JWT really belongs to the auth user this account row points
+  // to. supabaseAdmin.auth.getUser(token) hits the auth server with the
+  // service role to validate the token signature & expiry.
+  const { data: userData, error: userErr } = await supabaseAdmin.auth.getUser(token);
+  if (userErr || userData.user?.id !== account.data_user_id) {
+    return null;
   }
-  // If no Authorization header is present (legacy calls), fall back to the
-  // x-account-id check alone. This matches the Firebase-era behavior and
-  // keeps current settings page working pre-hardening; can be tightened
-  // once all callers include Authorization.
 
   return account;
 }

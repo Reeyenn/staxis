@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { todayStr } from '@/lib/utils';
+import { useTodayStr } from '@/lib/use-today-str';
 import {
   getPublicAreas,
   getLaundryConfig,
@@ -23,7 +23,10 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
   const searchParams = useSearchParams();
   const uid = searchParams.get('uid');
   const pid = searchParams.get('pid');
-  const today = todayStr();
+  // Reactive — flips at midnight Central so the rooms subscription rolls
+  // over to the new day's bucket. The staffer's iPad sometimes stays on
+  // this page from one shift into the next.
+  const today = useTodayStr();
 
   // ── Language is LOCAL to this page ──
   // See the matching comment block on /housekeeper/[id]. Using the global

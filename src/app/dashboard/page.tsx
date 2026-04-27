@@ -16,7 +16,7 @@ import {
   type DashboardNumbers,
 } from '@/lib/db';
 import { getOverdueRooms, calcDndFreedMinutes, suggestDeepCleans } from '@/lib/calculations';
-import { todayStr } from '@/lib/utils';
+import { useTodayStr } from '@/lib/use-today-str';
 import type { Room, DeepCleanConfig, DeepCleanRecord, WorkOrder, HandoffEntry } from '@/types';
 import {
   Clock, Users,
@@ -29,6 +29,11 @@ export default function DashboardPage() {
   const { activeProperty, activePropertyId, staff, loading: propLoading } = useProperty();
   const { lang } = useLang();
   const router = useRouter();
+
+  // Reactive "today" so realtime subscriptions roll over at midnight
+  // (Central). Without this, leaving the dashboard open overnight on the
+  // back-office TV silently keeps subscribing to yesterday's room bucket.
+  const today = useTodayStr();
 
   const [rooms, setRooms] = useState<Room[]>([]);
   const [dcConfig, setDcConfig] = useState<DeepCleanConfig | null>(null);
@@ -77,8 +82,8 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!user || !activePropertyId) return;
-    return subscribeToRooms(user.uid, activePropertyId, todayStr(), setRooms);
-  }, [user, activePropertyId]);
+    return subscribeToRooms(user.uid, activePropertyId, today, setRooms);
+  }, [user, activePropertyId, today]);
 
 
   useEffect(() => {

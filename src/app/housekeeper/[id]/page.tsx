@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import {
   subscribeToRoomsForStaff,
@@ -8,7 +8,7 @@ import {
   getStaffMember,
   saveStaffLanguage,
 } from '@/lib/db';
-import { todayStr } from '@/lib/utils';
+import { useTodayStr } from '@/lib/use-today-str';
 import type { Room, RoomStatus } from '@/types';
 import { format } from 'date-fns';
 import { es as esLocale } from 'date-fns/locale';
@@ -42,7 +42,11 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   const searchParams = useSearchParams();
   const uid = searchParams.get('uid');
   const pid = searchParams.get('pid');
-  const today = todayStr();
+  // Reactive: flips at Central midnight so the rooms subscription rolls
+  // over to the new day's bucket if the HK leaves the page open between
+  // shifts. The housekeeper rarely closes their browser overnight; without
+  // this, the next morning's rooms never appear until they hard-refresh.
+  const today = useTodayStr();
 
   // ── Language is LOCAL to this page ──
   // Previously this called the global setLang() from LanguageContext, which
@@ -134,77 +138,107 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
     return () => { unsub(); };
   }, [housekeeperId, pid, today]);
 
+  // ── Re-entrancy guard ─────────────────────────────────────────────────────
+  // Mobile users on slow connections double-tap buttons constantly. Without
+  // this, a "Finish Room" tap that takes 8s on 3G triggers a second tap →
+  // two updateRoom calls race, completedAt gets overwritten with the wrong
+  // timestamp, room status flickers. The setSavingRoomId state already
+  // disables the button, but the `disabled` attribute can lag a render
+  // behind a fast tap. A ref check is synchronous and bulletproof.
+  const inFlightRoomIds = useRef<Set<string>>(new Set());
+
+  // Wrapper that drops re-entrant calls for the same room. Guarantees only
+  // one mutation per room is in flight at a time. Survives slow networks
+  // and accidental fat-finger double taps.
+  const guardRoomAction = useCallback(
+    async (roomId: string, action: () => Promise<void>) => {
+      if (inFlightRoomIds.current.has(roomId)) return;
+      inFlightRoomIds.current.add(roomId);
+      try {
+        await action();
+      } finally {
+        inFlightRoomIds.current.delete(roomId);
+      }
+    },
+    [],
+  );
+
   // ── Start room (dirty → in_progress) ──────────────────────────────────────
   const handleStartRoom = async (room: RoomRow) => {
     if (!uid || !pid) return;
-    setSavingRoomId(room.id);
-    try {
-      await updateRoom(uid, pid, room.id, {
-        status: 'in_progress' as RoomStatus,
-        startedAt: new Date(),
-      });
-    } catch (err) {
-      console.error('[housekeeper] start room error:', err);
-    } finally {
-      setSavingRoomId(null);
-    }
+    await guardRoomAction(room.id, async () => {
+      setSavingRoomId(room.id);
+      try {
+        await updateRoom(uid, pid, room.id, {
+          status: 'in_progress' as RoomStatus,
+          startedAt: new Date(),
+        });
+      } catch (err) {
+        console.error('[housekeeper] start room error:', err);
+      } finally {
+        setSavingRoomId(null);
+      }
+    });
   };
 
   // ── Stop room (in_progress → dirty, clear startedAt) ──────────────────────
   const handleStopRoom = async (room: RoomRow) => {
     if (!uid || !pid) return;
-    setSavingRoomId(room.id);
-    try {
-      await updateRoom(uid, pid, room.id, {
-        status: 'dirty' as RoomStatus,
-        startedAt: null,
-      });
-    } catch (err) {
-      console.error('[housekeeper] stop room error:', err);
-    } finally {
-      setSavingRoomId(null);
-    }
+    await guardRoomAction(room.id, async () => {
+      setSavingRoomId(room.id);
+      try {
+        await updateRoom(uid, pid, room.id, {
+          status: 'dirty' as RoomStatus,
+          startedAt: null,
+        });
+      } catch (err) {
+        console.error('[housekeeper] stop room error:', err);
+      } finally {
+        setSavingRoomId(null);
+      }
+    });
   };
 
   // ── Finish room (in_progress → clean) ─────────────────────────────────────
   // Requires hold-to-confirm on the button - accidental taps are ignored.
   const handleFinishRoom = async (room: RoomRow) => {
     if (!uid || !pid) return;
-    setSavingRoomId(room.id);
-    try {
-      const updates: Partial<Room> = {
-        status: 'clean' as RoomStatus,
-        completedAt: new Date(),
-      };
-      // Safety net: write startedAt if somehow missing
-      if (!room.startedAt) {
-        updates.startedAt = new Date();
+    await guardRoomAction(room.id, async () => {
+      setSavingRoomId(room.id);
+      try {
+        const updates: Partial<Room> = {
+          status: 'clean' as RoomStatus,
+          completedAt: new Date(),
+        };
+        if (!room.startedAt) updates.startedAt = new Date();
+        await updateRoom(uid, pid, room.id, updates);
+      } catch (err) {
+        console.error('[housekeeper] finish room error:', err);
+      } finally {
+        setSavingRoomId(null);
       }
-      await updateRoom(uid, pid, room.id, updates);
-    } catch (err) {
-      console.error('[housekeeper] finish room error:', err);
-    } finally {
-      setSavingRoomId(null);
-    }
+    });
   };
 
   // ── Toggle DND on a room ────────────────────────────────────────────────────
   const handleToggleDnd = async (room: RoomRow) => {
     if (!uid || !pid) return;
-    setSavingDnd(room.id);
-    try {
-      const newDnd = !room.isDnd;
-      await updateRoom(uid, pid, room.id, {
-        isDnd: newDnd,
-        dndNote: newDnd
-          ? `Marked DND by housekeeper at ${new Date().toLocaleTimeString()}`
-          : '',
-      });
-    } catch (err) {
-      console.error('[housekeeper] toggle DND error:', err);
-    } finally {
-      setSavingDnd(null);
-    }
+    await guardRoomAction(room.id, async () => {
+      setSavingDnd(room.id);
+      try {
+        const newDnd = !room.isDnd;
+        await updateRoom(uid, pid, room.id, {
+          isDnd: newDnd,
+          dndNote: newDnd
+            ? `Marked DND by housekeeper at ${new Date().toLocaleTimeString()}`
+            : '',
+        });
+      } catch (err) {
+        console.error('[housekeeper] toggle DND error:', err);
+      } finally {
+        setSavingDnd(null);
+      }
+    });
   };
 
   // ── Need Help - alert Maria ───────────────────────────────────────────────

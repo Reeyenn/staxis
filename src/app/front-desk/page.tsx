@@ -8,7 +8,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { subscribeToRooms, updateRoom } from '@/lib/db';
-import { todayStr } from '@/lib/utils';
+import { useTodayStr } from '@/lib/use-today-str';
 import type { Room } from '@/types';
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -112,6 +112,11 @@ export default function FrontDeskPage() {
   const { lang } = useLang();
   const router = useRouter();
 
+  // Reactive: rolls over at Central midnight so the rooms subscription
+  // matches the new day's bucket. The front desk computer typically stays
+  // logged in across the night-audit shift.
+  const today = useTodayStr();
+
   const [rooms, setRooms] = useState<Room[]>([]);
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
   const [processing, setProcessing] = useState(false);
@@ -127,8 +132,8 @@ export default function FrontDeskPage() {
 
   useEffect(() => {
     if (!user || !activePropertyId) return;
-    return subscribeToRooms(user.uid, activePropertyId, todayStr(), setRooms);
-  }, [user, activePropertyId]);
+    return subscribeToRooms(user.uid, activePropertyId, today, setRooms);
+  }, [user, activePropertyId, today]);
 
   /* ── Derived stats ── */
   const stats = useMemo(() => {

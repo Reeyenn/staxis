@@ -19,8 +19,10 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { isValidDateStr, errToString } from '@/lib/utils';
+import { errToString } from '@/lib/utils';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import { validateUuid, validateDateStr, LIMITS } from '@/lib/api-validate';
+import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 
 interface RequestBody {
   pid: string;
@@ -68,18 +70,26 @@ export async function POST(req: NextRequest) {
   const session = await requireSession(req);
   if (!session.ok) return session.response;
   try {
-    const body: RequestBody = await req.json();
-    const { pid, date } = body;
+    const body = await req.json().catch(() => null) as RequestBody | null;
+    if (!body || typeof body !== 'object') {
+      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+    }
 
-    if (!pid || !date) {
-      return NextResponse.json({ error: 'Missing pid or date' }, { status: 400 });
-    }
-    if (!isValidDateStr(date)) {
-      return NextResponse.json({ error: 'Invalid date (expected YYYY-MM-DD)' }, { status: 400 });
-    }
+    const pidV = validateUuid(body.pid, 'pid');
+    if (pidV.error) return NextResponse.json({ error: pidV.error }, { status: 400 });
+    const dateV = validateDateStr(body.date, { allowFutureDays: LIMITS.SHIFT_DATE_FUTURE_DAYS, allowPastDays: 14, label: 'date' });
+    if (dateV.error) return NextResponse.json({ error: dateV.error }, { status: 400 });
+
+    const pid = pidV.value!;
+    const date = dateV.value!;
+
     if (!(await userHasPropertyAccess(session.userId, pid))) {
       return NextResponse.json({ error: 'forbidden' }, { status: 403 });
     }
+    // 20/hour/property is plenty: this is a manual button click that
+    // upserts ~74 rows. Anything more than ~1/min is either a bug or abuse.
+    const limit = await checkAndIncrementRateLimit('populate-rooms-from-plan', pid);
+    if (!limit.allowed) return rateLimitedResponse(limit.current, limit.cap, limit.retryAfterSec);
 
     // Pull the plan snapshot for this date — that's the last CSV pull.
     const { data: planRow, error: planErr } = await supabaseAdmin
@@ -221,8 +231,9 @@ export async function POST(req: NextRequest) {
       csvPulledAt: pulledAt,
     });
   } catch (err: unknown) {
-    const msg = errToString(err);
-    console.error('[populate-rooms-from-plan] Error:', msg);
-    return NextResponse.json({ error: msg }, { status: 500 });
+    // Don't echo errToString back — Postgres / supabase-js errors leak
+    // schema details. Log full error server-side, generic 500 to caller.
+    console.error('[populate-rooms-from-plan] Error:', errToString(err));
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

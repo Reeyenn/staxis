@@ -1,55 +1,68 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
+import { validateUuid } from '@/lib/api-validate';
 
-// Public endpoint — returns the staff scheduled to work today for a given
-// property. Used by the housekeeper mobile page to let someone identify who
-// they are (no login required — the URL encodes the property).
-//
-// Legacy `uid` query param is accepted for URL back-compat but ignored: the
-// old Firestore layout keyed data under users/{uid}/properties/{pid}/... so
-// the UI baked uid into bookmarks. Under Supabase, `pid` alone is enough
-// (property_id is the real scoping key).
+/**
+ * Public endpoint — returns the staff scheduled to work today for a given
+ * property. Used by the housekeeper / laundry mobile pages to let someone
+ * identify who they are (no login required — the URL encodes the property).
+ *
+ * THE RESPONSE IS DELIBERATELY MINIMAL.
+ *
+ * Previously this route returned `select *` mapped to camelCase, which
+ * leaked every staff member's phone number, hourly wage, weekly hours, and
+ * scheduling-manager flag to anyone who knew the property id. The pid
+ * shows up in the SMS we send out and ends up in browser history,
+ * referrer headers, and any spouse/coworker who borrows the phone for
+ * 30 seconds. That was a real PII + payroll leak.
+ *
+ * Now we only return the fields the public landing pages actually need:
+ *   { id, name, isSenior }
+ *
+ * Anything that needs phone / wage data must go through an authenticated
+ * route.
+ *
+ * Legacy `uid` query param is accepted for URL back-compat but ignored.
+ */
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
-  const pid = searchParams.get('pid');
+  const rawPid = searchParams.get('pid');
 
-  if (!pid) {
-    return NextResponse.json({ error: 'Missing pid' }, { status: 400 });
+  // UUID-validate the pid before it touches the query — even though
+  // supabase-js parameterises and the `pid` doesn't really tunnel into
+  // SQL, returning a 400 for garbage is a useful early signal that the
+  // capability URL is malformed.
+  const pidV = validateUuid(rawPid, 'pid');
+  if (pidV.error) {
+    return NextResponse.json({ error: pidV.error }, { status: 400 });
   }
+  const pid = pidV.value!;
 
+  // Pull only the columns we need to return. Belt-and-suspenders against
+  // someone later widening the response mapper without thinking about the
+  // PII implications.
   const { data, error } = await supabaseAdmin
     .from('staff')
-    .select('*')
+    .select('id, name, is_senior')
     .eq('property_id', pid)
-    .eq('scheduled_today', true);
+    .eq('scheduled_today', true)
+    .eq('is_active', true);
 
   if (error) {
-    const msg = errToString(error);
-    console.error('[staff-list] query failed', msg);
-    return NextResponse.json({ error: msg }, { status: 500 });
+    // Don't echo PG error text — leaks schema/column names. Log the full
+    // detail server-side and return generic 500 to caller.
+    console.error('[staff-list] query failed', errToString(error));
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 
-  // Translate snake_case → camelCase for the client (it expects the legacy
-  // Firestore shape). Only the fields the client actually reads are mapped;
-  // extra fields pass through under their snake_case names and will be
-  // ignored harmlessly by current callers.
+  // Minimal projection. NEVER add phone, hourly_wage, weekly_hours, or
+  // is_scheduling_manager here — those are private. If a consumer needs
+  // them, build a separate authenticated route.
   const mapped = (data ?? []).map(s => ({
     id: s.id,
     name: s.name,
-    phone: s.phone,
-    language: s.language,
     isSenior: s.is_senior,
-    department: s.department,
-    scheduledToday: s.scheduled_today,
-    hourlyWage: s.hourly_wage,
-    weeklyHours: s.weekly_hours,
-    maxWeeklyHours: s.max_weekly_hours,
-    maxDaysPerWeek: s.max_days_per_week,
-    daysWorkedThisWeek: s.days_worked_this_week,
-    isActive: s.is_active,
-    schedulePriority: s.schedule_priority,
-    isSchedulingManager: s.is_scheduling_manager,
   }));
 
   return NextResponse.json(mapped);

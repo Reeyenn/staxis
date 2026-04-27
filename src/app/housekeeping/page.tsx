@@ -31,6 +31,7 @@ import { getPublicAreasDueToday, calcPublicAreaMinutes, autoAssignRooms, getOver
 import { getDefaultPublicAreas } from '@/lib/defaults';
 import type { PublicArea } from '@/types';
 import { todayStr, errToString } from '@/lib/utils';
+import { useTodayStr } from '@/lib/use-today-str';
 import type { Room, RoomStatus, RoomType, RoomPriority, StaffMember, DeepCleanRecord, DeepCleanConfig, ShiftConfirmation, ConfirmationStatus, WorkOrder } from '@/types';
 import { format, subDays } from 'date-fns';
 import {
@@ -4408,6 +4409,10 @@ function DeepCleanSection() {
   const { user } = useAuth();
   const { activePropertyId, activeProperty, staff } = useProperty();
   const { lang } = useLang();
+  // Reactive YYYY-MM-DD string used for the rooms subscription. Different
+  // variable name from the local `today` Date below (used for cycle math)
+  // to avoid shadowing.
+  const todayStrReactive = useTodayStr();
 
   const [config, setConfigState] = useState<DeepCleanConfig | null>(null);
   const [records, setRecords] = useState<Record<string, DeepCleanRecord>>({});
@@ -4459,10 +4464,12 @@ function DeepCleanSection() {
       for (const rec of r) map[rec.roomNumber] = rec;
       setRecords(map);
     }).catch(() => {});
-    // Subscribe to today's rooms for occupancy data
-    const unsub = subscribeToRooms(uid, pid, todayStr(), setTodayRooms);
+    // Subscribe to today's rooms for occupancy data. `todayStrReactive` is
+    // reactive so the channel is rebuilt at midnight rather than silently
+    // keeping yesterday's bucket open on a long-running session.
+    const unsub = subscribeToRooms(uid, pid, todayStrReactive, setTodayRooms);
     return unsub;
-  }, [uid, pid]);
+  }, [uid, pid, todayStrReactive]);
 
   useEffect(() => { return () => { if (toastTimer.current) clearTimeout(toastTimer.current); }; }, []);
 
@@ -5487,6 +5494,7 @@ function PerformanceSection() {
   const { user } = useAuth();
   const { activeProperty, activePropertyId, staff } = useProperty();
   const { lang } = useLang();
+  const today = useTodayStr();
 
   const [view, setView] = useState<ViewMode>('live');
   const [rooms, setRooms] = useState<Room[]>([]);
@@ -5499,8 +5507,11 @@ function PerformanceSection() {
 
   useEffect(() => {
     if (!user || !activePropertyId) return;
-    return subscribeToRooms(user.uid, activePropertyId, todayStr(), setRooms);
-  }, [user, activePropertyId]);
+    // `today` is reactive — at midnight Central it flips and we re-subscribe
+    // to the new day's bucket. Without this, leaving the page open overnight
+    // silently keeps reading yesterday's rooms.
+    return subscribeToRooms(user.uid, activePropertyId, today, setRooms);
+  }, [user, activePropertyId, today]);
 
   useEffect(() => {
     const id = setInterval(() => setNowMs(Date.now()), 30_000);

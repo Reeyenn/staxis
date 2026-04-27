@@ -8,6 +8,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import { Users, Plus, Trash2, Pencil, X, Check, ChevronLeft, Shield, User } from 'lucide-react';
+import { fetchWithAuth } from '@/lib/api-fetch';
 
 interface AccountRow {
   accountId: string;
@@ -60,7 +61,12 @@ export default function AccountsPage() {
     if (!user) return;
     setLoading(true);
     try {
-      const res = await fetch('/api/auth/accounts', {
+      // fetchWithAuth attaches the Authorization: Bearer <jwt> header. The
+      // server-side admin gate now requires BOTH the bearer token AND the
+      // x-account-id header; without the JWT, the route 403s. This closes
+      // the privilege-escalation backdoor where someone who knew an admin
+      // accountId could spoof admin access by sending only the header.
+      const res = await fetchWithAuth('/api/auth/accounts', {
         headers: { 'x-account-id': user.accountId },
       });
       if (!res.ok) throw new Error('Failed to load accounts');
@@ -106,7 +112,7 @@ export default function AccountsPage() {
 
     try {
       if (editingId) {
-        const res = await fetch('/api/auth/accounts', {
+        const res = await fetchWithAuth('/api/auth/accounts', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json', 'x-account-id': user.accountId },
           body: JSON.stringify({
@@ -123,7 +129,7 @@ export default function AccountsPage() {
           return;
         }
       } else {
-        const res = await fetch('/api/auth/accounts', {
+        const res = await fetchWithAuth('/api/auth/accounts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-account-id': user.accountId },
           body: JSON.stringify({
@@ -156,7 +162,7 @@ export default function AccountsPage() {
     if (!confirm(lang === 'es' ? '¿Eliminar esta cuenta?' : 'Delete this account?')) return;
 
     try {
-      const res = await fetch(`/api/auth/accounts?accountId=${accountId}`, {
+      const res = await fetchWithAuth(`/api/auth/accounts?accountId=${accountId}`, {
         method: 'DELETE',
         headers: { 'x-account-id': user.accountId },
       });

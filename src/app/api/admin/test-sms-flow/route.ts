@@ -19,6 +19,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
+import {
+  validateUuid, validateString, validateEnum, sanitizeForSms, redactPhone, safeBaseUrl, LIMITS,
+} from '@/lib/api-validate';
+import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 
 function toE164(raw: string): string | null {
   const digits = raw.replace(/\D/g, '');
@@ -58,17 +62,38 @@ export async function POST(req: NextRequest) {
         { status: 400 },
       );
     }
-    const { pid, staffId, phone } = body;
-    const language = body.language ?? 'en';
-    const name = body.name ?? 'Test';
+    // Strict validation — defense in depth (route is also gated behind
+    // CRON_SECRET) so a typo'd staffId can't tunnel into a giant SQL string
+    // and the error path can't leak a free-text phone number.
+    const pidV = validateUuid(body.pid, 'pid');
+    if (pidV.error) return NextResponse.json({ error: pidV.error }, { status: 400 });
+    const sidV = validateUuid(body.staffId, 'staffId');
+    if (sidV.error) return NextResponse.json({ error: sidV.error }, { status: 400 });
+    const phoneRawV = validateString(body.phone, { max: 20, label: 'phone' });
+    if (phoneRawV.error) return NextResponse.json({ error: phoneRawV.error }, { status: 400 });
+    const langV = body.language == null
+      ? { value: 'en' as const }
+      : validateEnum(body.language, ['en', 'es'] as const, 'language');
+    if (langV.error) return NextResponse.json({ error: langV.error }, { status: 400 });
+    const nameV = body.name == null
+      ? { value: 'Test' as const }
+      : validateString(body.name, { max: LIMITS.STAFF_NAME_MAX, label: 'name' });
+    if (nameV.error) return NextResponse.json({ error: nameV.error }, { status: 400 });
 
-    if (!pid || !staffId || !phone) {
-      return NextResponse.json({ error: 'Need pid, staffId, phone' }, { status: 400 });
-    }
-    const phone164 = toE164(phone);
+    const pid = pidV.value!;
+    const staffId = sidV.value!;
+    const language = langV.value!;
+    const name = sanitizeForSms(nameV.value!);
+
+    const phone164 = toE164(phoneRawV.value!);
     if (!phone164) {
-      return NextResponse.json({ error: `Can't normalize phone ${phone} to E.164` }, { status: 400 });
+      // Don't echo the raw phone back — it's PII even in an admin tool.
+      return NextResponse.json({ error: `Can't normalize phone to E.164` }, { status: 400 });
     }
+    // Cap at 50/hour/property — generous for an admin smoke test, tight
+    // enough that a stuck script doesn't burn through Twilio credits.
+    const limit = await checkAndIncrementRateLimit('test-sms-flow', pid);
+    if (!limit.allowed) return rateLimitedResponse(limit.current, limit.cap, limit.retryAfterSec);
 
     // Confirm the staff row exists and belongs to this property.
     const { data: staffRow, error: staffErr } = await supabaseAdmin
@@ -90,7 +115,7 @@ export async function POST(req: NextRequest) {
       .select('name')
       .eq('id', pid)
       .maybeSingle();
-    const hotelName = prop?.name || 'the hotel';
+    const hotelName = sanitizeForSms(prop?.name || 'the hotel');
 
     const shiftDate = new Date().toISOString().slice(0, 10); // today
     const token = `TEST_${shiftDate}_${staffId}_${Date.now()}`;
@@ -118,7 +143,10 @@ export async function POST(req: NextRequest) {
       .update({ phone_lookup: phone164 })
       .eq('id', staffId);
 
-    const origin = new URL(req.url).origin;
+    // Whitelist the URL origin — protects the SMS body from being shaped
+    // around a phishing host if the route is ever called with a spoofed
+    // request URL (rare but cheap to defend against).
+    const origin = safeBaseUrl(new URL(req.url).origin);
     const hkUrl = `${origin}/housekeeper/${staffId}?pid=${encodeURIComponent(pid)}`;
 
     const message = language === 'es'
@@ -138,9 +166,11 @@ export async function POST(req: NextRequest) {
       instructions: `Reply ENGLISH or ESPAÑOL to the text to flip language. Then GET this same URL again with ?check=${encodeURIComponent(token)} to see the row.`,
     });
   } catch (err) {
-    const msg = errToString(err);
-    console.error('test-sms-flow error:', msg);
-    return NextResponse.json({ error: msg }, { status: 500 });
+    // Log full detail server-side, generic 500 to caller — even though the
+    // route is admin-gated, the err string can include staff_phone or PG
+    // schema names that have no business in a response body.
+    console.error('test-sms-flow error:', errToString(err));
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
 
@@ -159,12 +189,17 @@ export async function GET(req: NextRequest) {
     .select('token, status, staff_phone, language, responded_at')
     .eq('token', check)
     .maybeSingle();
-  if (error) return NextResponse.json({ error: errToString(error) }, { status: 500 });
+  if (error) {
+    console.error('test-sms-flow GET error:', errToString(error));
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
   if (!data) return NextResponse.json({ error: 'not found' }, { status: 404 });
   return NextResponse.json({
     token: data.token,
     status: data.status,
-    staffPhone: data.staff_phone,
+    // Redact the phone — admin-only or not, full E.164 in a response body
+    // is not necessary for the smoke test.
+    staffPhone: data.staff_phone ? redactPhone(data.staff_phone as string) : null,
     language: data.language,
     respondedAt: data.responded_at,
   });
