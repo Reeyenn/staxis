@@ -58,7 +58,7 @@
  */
 
 const { mergeStatus, incrementCounter } = require('./supabase-helpers');
-const { safeEval, safeWaitForFunction, settlePage } = require('./page-helpers');
+const { safeEval, safeWaitForFunction, goWithSettle } = require('./page-helpers');
 
 const VIEW_PAGES = [
   { key: 'inHouse',    url: 'https://www.choiceadvantage.com/choicehotels/ViewInHouseList.init' },
@@ -152,11 +152,11 @@ async function fetchAllViewPages(page, log) {
     log(`Dashboard pull — ${key}...`);
 
     // ── Navigate ──────────────────────────────────────────────────────
+    // goWithSettle = goto + load + networkidle. The shared "navigate to CA
+    // and let chained JS redirects settle" macro. See scraper/page-helpers.js
+    // for the 2026-04-27 outage rationale.
     try {
-      // 'load' (not 'domcontentloaded') so chained JS redirects on CA View
-      // pages have a chance to settle before we touch the DOM. See
-      // page-helpers.js header for the 2026-04-27 outage that motivated this.
-      await page.goto(url, { waitUntil: 'load', timeout: 30000 });
+      await goWithSettle(page, url, { loadTimeout: 8000, idleTimeout: 5000 });
     } catch (err) {
       throw new ScraperError(
         ERROR_CODES.CA_UNREACHABLE,
@@ -164,8 +164,6 @@ async function fetchAllViewPages(page, log) {
         { page: key }
       );
     }
-    // Belt-and-suspenders: wait for any post-load chained redirects to finish.
-    await settlePage(page, { loadTimeout: 8000, idleTimeout: 5000 });
 
     // ── Session-expiry guards (URL-based + DOM-based) ─────────────────
     // CA sometimes bounces expired sessions to a Welcome page whose URL

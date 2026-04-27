@@ -38,11 +38,8 @@ const { runCSVScrape } = require('./csv-scraper');
 const { pullDashboardNumbers, ScraperError, ERROR_CODES } = require('./dashboard-pull');
 const { pullOOOWorkOrders } = require('./ooo-pull');
 const { runVercelWatchdog } = require('./vercel-watchdog');
-const {
-  safeEval,
-  settlePage,
-  isExecutionContextDestroyed,
-} = require('./page-helpers');
+const { safeEval, goWithSettle } = require('./page-helpers');
+const { clickFirstMatching, fillFirstMatching } = require('./selector-helpers');
 const {
   createSupabase,
   verifySupabaseAuth,
@@ -168,20 +165,12 @@ async function login(page) {
   }
 
   try {
-    // 'load' (not 'domcontentloaded') so we wait for window.onload and any
-    // initial-paint scripts. CA does JS-based redirects after DOMContentLoaded
-    // (Login.init → Welcome.init → user_authenticated.jsp), so returning early
-    // and immediately calling page.evaluate dies with "Execution context was
-    // destroyed". Outage on 2026-04-27 — see scraper/page-helpers.js header.
-    await page.goto(CONFIG.CA_LOGIN_URL, { waitUntil: 'load', timeout: 30000 });
+    // goWithSettle = page.goto + load + networkidle. The single correct way
+    // to navigate CA in this scraper. See scraper/page-helpers.js header.
+    await goWithSettle(page, CONFIG.CA_LOGIN_URL);
   } catch (err) {
     throw new ScraperError(ERROR_CODES.CA_UNREACHABLE, `Login page unreachable: ${err.message}`);
   }
-  // Belt-and-suspenders: if there's a chained JS redirect still in flight
-  // after 'load', settlePage waits for networkidle too. Both timeouts are
-  // soft — we proceed anyway, since safeEval below will retry if the page
-  // is still navigating when we touch the DOM.
-  await settlePage(page);
   log(`Login page URL: ${page.url()}`);
 
   // Detect whether we're actually at the login form via DOM — CA's login
@@ -211,111 +200,74 @@ async function login(page) {
   }
 
   try {
-    // Login form fields. CA has used `j_username` / `j_password` historically,
-    // but the same selector-fragility that bit us on the CSV checkbox
-    // (#CSVcheckbox renamed silently) would take the entire scraper offline
-    // if these names ever change — and every downstream pull (CSV, dashboard,
-    // OOO) depends on this auth step. Try a list of fallbacks; first match wins.
-    async function fillFirst(selectors, value, fieldName) {
-      for (const sel of selectors) {
-        let count = 0;
-        try { count = await page.locator(sel).count(); } catch { continue; }
-        if (count === 0) continue;
-        try {
-          await page.fill(sel, value, { timeout: 5000 });
-          log(`Filled ${fieldName} (selector: ${sel})`);
-          return sel;
-        } catch (e) {
-          log(`Fill failed for ${fieldName} on ${sel}: ${e.message}`);
-        }
-      }
-      throw new ScraperError(
-        ERROR_CODES.LOGIN_FAILED,
-        `Could not fill ${fieldName} field on login form (tried ${selectors.length} selectors). CA login layout may have changed.`
-      );
+    // Username + password fields. CA has used `j_username` / `j_password`
+    // historically, but downstream pulls all depend on this step — list
+    // fallbacks for resilience and let fillFirstMatching escalate.
+    try {
+      await fillFirstMatching(page, [
+        'input[name="j_username"]',
+        'input[name="username"]',
+        'input[name="user"]',
+        'input[id="username"]',
+        'input[id="userId"]',
+        'input[type="text"][autocomplete="username"]',
+        'label:has-text("Username") >> input',
+        'label:has-text("User") >> input[type="text"]',
+      ], CONFIG.CA_USERNAME, 'username', log, { required: true });
+    } catch (err) {
+      throw new ScraperError(ERROR_CODES.LOGIN_FAILED, err.message);
     }
-    await fillFirst([
-      'input[name="j_username"]',
-      'input[name="username"]',
-      'input[name="user"]',
-      'input[id="username"]',
-      'input[id="userId"]',
-      'input[type="text"][autocomplete="username"]',
-      'label:has-text("Username") >> input',
-      'label:has-text("User") >> input[type="text"]',
-    ], CONFIG.CA_USERNAME, 'username');
-    await fillFirst([
-      'input[name="j_password"]',
-      'input[name="password"]',
-      'input[type="password"]',
-      'input[id="password"]',
-      'input[type="password"][autocomplete="current-password"]',
-      'label:has-text("Password") >> input',
-    ], CONFIG.CA_PASSWORD, 'password');
+    try {
+      await fillFirstMatching(page, [
+        'input[name="j_password"]',
+        'input[name="password"]',
+        'input[type="password"]',
+        'input[id="password"]',
+        'input[type="password"][autocomplete="current-password"]',
+        'label:has-text("Password") >> input',
+      ], CONFIG.CA_PASSWORD, 'password', log, { required: true });
+    } catch (err) {
+      throw new ScraperError(ERROR_CODES.LOGIN_FAILED, err.message);
+    }
 
-    // Find and click the login button. Same fallback pattern.
-    async function clickLoginButton() {
-      const candidates = [
-        'a#greenButton',           // legacy id
-        'a.greenButton',
-        '#greenButton',
-        'button[type="submit"]:visible',
-        'input[type="submit"]:visible',
-        'button:has-text("Login"):visible',
-        'button:has-text("Log in"):visible',
-        'button:has-text("Sign in"):visible',
-        'a:has-text("Login"):visible',
-        'a:has-text("Log in"):visible',
-        'a:has-text("Sign in"):visible',
-        'a:has-text("Submit"):visible',
-      ];
-      for (const sel of candidates) {
-        let count = 0;
-        try { count = await page.locator(sel).count(); } catch { continue; }
-        if (count === 0) continue;
-        try {
-          await page.click(sel, { timeout: 5000 });
-          log(`Clicked login button (selector: ${sel})`);
-          return sel;
-        } catch (e) {
-          // Try force, then JS, before moving on.
-          try { await page.click(sel, { timeout: 3000, force: true }); log(`Clicked login button via force (selector: ${sel})`); return sel; } catch {}
-          try {
-            // Locator.evaluate() on the first match — also susceptible to
-            // execution-context-destroyed if the page navigates mid-call.
-            // Wrap so a transient race here doesn't kill the entire login.
-            let ok = false;
-            for (let attempt = 1; attempt <= 2 && !ok; attempt++) {
-              try {
-                ok = await page.locator(sel).first().evaluate((el) => { if (el && typeof el.click === 'function') { el.click(); return true; } return false; });
-              } catch (jsErr) {
-                if (!isExecutionContextDestroyed(jsErr)) throw jsErr;
-                await settlePage(page, { loadTimeout: 5000, idleTimeout: 2000 });
-              }
-            }
-            if (ok) { log(`Clicked login button via JS (selector: ${sel})`); return sel; }
-          } catch {}
-          log(`Click failed on login selector ${sel}: ${e.message}`);
-        }
-      }
-      // Last-ditch: submit the form directly.
+    // Find and click the login button. clickFirstMatching escalates click
+    // through plain → force → JS-direct, same pattern as before but shared
+    // with csv-scraper. On total miss, falls back to form.submit() via JS.
+    const LOGIN_BUTTON_SELECTORS = [
+      'a#greenButton',           // legacy id
+      'a.greenButton',
+      '#greenButton',
+      'button[type="submit"]:visible',
+      'input[type="submit"]:visible',
+      'button:has-text("Login"):visible',
+      'button:has-text("Log in"):visible',
+      'button:has-text("Sign in"):visible',
+      'a:has-text("Login"):visible',
+      'a:has-text("Log in"):visible',
+      'a:has-text("Sign in"):visible',
+      'a:has-text("Submit"):visible',
+    ];
+    const clickAndNavigate = async () => {
       try {
+        await clickFirstMatching(page, LOGIN_BUTTON_SELECTORS, 'login button', log);
+      } catch (clickErr) {
+        // Last-ditch: submit the form directly.
         const submitted = await safeEval(page, () => {
           const pw = document.querySelector('input[type="password"]');
           const form = pw ? pw.closest('form') : (document.forms[0] || null);
           if (form && typeof form.submit === 'function') { form.submit(); return true; }
           return false;
-        });
-        if (submitted) { log('Submitted login form directly via JS'); return 'form.submit()'; }
-      } catch {}
-      throw new ScraperError(
-        ERROR_CODES.LOGIN_FAILED,
-        'Could not click login button (tried ' + candidates.length + ' selectors + form.submit()). CA login layout changed.'
-      );
-    }
+        }).catch(() => false);
+        if (submitted) {
+          log('Submitted login form directly via JS');
+          return;
+        }
+        throw new ScraperError(ERROR_CODES.LOGIN_FAILED, clickErr.message);
+      }
+    };
     await Promise.all([
       page.waitForNavigation({ waitUntil: 'load', timeout: 30000 }).catch(() => {}),
-      clickLoginButton(),
+      clickAndNavigate(),
     ]);
     log(`After login click — now at: ${page.url()}`);
 

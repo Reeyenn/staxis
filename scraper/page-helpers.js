@@ -120,9 +120,48 @@ async function safeWaitForFunction(page, fn, options = {}, ...args) {
   throw lastErr;
 }
 
+/**
+ * The single correct way to navigate Choice Advantage in this scraper.
+ *
+ * `goWithSettle` = page.goto + waitForLoadState('load') + waitForLoadState
+ * ('networkidle'), with sensible bounded timeouts and tolerant on each
+ * step. CA does chained JS redirects after DOMContentLoaded fires (e.g.
+ * Login.init → Welcome.init → user_authenticated.jsp), so the pre-2026-04-27
+ * default of `waitUntil:'domcontentloaded'` was racing those redirects and
+ * tearing down execution contexts mid-page.evaluate.
+ *
+ * Use this everywhere instead of raw page.goto. It encodes:
+ *   - waitUntil:'load' (waits for window.onload, runs scripts to completion)
+ *   - then 'load' state again as belt-and-suspenders
+ *   - then 'networkidle' (500ms of no in-flight requests)
+ * Each waitForLoadState swallows its own timeout so we proceed even if CA
+ * keeps a long-poll connection open. The downstream safeEval retry on
+ * 'execution context was destroyed' is the actual safety net for the
+ * tail-end race conditions.
+ *
+ * Throws a vanilla Error on navigation failure (timeout / DNS / 5xx). The
+ * caller is expected to wrap in ScraperError if it wants typed handling
+ * (see scraper/dashboard-pull.js for the CA_UNREACHABLE pattern).
+ *
+ * @param {import('playwright').Page} page
+ * @param {string} url
+ * @param {object} [options]
+ * @param {number} [options.gotoTimeout=30000] page.goto timeout
+ * @param {number} [options.loadTimeout=15000] waitForLoadState('load') timeout
+ * @param {number} [options.idleTimeout=5000] waitForLoadState('networkidle') timeout
+ */
+async function goWithSettle(page, url, options = {}) {
+  const gotoTimeout = options.gotoTimeout ?? 30000;
+  const loadTimeout = options.loadTimeout ?? 15000;
+  const idleTimeout = options.idleTimeout ?? 5000;
+  await page.goto(url, { waitUntil: 'load', timeout: gotoTimeout });
+  await settlePage(page, { loadTimeout, idleTimeout });
+}
+
 module.exports = {
   safeEval,
   safeWaitForFunction,
   settlePage,
+  goWithSettle,
   isExecutionContextDestroyed,
 };

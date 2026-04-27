@@ -11,6 +11,12 @@
 
 const path = require('path');
 const fs = require('fs');
+const { goWithSettle, safeEval } = require('./page-helpers');
+const {
+  clickFirstMatching,
+  fillFirstMatching,
+  selectFirstMatching,
+} = require('./selector-helpers');
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -282,24 +288,16 @@ function buildSnapshot(rooms, pullType, dateISO /*, timezone */) {
  */
 async function downloadCSVFromCA(page, log) {
   log('[CSV] Navigating to Reports page...');
-  // 'load' (not 'domcontentloaded') so chained JS redirects on the CA reports
-  // landing page have a chance to settle before we touch the DOM. See
-  // scraper/page-helpers.js header for the 2026-04-27 outage rationale.
-  await page.goto(CA_REPORTS_URL, { waitUntil: 'load', timeout: 30000 });
+  // goWithSettle = goto + load + networkidle. Without networkidle the URL
+  // logged below would be the intermediate user_authenticated.jsp instead
+  // of the actual reports page, and every subsequent selector miss
+  // (2026-04-27 outage symptom).
+  await goWithSettle(page, CA_REPORTS_URL, { idleTimeout: 15000 });
 
   // Check if we got redirected to login
   if (page.url().includes('sign_in') || page.url().includes('Welcome')) {
     throw new Error('Session expired — need to re-login before CSV pull');
   }
-
-  // Wait for the page to fully load — INCLUDING any chained JS redirect from
-  // the user_authenticated.jsp landing page to the actual reports page. The
-  // 2026-04-27 outage showed that ReportViewStart.init can land on
-  // user_authenticated.jsp first, then JS-redirect to the real reports page.
-  // Logging the URL BEFORE this settle was the symptom — we'd see
-  // 'user_authenticated.jsp' instead of the reports page and then fail to
-  // find the "Housekeeping Check-off List" link.
-  await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
   log(`[CSV] On reports page: ${page.url()}`);
 
   // Dismiss any data discrepancy dialogs. Add :visible filter so a
@@ -316,94 +314,29 @@ async function downloadCSVFromCA(page, log) {
     // No dialog to dismiss — fine
   }
 
-  // ── Helper: click first matching, with click/force/JS fallbacks ──
-  async function clickFirstMatching(selectors, label) {
-    for (const sel of selectors) {
-      let count = 0;
-      try { count = await page.locator(sel).count(); } catch { continue; }
-      if (count === 0) continue;
-      const loc = page.locator(sel).first();
-      try { await loc.click({ timeout: 5000 }); log(`[CSV] ${label} (selector: ${sel})`); return sel; } catch {}
-      try { await loc.click({ timeout: 3000, force: true }); log(`[CSV] ${label} via force (selector: ${sel})`); return sel; } catch {}
-      try {
-        const ok = await loc.evaluate((el) => { if (el && typeof el.click === 'function') { el.click(); return true; } return false; });
-        if (ok) { log(`[CSV] ${label} via JS (selector: ${sel})`); return sel; }
-      } catch {}
-    }
-    // Selector list exhausted — dump a snapshot of every visible link on the
-    // page so the upstream alert is debuggable. Without this, "CA layout may
-    // have changed" is just a vague hand-wave; with it, we can see exactly
-    // what link text/hrefs CA is now serving and add the right selector.
-    let linkInventory = [];
-    try {
-      linkInventory = await page.evaluate(() =>
-        Array.from(document.querySelectorAll('a')).map((el) => ({
-          text: (el.textContent || '').trim().slice(0, 80),
-          href: (el.getAttribute('href') || '').slice(0, 120),
-          id:   el.id || null,
-          visible: !!(el.offsetWidth || el.offsetHeight),
-        })).filter(a => a.text && a.visible).slice(0, 40)
-      );
-    } catch { /* ignore */ }
-    try {
-      const html = await page.content();
-      fs.writeFileSync(path.join(__dirname, 'csv-link-dump.html'), html);
-      log('[CSV] saved csv-link-dump.html for selector diagnosis');
-    } catch (e) {
-      log(`[CSV] could not dump link HTML: ${e.message}`);
-    }
-    throw new Error(
-      `Could not click ${label}. Tried ${selectors.length} selectors. ` +
-      `Visible links on page: ${JSON.stringify(linkInventory)}. ` +
-      `Current URL: ${page.url()}. ` +
-      `CA layout may have changed — see csv-link-dump.html.`
-    );
-  }
-
-  // ── Helper: fill first matching input ──
-  async function fillFirstMatching(selectors, value, label) {
-    for (const sel of selectors) {
-      let count = 0;
-      try { count = await page.locator(sel).count(); } catch { continue; }
-      if (count === 0) continue;
-      try { await page.fill(sel, value, { timeout: 5000 }); log(`[CSV] ${label} (selector: ${sel})`); return sel; } catch {}
-    }
-    throw new Error(`Could not fill ${label}. Tried ${selectors.length} selectors.`);
-  }
-
-  // ── Helper: select first matching dropdown ──
-  async function selectFirstMatching(selectors, value, label) {
-    for (const sel of selectors) {
-      let count = 0;
-      try { count = await page.locator(sel).count(); } catch { continue; }
-      if (count === 0) continue;
-      try {
-        await page.selectOption(sel, value, { timeout: 5000 });
-        log(`[CSV] ${label} → ${value} (selector: ${sel})`);
-        return sel;
-      } catch (e) {
-        // CA sometimes wraps select in a custom dropdown — fall through silently
-        log(`[CSV] selectOption failed on ${sel} for ${label}: ${e.message}`);
-      }
-    }
-    // If dropdown can't be selected, log a warning but DON'T throw — many CA
-    // reports default to sensible filters anyway. Bad data is preferable to
-    // no data when our concern is just "more permissive than default".
-    log(`[CSV] WARNING: Could not set ${label}. Continuing with whatever default CA used.`);
-    return null;
-  }
+  // ── Selector helpers are shared across login + CSV + dashboard pulls now;
+  // see scraper/selector-helpers.js for the click/fill/select fallback chain
+  // and the diagnostic-dump pattern. Local wrappers below tag log lines with
+  // "[CSV]" so the Railway log stream stays grep-able by component.
+  const csvLog = (msg) => log(`[CSV] ${msg}`);
 
   // Click "Housekeeping Check-off List" link
   log('[CSV] Looking for Housekeeping Check-off List link...');
-  await clickFirstMatching([
-    'a:has-text("Housekeeping Check-off List"):visible',
-    'a:has-text("Check-off List"):visible',
-    'a:has-text("Check-off"):visible',
-    'a:has-text("Housekeeping"):visible',
-    'a[href*="housekeeping" i]:visible',
-    'a:has-text("Room Status"):visible',
-    'a:has-text("Room List"):visible',
-  ], 'Clicked Housekeeping Check-off List');
+  await clickFirstMatching(
+    page,
+    [
+      'a:has-text("Housekeeping Check-off List"):visible',
+      'a:has-text("Check-off List"):visible',
+      'a:has-text("Check-off"):visible',
+      'a:has-text("Housekeeping"):visible',
+      'a[href*="housekeeping" i]:visible',
+      'a:has-text("Room Status"):visible',
+      'a:has-text("Room List"):visible',
+    ],
+    'Housekeeping Check-off List link',
+    csvLog,
+    { dumpFile: 'csv-link-dump' },
+  );
 
   // Wait for the report form to load
   await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
@@ -412,49 +345,49 @@ async function downloadCSVFromCA(page, log) {
   // ── Set all filters explicitly (never trust defaults / sticky state) ──
   // Each one falls through gracefully if the dropdown can't be set —
   // we'd rather get permissive default data than no data.
-  await selectFirstMatching([
+  await selectFirstMatching(page, [
     'select[name="status"]',
     'select[id="status"]',
     'select[id*="status" i]',
     'label:has-text("Status") >> select',
-  ], '*', 'Set Status → Select All');
+  ], '*', 'Status → Select All', csvLog);
 
-  await selectFirstMatching([
+  await selectFirstMatching(page, [
     'select[name="condition"]',
     'select[id="condition"]',
     'select[id*="condition" i]',
     'label:has-text("Condition") >> select',
-  ], '*', 'Set Condition → Select All');
+  ], '*', 'Condition → Select All', csvLog);
 
-  await selectFirstMatching([
+  await selectFirstMatching(page, [
     'select[name="housekeeper"]',
     'select[id="housekeeper"]',
     'select[id*="housekeep" i]',
     'label:has-text("Housekeeper") >> select',
-  ], '*', 'Set Housekeeper → Select All');
+  ], '*', 'Housekeeper → Select All', csvLog);
 
   // Room range — fail loud (we need this).
-  await fillFirstMatching([
+  await fillFirstMatching(page, [
     'input[name="roomRangeStartField"]',
     'input[name="roomRangeStart"]',
     'input[name*="rangeStart" i]',
     'input[id*="rangeStart" i]',
     'input[placeholder*="start" i]',
-  ], '101', 'Set Room Range Start');
-  await fillFirstMatching([
+  ], '101', 'Room Range Start', csvLog, { required: true });
+  await fillFirstMatching(page, [
     'input[name="roomRangeEndField"]',
     'input[name="roomRangeEnd"]',
     'input[name*="rangeEnd" i]',
     'input[id*="rangeEnd" i]',
     'input[placeholder*="end" i]',
-  ], '422', 'Set Room Range End');
+  ], '422', 'Room Range End', csvLog, { required: true });
 
-  await selectFirstMatching([
+  await selectFirstMatching(page, [
     'select[name="sort"]',
     'select[id="sort"]',
     'select[id*="sort" i]',
     'label:has-text("Sort") >> select',
-  ], 'room_number', 'Set Sort → Room Number');
+  ], 'room_number', 'Sort → Room Number', csvLog);
 
   // CSV export checkbox.
   //
