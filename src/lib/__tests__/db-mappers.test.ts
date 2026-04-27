@@ -137,7 +137,7 @@ describe('Room mapper round-trip', () => {
     const original = {
       number: '305',
       type: 'checkout' as const,
-      priority: 'urgent' as const,
+      priority: 'vip' as const,
       status: 'dirty' as const,
       date: '2026-04-27',
       propertyId: 'p1',
@@ -150,7 +150,7 @@ describe('Room mapper round-trip', () => {
     const reread = fromRoomRow({ ...row, id: 'r1' });
     assert.equal(reread.number, '305');
     assert.equal(reread.type, 'checkout');
-    assert.equal(reread.priority, 'urgent');
+    assert.equal(reread.priority, 'vip');
     assert.equal(reread.status, 'dirty');
     assert.equal(reread.assignedName, 'Maria');
     assert.equal(reread.startedAt!.toISOString(), '2026-04-27T15:00:00.000Z');
