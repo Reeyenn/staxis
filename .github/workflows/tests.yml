@@ -1,0 +1,34 @@
+name: Tests
+
+# Run the unit tests on every push to main and every PR. Keeps regressions
+# in the parser, mappers, and scraper helpers from shipping. Tests use
+# node:test (built-in, no extra install) + tsx for the TypeScript suites,
+# so the workflow stays fast (~30s including npm ci).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Run scraper unit tests
+        run: node --test scraper/__tests__/*.test.js
+
+      - name: Run db-mappers unit tests
+        run: npx tsx --test src/lib/__tests__/*.test.ts

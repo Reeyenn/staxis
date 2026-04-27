@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "next lint",
     "seed": "node scripts/seed-supabase.js",
-    "seed:reset": "node scripts/seed-supabase.js --reset"
+    "seed:reset": "node scripts/seed-supabase.js --reset",
+    "test": "node --test scraper/__tests__/*.test.js && npx tsx --test src/lib/__tests__/*.test.ts",
+    "test:scraper": "node --test scraper/__tests__/*.test.js"
   },
   "dependencies": {
     "@supabase/ssr": "^0.5.2",
