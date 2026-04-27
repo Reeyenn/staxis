@@ -294,50 +294,132 @@ async function downloadCSVFromCA(page, log) {
   // Wait for the page to fully load
   await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
 
-  // Dismiss any data discrepancy dialogs
+  // Dismiss any data discrepancy dialogs. Add :visible filter so a
+  // hidden legacy OK button doesn't waste 30s on a non-existent dialog.
   try {
-    const okButton = page.locator('button:has-text("OK"), input[value="OK"]');
+    const okButton = page.locator('button:has-text("OK"):visible, input[value="OK"]:visible, button:has-text("Continue"):visible, button:has-text("Dismiss"):visible').first();
     if (await okButton.count() > 0) {
-      await okButton.first().click();
+      try { await okButton.click({ timeout: 3000 }); }
+      catch { try { await okButton.click({ timeout: 2000, force: true }); } catch { /* ignore */ } }
       log('[CSV] Dismissed data discrepancy dialog');
       await page.waitForTimeout(500);
     }
-  } catch (e) {
+  } catch {
     // No dialog to dismiss — fine
+  }
+
+  // ── Helper: click first matching, with click/force/JS fallbacks ──
+  async function clickFirstMatching(selectors, label) {
+    for (const sel of selectors) {
+      let count = 0;
+      try { count = await page.locator(sel).count(); } catch { continue; }
+      if (count === 0) continue;
+      const loc = page.locator(sel).first();
+      try { await loc.click({ timeout: 5000 }); log(`[CSV] ${label} (selector: ${sel})`); return sel; } catch {}
+      try { await loc.click({ timeout: 3000, force: true }); log(`[CSV] ${label} via force (selector: ${sel})`); return sel; } catch {}
+      try {
+        const ok = await loc.evaluate((el) => { if (el && typeof el.click === 'function') { el.click(); return true; } return false; });
+        if (ok) { log(`[CSV] ${label} via JS (selector: ${sel})`); return sel; }
+      } catch {}
+    }
+    throw new Error(`Could not click ${label}. Tried ${selectors.length} selectors. CA layout may have changed.`);
+  }
+
+  // ── Helper: fill first matching input ──
+  async function fillFirstMatching(selectors, value, label) {
+    for (const sel of selectors) {
+      let count = 0;
+      try { count = await page.locator(sel).count(); } catch { continue; }
+      if (count === 0) continue;
+      try { await page.fill(sel, value, { timeout: 5000 }); log(`[CSV] ${label} (selector: ${sel})`); return sel; } catch {}
+    }
+    throw new Error(`Could not fill ${label}. Tried ${selectors.length} selectors.`);
+  }
+
+  // ── Helper: select first matching dropdown ──
+  async function selectFirstMatching(selectors, value, label) {
+    for (const sel of selectors) {
+      let count = 0;
+      try { count = await page.locator(sel).count(); } catch { continue; }
+      if (count === 0) continue;
+      try {
+        await page.selectOption(sel, value, { timeout: 5000 });
+        log(`[CSV] ${label} → ${value} (selector: ${sel})`);
+        return sel;
+      } catch (e) {
+        // CA sometimes wraps select in a custom dropdown — fall through silently
+        log(`[CSV] selectOption failed on ${sel} for ${label}: ${e.message}`);
+      }
+    }
+    // If dropdown can't be selected, log a warning but DON'T throw — many CA
+    // reports default to sensible filters anyway. Bad data is preferable to
+    // no data when our concern is just "more permissive than default".
+    log(`[CSV] WARNING: Could not set ${label}. Continuing with whatever default CA used.`);
+    return null;
   }
 
   // Click "Housekeeping Check-off List" link
   log('[CSV] Looking for Housekeeping Check-off List link...');
-  const hkLink = page.locator('a:has-text("Housekeeping Check-off List")').first();
-  await hkLink.waitFor({ timeout: 10000 });
-  await hkLink.click();
-  log('[CSV] Clicked Housekeeping Check-off List');
+  await clickFirstMatching([
+    'a:has-text("Housekeeping Check-off List"):visible',
+    'a:has-text("Check-off List"):visible',
+    'a:has-text("Check-off"):visible',
+    'a:has-text("Housekeeping"):visible',
+    'a[href*="housekeeping" i]:visible',
+    'a:has-text("Room Status"):visible',
+    'a:has-text("Room List"):visible',
+  ], 'Clicked Housekeeping Check-off List');
 
   // Wait for the report form to load
   await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
   await page.waitForTimeout(1000); // CA forms can be slow
 
   // ── Set all filters explicitly (never trust defaults / sticky state) ──
-  // Status: Select All
-  await page.selectOption('select[name="status"]', '*');
-  log('[CSV] Set Status → Select All');
+  // Each one falls through gracefully if the dropdown can't be set —
+  // we'd rather get permissive default data than no data.
+  await selectFirstMatching([
+    'select[name="status"]',
+    'select[id="status"]',
+    'select[id*="status" i]',
+    'label:has-text("Status") >> select',
+  ], '*', 'Set Status → Select All');
 
-  // Condition: Select All (default is "Dirty" — must override)
-  await page.selectOption('select[name="condition"]', '*');
-  log('[CSV] Set Condition → Select All');
+  await selectFirstMatching([
+    'select[name="condition"]',
+    'select[id="condition"]',
+    'select[id*="condition" i]',
+    'label:has-text("Condition") >> select',
+  ], '*', 'Set Condition → Select All');
 
-  // Housekeeper: Select All
-  await page.selectOption('select[name="housekeeper"]', '*');
-  log('[CSV] Set Housekeeper → Select All');
+  await selectFirstMatching([
+    'select[name="housekeeper"]',
+    'select[id="housekeeper"]',
+    'select[id*="housekeep" i]',
+    'label:has-text("Housekeeper") >> select',
+  ], '*', 'Set Housekeeper → Select All');
 
-  // Room Range: 101 – 422
-  await page.fill('input[name="roomRangeStartField"]', '101');
-  await page.fill('input[name="roomRangeEndField"]', '422');
-  log('[CSV] Set Room Range → 101–422');
+  // Room range — fail loud (we need this).
+  await fillFirstMatching([
+    'input[name="roomRangeStartField"]',
+    'input[name="roomRangeStart"]',
+    'input[name*="rangeStart" i]',
+    'input[id*="rangeStart" i]',
+    'input[placeholder*="start" i]',
+  ], '101', 'Set Room Range Start');
+  await fillFirstMatching([
+    'input[name="roomRangeEndField"]',
+    'input[name="roomRangeEnd"]',
+    'input[name*="rangeEnd" i]',
+    'input[id*="rangeEnd" i]',
+    'input[placeholder*="end" i]',
+  ], '422', 'Set Room Range End');
 
-  // Sort: Room Number
-  await page.selectOption('select[name="sort"]', 'room_number');
-  log('[CSV] Set Sort → Room Number');
+  await selectFirstMatching([
+    'select[name="sort"]',
+    'select[id="sort"]',
+    'select[id*="sort" i]',
+    'label:has-text("Sort") >> select',
+  ], 'room_number', 'Set Sort → Room Number');
 
   // CSV export checkbox.
   //

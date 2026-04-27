@@ -187,7 +187,25 @@ export async function POST(req: NextRequest) {
   if (insErr || !inserted) {
     console.error('[accounts:POST] accounts insert failed, rolling back auth user', errToString(insErr));
     // Roll back the auth user so we don't leak orphaned auth rows.
-    await supabaseAdmin.auth.admin.deleteUser(authData.user.id).catch(() => {});
+    // Don't silently swallow the rollback failure — if the rollback ALSO
+    // fails we end up with a permanent zombie auth.users row that future
+    // account-creation will trip over with "email already exists" with
+    // no record showing where it came from. Surface the rollback failure
+    // alongside the original insert failure so the caller sees both and
+    // can ask Reeyen to clean up by email in the Supabase dashboard.
+    let rollbackError: string | null = null;
+    try {
+      const { error: delErr } = await supabaseAdmin.auth.admin.deleteUser(authData.user.id);
+      if (delErr) rollbackError = errToString(delErr);
+    } catch (rollErr) {
+      rollbackError = errToString(rollErr);
+    }
+    if (rollbackError) {
+      console.error(`[accounts:POST] AUTH ROLLBACK FAILED — orphaned auth.users row id=${authData.user.id} email=${normalizedUsername}@staxis.local. Insert error: ${errToString(insErr)}. Rollback error: ${rollbackError}`);
+      return NextResponse.json({
+        error: `Failed to create account record. ALSO: rollback of the auth user failed — orphaned auth row remains for username "${normalizedUsername}". Have an admin delete the row manually in Supabase Authentication.`,
+      }, { status: 500 });
+    }
     return NextResponse.json({ error: 'Failed to create account record' }, { status: 500 });
   }
 

@@ -63,6 +63,12 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   const [savingIssue, setSavingIssue] = useState(false);
   const [savingDnd, setSavingDnd] = useState<string | null>(null);
   const [helpSent, setHelpSent] = useState<Set<string>>(new Set());
+  // helpFailed: rooms where the SMS to the scheduling manager could NOT be
+  // delivered (no manager flagged, manager phone missing/invalid, Twilio
+  // down). Distinct from `helpSent` so the UI can show a "couldn't reach
+  // manager — find help in person" state instead of falsely claiming the
+  // alert went through.
+  const [helpFailed, setHelpFailed] = useState<Set<string>>(new Set());
   const [savingHelp, setSavingHelp] = useState<string | null>(null);
   const [resettingRoomId, setResettingRoomId] = useState<string | null>(null);
 
@@ -202,30 +208,39 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   };
 
   // ── Need Help - alert Maria ───────────────────────────────────────────────
+  // History: this used to flip helpSent=true (showing a green "Help Alert
+  // Sent" badge to the housekeeper) BEFORE confirming the SMS actually
+  // reached anyone — and the fetch that would deliver it was fire-and-
+  // forget with the .catch swallowing all errors. So if the property had
+  // no Scheduling Manager flagged, the manager had no phone, the manager
+  // was inactive, or Twilio was down, the housekeeper still saw "Sent"
+  // and assumed someone was on their way. That's a real safety problem
+  // — they're standing in a room waiting for help that never got pinged.
+  //
+  // Fix: AWAIT the API call, inspect the response, and only show "Sent"
+  // when the API confirms `sent: 1`. Anything else (`sent: 0` for any
+  // reason, network failure, 5xx) gets surfaced to the user with a
+  // distinct "couldn't reach manager" state so they know to call instead.
   const handleNeedHelp = async (room: RoomRow) => {
-    if (helpSent.has(room.id)) return; // already sent for this room
+    if (helpSent.has(room.id)) return; // already successfully sent for this room
     if (!uid || !pid) return;
+    // Clear any prior failure indicator so the spinner shows during the retry.
+    setHelpFailed(prev => {
+      if (!prev.has(room.id)) return prev;
+      const next = new Set(prev); next.delete(room.id); return next;
+    });
     setSavingHelp(room.id);
     try {
-      // helpRequestedAt / helpRequestedBy are legacy Firestore-only fields
-      // that the Postgres schema doesn't carry — the SMS alert below is
-      // the authoritative notification channel, so we only flip the
-      // `helpRequested` flag here for the UI state.
+      // Flip the helpRequested flag on the room row first so other UI
+      // (e.g. manager-side dashboard) can pick it up via realtime.
       await updateRoom(uid, pid, room.id, {
         helpRequested: true,
       });
-      setHelpSent(prev => new Set(prev).add(room.id));
 
-      // Send SMS to the property's Scheduling Manager only.
-      // /api/help-request looks up the single staff member with
-      // isSchedulingManager=true and texts them — no broadcasts, no
-      // front desk fallback. Best-effort, don't block on failure.
-      //
-      // Pass staffId (housekeeperId from the URL) so the API route can
-      // confirm the request originates from a real staff member of this
-      // property — not just anyone who happens to know the pid.
-      if (uid && pid) {
-        fetch('/api/help-request', {
+      // Send SMS to the property's Scheduling Manager. AWAIT — we need to
+      // know whether it actually reached anyone before showing "Sent".
+      try {
+        const res = await fetch('/api/help-request', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -236,9 +251,26 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
             roomNumber: room.number,
             language: lang,
           }),
-        }).catch(err => {
-          console.error('[housekeeper] help request SMS failed:', err);
         });
+        const data = (await res.json().catch(() => ({}))) as {
+          sent?: number;
+          failed?: number;
+          reason?: string;
+        };
+        const actuallySent = res.ok && (data.sent ?? 0) >= 1;
+        if (actuallySent) {
+          setHelpSent(prev => new Set(prev).add(room.id));
+        } else {
+          // Don't claim Sent. Surface a distinct "couldn't reach manager"
+          // state so the HK knows to physically find help instead of waiting.
+          const reason = data.reason || (res.ok ? 'unknown' : `http_${res.status}`);
+          setHelpFailed(prev => new Set(prev).add(room.id));
+          console.error(`[housekeeper] help request not delivered: reason=${reason}`);
+        }
+      } catch (err) {
+        // Network error — same UX as a delivery failure.
+        setHelpFailed(prev => new Set(prev).add(room.id));
+        console.error('[housekeeper] help request network error:', err);
       }
     } catch (err) {
       console.error('[housekeeper] help request error:', err);
@@ -492,6 +524,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
               isSavingDnd={savingDnd === room.id}
               isSavingHelp={savingHelp === room.id}
               helpAlreadySent={helpSent.has(room.id)}
+              helpDeliveryFailed={helpFailed.has(room.id)}
               onStart={() => handleStartRoom(room)}
               onFinish={() => handleFinishRoom(room)}
               onStop={() => handleStopRoom(room)}
@@ -607,6 +640,7 @@ function RoomCard({
   isSavingDnd,
   isSavingHelp,
   helpAlreadySent,
+  helpDeliveryFailed,
   onStart,
   onFinish,
   onStop,
@@ -623,6 +657,11 @@ function RoomCard({
   isSavingDnd: boolean;
   isSavingHelp: boolean;
   helpAlreadySent: boolean;
+  /** True when the help-request SMS could NOT be delivered (no manager
+   *  flagged, manager phone missing/invalid, Twilio failure). Distinct
+   *  from helpAlreadySent so the UI can show a "tell someone in person"
+   *  state instead of falsely claiming the alert was sent. */
+  helpDeliveryFailed: boolean;
   onStart: () => void;
   onFinish: () => void;
   onStop: () => void;
@@ -902,18 +941,32 @@ function RoomCard({
       {isInProgress && (
         <button
           onClick={onNeedHelp}
+          // Allow re-tapping after a delivery failure — maybe Twilio recovered.
           disabled={isSavingHelp || helpAlreadySent}
           style={{
             width: '100%', height: '48px', marginTop: '8px',
-            border: helpAlreadySent ? '2px solid var(--green-light, #86EFAC)' : '2px solid var(--red-light, #FCA5A5)',
+            border:
+              helpAlreadySent ? '2px solid var(--green-light, #86EFAC)' :
+              helpDeliveryFailed ? '2px solid var(--orange, #EA580C)' :
+              '2px solid var(--red-light, #FCA5A5)',
             borderRadius: '12px',
-            background: helpAlreadySent ? 'var(--green-bg, #F0FDF4)' : isSavingHelp ? 'var(--red-dim)' : 'var(--red-dim)',
-            color: helpAlreadySent ? 'var(--green)' : 'var(--red)',
-            fontSize: '16px', fontWeight: 700,
+            background:
+              helpAlreadySent ? 'var(--green-bg, #F0FDF4)' :
+              helpDeliveryFailed ? '#FFF7ED' :
+              isSavingHelp ? 'var(--red-dim)' : 'var(--red-dim)',
+            color:
+              helpAlreadySent ? 'var(--green)' :
+              helpDeliveryFailed ? 'var(--orange, #EA580C)' :
+              'var(--red)',
+            fontSize: helpDeliveryFailed ? '13px' : '16px',
+            fontWeight: 700,
             cursor: isSavingHelp || helpAlreadySent ? 'not-allowed' : 'pointer',
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
             WebkitTapHighlightColor: 'transparent',
             transition: 'all 150ms ease',
+            padding: '0 12px',
+            textAlign: 'center',
+            lineHeight: 1.2,
           }}
         >
           {helpAlreadySent ? (
@@ -921,6 +974,12 @@ function RoomCard({
               <CheckCircle size={18} color="var(--green)" />
               {t('helpAlertSent', lang)}
             </>
+          ) : helpDeliveryFailed ? (
+            // Delivery failed — tell the housekeeper to find someone in
+            // person. Don't pretend the alert went out.
+            lang === 'es'
+              ? '⚠️ No se pudo avisar al gerente — busca ayuda en persona. Toca para reintentar.'
+              : '⚠️ Couldn\'t reach manager — find help in person. Tap to retry.'
           ) : isSavingHelp ? (
             t('savingDots', lang)
           ) : (

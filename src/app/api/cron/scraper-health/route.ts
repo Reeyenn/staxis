@@ -176,8 +176,16 @@ async function getStatus(key: string): Promise<Record<string, unknown>> {
 
 // Upsert a scraper_status row with merged jsonb data. Supabase jsonb
 // doesn't have a native "merge" op, so we read-modify-write client-side.
+//
+// IMPORTANT: don't swallow read failures here. If we can't read the
+// existing row but pretend it was empty {}, the dedup logic in
+// runHealthCheck() loses its 6-hour quiet-window memory and starts
+// re-firing the same alert on every cron tick — Reeyen would get spam
+// SMS at 3am for a single underlying problem. Throw, so the GET handler's
+// catch returns 500 and GitHub Actions emails about the broken cron
+// instead of the cron silently corrupting our alert state.
 async function mergeStatus(key: string, patch: Record<string, unknown>): Promise<void> {
-  const current: Record<string, unknown> = await getStatus(key).catch(() => ({}));
+  const current: Record<string, unknown> = await getStatus(key);
   // Strip out our synthetic _updated_at before round-tripping.
   const { _updated_at: _, ...currentClean } = current;
   void _;

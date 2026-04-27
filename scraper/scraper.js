@@ -175,12 +175,100 @@ async function login(page) {
   }
 
   try {
-    await page.fill('input[name="j_username"]', CONFIG.CA_USERNAME);
-    await page.fill('input[name="j_password"]', CONFIG.CA_PASSWORD);
+    // Login form fields. CA has used `j_username` / `j_password` historically,
+    // but the same selector-fragility that bit us on the CSV checkbox
+    // (#CSVcheckbox renamed silently) would take the entire scraper offline
+    // if these names ever change — and every downstream pull (CSV, dashboard,
+    // OOO) depends on this auth step. Try a list of fallbacks; first match wins.
+    async function fillFirst(selectors, value, fieldName) {
+      for (const sel of selectors) {
+        let count = 0;
+        try { count = await page.locator(sel).count(); } catch { continue; }
+        if (count === 0) continue;
+        try {
+          await page.fill(sel, value, { timeout: 5000 });
+          log(`Filled ${fieldName} (selector: ${sel})`);
+          return sel;
+        } catch (e) {
+          log(`Fill failed for ${fieldName} on ${sel}: ${e.message}`);
+        }
+      }
+      throw new ScraperError(
+        ERROR_CODES.LOGIN_FAILED,
+        `Could not fill ${fieldName} field on login form (tried ${selectors.length} selectors). CA login layout may have changed.`
+      );
+    }
+    await fillFirst([
+      'input[name="j_username"]',
+      'input[name="username"]',
+      'input[name="user"]',
+      'input[id="username"]',
+      'input[id="userId"]',
+      'input[type="text"][autocomplete="username"]',
+      'label:has-text("Username") >> input',
+      'label:has-text("User") >> input[type="text"]',
+    ], CONFIG.CA_USERNAME, 'username');
+    await fillFirst([
+      'input[name="j_password"]',
+      'input[name="password"]',
+      'input[type="password"]',
+      'input[id="password"]',
+      'input[type="password"][autocomplete="current-password"]',
+      'label:has-text("Password") >> input',
+    ], CONFIG.CA_PASSWORD, 'password');
 
+    // Find and click the login button. Same fallback pattern.
+    async function clickLoginButton() {
+      const candidates = [
+        'a#greenButton',           // legacy id
+        'a.greenButton',
+        '#greenButton',
+        'button[type="submit"]:visible',
+        'input[type="submit"]:visible',
+        'button:has-text("Login"):visible',
+        'button:has-text("Log in"):visible',
+        'button:has-text("Sign in"):visible',
+        'a:has-text("Login"):visible',
+        'a:has-text("Log in"):visible',
+        'a:has-text("Sign in"):visible',
+        'a:has-text("Submit"):visible',
+      ];
+      for (const sel of candidates) {
+        let count = 0;
+        try { count = await page.locator(sel).count(); } catch { continue; }
+        if (count === 0) continue;
+        try {
+          await page.click(sel, { timeout: 5000 });
+          log(`Clicked login button (selector: ${sel})`);
+          return sel;
+        } catch (e) {
+          // Try force, then JS, before moving on.
+          try { await page.click(sel, { timeout: 3000, force: true }); log(`Clicked login button via force (selector: ${sel})`); return sel; } catch {}
+          try {
+            const ok = await page.locator(sel).first().evaluate((el) => { if (el && typeof el.click === 'function') { el.click(); return true; } return false; });
+            if (ok) { log(`Clicked login button via JS (selector: ${sel})`); return sel; }
+          } catch {}
+          log(`Click failed on login selector ${sel}: ${e.message}`);
+        }
+      }
+      // Last-ditch: submit the form directly.
+      try {
+        const submitted = await page.evaluate(() => {
+          const pw = document.querySelector('input[type="password"]');
+          const form = pw ? pw.closest('form') : (document.forms[0] || null);
+          if (form && typeof form.submit === 'function') { form.submit(); return true; }
+          return false;
+        });
+        if (submitted) { log('Submitted login form directly via JS'); return 'form.submit()'; }
+      } catch {}
+      throw new ScraperError(
+        ERROR_CODES.LOGIN_FAILED,
+        'Could not click login button (tried ' + candidates.length + ' selectors + form.submit()). CA login layout changed.'
+      );
+    }
     await Promise.all([
-      page.waitForNavigation({ waitUntil: 'load', timeout: 30000 }),
-      page.click('a#greenButton'),
+      page.waitForNavigation({ waitUntil: 'load', timeout: 30000 }).catch(() => {}),
+      clickLoginButton(),
     ]);
     log(`After login click — now at: ${page.url()}`);
 

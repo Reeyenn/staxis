@@ -62,7 +62,12 @@ async function getStatus(key: string): Promise<Record<string, unknown>> {
 }
 
 async function mergeStatus(key: string, patch: Record<string, unknown>): Promise<void> {
-  const current: Record<string, unknown> = await getStatus(key).catch(() => ({}));
+  // Don't swallow read failures — pretending the digest_state was empty
+  // would treat the next run as 'first ever' and skip the alert
+  // unnecessarily, leaving Reeyen without a weekly proof-of-life signal.
+  // Let the GET handler's outer catch surface this as a 500 so GitHub
+  // Actions emails about the broken cron.
+  const current: Record<string, unknown> = await getStatus(key);
   const { _updated_at: _, ...clean } = current;
   void _;
   const merged = { ...clean, ...patch };
