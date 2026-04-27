@@ -47,7 +47,7 @@ export default function PropertySelectorPage() {
   if (isLoading) {
     return (
       <div style={{
-        minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center',
         background: 'var(--bg)',
       }}>
         <div style={{
@@ -64,7 +64,7 @@ export default function PropertySelectorPage() {
 
   return (
     <div style={{
-      minHeight: '100vh',
+      minHeight: '100dvh',
       background: 'var(--bg)',
       display: 'flex',
       flexDirection: 'column',

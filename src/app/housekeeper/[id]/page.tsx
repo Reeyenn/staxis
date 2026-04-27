@@ -958,13 +958,18 @@ function RoomCard({
 
         <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
           {/* DND toggle button — hide when done, when dirty+DND (action area handles it), and when in-progress (can't DND a started room) */}
+          {/* min 44x44 tap target per Apple HIG / Android guidelines.
+              touch-action: manipulation suppresses iOS double-tap zoom
+              on rapid taps so a HK with wet hands doesn't accidentally
+              zoom the page when reaching for DND. */}
           {!isDone && !isInProgress && !room.isDnd && (
             <button
               onClick={onToggleDnd}
               disabled={isSavingDnd}
               style={{
-                height: '36px',
-                padding: '0 10px',
+                minHeight: '44px',
+                minWidth: '44px',
+                padding: '0 12px',
                 border: `1.5px solid var(--border-light, #E5E7EB)`,
                 borderRadius: '10px',
                 background: 'transparent',
@@ -973,6 +978,7 @@ function RoomCard({
                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px',
                 opacity: isSavingDnd ? 0.4 : 0.6,
                 WebkitTapHighlightColor: 'transparent',
+                touchAction: 'manipulation',
                 transition: 'all 150ms ease',
               }}
               aria-label={room.isDnd ? t('removeDnd', lang) : t('markDnd', lang)}
@@ -988,18 +994,20 @@ function RoomCard({
             </button>
           )}
 
-          {/* Report issue button */}
+          {/* Report issue button — same 44x44 minimum + touch-action. */}
           <button
             onClick={onReportIssue}
             style={{
-              height: '36px',
-              padding: '0 10px',
+              minHeight: '44px',
+              minWidth: '44px',
+              padding: '0 12px',
               border: '1.5px solid var(--border-light, #E5E7EB)',
               borderRadius: '10px', background: 'transparent',
               cursor: 'pointer', flexShrink: 0,
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px',
               opacity: 0.6,
               WebkitTapHighlightColor: 'transparent',
+              touchAction: 'manipulation',
             }}
             aria-label={lang === 'es' ? 'Reportar problema' : 'Report issue'}
           >
@@ -1052,13 +1060,18 @@ function RoomCard({
             style={{
               background: 'none',
               border: 'none',
-              padding: '4px 6px',
+              // 44x44 minimum tap target — was 4x6 padding which gave a
+              // ~25px hit area, well under accessibility guidelines.
+              minHeight: '44px',
+              minWidth: '44px',
+              padding: '0 12px',
               fontSize: '13px',
               fontWeight: 600,
               color: 'var(--green)',
               cursor: isResetting ? 'not-allowed' : 'pointer',
               opacity: isResetting ? 0.4 : 0.55,
               WebkitTapHighlightColor: 'transparent',
+              touchAction: 'manipulation',
               textDecoration: 'underline',
               textUnderlineOffset: '2px',
               transition: 'opacity 150ms ease',
@@ -1117,7 +1130,12 @@ function RoomCard({
               opacity: isSavingDnd ? 0.4 : 0.7,
               textDecoration: 'underline', textUnderlineOffset: '2px',
               WebkitTapHighlightColor: 'transparent',
-              padding: '4px 6px',
+              touchAction: 'manipulation',
+              // 44x44 minimum tap target. Same accessibility note as the
+              // Reset button above.
+              minHeight: '44px',
+              minWidth: '44px',
+              padding: '0 12px',
             }}
           >
             {isSavingDnd ? '...' : (lang === 'es' ? 'Quitar' : 'Undo')}

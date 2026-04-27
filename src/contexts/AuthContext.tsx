@@ -162,10 +162,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const uid = session.user.id;
       // Dispatched into the next tick so the auth lock is released before
       // we touch any supabase.* method. See deadlock warning above.
+      //
+      // We also race loadAppUser against a 6-second timeout. If the
+      // accounts-table query hangs (RLS bug, Supabase outage, dropped
+      // websocket), we don't want the user stuck on a loading spinner
+      // indefinitely — the initial-hydration path already has a 4s
+      // ceiling (further down), but token-refresh and SIGNED_IN events
+      // hit this branch *after* hydration and previously had no bound.
+      // 6s is generous (typical query is <300ms) but firm enough that
+      // a real hang surfaces as a recoverable signed-out state instead
+      // of a frozen UI.
       setTimeout(async () => {
         if (!active) return;
         try {
-          const appUser = await loadAppUser(uid);
+          const appUser = await Promise.race([
+            loadAppUser(uid),
+            new Promise<null>((_, reject) =>
+              setTimeout(() => reject(new Error('loadAppUser timeout (6s)')), 6000),
+            ),
+          ]);
           if (!active) return;
           if (appUser) {
             setUser(appUser);

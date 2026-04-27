@@ -1678,7 +1678,7 @@ function ScheduleSection() {
   }, [dragState?.floating, findDropTarget, commitRoomTo]);
 
   return (
-    <div style={{ padding: '16px 24px 200px', background: 'var(--bg)', minHeight: 'calc(100vh - 180px)', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+    <div style={{ padding: '16px 24px 200px', background: 'var(--bg)', minHeight: 'calc(100dvh - 180px)', display: 'flex', flexDirection: 'column', gap: '20px' }}>
 
       {/* ── Date picker ── */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '16px' }}>
@@ -3386,7 +3386,7 @@ function RoomsSection() {
   };
 
   return (
-    <div style={{ padding: '24px', paddingBottom: '200px', background: 'var(--bg)', minHeight: 'calc(100vh - 180px)' }}>
+    <div style={{ padding: '24px', paddingBottom: '200px', background: 'var(--bg)', minHeight: 'calc(100dvh - 180px)' }}>
 
       {/* Backup staff picker popup */}
       {backupRoom && (
@@ -5615,7 +5615,7 @@ function PerformanceSection() {
   })();
 
   return (
-    <div style={{ padding: '24px', maxWidth: '1600px', margin: '0 auto', minHeight: 'calc(100vh - 120px)' }}>
+    <div style={{ padding: '24px', maxWidth: '1600px', margin: '0 auto', minHeight: 'calc(100dvh - 120px)' }}>
 
       {/* ── Header + Time-range Filter ── */}
       <header style={{ marginBottom: '40px', display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'flex-end', gap: '16px' }}>
@@ -6035,7 +6035,7 @@ export default function HousekeepingPage() {
 
   if (authLoading || propLoading) {
     return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)' }}>
+      <div style={{ minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)' }}>
         <div className="spinner" style={{ width: '32px', height: '32px' }} />
       </div>
     );

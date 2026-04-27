@@ -216,7 +216,7 @@ export default function FrontDeskPage() {
   if (authLoading || propLoading) {
     return (
       <AppLayout>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#fbf9f4' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100dvh', background: '#fbf9f4' }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{ width: '32px', height: '32px', border: '3px solid #d5d2ca', borderTopColor: '#364262', borderRadius: '50%', margin: '0 auto 12px', animation: 'spin 0.8s linear infinite' }} />
             <div style={{ fontSize: '14px', fontWeight: 500, color: '#757684', fontFamily: 'Inter, sans-serif' }}>
@@ -255,7 +255,7 @@ export default function FrontDeskPage() {
         .fd-filter-pill:hover { background: rgba(54,66,98,0.06); }
       `}</style>
 
-      <div style={{ minHeight: '100vh', background: '#fbf9f4' }}>
+      <div style={{ minHeight: '100dvh', background: '#fbf9f4' }}>
 
         {/* ── Stitch Hero Section ── */}
         <div style={{ padding: '28px 28px 0', maxWidth: '1200px', margin: '0 auto' }}>

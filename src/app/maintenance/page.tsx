@@ -367,7 +367,7 @@ export default function MaintenancePage() {
 
   if (authLoading || propLoading) {
     return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '12px', background: 'var(--bg)' }}>
+      <div style={{ minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '12px', background: 'var(--bg)' }}>
         <div className="animate-spin" style={{ width: '32px', height: '32px', border: '4px solid var(--border)', borderTopColor: 'var(--navy)', borderRadius: '50%' }} />
         <p style={{ color: 'var(--text-muted)', fontSize: '14px' }}>
           {lang === 'es' ? 'Cargando mantenimiento...' : 'Loading maintenance...'}
