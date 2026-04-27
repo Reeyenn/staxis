@@ -45,6 +45,20 @@ function toE164(raw: string): string | null {
 
 export async function POST(req: NextRequest) {
   try {
+    // Lock this route behind CRON_SECRET. It's currently dead code (the
+    // active SMS path is /api/send-shift-confirmations), but the route
+    // is still publicly POST-able and would fire SMS through our Twilio
+    // account if anyone discovered it. Same secret as /api/cron/* and
+    // /api/morning-resend; if the secret isn't configured (dev env), we
+    // skip the check.
+    const cronSecret = process.env.CRON_SECRET;
+    if (cronSecret) {
+      const authHeader = req.headers.get('authorization') ?? '';
+      if (authHeader !== `Bearer ${cronSecret}`) {
+        return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+      }
+    }
+
     const reqBody = await req.json();
 
     let entries: NotifyEntry[];

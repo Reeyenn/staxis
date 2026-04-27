@@ -220,6 +220,10 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       // /api/help-request looks up the single staff member with
       // isSchedulingManager=true and texts them — no broadcasts, no
       // front desk fallback. Best-effort, don't block on failure.
+      //
+      // Pass staffId (housekeeperId from the URL) so the API route can
+      // confirm the request originates from a real staff member of this
+      // property — not just anyone who happens to know the pid.
       if (uid && pid) {
         fetch('/api/help-request', {
           method: 'POST',
@@ -227,6 +231,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
           body: JSON.stringify({
             uid,
             pid,
+            staffId: housekeeperId,
             staffName: room.assignedName || 'Housekeeper',
             roomNumber: room.number,
             language: lang,
