@@ -293,9 +293,19 @@ async function runVercelWatchdog({ supabase, timezone }) {
   }
 
   // Debounce & business-hours gate.
-  const hoursSinceAlert = prevAlertedAt
+  //
+  // Clock-skew safety: prevAlertedAt comes from Postgres `now()` (server
+  // time), but `now` on this side is Railway's local clock. If Railway's
+  // clock drifts AHEAD of the database, hoursSinceAlert can be negative
+  // and the `< REALERT_INTERVAL_MS` check trivially passes — we'd alert
+  // every tick instead of every 6 hours, hammering Twilio. Floor at 0
+  // before the comparison so any negative skew degrades to "alert now"
+  // (correct on first alert, debounced on subsequent ones once Postgres
+  // catches up).
+  const rawSinceAlert = prevAlertedAt
     ? (now.getTime() - prevAlertedAt.getTime())
     : Infinity;
+  const hoursSinceAlert = rawSinceAlert < 0 ? 0 : rawSinceAlert;
   const hour = localHour(timezone);
   const insideWindow = hour >= ALERT_WINDOW_START && hour < ALERT_WINDOW_END;
 
@@ -335,13 +345,20 @@ async function runVercelWatchdog({ supabase, timezone }) {
 
   const smsRes = await sendTwilioSms(alertPhone, body);
   patch.alertActive = true;
-  patch.lastAlertedAt = nowIso;
   patch.lastAlertedBody = body;
   patch.lastAlertSmsOk = smsRes.ok;
-  if (!smsRes.ok) {
-    log(`ALERT SMS FAILED: ${smsRes.detail}. Would have said: ${body}`);
-  } else {
+  // Only stamp lastAlertedAt if the SMS actually went out. Previously we
+  // wrote the timestamp unconditionally, which meant a Twilio outage at
+  // the moment of alert would burn the entire 6-hour debounce window:
+  // the next 71 ticks all see "we alerted recently" and stay silent,
+  // even though no human ever got the SMS. By only persisting the
+  // timestamp on success, a failed send re-attempts on the next tick
+  // (every 5 min) until it lands.
+  if (smsRes.ok) {
+    patch.lastAlertedAt = nowIso;
     log(`ALERT sent: ${body}`);
+  } else {
+    log(`ALERT SMS FAILED: ${smsRes.detail}. Will retry on next tick. Body: ${body}`);
   }
 
   try { await mergeStatus(supabase, 'vercel_watchdog', patch); }

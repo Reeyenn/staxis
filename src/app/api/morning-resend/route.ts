@@ -319,8 +319,11 @@ export async function POST(req: NextRequest) {
     });
 
   } catch (err) {
+    // Generic 500 — `errToString(err)` may include PG schema names or
+    // Supabase-internal error text. Caller is CRON_SECRET-gated, so
+    // this is defense in depth, but we keep the full detail server-side.
     const msg = errToString(err);
     console.error('morning-resend error:', msg);
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

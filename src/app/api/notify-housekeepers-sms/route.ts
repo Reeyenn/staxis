@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
+import {
+  validateUuid, validateString, validateArray, sanitizeForSms, LIMITS,
+} from '@/lib/api-validate';
 
 interface SmsEntry {
   phone: string;          // E.164 format, e.g. +15551234567
@@ -34,22 +37,70 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const reqBody = await req.json();
+    const reqBody = await req.json().catch(() => null);
+    if (reqBody == null) {
+      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+    }
 
     // Handle both array format (legacy) and object format with uid/pid.
-    let entries: SmsEntry[];
+    let rawEntries: unknown;
     let pid: string | undefined;
 
     if (Array.isArray(reqBody)) {
-      entries = reqBody;
+      rawEntries = reqBody;
+    } else if (reqBody && typeof reqBody === 'object') {
+      rawEntries = (reqBody as { entries?: unknown }).entries ?? [];
+      pid = (reqBody as { pid?: string }).pid;
     } else {
-      entries = reqBody.entries ?? [];
-      // uid still accepted for back-compat but ignored; pid is the scoping key.
-      pid = reqBody.pid;
+      rawEntries = [];
     }
 
-    if (!Array.isArray(entries) || entries.length === 0) {
+    // ── Strict per-entry validation ─────────────────────────────────────
+    // The route is CRON_SECRET-gated, but defense in depth: a stale call
+    // site or a typo'd payload should fail loudly with a 400, not tunnel
+    // unbounded strings into Twilio bodies. Every name/room/phone we
+    // ultimately stick into an SMS must be length-bounded and free of
+    // newline injection.
+    const arrV = validateArray<unknown>(rawEntries, {
+      max: LIMITS.STAFF_ARRAY_MAX,
+      label: 'entries',
+    });
+    if (arrV.error) return NextResponse.json({ error: arrV.error }, { status: 400 });
+    if (arrV.value!.length === 0) {
       return NextResponse.json({ error: 'No entries provided' }, { status: 400 });
+    }
+
+    const entries: SmsEntry[] = [];
+    for (let i = 0; i < arrV.value!.length; i++) {
+      const e = arrV.value![i];
+      if (!e || typeof e !== 'object') {
+        return NextResponse.json({ error: `entries[${i}] not an object` }, { status: 400 });
+      }
+      const ee = e as Record<string, unknown>;
+      const phoneV = validateString(ee.phone, { max: 20, label: `entries[${i}].phone` });
+      if (phoneV.error) return NextResponse.json({ error: phoneV.error }, { status: 400 });
+      const nameV  = validateString(ee.name,  { max: LIMITS.STAFF_NAME_MAX, label: `entries[${i}].name` });
+      if (nameV.error)  return NextResponse.json({ error: nameV.error  }, { status: 400 });
+      const roomsArr = validateArray<unknown>(ee.rooms, { max: LIMITS.ASSIGNED_ROOMS_MAX, label: `entries[${i}].rooms` });
+      if (roomsArr.error) return NextResponse.json({ error: roomsArr.error }, { status: 400 });
+      const rooms: string[] = [];
+      for (let j = 0; j < roomsArr.value!.length; j++) {
+        const r = validateString(roomsArr.value![j], { max: LIMITS.ROOM_NUMBER_MAX, label: `entries[${i}].rooms[${j}]` });
+        if (r.error) return NextResponse.json({ error: r.error }, { status: 400 });
+        rooms.push(r.value!);
+      }
+      let hkId: string | undefined;
+      if (ee.housekeeperId != null) {
+        const hkV = validateUuid(ee.housekeeperId, `entries[${i}].housekeeperId`);
+        if (hkV.error) return NextResponse.json({ error: hkV.error }, { status: 400 });
+        hkId = hkV.value!;
+      }
+      entries.push({
+        phone: phoneV.value!,
+        name:  sanitizeForSms(nameV.value!),
+        rooms: rooms.map(sanitizeForSms),
+        housekeeperId: hkId,
+      });
     }
 
     let hotelName = 'Your Hotel';
@@ -59,7 +110,7 @@ export async function POST(req: NextRequest) {
         .select('name')
         .eq('id', pid)
         .maybeSingle();
-      hotelName = prop?.name || 'Your Hotel';
+      hotelName = sanitizeForSms(prop?.name || 'Your Hotel');
     }
 
     const results = await Promise.allSettled(

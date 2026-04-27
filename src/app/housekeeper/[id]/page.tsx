@@ -171,7 +171,29 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       }
 
       setActiveDate(chosenDate);
-      setRooms(sortRooms(byDate.get(chosenDate) ?? []));
+      const newRooms = sortRooms(byDate.get(chosenDate) ?? []);
+      setRooms(newRooms);
+
+      // Bound helpSent / helpFailed Sets to currently-visible room ids.
+      // These were unbounded — a HK who works five shifts in a row on a
+      // shared phone (without page reload) would accumulate room ids
+      // across days forever. Date rollover + page-stay alone leaks
+      // memory and shows yesterday's "Help sent" badges on rooms that
+      // happen to have the same id today (rare but possible). Pruning
+      // to the currently-rendered room set is bounded and matches what
+      // the user can actually see.
+      const visibleIds = new Set(newRooms.map(r => r.id));
+      setHelpSent(prev => {
+        const next = new Set<string>();
+        for (const id of prev) if (visibleIds.has(id)) next.add(id);
+        return next.size === prev.size ? prev : next;
+      });
+      setHelpFailed(prev => {
+        const next = new Set<string>();
+        for (const id of prev) if (visibleIds.has(id)) next.add(id);
+        return next.size === prev.size ? prev : next;
+      });
+
       setLoading(false);
     });
 

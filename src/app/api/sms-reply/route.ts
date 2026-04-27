@@ -26,6 +26,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
+import { safeBaseUrl, redactPhone } from '@/lib/api-validate';
 import twilio from 'twilio';
 
 // Twilio expects TwiML (XML), not JSON. An empty <Response/> tells Twilio
@@ -121,26 +122,53 @@ const EN_SET = new Set(['ENGLISH', 'INGLES', 'INGLÉS', 'EN']);
 
 // Debug: write every webhook hit (and the final lookup outcome) to the
 // `webhook_log` table so we can diagnose failures end-to-end.
+//
+// PII redaction: any field that holds a phone number is redacted to
+// "+1***1234" before insertion. webhook_log is service-role only via
+// RLS, but we still don't want full E.164 phones in cleartext on disk.
+// If a future migration mistakenly opens read access to the table the
+// blast radius stays small.
 async function logHit(payload: Record<string, unknown>): Promise<void> {
   try {
+    const PHONE_KEYS = new Set([
+      'fromNumber', 'fromHeader', 'phone', 'phone164',
+      'staffPhone', 'From',
+    ]);
+    const redacted: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(payload)) {
+      if (PHONE_KEYS.has(k) && typeof v === 'string') {
+        redacted[k] = redactPhone(v);
+      } else {
+        redacted[k] = v;
+      }
+    }
     await supabaseAdmin.from('webhook_log').insert({
       source: 'twilio-sms-reply',
-      payload,
+      payload: redacted,
     });
   } catch (e) {
     console.error('logHit failed:', errToString(e));
   }
 }
 
-/** Best-effort: return the hotel's public base URL for links embedded in SMS.
- *  Mirrors whatever /api/send-shift-confirmations used on the outbound leg. */
+/**
+ * Return the hotel's public base URL for links embedded in SMS replies.
+ *
+ * IMPORTANT: this used to read NEXT_PUBLIC_* envs and trust them blindly.
+ * If any of those envs were tampered with (or drifted across deploys),
+ * the SMS would carry a link pointing at an attacker-controlled host —
+ * and housekeepers click these links without scrutiny. The safeBaseUrl()
+ * helper enforces a whitelist of known-good origins (defined in
+ * api-validate.ts) so the worst case is we fall back to the canonical
+ * production URL instead of a phishing host.
+ */
 function resolveBaseUrl(): string {
-  return (
+  const candidate =
     process.env.NEXT_PUBLIC_APP_URL ||
     process.env.NEXT_PUBLIC_SITE_URL ||
     process.env.NEXT_PUBLIC_BASE_URL ||
-    'https://hotelops-ai.vercel.app'
-  );
+    'https://hotelops-ai.vercel.app';
+  return safeBaseUrl(candidate);
 }
 
 export async function POST(req: NextRequest) {

@@ -718,6 +718,32 @@ async function downloadCSVFromCA(page, log) {
  * is recomputed from the CSV each pull.
  */
 async function writePlanSnapshot(supabase, config, snapshot, log) {
+  // Sanity gate — refuse to overwrite a good snapshot with a degenerate one.
+  //
+  // History: when CSV parsing partially failed (selector drift, Choice
+  // Advantage HTML hiccup, network truncation), buildSnapshot() returned
+  // an object with totalRooms=0 / recommendedHKs=1 (Math.max floor). Writing
+  // that to plan_snapshots clobbered the morning's GOOD snapshot with a
+  // bogus "0 rooms today" row, then every page that depends on the snapshot
+  // showed empty data until the next successful pull (potentially 8 hours
+  // away). The dashboard would silently say "0 occupancy" while the hotel
+  // was full.
+  //
+  // Better behavior: if the snapshot has zero rooms or NaN totals, throw
+  // — let the caller mark the pull as failed in scraper_status (so the
+  // doctor endpoint goes red and Reeyen gets a SMS) rather than silently
+  // poison the snapshot.
+  if (
+    !snapshot
+    || !Number.isFinite(snapshot.totalRooms)
+    || snapshot.totalRooms <= 0
+    || !Number.isFinite(snapshot.totalCleaningMinutes)
+    || !Number.isFinite(snapshot.recommendedHKs)
+  ) {
+    const reason = `degenerate snapshot: totalRooms=${snapshot && snapshot.totalRooms}, totalCleaningMinutes=${snapshot && snapshot.totalCleaningMinutes}, recommendedHKs=${snapshot && snapshot.recommendedHKs}`;
+    log(`[CSV] REFUSING TO WRITE — ${reason}`);
+    throw new Error(reason);
+  }
   const row = {
     property_id:                   config.PROPERTY_ID,
     date:                          snapshot.date,

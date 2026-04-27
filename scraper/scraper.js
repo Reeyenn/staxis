@@ -636,11 +636,54 @@ async function run() {
     }
   }
 
-  // First tick immediately, then on interval
-  await tick();
-
+  // First tick immediately, then schedule recursively.
+  //
+  // We INTENTIONALLY do not use setInterval here. setInterval fires every
+  // N ms regardless of whether the previous tick is still running. If a
+  // single tick takes longer than the interval (Playwright hang, slow
+  // CA login, network blip), setInterval queues a second tick that
+  // executes concurrently with the first. Two ticks running at once means
+  // two concurrent Playwright operations on the same browser context,
+  // which is unsupported and produces non-deterministic crashes.
+  //
+  // Instead: run the tick to completion, then schedule the next one. If
+  // the tick took more than the interval, the next tick fires immediately
+  // (still serialized). Worst case is the schedule slowly drifts; that's
+  // fine because each tick is idempotent.
   const tickMs = CONFIG.TICK_MINUTES * 60 * 1000;
-  setInterval(tick, tickMs);
+  let tickInProgress = false;
+
+  const scheduleTick = () => {
+    if (tickInProgress) {
+      // Defensive: should never happen because we only call scheduleTick
+      // from the tick's own finally. But if some future code path adds a
+      // second scheduler, this guard keeps us serial.
+      log('scheduleTick called while a tick is already in progress; skipping');
+      return;
+    }
+    tickInProgress = true;
+    const startedAt = Date.now();
+    Promise.resolve()
+      .then(tick)
+      .catch(err => {
+        // tick() already has its own try/catch, but catch any re-thrown
+        // promise rejections at this boundary so they can't kill the
+        // process via unhandledRejection.
+        log(`tick rejected at scheduler: ${err && err.message ? err.message : err}`);
+      })
+      .finally(() => {
+        tickInProgress = false;
+        const elapsed = Date.now() - startedAt;
+        // Subtract elapsed time so a 3-min tick on a 5-min interval lands
+        // 2 min later, not 5. Floor at 1s so we never hot-loop if a tick
+        // ever takes longer than the interval.
+        const next = Math.max(tickMs - elapsed, 1000);
+        setTimeout(scheduleTick, next);
+      });
+  };
+
+  await tick();
+  setTimeout(scheduleTick, tickMs);
 
   log(`CSV runner running. Next tick in ${CONFIG.TICK_MINUTES} minutes.`);
 }
