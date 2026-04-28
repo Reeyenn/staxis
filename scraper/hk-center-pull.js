@@ -43,29 +43,39 @@ const HK_CENTER_TABLE_SELECTOR = '#updateRoomConditionHeaderTable';
 
 /**
  * Cell layout inside each data <tr> of the HK Center table:
- *   0 = Room number ('101', '202', …)
- *   1 = (empty / status icon)
- *   2 = Room type code (SNK, SNQQ, HSNK1, …) — CA-internal
- *   3 = Room status ('Occupied' | 'Vacant') — front desk view
- *   4 = Condition pill — contains <div id="rcInput"> with either a
- *       child .GreenFake (CLEAN active) or .RedFake (DIRTY active).
- *       Both labels are always rendered as text — only the styled
- *       div tells you which one is the active state.
- *   5 = Service ('Stay Over' | 'Check Out' | 'None' | …)
- *   6 = Assigned-to (initials, e.g. 'M. C.', or empty)
- *   7 = DnD checkbox cell (input[type=checkbox])
+ *   0  = Room number ('101', '202', …)
+ *   1  = (empty / status icon)
+ *   2  = Room type code (SNK, SNQQ, HSNK1, …) — CA-internal
+ *   3  = Room status ('Occupied' | 'Vacant') — front desk view
+ *   4  = "Set room status" dropdown (NEW since pre-Apr-2026 CA refactor;
+ *        contains <select name="housekeepingStatus_NNN"> with options
+ *        like '—', 'Occupied', 'Vacant'. This is a WRITE control — the
+ *        currently-selected option is just a placeholder, NOT the
+ *        room's actual current status.)
+ *   5  = Condition pill cell (class "UBcontainer"). Contains both
+ *        "CLEAN" and "DIRTY" as text — only the active one is
+ *        styled (in the prior layout it was #rcInput .GreenFake /
+ *        .RedFake; the layered detector handles class-name churn).
+ *   6  = Service ('Stay Over' | 'Check Out' | 'None' | …)
+ *   7  = Assigned-to (initials, e.g. 'M. C.', or empty)
+ *   8  = DnD checkbox cell (input[type=checkbox])
+ *   9+ = Extra empty cells (CHI's table renderer pads). Ignored.
  *
  * The header row also has <td>s, but cells[0] won't be a numeric
  * room number, so the /^\d/ filter skips it.
+ *
+ * Cell-layout history: confirmed empirically via diagnostic dump
+ * 2026-04-28 — CA inserted a new "set status" dropdown column at
+ * index 4, shifting condition/service/assignedTo/DnD up by one.
  */
 const CELL = {
   ROOM_NUMBER: 0,
   TYPE: 2,
   ROOM_STATUS: 3,
-  CONDITION: 4,
-  SERVICE: 5,
-  ASSIGNED_TO: 6,
-  DND: 7,
+  CONDITION: 5,
+  SERVICE: 6,
+  ASSIGNED_TO: 7,
+  DND: 8,
 };
 
 /**
@@ -246,8 +256,8 @@ async function pullHkCenter(page, log) {
       const rows = document.querySelectorAll(`${tableSelector} tr`);
       for (const tr of rows) {
         const cells = tr.querySelectorAll('td');
-        // Need cells[CELL.DND] (=7) at minimum. < 8 means partial row.
-        if (cells.length < 8) continue;
+        // Need cells[CELL.DND] (=8) reachable. < 9 means partial row.
+        if (cells.length < 9) continue;
         const number = (cells[CELL.ROOM_NUMBER].innerText || '').trim();
         if (!/^\d{3,4}$/.test(number)) continue; // skip header / non-data rows
 
