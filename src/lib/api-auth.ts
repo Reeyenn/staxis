@@ -19,6 +19,7 @@
  *                       caller has access to the property in the body.
  */
 
+import { timingSafeEqual } from 'node:crypto';
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
@@ -27,12 +28,25 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
  * Returns null on success, or a NextResponse the caller should return
  * to short-circuit with 401. If CRON_SECRET is unset (dev), allows
  * everything through.
+ *
+ * Constant-time string compare via crypto.timingSafeEqual on equal-length
+ * buffers — `===` short-circuits on the first differing byte and leaks the
+ * secret over many requests through response timing. The Railway scraper
+ * uses the same pattern (scraper/scraper.js post-Apr-28); keeping this
+ * symmetric so neither side is the weakest link.
  */
 export function requireCronSecret(req: NextRequest): NextResponse | null {
   const secret = process.env.CRON_SECRET;
   if (!secret) return null;  // dev mode — no secret configured
   const auth = req.headers.get('authorization') ?? '';
-  if (auth === `Bearer ${secret}`) return null;
+  const expected = `Bearer ${secret}`;
+  const authBuf = Buffer.from(auth);
+  const expectedBuf = Buffer.from(expected);
+  let ok = false;
+  if (authBuf.length === expectedBuf.length) {
+    try { ok = timingSafeEqual(authBuf, expectedBuf); } catch { ok = false; }
+  }
+  if (ok) return null;
   return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
 }
 

@@ -36,6 +36,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
+import { log, getOrMintRequestId } from '@/lib/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -84,11 +85,19 @@ function deriveRoomType(room: HkCenterRoom): 'checkout' | 'stayover' | 'vacant' 
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
+  // Request id rides through the whole chain: Vercel route → Railway
+  // /scrape/hk-center (via x-request-id header) → Vercel logs again on
+  // the response. Lets us pluck a single user's "Load Rooms" round trip
+  // out of either log stream by id.
+  const requestId = getOrMintRequestId(req);
+  const t0 = Date.now();
+
   let body: { pid?: string; date?: string };
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ ok: false, error: 'invalid_json' }, { status: 400 });
+    log.warn('refresh-from-pms: invalid json body', { requestId, route: 'refresh-from-pms' });
+    return NextResponse.json({ ok: false, error: 'invalid_json' }, { status: 400, headers: { 'x-request-id': requestId } });
   }
 
   const pid = body.pid;
@@ -96,23 +105,26 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // the active date so historical-tab refreshes stay in scope.
   const date = body.date || new Date().toISOString().slice(0, 10);
   if (!pid) {
-    return NextResponse.json({ ok: false, error: 'missing_pid' }, { status: 400 });
+    log.warn('refresh-from-pms: missing pid', { requestId, route: 'refresh-from-pms' });
+    return NextResponse.json({ ok: false, error: 'missing_pid' }, { status: 400, headers: { 'x-request-id': requestId } });
   }
 
   // ─── 1. Call the Railway scraper ─────────────────────────────────────
   const scraperUrl = process.env.RAILWAY_SCRAPER_URL;
   const cronSecret = process.env.CRON_SECRET;
   if (!scraperUrl) {
+    log.error('refresh-from-pms: RAILWAY_SCRAPER_URL not configured', { requestId, route: 'refresh-from-pms' });
     return NextResponse.json({
       ok: false,
       error: 'RAILWAY_SCRAPER_URL not configured on Vercel. Set it in Project Settings → Environment Variables and redeploy.',
-    }, { status: 503 });
+    }, { status: 503, headers: { 'x-request-id': requestId } });
   }
   if (!cronSecret) {
+    log.error('refresh-from-pms: CRON_SECRET not configured', { requestId, route: 'refresh-from-pms' });
     return NextResponse.json({
       ok: false,
       error: 'CRON_SECRET not configured on Vercel.',
-    }, { status: 503 });
+    }, { status: 503, headers: { 'x-request-id': requestId } });
   }
 
   let scraperRes: Response;
@@ -128,6 +140,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         headers: {
           Authorization: `Bearer ${cronSecret}`,
           'Content-Type': 'application/json',
+          // Request-id propagation: Railway echoes this back in its own
+          // logs so a single user click can be correlated across both
+          // log streams without time-aligning timestamps by hand.
+          'x-request-id': requestId,
         },
         body: JSON.stringify({}),
         signal: controller.signal,
@@ -136,35 +152,39 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       clearTimeout(timeoutId);
     }
   } catch (err) {
+    log.error('refresh-from-pms: railway fetch failed', { requestId, route: 'refresh-from-pms', pid, err: err as Error });
     return NextResponse.json({
       ok: false,
       error: `Could not reach Railway scraper: ${errToString(err)}`,
-    }, { status: 502 });
+    }, { status: 502, headers: { 'x-request-id': requestId } });
   }
 
   let scraperBody: ScraperResponse;
   try {
     scraperBody = await scraperRes.json();
   } catch {
+    log.error('refresh-from-pms: railway returned non-json', { requestId, route: 'refresh-from-pms', pid, status: scraperRes.status });
     return NextResponse.json({
       ok: false,
       error: `Railway returned non-JSON (status ${scraperRes.status})`,
-    }, { status: 502 });
+    }, { status: 502, headers: { 'x-request-id': requestId } });
   }
   if (!scraperRes.ok || !scraperBody.ok || !Array.isArray(scraperBody.rooms)) {
+    log.error('refresh-from-pms: railway error response', { requestId, route: 'refresh-from-pms', pid, status: scraperRes.status, errorCode: scraperBody.code, scraperError: scraperBody.error });
     return NextResponse.json({
       ok: false,
       error: scraperBody.error || `Railway returned status ${scraperRes.status}`,
       code: scraperBody.code,
-    }, { status: 502 });
+    }, { status: 502, headers: { 'x-request-id': requestId } });
   }
 
   const rooms = scraperBody.rooms;
   if (rooms.length === 0) {
+    log.error('refresh-from-pms: railway returned zero rooms', { requestId, route: 'refresh-from-pms', pid });
     return NextResponse.json({
       ok: false,
       error: 'Railway returned zero rooms — CA HK Center page may be down or layout changed',
-    }, { status: 502 });
+    }, { status: 502, headers: { 'x-request-id': requestId } });
   }
 
   // ─── 2. Upsert into rooms table ──────────────────────────────────────
@@ -182,10 +202,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     .eq('property_id', pid)
     .eq('date', date);
   if (readErr) {
+    log.error('refresh-from-pms: rooms read failed', { requestId, route: 'refresh-from-pms', pid, err: readErr as unknown as Error });
     return NextResponse.json({
       ok: false,
       error: `rooms read failed: ${errToString(readErr)}`,
-    }, { status: 500 });
+    }, { status: 500, headers: { 'x-request-id': requestId } });
   }
   const existingByNumber = new Map<string, { id: string; status: string; started_at: string | null; completed_at: string | null }>();
   for (const r of existing ?? []) {
@@ -274,27 +295,48 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (toInsert.length > 0) {
     const { error: insertErr } = await supabaseAdmin.from('rooms').insert(toInsert);
     if (insertErr) {
+      log.error('refresh-from-pms: rooms insert failed', { requestId, route: 'refresh-from-pms', pid, err: insertErr as unknown as Error, attemptedInserts: toInsert.length });
       return NextResponse.json({
         ok: false,
         error: `rooms insert failed: ${errToString(insertErr)}`,
+        // Be honest about what stuck and what didn't, so the UI can warn
+        // Maria that the dataset is partially fresh / partially stale
+        // rather than treating it as a clean refresh.
+        partiallySucceeded: true,
         partial: { createdCount: 0, updatedCount, totalFromHkCenter: rooms.length },
-      }, { status: 500 });
+      }, { status: 500, headers: { 'x-request-id': requestId } });
     }
   }
 
   // Apply updates in parallel — each is a different row.
+  let updateFailures = 0;
   if (updates.length > 0) {
     const results = await Promise.allSettled(updates);
-    const failures = results.filter(r => r.status === 'rejected');
-    if (failures.length > 0) {
+    updateFailures = results.filter(r => r.status === 'rejected').length;
+    if (updateFailures > 0) {
+      log.error('refresh-from-pms: rooms update partial failure', { requestId, route: 'refresh-from-pms', pid, updateFailures, totalUpdates: updates.length });
       return NextResponse.json({
         ok: false,
-        error: `${failures.length} rooms updates failed`,
-        partial: { createdCount, updatedCount: updatedCount - failures.length, totalFromHkCenter: rooms.length },
-      }, { status: 500 });
+        error: `${updateFailures} rooms updates failed`,
+        // partiallySucceeded: tells the toast layer "some rooms WERE
+        // refreshed; a subset failed." UI can decide whether to show a
+        // warning toast (yellow) instead of an error toast (red).
+        partiallySucceeded: true,
+        partial: { createdCount, updatedCount: updatedCount - updateFailures, totalFromHkCenter: rooms.length },
+      }, { status: 500, headers: { 'x-request-id': requestId } });
     }
   }
 
+  log.info('refresh-from-pms: ok', {
+    requestId,
+    route: 'refresh-from-pms',
+    pid,
+    durationMs: Date.now() - t0,
+    totalFromHkCenter: rooms.length,
+    createdCount,
+    updatedCount,
+    scraperElapsedMs: scraperBody.elapsedMs,
+  });
   return NextResponse.json({
     ok: true,
     pulledAt: scraperBody.pulledAt,
@@ -302,5 +344,5 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     totalFromHkCenter: rooms.length,
     createdCount,
     updatedCount,
-  });
+  }, { headers: { 'x-request-id': requestId } });
 }

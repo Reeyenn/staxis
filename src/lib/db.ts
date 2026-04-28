@@ -191,23 +191,14 @@ function subscribeTable<T>(
 // retained as soft no-ops so legacy callers compile without change.
 // ═══════════════════════════════════════════════════════════════════════════
 
-export async function createOrUpdateUser(_uid: string, _data: Partial<UserProfile>): Promise<void> {
-  // no-op: Supabase Auth owns the user record
-}
-
-export async function getUser(uid: string): Promise<UserProfile | null> {
-  // Best-effort: synthesize a minimal profile from the auth session. Callers
-  // that relied on rich Firestore-side profile fields should use Supabase Auth
-  // getUser() directly going forward.
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user || user.id !== uid) return null;
-  return {
-    uid: user.id,
-    email: user.email ?? '',
-    displayName: (user.user_metadata?.display_name as string) ?? user.email ?? '',
-    createdAt: toDate(user.created_at) ?? new Date(),
-  };
-}
+// createOrUpdateUser / getUser were Firestore-era shims kept "until callers
+// migrate." Verified 2026-04-28 that nothing imports them anywhere in the
+// codebase (grep across src/ for both names + UserProfile import sites).
+// Removed — keeping zero dead code in the public API of db.ts so the next
+// engineer doesn't try to use them and discover they're stubs.
+//
+// Anyone needing the auth user should call supabase.auth.getUser() (browser)
+// or supabaseAdmin.auth.getUser(token) (server) directly.
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Properties
@@ -289,11 +280,9 @@ export async function deleteStaffMember(_uid: string, _pid: string, sid: string)
   } catch (err) { logErr('deleteStaffMember', err); throw err; }
 }
 
-/** No-op in Supabase world — FCM push has been dropped in favor of Twilio SMS.
- * Retained so legacy callers compile without edits. */
-export async function saveStaffFcmToken(_uid: string, _pid: string, _sid: string, _fcmToken: string): Promise<void> {
-  // intentionally no-op
-}
+// saveStaffFcmToken was a Firestore-era no-op kept "until callers migrate."
+// Verified unused 2026-04-28. Push notifications go through Twilio SMS only;
+// see /api/send-shift-confirmations and /api/notify-housekeepers-sms.
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Public Areas
@@ -1452,20 +1441,29 @@ export async function insertCleaningEvent(input: {
  * Performance API endpoints. Discarded entries are excluded by default
  * (they're not useful for analytics) — pass includeDiscarded=true for the
  * raw audit dump (e.g., CSV export).
+ *
+ * Result cap: defaults to 5_000 rows. At ~50 rooms × ~30 days × 1.2 events
+ * per room-day that's ~1_800 typical events for a month view, so 5k is a
+ * 2-3x headroom buffer that prevents a runaway "select * over 6 months"
+ * call from returning 30k rows and OOM'ing the browser. Caller can pass
+ * a higher limit explicitly if they really need it (CSV export of an
+ * entire year, etc.).
  */
 export async function getCleaningEventsForRange(
   pid: string,
   fromDate: string,
   toDate: string,
-  options: { includeDiscarded?: boolean } = {},
+  options: { includeDiscarded?: boolean; limit?: number } = {},
 ): Promise<CleaningEvent[]> {
+  const limit = Math.max(1, Math.min(options.limit ?? 5_000, 50_000));
   let q = supabase
     .from('cleaning_events')
     .select('*')
     .eq('property_id', pid)
     .gte('date', fromDate)
     .lte('date', toDate)
-    .order('completed_at', { ascending: false });
+    .order('completed_at', { ascending: false })
+    .limit(limit);
 
   if (!options.includeDiscarded) {
     q = q.neq('status', 'discarded');
