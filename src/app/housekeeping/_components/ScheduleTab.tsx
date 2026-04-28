@@ -5,6 +5,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
@@ -152,6 +153,24 @@ function ScheduleTab() {
   // Move toast notification
   const [moveToast, setMoveToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Lock background scroll while Staff Priority modal is open ──
+  // Reeyen reported the page behind the modal was still scrollable —
+  // jarring because the modal was opened to read/click, not to navigate
+  // the page. Standard fix: set overflow:hidden on <body> while open and
+  // restore the previous value on close. Belt-and-suspenders: also pin
+  // <html> in case some parent style overrides body.
+  useEffect(() => {
+    if (!showPrioritySettings) return;
+    const prevBodyOverflow = document.body.style.overflow;
+    const prevHtmlOverflow = document.documentElement.style.overflow;
+    document.body.style.overflow = 'hidden';
+    document.documentElement.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prevBodyOverflow;
+      document.documentElement.style.overflow = prevHtmlOverflow;
+    };
+  }, [showPrioritySettings]);
 
   // ── Staff Priority modal: snapshot order on open ──
   // When showPrioritySettings flips to true, capture the current sorted
@@ -2633,15 +2652,32 @@ function ScheduleTab() {
       )}
 
       {/* ── Staff Priority Settings popup ── */}
-      {showPrioritySettings && uid && pid && (
-        <>
-          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 9997 }} onClick={() => setShowPrioritySettings(false)} />
-          <div style={{
-            position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 9998,
-            background: '#fff', borderRadius: '16px', padding: '24px',
-            boxShadow: '0 8px 40px rgba(0,0,0,0.2)', width: '380px', maxHeight: '80vh', overflowY: 'auto',
-            animation: 'popIn 0.15s ease-out',
-          }}>
+      {/* Portaled to <body> so it escapes any ancestor that has a CSS
+          transform / filter / perspective — those make `position:fixed`
+          relative to the transformed ancestor instead of the viewport,
+          which was rendering this modal off-center (Reeyen's screenshots
+          on 2026-04-28). Flexbox-centered overlay so we don't depend on
+          transform-based centering anymore. Body scroll is locked via
+          the useEffect above. */}
+      {showPrioritySettings && uid && pid && typeof document !== 'undefined' && createPortal(
+        <div
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 9997,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: '16px',
+          }}
+          onClick={() => setShowPrioritySettings(false)}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              position: 'relative',
+              background: '#fff', borderRadius: '16px', padding: '24px',
+              boxShadow: '0 8px 40px rgba(0,0,0,0.2)',
+              width: '380px', maxWidth: '100%', maxHeight: '80vh', overflowY: 'auto',
+              animation: 'popIn 0.15s ease-out',
+            }}
+          >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
               <p style={{ fontSize: '18px', fontWeight: 700, color: '#1b1c19', margin: 0 }}>
                 {lang === 'es' ? 'Prioridad del Personal' : 'Staff Priority'}
@@ -2694,9 +2730,14 @@ function ScheduleTab() {
                 ? 'Prioridad = seleccionado automáticamente primero. Normal = respaldo. Excluir = nunca seleccionado automáticamente.'
                 : 'Priority = auto-selected first. Normal = backup when needed. Exclude = never auto-selected.'}
             </p>
+            {/* Pop-in animation for the modal. Was previously combined with
+                a translate(-50%,-50%) for centering — that's gone now (flex
+                centers it instead), so the keyframes only handle scale +
+                opacity. */}
+            <style>{`@keyframes popIn { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }`}</style>
           </div>
-          <style>{`@keyframes popIn { from { transform: translate(-50%, -50%) scale(0.9); opacity: 0; } to { transform: translate(-50%, -50%) scale(1); opacity: 1; } }`}</style>
-        </>
+        </div>,
+        document.body
       )}
 
       {/* ── Add Staff popup ── */}
