@@ -1053,22 +1053,86 @@ async function checkScraperPullLatency(): Promise<Omit<Check, 'name' | 'duration
     if (!data || data.length < 10) {
       return { status: 'skipped', detail: `pull_metrics has only ${data?.length ?? 0} rows; need >=10 for trend.` };
     }
+
+    // ─── PRESENCE CHECK ──────────────────────────────────────────────────
+    // 2026-04-27 incident: pulls stopped completely (Playwright tick wedged
+    // on an unresolved Promise inside the Railway scraper). Heartbeat kept
+    // updating, the watchdog's HTTP ping kept saying "doctor returned 200,"
+    // and this check stayed green for 5 hours because all checks below
+    // ONLY compare slow pulls to baseline — when pulls disappear entirely
+    // there's nothing recent to be slow. The result was a silent outage.
+    //
+    // Fix: read the freshest pull across ALL types. If the scraper says
+    // it's alive (heartbeat fresh) but the most-recent pull is older than
+    // a generous threshold, it's wedged. Fail loudly so SMS fires.
+    //
+    // Threshold = 30 min: dashboard normally runs every 5-15 min, ooo and
+    // csv_evening every 5-10 min. 30 min is well past any normal gap and
+    // short enough that Mario sees the alert before the room list goes
+    // multi-hour stale. csv_morning is excluded because it's a once-a-day
+    // job (~6am Central).
+    const STALE_THRESHOLD_MIN = 30;
+    const NON_DAILY_TYPES = new Set(['dashboard', 'ooo', 'csv_evening']);
+    const nowMs = Date.now();
+    type Row = { pull_type: string; total_ms: number; ok: boolean; pulled_at: string };
+    const rows = data as Row[];
+    let mostRecentPullMs = 0;
+    let mostRecentPullType: string | undefined;
+    for (const r of rows) {
+      if (!NON_DAILY_TYPES.has(r.pull_type)) continue;
+      const t = new Date(r.pulled_at).getTime();
+      if (t > mostRecentPullMs) { mostRecentPullMs = t; mostRecentPullType = r.pull_type; }
+    }
+
+    if (mostRecentPullMs > 0) {
+      const ageMin = (nowMs - mostRecentPullMs) / 60000;
+      if (ageMin > STALE_THRESHOLD_MIN) {
+        // Cross-reference heartbeat to distinguish "scraper is dead" from
+        // "scraper is alive but tick is wedged." Different fix paths.
+        const { data: hbRow } = await supabaseAdmin
+          .from('scraper_status').select('updated_at').eq('key', 'heartbeat').maybeSingle();
+        const hbAgeMin = hbRow?.updated_at
+          ? (nowMs - new Date(hbRow.updated_at).getTime()) / 60000
+          : Infinity;
+
+        if (hbAgeMin <= 10) {
+          return {
+            status: 'fail',
+            detail: `Scraper heartbeat is fresh (${hbAgeMin.toFixed(1)}m) but pulls have stopped — most recent ${mostRecentPullType} pull was ${ageMin.toFixed(1)}m ago (threshold ${STALE_THRESHOLD_MIN}m). Tick loop is wedged.`,
+            fix: 'Restart the Railway hotelops-scraper service (Railway dashboard → service → Restart). Check logs for a hung Playwright operation (page.goto / waitForSelector without timeout).',
+          };
+        }
+        return {
+          status: 'fail',
+          detail: `No pulls in ${ageMin.toFixed(1)}m AND heartbeat is ${hbAgeMin === Infinity ? 'missing' : hbAgeMin.toFixed(1) + 'm'} old. Scraper process is down.`,
+          fix: 'Railway dashboard → hotelops-scraper service → check Status. If "Crashed", redeploy from main. If "Stopped", start it.',
+        };
+      }
+    } else {
+      // No non-daily pulls at all in the recent 200 rows? Surface this.
+      return {
+        status: 'warn',
+        detail: 'No dashboard/ooo/csv_evening pulls found in recent metrics. Either the scraper has been off >a few hours, or only csv_morning is firing.',
+        fix: 'Check Railway logs and the scraper schedule.',
+      };
+    }
+
+    // ─── SLOWNESS CHECK (legacy) ──────────────────────────────────────────
     // Bucket by pull_type, take the most recent 30 successful pulls per
     // type, compute median. Compare to a baseline (next 30 successful pulls
     // before that window). 2x slower = warn; 3x slower = fail.
-    type Row = { pull_type: string; total_ms: number; ok: boolean };
     const buckets: Record<string, Row[]> = {};
-    for (const row of data as Row[]) {
+    for (const row of rows) {
       if (!row.ok) continue;
       const k = row.pull_type;
       buckets[k] = buckets[k] || [];
       buckets[k].push(row);
     }
     const warnings: string[] = [];
-    for (const [pullType, rows] of Object.entries(buckets)) {
-      if (rows.length < 20) continue;
-      const recent = rows.slice(0, 10).map(r => r.total_ms).sort((a, b) => a - b);
-      const baseline = rows.slice(10, 20).map(r => r.total_ms).sort((a, b) => a - b);
+    for (const [pullType, rs] of Object.entries(buckets)) {
+      if (rs.length < 20) continue;
+      const recent = rs.slice(0, 10).map(r => r.total_ms).sort((a, b) => a - b);
+      const baseline = rs.slice(10, 20).map(r => r.total_ms).sort((a, b) => a - b);
       const recentMedian = recent[Math.floor(recent.length / 2)];
       const baselineMedian = baseline[Math.floor(baseline.length / 2)];
       if (recentMedian > 3 * baselineMedian) {
@@ -1082,7 +1146,7 @@ async function checkScraperPullLatency(): Promise<Omit<Check, 'name' | 'duration
         fix: 'Check Railway logs for the affected pull type. If sustained, CA may have changed their page weight (more JS, slower auth) — consider tuning waitForLoadState timeouts.',
       };
     }
-    return { status: 'ok', detail: `Pull latency within baseline across ${Object.keys(buckets).length} pull types (${data.length} samples).` };
+    return { status: 'ok', detail: `Pulls fresh (${mostRecentPullType} ${((nowMs - mostRecentPullMs) / 60000).toFixed(1)}m ago); latency within baseline across ${Object.keys(buckets).length} pull types.` };
   } catch (err) {
     return { status: 'warn', detail: `pull-latency check raised: ${errToString(err)}` };
   }
