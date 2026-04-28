@@ -31,6 +31,7 @@
  */
 
 require('dotenv').config();
+const http = require('http');
 const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
@@ -38,6 +39,7 @@ const crypto = require('crypto');
 const { runCSVScrape } = require('./csv-scraper');
 const { pullDashboardNumbers } = require('./dashboard-pull');
 const { pullOOOWorkOrders } = require('./ooo-pull');
+const { pullHkCenter } = require('./hk-center-pull');
 const { ScraperError, ERROR_CODES } = require('./scraper-errors');
 const { runVercelWatchdog } = require('./vercel-watchdog');
 const { safeEval, goWithSettle } = require('./page-helpers');
@@ -826,19 +828,44 @@ async function run() {
     }
   }
 
+  // ── Page lock — serialize all Playwright operations on `page` ──────────
+  // The tick loop runs scheduled pulls. The HTTP server (added below)
+  // accepts on-demand HK Center pulls from Vercel. Both touch the same
+  // Playwright page, and Playwright does not support concurrent
+  // operations on a single page (you'll get "navigation interrupted" or
+  // worse, partial DOM reads). This mutex makes every page-touching
+  // call wait its turn — FIFO via promise chaining.
+  //
+  // The chain stays a single promise so memory doesn't grow with call
+  // volume. Each wrapped fn() runs inside a try/catch so a failure
+  // doesn't poison the chain for the next caller.
+  let pageLock = Promise.resolve();
+  function withPageLock(fn) {
+    const next = pageLock.then(() => fn());
+    pageLock = next.catch(() => {}); // ignore failures for chain purposes
+    return next;
+  }
+
   async function tick() {
     try {
       // Heartbeat first so the app knows the scraper is alive even if the
-      // scheduled pull didn't run this tick.
+      // scheduled pull didn't run this tick. Heartbeat is a Supabase write
+      // only — doesn't touch `page` — so it can run outside the lock.
       await writeHeartbeat();
-      await maybeRunCSVPull(page, relogin);
-      await maybeRunDashboardPull(page, relogin);
-      await maybeRunOOOPull(page, relogin);
-      // Refresh session cookie so we stay logged in. Best-effort Supabase
-      // mirror so Railway redeploy doesn't force a fresh login.
-      await context.storageState({ path: CONFIG.SESSION_FILE });
-      const stateBlob = await context.storageState();
-      await saveScraperSession(supabase, CONFIG.PROPERTY_ID, stateBlob, log);
+
+      // All page-touching work goes through the lock so an in-flight
+      // HTTP scrape (e.g., Mario hitting "Load Rooms from CSV") doesn't
+      // race with us.
+      await withPageLock(async () => {
+        await maybeRunCSVPull(page, relogin);
+        await maybeRunDashboardPull(page, relogin);
+        await maybeRunOOOPull(page, relogin);
+        // Refresh session cookie so we stay logged in. Best-effort
+        // Supabase mirror so Railway redeploy doesn't force a fresh login.
+        await context.storageState({ path: CONFIG.SESSION_FILE });
+        const stateBlob = await context.storageState();
+        await saveScraperSession(supabase, CONFIG.PROPERTY_ID, stateBlob, log);
+      });
     } catch (err) {
       log(`ERROR during tick: ${err.message}`);
     }
@@ -909,6 +936,124 @@ async function run() {
   setTimeout(scheduleTick, tickMs);
 
   log(`CSV runner running. Next tick in ${CONFIG.TICK_MINUTES} minutes.`);
+
+  // ── HTTP server — on-demand HK Center pulls from Vercel ────────────────
+  // Mario clicks "Load Rooms from CSV" → Vercel POSTs here → we run the
+  // HK Center pull using the existing Playwright session (fast, no fresh
+  // login) and return JSON. Same `page` as the tick loop, serialized
+  // through `withPageLock` so we don't race.
+  //
+  // Auth: Bearer ${CRON_SECRET}. Same secret used by GitHub Actions cron
+  // and Vercel watchdog, so credential drift surfaces in one place.
+  // Without the secret set, the endpoint refuses every request — better
+  // to fail closed than to leak access to anyone who finds the URL.
+  //
+  // Health endpoint: GET /health. Used by Railway's own probe (and useful
+  // for debugging "is the server alive but the scraper stuck?"). No auth
+  // required because it returns nothing sensitive.
+  const HTTP_PORT = parseInt(process.env.PORT || '3000', 10);
+  const httpServer = http.createServer(async (req, res) => {
+    const url = req.url || '/';
+    const method = req.method || 'GET';
+    const requestId = Math.random().toString(36).slice(2, 8);
+
+    // Health check — unauthenticated, returns scraper liveness.
+    if (method === 'GET' && (url === '/health' || url === '/')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true,
+        service: 'hotelops-scraper',
+        propertyId: CONFIG.PROPERTY_ID,
+        timestamp: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    // Everything else requires auth.
+    const auth = req.headers.authorization || '';
+    const expected = `Bearer ${process.env.CRON_SECRET || ''}`;
+    if (!process.env.CRON_SECRET) {
+      // Misconfigured. Don't allow blanket access.
+      log(`[http ${requestId}] CRON_SECRET not set — refusing ${method} ${url}`);
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'CRON_SECRET not configured on Railway' }));
+      return;
+    }
+    if (auth !== expected) {
+      // Don't include the expected value in the error — that'd leak it
+      // to anyone who could see the response body.
+      log(`[http ${requestId}] auth mismatch for ${method} ${url}`);
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+      return;
+    }
+
+    // POST /scrape/hk-center — pull live HK Center page state.
+    if (method === 'POST' && url === '/scrape/hk-center') {
+      const t0 = Date.now();
+      try {
+        const rooms = await withPageLock(async () => {
+          try {
+            return await pullHkCenter(page, log);
+          } catch (err) {
+            // Same recovery as runDashboardPullFresh: re-login once on
+            // session expiry, retry, give up if that fails too.
+            if (err.code === ERROR_CODES.SESSION_EXPIRED) {
+              log(`[http ${requestId}] HK Center session expired — re-logging`);
+              await relogin();
+              return await pullHkCenter(page, log);
+            }
+            throw err;
+          }
+        });
+        const elapsed = Date.now() - t0;
+        log(`[http ${requestId}] HK Center pull OK — ${rooms.length} rooms in ${elapsed}ms`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: true,
+          pulledAt: new Date().toISOString(),
+          elapsedMs: elapsed,
+          rooms,
+        }));
+        // Best-effort metric write so the doctor's pull-latency check
+        // sees this pull type.
+        await writePullMetric(supabase, {
+          property_id: CONFIG.PROPERTY_ID,
+          pull_type: 'hk_center_on_demand',
+          ok: true,
+          error_code: null,
+          total_ms: elapsed,
+          rows: rooms.length,
+        }, log).catch(() => {});
+      } catch (err) {
+        const code = err instanceof ScraperError ? err.code : ERROR_CODES.UNKNOWN;
+        const msg = err && err.message ? err.message : String(err);
+        log(`[http ${requestId}] HK Center pull FAILED [${code}]: ${msg}`);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: msg, code }));
+        await writePullMetric(supabase, {
+          property_id: CONFIG.PROPERTY_ID,
+          pull_type: 'hk_center_on_demand',
+          ok: false,
+          error_code: code,
+          total_ms: Date.now() - t0,
+          rows: null,
+        }, log).catch(() => {});
+      }
+      return;
+    }
+
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: 'not_found' }));
+  });
+
+  httpServer.on('error', err => {
+    log(`HTTP server error: ${err.message}`);
+  });
+
+  httpServer.listen(HTTP_PORT, '0.0.0.0', () => {
+    log(`HTTP server listening on 0.0.0.0:${HTTP_PORT}`);
+  });
 }
 
 // ─── Entry point ───────────────────────────────────────────────────────────

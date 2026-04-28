@@ -77,17 +77,26 @@ function RoomsTab() {
   // Help request badge tracking — rooms where helpRequested is true
   const [backupRoom, setBackupRoom] = useState<Room | null>(null); // room needing backup staff picker
 
-  // Manual "pull all rooms from last CSV" button handler — seeds rooms/{date}_{num}
-  // with the CSV baseline so the grid shows all 74 rooms (not just assigned ones).
+  // "Load Rooms from CSV" button handler.
+  //
+  // 2026-04-28: switched from /api/populate-rooms-from-plan (which read
+  // from the cached plan_snapshots table) to /api/refresh-from-pms (which
+  // calls the Railway scraper to pull live state from Choice Advantage's
+  // Housekeeping Center page right now). Reeyen wanted the button to
+  // reflect what's actually in PMS at the moment of click, not whatever
+  // the morning scraper happened to capture an hour ago.
+  //
+  // Round-trip latency: ~5-15s typically. Worst case ~25s if the Railway
+  // scraper has to re-login mid-pull. Button shows a spinner state during
+  // the fetch.
   const handlePopulateFromCsv = async () => {
     if (!user || !activePropertyId || populating) return;
     setPopulating(true);
     try {
-      const res = await fetchWithAuth('/api/populate-rooms-from-plan', {
+      const res = await fetchWithAuth('/api/refresh-from-pms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          uid:  user.uid,
           pid:  activePropertyId,
           date: activeDate,
         }),
@@ -95,13 +104,14 @@ function RoomsTab() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setToastMessage(lang === 'es'
-          ? `Error: ${data?.error ?? 'no se pudo cargar'}`
-          : `Error: ${data?.error ?? 'could not load'}`);
+          ? `Error: ${data?.error ?? 'no se pudo cargar desde PMS'}`
+          : `Error: ${data?.error ?? 'could not load from PMS'}`);
       } else {
-        const { created = 0, updated = 0 } = data;
+        const created = (data && typeof data.createdCount === 'number') ? data.createdCount : 0;
+        const updated = (data && typeof data.updatedCount === 'number') ? data.updatedCount : 0;
         setToastMessage(lang === 'es'
-          ? `Cargadas ${created + updated} habitaciones (${created} nuevas, ${updated} actualizadas)`
-          : `Loaded ${created + updated} rooms (${created} new, ${updated} updated)`);
+          ? `Cargadas ${created + updated} habitaciones desde PMS (${created} nuevas, ${updated} actualizadas)`
+          : `Loaded ${created + updated} rooms from PMS (${created} new, ${updated} updated)`);
       }
     } catch (err: unknown) {
       const msg = errToString(err);
