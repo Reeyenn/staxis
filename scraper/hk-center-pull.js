@@ -130,10 +130,86 @@ async function pullHkCenter(page, log) {
   // Extract via page.evaluate — runs inside the browser context. We
   // pass the cell-index map and table selector as args so the JS in
   // here doesn't drift from the constants above.
-  let rooms;
+  //
+  // Condition detection: layered strategy because CA has changed pill
+  // class names at least once between the pre-Apr-18 live scraper
+  // (.GreenFake / .RedFake) and now (today's smoke test showed those
+  // classes were absent on all 74 rooms). The new strategy:
+  //
+  //   1. Try the historical .GreenFake / .RedFake selectors.
+  //   2. Try common "active state" class patterns (Green/Red, active,
+  //      selected) inside the condition cell.
+  //   3. Fall back to walking children of #rcInput and finding the one
+  //      with a meaningfully colored background — green-ish (R<G,B<G,
+  //      G high) means CLEAN, red-ish (R high, G low, B low) means
+  //      DIRTY. This survives any class-name churn as long as CA still
+  //      visually distinguishes the two states with color.
+  //
+  // On total failure for a row, returns sample HTML so we can see
+  // what CA changed — surfaces in the parse_error message.
+  let result;
   try {
-    rooms = await page.evaluate(({ tableSelector, CELL }) => {
+    result = await page.evaluate(({ tableSelector, CELL }) => {
+      function detectCondition(condCell) {
+        if (!condCell) return { condition: null, debug: 'no-cell' };
+
+        // Strategy 1: legacy class names.
+        if (condCell.querySelector('#rcInput .GreenFake, .GreenFake')) {
+          return { condition: 'clean', debug: 'GreenFake' };
+        }
+        if (condCell.querySelector('#rcInput .RedFake, .RedFake')) {
+          return { condition: 'dirty', debug: 'RedFake' };
+        }
+
+        // Strategy 2: heuristic class names CA might use.
+        const greenClassHits = condCell.querySelectorAll(
+          '[class*="Green" i], [class*="green-active" i], [class*="clean-active" i]',
+        );
+        if (greenClassHits.length > 0) return { condition: 'clean', debug: 'class-green' };
+        const redClassHits = condCell.querySelectorAll(
+          '[class*="Red" i], [class*="red-active" i], [class*="dirty-active" i]',
+        );
+        if (redClassHits.length > 0) return { condition: 'dirty', debug: 'class-red' };
+
+        // Strategy 3: computed background color. Walk descendants and
+        // look for one with a non-transparent, non-white background.
+        // Categorize as green or red based on RGB ratio.
+        const candidates = condCell.querySelectorAll('*');
+        for (const el of candidates) {
+          const cs = window.getComputedStyle(el);
+          const bg = cs.backgroundColor;
+          if (!bg || bg === 'transparent' || bg === 'rgba(0, 0, 0, 0)') continue;
+          // Parse rgb(r, g, b) or rgba(r, g, b, a). White-ish rejected.
+          const m = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+          if (!m) continue;
+          const r = parseInt(m[1], 10);
+          const g = parseInt(m[2], 10);
+          const b = parseInt(m[3], 10);
+          // Skip white / near-white / pure black backgrounds — those
+          // are the chrome around the pill, not the pill itself.
+          const sum = r + g + b;
+          if (sum > 720 || sum < 80) continue;
+          // Green dominant: G clearly higher than R and B.
+          if (g > r + 30 && g > b + 30) return { condition: 'clean', debug: `green-rgb(${r},${g},${b})` };
+          // Red dominant: R clearly higher than G and B.
+          if (r > g + 30 && r > b + 30) return { condition: 'dirty', debug: `red-rgb(${r},${g},${b})` };
+        }
+
+        // Strategy 4: text-content fallback. Some PMS variants render
+        // only one of CLEAN/DIRTY (the active one) as text and the
+        // other as a button. innerText returns visible text only.
+        const txt = (condCell.innerText || '').trim().toUpperCase();
+        if (txt === 'CLEAN') return { condition: 'clean', debug: 'text-only' };
+        if (txt === 'DIRTY') return { condition: 'dirty', debug: 'text-only' };
+
+        // Total miss — return sample HTML so we can see what changed.
+        // Truncate to keep error messages readable.
+        const html = (condCell.outerHTML || '').slice(0, 400);
+        return { condition: null, debug: html };
+      }
+
       const out = [];
+      let firstMissDebug = null;
       const rows = document.querySelectorAll(`${tableSelector} tr`);
       for (const tr of rows) {
         const cells = tr.querySelectorAll('td');
@@ -142,17 +218,10 @@ async function pullHkCenter(page, log) {
         const number = (cells[CELL.ROOM_NUMBER].innerText || '').trim();
         if (!/^\d{3,4}$/.test(number)) continue; // skip header / non-data rows
 
-        // Condition pill: scoped querySelector inside cells[4] for the
-        // active-state div. CA renders BOTH "CLEAN" and "DIRTY" labels
-        // — only the active one has the .GreenFake/.RedFake class.
-        // querySelector is scoped to the cell so duplicate rcInput IDs
-        // across rows don't matter.
-        const condCell = cells[CELL.CONDITION];
-        const isClean = condCell && condCell.querySelector('#rcInput .GreenFake') !== null;
-        const isDirty = condCell && condCell.querySelector('#rcInput .RedFake') !== null;
-        let condition = null;
-        if (isClean) condition = 'clean';
-        else if (isDirty) condition = 'dirty';
+        const { condition, debug } = detectCondition(cells[CELL.CONDITION]);
+        if (condition === null && firstMissDebug === null) {
+          firstMissDebug = `room=${number} cell-html=${debug}`;
+        }
 
         // DnD: a checkbox inside cell 7. Some rows have no checkbox at
         // all (e.g., OOO rooms) — treat absent as not-DnD.
@@ -173,7 +242,7 @@ async function pullHkCenter(page, log) {
           isDnd,
         });
       }
-      return out;
+      return { rooms: out, firstMissDebug };
     }, { tableSelector: HK_CENTER_TABLE_SELECTOR, CELL });
   } catch (err) {
     throw new ScraperError(
@@ -182,6 +251,7 @@ async function pullHkCenter(page, log) {
     );
   }
 
+  const rooms = result.rooms;
   if (rooms.length === 0) {
     throw new ScraperError(
       ERROR_CODES.PARSE_ERROR,
@@ -189,15 +259,15 @@ async function pullHkCenter(page, log) {
     );
   }
 
-  // Sanity check: every room must have a condition. If neither
-  // .GreenFake nor .RedFake matched, CA likely restyled the pill —
-  // fail loud rather than write garbage.
+  // Sanity check: every room must have a condition. If detection
+  // failed for any, surface the first row's outerHTML so we can see
+  // what CA changed and update the detector.
   const missingCondition = rooms.filter(r => r.condition === null).length;
   if (missingCondition > 0) {
     throw new ScraperError(
       ERROR_CODES.PARSE_ERROR,
-      `HK Center: ${missingCondition} of ${rooms.length} rooms had no condition badge ` +
-      `(neither #rcInput .GreenFake nor #rcInput .RedFake matched) — CA layout likely changed`,
+      `HK Center: ${missingCondition} of ${rooms.length} rooms had no condition badge — ` +
+      `CA layout likely changed. First miss: ${result.firstMissDebug || '(none)'}`,
     );
   }
 
