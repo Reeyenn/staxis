@@ -70,6 +70,11 @@ function RoomsTab() {
   const [activeDate, setActiveDate] = useState<string>(todayStr());
   const [loading, setLoading] = useState(true);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  // Toast severity drives color: 'success' = green, 'error' = red.
+  // Set in handlePopulateFromCsv before each setToastMessage call so the
+  // toast can self-explain the outcome at a glance — Mario shouldn't
+  // have to read the message text to know if the load worked.
+  const [toastKind, setToastKind] = useState<'success' | 'error'>('success');
   const [actionRoom, setActionRoom] = useState<Room | null>(null); // room action popup
   const [nowMs, setNowMs] = useState(Date.now());
   const [populating, setPopulating] = useState(false);
@@ -103,22 +108,42 @@ function RoomsTab() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        // Make errors specific about the source so it's obvious WHAT failed.
+        // The user shouldn't have to know what "PMS" means — say
+        // "Choice Advantage Housekeeping Center" plainly.
+        const reason = data?.error ?? (lang === 'es' ? 'razón desconocida' : 'unknown reason');
+        setToastKind('error');
         setToastMessage(lang === 'es'
-          ? `Error: ${data?.error ?? 'no se pudo cargar desde PMS'}`
-          : `Error: ${data?.error ?? 'could not load from PMS'}`);
+          ? `❌ No se pudo cargar desde Choice Advantage: ${reason}`
+          : `❌ Couldn't load from Choice Advantage: ${reason}`);
       } else {
+        // Success message names the exact source so anyone clicking the
+        // button understands what just happened. Includes time of pull
+        // so consecutive clicks don't blur together.
         const created = (data && typeof data.createdCount === 'number') ? data.createdCount : 0;
         const updated = (data && typeof data.updatedCount === 'number') ? data.updatedCount : 0;
+        const total = created + updated;
+        const time = new Date().toLocaleTimeString(lang === 'es' ? 'es-MX' : 'en-US', {
+          hour: 'numeric',
+          minute: '2-digit',
+        });
+        setToastKind('success');
         setToastMessage(lang === 'es'
-          ? `Cargadas ${created + updated} habitaciones desde PMS (${created} nuevas, ${updated} actualizadas)`
-          : `Loaded ${created + updated} rooms from PMS (${created} new, ${updated} updated)`);
+          ? `✓ Cargadas ${total} habitaciones desde Choice Advantage · ${time}`
+          : `✓ Loaded ${total} rooms from Choice Advantage Housekeeping Center · ${time}`);
       }
     } catch (err: unknown) {
+      // Network-layer error (Vercel unreachable, browser offline, etc.)
+      // — distinct from a server error response handled above.
       const msg = errToString(err);
-      setToastMessage(lang === 'es' ? `Error: ${msg}` : `Error: ${msg}`);
+      setToastKind('error');
+      setToastMessage(lang === 'es'
+        ? `❌ Error de red: ${msg}`
+        : `❌ Network error: ${msg}`);
     } finally {
       setPopulating(false);
-      setTimeout(() => setToastMessage(null), 3500);
+      // Errors stay up longer so Mario can read the reason.
+      setTimeout(() => setToastMessage(null), 6000);
     }
   };
 
@@ -342,13 +367,17 @@ function RoomsTab() {
         </>
       )}
 
-      {/* Toast notification */}
+      {/* Toast notification — green for success, red for errors so the
+          outcome is obvious at a glance even before reading the text. */}
       {toastMessage && (
         <div style={{
           position: 'fixed', bottom: '100px', right: '20px',
-          background: '#10b981', color: '#fff',
+          maxWidth: '440px',
+          background: toastKind === 'error' ? '#dc2626' : '#10b981',
+          color: '#fff',
           padding: '12px 16px', borderRadius: '12px',
           fontSize: '14px', fontWeight: 500,
+          lineHeight: 1.4,
           boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
           zIndex: 1000,
         }}>
@@ -368,6 +397,9 @@ function RoomsTab() {
           <button
             onClick={handlePopulateFromCsv}
             disabled={populating}
+            title={lang === 'es'
+              ? 'Pulsa para cargar el estado en vivo (limpio/sucio, ocupado, asignado) de la página Housekeeping Center de Choice Advantage. Conserva las asignaciones del personal.'
+              : 'Click to load live room status (clean/dirty, occupied, assigned) from Choice Advantage\u2019s Housekeeping Center page. Preserves staff assignments.'}
             style={{
               display: 'inline-flex', alignItems: 'center', gap: '8px',
               padding: '10px 18px',
@@ -454,13 +486,17 @@ function RoomsTab() {
               </div>
             </div>
 
-            {/* ── Populate from CSV button (right-aligned) ── */}
+            {/* ── Populate from CSV button (right-aligned) ──
+                The button name still reads "Load Rooms from CSV" because
+                Mario knows that label, but the title (hover tooltip) is
+                explicit about what it actually does today: pulls live
+                state from Choice Advantage's Housekeeping Center page. */}
             <button
               onClick={handlePopulateFromCsv}
               disabled={populating}
               title={lang === 'es'
-                ? 'Carga todas las habitaciones desde el último CSV. Preserva asignaciones.'
-                : 'Loads every room from the last CSV pull. Preserves assignments.'}
+                ? 'Pulsa para cargar el estado en vivo (limpio/sucio, ocupado, asignado) de la página Housekeeping Center de Choice Advantage. Conserva las asignaciones del personal.'
+                : 'Click to load live room status (clean/dirty, occupied, assigned) from Choice Advantage\u2019s Housekeeping Center page. Preserves staff assignments.'}
               style={{
                 marginLeft: 'auto',
                 display: 'inline-flex', alignItems: 'center', gap: '8px',
