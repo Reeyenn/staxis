@@ -444,9 +444,15 @@ function PerformanceTab() {
                 </div>
               )}
 
-              {/* Leaderboard table */}
+              {/* Leaderboard table — wrapped in overflow-x:auto so the
+                  8-column grid stays usable on phones (8 columns at min
+                  width = 450px fixed + flex; phone viewport = 380px). On
+                  mobile, Mario scrolls horizontally; on desktop the
+                  scroll never engages because the parent card is wider
+                  than the content. */}
               {leaderboard.length > 0 && (
-                <div>
+                <div style={{ overflowX: 'auto' }}>
+                  <div style={{ minWidth: '720px' }}>
                   {/* Header row */}
                   <div style={{ display: 'grid', gridTemplateColumns: LB_GRID, gap: '8px', padding: '0 20px 12px', borderBottom: 'none' }}>
                     {[
@@ -510,6 +516,7 @@ function PerformanceTab() {
                         </div>
                       );
                     })}
+                  </div>
                   </div>
                 </div>
               )}

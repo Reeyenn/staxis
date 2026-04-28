@@ -4,12 +4,9 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import {
   subscribeToRoomsForStaff,
-  updateRoom,
   getStaffMember,
   saveStaffLanguage,
-  insertCleaningEvent,
   bucketStayoverDay,
-  discardRecentCleaningEvent,
 } from '@/lib/db';
 import { useTodayStr } from '@/lib/use-today-str';
 import type { Room, RoomStatus } from '@/types';
@@ -21,7 +18,9 @@ import type { Language } from '@/lib/translations';
 
 // Rooms come off Supabase via `subscribeToRoomsForStaff` fully shaped as our
 // canonical Room type — no Firestore DocumentReference to carry around.
-// Per-room mutations all go through `updateRoom(_, _, room.id, patch)`.
+// Per-room mutations all go through POST /api/housekeeper/room-action
+// (server-side, service-role) because RLS silently blocks anon writes
+// from this publicly-linkable page. See route.ts header for context.
 type RoomRow = Room;
 
 const PRIORITY_SCORE: Record<string, number> = { vip: 0, early: 1, standard: 2 };
@@ -245,20 +244,57 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   );
 
   // ── Start room (dirty → in_progress) ──────────────────────────────────────
+  // 2026-04-28 fix: ALL room mutations from this page MUST go through the
+  // server-side /api/housekeeper/room-action route. Direct
+  // supabase.from('rooms').update() silently no-ops in production because
+  // the housekeeper opens this URL with no auth session — RLS filters the
+  // UPDATE to zero rows but Postgres returns 200 OK so the supabase JS
+  // client treats it as success. We were silently losing every Start /
+  // Done / Reset tap. The API route uses service-role to bypass RLS.
+  const callRoomActionApi = async (
+    room: RoomRow,
+    action: 'start' | 'finish' | 'reset' | 'stop' | 'help',
+    cleaningContext?: {
+      roomNumber: string;
+      roomType: 'checkout' | 'stayover';
+      stayoverDayBucket: 1 | 2 | null;
+      staffName: string;
+      date: string;
+      startedAt: string;
+      completedAt: string;
+    },
+  ): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      const r = await fetch('/api/housekeeper/room-action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pid,
+          staffId: housekeeperId,
+          roomId: room.id,
+          action,
+          cleaningContext,
+        }),
+      });
+      const j = await r.json().catch(() => ({}));
+      return r.ok && j?.ok ? { ok: true } : { ok: false, error: j?.error || `http ${r.status}` };
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    }
+  };
+
   const handleStartRoom = async (room: RoomRow) => {
     if (!uid || !pid) return;
     await guardRoomAction(room.id, async () => {
       setSavingRoomId(room.id);
       try {
-        await updateRoom(uid, pid, room.id, {
-          status: 'in_progress' as RoomStatus,
-          startedAt: new Date(),
-        });
-      } catch (err) {
-        console.error('[housekeeper] start room error:', err);
-        showActionError(lang === 'es'
-          ? 'No se pudo iniciar. Verifica tu conexión.'
-          : 'Couldn\u2019t start room. Check your connection.');
+        const res = await callRoomActionApi(room, 'start');
+        if (!res.ok) {
+          console.error('[housekeeper] start room error:', res.error);
+          showActionError(lang === 'es'
+            ? 'No se pudo iniciar. Verifica tu conexión.'
+            : 'Couldn\u2019t start room. Check your connection.');
+        }
       } finally {
         setSavingRoomId(null);
       }
@@ -271,15 +307,13 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
     await guardRoomAction(room.id, async () => {
       setSavingRoomId(room.id);
       try {
-        await updateRoom(uid, pid, room.id, {
-          status: 'dirty' as RoomStatus,
-          startedAt: null,
-        });
-      } catch (err) {
-        console.error('[housekeeper] stop room error:', err);
-        showActionError(lang === 'es'
-          ? 'No se pudo detener. Verifica tu conexión.'
-          : 'Couldn\u2019t stop room. Check your connection.');
+        const res = await callRoomActionApi(room, 'stop');
+        if (!res.ok) {
+          console.error('[housekeeper] stop room error:', res.error);
+          showActionError(lang === 'es'
+            ? 'No se pudo detener. Verifica tu conexión.'
+            : 'Couldn\u2019t stop room. Check your connection.');
+        }
       } finally {
         setSavingRoomId(null);
       }
@@ -288,14 +322,9 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
 
   // ── Finish room (in_progress → clean) ─────────────────────────────────────
   // Requires hold-to-confirm on the button - accidental taps are ignored.
-  //
-  // After the room update succeeds, we ALSO write an immutable row to
-  // cleaning_events. That table is the permanent audit log powering the
-  // Performance tab — independent of the rooms table (which gets wiped by
-  // populate-rooms-from-plan on every PMS re-pull). The audit insert is
-  // fire-and-forget: if it fails, the room update still stands and the HK
-  // sees no error. Worst case: one missing leaderboard entry, never a stuck
-  // "Done" button.
+  // Server-side route does both the room update AND the cleaning_events
+  // audit insert in one shot. See callRoomActionApi() above for the
+  // RLS-bypass rationale.
   const handleFinishRoom = async (room: RoomRow) => {
     if (!uid || !pid) return;
     await guardRoomAction(room.id, async () => {
@@ -303,42 +332,27 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       try {
         const completedAt = new Date();
         // If Start was never tapped (or got wiped by a re-pull), we use
-        // completedAt for both timestamps. Duration = 0 → cleaning_events
+        // completedAt for both timestamps. Duration = 0 → server-side
         // classifier auto-discards it from analytics. Audit row still gets
         // written so we have a record.
         const startedAt = room.startedAt ?? completedAt;
-        const updates: Partial<Room> = {
-          status: 'clean' as RoomStatus,
-          completedAt,
-        };
-        if (!room.startedAt) updates.startedAt = startedAt;
-        await updateRoom(uid, pid, room.id, updates);
-
-        // Audit log — only checkout/stayover rooms get tracked. Vacant
-        // rooms aren't real cleans (already clean per PMS).
-        if (room.type === 'checkout' || room.type === 'stayover') {
-          void insertCleaningEvent({
-            propertyId: pid,
-            date: room.date ?? today,
-            roomNumber: room.number,
-            roomType: room.type,
-            stayoverDay: bucketStayoverDay(room.stayoverDay, room.type),
-            staffId: housekeeperId,
-            staffName: room.assignedName || 'Housekeeper',
-            startedAt,
-            completedAt,
-          }).catch(err => {
-            // Non-fatal — log and move on. The HK has already seen Done
-            // succeed; we don't want to scare them with an error from a
-            // failed audit insert.
-            console.error('[housekeeper] cleaning_event insert failed (non-fatal):', err);
-          });
+        const isCleanable = room.type === 'checkout' || room.type === 'stayover';
+        const ctx = isCleanable ? {
+          roomNumber: room.number,
+          roomType: room.type as 'checkout' | 'stayover',
+          stayoverDayBucket: bucketStayoverDay(room.stayoverDay, room.type),
+          staffName: room.assignedName || 'Housekeeper',
+          date: room.date ?? today,
+          startedAt: startedAt instanceof Date ? startedAt.toISOString() : new Date(startedAt as unknown as string).toISOString(),
+          completedAt: completedAt.toISOString(),
+        } : undefined;
+        const res = await callRoomActionApi(room, 'finish', ctx);
+        if (!res.ok) {
+          console.error('[housekeeper] finish room error:', res.error);
+          showActionError(lang === 'es'
+            ? 'No se pudo guardar como Limpia. Verifica tu conexi\u00f3n e intenta de nuevo.'
+            : 'Couldn\u2019t mark Clean. Check your connection and try again.');
         }
-      } catch (err) {
-        console.error('[housekeeper] finish room error:', err);
-        showActionError(lang === 'es'
-          ? 'No se pudo guardar como Limpia. Verifica tu conexi\u00f3n e intenta de nuevo.'
-          : 'Couldn\u2019t mark Clean. Check your connection and try again.');
       } finally {
         setSavingRoomId(null);
       }
@@ -352,17 +366,27 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       setSavingDnd(room.id);
       try {
         const newDnd = !room.isDnd;
-        await updateRoom(uid, pid, room.id, {
-          isDnd: newDnd,
-          dndNote: newDnd
-            ? `Marked DND by housekeeper at ${new Date().toLocaleTimeString()}`
-            : '',
+        const dndNote = newDnd
+          ? `Marked DND by housekeeper at ${new Date().toLocaleTimeString()}`
+          : undefined;
+        const res = await fetch('/api/housekeeper/room-action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            pid,
+            staffId: housekeeperId,
+            roomId: room.id,
+            action: newDnd ? 'dnd_on' : 'dnd_off',
+            dndNote,
+          }),
         });
-      } catch (err) {
-        console.error('[housekeeper] toggle DND error:', err);
-        showActionError(lang === 'es'
-          ? 'No se pudo cambiar No Molestar.'
-          : 'Couldn\u2019t toggle Do Not Disturb.');
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok || !j?.ok) {
+          console.error('[housekeeper] toggle DND error:', j?.error || res.status);
+          showActionError(lang === 'es'
+            ? 'No se pudo cambiar No Molestar.'
+            : 'Couldn\u2019t toggle Do Not Disturb.');
+        }
       } finally {
         setSavingDnd(null);
       }
@@ -395,9 +419,9 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
     try {
       // Flip the helpRequested flag on the room row first so other UI
       // (e.g. manager-side dashboard) can pick it up via realtime.
-      await updateRoom(uid, pid, room.id, {
-        helpRequested: true,
-      });
+      // Goes through the server-side route — direct supabase update
+      // silently no-ops for unauthenticated housekeeper sessions.
+      await callRoomActionApi(room, 'help');
 
       // Send SMS to the property's Scheduling Manager. AWAIT — we need to
       // know whether it actually reached anyone before showing "Sent".
@@ -453,7 +477,21 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       return;
     }
     try {
-      await updateRoom(uid, pid, room.id, { issueNote: issueNote.trim() });
+      const r = await fetch('/api/housekeeper/room-action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pid,
+          staffId: housekeeperId,
+          roomId: room.id,
+          action: 'issue',
+          issueNote: issueNote.trim(),
+        }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j?.ok) {
+        throw new Error(j?.error || `http ${r.status}`);
+      }
       setIssueRoomId(null);
       setIssueNote('');
     } catch (err) {
@@ -467,35 +505,20 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   };
 
   // ── Reset room (clean/inspected → dirty, clear times) ─────────────────────
-  // Also discards any cleaning_events row this HK created for this room in
-  // the last 60 seconds — the "oops, wrong room — undo" path. Resets that
-  // happen >60s after Done are treated as legitimate (the audit entry
-  // stays; Maria did real work even if the room needed re-cleaning).
+  // The server-side route also discards any cleaning_events row created
+  // by this HK for this room in the last 60s — the "oops, wrong room —
+  // undo" path. Resets >60s after Done are treated as legitimate.
   const handleResetRoom = async (room: RoomRow) => {
     if (!uid || !pid) return;
     setResettingRoomId(room.id);
     try {
-      await updateRoom(uid, pid, room.id, {
-        status: 'dirty' as RoomStatus,
-        startedAt: null,
-        completedAt: null,
-      });
-      // Fire-and-forget: undo a recent audit insert if this is an "oops"
-      // reset. Errors here don't block the reset itself.
-      void discardRecentCleaningEvent({
-        propertyId: pid,
-        date: room.date ?? today,
-        roomNumber: room.number,
-        staffId: housekeeperId,
-        withinSeconds: 60,
-      }).catch(err => {
-        console.error('[housekeeper] discard recent cleaning_event failed (non-fatal):', err);
-      });
-    } catch (err) {
-      console.error('[housekeeper] reset room error:', err);
-      showActionError(lang === 'es'
-        ? 'No se pudo reiniciar la habitaci\u00f3n.'
-        : 'Couldn\u2019t reset the room.');
+      const res = await callRoomActionApi(room, 'reset');
+      if (!res.ok) {
+        console.error('[housekeeper] reset room error:', res.error);
+        showActionError(lang === 'es'
+          ? 'No se pudo reiniciar la habitaci\u00f3n.'
+          : 'Couldn\u2019t reset the room.');
+      }
     } finally {
       setResettingRoomId(null);
     }
