@@ -5,6 +5,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
@@ -368,21 +369,29 @@ function RoomsTab() {
       )}
 
       {/* Toast notification — green for success, red for errors so the
-          outcome is obvious at a glance even before reading the text. */}
-      {toastMessage && (
+          outcome is obvious at a glance even before reading the text.
+          Portaled to document.body because some ancestor in the
+          housekeeping layout has a CSS transform/perspective that turns
+          this component's containing block into the ancestor instead of
+          the viewport — without the portal, position:fixed anchors to
+          that ancestor and the toast renders below the page fold.
+          Same fix pattern used on the Staff Priority modal (commit
+          c2bb521). */}
+      {toastMessage && typeof document !== 'undefined' && createPortal(
         <div style={{
-          position: 'fixed', bottom: '100px', right: '20px',
+          position: 'fixed', bottom: '24px', right: '24px',
           maxWidth: '440px',
           background: toastKind === 'error' ? '#dc2626' : '#10b981',
           color: '#fff',
-          padding: '12px 16px', borderRadius: '12px',
+          padding: '14px 18px', borderRadius: '12px',
           fontSize: '14px', fontWeight: 500,
           lineHeight: 1.4,
-          boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-          zIndex: 1000,
+          boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
+          zIndex: 9999,
         }}>
           {toastMessage}
-        </div>
+        </div>,
+        document.body,
       )}
 
       {loading ? (
