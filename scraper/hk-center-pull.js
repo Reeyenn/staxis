@@ -253,7 +253,17 @@ async function pullHkCenter(page, log) {
 
         const { condition, debug } = detectCondition(cells[CELL.CONDITION]);
         if (condition === null && firstMissDebug === null) {
-          firstMissDebug = `room=${number} cell-html=${debug}`;
+          // On first miss, dump the WHOLE row's HTML so we can see
+          // where CA moved the current condition to. Truncate to keep
+          // the error response sane.
+          const cellSummary = [];
+          for (let i = 0; i < cells.length; i++) {
+            const txt = (cells[i].innerText || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+            const cls = (cells[i].className || '').slice(0, 60);
+            cellSummary.push(`[${i}]"${txt}"(class="${cls}")`);
+          }
+          const rowHtml = (tr.outerHTML || '').slice(0, 1200);
+          firstMissDebug = `room=${number} detect=${debug} cells=${cellSummary.join('|')} row-html=${rowHtml}`;
         }
 
         // DnD: a checkbox inside cell 7. Some rows have no checkbox at
