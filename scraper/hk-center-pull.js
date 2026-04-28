@@ -153,7 +153,40 @@ async function pullHkCenter(page, log) {
       function detectCondition(condCell) {
         if (!condCell) return { condition: null, debug: 'no-cell' };
 
-        // Strategy 1: legacy class names.
+        // Strategy 1 (current CA, post-Apr-2026): housekeeping status is
+        // now a <select> dropdown inside the cell, NOT a styled pill.
+        // The cell wraps a <select id="update-housekeeping-status-dropdown-N"
+        // name="housekeepingStatus_<roomNumber>"> containing options like
+        // 'Clean', 'Dirty' (and possibly Inspected, OOO, etc.).
+        // The currently selected option = the room's current condition.
+        // We use select.value (the value attribute), falling back to the
+        // selected <option>'s text content, lowercase + trim.
+        const sel = condCell.querySelector(
+          'select[name^="housekeepingStatus" i], select[id^="update-housekeeping-status" i]',
+        );
+        if (sel) {
+          let raw = '';
+          if (typeof sel.value === 'string' && sel.value) {
+            raw = sel.value;
+          } else if (sel.selectedIndex >= 0 && sel.options[sel.selectedIndex]) {
+            raw = sel.options[sel.selectedIndex].text || sel.options[sel.selectedIndex].value || '';
+          }
+          const norm = raw.trim().toLowerCase();
+          if (norm.startsWith('clean')) return { condition: 'clean', debug: `select=${raw}` };
+          if (norm.startsWith('dirty')) return { condition: 'dirty', debug: `select=${raw}` };
+          // Inspected / Out of Order / Pickup etc. — bucket as clean
+          // (room isn't dirty, doesn't need a clean tap). The status
+          // preservation logic in refresh-from-pms already protects
+          // 'inspected' from being downgraded; we just need the room
+          // to NOT show as 'dirty' on the housekeeper page.
+          if (norm.startsWith('insp')) return { condition: 'clean', debug: `select=${raw} (inspected→clean)` };
+          if (norm.startsWith('out') || norm === 'ooo') return { condition: 'clean', debug: `select=${raw} (ooo→clean)` };
+          if (norm.startsWith('pickup') || norm.startsWith('refresh')) return { condition: 'clean', debug: `select=${raw} (other→clean)` };
+          // Unrecognized status — surface for review rather than guess.
+          return { condition: null, debug: `select-unknown=${raw}` };
+        }
+
+        // Strategy 2: legacy class names (pre-Apr-2026 CA layout).
         if (condCell.querySelector('#rcInput .GreenFake, .GreenFake')) {
           return { condition: 'clean', debug: 'GreenFake' };
         }
