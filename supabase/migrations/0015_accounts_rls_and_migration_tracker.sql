@@ -1,0 +1,7 @@
+-- This file is intentionally empty — the original draft was split into
+-- 0015_applied_migrations_tracker.sql (behavior-neutral, applied) and a
+-- deferred RLS-on-accounts migration that will be drafted as 0016 after
+-- post-launch verification. See the audit report for context.
+--
+-- Renamed/split rather than deleted because the sandbox file system can't
+-- delete files on the mounted drive. Treat this as a no-op.

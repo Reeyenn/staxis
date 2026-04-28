@@ -35,6 +35,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
+import { log, getOrMintRequestId } from '@/lib/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -77,18 +78,28 @@ function classify(durationMin: number): { status: 'recorded' | 'discarded' | 'fl
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
+  // Each housekeeper tap (Start, Done, Reset, DND, Issue, Help) gets a
+  // request id so we can correlate "Maria says Done didn't work at 11:14
+  // AM" to the exact server-side log line. Especially valuable here
+  // because the housekeeper page is the one with the most user actions
+  // and the most "it didn't work" bug reports.
+  const requestId = getOrMintRequestId(req);
+
   let body: RequestBody;
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ ok: false, error: 'invalid json' }, { status: 400 });
+    log.warn('room-action: invalid json', { requestId, route: 'housekeeper/room-action' });
+    return NextResponse.json({ ok: false, error: 'invalid json' }, { status: 400, headers: { 'x-request-id': requestId } });
   }
   const { pid, staffId, roomId, action, cleaningContext } = body;
   if (!pid || !staffId || !roomId || !action) {
-    return NextResponse.json({ ok: false, error: 'missing pid/staffId/roomId/action' }, { status: 400 });
+    log.warn('room-action: missing fields', { requestId, route: 'housekeeper/room-action', hasPid: !!pid, hasStaff: !!staffId, hasRoom: !!roomId, hasAction: !!action });
+    return NextResponse.json({ ok: false, error: 'missing pid/staffId/roomId/action' }, { status: 400, headers: { 'x-request-id': requestId } });
   }
   if (!['start', 'finish', 'reset', 'stop', 'dnd_on', 'dnd_off', 'issue', 'help'].includes(action)) {
-    return NextResponse.json({ ok: false, error: 'invalid action' }, { status: 400 });
+    log.warn('room-action: invalid action', { requestId, route: 'housekeeper/room-action', action });
+    return NextResponse.json({ ok: false, error: 'invalid action' }, { status: 400, headers: { 'x-request-id': requestId } });
   }
 
   // ─── Capability check ─────────────────────────────────────────────────
@@ -183,11 +194,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         // Don't fail the whole request if audit insert fails — the room
         // update already succeeded and the housekeeper has moved on.
         if (ceErr) {
-          // eslint-disable-next-line no-console
-          console.error('[room-action] cleaning_events insert failed (non-fatal):', ceErr);
+          log.error('room-action: cleaning_events insert failed (non-fatal)', { requestId, route: 'housekeeper/room-action', pid, staffId, action: 'finish', err: ceErr as unknown as Error });
         }
       }
-      return NextResponse.json({ ok: true, action: 'finish', completedAt, cleaningEventInserted });
+      return NextResponse.json({ ok: true, action: 'finish', completedAt, cleaningEventInserted }, { headers: { 'x-request-id': requestId } });
     }
 
     // ─── RESET ──────────────────────────────────────────────────────────
@@ -213,10 +223,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         .gte('created_at', cutoff)
         .in('status', ['recorded', 'flagged']);
       if (discardErr) {
-        // eslint-disable-next-line no-console
-        console.error('[room-action] discard cleaning_events failed (non-fatal):', discardErr);
+        log.error('room-action: cleaning_events discard failed (non-fatal)', { requestId, route: 'housekeeper/room-action', pid, staffId, action: 'reset', err: discardErr as unknown as Error });
       }
-      return NextResponse.json({ ok: true, action: 'reset' });
+      return NextResponse.json({ ok: true, action: 'reset' }, { headers: { 'x-request-id': requestId } });
     }
 
     // ─── STOP (undo a Start tap) ────────────────────────────────────────

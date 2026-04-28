@@ -110,6 +110,11 @@ const checks: Array<[string, CheckFn]> = [
   ['supabase_realtime_publication',  checkSupabaseRealtimePublication],
   ['supabase_heartbeat',             checkSupabaseHeartbeat],
   ['supabase_dashboard',             checkSupabaseDashboard],
+  // Schema-drift detection: every migration in /supabase/migrations/ must be
+  // recorded in applied_migrations on the live DB. Catches the "deployed
+  // code that calls a column added in 00NN before 00NN was applied" failure
+  // mode that otherwise surfaces as cryptic 'relation … not found' 500s.
+  ['supabase_migrations_applied',    checkAppliedMigrations],
   ['scraper_csv_pull',               checkScraperCsvPull],
   ['scraper_health_cron',            checkScraperHealthCronLiveness],
   ['twilio_credentials',             checkTwilioCredentials],
@@ -1024,6 +1029,69 @@ async function checkCronSecretCrossPlatform(): Promise<Omit<Check, 'name' | 'dur
     };
   } catch (err) {
     return { status: 'warn', detail: `cross-platform check raised: ${errToString(err)}` };
+  }
+}
+
+/**
+ * Schema-drift detection: every numbered migration in /supabase/migrations/
+ * must have a row in the live applied_migrations table. If a deployment
+ * ships code that calls a column added in 00NN before 00NN was applied,
+ * the route 500s with a cryptic "relation … not found" — this surfaces
+ * that drift up front so doctor goes red BEFORE Mario sees a broken page.
+ *
+ * `EXPECTED_MIGRATIONS` is the source of truth maintained alongside the
+ * SQL files. Add a new entry whenever you add a new migration file.
+ *
+ * Behavior:
+ *   - applied_migrations table missing entirely → warn (0015 itself not applied yet)
+ *   - subset applied → fail with the specific missing version list
+ *   - all applied → ok, with the count
+ *   - extras in DB not in code → warn (someone applied a hand-rolled migration)
+ */
+const EXPECTED_MIGRATIONS: ReadonlyArray<string> = [
+  '0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008',
+  '0009', '0010', '0011', '0012', '0013', '0014', '0015',
+];
+async function checkAppliedMigrations(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('applied_migrations')
+      .select('version');
+    if (error) {
+      // Table doesn't exist yet — 0015 hasn't been applied to this project.
+      // Warn rather than fail so existing prod deployments without 0015
+      // don't go red on the next doctor run.
+      if (errToString(error).includes('does not exist')) {
+        return {
+          status: 'warn',
+          detail: 'applied_migrations table not present. Apply migration 0015_applied_migrations_tracker.sql to enable schema-drift detection.',
+          fix: 'Run supabase/migrations/0015_applied_migrations_tracker.sql in the Supabase SQL editor. Idempotent; safe to re-run.',
+        };
+      }
+      return { status: 'warn', detail: `applied_migrations read failed: ${errToString(error)}` };
+    }
+    const applied = new Set((data ?? []).map(r => String((r as { version: string }).version)));
+    const missing = EXPECTED_MIGRATIONS.filter(v => !applied.has(v));
+    const unexpected = [...applied].filter(v => !EXPECTED_MIGRATIONS.includes(v));
+    if (missing.length > 0) {
+      return {
+        status: 'fail',
+        detail: `${missing.length} migration(s) missing from live DB: ${missing.join(', ')}. Code expects all ${EXPECTED_MIGRATIONS.length} to be applied.`,
+        fix: `Apply ${missing.map(v => `supabase/migrations/${v}_*.sql`).join(', ')} via the Supabase SQL editor. Each migration is idempotent.`,
+      };
+    }
+    if (unexpected.length > 0) {
+      return {
+        status: 'warn',
+        detail: `applied_migrations contains ${unexpected.length} version(s) not in EXPECTED_MIGRATIONS: ${unexpected.join(', ')}. If you added a new migration, also add it to EXPECTED_MIGRATIONS in the doctor.`,
+      };
+    }
+    return {
+      status: 'ok',
+      detail: `all ${EXPECTED_MIGRATIONS.length} migrations applied`,
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `applied_migrations check raised: ${errToString(err)}` };
   }
 }
 
