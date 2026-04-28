@@ -667,7 +667,7 @@ export default function StaffPage() {
             DIRECTORY TAB
             ════════════════════════════════════════════════════════════════ */}
         {activeTab === 'directory' && (
-          <div className="animate-in">
+          <div key="directory" className="animate-in stagger-1">
 
             {/* ── Key Stats Bar ── */}
             {totalStaff > 0 && (
@@ -830,7 +830,7 @@ export default function StaffPage() {
             SCHEDULE TAB
             ════════════════════════════════════════════════════════════════ */}
         {activeTab === 'schedule' && (
-          <div className="animate-in" style={{ maxWidth: '800px', margin: '0 auto' }}>
+          <div key="schedule" className="animate-in stagger-1" style={{ maxWidth: '800px', margin: '0 auto' }}>
 
             {/* ── Notification panel ── */}
             {showNotifPanel && (

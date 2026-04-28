@@ -113,11 +113,17 @@ export default function HousekeepingPage() {
         </nav>
       </div>
 
-      {/* ── Section content ── */}
-      {activeTab === 'schedule'    && <ScheduleTab />}
-      {activeTab === 'rooms'       && <RoomsTab />}
-      {activeTab === 'deepclean'   && <DeepCleanTab />}
-      {activeTab === 'performance' && <PerformanceTab />}
+      {/* ── Section content ──
+          Wrapped in a keyed div so React remounts the wrapper on tab
+          switch, which re-triggers the CSS .animate-in fade-up. Same
+          cascade-in feel as the dashboard page. The tab subcomponents
+          themselves are unchanged. */}
+      <div key={activeTab} className="animate-in stagger-1">
+        {activeTab === 'schedule'    && <ScheduleTab />}
+        {activeTab === 'rooms'       && <RoomsTab />}
+        {activeTab === 'deepclean'   && <DeepCleanTab />}
+        {activeTab === 'performance' && <PerformanceTab />}
+      </div>
     </AppLayout>
   );
 }

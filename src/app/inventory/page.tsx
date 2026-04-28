@@ -258,7 +258,7 @@ export default function InventoryPage() {
       <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '16px 24px 160px' }}>
 
         {/* ── Compact Hero ── */}
-        <header style={{ marginBottom: '20px' }}>
+        <header className="animate-in stagger-1" style={{ marginBottom: '20px' }}>
           <div style={{
             background: '#f5f3ee', padding: '18px 24px', borderRadius: '14px',
             position: 'relative', overflow: 'hidden',
@@ -325,7 +325,7 @@ export default function InventoryPage() {
         </header>
 
         {/* ── Bento Grid: 3 Category Columns ── */}
-        <div className="inv-cat-grid">
+        <div className="inv-cat-grid animate-in stagger-2">
           {/* Render each category column */}
           {([
             { key: 'housekeeping' as InventoryCategory, label: lang === 'es' ? 'Limpieza' : 'Housekeeping', items: hkItems, alerts: catAlerts.housekeeping },

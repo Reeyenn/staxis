@@ -474,9 +474,13 @@ export default function MaintenancePage() {
           ))}
         </div>
 
-        {/* ── Tab content ── */}
+        {/* ── Tab content ──
+            Keyed wrapper retriggers .animate-in on every tab switch so
+            the content cascades in like the dashboard, instead of
+            popping in instantly. Inner tab branches keep their own
+            stagger-N classes to chain the cascade. */}
         {activeTab === 'workOrders' ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div key="workOrders" className="animate-in stagger-1" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
             {/* Blocked-rooms banner — tells Maria at a glance how many rooms
                 are currently flagged as unrentable. Hidden when zero so the
@@ -664,12 +668,12 @@ export default function MaintenancePage() {
           </div>
         ) : activeTab === 'preventive' ? (
           /* ── Preventive Maintenance Tab (Inspections) ── */
-          <div className="animate-in stagger-2">
+          <div key="preventive" className="animate-in stagger-1">
             <InspectionsView />
           </div>
         ) : (
           /* ── Landscaping Tab — Stitch Concierge Layout ── */
-          <div className="animate-in stagger-2" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div key="landscaping" className="animate-in stagger-1" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
 
             {/* ── Hero Section ── */}
             {(() => {
