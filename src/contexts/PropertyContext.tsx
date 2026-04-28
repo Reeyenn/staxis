@@ -78,6 +78,22 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   // typically a few hundred ms. If the first attempt fails with a permission
   // error, retry with a short backoff so the user isn't greeted by a
   // spurious "No properties found" screen during that window.
+  //
+  // ⚠️ The dependency below is INTENTIONALLY narrow (uid + role + access)
+  // rather than the full `user` object. Reason: AuthContext's
+  // onAuthStateChange handler fires on every Supabase token refresh
+  // (~hourly, plus on tab focus/visibility). Each fire creates a NEW
+  // appUser object reference even though the data is identical. If this
+  // effect depended on `[user]` (the reference), every token refresh
+  // would re-run loadProps and flip setLoading(true) — producing a brief
+  // 'loading spinner over the dashboard' that the operator sees every
+  // time they come back to the tab. Depending only on the identity-
+  // bearing primitives makes this effect idempotent across refreshes.
+  // The full user object is still in scope inside the effect; we just
+  // don't react to its reference identity.
+  const userUid           = user?.uid;
+  const userRole          = user?.role;
+  const userPropertyAccessKey = (user?.propertyAccess ?? []).join(',');
   useEffect(() => {
     if (!user) {
       setLoading(false);
@@ -140,7 +156,9 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     })();
 
     return () => { cancelled = true; };
-  }, [user]);
+    // See note above for why we depend on identity primitives, not `user`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userUid, userRole, userPropertyAccessKey]);
 
   // Load active property data.
   // Staff is loaded via onSnapshot (real-time) so it updates when the network
@@ -216,7 +234,12 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
       cancelled = true;
       unsubStaff();
     };
-  }, [user, activePropertyId]);
+    // Same reasoning as the properties-list effect above: depend on the
+    // user's stable identity (uid) rather than the object reference, so a
+    // Supabase token refresh doesn't tear down + recreate the staff
+    // subscription and re-fetch areas/laundry every hour.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userUid, activePropertyId]);
 
   const refreshProperty = async () => {
     if (!user || !activePropertyId) return;

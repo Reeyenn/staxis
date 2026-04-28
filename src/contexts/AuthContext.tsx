@@ -185,7 +185,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           ]);
           if (!active) return;
           if (appUser) {
-            setUser(appUser);
+            // Stable-reference setUser: if the data is identical to what's
+            // already in state, keep the same object reference. Reason:
+            // onAuthStateChange fires on every Supabase token refresh
+            // (~hourly + on tab focus), and a fresh `setUser({...})` call
+            // creates a new reference even when nothing changed. Downstream
+            // contexts depending on `[user]` (PropertyContext, etc.) would
+            // tear down and re-fetch on every refresh, producing the
+            // 'spinner over the dashboard every time I come back to the
+            // tab' UX bug. Comparing the load-bearing fields here keeps
+            // the reference stable across no-op refreshes.
+            setUser(prev => {
+              if (prev
+                && prev.uid === appUser.uid
+                && prev.accountId === appUser.accountId
+                && prev.role === appUser.role
+                && prev.username === appUser.username
+                && prev.displayName === appUser.displayName
+                && JSON.stringify(prev.propertyAccess ?? []) === JSON.stringify(appUser.propertyAccess ?? [])
+              ) {
+                return prev;
+              }
+              return appUser;
+            });
           } else {
             await supabase.auth.signOut();
             setUser(null);
