@@ -149,17 +149,29 @@ export async function POST(req: NextRequest) {
 
       const row = existingByNumber.get(num);
       if (row) {
-        // Overwrite type + status with CSV baseline. Clear stale progress
-        // timestamps (fresh baseline). Preserve assigned_to/assigned_name so
-        // Maria's shift Send is not blown away. Preserve is_dnd flags.
+        // Overwrite type + status with CSV baseline. Preserve assigned_to /
+        // assigned_name (so Maria's shift Send isn't blown away) and is_dnd.
+        //
+        // Timestamps (started_at / completed_at): ONLY clear when the new
+        // status is 'dirty' — that means the PMS reported the room as
+        // dirty, which represents a real reset (next day's baseline OR
+        // guest re-checked-in). When the new status is 'clean' or
+        // 'inspected', preserve the existing timestamps because they
+        // represent a real housekeeper action that we DON'T want the next
+        // CSV pull to silently erase. (This was a pre-2026-04-27 bug:
+        // unconditionally nulling these wiped per-clean durations within
+        // minutes of capture, breaking the Performance tab averages and
+        // the in-progress elapsed-time displays.)
         const patch: Record<string, unknown> = {
           type,
           status,
-          started_at:   null,
-          completed_at: null,
           issue_note:   null,
           help_requested: false,
         };
+        if (status === 'dirty') {
+          patch.started_at = null;
+          patch.completed_at = null;
+        }
         if (csv.stayoverDay !== null && csv.stayoverDay !== undefined) {
           patch.stayover_day = csv.stayoverDay;
         } else {
