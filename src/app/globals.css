@@ -5,6 +5,40 @@
 @tailwind utilities;
 
 /* ─────────────────────────────────────────────────────────────────────────────
+   Material Symbols — defensive FOUT prevention.
+
+   Material Symbols renders icons by reading the literal text inside the
+   span ("groups", "calendar_month", "check_circle") and substituting a
+   glyph via OpenType ligatures. Two things have to be true for this to
+   work cleanly:
+     1. The font file must be loaded (handled by display=block in
+        layout.tsx — gives a 3s invisible window during cold loads).
+     2. Ligature substitution must be ON (font-feature-settings: 'liga').
+
+   The rules below also clamp visual properties so that if the font
+   truly fails to load (network blocked, Google Fonts down, etc.), the
+   literal "groups" text doesn't break the page layout — it stays
+   compact and aligned with whatever surrounding chrome it lived in.
+   This is the "engineering Other" / "concierge Front Desk" leak the
+   2026-04-27 screenshot reported. ─────────────────────────────────── */
+
+.material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal;
+  font-style: normal;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-feature-settings: 'liga';
+  font-feature-settings: 'liga';
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
    Staxis — Ops Tool Design System
    Light, professional, B2B SaaS — built for hotel operators.
    Navy sidebar. White cards. Clean and readable.

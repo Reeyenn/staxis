@@ -32,7 +32,19 @@ export default function RootLayout({
         <link rel="apple-touch-icon" href="/icons/icon.svg" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" />
+        {/*
+          display=block (NOT swap) for the icon font.
+          Why it matters: Material Symbols renders an icon by reading the
+          literal text inside <span class="material-symbols-outlined">groups</span>
+          and substituting a glyph via OpenType ligatures. With display=swap,
+          the browser shows the FALLBACK text (the literal word "groups",
+          "calendar_month", etc.) until the font finishes loading — that
+          word-flash is what users were seeing as the "buggy" icon labels.
+          display=block holds the text invisible for up to 3s while the
+          font loads, so on cold-cache loads the icons appear correctly
+          instead of flashing as English words first.
+        */}
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block" />
       </head>
       <body>
         <SyncProvider>
