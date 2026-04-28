@@ -18,6 +18,15 @@
  *
  * Triggered by Mario clicking "Load Rooms from CSV" (button name kept
  * for continuity even though it now pulls from a different page).
+ *
+ * Selector + cell-index reference: salvaged from the pre-Apr-18 live
+ * scraper (commit 8979cde^), which scraped this same page every 15 min
+ * for months and is the proven layout. CA's HK Center renders the
+ * rooms inside a table with id="updateRoomConditionHeaderTable", and
+ * the active CLEAN/DIRTY pill is marked by a child <div class="GreenFake">
+ * (CLEAN) or <div class="RedFake"> (DIRTY) inside #rcInput in cell 4.
+ * The earlier rewrite of this file used a generic `table tr` selector
+ * + computed background-color heuristic; both fail on CA's actual DOM.
  */
 
 'use strict';
@@ -27,6 +36,38 @@ const { ScraperError, ERROR_CODES } = require('./scraper-errors');
 const HK_CENTER_URL =
   'https://www.choiceadvantage.com/choicehotels/HousekeepingCenter_start.init';
 
+// CA's HK Center table ID. Stable across the months the prior scraper
+// ran. If this ever changes, every error below will surface as
+// SELECTOR_MISS — point at this constant and inspect the live DOM.
+const HK_CENTER_TABLE_SELECTOR = '#updateRoomConditionHeaderTable';
+
+/**
+ * Cell layout inside each data <tr> of the HK Center table:
+ *   0 = Room number ('101', '202', …)
+ *   1 = (empty / status icon)
+ *   2 = Room type code (SNK, SNQQ, HSNK1, …) — CA-internal
+ *   3 = Room status ('Occupied' | 'Vacant') — front desk view
+ *   4 = Condition pill — contains <div id="rcInput"> with either a
+ *       child .GreenFake (CLEAN active) or .RedFake (DIRTY active).
+ *       Both labels are always rendered as text — only the styled
+ *       div tells you which one is the active state.
+ *   5 = Service ('Stay Over' | 'Check Out' | 'None' | …)
+ *   6 = Assigned-to (initials, e.g. 'M. C.', or empty)
+ *   7 = DnD checkbox cell (input[type=checkbox])
+ *
+ * The header row also has <td>s, but cells[0] won't be a numeric
+ * room number, so the /^\d/ filter skips it.
+ */
+const CELL = {
+  ROOM_NUMBER: 0,
+  TYPE: 2,
+  ROOM_STATUS: 3,
+  CONDITION: 4,
+  SERVICE: 5,
+  ASSIGNED_TO: 6,
+  DND: 7,
+};
+
 /**
  * Navigate to the Housekeeping Center and parse the rooms table.
  *
@@ -35,7 +76,7 @@ const HK_CENTER_URL =
  *   type: string,          // CA's internal code: SNQQ, SNK, HSNK1, …
  *   roomStatus: string,    // 'Occupied' | 'Vacant' (front-desk view)
  *   condition: 'clean' | 'dirty' | null,  // housekeeping view
- *   service: string,       // 'Stay Over' | 'None' (or other)
+ *   service: string,       // 'Stay Over' | 'Check Out' | 'None' (or other)
  *   assignedTo: string,    // assigned-to initials, e.g. 'M. C.', or ''
  *   isDnd: boolean,        // Do Not Disturb checkbox
  * }>
@@ -72,72 +113,68 @@ async function pullHkCenter(page, log) {
     );
   }
 
-  // Wait for the rooms table specifically. If CA's page structure ever
-  // changes this is the canary.
+  // Wait specifically for the room table — not just any table on the
+  // page (CA's chrome has nav tables that always exist). 30s is generous
+  // because cold-cached HK Center can take 15-20s to render its rows
+  // when CA's report cluster is busy.
   try {
-    await page.waitForSelector('table tr', { timeout: 15_000 });
+    await page.waitForSelector(`${HK_CENTER_TABLE_SELECTOR} tr`, { timeout: 30_000 });
   } catch {
     throw new ScraperError(
       ERROR_CODES.SELECTOR_MISS,
-      'HK Center table never rendered (no table tr selector matched)',
+      `HK Center table never rendered (selector: ${HK_CENTER_TABLE_SELECTOR} tr). ` +
+      `Final URL: ${page.url()}. CA page layout may have changed.`,
     );
   }
 
-  // Extract via page.evaluate — runs inside the browser context, has
-  // access to the actual rendered DOM + computed styles. We use the
-  // background color of the condition badge as the source of truth for
-  // CLEAN vs DIRTY because both labels are always rendered as text;
-  // only the active one has a colored background. This was the trick
-  // we discovered while pairing on the page in Chrome — see chat log
-  // 2026-04-28.
+  // Extract via page.evaluate — runs inside the browser context. We
+  // pass the cell-index map and table selector as args so the JS in
+  // here doesn't drift from the constants above.
   let rooms;
   try {
-    rooms = await page.evaluate(() => {
+    rooms = await page.evaluate(({ tableSelector, CELL }) => {
       const out = [];
-      const rows = document.querySelectorAll('table tr');
+      const rows = document.querySelectorAll(`${tableSelector} tr`);
       for (const tr of rows) {
         const cells = tr.querySelectorAll('td');
-        if (cells.length < 7) continue;
-        const number = (cells[0].innerText || '').trim();
-        if (!/^\d/.test(number)) continue; // skip header / non-data rows
+        // Need cells[CELL.DND] (=7) at minimum. < 8 means partial row.
+        if (cells.length < 8) continue;
+        const number = (cells[CELL.ROOM_NUMBER].innerText || '').trim();
+        if (!/^\d{3,4}$/.test(number)) continue; // skip header / non-data rows
 
-        // Condition: find the descendant of cells[5] with a non-transparent
-        // background-color — that's the highlighted CLEAN or DIRTY pill.
+        // Condition pill: scoped querySelector inside cells[4] for the
+        // active-state div. CA renders BOTH "CLEAN" and "DIRTY" labels
+        // — only the active one has the .GreenFake/.RedFake class.
+        // querySelector is scoped to the cell so duplicate rcInput IDs
+        // across rows don't matter.
+        const condCell = cells[CELL.CONDITION];
+        const isClean = condCell && condCell.querySelector('#rcInput .GreenFake') !== null;
+        const isDirty = condCell && condCell.querySelector('#rcInput .RedFake') !== null;
         let condition = null;
-        const condCell = cells[5];
-        if (condCell) {
-          const els = condCell.querySelectorAll('*');
-          for (const el of els) {
-            const bg = window.getComputedStyle(el).backgroundColor;
-            if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') {
-              const txt = (el.innerText || '').trim().toUpperCase();
-              if (txt === 'CLEAN' || txt === 'DIRTY') {
-                condition = txt.toLowerCase();
-                break;
-              }
-            }
-          }
-        }
+        if (isClean) condition = 'clean';
+        else if (isDirty) condition = 'dirty';
 
-        // DND checkbox is in cells[8]. We probe for a checked input.
+        // DnD: a checkbox inside cell 7. Some rows have no checkbox at
+        // all (e.g., OOO rooms) — treat absent as not-DnD.
         let isDnd = false;
-        if (cells[8]) {
-          const chk = cells[8].querySelector('input[type="checkbox"]');
+        const dndCell = cells[CELL.DND];
+        if (dndCell) {
+          const chk = dndCell.querySelector('input[type="checkbox"]');
           if (chk && chk.checked) isDnd = true;
         }
 
         out.push({
           number,
-          type: (cells[2]?.innerText || '').trim(),
-          roomStatus: (cells[3]?.innerText || '').trim(),
+          type: (cells[CELL.TYPE].innerText || '').trim(),
+          roomStatus: (cells[CELL.ROOM_STATUS].innerText || '').trim(),
           condition,
-          service: (cells[6]?.innerText || '').trim(),
-          assignedTo: (cells[7]?.innerText || '').trim(),
+          service: (cells[CELL.SERVICE].innerText || '').trim(),
+          assignedTo: (cells[CELL.ASSIGNED_TO].innerText || '').trim(),
           isDnd,
         });
       }
       return out;
-    });
+    }, { tableSelector: HK_CENTER_TABLE_SELECTOR, CELL });
   } catch (err) {
     throw new ScraperError(
       ERROR_CODES.PARSE_ERROR,
@@ -152,14 +189,15 @@ async function pullHkCenter(page, log) {
     );
   }
 
-  // Sanity check: every room must have a condition. If we lose the
-  // background-color heuristic (CA restyles their pill), rooms.condition
-  // would be null and the caller would write garbage. Fail loudly.
+  // Sanity check: every room must have a condition. If neither
+  // .GreenFake nor .RedFake matched, CA likely restyled the pill —
+  // fail loud rather than write garbage.
   const missingCondition = rooms.filter(r => r.condition === null).length;
   if (missingCondition > 0) {
     throw new ScraperError(
       ERROR_CODES.PARSE_ERROR,
-      `HK Center: ${missingCondition} of ${rooms.length} rooms had no condition badge — CA layout likely changed`,
+      `HK Center: ${missingCondition} of ${rooms.length} rooms had no condition badge ` +
+      `(neither #rcInput .GreenFake nor #rcInput .RedFake matched) — CA layout likely changed`,
     );
   }
 
