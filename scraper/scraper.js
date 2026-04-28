@@ -979,7 +979,23 @@ async function run() {
       res.end(JSON.stringify({ ok: false, error: 'CRON_SECRET not configured on Railway' }));
       return;
     }
-    if (auth !== expected) {
+    // Constant-time string compare. `===` short-circuits on the first
+    // differing byte, leaking the secret over many requests via response
+    // timing (each correct prefix byte slows the comparison by a few ns).
+    // timingSafeEqual fails closed if buffers are different lengths, so we
+    // pre-equalize via Buffer.alloc + copy. Same authorization model used
+    // by Vercel's /api/admin/doctor and the cron endpoints.
+    const authBuf = Buffer.from(auth);
+    const expectedBuf = Buffer.from(expected);
+    let authorized = false;
+    if (authBuf.length === expectedBuf.length) {
+      try {
+        authorized = crypto.timingSafeEqual(authBuf, expectedBuf);
+      } catch {
+        authorized = false;
+      }
+    }
+    if (!authorized) {
       // Don't include the expected value in the error — that'd leak it
       // to anyone who could see the response body.
       log(`[http ${requestId}] auth mismatch for ${method} ${url}`);

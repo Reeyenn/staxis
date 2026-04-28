@@ -211,14 +211,24 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // 'inspected' room back to 'clean' — Maria's supervisor sign-off
     // sticks until the next dirty state. Same protection for
     // 'in_progress' (housekeeper started but not done).
+    //
+    // CRITICAL: 'in_progress' must be preserved regardless of what PMS
+    // reports. Mid-clean state is owned by the housekeeper app — PMS
+    // doesn't know about it. If the housekeeper marks the room "Done"
+    // in PMS before tapping Finish in our app, PMS flips clean while we
+    // still want the in_progress state to live until they tap Finish
+    // (which writes a cleaning_event row). Without this guard, a refresh
+    // mid-clean would downgrade them to 'clean' and we'd lose the audit
+    // event entirely.
     const existingRoom = existingByNumber.get(room.number);
     let newStatus: string = room.condition; // 'clean' | 'dirty'
     if (existingRoom) {
       if (existingRoom.status === 'inspected' && room.condition === 'clean') {
         newStatus = 'inspected';
-      } else if (existingRoom.status === 'in_progress' && room.condition === 'dirty') {
-        // Mid-clean and PMS still says dirty — preserve in_progress so
-        // we don't kick the housekeeper's tap state.
+      } else if (existingRoom.status === 'in_progress') {
+        // Housekeeper is mid-clean — only THEY can move this state via
+        // /api/housekeeper/room-action (Finish/Reset/Stop). PMS state is
+        // not authoritative here. Preserve regardless of clean/dirty.
         newStatus = 'in_progress';
       }
     }
