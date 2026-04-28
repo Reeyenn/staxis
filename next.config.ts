@@ -31,15 +31,28 @@ function buildCsp(): string {
   const supabaseHost = supabaseUrl.replace(/^https?:\/\//, '');
   const supabaseConnect = `https://${supabaseHost} wss://${supabaseHost}`;
 
+  // Google Fonts allowance:
+  //   - fonts.googleapis.com serves the CSS (the @font-face stylesheets) →
+  //     must be in style-src
+  //   - fonts.gstatic.com serves the actual woff2 binaries that those
+  //     stylesheets reference → must be in font-src
+  // Without both, the Material Symbols + Inter requests get blocked by
+  // CSP (browser shows them as 503/blocked in DevTools) and every icon
+  // span renders as the literal ligature name ("groups", "calendar_month",
+  // "check_circle", etc.) — this was the bug Reeyen screenshotted on
+  // 2026-04-27. Both hosts are Google's own CDN, no extra trust risk.
+  const googleFontsCss  = 'https://fonts.googleapis.com';
+  const googleFontsFile = 'https://fonts.gstatic.com';
+
   return [
     `default-src 'self'`,
     // 'unsafe-inline' is needed because Next.js injects inline scripts for
     // hydration that don't carry our nonce. Pair with a tight script-src
     // host whitelist.
     `script-src 'self' 'unsafe-inline'`,
-    `style-src 'self' 'unsafe-inline'`,
+    `style-src 'self' 'unsafe-inline' ${googleFontsCss}`,
     `img-src 'self' data: https:`,
-    `font-src 'self' data:`,
+    `font-src 'self' data: ${googleFontsFile}`,
     `connect-src 'self' ${supabaseConnect}`,
     `frame-ancestors 'none'`,
     `form-action 'self'`,
