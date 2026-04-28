@@ -123,6 +123,14 @@ function ScheduleTab() {
   const [crewOverride, setCrewOverride] = useState<string[]>([]); // manually toggled staff IDs
   const [hasAutoSelected, setHasAutoSelected] = useState(false);
   const [showPrioritySettings, setShowPrioritySettings] = useState(false);
+  // Snapshot of staff order for the Priority modal. We freeze the list when
+  // the modal opens so clicks on Priority/Normal/Exclude don't make rows
+  // jump around the screen — Mario's housekeepers ranged from "tech-comfy"
+  // to "this is my first ever app," and a row that physically moves after a
+  // tap is confusing. The badges still update live; only the row order is
+  // pinned. Cleared when the modal closes; rebuilt (newly sorted) on next
+  // open. Sort key: priority(0) → normal(1) → excluded(2), then name asc.
+  const [frozenStaffOrder, setFrozenStaffOrder] = useState<string[]>([]);
 
   // Refs used by the hydration flow below (declared early so useEffects can flip them)
   const userEditedCrew = useRef(false);
@@ -144,6 +152,32 @@ function ScheduleTab() {
   // Move toast notification
   const [moveToast, setMoveToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Staff Priority modal: snapshot order on open ──
+  // When showPrioritySettings flips to true, capture the current sorted
+  // order of (housekeeping, active) staff IDs. Render the modal from this
+  // snapshot until it closes — clicks on Priority/Normal/Exclude don't
+  // re-shuffle rows. On close, clear so the next open re-snapshots
+  // (picking up any priority changes Maria made in the previous session).
+  useEffect(() => {
+    if (!showPrioritySettings) {
+      if (frozenStaffOrder.length > 0) setFrozenStaffOrder([]);
+      return;
+    }
+    const sorted = [...staff]
+      .filter(s => s.isActive !== false && (s.department === 'housekeeping' || !s.department))
+      .sort((a, b) => {
+        const aPri = PRIORITY_ORDER[a.schedulePriority ?? 'normal'];
+        const bPri = PRIORITY_ORDER[b.schedulePriority ?? 'normal'];
+        if (aPri !== bPri) return aPri - bPri;
+        return a.name.localeCompare(b.name);
+      });
+    setFrozenStaffOrder(sorted.map(s => s.id));
+    // Intentionally NOT depending on `staff` — the whole point is to NOT
+    // re-snapshot when staff changes (e.g., when a priority click triggers
+    // a realtime update). We snapshot once on open and that's it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showPrioritySettings]);
 
   // Drag-and-drop state (pointer events — works for both mouse + touch)
   // `floating: true` means the user tapped a pill and it's now stuck to the
@@ -2619,7 +2653,16 @@ function ScheduleTab() {
               <span style={{ display: 'flex', alignItems: 'center' }}>{lang === 'es' ? '= primera selección' : '= picked first'}</span>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              {staff.filter(s => s.isActive !== false && (s.department === 'housekeeping' || !s.department)).map(s => {
+              {/* Render in the FROZEN order captured when the modal opened.
+                  Clicks update each row's badge live (via the lookup into
+                  `staff`) but never reshuffle the list. New / removed staff
+                  during the session won't appear / disappear until the
+                  modal is reopened — acceptable, this is a settings panel,
+                  not a live roster. */}
+              {frozenStaffOrder.map(sid => {
+                const s = staff.find(x => x.id === sid);
+                if (!s) return null; // staff was deleted while modal open
+                if (s.isActive === false) return null; // became inactive — hide
                 const pri = s.schedulePriority ?? 'normal';
                 return (
                   <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '12px 14px', background: '#f5f3ee', borderRadius: '12px' }}>
