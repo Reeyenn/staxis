@@ -28,8 +28,13 @@ import {
   subscribeToDashboardNumbers,
   getDashboardForDate,
   subscribeToWorkOrders,
+  // Cleaning events (Migration 0012) — powers the Performance tab.
+  getCleaningEventsForRange,
+  getFlaggedCleaningEvents,
+  decideOnFlaggedEvent,
+  subscribeToTodayCleaningEvents,
 } from '@/lib/db';
-import type { PlanSnapshot, ScheduleAssignments, CsvRoomSnapshot, DashboardNumbers } from '@/lib/db';
+import type { PlanSnapshot, ScheduleAssignments, CsvRoomSnapshot, DashboardNumbers, CleaningEvent } from '@/lib/db';
 import { dashboardFreshness, DASHBOARD_STALE_MINUTES } from '@/lib/db';
 import { getPublicAreasDueToday, calcPublicAreaMinutes, autoAssignRooms, getOverdueRooms, calcDndFreedMinutes, suggestDeepCleans } from '@/lib/calculations';
 import { getDefaultPublicAreas } from '@/lib/defaults';
@@ -38,6 +43,7 @@ import { todayStr, errToString } from '@/lib/utils';
 import { useTodayStr } from '@/lib/use-today-str';
 import type { Room, RoomStatus, RoomType, RoomPriority, StaffMember, DeepCleanRecord, DeepCleanConfig, ShiftConfirmation, ConfirmationStatus, WorkOrder } from '@/types';
 import { format, subDays } from 'date-fns';
+import { es as esLocale } from 'date-fns/locale';
 import {
   Calendar, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, CheckCircle2, Clock,
   AlertTriangle, Users, Send, Zap, BedDouble, Plus, Pencil, Trash2, Star, Check,
@@ -63,12 +69,56 @@ import type { TabKey, HKLive, HKHistory, StaffFormData } from './_shared';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // PERFORMANCE SECTION
+//
+// Powered by `cleaning_events` (Migration 0012). Each row is one immutable
+// "Done" tap from the housekeeper page. The legacy logic below USED to read
+// from `rooms` directly — but that table gets its started_at/completed_at
+// wiped on every populate-rooms-from-plan re-pull, so durations were
+// silently zeroed out within minutes of being captured. The audit log
+// fixes that.
+//
+// Leaderboard rules locked in 2026-04-27 with Reeyen:
+//   • Rank by overall avg clean time, ascending (fastest = #1).
+//   • 3-room minimum to appear ranked (prevents gaming with 1 fast clean).
+//   • Show: rooms count, checkout avg, S1 avg, S2 avg, overall avg, rate.
+//   • Inactive staff hidden from leaderboard (history persists in DB).
+// Flag review:
+//   • Cleans > 60 min are flagged. Mario clicks Keep / Discard. Permanent.
+//   • Discarded (<3 min, accidental) entries auto-excluded from averages.
 // ══════════════════════════════════════════════════════════════════════════════
 
 type ViewMode = 'live' | '7d' | '14d' | '30d' | '3mo' | '1yr' | 'all';
 
-const VIEW_DAYS: Record<ViewMode, number> = { live: 0, '7d': 7, '14d': 14, '30d': 30, '3mo': 90, '1yr': 365, all: 730 };
+const VIEW_DAYS: Record<ViewMode, number> = { live: 1, '7d': 7, '14d': 14, '30d': 30, '3mo': 90, '1yr': 365, all: 730 };
 
+// 3-room minimum for the ranked leaderboard. Anyone below this shows in the
+// "Provisional" sidebar so Mario can see they're contributing, but they
+// can't be #1 with a single 12-minute clean.
+const LEADERBOARD_MIN_ROOMS = 3;
+
+// Format minutes as "MM:SS" — matches the existing dashboard typography.
+function formatMin(mins: number | null | undefined): string {
+  if (mins === null || mins === undefined || !isFinite(mins)) return '--:--';
+  const total = Math.max(0, mins);
+  const m = Math.floor(total);
+  const s = Math.round((total - m) * 60);
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+interface StaffStats {
+  staffId: string;
+  name: string;
+  total: number;
+  totalMins: number;
+  avgMins: number;
+  avgCheckout: number | null;
+  avgS1: number | null;
+  avgS2: number | null;
+  roomsPerHour: number;
+  checkoutN: number;
+  s1N: number;
+  s2N: number;
+}
 
 function PerformanceTab() {
   const { user } = useAuth();
@@ -77,122 +127,218 @@ function PerformanceTab() {
   const today = useTodayStr();
 
   const [view, setView] = useState<ViewMode>('live');
-  const [rooms, setRooms] = useState<Room[]>([]);
-  const [historyRooms, setHistoryRooms] = useState<Room[][]>([]);
+  const [events, setEvents] = useState<CleaningEvent[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
-  const [nowMs, setNowMs] = useState(Date.now());
+  const [flagged, setFlagged] = useState<CleaningEvent[]>([]);
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
 
-  const coMins = activeProperty?.checkoutMinutes ?? 30;
-  const soMins = activeProperty?.stayoverMinutes ?? 20;
+  // Targets for the 3 efficiency cards. Falls back to legacy stayoverMinutes
+  // if a property pre-dates the day1/day2 split (older seed data).
+  const checkoutTarget = activeProperty?.checkoutMinutes ?? 30;
+  const s1Target = activeProperty?.stayoverDay1Minutes ?? 15;
+  const s2Target = activeProperty?.stayoverDay2Minutes ?? activeProperty?.stayoverMinutes ?? 20;
 
+  // Active staff — used to filter the leaderboard. Inactive housekeepers'
+  // historical entries persist in cleaning_events but they're hidden from
+  // the live ranking. `isActive !== false` treats undefined as active too.
+  const activeStaffIds = useMemo(
+    () => new Set(staff.filter(s => s.isActive !== false).map(s => s.id)),
+    [staff]
+  );
+
+  // ── Load events for the current view ──────────────────────────────────────
+  // Live: realtime subscription to today's events (new cleans appear instantly).
+  // History: one-shot fetch over the rolling window.
   useEffect(() => {
     if (!user || !activePropertyId) return;
-    // `today` is reactive — at midnight Central it flips and we re-subscribe
-    // to the new day's bucket. Without this, leaving the page open overnight
-    // silently keeps reading yesterday's rooms.
-    return subscribeToRooms(user.uid, activePropertyId, today, setRooms);
-  }, [user, activePropertyId, today]);
-
-  useEffect(() => {
-    const id = setInterval(() => setNowMs(Date.now()), 30_000);
-    return () => clearInterval(id);
-  }, []);
-
-  const loadHistory = useCallback(async (days: number) => {
-    if (!user || !activePropertyId) return;
-    setHistoryLoading(true);
-    try {
-      const dates = Array.from({ length: days }, (_, i) => format(subDays(new Date(), i + 1), 'yyyy-MM-dd'));
-      const results = await Promise.all(dates.map(d => getRoomsForDate(user.uid, activePropertyId, d)));
-      setHistoryRooms(results);
-    } catch (err) {
-      console.error('Error loading performance history:', err);
-    } finally {
-      setHistoryLoading(false);
-    }
-  }, [user, activePropertyId]);
-
-  useEffect(() => {
-    const days = VIEW_DAYS[view];
-    if (days > 0) loadHistory(days);
-  }, [view, loadHistory]);
-
-  const livePerfs    = buildLive(rooms, coMins, soMins, nowMs);
-  const historyPerfs = buildHistory(historyRooms);
-
-  const todayDone = rooms.filter(r => r.status === 'clean' || r.status === 'inspected').length;
-  const todayTurnaround = (() => {
-    const timed = rooms.filter(r => r.startedAt && r.completedAt).map(r => {
-      const s = toDate(r.startedAt); const e = toDate(r.completedAt);
-      if (!s || !e) return null;
-      return (e.getTime() - s.getTime()) / 60_000;
-    }).filter((m): m is number => m !== null && m > 0);
-    return timed.length > 0 ? Math.round(timed.reduce((a, b) => a + b, 0) / timed.length) : null;
-  })();
-
-  const scheduledToday  = staff.filter(s => s.scheduledToday);
-  const unassignedToday = scheduledToday.filter(s => !livePerfs.find(p => p.staffId === s.id));
-  const viewDays        = VIEW_DAYS[view] || 14;
-  const topHistoryPerf  = historyPerfs[0];
-
-  // ── Computed metrics for sidebar ──
-  const coTimedRooms = rooms.filter(r => r.type === 'checkout' && r.startedAt && r.completedAt).map(r => {
-    const s = toDate(r.startedAt); const e = toDate(r.completedAt);
-    if (!s || !e) return null;
-    return (e.getTime() - s.getTime()) / 60_000;
-  }).filter((m): m is number => m !== null && m > 0);
-  const soTimedRooms = rooms.filter(r => r.type === 'stayover' && r.startedAt && r.completedAt).map(r => {
-    const s = toDate(r.startedAt); const e = toDate(r.completedAt);
-    if (!s || !e) return null;
-    return (e.getTime() - s.getTime()) / 60_000;
-  }).filter((m): m is number => m !== null && m > 0);
-  const avgCoMins = coTimedRooms.length > 0 ? Math.round(coTimedRooms.reduce((a, b) => a + b, 0) / coTimedRooms.length) : null;
-  const avgSoMins = soTimedRooms.length > 0 ? Math.round(soTimedRooms.reduce((a, b) => a + b, 0) / soTimedRooms.length) : null;
-  const coVar = avgCoMins !== null ? avgCoMins - coMins : null;
-  const soVar = avgSoMins !== null ? avgSoMins - soMins : null;
-  const coFmtMin = avgCoMins !== null ? `${Math.floor(avgCoMins)}:${String(Math.round(avgCoMins % 1 * 60)).padStart(2, '0')}` : '--:--';
-  const soFmtMin = avgSoMins !== null ? `${Math.floor(avgSoMins)}:${String(Math.round(avgSoMins % 1 * 60)).padStart(2, '0')}` : '--:--';
-
-  // ── Leaderboard data (merged from livePerfs + LeaderboardCard logic) ──
-  const leaderboardData = (() => {
     if (view === 'live') {
-      const map = new Map<string, { name: string; cleaned: number; totalMinutes: number; inspected: number }>();
-      rooms.filter(r => r.assignedTo && (r.status === 'clean' || r.status === 'inspected' || r.status === 'in_progress'))
-        .forEach(room => {
-          const entry = map.get(room.assignedTo!) ?? { name: room.assignedName ?? 'Unknown', cleaned: 0, totalMinutes: 0, inspected: 0 };
-          if (room.status === 'clean' || room.status === 'inspected') {
-            entry.cleaned++;
-            const s = toDate(room.startedAt); const e = toDate(room.completedAt);
-            if (s && e) { const mins = (e.getTime() - s.getTime()) / 60000; if (mins > 0 && mins < 480) entry.totalMinutes += mins; }
-          }
-          if (room.status === 'inspected') entry.inspected++;
-          map.set(room.assignedTo!, entry);
-        });
-      const maxCleaned = Math.max(...Array.from(map.values()).map(s => s.cleaned), 1);
-      return Array.from(map.values())
-        .map(s => ({ ...s, avgMinutes: s.cleaned > 0 ? Math.round(s.totalMinutes / s.cleaned) : 0, efficiency: s.cleaned > 0 ? Math.round((s.inspected / s.cleaned) * 100) : 0, score: s.cleaned > 0 ? Math.round((s.cleaned / maxCleaned) * 10 * 10) / 10 : 0 }))
-        .sort((a, b) => b.cleaned - a.cleaned);
-    } else {
-      const maxDone = Math.max(...historyPerfs.map(p => p.totalDone), 1);
-      return historyPerfs.map(p => ({ name: p.name, cleaned: p.totalDone, totalMinutes: 0, inspected: 0, avgMinutes: p.avgCleanMins ?? 0, efficiency: 0, score: Math.round((p.totalDone / maxDone) * 10 * 10) / 10 }));
+      return subscribeToTodayCleaningEvents(activePropertyId, today, setEvents);
     }
-  })();
+    const days = VIEW_DAYS[view];
+    const fromDate = format(subDays(new Date(), days - 1), 'yyyy-MM-dd');
+    let cancelled = false;
+    setHistoryLoading(true);
+    getCleaningEventsForRange(activePropertyId, fromDate, today)
+      .then(rows => { if (!cancelled) setEvents(rows); })
+      .catch(err => console.error('[PerformanceTab] load events failed:', err))
+      .finally(() => { if (!cancelled) setHistoryLoading(false); });
+    return () => { cancelled = true; };
+  }, [user, activePropertyId, view, today]);
 
-  // AI insight text
-  const aiInsightText = (() => {
-    if (leaderboardData.length === 0) return lang === 'es' ? 'No hay suficientes datos para generar información.' : 'Not enough data to generate insights yet.';
-    const top = leaderboardData[0];
-    const totalCleaned = leaderboardData.reduce((s, p) => s + p.cleaned, 0);
-    const avgEff = leaderboardData.length > 0 ? Math.round(leaderboardData.reduce((s, p) => s + (p.efficiency || 0), 0) / leaderboardData.length) : 0;
-    if (todayTurnaround !== null && todayTurnaround < coMins) {
+  // ── Flag-review queue (separate from the view filter) ─────────────────────
+  // Always shows ALL pending flags regardless of date range. A 4-hour clean
+  // from 30 days ago should still be reviewable. Polled every 30s as a
+  // belt-and-suspenders against missed realtime events.
+  useEffect(() => {
+    if (!activePropertyId) return;
+    let cancelled = false;
+    const refresh = () => {
+      getFlaggedCleaningEvents(activePropertyId)
+        .then(rows => { if (!cancelled) setFlagged(rows); })
+        .catch(err => console.error('[PerformanceTab] load flagged failed:', err));
+    };
+    refresh();
+    const id = setInterval(refresh, 30_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [activePropertyId]);
+
+  // ── Leaderboard math ─────────────────────────────────────────────────────
+  // Eligible = 'recorded' (clean entry) + 'approved' (Mario kept after flag).
+  // Excluded: 'discarded' (auto-purged), 'flagged' (still pending), 'rejected' (Mario threw out).
+  const eligibleEvents = useMemo(
+    () => events.filter(e => e.status === 'recorded' || e.status === 'approved'),
+    [events]
+  );
+
+  const leaderboard: StaffStats[] = useMemo(() => {
+    const byStaff = new Map<string, StaffStats & { _check: number; _s1: number; _s2: number }>();
+    for (const ev of eligibleEvents) {
+      // Skip events where the staff has been deactivated. Their old entries
+      // remain in the audit log for historical accuracy.
+      if (ev.staffId && !activeStaffIds.has(ev.staffId)) continue;
+      const key = ev.staffId ?? `name:${ev.staffName}`;
+      const e = byStaff.get(key) ?? {
+        staffId: ev.staffId ?? key,
+        name: ev.staffName,
+        total: 0, totalMins: 0,
+        avgMins: 0, avgCheckout: null, avgS1: null, avgS2: null,
+        roomsPerHour: 0,
+        checkoutN: 0, s1N: 0, s2N: 0,
+        _check: 0, _s1: 0, _s2: 0,
+      };
+      e.total++;
+      e.totalMins += ev.durationMinutes;
+      if (ev.roomType === 'checkout') {
+        e._check += ev.durationMinutes; e.checkoutN++;
+      } else if (ev.stayoverDay === 1) {
+        e._s1 += ev.durationMinutes; e.s1N++;
+      } else if (ev.stayoverDay === 2) {
+        e._s2 += ev.durationMinutes; e.s2N++;
+      }
+      byStaff.set(key, e);
+    }
+    return Array.from(byStaff.values())
+      .filter(e => e.total >= LEADERBOARD_MIN_ROOMS)
+      .map(e => ({
+        staffId: e.staffId,
+        name: e.name,
+        total: e.total,
+        totalMins: e.totalMins,
+        avgMins: e.totalMins / e.total,
+        avgCheckout: e.checkoutN > 0 ? e._check / e.checkoutN : null,
+        avgS1: e.s1N > 0 ? e._s1 / e.s1N : null,
+        avgS2: e.s2N > 0 ? e._s2 / e.s2N : null,
+        roomsPerHour: e.totalMins > 0 ? e.total / (e.totalMins / 60) : 0,
+        checkoutN: e.checkoutN,
+        s1N: e.s1N,
+        s2N: e.s2N,
+      }))
+      .sort((a, b) => a.avgMins - b.avgMins); // Fastest avg → #1
+  }, [eligibleEvents, activeStaffIds]);
+
+  // Provisional list — housekeepers logging work but not yet at 3 rooms.
+  const provisional = useMemo(() => {
+    const byStaff = new Map<string, { name: string; total: number }>();
+    for (const ev of eligibleEvents) {
+      if (ev.staffId && !activeStaffIds.has(ev.staffId)) continue;
+      const key = ev.staffId ?? `name:${ev.staffName}`;
+      const entry = byStaff.get(key) ?? { name: ev.staffName, total: 0 };
+      entry.total++;
+      byStaff.set(key, entry);
+    }
+    return Array.from(byStaff.values())
+      .filter(e => e.total < LEADERBOARD_MIN_ROOMS && e.total > 0)
+      .sort((a, b) => b.total - a.total);
+  }, [eligibleEvents, activeStaffIds]);
+
+  // ── Efficiency cards (Checkout / S1 / S2) ─────────────────────────────────
+  const checkoutAvg = useMemo(() => {
+    const rows = eligibleEvents.filter(e => e.roomType === 'checkout');
+    if (rows.length === 0) return null;
+    return rows.reduce((s, e) => s + e.durationMinutes, 0) / rows.length;
+  }, [eligibleEvents]);
+  const s1Avg = useMemo(() => {
+    const rows = eligibleEvents.filter(e => e.roomType === 'stayover' && e.stayoverDay === 1);
+    if (rows.length === 0) return null;
+    return rows.reduce((s, e) => s + e.durationMinutes, 0) / rows.length;
+  }, [eligibleEvents]);
+  const s2Avg = useMemo(() => {
+    const rows = eligibleEvents.filter(e => e.roomType === 'stayover' && e.stayoverDay === 2);
+    if (rows.length === 0) return null;
+    return rows.reduce((s, e) => s + e.durationMinutes, 0) / rows.length;
+  }, [eligibleEvents]);
+
+  // ── AI Operational Insight (templated stat readout, not a real LLM) ──────
+  const aiInsightText = useMemo(() => {
+    if (eligibleEvents.length === 0) {
       return lang === 'es'
-        ? `El tiempo promedio de limpieza es ${todayTurnaround}m — ${coMins - todayTurnaround}m por debajo del objetivo. ${top.name} lidera con ${top.cleaned} habitaciones.`
-        : `Average clean time is ${todayTurnaround}m — ${coMins - todayTurnaround}m below target. ${top.name} leads with ${top.cleaned} rooms.`;
+        ? 'No hay suficientes datos para generar información.'
+        : 'Not enough data to generate insights yet.';
+    }
+    const total = eligibleEvents.length;
+    const top = leaderboard[0];
+    if (!top) {
+      return lang === 'es'
+        ? `${total} habitaciones limpiadas en este período. Aún no hay un líder claro (mínimo 3 habitaciones).`
+        : `${total} rooms cleaned this period. No clear leader yet (3-room minimum).`;
     }
     return lang === 'es'
-      ? `${totalCleaned} habitaciones completadas este período. ${top.name} lidera el equipo con ${top.cleaned} habitaciones y un promedio de ${top.avgMinutes}m por habitación.`
-      : `${totalCleaned} rooms completed this period. ${top.name} leads the team with ${top.cleaned} rooms and an average of ${top.avgMinutes}m per room.`;
-  })();
+      ? `${total} habitaciones limpiadas este período. ${top.name} lidera con ${formatMin(top.avgMins)} promedio en ${top.total} habitaciones.`
+      : `${total} rooms cleaned this period. ${top.name} leads at ${formatMin(top.avgMins)} avg across ${top.total} rooms.`;
+  }, [eligibleEvents, leaderboard, lang]);
+
+  // ── CSV export ──────────────────────────────────────────────────────────
+  const handleExport = useCallback(() => {
+    if (events.length === 0) return;
+    const fromDate = view === 'live' ? today : format(subDays(new Date(), VIEW_DAYS[view] - 1), 'yyyy-MM-dd');
+    const filename = `cleaning-events_${fromDate}_to_${today}.csv`;
+    const headers = ['date', 'room', 'type', 'cycle', 'housekeeper', 'started_at', 'completed_at', 'duration_minutes', 'status'];
+    const rows = events.map(e => [
+      e.date,
+      e.roomNumber,
+      e.roomType,
+      e.stayoverDay === 1 ? 'S1' : e.stayoverDay === 2 ? 'S2' : (e.roomType === 'checkout' ? 'CO' : ''),
+      e.staffName,
+      e.startedAt.toISOString(),
+      e.completedAt.toISOString(),
+      e.durationMinutes.toFixed(2),
+      e.status,
+    ]);
+    const csv = [headers, ...rows]
+      .map(r => r.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','))
+      .join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [events, view, today]);
+
+  // ── Flag-review actions ─────────────────────────────────────────────────
+  const handleDecide = async (eventId: string, decision: 'approved' | 'rejected') => {
+    if (!user || reviewingId) return;
+    setReviewingId(eventId);
+    try {
+      await decideOnFlaggedEvent(eventId, decision, user.uid);
+      // Optimistically remove from the queue. The 30s poll will reconcile
+      // if anything's wrong, but Mario sees instant feedback.
+      setFlagged(prev => prev.filter(e => e.id !== eventId));
+      // If this event is in the current view's data, update its status so
+      // the leaderboard recalculates without a full refetch.
+      setEvents(prev => prev.map(e => e.id === eventId ? { ...e, status: decision } : e));
+    } catch (err) {
+      console.error('[PerformanceTab] decide failed:', err);
+    } finally {
+      setReviewingId(null);
+    }
+  };
+
+  const viewDays = VIEW_DAYS[view];
+
+  // Column grid for the leaderboard — kept in one place so header + rows
+  // stay aligned. 8 columns: rank, specialist, rooms, C/O, S1, S2, avg, rate.
+  const LB_GRID = '40px 1.2fr 60px 70px 60px 60px 80px 80px';
 
   return (
     <div style={{ padding: '24px', maxWidth: '1600px', margin: '0 auto', minHeight: 'calc(100dvh - 120px)' }}>
@@ -240,7 +386,16 @@ function PerformanceTab() {
                 <h2 style={{ fontSize: '22px', fontWeight: 600, color: '#1b1c19' }}>
                   {lang === 'es' ? 'Clasificación del Equipo' : 'Team Leaderboard'}
                 </h2>
-                <button style={{ color: '#364262', fontWeight: 600, fontSize: '14px', display: 'flex', alignItems: 'center', gap: '4px', background: 'none', border: 'none', cursor: 'pointer' }}>
+                <button
+                  onClick={handleExport}
+                  disabled={events.length === 0}
+                  style={{
+                    color: events.length > 0 ? '#364262' : '#a3a3a3', fontWeight: 600, fontSize: '14px',
+                    display: 'flex', alignItems: 'center', gap: '4px',
+                    background: 'none', border: 'none',
+                    cursor: events.length > 0 ? 'pointer' : 'not-allowed',
+                  }}
+                >
                   {lang === 'es' ? 'Exportar Reporte' : 'Export Report'} <span style={{ fontSize: '16px' }}>↓</span>
                 </button>
               </div>
@@ -252,87 +407,96 @@ function PerformanceTab() {
                 </div>
               )}
 
-              {/* Empty state */}
-              {leaderboardData.length === 0 && !(view !== 'live' && historyLoading) && (
+              {/* Empty state — no events at all in this window */}
+              {events.length === 0 && !(view !== 'live' && historyLoading) && (
                 <div style={{ textAlign: 'center', padding: '52px 20px' }}>
                   <div style={{ width: '60px', height: '60px', borderRadius: '16px', margin: '0 auto 14px', background: 'rgba(0,0,0,0.03)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <Users size={28} color="#757684" />
                   </div>
                   <p style={{ color: '#454652', fontSize: '15px', fontWeight: 500 }}>{t('noActivityToday', lang)}</p>
-                  {view !== 'live' && (
-                    <p style={{ color: '#757684', fontSize: '13px', marginTop: '6px' }}>
-                      {lang === 'es' ? `Los datos aparecerán aquí después de que el equipo complete habitaciones en los últimos ${viewDays} días.` : `Data will appear here after the team completes rooms over the past ${viewDays} days.`}
-                    </p>
-                  )}
+                  <p style={{ color: '#757684', fontSize: '13px', marginTop: '6px' }}>
+                    {lang === 'es' ? 'Los datos aparecerán cuando los housekeepers marquen habitaciones como Limpias.' : 'Data will appear here as housekeepers mark rooms Done.'}
+                  </p>
+                </div>
+              )}
+
+              {/* Provisional-only state — events exist but no one's hit 3-room minimum */}
+              {events.length > 0 && leaderboard.length === 0 && !(view !== 'live' && historyLoading) && (
+                <div style={{ textAlign: 'center', padding: '40px 20px' }}>
+                  <p style={{ color: '#454652', fontSize: '15px', fontWeight: 500, marginBottom: '8px' }}>
+                    {lang === 'es' ? 'Aún no hay clasificación' : 'No ranked specialists yet'}
+                  </p>
+                  <p style={{ color: '#757684', fontSize: '13px' }}>
+                    {lang === 'es'
+                      ? `Se necesitan al menos ${LEADERBOARD_MIN_ROOMS} habitaciones limpias para aparecer.`
+                      : `At least ${LEADERBOARD_MIN_ROOMS} cleans needed to appear on the leaderboard.`}
+                  </p>
                 </div>
               )}
 
               {/* Leaderboard table */}
-              {leaderboardData.length > 0 && (
+              {leaderboard.length > 0 && (
                 <div>
                   {/* Header row */}
-                  <div style={{ display: 'grid', gridTemplateColumns: '60px 1fr 100px 100px 80px', padding: '0 20px 12px', borderBottom: 'none' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: LB_GRID, gap: '8px', padding: '0 20px 12px', borderBottom: 'none' }}>
                     {[
-                      lang === 'es' ? 'Rango' : 'Rank',
-                      lang === 'es' ? 'Especialista' : 'Specialist',
-                      lang === 'es' ? 'Hab.' : 'Rooms',
-                      lang === 'es' ? 'Eficiencia' : 'Efficiency',
-                      lang === 'es' ? 'Puntos' : 'Score',
-                    ].map(h => (
-                      <div key={h} style={{ fontSize: '12px', fontWeight: 500, color: '#454652', textTransform: 'uppercase', letterSpacing: '0.08em', textAlign: h === (lang === 'es' ? 'Rango' : 'Rank') || h === (lang === 'es' ? 'Especialista' : 'Specialist') ? 'left' : 'right' }}>
-                        {h}
+                      { label: lang === 'es' ? 'Rango' : 'Rank', align: 'left' as const },
+                      { label: lang === 'es' ? 'Especialista' : 'Specialist', align: 'left' as const },
+                      { label: lang === 'es' ? 'Hab.' : 'Rooms', align: 'right' as const },
+                      { label: 'C/O', align: 'right' as const },
+                      { label: 'S1', align: 'right' as const },
+                      { label: 'S2', align: 'right' as const },
+                      { label: lang === 'es' ? 'Prom.' : 'Avg', align: 'right' as const },
+                      { label: lang === 'es' ? 'Hab/h' : 'Rate', align: 'right' as const },
+                    ].map(({ label, align }) => (
+                      <div key={label} style={{ fontSize: '11px', fontWeight: 600, color: '#454652', textTransform: 'uppercase', letterSpacing: '0.08em', textAlign: align }}>
+                        {label}
                       </div>
                     ))}
                   </div>
 
-                  {/* Rows */}
+                  {/* Rows — sorted by overall avg ascending (fastest = #1) */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
-                    {leaderboardData.map((s, i) => {
+                    {leaderboard.map((s, i) => {
                       const initials = s.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
-                      const effPct = s.avgMinutes > 0 && s.avgMinutes <= coMins ? Math.round((1 - (s.avgMinutes - soMins) / (coMins - soMins + 1)) * 100) : s.cleaned > 0 ? Math.round(Math.min(100, (1 - Math.max(0, s.avgMinutes - coMins) / coMins) * 100)) : 0;
-                      const effDisplay = s.cleaned > 0 ? `${Math.min(99, Math.max(50, effPct))}%` : '-';
+                      const monoCell: React.CSSProperties = { textAlign: 'right', fontFamily: "'JetBrains Mono', monospace", fontSize: '14px', color: '#1b1c19' };
+                      const isLeader = i === 0;
                       return (
-                        <div key={s.name} style={{
-                          display: 'grid', gridTemplateColumns: '60px 1fr 100px 100px 80px', alignItems: 'center',
-                          padding: '16px 20px', background: 'rgba(245,243,238,0.4)', borderRadius: '16px',
-                          transition: 'background 200ms',
+                        <div key={s.staffId} style={{
+                          display: 'grid', gridTemplateColumns: LB_GRID, gap: '8px', alignItems: 'center',
+                          padding: '14px 20px',
+                          background: isLeader ? 'rgba(54,66,98,0.04)' : 'rgba(245,243,238,0.4)',
+                          border: isLeader ? '1px solid rgba(54,66,98,0.15)' : '1px solid transparent',
+                          borderRadius: '16px', transition: 'background 200ms',
                         }}
                         onMouseEnter={e => { e.currentTarget.style.background = '#f5f3ee'; }}
-                        onMouseLeave={e => { e.currentTarget.style.background = 'rgba(245,243,238,0.4)'; }}
+                        onMouseLeave={e => { e.currentTarget.style.background = isLeader ? 'rgba(54,66,98,0.04)' : 'rgba(245,243,238,0.4)'; }}
                         >
-                          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '18px', color: '#454652' }}>
+                          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '16px', color: isLeader ? '#364262' : '#454652', fontWeight: isLeader ? 700 : 400 }}>
                             {String(i + 1).padStart(2, '0')}
                           </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 }}>
                             <div style={{
-                              width: '44px', height: '44px', borderRadius: '50%', background: '#eae8e3',
+                              width: '40px', height: '40px', borderRadius: '50%', background: '#eae8e3',
                               display: 'flex', alignItems: 'center', justifyContent: 'center',
-                              fontWeight: 700, fontSize: '14px', color: '#364262', flexShrink: 0,
+                              fontWeight: 700, fontSize: '13px', color: '#364262', flexShrink: 0,
                               border: '2px solid #ffffff',
                             }}>
                               {initials}
                             </div>
-                            <div>
-                              <div style={{ fontWeight: 600, fontSize: '15px', color: '#1b1c19' }}>{s.name}</div>
-                              <div style={{ fontSize: '13px', color: '#454652' }}>
-                                {s.avgMinutes > 0 ? `${s.avgMinutes}m avg` : (lang === 'es' ? 'Especialista' : 'Specialist')}
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontWeight: 600, fontSize: '14px', color: '#1b1c19', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</div>
+                              <div style={{ fontSize: '11px', color: '#757684', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                {lang === 'es' ? 'Especialista' : 'Specialist'}
                               </div>
                             </div>
                           </div>
-                          <div style={{ textAlign: 'right', fontFamily: "'JetBrains Mono', monospace", fontSize: '16px', color: '#1b1c19' }}>
-                            {s.cleaned}
-                          </div>
-                          <div style={{ textAlign: 'right', fontFamily: "'JetBrains Mono', monospace", fontSize: '16px', color: '#006565' }}>
-                            {effDisplay}
-                          </div>
-                          <div style={{ textAlign: 'right' }}>
-                            <span style={{
-                              background: '#364262', color: '#ffffff', padding: '4px 12px', borderRadius: '9999px',
-                              fontFamily: "'JetBrains Mono', monospace", fontSize: '13px', letterSpacing: '-0.02em',
-                            }}>
-                              {s.score.toFixed(1)}
-                            </span>
-                          </div>
+                          <div style={{ ...monoCell, fontWeight: 600 }}>{s.total}</div>
+                          <div style={monoCell}>{formatMin(s.avgCheckout)}</div>
+                          <div style={monoCell}>{formatMin(s.avgS1)}</div>
+                          <div style={monoCell}>{formatMin(s.avgS2)}</div>
+                          <div style={{ ...monoCell, color: '#364262', fontWeight: 700 }}>{formatMin(s.avgMins)}</div>
+                          <div style={{ ...monoCell, color: '#006565' }}>{s.roomsPerHour.toFixed(1)}</div>
                         </div>
                       );
                     })}
@@ -361,6 +525,83 @@ function PerformanceTab() {
               </div>
               <style>{`@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }`}</style>
             </div>
+
+            {/* ── Flag Review Queue ────────────────────────────────────────
+                Pending flagged cleans (>60 min). Mario clicks Keep / Discard.
+                Permanent. Hidden when queue is empty. */}
+            {flagged.length > 0 && (
+              <div style={{ background: '#ffffff', padding: '28px', borderRadius: '24px', boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
+                  <div style={{ width: '32px', height: '32px', borderRadius: '10px', background: 'rgba(186,26,26,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <AlertTriangle size={16} style={{ color: '#ba1a1a' }} />
+                  </div>
+                  <h3 style={{ fontSize: '17px', fontWeight: 600, color: '#1b1c19', flex: 1 }}>
+                    {lang === 'es' ? 'Revisión de Limpiezas Largas' : 'Long-Clean Review'}
+                  </h3>
+                  <span style={{
+                    background: '#ba1a1a', color: '#ffffff', padding: '3px 10px', borderRadius: '9999px',
+                    fontSize: '12px', fontWeight: 700, fontFamily: "'JetBrains Mono', monospace",
+                  }}>
+                    {flagged.length}
+                  </span>
+                </div>
+                <p style={{ fontSize: '13px', color: '#757684', marginBottom: '16px', lineHeight: 1.5 }}>
+                  {lang === 'es'
+                    ? 'Limpiezas que tomaron más de 60 minutos. Decide si cuentan en los promedios. La decisión es permanente.'
+                    : 'Cleans that took over 60 minutes. Decide whether each counts toward averages. Once decided, locked.'}
+                </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {flagged.map(ev => {
+                    const cycle = ev.stayoverDay === 1 ? 'S1' : ev.stayoverDay === 2 ? 'S2' : 'C/O';
+                    const dateStr = format(new Date(ev.date + 'T00:00:00'), 'MMM d', { locale: lang === 'es' ? esLocale : undefined });
+                    const isReviewing = reviewingId === ev.id;
+                    return (
+                      <div key={ev.id} style={{
+                        display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap',
+                        padding: '12px 16px', background: 'rgba(186,26,26,0.04)',
+                        border: '1px solid rgba(186,26,26,0.15)', borderRadius: '12px',
+                      }}>
+                        <div style={{ flex: 1, minWidth: '160px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '2px', flexWrap: 'wrap' }}>
+                            <span style={{ fontWeight: 700, fontSize: '14px', color: '#1b1c19' }}>{ev.staffName}</span>
+                            <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', color: '#757684', background: '#eae8e3', padding: '2px 6px', borderRadius: '4px' }}>
+                              {cycle}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: '12px', color: '#454652' }}>
+                            {lang === 'es' ? 'Hab.' : 'Room'} {ev.roomNumber} · {dateStr} · <span style={{ fontFamily: "'JetBrains Mono', monospace", color: '#ba1a1a', fontWeight: 700 }}>{Math.round(ev.durationMinutes)}m</span>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleDecide(ev.id, 'approved')}
+                          disabled={isReviewing}
+                          style={{
+                            padding: '8px 14px', borderRadius: '10px', fontSize: '13px', fontWeight: 600,
+                            background: '#006565', color: '#ffffff', border: 'none',
+                            cursor: isReviewing ? 'wait' : 'pointer', opacity: isReviewing ? 0.5 : 1,
+                            minHeight: '36px', minWidth: '72px',
+                          }}
+                        >
+                          {lang === 'es' ? 'Mantener' : 'Keep'}
+                        </button>
+                        <button
+                          onClick={() => handleDecide(ev.id, 'rejected')}
+                          disabled={isReviewing}
+                          style={{
+                            padding: '8px 14px', borderRadius: '10px', fontSize: '13px', fontWeight: 600,
+                            background: '#ffffff', color: '#ba1a1a', border: '1px solid #ba1a1a',
+                            cursor: isReviewing ? 'wait' : 'pointer', opacity: isReviewing ? 0.5 : 1,
+                            minHeight: '36px', minWidth: '72px',
+                          }}
+                        >
+                          {lang === 'es' ? 'Descartar' : 'Discard'}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* ── RIGHT: Cleaning Efficiency Sidebar ── */}
@@ -371,69 +612,75 @@ function PerformanceTab() {
                 {lang === 'es' ? 'Eficiencia de Limpieza' : 'Cleaning Efficiency'}
               </h2>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
-                {/* Checkout Rooms */}
-                <div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '10px' }}>
-                    <span style={{ fontSize: '14px', fontWeight: 500, color: '#454652' }}>
-                      {lang === 'es' ? 'Habitaciones Checkout' : 'Checkout Rooms'}
-                    </span>
-                    <div style={{ textAlign: 'right' }}>
-                      <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '28px', fontWeight: 500, color: '#1b1c19' }}>{coFmtMin}</span>
-                      <span style={{ display: 'block', fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', color: '#454652' }}>avg minutes</span>
-                    </div>
-                  </div>
-                  <div style={{ height: '10px', width: '100%', background: '#eae8e3', borderRadius: '9999px', overflow: 'hidden' }}>
-                    <div style={{ height: '100%', background: '#364262', borderRadius: '9999px', transition: 'width 400ms', width: avgCoMins !== null ? `${Math.min(100, (avgCoMins / (coMins * 1.5)) * 100)}%` : '0%' }} />
-                  </div>
-                  <div style={{ marginTop: '6px', display: 'flex', justifyContent: 'space-between', fontSize: '10px', fontWeight: 600, textTransform: 'uppercase', color: '#454652' }}>
-                    <span>{lang === 'es' ? 'Objetivo' : 'Target'} {coMins}:00</span>
-                    <span style={{ color: coVar !== null && coVar > 0 ? '#ba1a1a' : '#006565', fontWeight: 700 }}>
-                      {coVar !== null ? `${coVar > 0 ? '+' : ''}${coVar}:00 VAR` : '-'}
-                    </span>
-                  </div>
-                </div>
-
-                {/* Stayover Rooms */}
-                <div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '10px' }}>
-                    <span style={{ fontSize: '14px', fontWeight: 500, color: '#454652' }}>
-                      {lang === 'es' ? 'Habitaciones Stayover' : 'Stayover Rooms'}
-                    </span>
-                    <div style={{ textAlign: 'right' }}>
-                      <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '28px', fontWeight: 500, color: '#1b1c19' }}>{soFmtMin}</span>
-                      <span style={{ display: 'block', fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', color: '#454652' }}>avg minutes</span>
-                    </div>
-                  </div>
-                  <div style={{ height: '10px', width: '100%', background: '#eae8e3', borderRadius: '9999px', overflow: 'hidden' }}>
-                    <div style={{ height: '100%', background: '#006565', borderRadius: '9999px', transition: 'width 400ms', width: avgSoMins !== null ? `${Math.min(100, (avgSoMins / (soMins * 1.5)) * 100)}%` : '0%' }} />
-                  </div>
-                  <div style={{ marginTop: '6px', display: 'flex', justifyContent: 'space-between', fontSize: '10px', fontWeight: 600, textTransform: 'uppercase', color: '#454652' }}>
-                    <span>{lang === 'es' ? 'Objetivo' : 'Target'} {soMins}:00</span>
-                    <span style={{ color: soVar !== null && soVar > 0 ? '#ba1a1a' : '#006565', fontWeight: 700 }}>
-                      {soVar !== null ? `${soVar > 0 ? '+' : ''}${soVar}:00 VAR` : '-'}
-                    </span>
-                  </div>
-                </div>
+              {/* Three efficiency cards — Checkout, S1, S2 — replacing the old
+                  two-card "Stayover Rooms" lump that hid S1 vs S2 differences. */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '28px' }}>
+                <EfficiencyRow
+                  label={lang === 'es' ? 'Habitaciones Checkout' : 'Checkout Rooms'}
+                  actual={checkoutAvg}
+                  target={checkoutTarget}
+                  barColor="#364262"
+                  lang={lang}
+                />
+                <EfficiencyRow
+                  label={lang === 'es' ? 'Stayover Día 1 (Ligero)' : 'Stayover Day 1 (Light)'}
+                  actual={s1Avg}
+                  target={s1Target}
+                  barColor="#006565"
+                  lang={lang}
+                />
+                <EfficiencyRow
+                  label={lang === 'es' ? 'Stayover Día 2 (Completo)' : 'Stayover Day 2 (Full)'}
+                  actual={s2Avg}
+                  target={s2Target}
+                  barColor="#506071"
+                  lang={lang}
+                />
               </div>
 
-              {/* Performance Shift */}
-              <div style={{ marginTop: '36px', padding: '20px', background: '#ffffff', borderRadius: '16px', border: '1px solid rgba(197,197,212,0.1)' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
-                  <Trophy size={16} style={{ color: '#506071' }} />
-                  <span style={{ fontSize: '14px', fontWeight: 600, color: '#1b1c19' }}>
-                    {lang === 'es' ? 'Cambio de Rendimiento' : 'Performance Shift'}
+              {/* Provisional list — anyone logging cleans but not yet at the
+                  3-room minimum to qualify for the ranked leaderboard. */}
+              {provisional.length > 0 && (
+                <div style={{ marginTop: '32px', padding: '18px', background: '#ffffff', borderRadius: '14px', border: '1px solid rgba(197,197,212,0.15)' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 700, color: '#757684', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '10px' }}>
+                    {lang === 'es' ? `En camino (mín. ${LEADERBOARD_MIN_ROOMS})` : `Warming up (min ${LEADERBOARD_MIN_ROOMS})`}
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {provisional.map(p => (
+                      <div key={p.name} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: '#454652' }}>
+                        <span>{p.name}</span>
+                        <span style={{ fontFamily: "'JetBrains Mono', monospace", color: '#1b1c19', fontWeight: 600 }}>{p.total}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Period summary — replaces the old "Performance Shift" card.
+                  Shows total cleans counted in the current view's window. */}
+              <div style={{ marginTop: '24px', padding: '18px', background: '#ffffff', borderRadius: '14px', border: '1px solid rgba(197,197,212,0.15)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                  <Trophy size={14} style={{ color: '#506071' }} />
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#1b1c19', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    {lang === 'es' ? 'Resumen del Período' : 'Period Summary'}
                   </span>
                 </div>
-                <p style={{ fontSize: '14px', color: '#454652', lineHeight: 1.6 }}>
-                  {todayTurnaround !== null ? (
-                    lang === 'es'
-                      ? <>Tiempo promedio de respuesta del equipo: <span style={{ fontFamily: "'JetBrains Mono', monospace", color: '#364262', fontWeight: 700 }}>{todayTurnaround}m</span> por habitación hoy.</>
-                      : <>Team average response time: <span style={{ fontFamily: "'JetBrains Mono', monospace", color: '#364262', fontWeight: 700 }}>{todayTurnaround}m</span> per room today.</>
+                <div style={{ fontSize: '13px', color: '#454652', lineHeight: 1.6 }}>
+                  {eligibleEvents.length > 0 ? (
+                    <>
+                      <div><span style={{ fontFamily: "'JetBrains Mono', monospace", color: '#1b1c19', fontWeight: 700 }}>{eligibleEvents.length}</span> {lang === 'es' ? 'limpiezas contadas' : 'cleans counted'}</div>
+                      <div style={{ fontSize: '11px', color: '#757684', marginTop: '4px' }}>
+                        {view === 'live'
+                          ? (lang === 'es' ? 'Hoy' : 'Today')
+                          : (lang === 'es' ? `Últimos ${viewDays} días` : `Last ${viewDays} days`)}
+                      </div>
+                    </>
                   ) : (
-                    lang === 'es' ? 'Los datos de rendimiento aparecerán cuando se completen habitaciones.' : 'Performance data will appear as rooms are completed.'
+                    <span style={{ fontSize: '12px', color: '#757684' }}>
+                      {lang === 'es' ? 'Sin datos en este período' : 'No data in this period'}
+                    </span>
                   )}
-                </p>
+                </div>
               </div>
             </div>
           </div>
@@ -443,93 +690,52 @@ function PerformanceTab() {
   );
 }
 
-function LeaderboardCard({ rooms, lang }: { rooms: Room[]; lang: 'en' | 'es' }) {
-  const { activeProperty } = useProperty();
-  const checkoutMins = activeProperty?.checkoutMinutes || 30;
-
-  const staffStats = useMemo(() => {
-    const map = new Map<string, { name: string; cleaned: number; totalMinutes: number; inspected: number }>();
-    rooms
-      .filter(r => r.assignedTo && (r.status === 'clean' || r.status === 'inspected' || r.status === 'in_progress'))
-      .forEach(room => {
-        const entry = map.get(room.assignedTo!) ?? { name: room.assignedName ?? 'Unknown', cleaned: 0, totalMinutes: 0, inspected: 0 };
-        if (room.status === 'clean' || room.status === 'inspected') {
-          entry.cleaned++;
-          const s = toDate(room.startedAt);
-          const e = toDate(room.completedAt);
-          if (s && e) {
-            const mins = (e.getTime() - s.getTime()) / 60000;
-            if (mins > 0 && mins < 480) entry.totalMinutes += mins;
-          }
-        }
-        if (room.status === 'inspected') entry.inspected++;
-        map.set(room.assignedTo!, entry);
-      });
-    return Array.from(map.values())
-      .map(s => ({ ...s, avgMinutes: s.cleaned > 0 ? Math.round(s.totalMinutes / s.cleaned) : 0 }))
-      .sort((a, b) => b.cleaned - a.cleaned);
-  }, [rooms]);
-
-  if (staffStats.length === 0) {
-    return (
-      <div className="card animate-in stagger-3" style={{ padding: '20px', textAlign: 'center' }}>
-        <p style={{ fontSize: '13px', color: 'var(--text-muted)', fontWeight: 500 }}>
-          {t('noRoomsCompleted', lang)}
-        </p>
-      </div>
-    );
-  }
-
-  const getAvgColor = (avg: number) => {
-    if (avg <= checkoutMins) return 'var(--green)';
-    if (avg <= checkoutMins * 1.5) return 'var(--amber)';
-    return 'var(--red)';
-  };
-
+/**
+ * One row in the Cleaning Efficiency sidebar — used for Checkout, S1, S2.
+ * Renders the actual avg, target, progress bar, and variance from target.
+ * Bar fills toward 100% at target; over-target shades red.
+ */
+function EfficiencyRow({
+  label, actual, target, barColor, lang,
+}: {
+  label: string;
+  actual: number | null;
+  target: number;
+  barColor: string;
+  lang: 'en' | 'es';
+}) {
+  const variance = actual !== null ? actual - target : null;
+  const barPct = actual !== null ? Math.min(100, (actual / (target * 1.5)) * 100) : 0;
+  const overTarget = variance !== null && variance > 0;
   return (
-    <div className="card animate-in stagger-3" style={{ padding: '16px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
-        <Trophy size={16} color="var(--amber)" />
-        <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>
-          {t('leaderboard', lang)}
-        </span>
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '8px' }}>
+        <span style={{ fontSize: '13px', fontWeight: 500, color: '#454652' }}>{label}</span>
+        <div style={{ textAlign: 'right' }}>
+          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '24px', fontWeight: 500, color: '#1b1c19' }}>
+            {formatMin(actual)}
+          </span>
+          <span style={{ display: 'block', fontFamily: "'JetBrains Mono', monospace", fontSize: '10px', color: '#454652' }}>
+            {lang === 'es' ? 'min promedio' : 'avg minutes'}
+          </span>
+        </div>
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-        {staffStats.map((s, i) => (
-          <div key={s.name} style={{
-            display: 'flex', alignItems: 'center', gap: '10px',
-            padding: '10px 12px', background: i === 0 ? 'rgba(251,191,36,0.06)' : 'rgba(0,0,0,0.02)',
-            borderRadius: 'var(--radius-md)', border: i === 0 ? '1px solid rgba(251,191,36,0.2)' : '1px solid var(--border)',
-          }}>
-            <span style={{
-              fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '13px',
-              color: i === 0 ? 'var(--amber)' : 'var(--text-muted)', width: '24px', textAlign: 'center', flexShrink: 0,
-            }}>
-              {i === 0 ? '🏆' : `#${i + 1}`}
-            </span>
-            <span style={{ flex: 1, fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {s.name}
-            </span>
-            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', flexShrink: 0 }}>
-              {s.cleaned} {t('roomsCleaned', lang)}
-            </span>
-            {s.avgMinutes > 0 && (
-              <span style={{
-                fontFamily: 'var(--font-mono)', fontSize: '12px', fontWeight: 700,
-                color: getAvgColor(s.avgMinutes), flexShrink: 0,
-              }}>
-                {s.avgMinutes}m {t('avgTime', lang)}
-              </span>
-            )}
-          </div>
-        ))}
+      <div style={{ height: '8px', width: '100%', background: '#eae8e3', borderRadius: '9999px', overflow: 'hidden' }}>
+        <div style={{
+          height: '100%',
+          background: overTarget ? '#ba1a1a' : barColor,
+          borderRadius: '9999px', transition: 'width 400ms',
+          width: `${barPct}%`,
+        }} />
+      </div>
+      <div style={{ marginTop: '6px', display: 'flex', justifyContent: 'space-between', fontSize: '10px', fontWeight: 600, textTransform: 'uppercase', color: '#454652' }}>
+        <span>{lang === 'es' ? 'Objetivo' : 'Target'} {String(target).padStart(2, '0')}:00</span>
+        <span style={{ color: overTarget ? '#ba1a1a' : '#006565', fontWeight: 700 }}>
+          {variance !== null ? `${variance > 0 ? '+' : ''}${Math.round(variance)}m VAR` : '-'}
+        </span>
       </div>
     </div>
   );
 }
-
-// ══════════════════════════════════════════════════════════════════════════════
-// IMPORT SECTION
-// ══════════════════════════════════════════════════════════════════════════════
 
 export { PerformanceTab };

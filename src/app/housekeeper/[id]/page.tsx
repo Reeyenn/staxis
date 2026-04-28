@@ -7,6 +7,8 @@ import {
   updateRoom,
   getStaffMember,
   saveStaffLanguage,
+  insertCleaningEvent,
+  bucketStayoverDay,
 } from '@/lib/db';
 import { useTodayStr } from '@/lib/use-today-str';
 import type { Room, RoomStatus } from '@/types';
@@ -285,17 +287,52 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
 
   // ── Finish room (in_progress → clean) ─────────────────────────────────────
   // Requires hold-to-confirm on the button - accidental taps are ignored.
+  //
+  // After the room update succeeds, we ALSO write an immutable row to
+  // cleaning_events. That table is the permanent audit log powering the
+  // Performance tab — independent of the rooms table (which gets wiped by
+  // populate-rooms-from-plan on every PMS re-pull). The audit insert is
+  // fire-and-forget: if it fails, the room update still stands and the HK
+  // sees no error. Worst case: one missing leaderboard entry, never a stuck
+  // "Done" button.
   const handleFinishRoom = async (room: RoomRow) => {
     if (!uid || !pid) return;
     await guardRoomAction(room.id, async () => {
       setSavingRoomId(room.id);
       try {
+        const completedAt = new Date();
+        // If Start was never tapped (or got wiped by a re-pull), we use
+        // completedAt for both timestamps. Duration = 0 → cleaning_events
+        // classifier auto-discards it from analytics. Audit row still gets
+        // written so we have a record.
+        const startedAt = room.startedAt ?? completedAt;
         const updates: Partial<Room> = {
           status: 'clean' as RoomStatus,
-          completedAt: new Date(),
+          completedAt,
         };
-        if (!room.startedAt) updates.startedAt = new Date();
+        if (!room.startedAt) updates.startedAt = startedAt;
         await updateRoom(uid, pid, room.id, updates);
+
+        // Audit log — only checkout/stayover rooms get tracked. Vacant
+        // rooms aren't real cleans (already clean per PMS).
+        if (room.type === 'checkout' || room.type === 'stayover') {
+          void insertCleaningEvent({
+            propertyId: pid,
+            date: room.date ?? today,
+            roomNumber: room.number,
+            roomType: room.type,
+            stayoverDay: bucketStayoverDay(room.stayoverDay, room.type),
+            staffId: housekeeperId,
+            staffName: room.assignedName || 'Housekeeper',
+            startedAt,
+            completedAt,
+          }).catch(err => {
+            // Non-fatal — log and move on. The HK has already seen Done
+            // succeed; we don't want to scare them with an error from a
+            // failed audit insert.
+            console.error('[housekeeper] cleaning_event insert failed (non-fatal):', err);
+          });
+        }
       } catch (err) {
         console.error('[housekeeper] finish room error:', err);
         showActionError(lang === 'es'
