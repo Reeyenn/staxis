@@ -920,6 +920,16 @@ export function dashboardFreshness(
   if (!d) return 'unknown';
   if (d.errorCode) return 'error';
   if (!d.pulledAt) return 'unknown';
+  // Off-hours suppression: scraper only pulls dashboard numbers between
+  // 5am and 11pm Central. Outside that window the data is naturally
+  // stale, but Maria shouldn't see a red "PMS stale" banner at midnight
+  // when nothing's broken. Mirror the scraper's gate exactly.
+  const localHourCT = parseInt(
+    new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: 'America/Chicago' }).format(new Date(nowMs)),
+    10,
+  );
+  const inScraperWindow = localHourCT >= 5 && localHourCT < 23;
+  if (!inScraperWindow) return 'fresh';
   const ageMs = nowMs - d.pulledAt.getTime();
   return ageMs > DASHBOARD_STALE_MINUTES * 60_000 ? 'stale' : 'fresh';
 }

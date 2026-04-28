@@ -1062,18 +1062,28 @@ async function checkScraperPullLatency(): Promise<Omit<Check, 'name' | 'duration
     // ONLY compare slow pulls to baseline — when pulls disappear entirely
     // there's nothing recent to be slow. The result was a silent outage.
     //
-    // Fix: read the freshest pull across ALL types. If the scraper says
-    // it's alive (heartbeat fresh) but the most-recent pull is older than
-    // a generous threshold, it's wedged. Fail loudly so SMS fires.
+    // Fix: read the freshest pull across non-daily types. If the scraper
+    // says it's alive (heartbeat fresh) but the most-recent pull is older
+    // than a generous threshold during business hours, it's wedged.
     //
-    // Threshold = 30 min: dashboard normally runs every 5-15 min, ooo and
-    // csv_evening every 5-10 min. 30 min is well past any normal gap and
-    // short enough that Mario sees the alert before the room list goes
-    // multi-hour stale. csv_morning is excluded because it's a once-a-day
-    // job (~6am Central).
+    // OFF-HOURS HANDLING: the scraper itself only pulls when local hour is
+    // 5–22 (5am–10:59pm Central — see scraper.js around line 587). Outside
+    // that window, pulls correctly stop and the freshness check would
+    // false-positive every night. We mirror the same gate here so a sleeping
+    // scraper doesn't trip the alarm. There's also a brief grace window at
+    // 5:00–5:30am while the resumed scraper does its first tick.
     const STALE_THRESHOLD_MIN = 30;
     const NON_DAILY_TYPES = new Set(['dashboard', 'ooo', 'csv_evening']);
+    const SCRAPER_WINDOW_START = 5;   // local hour, inclusive
+    const SCRAPER_WINDOW_END   = 23;  // local hour, exclusive (so 22:59 is in)
+    const TZ = 'America/Chicago';
     const nowMs = Date.now();
+    // Mirror scraper's localHour() exactly. Intl handles CDT/CST DST.
+    const localHourNow = parseInt(
+      new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: TZ }).format(new Date()),
+      10,
+    );
+    const inScraperWindow = localHourNow >= SCRAPER_WINDOW_START && localHourNow < SCRAPER_WINDOW_END;
     type Row = { pull_type: string; total_ms: number; ok: boolean; pulled_at: string };
     const rows = data as Row[];
     let mostRecentPullMs = 0;
@@ -1087,6 +1097,16 @@ async function checkScraperPullLatency(): Promise<Omit<Check, 'name' | 'duration
     if (mostRecentPullMs > 0) {
       const ageMin = (nowMs - mostRecentPullMs) / 60000;
       if (ageMin > STALE_THRESHOLD_MIN) {
+        // OFF-HOURS SHORT-CIRCUIT — scraper correctly idles 11pm–5am.
+        // Skip with status=ok so we don't fire a false-positive every
+        // night. Detail still shows the staleness so it's visible if
+        // someone hits doctor manually.
+        if (!inScraperWindow) {
+          return {
+            status: 'ok',
+            detail: `Off-hours (${localHourNow}:00 Central, scraper window ${SCRAPER_WINDOW_START}am–${SCRAPER_WINDOW_END}:00). Most recent ${mostRecentPullType} pull was ${ageMin.toFixed(1)}m ago — expected during this window.`,
+          };
+        }
         // Cross-reference heartbeat to distinguish "scraper is dead" from
         // "scraper is alive but tick is wedged." Different fix paths.
         const { data: hbRow } = await supabaseAdmin
@@ -1098,7 +1118,7 @@ async function checkScraperPullLatency(): Promise<Omit<Check, 'name' | 'duration
         if (hbAgeMin <= 10) {
           return {
             status: 'fail',
-            detail: `Scraper heartbeat is fresh (${hbAgeMin.toFixed(1)}m) but pulls have stopped — most recent ${mostRecentPullType} pull was ${ageMin.toFixed(1)}m ago (threshold ${STALE_THRESHOLD_MIN}m). Tick loop is wedged.`,
+            detail: `Scraper heartbeat is fresh (${hbAgeMin.toFixed(1)}m) but pulls have stopped — most recent ${mostRecentPullType} pull was ${ageMin.toFixed(1)}m ago (threshold ${STALE_THRESHOLD_MIN}m, local hour ${localHourNow}). Tick loop is wedged.`,
             fix: 'Restart the Railway hotelops-scraper service (Railway dashboard → service → Restart). Check logs for a hung Playwright operation (page.goto / waitForSelector without timeout).',
           };
         }

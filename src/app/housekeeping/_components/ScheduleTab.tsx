@@ -1553,10 +1553,22 @@ function ScheduleTab() {
               if (!csvPulledAt) return null;
               const csvMinutesAgo = Math.max(0, Math.round((nowMs - csvPulledAt.getTime()) / 60_000));
               const timeStr = csvPulledAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-              const csvState: 'fresh' | 'stale' | 'error' =
-                csvMinutesAgo > CSV_ERROR_MINUTES ? 'error' :
-                csvMinutesAgo > CSV_STALE_MINUTES ? 'stale' :
-                'fresh';
+              // Off-hours suppression: scraper only runs CSV pulls 5am–11pm
+              // local. Outside that window the data is correctly stale and
+              // showing a red "CSV pull failing" banner is misleading. We
+              // demote stale/error to fresh during off-hours so Mario sees
+              // a normal "CSV updated 10:45 PM" caption instead of a fake
+              // alarm at midnight. Mirrors scraper.js's `hour < 5 || hour >= 23` gate.
+              const localHourCT = parseInt(
+                new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: 'America/Chicago' }).format(new Date()),
+                10,
+              );
+              const inScraperWindow = localHourCT >= 5 && localHourCT < 23;
+              const csvState: 'fresh' | 'stale' | 'error' = !inScraperWindow
+                ? 'fresh'
+                : csvMinutesAgo > CSV_ERROR_MINUTES ? 'error'
+                : csvMinutesAgo > CSV_STALE_MINUTES ? 'stale'
+                : 'fresh';
 
               if (csvState === 'fresh') {
                 return (
