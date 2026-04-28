@@ -236,8 +236,23 @@ export function autoAssignRooms(
   const prepMins = config?.prepMinutesPerRoom ?? 5;
   const shiftCap = config?.shiftMinutes ?? 420; // 7 hours max
 
-  const available = staff.filter(s => s.scheduledToday);
+  // Schedule-priority gate. The Staff Priority modal lets Mario mark each
+  // housekeeper as 'priority' (auto-pick first), 'normal' (default), or
+  // 'excluded' (never auto-pick). The schedule auto-selector already
+  // honors this — but if Mario manually adds an Excluded housekeeper to
+  // today's crew via the Add Staff button, we still want auto-assign to
+  // refuse to pile rooms on them. So we re-filter here as a safety net.
+  // Within the remaining pool, 'priority' staff fill first (until at the
+  // shift cap or out of suitable floor stickiness), then 'normal' staff
+  // pick up the spillover. Floor-stickiness and least-load tiebreakers
+  // apply within each tier — same logic as before, just two passes.
+  const available = staff.filter(s =>
+    s.scheduledToday && s.schedulePriority !== 'excluded',
+  );
   if (available.length === 0) return {};
+
+  const priorityStaff = available.filter(s => s.schedulePriority === 'priority');
+  const normalStaff   = available.filter(s => s.schedulePriority !== 'priority');
 
   const assignments: Record<string, string> = {};
   // floorCount[staffId][floor] = rooms already assigned to them on that floor.
@@ -257,6 +272,31 @@ export function autoAssignRooms(
     return a.number.localeCompare(b.number);
   });
 
+  // Pick the best staff out of a candidate pool given a room. Stickiness
+  // first (whoever has the most rooms on this floor), then least-load.
+  // Returns null if the pool is empty or no one has capacity.
+  function pickBest(
+    pool: StaffMember[],
+    floor: string,
+    roomTime: number,
+  ): StaffMember | null {
+    const withCapacity = pool.filter(s => staffLoad[s.id].minutes + roomTime <= shiftCap);
+    if (withCapacity.length === 0) return null;
+    let best: StaffMember | null = null;
+    let bestFloorCount = -1;
+    let bestLoad = Infinity;
+    for (const s of withCapacity) {
+      const fc = staffLoad[s.id].floors.get(floor) ?? 0;
+      const load = staffLoad[s.id].minutes;
+      if (fc > bestFloorCount || (fc === bestFloorCount && load < bestLoad)) {
+        bestFloorCount = fc;
+        bestLoad = load;
+        best = s;
+      }
+    }
+    return best;
+  }
+
   // Track rooms we couldn't fit under the cap — surfaced as unassigned in the UI
   // so Reeyen can add another housekeeper or manually stretch someone. Never
   // pile over the cap silently — that's what produced 10h+ shifts in the past.
@@ -272,28 +312,13 @@ export function autoAssignRooms(
     }
     const roomTime = baseMins + prepMins;
 
-    // HARD CAP: only consider staff that can take this room without going over
-    // shiftCap (default 7h). If no one has capacity, the room stays unassigned
-    // — NO fallback that silently overloads someone.
-    const withCapacity = available.filter(s => staffLoad[s.id].minutes + roomTime <= shiftCap);
-    if (withCapacity.length === 0) continue; // leave in unassigned pool
-
-    // Prefer whoever already owns the most rooms on this floor (stickiness =
-    // one person per floor when possible). Ties break on LEAST total load
-    // today — this spreads work evenly instead of piling onto one person.
-    let best: StaffMember | null = null;
-    let bestFloorCount = -1;
-    let bestLoad = Infinity;
-    for (const s of withCapacity) {
-      const fc = staffLoad[s.id].floors.get(floor) ?? 0;
-      const load = staffLoad[s.id].minutes;
-      if (fc > bestFloorCount || (fc === bestFloorCount && load < bestLoad)) {
-        bestFloorCount = fc;
-        bestLoad = load;
-        best = s;
-      }
-    }
-    if (!best) continue;
+    // Try Priority staff first. Only fall through to Normal staff when no
+    // Priority candidate has capacity for this room. This means Priority
+    // housekeepers fill toward the shift cap before any Normal one picks
+    // up a room — matching the modal's promise of "Priority = picked first".
+    let best = pickBest(priorityStaff, floor, roomTime);
+    if (!best) best = pickBest(normalStaff, floor, roomTime);
+    if (!best) continue; // leave in unassigned pool — no one has capacity
 
     assignments[room.id] = best.id;
     staffLoad[best.id].minutes += roomTime;
