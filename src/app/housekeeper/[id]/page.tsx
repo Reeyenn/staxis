@@ -9,6 +9,7 @@ import {
   saveStaffLanguage,
   insertCleaningEvent,
   bucketStayoverDay,
+  discardRecentCleaningEvent,
 } from '@/lib/db';
 import { useTodayStr } from '@/lib/use-today-str';
 import type { Room, RoomStatus } from '@/types';
@@ -466,6 +467,10 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   };
 
   // ── Reset room (clean/inspected → dirty, clear times) ─────────────────────
+  // Also discards any cleaning_events row this HK created for this room in
+  // the last 60 seconds — the "oops, wrong room — undo" path. Resets that
+  // happen >60s after Done are treated as legitimate (the audit entry
+  // stays; Maria did real work even if the room needed re-cleaning).
   const handleResetRoom = async (room: RoomRow) => {
     if (!uid || !pid) return;
     setResettingRoomId(room.id);
@@ -474,6 +479,17 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
         status: 'dirty' as RoomStatus,
         startedAt: null,
         completedAt: null,
+      });
+      // Fire-and-forget: undo a recent audit insert if this is an "oops"
+      // reset. Errors here don't block the reset itself.
+      void discardRecentCleaningEvent({
+        propertyId: pid,
+        date: room.date ?? today,
+        roomNumber: room.number,
+        staffId: housekeeperId,
+        withinSeconds: 60,
+      }).catch(err => {
+        console.error('[housekeeper] discard recent cleaning_event failed (non-fatal):', err);
       });
     } catch (err) {
       console.error('[housekeeper] reset room error:', err);

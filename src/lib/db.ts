@@ -1482,6 +1482,49 @@ export async function getFlaggedCleaningEvents(pid: string): Promise<CleaningEve
 }
 
 /**
+ * Mark recent cleaning_events for a (property, date, room, staff) tuple as
+ * 'discarded' if they were created within the last N seconds. This is the
+ * "oops, wrong room — Done then Reset" undo path.
+ *
+ * Reeyen's spec: when a housekeeper accidentally hits Done and immediately
+ * hits Reset, throw out the audit entry. We use a 60-second window — wide
+ * enough to absorb a "walk away, realize mistake, walk back, reset" but
+ * narrow enough that a 5-minute-later legit reset (e.g., guest came back
+ * mid-clean) doesn't retroactively erase real work.
+ *
+ * Multiple matches are all marked discarded — covers Done/Reset/Done/Reset
+ * thrash. Already-decided entries (approved/rejected) are NOT touched —
+ * Mario's call is permanent.
+ */
+export async function discardRecentCleaningEvent(input: {
+  propertyId: string;
+  date: string;
+  roomNumber: string;
+  staffId: string | null;
+  withinSeconds?: number;
+}): Promise<void> {
+  const cutoff = new Date(Date.now() - (input.withinSeconds ?? 60) * 1000).toISOString();
+  let q = supabase
+    .from('cleaning_events')
+    .update({
+      status: 'discarded' as CleaningEventStatus,
+      flag_reason: 'reset_within_window',
+    })
+    .eq('property_id', input.propertyId)
+    .eq('date', input.date)
+    .eq('room_number', input.roomNumber)
+    .gte('created_at', cutoff)
+    .in('status', ['recorded', 'flagged']);
+  if (input.staffId) {
+    q = q.eq('staff_id', input.staffId);
+  } else {
+    q = q.is('staff_id', null);
+  }
+  const { error } = await q;
+  if (error) logErr('discardRecentCleaningEvent', error);
+}
+
+/**
  * Mario decides yes/no on a flagged entry. Permanent — once decided, the
  * entry can't be re-reviewed. The .eq('status', 'flagged') guard prevents
  * race conditions where two reviewers click at once.

@@ -122,7 +122,7 @@ interface StaffStats {
 
 function PerformanceTab() {
   const { user } = useAuth();
-  const { activeProperty, activePropertyId, staff } = useProperty();
+  const { activeProperty, activePropertyId, staff, staffLoaded } = useProperty();
   const { lang } = useLang();
   const today = useTodayStr();
 
@@ -141,9 +141,13 @@ function PerformanceTab() {
   // Active staff — used to filter the leaderboard. Inactive housekeepers'
   // historical entries persist in cleaning_events but they're hidden from
   // the live ranking. `isActive !== false` treats undefined as active too.
-  const activeStaffIds = useMemo(
-    () => new Set(staff.filter(s => s.isActive !== false).map(s => s.id)),
-    [staff]
+  //
+  // Until the staff context finishes loading we can't reliably filter — an
+  // empty Set would hide every housekeeper's entries. Returning null here
+  // signals "filter is not ready, include everyone" downstream.
+  const activeStaffIds = useMemo<Set<string> | null>(
+    () => staffLoaded ? new Set(staff.filter(s => s.isActive !== false).map(s => s.id)) : null,
+    [staff, staffLoaded]
   );
 
   // ── Load events for the current view ──────────────────────────────────────
@@ -195,7 +199,10 @@ function PerformanceTab() {
     for (const ev of eligibleEvents) {
       // Skip events where the staff has been deactivated. Their old entries
       // remain in the audit log for historical accuracy.
-      if (ev.staffId && !activeStaffIds.has(ev.staffId)) continue;
+      // Skip events for deactivated staff. When activeStaffIds is null
+      // (staff context still loading) we include everyone — the alternative
+      // is a transient empty leaderboard during page load.
+      if (activeStaffIds && ev.staffId && !activeStaffIds.has(ev.staffId)) continue;
       const key = ev.staffId ?? `name:${ev.staffName}`;
       const e = byStaff.get(key) ?? {
         staffId: ev.staffId ?? key,
@@ -240,7 +247,10 @@ function PerformanceTab() {
   const provisional = useMemo(() => {
     const byStaff = new Map<string, { name: string; total: number }>();
     for (const ev of eligibleEvents) {
-      if (ev.staffId && !activeStaffIds.has(ev.staffId)) continue;
+      // Skip events for deactivated staff. When activeStaffIds is null
+      // (staff context still loading) we include everyone — the alternative
+      // is a transient empty leaderboard during page load.
+      if (activeStaffIds && ev.staffId && !activeStaffIds.has(ev.staffId)) continue;
       const key = ev.staffId ?? `name:${ev.staffName}`;
       const entry = byStaff.get(key) ?? { name: ev.staffName, total: 0 };
       entry.total++;
