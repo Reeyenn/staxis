@@ -24,6 +24,24 @@ import {
   Zap, Sparkles, ChevronRight,
 } from 'lucide-react';
 
+// Hero banner images — randomly picked once per tab session and persisted
+// across nav via sessionStorage. Lifted to module scope (was function-local)
+// so the useMemo below can keep an empty dep array without ESLint complaining
+// — module-level constants don't change between renders by definition.
+const HERO_IMAGES = [
+  'https://images.unsplash.com/photo-1677129667171-92abd8740fa3?w=1200&q=80&auto=format&fit=crop',
+  'https://lh3.googleusercontent.com/aida-public/AB6AXuBZbI6Q__TgrGV68CwAljtCXlm-IIQqMH3Xp-2bJ6iCAK7czY26jVHPqSvr1eW6Jr9UzXxPWcHxnZY-vhxpsuzsHWrTmc959Y8259FEe1eFselJfyEo8TSuB3A5ousMXyxqU07-hrv_pwBIgA8BPUv8oz2UdjcLL_sZNHiuPA7ImV_kiS6oL0xM1Jdkrs6Nsv7LTW-MVg0PWv1jzCrTFmWDskwTsIebZXs0pedyHW35oLHSX4pjQ_Y8CA130SYTXxEN-ZUlVQTT94A',
+  'https://images.unsplash.com/photo-1767395523614-53f52709c37a?w=1200&q=80&auto=format&fit=crop',
+  'https://images.unsplash.com/photo-1763560705345-5aed55f99c8f?w=1200&q=80&auto=format&fit=crop',
+  'https://images.unsplash.com/photo-1758193783649-13371d7fb8dd?w=1200&q=80&auto=format&fit=crop',
+  'https://images.unsplash.com/photo-1758194190679-198a77cba84f?w=1200&q=80&auto=format&fit=crop',
+  'https://images.unsplash.com/photo-1702814160779-4a88cfb330c7?w=1200&q=80&auto=format&fit=crop',
+  'https://images.unsplash.com/photo-1768346564825-6f90c0b89e2e?w=1200&q=80&auto=format&fit=crop',
+  'https://images.unsplash.com/photo-1774192621035-20d11389f781?w=1200&q=80&auto=format&fit=crop',
+  'https://images.unsplash.com/photo-1723974915612-c9b6f524f28c?w=1200&q=80&auto=format&fit=crop',
+  'https://images.unsplash.com/photo-1758194090785-8e09b7288199?w=1200&q=80&auto=format&fit=crop',
+];
+
 export default function DashboardPage() {
   const { user, loading: authLoading } = useAuth();
   const { activeProperty, activePropertyId, staff, loading: propLoading } = useProperty();
@@ -48,21 +66,10 @@ export default function DashboardPage() {
   const [editingField, setEditingField] = useState<string | null>(null);
   const [dashboardNums, setDashboardNums] = useState<DashboardNumbers | null>(null);
 
-  // Hero banner images — randomly picked on each page load
-  const HERO_IMAGES = [
-    'https://images.unsplash.com/photo-1677129667171-92abd8740fa3?w=1200&q=80&auto=format&fit=crop',
-    'https://lh3.googleusercontent.com/aida-public/AB6AXuBZbI6Q__TgrGV68CwAljtCXlm-IIQqMH3Xp-2bJ6iCAK7czY26jVHPqSvr1eW6Jr9UzXxPWcHxnZY-vhxpsuzsHWrTmc959Y8259FEe1eFselJfyEo8TSuB3A5ousMXyxqU07-hrv_pwBIgA8BPUv8oz2UdjcLL_sZNHiuPA7ImV_kiS6oL0xM1Jdkrs6Nsv7LTW-MVg0PWv1jzCrTFmWDskwTsIebZXs0pedyHW35oLHSX4pjQ_Y8CA130SYTXxEN-ZUlVQTT94A',
-    'https://images.unsplash.com/photo-1767395523614-53f52709c37a?w=1200&q=80&auto=format&fit=crop',
-    'https://images.unsplash.com/photo-1763560705345-5aed55f99c8f?w=1200&q=80&auto=format&fit=crop',
-    'https://images.unsplash.com/photo-1758193783649-13371d7fb8dd?w=1200&q=80&auto=format&fit=crop',
-    'https://images.unsplash.com/photo-1758194190679-198a77cba84f?w=1200&q=80&auto=format&fit=crop',
-    'https://images.unsplash.com/photo-1702814160779-4a88cfb330c7?w=1200&q=80&auto=format&fit=crop',
-    'https://images.unsplash.com/photo-1768346564825-6f90c0b89e2e?w=1200&q=80&auto=format&fit=crop',
-    'https://images.unsplash.com/photo-1774192621035-20d11389f781?w=1200&q=80&auto=format&fit=crop',
-    'https://images.unsplash.com/photo-1723974915612-c9b6f524f28c?w=1200&q=80&auto=format&fit=crop',
-    'https://images.unsplash.com/photo-1758194090785-8e09b7288199?w=1200&q=80&auto=format&fit=crop',
-  ];
-  // Persist across tab navigation — only changes on full page refresh (F5)
+  // Persist across tab navigation — only changes on full page refresh (F5).
+  // HERO_IMAGES is module-level (declared at top of file), so the empty
+  // dep array is correct. ESLint's exhaustive-deps doesn't flag module-
+  // level identifiers.
   const heroImage = useMemo(() => {
     if (typeof window === 'undefined') return HERO_IMAGES[0];
     const stored = sessionStorage.getItem('staxis-hero-img');

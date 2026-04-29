@@ -526,6 +526,10 @@ function ScheduleTab() {
       }
     }
     // On subsequent crew changes, don't re-assign — let unassigned rooms stay unassigned
+    // `legacySoMins` is intentionally NOT in deps; it's a back-compat read-only
+    // shadow of soMins consulted only inside this branch and would not change
+    // independently of soMins.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCrew, assignableRooms, coMins, soMins, day1Mins, day2Mins, prepPerRoom, shiftLen]);
 
   const toggleCrewMember = (memberId: string) => {

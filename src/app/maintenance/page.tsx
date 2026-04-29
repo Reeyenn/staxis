@@ -249,7 +249,8 @@ export default function MaintenancePage() {
     } finally {
       setSubmitting(false);
     }
-  }, [user, activePropertyId, newRoom, newDesc, newSeverity, submitting, lang]);
+    // `newBlockRoom` is read inside; adding it to deps is correct.
+  }, [user, activePropertyId, newRoom, newDesc, newSeverity, submitting, lang, newBlockRoom]);
 
   const handleStartWork = useCallback(async (order: WorkOrder) => {
     if (!user || !activePropertyId) return;

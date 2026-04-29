@@ -70,6 +70,10 @@ function LaundryInner() {
           ? 'No se pudo cargar la lista. Verifica tu conexión e intenta de nuevo.'
           : 'Could not load staff list. Check your connection and try again.');
       });
+    // `lang` is intentionally NOT a dep — only used to localize the error
+    // toast on failure. Adding it would re-fetch the staff list whenever
+    // the user toggles language, which is wrong.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uid, pid]);
 
   const handleSetup = async () => {

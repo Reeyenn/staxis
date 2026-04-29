@@ -30,12 +30,10 @@ jobs:
       # Lint — ESLint flat config (eslint.config.js) bridged to
       # eslint-config-next via FlatCompat. The cosmetic
       # react/no-unescaped-entities rule is disabled project-wide.
-      # We don't pass --max-warnings 0 yet because there are 8
-      # pre-existing warnings (font loading nags, exhaustive-deps
-      # hints) that are worth triaging without blocking the build.
-      # Errors WILL fail the build.
+      # `--max-warnings 0` means ANY warning fails the build — keeps
+      # the codebase from drifting back into the noisy state.
       - name: Lint
-        run: npx eslint src/
+        run: npx eslint src/ --max-warnings 0
 
       # Type-check — fails on any tsc error.
       - name: Type-check

@@ -91,7 +91,12 @@ function DeepCleanTab() {
   const uid = user?.uid ?? '';
   const pid = activePropertyId ?? '';
   const totalRooms = activeProperty?.totalRooms ?? 74;
-  const today = new Date();
+  // `today` is pinned per-mount via useMemo. Without this, `new Date()` runs
+  // on every render and downstream useMemo hooks treat it as a changed dep,
+  // re-running their (expensive) calculations every render. The component
+  // re-mounts on day rollover via the route's date-aware key, so we don't
+  // need to track midnight transitions inside this state.
+  const today = useMemo(() => new Date(), []);
   const dayOfWeek = today.getDay(); // 0=Sun, 1=Mon
 
   // All room numbers — Comfort Suites Beaumont layout

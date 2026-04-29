@@ -43,7 +43,15 @@ export default function RootLayout({
           display=block holds the text invisible for up to 3s while the
           font loads, so on cold-cache loads the icons appear correctly
           instead of flashing as English words first.
+
+          Next.js wants us to use `next/font` for fonts and to set
+          display=swap for performance. We deliberately ignore both rules
+          here because (a) Material Symbols is an *icon* font, not a text
+          font, and the flash-of-fallback-text is a UX bug for icons;
+          (b) `next/font` doesn't support OpenType ligature swapping the
+          way Material Symbols needs.
         */}
+        {/* eslint-disable-next-line @next/next/google-font-display, @next/next/no-page-custom-font */}
         <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block" />
       </head>
       <body>
