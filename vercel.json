@@ -1,3 +1,10 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json"
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    {
+      "//": "Drains the SMS jobs queue. Vercel calls this every minute. Each tick claims a batch (up to 50) of queued SMS jobs, sends via Twilio, and updates row status. Auth via CRON_SECRET in the request — see src/app/api/cron/process-sms-jobs/route.ts.",
+      "path": "/api/cron/process-sms-jobs",
+      "schedule": "* * * * *"
+    }
+  ]
 }
