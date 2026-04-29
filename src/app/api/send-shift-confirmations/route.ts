@@ -35,6 +35,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { isValidDateStr, errToString } from '@/lib/utils';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import { checkIdempotency, recordIdempotency } from '@/lib/idempotency';
 import {
   validateUuid, validateString, validateArray, validateDateStr, validateEnum,
   sanitizeForSms, redactPhone, safeBaseUrl, LIMITS,
@@ -105,6 +106,16 @@ export async function POST(req: NextRequest) {
   // and is the highest-Twilio-cost endpoint we have.
   const session = await requireSession(req);
   if (!session.ok) return session.response;
+
+  // Idempotency: Stripe-style header dedup. Mario's UI generates a UUID
+  // per click and sends it as Idempotency-Key. If the network drops or
+  // he double-clicks, the second call hits the cache and returns the
+  // first call's response — no duplicate SMS to housekeepers.
+  // Legacy callers (no header) bypass; we still send.
+  const idem = await checkIdempotency(req, 'send-shift-confirmations');
+  if (idem.kind === 'cached') {
+    return idem.response;
+  }
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== 'object') {
@@ -463,7 +474,18 @@ export async function POST(req: NextRequest) {
     const updated = perStaff.filter(r => r.status === 'sent' && r.isUpdate === true).length;
     const fresh   = sent - updated;
 
-    return NextResponse.json({ sent, failed, skipped, updated, fresh, perStaff });
+    const responseBody = { sent, failed, skipped, updated, fresh, perStaff };
+
+    // Cache the response for retries within the next 24h. Only the
+    // success path — failures shouldn't be cached because the caller
+    // probably wants to retry against a working state. Best-effort:
+    // if the insert fails (race with a parallel retry that beat us
+    // to it, transient DB error) we just don't cache.
+    if (idem.kind === 'first') {
+      await recordIdempotency(idem.key, 'send-shift-confirmations', responseBody, 200, pid);
+    }
+
+    return NextResponse.json(responseBody);
   } catch (err) {
     console.error('send-shift-confirmations error:', err);
     // Persist the error so we can diagnose without shell logs.
