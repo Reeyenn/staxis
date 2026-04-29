@@ -1052,6 +1052,7 @@ async function checkCronSecretCrossPlatform(): Promise<Omit<Check, 'name' | 'dur
 const EXPECTED_MIGRATIONS: ReadonlyArray<string> = [
   '0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008',
   '0009', '0010', '0011', '0012', '0013', '0014', '0015', '0016',
+  '0017',
 ];
 async function checkAppliedMigrations(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {
