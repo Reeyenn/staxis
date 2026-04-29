@@ -1,0 +1,79 @@
+# Sentry pipeline verification — manual on-demand workflow
+#
+# Fires a single synthetic event into Sentry by curling /api/admin/sentry-test
+# with the CRON_SECRET. Used to confirm end-to-end that:
+#   1. SENTRY_DSN env var is set on Vercel and survives redeploys
+#   2. @sentry/nextjs is installed and Sentry.init has run on the cold function
+#   3. log.error → captureException → Sentry's ingest API works
+#   4. The event surfaces in staxis.sentry.io within ~30s
+#
+# When to run this:
+#   - After any change to instrumentation.ts, sentry.{server,edge,client}.config.ts,
+#     log.ts, or sentry.ts
+#   - After rotating SENTRY_DSN
+#   - After a Sentry quota / billing change
+#   - When you suspect Sentry has stopped receiving events
+#
+# How to run:
+#   GitHub → Actions → Sentry pipeline test → Run workflow
+#   (or via CLI: gh workflow run sentry-test.yml)
+#
+# What you should see:
+#   1. The workflow log prints `{"ok":true,"requestId":"...","fired":"synthetic-..."}`
+#   2. Within ~30s, https://staxis.sentry.io/issues/?project=4511304385888256
+#      shows a new issue titled "[sentry-test] synthetic event synthetic-..."
+#   3. If no issue appears → something in the pipeline is broken; see the
+#      diagnostics list at the top of /api/admin/sentry-test/route.ts.
+
+name: Sentry pipeline test
+
+on:
+  # Manual only. This is a verification button, not an automated job.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Fire synthetic Sentry event
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+
+          URL="https://hotelops-ai.vercel.app/api/admin/sentry-test"
+
+          # --fail-with-body so HTTP 4xx/5xx fails the workflow loudly.
+          # Capture the marker from the response so the run log includes
+          # the exact substring you'll be searching for in Sentry.
+          RESPONSE=$(curl \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --max-time 30 \
+            --retry 2 \
+            --retry-delay 5 \
+            -H "Authorization: Bearer ${CRON_SECRET:-}" \
+            "$URL")
+
+          echo "Response from /api/admin/sentry-test:"
+          echo "$RESPONSE"
+
+          # Sanity check.
+          echo "$RESPONSE" | grep -q '"ok":true' || {
+            echo "::error::sentry-test endpoint returned ok:false or malformed JSON"
+            exit 1
+          }
+
+          # Extract and bold-print the marker so it's easy to spot in the
+          # Sentry issues feed.
+          MARKER=$(echo "$RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("fired",""))')
+          echo ""
+          echo "===================================================="
+          echo "Search Sentry for: $MARKER"
+          echo "https://staxis.sentry.io/issues/?project=4511304385888256"
+          echo "===================================================="
