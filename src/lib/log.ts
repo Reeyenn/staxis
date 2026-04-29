@@ -27,6 +27,8 @@
  *     confidence.
  */
 
+import { captureException } from '@/lib/sentry';
+
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 export interface LogFields {
@@ -51,10 +53,12 @@ function emit(level: LogLevel, msg: string, fields?: LogFields): void {
   };
   // Errors / Error subclasses don't serialize cleanly through JSON.stringify
   // by default — they come out as `{}`. Pull stack/message off explicitly.
+  let firstError: unknown;
   if (fields) {
     for (const [k, v] of Object.entries(fields)) {
       if (v instanceof Error) {
         line[k] = { name: v.name, message: v.message, stack: v.stack };
+        if (!firstError) firstError = v;
       }
     }
   }
@@ -68,6 +72,16 @@ function emit(level: LogLevel, msg: string, fields?: LogFields): void {
   }
   // eslint-disable-next-line no-console
   (level === 'error' ? console.error : level === 'warn' ? console.warn : console.log)(text);
+
+  // Ship error-level events with an attached Error to Sentry. No-op until
+  // SENTRY_DSN is set in env (see src/lib/sentry.ts + src/instrumentation.ts).
+  // We only ship 'error' level because warn/info would flood the dashboard.
+  if (level === 'error' && firstError) {
+    captureException(firstError, { msg, ...(fields ?? {}) });
+  } else if (level === 'error' && !firstError) {
+    // No Error attached — ship a synthetic one so Sentry has a stack.
+    captureException(new Error(msg), fields ?? {});
+  }
 }
 
 export const log = {

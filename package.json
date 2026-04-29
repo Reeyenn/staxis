@@ -13,6 +13,7 @@
     "test:scraper": "node --test scraper/__tests__/*.test.js"
   },
   "dependencies": {
+    "@sentry/nextjs": "^10.51.0",
     "@supabase/ssr": "^0.5.2",
     "@supabase/supabase-js": "^2.47.0",
     "bcryptjs": "^3.0.3",
