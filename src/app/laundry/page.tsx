@@ -48,14 +48,19 @@ function LaundryInner() {
 
     fetch(`/api/staff-list?uid=${uid}&pid=${pid}`)
       .then(r => r.json())
-      .then(data => {
-        if (!Array.isArray(data) || data.length === 0) {
+      .then((body: { ok?: boolean; data?: unknown; error?: string }) => {
+        // Standard ApiResponse envelope — read the array off `.data`.
+        const raw = (body && body.ok && Array.isArray(body.data))
+          ? (body.data as Array<{ id: string; name: string; isSenior?: boolean }>)
+          : [];
+        const list = raw.map(s => ({ id: s.id, name: s.name, isSenior: !!s.isSenior }));
+        if (list.length === 0) {
           setStep('error');
           setErrorMsg(lang === 'es'
             ? 'No hay personal programado hoy. Pide a tu gerente que te agregue al horario de hoy.'
             : 'No staff scheduled today. Ask your manager to add you to today\'s schedule.');
         } else {
-          setStaff(data);
+          setStaff(list);
           setStep('select');
         }
       })

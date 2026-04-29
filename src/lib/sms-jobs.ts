@@ -1,0 +1,306 @@
+/**
+ * SMS jobs queue — producer + worker helpers.
+ *
+ * See migration `0020_sms_jobs.sql` for the schema and the design doc at
+ * `Second Brain/02 Projects/HotelOps AI/[C] SMS Job Queue — Design Doc.md`
+ * for the rationale.
+ *
+ * Public surface:
+ *   - `enqueueSms(input)` — producers call this from route handlers.
+ *     Returns the job row (created or pre-existing if the idempotency
+ *     key already exists for the property).
+ *   - `processSmsJobs(limit)` — worker entry point. Cron job calls this
+ *     each tick. Pops a batch, sends each via Twilio, updates rows.
+ *   - `resetStuckSmsJobs()` — watchdog. Resets rows stuck in 'sending'
+ *     longer than the threshold so they're retried.
+ *
+ * Status flow:
+ *   queued → sending → sent
+ *                   → queued (with backoff) → sending → ...
+ *                                          → dead (after max_attempts)
+ *
+ * The processor is deliberately conservative — one Twilio call at a time,
+ * sequential. We can parallelize later when load demands it; today's
+ * volume is well below Twilio's per-account rate limit so there's no
+ * benefit.
+ */
+
+import { supabaseAdmin } from '@/lib/supabase-admin';
+import { sendSms } from '@/lib/sms';
+import { errToString } from '@/lib/utils';
+import { log } from '@/lib/log';
+import { captureException } from '@/lib/sentry';
+
+// ─── shared types ───────────────────────────────────────────────────────────
+
+export interface EnqueueSmsInput {
+  propertyId: string;
+  toPhone: string;
+  body: string;
+  /**
+   * Caller-supplied dedup key. Same (propertyId, idempotencyKey) within
+   * the row's lifetime returns the existing row. Use a per-message UUID
+   * (e.g. `crypto.randomUUID()`) when you want every send unique, or a
+   * deterministic key like `shift-confirmations:${shiftDate}:${staffId}`
+   * when you want at-most-one-send-per-staff-per-shift.
+   */
+  idempotencyKey: string;
+  /**
+   * Optional metadata blob. Surfaces in the per-message status row in
+   * the UI ("Maria, Room 217 confirmation"). Don't put secrets here.
+   */
+  metadata?: Record<string, unknown>;
+  /**
+   * Override the default retry cap (3). Use sparingly — high values mean
+   * a permanently broken phone number burns a lot of Twilio retries.
+   */
+  maxAttempts?: number;
+}
+
+export interface SmsJobRow {
+  id: string;
+  property_id: string;
+  to_phone: string;
+  body: string;
+  status: 'queued' | 'sending' | 'sent' | 'failed' | 'dead';
+  attempts: number;
+  max_attempts: number;
+  next_attempt_at: string;
+  started_at: string | null;
+  sent_at: string | null;
+  twilio_sid: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  idempotency_key: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+// ─── producer ───────────────────────────────────────────────────────────────
+
+/**
+ * Insert a new SMS job. If a job with the same (propertyId, idempotencyKey)
+ * already exists, return the existing row instead of creating a duplicate.
+ *
+ * Errors:
+ *   - Throws if the database is unreachable or the schema is mismatched.
+ *     Callers can decide whether to fall back to a synchronous send.
+ */
+export async function enqueueSms(input: EnqueueSmsInput): Promise<SmsJobRow> {
+  // Try insert first. The unique (property_id, idempotency_key) constraint
+  // makes duplicate enqueues into "no-op + return existing" via the
+  // upsert-style flow below.
+  const insertPayload = {
+    property_id: input.propertyId,
+    to_phone: input.toPhone,
+    body: input.body,
+    idempotency_key: input.idempotencyKey,
+    max_attempts: input.maxAttempts ?? 3,
+    metadata: input.metadata ?? {},
+  };
+
+  const { data: inserted, error: insertErr } = await supabaseAdmin
+    .from('sms_jobs')
+    .insert(insertPayload)
+    .select('*')
+    .single();
+
+  if (!insertErr && inserted) return inserted as SmsJobRow;
+
+  // Conflict — read the existing row and return it.
+  // Postgres conflict code is 23505 (unique_violation). supabase-js maps
+  // this to error.code === '23505'.
+  const isDuplicate = (insertErr as { code?: string } | null)?.code === '23505';
+  if (isDuplicate) {
+    const { data: existing, error: readErr } = await supabaseAdmin
+      .from('sms_jobs')
+      .select('*')
+      .eq('property_id', input.propertyId)
+      .eq('idempotency_key', input.idempotencyKey)
+      .single();
+    if (readErr || !existing) {
+      throw new Error(
+        `enqueueSms: duplicate detected for (pid=${input.propertyId}, key=${input.idempotencyKey}) but row not found on re-read: ${errToString(readErr)}`,
+      );
+    }
+    return existing as SmsJobRow;
+  }
+
+  throw new Error(`enqueueSms: insert failed: ${errToString(insertErr)}`);
+}
+
+// ─── worker ─────────────────────────────────────────────────────────────────
+
+/**
+ * Compute the next-attempt timestamp after a transient failure.
+ *
+ * Backoff: 30s, 2min, 5min for attempts 1-3. After max_attempts we mark
+ * the job 'dead' instead.
+ */
+export function computeBackoffSeconds(attempt: number): number {
+  switch (attempt) {
+    case 1:  return 30;
+    case 2:  return 120;
+    case 3:  return 300;
+    default: return 600;
+  }
+}
+
+export interface ProcessResult {
+  claimed: number;
+  sent: number;
+  retried: number;
+  dead: number;
+}
+
+/**
+ * Drain up to `limit` queued jobs by calling Twilio for each. Updates
+ * each row to 'sent' (success), 'queued' with backoff (transient
+ * failure), or 'dead' (max_attempts exhausted).
+ *
+ * Idempotent — safe to call from multiple cron instances thanks to
+ * `select … for update skip locked` in the RPC.
+ *
+ * Returns counts so the cron caller can log a summary.
+ */
+export async function processSmsJobs(limit = 50): Promise<ProcessResult> {
+  const result: ProcessResult = { claimed: 0, sent: 0, retried: 0, dead: 0 };
+
+  // Claim a batch atomically.
+  const { data: claimed, error: claimErr } = await supabaseAdmin
+    .rpc('staxis_claim_sms_jobs', { p_limit: limit });
+
+  if (claimErr) {
+    log.error('[sms-jobs] claim rpc failed', { errorCode: claimErr.code, msg: claimErr.message });
+    captureException(new Error(`sms-jobs claim failed: ${claimErr.message}`));
+    return result;
+  }
+  const rows = (claimed ?? []) as Array<{
+    id: string;
+    property_id: string;
+    to_phone: string;
+    body: string;
+    attempts: number;
+    max_attempts: number;
+    idempotency_key: string;
+    metadata: Record<string, unknown>;
+  }>;
+  result.claimed = rows.length;
+
+  // Send each. Sequential — keeps it simple and within Twilio's per-account
+  // pacing without us reasoning about concurrency. Volume today is far
+  // below the rate where parallelism would matter.
+  //
+  // Note: sendSms currently returns void. The Twilio SID would be useful
+  // to record on the row for support traceability — when sendSms is
+  // upgraded to surface the Message resource, plumb the .sid through here.
+  for (const job of rows) {
+    try {
+      await sendSms(job.to_phone, job.body);
+
+      const { error: updateErr } = await supabaseAdmin
+        .from('sms_jobs')
+        .update({
+          status: 'sent',
+          sent_at: new Date().toISOString(),
+          twilio_sid: null, // see comment above — sendSms doesn't return SID today
+          error_code: null,
+          error_message: null,
+          started_at: null,
+        })
+        .eq('id', job.id);
+      if (updateErr) throw updateErr;
+      result.sent++;
+    } catch (err) {
+      // Categorize: terminal vs transient. Terminal errors get marked
+      // 'dead' immediately (e.g. invalid phone number — no retry will
+      // help). Everything else goes back to 'queued' with backoff and
+      // counts toward the attempt cap.
+      const errMsg = errToString(err);
+      const errCode = extractTwilioErrorCode(err);
+      const isTerminal = isTerminalTwilioError(errCode);
+
+      const isFinalAttempt = job.attempts >= job.max_attempts;
+      const nextStatus: 'dead' | 'queued' = (isTerminal || isFinalAttempt) ? 'dead' : 'queued';
+      const backoffSec = computeBackoffSeconds(job.attempts);
+      const nextAt = new Date(Date.now() + backoffSec * 1000).toISOString();
+
+      await supabaseAdmin
+        .from('sms_jobs')
+        .update({
+          status: nextStatus,
+          next_attempt_at: nextAt,
+          error_code: errCode,
+          error_message: errMsg.slice(0, 1000),
+          started_at: null,
+        })
+        .eq('id', job.id);
+
+      if (nextStatus === 'dead') {
+        result.dead++;
+        log.error('[sms-jobs] job dead', {
+          jobId: job.id, pid: job.property_id, errorCode: errCode ?? undefined, msg: errMsg,
+        });
+      } else {
+        result.retried++;
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Reset rows that have been stuck in 'sending' for `maxSeconds` or more.
+ * The worker's container probably crashed mid-Twilio-call. Bounce them
+ * back to 'queued' so the next tick picks them up again.
+ *
+ * Returns the number of rows reset.
+ */
+export async function resetStuckSmsJobs(maxSeconds = 300): Promise<number> {
+  const { data, error } = await supabaseAdmin
+    .rpc('staxis_reset_stuck_sms_jobs', { p_max_seconds: maxSeconds });
+  if (error) {
+    log.error('[sms-jobs] reset stuck rpc failed', { errorCode: error.code, msg: error.message });
+    return 0;
+  }
+  return Number(data ?? 0);
+}
+
+// ─── error categorization ───────────────────────────────────────────────────
+
+/**
+ * Pull a Twilio error code off whatever shape the SDK / fetch wrapper
+ * threw. Twilio's REST errors usually include a numeric `code` like
+ * 21211 (invalid phone), 30007 (carrier filter), etc.
+ */
+function extractTwilioErrorCode(err: unknown): string | null {
+  if (err && typeof err === 'object') {
+    const e = err as { code?: unknown; status?: unknown };
+    if (typeof e.code === 'number' || typeof e.code === 'string') return String(e.code);
+    if (typeof e.status === 'number' || typeof e.status === 'string') return String(e.status);
+  }
+  return null;
+}
+
+/**
+ * Return true if the error is one we should NOT retry. Saves Twilio
+ * billing on doomed messages.
+ *
+ *   21211 — invalid 'To' number
+ *   21408 — permission denied for region
+ *   21610 — message blocked by recipient (STOP)
+ *   21614 — 'To' is not a mobile number
+ *   30003 — unreachable destination handset
+ *   30005 — unknown destination handset
+ *   30006 — landline / unreachable carrier
+ */
+const TERMINAL_TWILIO_CODES = new Set<string>([
+  '21211', '21408', '21610', '21614', '30003', '30005', '30006',
+]);
+
+function isTerminalTwilioError(code: string | null): boolean {
+  if (!code) return false;
+  return TERMINAL_TWILIO_CODES.has(code);
+}

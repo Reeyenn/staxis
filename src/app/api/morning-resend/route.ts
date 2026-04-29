@@ -22,6 +22,8 @@ import { sendSms } from '@/lib/sms';
 import { isValidDateStr, errToString } from '@/lib/utils';
 import { validateUuid, validateDateStr, redactPhone, safeBaseUrl, LIMITS } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
+import { checkIdempotency, recordIdempotency } from '@/lib/idempotency';
+import { smartAssignRooms } from '@/lib/room-assignment';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -40,49 +42,9 @@ interface RoomRow {
   assigned_to: string | null;
 }
 
-interface HKSlot {
-  index: number;
-  rooms: string[];
-  totalMinutes: number;
-}
-
-const CLEANING_TIMES = { checkout: 30, stayover: 20 };
-
-/**
- * Re-runs smart room assignment: groups by floor, distributes floor groups
- * to the HK with the least work. Checkouts before stayovers per floor.
- */
-function smartAssignRooms(rooms: RoomRow[], numHousekeepers: number): HKSlot[] {
-  if (numHousekeepers <= 0 || rooms.length === 0) return [];
-
-  const byFloor: Record<string, RoomRow[]> = {};
-  for (const room of rooms) {
-    const floor = String(room.number).charAt(0);
-    if (!byFloor[floor]) byFloor[floor] = [];
-    byFloor[floor].push(room);
-  }
-
-  for (const floor of Object.keys(byFloor)) {
-    byFloor[floor].sort((a, b) => {
-      if (a.type !== b.type) return a.type === 'checkout' ? -1 : 1;
-      return parseInt(a.number) - parseInt(b.number);
-    });
-  }
-
-  const slots: HKSlot[] = Array.from({ length: numHousekeepers }, (_, i) => ({
-    index: i, rooms: [], totalMinutes: 0,
-  }));
-
-  for (const floorRooms of Object.values(byFloor)) {
-    const lightest = slots.reduce((min, s) => s.totalMinutes < min.totalMinutes ? s : min, slots[0]);
-    for (const room of floorRooms) {
-      lightest.rooms.push(room.number);
-      lightest.totalMinutes += CLEANING_TIMES[room.type as 'checkout' | 'stayover'] ?? 25;
-    }
-  }
-
-  return slots;
-}
+// Note: the smartAssignRooms algorithm itself moved to
+// src/lib/room-assignment.ts on 2026-04-29 so it can be reused and
+// tested in isolation. RoomRow above is local to this route.
 
 // ─── Route handler ────────────────────────────────────────────────────────────
 
@@ -112,6 +74,14 @@ export async function POST(req: NextRequest) {
     const pid = pidV.value!;
     const shiftDate = shiftV.value!;
     const baseUrl = safeBaseUrl(b.baseUrl);
+
+    // Idempotency check BEFORE rate limit. A retry of the same logical
+    // request (same Idempotency-Key) returns the cached response without
+    // burning rate-limit budget. Without this, a cron retry from a
+    // network blip would double-charge against the 5/hr cap and possibly
+    // double-text staff if the cache was missing for any reason.
+    const idem = await checkIdempotency(req, 'morning-resend');
+    if (idem.kind === 'cached') return idem.response;
 
     // Cap at 5 morning-resends per property per hour. The cron schedule
     // calls this once per morning; manual re-runs should be rare.
@@ -307,11 +277,16 @@ export async function POST(req: NextRequest) {
       console.error('[morning-resend] schedule_assignments mirror failed:', errToString(e));
     }
 
-    return NextResponse.json({
+    const responseBody = {
       message: `Morning resend complete. ${updatedCount} of ${numHKs} HKs received updated room lists.`,
       updated: updatedCount,
       total: numHKs,
-    });
+    };
+
+    if (idem.kind === 'first') {
+      await recordIdempotency(idem.key, 'morning-resend', responseBody, 200, pid);
+    }
+    return NextResponse.json(responseBody);
 
   } catch (err) {
     // Generic 500 — `errToString(err)` may include PG schema names or

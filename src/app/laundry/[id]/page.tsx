@@ -70,8 +70,10 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
 
     fetch(`/api/staff-list?uid=${uid}&pid=${pid}`)
       .then(r => r.json())
-      .then((data: Array<{ id: string; name: string }>) => {
-        const person = data.find(s => s.id === laundryPersonId);
+      .then((body: { ok?: boolean; data?: Array<{ id: string; name: string }> }) => {
+        // Standard ApiResponse envelope — read the array off `.data`.
+        const list = (body && body.ok && Array.isArray(body.data)) ? body.data : [];
+        const person = list.find(s => s.id === laundryPersonId);
         if (person) {
           setLaundryPersonName(person.name);
         }

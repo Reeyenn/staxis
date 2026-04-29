@@ -1,7 +1,9 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { getOrMintRequestId } from '@/lib/log';
 
 /**
  * Public endpoint — returns the staff scheduled to work today for a given
@@ -24,8 +26,14 @@ import { validateUuid } from '@/lib/api-validate';
  * route.
  *
  * Legacy `uid` query param is accepted for URL back-compat but ignored.
+ *
+ * Response shape (uniform envelope from src/lib/api-response.ts):
+ *   200: { ok: true, requestId, data: Array<{id,name,isSenior}> }
+ *   4xx: { ok: false, requestId, error, code }
+ *   5xx: { ok: false, requestId, error, code }
  */
 export async function GET(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
   const { searchParams } = new URL(req.url);
   const rawPid = searchParams.get('pid');
 
@@ -35,25 +43,27 @@ export async function GET(req: NextRequest) {
   // capability URL is malformed.
   const pidV = validateUuid(rawPid, 'pid');
   if (pidV.error) {
-    return NextResponse.json({ error: pidV.error }, { status: 400 });
+    return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   const pid = pidV.value!;
 
   // Pull only the columns we need to return. Belt-and-suspenders against
   // someone later widening the response mapper without thinking about the
   // PII implications.
-  const { data, error } = await supabaseAdmin
+  const { data, error: queryError } = await supabaseAdmin
     .from('staff')
     .select('id, name, is_senior')
     .eq('property_id', pid)
     .eq('scheduled_today', true)
     .eq('is_active', true);
 
-  if (error) {
+  if (queryError) {
     // Don't echo PG error text — leaks schema/column names. Log the full
     // detail server-side and return generic 500 to caller.
-    console.error('[staff-list] query failed', errToString(error));
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    console.error('[staff-list] query failed', errToString(queryError));
+    return err('Internal server error', {
+      requestId, status: 500, code: ApiErrorCode.InternalError,
+    });
   }
 
   // Minimal projection. NEVER add phone, hourly_wage, weekly_hours, or
@@ -65,5 +75,5 @@ export async function GET(req: NextRequest) {
     isSenior: s.is_senior,
   }));
 
-  return NextResponse.json(mapped);
+  return ok(mapped, { requestId });
 }

@@ -11,6 +11,7 @@ import {
   rateLimitedResponse,
   NO_PROPERTY_RATE_LIMIT_KEY,
 } from '@/lib/api-ratelimit';
+import { checkIdempotency, recordIdempotency } from '@/lib/idempotency';
 
 interface SmsEntry {
   phone: string;          // E.164 format, e.g. +15551234567
@@ -105,6 +106,12 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // Idempotency check BEFORE rate limit. A retry of the same logical
+    // request (same Idempotency-Key) returns the cached response without
+    // burning rate-limit budget OR re-firing the SMS fan-out.
+    const idem = await checkIdempotency(req, 'notify-housekeepers-sms');
+    if (idem.kind === 'cached') return idem.response;
+
     // Rate limit BEFORE we burn Twilio credits. Per-property bucket if pid
     // is supplied AND is a valid UUID; otherwise drop into a single global
     // bucket via the sentinel UUID, which is still a meaningful protection
@@ -158,7 +165,17 @@ export async function POST(req: NextRequest) {
       }
     });
 
-    return NextResponse.json({ sent, failed });
+    const responseBody = { sent, failed };
+    if (idem.kind === 'first') {
+      await recordIdempotency(
+        idem.key,
+        'notify-housekeepers-sms',
+        responseBody,
+        200,
+        pid ?? null,
+      );
+    }
+    return NextResponse.json(responseBody);
   } catch (err) {
     // Server-side error detail in log; generic 500 to the caller.
     console.error('[notify-housekeepers-sms] error:', errToString(err));

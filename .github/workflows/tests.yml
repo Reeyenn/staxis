@@ -27,12 +27,15 @@ jobs:
 
       - run: npm ci
 
-      # NOTE: Lint step is deliberately NOT in CI yet. eslint.config.js
-      # uses the legacy `extends` key which ESLint 8.57's flat config
-      # rejects, so any lint run errors out on config parsing. Fix the
-      # config (likely via @eslint/eslintrc FlatCompat) and add the
-      # step back here once `npx eslint src/` runs cleanly. See the
-      # 2026-04-29 overnight handoff for the full context.
+      # Lint — ESLint flat config (eslint.config.js) bridged to
+      # eslint-config-next via FlatCompat. The cosmetic
+      # react/no-unescaped-entities rule is disabled project-wide.
+      # We don't pass --max-warnings 0 yet because there are 8
+      # pre-existing warnings (font loading nags, exhaustive-deps
+      # hints) that are worth triaging without blocking the build.
+      # Errors WILL fail the build.
+      - name: Lint
+        run: npx eslint src/
 
       # Type-check — fails on any tsc error.
       - name: Type-check
@@ -42,8 +45,15 @@ jobs:
       - name: Run scraper unit tests
         run: node --test scraper/__tests__/*.test.js
 
-      # TypeScript test suites run via tsx --test.
-      - name: Run db-mappers unit tests
+      # TypeScript test suites run via tsx --test. supabase-admin.ts throws
+      # at module load if Supabase env vars are missing, and several test
+      # files transitively import it; pass placeholder env so the imports
+      # succeed. Tests don't make real Supabase calls.
+      - name: Run TypeScript unit tests
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: 'https://placeholder.supabase.co'
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: 'placeholder-anon-key'
+          SUPABASE_SERVICE_ROLE_KEY: 'placeholder-service-role-key'
         run: npx tsx --test src/lib/__tests__/*.test.ts
 
       # Final guard: actually build the app. Catches Next.js bundler errors
