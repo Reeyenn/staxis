@@ -17,6 +17,13 @@
 import { setCaptureImpl } from '@/lib/sentry';
 
 export async function register() {
+  // The instrumentation hook runs in BOTH the Node and Edge runtimes. We
+  // only have a Node-runtime Sentry path, and Edge Runtime forbids
+  // `eval` / `new Function` syntactically (Vercel rejects the build even
+  // if the eval is never reached at runtime). Bail early on Edge so the
+  // bundler never has to parse the eval below.
+  if (process.env.NEXT_RUNTIME !== 'nodejs') return;
+
   const dsn = process.env.SENTRY_DSN;
   if (!dsn) {
     // Sentry not configured — leave the no-op in place. This is the
@@ -28,9 +35,8 @@ export async function register() {
   // using it. We use eval('require')('...') here (instead of the more
   // idiomatic dynamic `import()`) deliberately: this hides the module
   // path from the bundler's static analyzer entirely, so Next.js never
-  // tries to resolve `@sentry/nextjs` at build time. The cost is that
-  // this only works on the Node runtime (not edge); that's fine because
-  // Sentry's Node SDK only works on Node anyway.
+  // tries to resolve `@sentry/nextjs` at build time. Edge runtime is
+  // explicitly excluded above so the eval is only ever parsed by Node.
   let SentryModule: unknown;
   try {
     // eslint-disable-next-line no-eval
