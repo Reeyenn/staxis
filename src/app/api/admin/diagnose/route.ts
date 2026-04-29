@@ -8,12 +8,15 @@
  *
  * Legacy `uid` query param accepted but ignored.
  */
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { requireCronSecret } from '@/lib/api-auth';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { getOrMintRequestId } from '@/lib/log';
 
 export async function GET(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
   // Lock this endpoint behind CRON_SECRET. It returns recent inbound SMS,
   // staff phone numbers, shift_confirmations, and Twilio operational
   // metadata — all PII / sensitive ops data. Open to the internet was
@@ -24,7 +27,7 @@ export async function GET(req: NextRequest) {
     const url = new URL(req.url);
     const pid = url.searchParams.get('pid');
     if (!pid) {
-      return NextResponse.json({ error: 'need ?pid=' }, { status: 400 });
+      return err('need ?pid=', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     }
 
     // ── Twilio REST helpers ────────────────────────────────────────────────
@@ -114,10 +117,10 @@ export async function GET(req: NextRequest) {
       respondedAt: r.responded_at,
     }));
 
-    return NextResponse.json({ webhookLogs, confirmations, twilioNumbers, twilioMessages });
-  } catch (err) {
-    const msg = errToString(err);
+    return ok({ webhookLogs, confirmations, twilioNumbers, twilioMessages }, { requestId });
+  } catch (caughtErr) {
+    const msg = errToString(caughtErr);
     console.error('[admin/diagnose] error:', msg);
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return err(msg, { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }
