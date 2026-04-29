@@ -212,6 +212,10 @@ export async function processSmsJobs(limit = 50): Promise<ProcessResult> {
         .eq('id', job.id);
       if (updateErr) throw updateErr;
       result.sent++;
+      // Side-effect callback: if the job is tied to a shift_confirmations
+      // row (route enqueued it with metadata.shiftConfirmationToken), flip
+      // sms_sent → true on that row so the UI badges turn green.
+      await applyMetadataCallback(job.metadata, 'sent', null);
     } catch (err) {
       // Categorize: terminal vs transient. Terminal errors get marked
       // 'dead' immediately (e.g. invalid phone number — no retry will
@@ -242,6 +246,10 @@ export async function processSmsJobs(limit = 50): Promise<ProcessResult> {
         log.error('[sms-jobs] job dead', {
           jobId: job.id, pid: job.property_id, errorCode: errCode ?? undefined, msg: errMsg,
         });
+        // Side-effect callback: only on terminal failure. While the job is
+        // queued for retry, leave shift_confirmations alone so the UI keeps
+        // showing "in flight" instead of flipping to "failed" prematurely.
+        await applyMetadataCallback(job.metadata, 'dead', errMsg);
       } else {
         result.retried++;
       }
@@ -249,6 +257,47 @@ export async function processSmsJobs(limit = 50): Promise<ProcessResult> {
   }
 
   return result;
+}
+
+/**
+ * Side-effect: when a job carries `metadata.shiftConfirmationToken`, mirror
+ * the terminal status onto the matching `shift_confirmations` row so the
+ * Schedule tab UI badges reflect reality.
+ *
+ * Why this lives here and not in the route: the worker is the only place
+ * that knows when Twilio actually accepted the message. The route can only
+ * say "queued."
+ *
+ * Best-effort — a failure to update shift_confirmations should NOT mark
+ * the SMS job as failed. We just log and move on.
+ */
+async function applyMetadataCallback(
+  metadata: Record<string, unknown>,
+  status: 'sent' | 'dead',
+  errMsg: string | null,
+): Promise<void> {
+  const token = metadata?.shiftConfirmationToken;
+  if (typeof token !== 'string' || token.length === 0) return;
+
+  try {
+    if (status === 'sent') {
+      await supabaseAdmin
+        .from('shift_confirmations')
+        .update({ sms_sent: true, sms_error: null })
+        .eq('token', token);
+    } else {
+      await supabaseAdmin
+        .from('shift_confirmations')
+        .update({ sms_sent: false, sms_error: errMsg ?? 'sms_dead' })
+        .eq('token', token);
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[sms-jobs] shift_confirmations callback failed for token=${token}:`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 }
 
 /**

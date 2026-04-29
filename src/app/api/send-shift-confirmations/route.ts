@@ -30,9 +30,8 @@
  *     uid?: string,                             // legacy — ignored
  *   }
  */
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { sendSms } from '@/lib/sms';
 import { isValidDateStr, errToString } from '@/lib/utils';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { checkIdempotency, recordIdempotency } from '@/lib/idempotency';
@@ -41,6 +40,7 @@ import {
   sanitizeForSms, redactPhone, safeBaseUrl, LIMITS,
 } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
+import { enqueueSms, processSmsJobs } from '@/lib/sms-jobs';
 
 interface StaffEntry {
   staffId: string;
@@ -398,6 +398,13 @@ export async function POST(req: NextRequest) {
           // Upsert the shift_confirmation row. On insert: all fields. On
           // update: all the same fields — last write wins — with sent_at
           // refreshed so the UI can show "resent 2 min ago".
+          //
+          // sms_sent stays false here — the queue worker flips it to true
+          // when Twilio actually accepts the message (see
+          // applyMetadataCallback in src/lib/sms-jobs.ts). On terminal
+          // failure (max retries exhausted, or terminal Twilio code like
+          // invalid phone), the worker sets sms_sent=false + sms_error
+          // with the failure reason.
           const { error: upsertErr } = await supabaseAdmin
             .from('shift_confirmations')
             .upsert({
@@ -441,21 +448,46 @@ export async function POST(req: NextRequest) {
             ? `Hola ${firstName}! Tu lista para ${dateLabel}:\n${hkUrl}\n\nFor English, reply ENGLISH\n\n– ${hotelName}`
             : `Hi ${firstName}! Your list for ${dateLabel}:\n${hkUrl}\n\nPara español, responde ESPAÑOL\n\n– ${hotelName}`;
 
+          // Enqueue rather than sending synchronously. Producer-side
+          // benefits: (a) the route returns immediately even for big
+          // crews; (b) Twilio failures retry per-staff instead of bailing
+          // the whole batch; (c) Mario can resend ONLY the failed ones
+          // later via a UI that reads sms_jobs status.
+          //
+          // Idempotency key: include both the deterministic token AND the
+          // request's Idempotency-Key. Re-clicking Send refreshes the
+          // shift_confirmations row but ALSO mints a fresh sms_jobs row
+          // (different idem.key), so the new SMS goes out. The
+          // shift_confirmations.sms_sent state is what the UI shows; the
+          // sms_jobs row is just the delivery vehicle.
+          const idemKeyPart = idem.kind === 'first' ? idem.key : `auto-${nowIso}`;
           try {
-            await sendSms(phone164, message);
-            await supabaseAdmin
-              .from('shift_confirmations')
-              .update({ sms_sent: true, sms_error: null })
-              .eq('token', token);
+            await enqueueSms({
+              propertyId: pid,
+              toPhone: phone164,
+              body: message,
+              idempotencyKey: `shift-conf:${token}:${idemKeyPart}`,
+              metadata: {
+                kind: 'shift-confirmation',
+                shiftConfirmationToken: token,
+                staffId,
+              },
+            });
+            // Status is 'sent' from Mario's perspective — the message has
+            // been committed to the durable queue and will be delivered.
+            // The shift_confirmations.sms_sent flag flips true only after
+            // Twilio confirms (see worker's applyMetadataCallback).
             return { staffId, status: 'sent', isUpdate };
-          } catch (smsErr) {
-            // Use errToString so Supabase-shaped errors (plain objects) don't
-            // stringify to "[object Object]" in the sms_error column.
+          } catch (enqueueErr) {
+            // The producer enqueue itself failed (DB unreachable, schema
+            // mismatch, etc). Mark the shift_confirmation as errored so
+            // Mario sees red and can retry — the queue worker isn't going
+            // to pick anything up because nothing landed in sms_jobs.
             await supabaseAdmin
               .from('shift_confirmations')
-              .update({ sms_sent: false, sms_error: errToString(smsErr) })
+              .update({ sms_sent: false, sms_error: errToString(enqueueErr) })
               .eq('token', token);
-            throw smsErr;
+            throw enqueueErr;
           }
         } catch (err) {
           // Don't log the raw name — staff names are PII and any trailing
@@ -484,6 +516,24 @@ export async function POST(req: NextRequest) {
     if (idem.kind === 'first') {
       await recordIdempotency(idem.key, 'send-shift-confirmations', responseBody, 200, pid);
     }
+
+    // Drain the SMS queue inline AFTER the response is sent. Vercel's
+    // `after()` keeps the function alive long enough to finish background
+    // work without blocking the user. This means the first Twilio sends
+    // start within a couple of seconds of Mario clicking — instead of
+    // waiting for the every-5-min cron tick. If Vercel cuts us off
+    // mid-drain (60s function cap on Hobby), the GitHub Actions cron
+    // (.github/workflows/sms-jobs-cron.yml) picks up whatever's left
+    // within 5 min. Either way, no SMS is lost.
+    after(async () => {
+      try {
+        await processSmsJobs(50);
+      } catch (workerErr) {
+        // Don't surface this to the user — they already got their
+        // response. Log so we see it in Vercel + Sentry.
+        console.error('[send-shift-confirmations] inline drain failed:', errToString(workerErr));
+      }
+    });
 
     return NextResponse.json(responseBody);
   } catch (err) {
