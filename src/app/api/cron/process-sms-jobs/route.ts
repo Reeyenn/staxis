@@ -16,10 +16,11 @@
  * post-deploy smoke test and ad-hoc curl.
  */
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { requireCronSecret } from '@/lib/api-auth';
 import { processSmsJobs, resetStuckSmsJobs } from '@/lib/sms-jobs';
 import { getOrMintRequestId, log } from '@/lib/log';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -48,22 +49,19 @@ export async function GET(req: NextRequest) {
       durationMs,
     });
 
-    return NextResponse.json({
-      ok: true,
-      requestId,
+    return ok({
       stuckReset,
       claimed: result.claimed,
       sent: result.sent,
       retried: result.retried,
       dead: result.dead,
       durationMs,
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    }, { requestId });
+  } catch (caughtErr) {
+    const msg = caughtErr instanceof Error ? caughtErr.message : String(caughtErr);
     log.error('[cron/process-sms-jobs] failed', { requestId, msg });
-    return NextResponse.json(
-      { ok: false, requestId, error: 'process-sms-jobs failed', detail: msg },
-      { status: 500 },
-    );
+    return err('process-sms-jobs failed', {
+      requestId, status: 500, code: ApiErrorCode.InternalError, details: { detail: msg },
+    });
   }
 }

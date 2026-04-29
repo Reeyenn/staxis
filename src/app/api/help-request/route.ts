@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
@@ -6,6 +6,8 @@ import {
   validateUuid, validateString, validateEnum, sanitizeForSms, redactPhone, LIMITS,
 } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { getOrMintRequestId } from '@/lib/log';
 
 /**
  * POST /api/help-request
@@ -36,10 +38,11 @@ function toE164(raw: string): string | null {
 }
 
 export async function POST(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== 'object') {
-      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+      return err('Invalid JSON body', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     }
     const { pid: rawPid, staffId: rawStaffId, staffName: rawStaffName,
             roomNumber: rawRoomNumber, language: rawLanguage } = body as Record<string, unknown>;
@@ -48,15 +51,15 @@ export async function POST(req: NextRequest) {
     // we don't strip newlines + cap length, an attacker can put `\n\nSPAM` in
     // a staffName and inject extra SMS content.
     const pidV = validateUuid(rawPid, 'pid');
-    if (pidV.error) return NextResponse.json({ error: pidV.error }, { status: 400 });
+    if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     const staffNameV = validateString(rawStaffName, { max: LIMITS.STAFF_NAME_MAX, label: 'staffName' });
-    if (staffNameV.error) return NextResponse.json({ error: staffNameV.error }, { status: 400 });
+    if (staffNameV.error) return err(staffNameV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     const roomNumV = validateString(rawRoomNumber, { max: LIMITS.ROOM_NUMBER_MAX, label: 'roomNumber' });
-    if (roomNumV.error) return NextResponse.json({ error: roomNumV.error }, { status: 400 });
+    if (roomNumV.error) return err(roomNumV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     const langV = rawLanguage == null
       ? { value: 'en' as const }
       : validateEnum(rawLanguage, ['en', 'es'] as const, 'language');
-    if (langV.error) return NextResponse.json({ error: langV.error }, { status: 400 });
+    if (langV.error) return err(langV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
 
     const pid = pidV.value!;
     const staffName = sanitizeForSms(staffNameV.value!);
@@ -77,7 +80,7 @@ export async function POST(req: NextRequest) {
     if (staffId) {
       const staffIdV = validateUuid(staffId, 'staffId');
       if (staffIdV.error) {
-        return NextResponse.json({ sent: 0, failed: 0, reason: 'unknown-staff' });
+        return ok({ sent: 0, failed: 0, reason: 'unknown-staff' }, { requestId });
       }
       const { data: staffRow, error: staffErr } = await supabaseAdmin
         .from('staff')
@@ -86,13 +89,13 @@ export async function POST(req: NextRequest) {
         .maybeSingle();
       if (staffErr) {
         console.error('[help-request] staff lookup error:', staffErr.message);
-        return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+        return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
       }
       if (!staffRow || staffRow.property_id !== pid) {
-        return NextResponse.json({ sent: 0, failed: 0, reason: 'unknown-staff' });
+        return ok({ sent: 0, failed: 0, reason: 'unknown-staff' }, { requestId });
       }
       if (staffRow.is_active === false) {
-        return NextResponse.json({ sent: 0, failed: 0, reason: 'staff-inactive' });
+        return ok({ sent: 0, failed: 0, reason: 'staff-inactive' }, { requestId });
       }
     }
 
@@ -109,7 +112,7 @@ export async function POST(req: NextRequest) {
 
     if (mgrErr) {
       console.error('[help-request] staff query failed', mgrErr.message);
-      return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+      return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
 
     const propertyName = prop?.name || 'Your Hotel';
@@ -118,21 +121,21 @@ export async function POST(req: NextRequest) {
       // Don't log staffName + roomNumber here — they're user-controlled and
       // would let us tag a property's logs by injection. Just log the pid.
       console.warn(`[help-request] No scheduling manager for ${pid}`);
-      return NextResponse.json({ sent: 0, failed: 0, reason: 'no-scheduling-manager' });
+      return ok({ sent: 0, failed: 0, reason: 'no-scheduling-manager' }, { requestId });
     }
 
     const manager = managers[0];
 
     if (!manager.phone || manager.is_active === false) {
       console.warn(`[help-request] Scheduling manager unreachable for ${pid} (no phone or inactive)`);
-      return NextResponse.json({ sent: 0, failed: 0, reason: 'manager-unreachable' });
+      return ok({ sent: 0, failed: 0, reason: 'manager-unreachable' }, { requestId });
     }
 
     const e164 = toE164(manager.phone);
     if (!e164) {
       // Redact phone so we don't leak PII to log aggregators.
       console.error(`[help-request] Invalid phone for scheduling manager (pid=${pid}, phone=${redactPhone(manager.phone)})`);
-      return NextResponse.json({ sent: 0, failed: 1, reason: 'invalid-phone' });
+      return ok({ sent: 0, failed: 1, reason: 'invalid-phone' }, { requestId });
     }
 
     const message = lang === 'es'
@@ -141,19 +144,16 @@ export async function POST(req: NextRequest) {
 
     try {
       await sendSms(e164, message);
-      return NextResponse.json({ sent: 1, failed: 0 });
-    } catch (err) {
+      return ok({ sent: 1, failed: 0 }, { requestId });
+    } catch (smsErr) {
       console.error(
-        `[help-request] SMS failed (pid=${pid}, mgr=${redactPhone(manager.phone)}): ${errToString(err)}`,
+        `[help-request] SMS failed (pid=${pid}, mgr=${redactPhone(manager.phone)}): ${errToString(smsErr)}`,
       );
-      return NextResponse.json({ sent: 0, failed: 1 });
+      return ok({ sent: 0, failed: 1 }, { requestId });
     }
-  } catch (err) {
+  } catch (caughtErr) {
     // Don't leak stack traces or internal field values to the caller in prod.
-    console.error('[help-request] error:', errToString(err));
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+    console.error('[help-request] error:', errToString(caughtErr));
+    return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

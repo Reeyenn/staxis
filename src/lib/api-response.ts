@@ -66,15 +66,28 @@ export interface ErrOptions {
  *   return ok({ rooms, total }, { requestId });
  */
 export function ok<T>(data: T, opts: OkOptions): NextResponse {
-  const body: ApiResponse<T> = {
-    ok: true,
-    requestId: opts.requestId,
-    data,
-  };
-  return NextResponse.json(body, {
+  return NextResponse.json(buildOkBody(data, opts.requestId), {
     status: opts.status ?? 200,
     headers: opts.headers,
   });
+}
+
+/**
+ * Build the success envelope as a plain object (without wrapping it in a
+ * NextResponse). Used by routes that need to STORE the response body in
+ * the idempotency cache and ALSO return it to the caller. Storing the
+ * envelope (rather than just `data`) means a cache hit returns exactly
+ * the same shape as a fresh response, so retries are indistinguishable
+ * from first-time calls from the UI's perspective.
+ *
+ *   const body = buildOkBody({ sent, failed }, requestId);
+ *   if (idem.kind === 'first') {
+ *     await recordIdempotency(idem.key, 'route', body, 200, pid);
+ *   }
+ *   return NextResponse.json(body);
+ */
+export function buildOkBody<T>(data: T, requestId: string): ApiResponse<T> {
+  return { ok: true, requestId, data };
 }
 
 /**

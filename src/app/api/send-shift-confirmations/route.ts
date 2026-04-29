@@ -41,6 +41,8 @@ import {
 } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { enqueueSms, processSmsJobs } from '@/lib/sms-jobs';
+import { buildOkBody, err, ApiErrorCode } from '@/lib/api-response';
+import { getOrMintRequestId } from '@/lib/log';
 
 interface StaffEntry {
   staffId: string;
@@ -102,6 +104,7 @@ function buildToken(shiftDate: string, staffId: string): string {
 }
 
 export async function POST(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
   // Auth: this route fires bulk SMS to every housekeeper on the crew
   // and is the highest-Twilio-cost endpoint we have.
   const session = await requireSession(req);
@@ -119,20 +122,20 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== 'object') {
-      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+      return err('Invalid JSON body', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     }
     const b = body as Record<string, unknown>;
 
     // Strict validation. Each user-controlled field is checked for type,
     // length, and shape before it touches a query or an SMS body.
     const pidV = validateUuid(b.pid, 'pid');
-    if (pidV.error) return NextResponse.json({ error: pidV.error }, { status: 400 });
+    if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     const shiftV = validateDateStr(b.shiftDate, {
       label: 'shiftDate', allowFutureDays: LIMITS.SHIFT_DATE_FUTURE_DAYS, allowPastDays: 7,
     });
-    if (shiftV.error) return NextResponse.json({ error: shiftV.error }, { status: 400 });
+    if (shiftV.error) return err(shiftV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     const staffArrV = validateArray<unknown>(b.staff, { max: LIMITS.STAFF_ARRAY_MAX, min: 1, label: 'staff' });
-    if (staffArrV.error) return NextResponse.json({ error: staffArrV.error }, { status: 400 });
+    if (staffArrV.error) return err(staffArrV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
 
     const pid = pidV.value!;
     const shiftDate = shiftV.value!;
@@ -140,24 +143,26 @@ export async function POST(req: NextRequest) {
     for (let i = 0; i < staffArrV.value!.length; i++) {
       const e = staffArrV.value![i] as Record<string, unknown>;
       if (!e || typeof e !== 'object') {
-        return NextResponse.json({ error: `staff[${i}] must be an object` }, { status: 400 });
+        return err(`staff[${i}] must be an object`, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
       }
       const idV = validateUuid(e.staffId, `staff[${i}].staffId`);
-      if (idV.error) return NextResponse.json({ error: idV.error }, { status: 400 });
+      if (idV.error) return err(idV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
       const nameV = validateString(e.name, { max: LIMITS.STAFF_NAME_MAX, label: `staff[${i}].name` });
-      if (nameV.error) return NextResponse.json({ error: nameV.error }, { status: 400 });
+      if (nameV.error) return err(nameV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
       const phoneV = typeof e.phone === 'string' ? e.phone : '';
       const langV = validateEnum(e.language ?? 'en', ['en', 'es'] as const, `staff[${i}].language`);
-      if (langV.error) return NextResponse.json({ error: langV.error }, { status: 400 });
+      if (langV.error) return err(langV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
       const roomsV = validateArray<unknown>(e.assignedRooms ?? [], { max: LIMITS.ASSIGNED_ROOMS_MAX, label: `staff[${i}].assignedRooms` });
-      if (roomsV.error) return NextResponse.json({ error: roomsV.error }, { status: 400 });
+      if (roomsV.error) return err(roomsV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
       const areasV = validateArray<unknown>(e.assignedAreas ?? [], { max: LIMITS.ASSIGNED_AREAS_MAX, label: `staff[${i}].assignedAreas` });
-      if (areasV.error) return NextResponse.json({ error: areasV.error }, { status: 400 });
+      if (areasV.error) return err(areasV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
       // Each room/area string must be short.
       for (let j = 0; j < (roomsV.value as unknown[]).length; j++) {
         const r = (roomsV.value as unknown[])[j];
         if (typeof r !== 'string' || r.length > LIMITS.ROOM_NUMBER_MAX) {
-          return NextResponse.json({ error: `staff[${i}].assignedRooms[${j}] invalid` }, { status: 400 });
+          return err(`staff[${i}].assignedRooms[${j}] invalid`, {
+            requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+          });
         }
       }
       staff.push({
@@ -172,10 +177,10 @@ export async function POST(req: NextRequest) {
     const baseUrl = safeBaseUrl(b.baseUrl);
 
     if (!(await userHasPropertyAccess(session.userId, pid))) {
-      return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+      return err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
     }
     if (!isValidDateStr(shiftDate)) {  // belt-and-suspenders, never hits
-      return NextResponse.json({ error: 'Invalid shiftDate' }, { status: 400 });
+      return err('Invalid shiftDate', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     }
     // Hourly Twilio-bill cap. Maria might re-Send 2-3x; 10/hr is plenty.
     const limit = await checkAndIncrementRateLimit('send-shift-confirmations', pid);
@@ -190,9 +195,10 @@ export async function POST(req: NextRequest) {
     );
     const allowEmpty = body.allowEmpty === true;
     if (!hasAnyWork && !allowEmpty) {
-      return NextResponse.json({
-        error: 'Refusing to Send with no room or area assignments. Assign at least one HK before sending, or pass allowEmpty=true to override.',
-      }, { status: 400 });
+      return err(
+        'Refusing to Send with no room or area assignments. Assign at least one HK before sending, or pass allowEmpty=true to override.',
+        { requestId, status: 400, code: ApiErrorCode.ValidationFailed },
+      );
     }
 
     // Fetch property + plan_snapshot in parallel — both are needed downstream.
@@ -489,12 +495,12 @@ export async function POST(req: NextRequest) {
               .eq('token', token);
             throw enqueueErr;
           }
-        } catch (err) {
+        } catch (innerErr) {
           // Don't log the raw name — staff names are PII and any trailing
           // bytes in a malformed payload would reach our log aggregator.
           // The staffId is enough to identify the row in DB if needed.
-          console.error(`[send-shift-confirmations] failed for staffId=${staffId}: ${errToString(err)}`);
-          const reason = err instanceof Error ? err.message : 'sms_error';
+          console.error(`[send-shift-confirmations] failed for staffId=${staffId}: ${errToString(innerErr)}`);
+          const reason = innerErr instanceof Error ? innerErr.message : 'sms_error';
           return { staffId, status: 'failed', reason };
         }
       })
@@ -506,7 +512,14 @@ export async function POST(req: NextRequest) {
     const updated = perStaff.filter(r => r.status === 'sent' && r.isUpdate === true).length;
     const fresh   = sent - updated;
 
-    const responseBody = { sent, failed, skipped, updated, fresh, perStaff };
+    // Build the envelope BEFORE caching so retries get the same shape as
+    // fresh responses. The envelope shape is stored as-is in
+    // idempotency_log.response and round-trips back through
+    // checkIdempotency on cache hit.
+    const envelope = buildOkBody(
+      { sent, failed, skipped, updated, fresh, perStaff },
+      requestId,
+    );
 
     // Cache the response for retries within the next 24h. Only the
     // success path — failures shouldn't be cached because the caller
@@ -514,7 +527,7 @@ export async function POST(req: NextRequest) {
     // if the insert fails (race with a parallel retry that beat us
     // to it, transient DB error) we just don't cache.
     if (idem.kind === 'first') {
-      await recordIdempotency(idem.key, 'send-shift-confirmations', responseBody, 200, pid);
+      await recordIdempotency(idem.key, 'send-shift-confirmations', envelope, 200, pid);
     }
 
     // Drain the SMS queue inline AFTER the response is sent. Vercel's
@@ -535,17 +548,17 @@ export async function POST(req: NextRequest) {
       }
     });
 
-    return NextResponse.json(responseBody);
-  } catch (err) {
-    console.error('send-shift-confirmations error:', err);
+    return NextResponse.json(envelope);
+  } catch (caughtErr) {
+    console.error('send-shift-confirmations error:', caughtErr);
     // Persist the error so we can diagnose without shell logs.
     try {
       await supabaseAdmin.from('error_logs').insert({
         source: '/api/send-shift-confirmations',
-        message: errToString(err),
-        stack: err instanceof Error ? err.stack ?? null : null,
+        message: errToString(caughtErr),
+        stack: caughtErr instanceof Error ? caughtErr.stack ?? null : null,
       });
     } catch {}
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

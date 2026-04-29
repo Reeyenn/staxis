@@ -1,6 +1,8 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { getOrMintRequestId } from '@/lib/log';
 
 /**
  * POST /api/save-fcm-token — stamp the staff member's `last_paired_at`.
@@ -29,23 +31,24 @@ import { errToString } from '@/lib/utils';
  * implementation 2026-04-27.
  */
 export async function POST(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
   let body: unknown;
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ ok: false, error: 'invalid JSON body' }, { status: 400 });
+    return err('invalid JSON body', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   if (typeof body !== 'object' || body === null) {
-    return NextResponse.json({ ok: false, error: 'body must be an object' }, { status: 400 });
+    return err('body must be an object', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
   const { pid, staffId } = body as { uid?: unknown; pid?: unknown; staffId?: unknown };
 
   if (typeof pid !== 'string' || pid.length < 8) {
-    return NextResponse.json({ ok: false, error: 'pid required' }, { status: 400 });
+    return err('pid required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   if (typeof staffId !== 'string' || staffId.length < 8) {
-    return NextResponse.json({ ok: false, error: 'staffId required' }, { status: 400 });
+    return err('staffId required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
   // Verify the staff row exists AND belongs to the claimed property. This
@@ -58,15 +61,15 @@ export async function POST(req: NextRequest) {
     .maybeSingle();
   if (lookupErr) {
     console.error('[save-fcm-token] staff lookup failed', errToString(lookupErr));
-    return NextResponse.json({ ok: false, error: 'internal error' }, { status: 500 });
+    return err('internal error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   if (!staffRow) {
-    return NextResponse.json({ ok: false, error: 'staff not found' }, { status: 404 });
+    return err('staff not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
   if (staffRow.property_id !== pid) {
     // pid in URL doesn't match the staff's actual property — almost
     // certainly a stale magic link. Don't leak whether the staff exists.
-    return NextResponse.json({ ok: false, error: 'staff not found' }, { status: 404 });
+    return err('staff not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
 
   const { error: updateErr } = await supabaseAdmin
@@ -75,8 +78,8 @@ export async function POST(req: NextRequest) {
     .eq('id', staffId);
   if (updateErr) {
     console.error('[save-fcm-token] update failed', errToString(updateErr));
-    return NextResponse.json({ ok: false, error: 'internal error' }, { status: 500 });
+    return err('internal error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
-  return NextResponse.json({ ok: true });
+  return ok({ paired: true }, { requestId });
 }

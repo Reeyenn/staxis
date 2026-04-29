@@ -1243,11 +1243,20 @@ function ScheduleTab() {
       // - `skipped`: HKs we couldn't text (no phone / invalid phone)
       // - `failed`: SMS sends that errored (Twilio issue, etc.)
       // - `perStaff`: per-person outcome, drives the badge next to each name
+      //
+      // Response shape post-2026-04-29: standard ApiResponse envelope —
+      // { ok, requestId, data: { sent, failed, ... } }. Read counts off
+      // body.data; cache hits AND fresh responses both return this shape.
       try {
-        const data = (await res.json()) as {
-          sent?: number; failed?: number; skipped?: number; updated?: number; fresh?: number;
-          perStaff?: Array<{ staffId: string; status: 'sent' | 'skipped' | 'failed'; reason?: string }>;
+        const body = (await res.json()) as {
+          ok?: boolean;
+          data?: {
+            sent?: number; failed?: number; skipped?: number; updated?: number; fresh?: number;
+            perStaff?: Array<{ staffId: string; status: 'sent' | 'skipped' | 'failed'; reason?: string }>;
+          };
+          error?: string;
         };
+        const data = body?.data ?? {};
         const fresh = data.fresh ?? 0;
         const updated = data.updated ?? 0;
         const skipped = data.skipped ?? 0;

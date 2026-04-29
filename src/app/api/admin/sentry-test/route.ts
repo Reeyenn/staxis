@@ -30,9 +30,10 @@
  *   - Sentry quota / rate limit hit (check the Sentry billing page)
  */
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { requireCronSecret } from '@/lib/api-auth';
 import { log, getOrMintRequestId } from '@/lib/log';
+import { ok } from '@/lib/api-response';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -44,21 +45,21 @@ export async function GET(req: NextRequest) {
   if (unauth) return unauth;
 
   const marker = `synthetic-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const err = new Error(`[sentry-test] synthetic event ${marker}`);
+  const syntheticErr = new Error(`[sentry-test] synthetic event ${marker}`);
   // Tag it so it's filterable in Sentry's UI ("Search: tag:test_marker:..."
   // narrows to only the test events you care about).
   log.error('[sentry-test] synthetic event', {
     requestId,
     route: '/api/admin/sentry-test',
-    err,
+    err: syntheticErr,
     test_marker: marker,
   });
 
-  return NextResponse.json({
-    ok: true,
-    requestId,
+  // Standard ApiResponse envelope. The sentry-test.yml workflow reads
+  // `data.fired` to print the marker for searching in Sentry.
+  return ok({
     fired: marker,
     note:
       'A synthetic Error was logged. Check staxis.sentry.io within ~30s for an issue matching this marker.',
-  });
+  }, { requestId });
 }

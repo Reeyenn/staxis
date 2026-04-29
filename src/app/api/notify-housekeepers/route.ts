@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { requireCronSecret } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
@@ -6,6 +6,8 @@ import { errToString } from '@/lib/utils';
 import {
   validateUuid, validateString, validateArray, sanitizeForSms, LIMITS,
 } from '@/lib/api-validate';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { getOrMintRequestId } from '@/lib/log';
 
 /**
  * POST /api/notify-housekeepers
@@ -48,6 +50,7 @@ function toE164(raw: string): string | null {
 }
 
 export async function POST(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
   try {
     // Lock this route behind CRON_SECRET. It's currently dead code (the
     // active SMS path is /api/send-shift-confirmations), but the route
@@ -59,7 +62,7 @@ export async function POST(req: NextRequest) {
 
     const reqBody = await req.json().catch(() => null);
     if (reqBody == null) {
-      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+      return err('Invalid JSON body', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     }
 
     let rawEntries: unknown;
@@ -78,38 +81,38 @@ export async function POST(req: NextRequest) {
       max: LIMITS.STAFF_ARRAY_MAX,
       label: 'entries',
     });
-    if (arrV.error) return NextResponse.json({ error: arrV.error }, { status: 400 });
+    if (arrV.error) return err(arrV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     if (arrV.value!.length === 0) {
-      return NextResponse.json({ error: 'No entries provided' }, { status: 400 });
+      return err('No entries provided', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     }
 
     const entries: NotifyEntry[] = [];
     for (let i = 0; i < arrV.value!.length; i++) {
       const e = arrV.value![i];
       if (!e || typeof e !== 'object') {
-        return NextResponse.json({ error: `entries[${i}] not an object` }, { status: 400 });
+        return err(`entries[${i}] not an object`, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
       }
       const ee = e as Record<string, unknown>;
       const nameV = validateString(ee.name, { max: LIMITS.STAFF_NAME_MAX, label: `entries[${i}].name` });
-      if (nameV.error) return NextResponse.json({ error: nameV.error }, { status: 400 });
+      if (nameV.error) return err(nameV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
       const roomsArr = validateArray<unknown>(ee.rooms, { max: LIMITS.ASSIGNED_ROOMS_MAX, label: `entries[${i}].rooms` });
-      if (roomsArr.error) return NextResponse.json({ error: roomsArr.error }, { status: 400 });
+      if (roomsArr.error) return err(roomsArr.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
       const rooms: string[] = [];
       for (let j = 0; j < roomsArr.value!.length; j++) {
         const r = validateString(roomsArr.value![j], { max: LIMITS.ROOM_NUMBER_MAX, label: `entries[${i}].rooms[${j}]` });
-        if (r.error) return NextResponse.json({ error: r.error }, { status: 400 });
+        if (r.error) return err(r.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
         rooms.push(sanitizeForSms(r.value!));
       }
       let phone: string | undefined;
       if (ee.phone != null) {
         const pV = validateString(ee.phone, { max: 20, label: `entries[${i}].phone` });
-        if (pV.error) return NextResponse.json({ error: pV.error }, { status: 400 });
+        if (pV.error) return err(pV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
         phone = pV.value!;
       }
       let hkId: string | undefined;
       if (ee.housekeeperId != null) {
         const hkV = validateUuid(ee.housekeeperId, `entries[${i}].housekeeperId`);
-        if (hkV.error) return NextResponse.json({ error: hkV.error }, { status: 400 });
+        if (hkV.error) return err(hkV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
         hkId = hkV.value!;
       }
       entries.push({
@@ -187,9 +190,9 @@ export async function POST(req: NextRequest) {
       }
     });
 
-    return NextResponse.json({ sent, failed });
-  } catch (err) {
-    console.error('[notify-housekeepers] error:', errToString(err));
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return ok({ sent, failed }, { requestId });
+  } catch (caughtErr) {
+    console.error('[notify-housekeepers] error:', errToString(caughtErr));
+    return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

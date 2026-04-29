@@ -22,7 +22,7 @@
  *     uid?: string,                             // legacy — ignored
  *   }
  */
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
@@ -30,6 +30,8 @@ import {
   validateUuid, validateString, validateArray, validateDateStr, LIMITS,
 } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { getOrMintRequestId } from '@/lib/log';
 
 interface StaffEntry {
   staffId: string;
@@ -58,6 +60,7 @@ function deriveRoomType(
 }
 
 export async function POST(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
   // Auth: writes to rooms table (assigns/unassigns staff). Without auth
   // any caller could blank out today's room assignments.
   const session = await requireSession(req);
@@ -65,7 +68,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null) as RequestBody | null;
     if (!body || typeof body !== 'object') {
-      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+      return err('Invalid JSON body', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     }
 
     // ── Strict validation ───────────────────────────────────────────────────
@@ -74,34 +77,34 @@ export async function POST(req: NextRequest) {
     // limits. Without this, a manager browser bug or a hostile pen-test can
     // push thousands of rows or unbounded strings through the rooms table.
     const pidV = validateUuid(body.pid, 'pid');
-    if (pidV.error) return NextResponse.json({ error: pidV.error }, { status: 400 });
+    if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     const dateV = validateDateStr(body.shiftDate, { allowFutureDays: LIMITS.SHIFT_DATE_FUTURE_DAYS, allowPastDays: 14, label: 'shiftDate' });
-    if (dateV.error) return NextResponse.json({ error: dateV.error }, { status: 400 });
+    if (dateV.error) return err(dateV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
 
     const staffArrV = validateArray<unknown>(body.staff, { max: LIMITS.STAFF_ARRAY_MAX, label: 'staff' });
-    if (staffArrV.error) return NextResponse.json({ error: staffArrV.error }, { status: 400 });
+    if (staffArrV.error) return err(staffArrV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     const rawStaff = staffArrV.value!;
 
     const staff: StaffEntry[] = [];
     for (let i = 0; i < rawStaff.length; i++) {
       const e = rawStaff[i];
       if (!e || typeof e !== 'object') {
-        return NextResponse.json({ error: `staff[${i}] not an object` }, { status: 400 });
+        return err(`staff[${i}] not an object`, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
       }
       const ee = e as Record<string, unknown>;
       const sidV = validateUuid(ee.staffId, `staff[${i}].staffId`);
-      if (sidV.error) return NextResponse.json({ error: sidV.error }, { status: 400 });
+      if (sidV.error) return err(sidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
       const nameV = validateString(ee.staffName, { max: LIMITS.STAFF_NAME_MAX, label: `staff[${i}].staffName` });
-      if (nameV.error) return NextResponse.json({ error: nameV.error }, { status: 400 });
+      if (nameV.error) return err(nameV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
 
       // assignedRooms: optional array of short strings.
-      let rooms: string[] = [];
+      const rooms: string[] = [];
       if (ee.assignedRooms != null) {
         const arr = validateArray<unknown>(ee.assignedRooms, { max: LIMITS.ASSIGNED_ROOMS_MAX, label: `staff[${i}].assignedRooms` });
-        if (arr.error) return NextResponse.json({ error: arr.error }, { status: 400 });
+        if (arr.error) return err(arr.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
         for (let j = 0; j < arr.value!.length; j++) {
           const r = validateString(arr.value![j], { max: LIMITS.ROOM_NUMBER_MAX, label: `staff[${i}].assignedRooms[${j}]` });
-          if (r.error) return NextResponse.json({ error: r.error }, { status: 400 });
+          if (r.error) return err(r.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
           rooms.push(r.value!);
         }
       }
@@ -112,7 +115,7 @@ export async function POST(req: NextRequest) {
     const shiftDate = dateV.value!;
 
     if (!(await userHasPropertyAccess(session.userId, pid))) {
-      return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+      return err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
     }
     // 200 syncs/hour/property — comfortably above one active manager
     // dragging on the schedule board (debounced ~1.5s per change).
@@ -123,9 +126,9 @@ export async function POST(req: NextRequest) {
     const hasAnyAssignment = staff.some(s => (s.assignedRooms ?? []).length > 0);
     const allowClearAll = (body as unknown as Record<string, unknown>).allowClearAll === true;
     if (!hasAnyAssignment && !allowClearAll) {
-      return NextResponse.json({
-        error: 'Refusing to clear all room assignments without allowClearAll=true',
-      }, { status: 400 });
+      return err('Refusing to clear all room assignments without allowClearAll=true', {
+        requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+      });
     }
 
     // Pull plan snapshot so we can seed any new (future-date) rooms with the
@@ -227,16 +230,16 @@ export async function POST(req: NextRequest) {
       await Promise.all(updates);
     }
 
-    return NextResponse.json({ ok: true, writes });
-  } catch (err) {
-    console.error('sync-room-assignments error:', err);
+    return ok({ writes }, { requestId });
+  } catch (caughtErr) {
+    console.error('sync-room-assignments error:', caughtErr);
     try {
       await supabaseAdmin.from('error_logs').insert({
         source: '/api/sync-room-assignments',
-        message: errToString(err),
-        stack: err instanceof Error ? err.stack ?? null : null,
+        message: errToString(caughtErr),
+        stack: caughtErr instanceof Error ? caughtErr.stack ?? null : null,
       });
     } catch {}
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }
