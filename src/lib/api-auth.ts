@@ -93,6 +93,76 @@ export async function requireSession(req: NextRequest): Promise<
 }
 
 /**
+ * Dual-auth: accept EITHER a valid Supabase session token OR the
+ * CRON_SECRET. Used by routes that are user-facing (Mario clicks a
+ * button) but also need to be reachable from cron or smoke tests
+ * (post-deploy verification, the watchdog's periodic ping).
+ *
+ * Order matters: try CRON_SECRET first because it's a constant-time
+ * memcmp (O(1), no network), and only fall through to a Supabase Auth
+ * round-trip if the secret didn't match. That keeps cron requests fast
+ * and avoids hammering Supabase Auth on every health check.
+ *
+ * Returns:
+ *   { ok: true, kind: 'cron' }                  — CRON_SECRET matched
+ *   { ok: true, kind: 'session', userId, email } — session token validated
+ *   { ok: false, response }                       — neither, 401
+ *
+ * If CRON_SECRET is unset (dev), the helper still requires a valid
+ * session token. Pre-launch dev mode: just set a CRON_SECRET locally.
+ */
+export async function requireSessionOrCron(req: NextRequest): Promise<
+  | { ok: true; kind: 'cron' }
+  | { ok: true; kind: 'session'; userId: string; email: string | null }
+  | { ok: false; response: NextResponse }
+> {
+  const auth = req.headers.get('authorization') ?? '';
+
+  // Try cron-secret first (fast path, constant time).
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret) {
+    const expected = `Bearer ${cronSecret}`;
+    const authBuf = Buffer.from(auth);
+    const expectedBuf = Buffer.from(expected);
+    if (authBuf.length === expectedBuf.length) {
+      try {
+        if (timingSafeEqual(authBuf, expectedBuf)) {
+          return { ok: true, kind: 'cron' };
+        }
+      } catch {
+        // length mismatch already handled by the if-guard; this is the
+        // belt-and-suspenders catch.
+      }
+    }
+  }
+
+  // Fall through to session validation.
+  const m = /^Bearer\s+(.+)$/i.exec(auth.trim());
+  if (!m) {
+    return {
+      ok: false,
+      response: NextResponse.json({ error: 'missing bearer token' }, { status: 401 }),
+    };
+  }
+  const token = m[1];
+  try {
+    const { data, error } = await supabaseAdmin.auth.getUser(token);
+    if (error || !data.user) {
+      return {
+        ok: false,
+        response: NextResponse.json({ error: 'invalid session token' }, { status: 401 }),
+      };
+    }
+    return { ok: true, kind: 'session', userId: data.user.id, email: data.user.email ?? null };
+  } catch {
+    return {
+      ok: false,
+      response: NextResponse.json({ error: 'auth verification failed' }, { status: 500 }),
+    };
+  }
+}
+
+/**
  * Verify the caller has access to a specific property. Used after
  * requireSession() succeeds — confirms the userId is associated with
  * the pid via the `accounts` table.

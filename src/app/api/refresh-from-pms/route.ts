@@ -37,6 +37,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { log, getOrMintRequestId } from '@/lib/log';
+import { requireSessionOrCron, userHasPropertyAccess } from '@/lib/api-auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -92,6 +93,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const requestId = getOrMintRequestId(req);
   const t0 = Date.now();
 
+  // ─── Auth ──────────────────────────────────────────────────────────────
+  // Mario's button calls this via fetchWithAuth which sends his Supabase
+  // session token. Cron / smoke-test paths send Bearer CRON_SECRET. Either
+  // is acceptable. Property-access check is below, after we parse pid.
+  const auth = await requireSessionOrCron(req);
+  if (!auth.ok) {
+    log.warn('refresh-from-pms: unauthenticated', { requestId, route: 'refresh-from-pms' });
+    return auth.response;
+  }
+
   let body: { pid?: string; date?: string };
   try {
     body = await req.json();
@@ -107,6 +118,22 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (!pid) {
     log.warn('refresh-from-pms: missing pid', { requestId, route: 'refresh-from-pms' });
     return NextResponse.json({ ok: false, error: 'missing_pid' }, { status: 400, headers: { 'x-request-id': requestId } });
+  }
+
+  // Session callers must have access to the property they're refreshing.
+  // Cron callers (CRON_SECRET) bypass this — cron is implicitly trusted
+  // for any pid by virtue of holding the secret.
+  if (auth.kind === 'session') {
+    const hasAccess = await userHasPropertyAccess(auth.userId, pid);
+    if (!hasAccess) {
+      log.warn('refresh-from-pms: forbidden — user lacks property access', {
+        requestId, route: 'refresh-from-pms', userId: auth.userId, pid,
+      });
+      return NextResponse.json(
+        { ok: false, error: 'forbidden — no access to this property' },
+        { status: 403, headers: { 'x-request-id': requestId } },
+      );
+    }
   }
 
   // ─── 1. Call the Railway scraper ─────────────────────────────────────
