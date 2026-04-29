@@ -121,6 +121,14 @@ export default function TermsPage() {
               Staxis — operated by Reeyen Patel (sole proprietor) · 2215 Rio Grande St, Austin, TX 78705
             </div>
             <div>
+              {/*
+                These links use plain <a> instead of next/link because this
+                page is rendered as `force-static` and ships its own <html>
+                + <body>, so it lives outside the App Router runtime where
+                <Link> hooks in. Plain anchors work fine in this static
+                context.
+              */}
+              {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
               <a href="/">Home</a> · <a href="/consent">SMS Consent</a> · <a href="/privacy">Privacy</a> · <a href="mailto:rp@reeyenpatel.com">rp@reeyenpatel.com</a>
             </div>
           </footer>

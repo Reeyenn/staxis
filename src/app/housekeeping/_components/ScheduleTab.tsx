@@ -1211,8 +1211,23 @@ function ScheduleTab() {
           assignedAreas: [] as string[],
         };
       });
+      // Mint a fresh idempotency key per click. The server-side
+      // `/api/send-shift-confirmations` route checks this header — same
+      // key inside the 24h window returns the cached response, so a
+      // mis-click on an unresponsive button (or a network retry that
+      // re-fires the same request) won't double-text the crew. Use
+      // crypto.randomUUID for collision-free keys; the field is opaque
+      // to the server (any A-Za-z0-9_- string up to 256 chars is fine).
+      const idempotencyKey = (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : `send-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
       const res = await fetchWithAuth('/api/send-shift-confirmations', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey,
+        },
         body: JSON.stringify({ uid, pid, shiftDate, baseUrl, staff: staffPayload }),
       });
       // The subscribeToShiftConfirmations effect will pick up the new docs

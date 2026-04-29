@@ -27,12 +27,15 @@ jobs:
 
       - run: npm ci
 
-      # NOTE: Lint step is deliberately NOT in CI yet. eslint.config.js
-      # uses the legacy `extends` key which ESLint 8.57's flat config
-      # rejects, so any lint run errors out on config parsing. Fix the
-      # config (likely via @eslint/eslintrc FlatCompat) and add the
-      # step back here once `npx eslint src/` runs cleanly. See the
-      # 2026-04-29 overnight handoff for the full context.
+      # Lint — ESLint flat config (eslint.config.js) bridged to
+      # eslint-config-next via FlatCompat. The cosmetic
+      # react/no-unescaped-entities rule is disabled project-wide.
+      # We don't pass --max-warnings 0 yet because there are 8
+      # pre-existing warnings (font loading nags, exhaustive-deps
+      # hints) that are worth triaging without blocking the build.
+      # Errors WILL fail the build.
+      - name: Lint
+        run: npx eslint src/
 
       # Type-check — fails on any tsc error.
       - name: Type-check

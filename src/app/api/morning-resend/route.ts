@@ -22,6 +22,7 @@ import { sendSms } from '@/lib/sms';
 import { isValidDateStr, errToString } from '@/lib/utils';
 import { validateUuid, validateDateStr, redactPhone, safeBaseUrl, LIMITS } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
+import { checkIdempotency, recordIdempotency } from '@/lib/idempotency';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -112,6 +113,14 @@ export async function POST(req: NextRequest) {
     const pid = pidV.value!;
     const shiftDate = shiftV.value!;
     const baseUrl = safeBaseUrl(b.baseUrl);
+
+    // Idempotency check BEFORE rate limit. A retry of the same logical
+    // request (same Idempotency-Key) returns the cached response without
+    // burning rate-limit budget. Without this, a cron retry from a
+    // network blip would double-charge against the 5/hr cap and possibly
+    // double-text staff if the cache was missing for any reason.
+    const idem = await checkIdempotency(req, 'morning-resend');
+    if (idem.kind === 'cached') return idem.response;
 
     // Cap at 5 morning-resends per property per hour. The cron schedule
     // calls this once per morning; manual re-runs should be rare.
@@ -307,11 +316,16 @@ export async function POST(req: NextRequest) {
       console.error('[morning-resend] schedule_assignments mirror failed:', errToString(e));
     }
 
-    return NextResponse.json({
+    const responseBody = {
       message: `Morning resend complete. ${updatedCount} of ${numHKs} HKs received updated room lists.`,
       updated: updatedCount,
       total: numHKs,
-    });
+    };
+
+    if (idem.kind === 'first') {
+      await recordIdempotency(idem.key, 'morning-resend', responseBody, 200, pid);
+    }
+    return NextResponse.json(responseBody);
 
   } catch (err) {
     // Generic 500 — `errToString(err)` may include PG schema names or
