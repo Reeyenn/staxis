@@ -39,6 +39,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { requireCronSecret } from '@/lib/api-auth';
 import { supabaseAdmin, verifySupabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
@@ -397,13 +398,11 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
 }
 
 export async function GET(req: NextRequest) {
-  const secret = process.env.CRON_SECRET;
-  if (secret) {
-    const auth = req.headers.get('authorization');
-    if (auth !== `Bearer ${secret}`) {
-      return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-    }
-  }
+  // requireCronSecret: timing-safe Bearer compare via crypto.timingSafeEqual.
+  // Same auth gate as before; consolidated into the shared helper so all
+  // cron endpoints use a single, correct implementation.
+  const unauth = requireCronSecret(req);
+  if (unauth) return unauth;
 
   try {
     const result = await runHealthCheck();

@@ -57,6 +57,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { requireCronSecret } from '@/lib/api-auth';
 import { createHash } from 'crypto';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
@@ -1284,13 +1285,11 @@ async function runAllChecks(): Promise<DoctorReport> {
 
 export async function GET(req: NextRequest) {
   // Same auth pattern as cron routes. Permissive when CRON_SECRET is unset
-  // so initial bootstrap works; strict once it's configured.
-  const secret = process.env.CRON_SECRET;
-  if (secret) {
-    const auth = req.headers.get('authorization');
-    if (auth !== `Bearer ${secret}`) {
-      return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
-    }
+  // so initial bootstrap works; strict once it's configured. Timing-safe
+  // Bearer compare via the shared helper (crypto.timingSafeEqual).
+  const unauth = requireCronSecret(req);
+  if (unauth) {
+    return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
   }
 
   try {

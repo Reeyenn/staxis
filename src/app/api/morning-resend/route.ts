@@ -16,6 +16,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { requireCronSecret } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { isValidDateStr, errToString } from '@/lib/utils';
@@ -93,15 +94,9 @@ export async function POST(req: NextRequest) {
     // burning Twilio credits and spamming staff. Protect with the same
     // CRON_SECRET we already use for /api/cron/* routes — set it in
     // Vercel + the GitHub Actions secret + any cron service that calls
-    // this URL. If the secret isn't configured (dev), skip the check.
-    const cronSecret = process.env.CRON_SECRET;
-    if (cronSecret) {
-      const authHeader = req.headers.get('authorization') ?? '';
-      const expected = `Bearer ${cronSecret}`;
-      if (authHeader !== expected) {
-        return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-      }
-    }
+    // this URL. Now timing-safe via the shared helper.
+    const unauth = requireCronSecret(req);
+    if (unauth) return unauth;
 
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== 'object') {

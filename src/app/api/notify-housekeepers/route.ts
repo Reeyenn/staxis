@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireCronSecret } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
@@ -52,15 +53,9 @@ export async function POST(req: NextRequest) {
     // active SMS path is /api/send-shift-confirmations), but the route
     // is still publicly POST-able and would fire SMS through our Twilio
     // account if anyone discovered it. Same secret as /api/cron/* and
-    // /api/morning-resend; if the secret isn't configured (dev env), we
-    // skip the check.
-    const cronSecret = process.env.CRON_SECRET;
-    if (cronSecret) {
-      const authHeader = req.headers.get('authorization') ?? '';
-      if (authHeader !== `Bearer ${cronSecret}`) {
-        return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-      }
-    }
+    // /api/morning-resend. Timing-safe via the shared helper.
+    const unauth = requireCronSecret(req);
+    if (unauth) return unauth;
 
     const reqBody = await req.json().catch(() => null);
     if (reqBody == null) {

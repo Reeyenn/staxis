@@ -23,6 +23,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { requireCronSecret } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
@@ -145,13 +146,9 @@ async function runDigest(): Promise<{ sent: boolean; detail: string }> {
 }
 
 export async function GET(req: NextRequest) {
-  const secret = process.env.CRON_SECRET;
-  if (secret) {
-    const auth = req.headers.get('authorization');
-    if (auth !== `Bearer ${secret}`) {
-      return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-    }
-  }
+  // Timing-safe via the shared requireCronSecret helper.
+  const unauth = requireCronSecret(req);
+  if (unauth) return unauth;
 
   try {
     const result = await runDigest();
