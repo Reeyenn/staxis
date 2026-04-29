@@ -172,7 +172,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           // log streams without time-aligning timestamps by hand.
           'x-request-id': requestId,
         },
-        body: JSON.stringify({}),
+        // Pass property_id so the scraper can multi-tenant correctly
+        // when more than one property is configured. Today the Railway
+        // scraper validates this matches its env-configured PROPERTY_ID
+        // and rejects mismatches (defensive — prevents accidental
+        // cross-tenant pulls during the multi-property rollout).
+        body: JSON.stringify({ property_id: pid }),
         signal: controller.signal,
       });
     } finally {

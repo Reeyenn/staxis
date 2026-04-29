@@ -1007,6 +1007,53 @@ async function run() {
     // POST /scrape/hk-center — pull live HK Center page state.
     if (method === 'POST' && url === '/scrape/hk-center') {
       const t0 = Date.now();
+
+      // ─── Property-id validation (multi-tenant safety) ─────────────────
+      // The Vercel route now sends { property_id: pid } in the body. This
+      // scraper instance is configured for a single property via the
+      // HOTELOPS_PROPERTY_ID env var. If the caller asks for a different
+      // property, we refuse — prevents accidental cross-tenant pulls if
+      // an env var is mis-set or a future Vercel route reuses the URL
+      // for a property #2.
+      //
+      // Backwards compat: if the body is empty or property_id is missing,
+      // we accept and use the env-configured property — same as before.
+      // This keeps the existing smoke-test path (POST with empty {}) working.
+      let bodyText = '';
+      try {
+        bodyText = await new Promise((resolve, reject) => {
+          let chunks = '';
+          req.on('data', c => { chunks += c; if (chunks.length > 4096) reject(new Error('body_too_large')); });
+          req.on('end', () => resolve(chunks));
+          req.on('error', reject);
+        });
+      } catch (e) {
+        log(`[http ${requestId}] body read failed: ${e.message}`);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'invalid_body' }));
+        return;
+      }
+      let parsedBody = {};
+      if (bodyText) {
+        try { parsedBody = JSON.parse(bodyText); } catch {
+          // Empty or non-JSON body is fine for backwards compat — just
+          // means caller didn't send property_id. Treat as default.
+          parsedBody = {};
+        }
+      }
+      const requestedPid = parsedBody.property_id || null;
+      if (requestedPid && requestedPid !== CONFIG.PROPERTY_ID) {
+        log(`[http ${requestId}] property mismatch: requested=${requestedPid} configured=${CONFIG.PROPERTY_ID}`);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: false,
+          error: 'property_mismatch',
+          detail: `This scraper instance is configured for a different property. Add a row to scraper_credentials and run a scraper instance pinned to that property.`,
+          configuredPropertyId: CONFIG.PROPERTY_ID,
+        }));
+        return;
+      }
+
       try {
         const rooms = await withPageLock(async () => {
           try {
