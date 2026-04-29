@@ -14,8 +14,10 @@ export function subscribeToRooms(
 ): () => void {
   return subscribeTable<Room>(
     // Realtime postgres_changes only supports a single binary filter, so we
-    // narrow on property_id and let the doFetch query handle the date filter.
-    // Receiving an extra change event for another date just triggers a re-fetch.
+    // narrow on property_id at the Postgres level and use the shouldRefetch
+    // predicate to gate on date — that keeps stray events for other dates
+    // (yesterday's row getting an inspection update, tomorrow's plan being
+    // scraped, …) from triggering a wasteful full-table re-fetch.
     `rooms:${pid}:${date}`, 'rooms', `property_id=eq.${pid}`,
     async () => {
       const { data, error } = await supabase
@@ -25,6 +27,14 @@ export function subscribeToRooms(
       return (data ?? []).map(fromRoomRow);
     },
     callback,
+    (payload) => {
+      // Only re-fetch when the changed row is on this slice's date. Both
+      // `new` and `old` are checked so we still react to deletes (where
+      // `new` is null) and inserts (where `old` is null).
+      const newDate = (payload.new as { date?: string } | null)?.date;
+      const oldDate = (payload.old as { date?: string } | null)?.date;
+      return newDate === date || oldDate === date;
+    },
   );
 }
 

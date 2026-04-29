@@ -47,14 +47,38 @@ export function logErr(tag: string, err: unknown): void {
 // receives the full, consistent list — mirrors Firestore's `onSnapshot`
 // semantics exactly.
 //
-// `filter` is a Postgres-level filter (e.g. `property_id=eq.xxx`). `doFetch`
-// is the initial + refresh loader. Returns an unsubscribe function.
+// `filter` is a Postgres-level filter (e.g. `property_id=eq.xxx`). Realtime
+// only supports a single binary filter expression, so for multi-column
+// scoping (e.g. property_id AND date) the caller can pass a `shouldRefetch`
+// predicate that inspects the change payload and returns false when the
+// changed row is outside the caller's slice — that suppresses unnecessary
+// re-fetches when, e.g., another date's row is updated for the same
+// property.
+//
+// `doFetch` is the initial + refresh loader. Returns an unsubscribe function.
+
+/** Shape of the postgres_changes payload that Realtime delivers to listeners. */
+export interface PostgresChangesPayload {
+  eventType: 'INSERT' | 'UPDATE' | 'DELETE';
+  schema: string;
+  table: string;
+  new: Record<string, unknown> | null;
+  old: Record<string, unknown> | null;
+}
+
 export function subscribeTable<T>(
   channelName: string,
   table: string,
   filter: string | null,
   doFetch: () => Promise<T[]>,
   callback: (rows: T[]) => void,
+  /**
+   * Optional predicate run on every postgres_changes payload. Return false
+   * to skip the re-fetch — used to scope subscriptions tighter than what
+   * Realtime's single-column filter allows. The initial fetch is always
+   * performed regardless of the predicate (caller wants the snapshot).
+   */
+  shouldRefetch?: (payload: PostgresChangesPayload) => boolean,
 ): () => void {
   let active = true;
 
@@ -63,6 +87,13 @@ export function subscribeTable<T>(
     doFetch()
       .then(rows => { if (active) callback(rows); })
       .catch(err => logErr(`Listener error in ${channelName}`, err));
+  };
+
+  // Channel listener: optionally gate on shouldRefetch.
+  const onChange = (payload: PostgresChangesPayload) => {
+    if (!active) return;
+    if (shouldRefetch && !shouldRefetch(payload)) return;
+    fire();
   };
 
   fire();
@@ -76,7 +107,7 @@ export function subscribeTable<T>(
   // the WebSocket while the tab is backgrounded.
   let channel = supabase
     .channel(channelName)
-    .on('postgres_changes' as never, filterSpec, fire)
+    .on('postgres_changes' as never, filterSpec, onChange as never)
     .subscribe();
 
   // ── Mobile Safari / phone-wake recovery ────────────────────────────────
@@ -104,7 +135,7 @@ export function subscribeTable<T>(
       try { supabase.removeChannel(channel); } catch { /* best effort */ }
       channel = supabase
         .channel(channelName)
-        .on('postgres_changes' as never, filterSpec, fire)
+        .on('postgres_changes' as never, filterSpec, onChange as never)
         .subscribe();
     }
   };

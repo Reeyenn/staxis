@@ -1,26 +1,82 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // Staff — housekeeping crew + front desk. One row per staff member, scoped
 // by property_id.
+//
+// All listing functions accept an optional `opts` for pagination. The
+// default page size is generous (DEFAULT_STAFF_LIMIT) — covers any
+// realistic single-property staff count without surprising existing
+// callers — but it's bounded so a runaway data-quality issue can't return
+// a 50,000-row payload to a React state update.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { StaffMember } from '@/types';
 import { supabase, logErr, subscribeTable } from './_common';
 import { toStaffRow, fromStaffRow } from '../db-mappers';
 
-export async function getStaff(_uid: string, pid: string): Promise<StaffMember[]> {
-  const { data, error } = await supabase.from('staff').select('*').eq('property_id', pid);
+/** Default upper bound on staff rows returned by listing helpers. */
+export const DEFAULT_STAFF_LIMIT = 500;
+/** Hard ceiling — even with explicit opts, never return more than this. */
+export const MAX_STAFF_LIMIT = 1000;
+
+export interface StaffListOpts {
+  /** 1-based page size cap. Clamped to [1, MAX_STAFF_LIMIT]. */
+  limit?: number;
+  /** Number of rows to skip (0-indexed). Default 0. */
+  offset?: number;
+}
+
+function clampedRange(opts?: StaffListOpts): { from: number; to: number } {
+  const rawLimit = opts?.limit ?? DEFAULT_STAFF_LIMIT;
+  const limit = Math.max(1, Math.min(MAX_STAFF_LIMIT, rawLimit));
+  const offset = Math.max(0, opts?.offset ?? 0);
+  return { from: offset, to: offset + limit - 1 };
+}
+
+export async function getStaff(
+  _uid: string, pid: string, opts?: StaffListOpts,
+): Promise<StaffMember[]> {
+  const { from, to } = clampedRange(opts);
+  const { data, error } = await supabase
+    .from('staff').select('*')
+    .eq('property_id', pid)
+    .order('name', { ascending: true })
+    .range(from, to);
   if (error) { logErr('getStaff', error); throw error; }
   return (data ?? []).map(fromStaffRow);
+}
+
+/**
+ * Fetch the next page of staff plus the exact total count. Use this when
+ * the UI needs "Showing X of Y" — `count: 'exact'` is more expensive than
+ * a plain select, so plain `getStaff` skips it.
+ */
+export async function getStaffPage(
+  _uid: string, pid: string, opts?: StaffListOpts,
+): Promise<{ rows: StaffMember[]; total: number }> {
+  const { from, to } = clampedRange(opts);
+  const { data, error, count } = await supabase
+    .from('staff').select('*', { count: 'exact' })
+    .eq('property_id', pid)
+    .order('name', { ascending: true })
+    .range(from, to);
+  if (error) { logErr('getStaffPage', error); throw error; }
+  return { rows: (data ?? []).map(fromStaffRow), total: count ?? 0 };
 }
 
 export function subscribeToStaff(
   _uid: string, pid: string,
   callback: (staff: StaffMember[]) => void,
+  opts?: StaffListOpts,
 ): () => void {
+  const { from, to } = clampedRange(opts);
   return subscribeTable<StaffMember>(
     `staff:${pid}`, 'staff', `property_id=eq.${pid}`,
     async () => {
-      const { data, error } = await supabase.from('staff').select('*').eq('property_id', pid);
+      const { data, error } = await supabase
+        .from('staff').select('*')
+        .eq('property_id', pid)
+        .order('name', { ascending: true })
+        .range(from, to);
       if (error) throw error;
       return (data ?? []).map(fromStaffRow);
     },

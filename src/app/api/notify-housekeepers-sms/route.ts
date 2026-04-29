@@ -6,6 +6,11 @@ import { errToString } from '@/lib/utils';
 import {
   validateUuid, validateString, validateArray, sanitizeForSms, LIMITS,
 } from '@/lib/api-validate';
+import {
+  checkAndIncrementRateLimit,
+  rateLimitedResponse,
+  NO_PROPERTY_RATE_LIMIT_KEY,
+} from '@/lib/api-ratelimit';
 
 interface SmsEntry {
   phone: string;          // E.164 format, e.g. +15551234567
@@ -99,6 +104,19 @@ export async function POST(req: NextRequest) {
         housekeeperId: hkId,
       });
     }
+
+    // Rate limit BEFORE we burn Twilio credits. Per-property bucket if pid
+    // is supplied AND is a valid UUID; otherwise drop into a single global
+    // bucket via the sentinel UUID, which is still a meaningful protection
+    // against a runaway legacy caller. CRON_SECRET above is the primary
+    // gate; this is defense in depth.
+    let rateLimitPid: string = NO_PROPERTY_RATE_LIMIT_KEY;
+    if (pid) {
+      const pidV = validateUuid(pid, 'pid');
+      if (!pidV.error) rateLimitPid = pidV.value!;
+    }
+    const limit = await checkAndIncrementRateLimit('notify-housekeepers-sms', rateLimitPid);
+    if (!limit.allowed) return rateLimitedResponse(limit.current, limit.cap, limit.retryAfterSec);
 
     let hotelName = 'Your Hotel';
     if (pid) {

@@ -1,9 +1,11 @@
 name: Tests
 
-# Run the unit tests on every push to main and every PR. Keeps regressions
-# in the parser, mappers, and scraper helpers from shipping. Tests use
-# node:test (built-in, no extra install) + tsx for the TypeScript suites,
-# so the workflow stays fast (~30s including npm ci).
+# Runs on every push to main and every PR. The chain catches regressions
+# *before* they reach Vercel. Each step has a comment explaining what it
+# protects against — keep them when editing.
+#
+# Order is intentional: cheap checks first (lint, type-check) so a broken
+# import surfaces in <30s, then unit tests, then the more expensive build.
 
 on:
   push:
@@ -14,6 +16,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -24,11 +27,37 @@ jobs:
 
       - run: npm ci
 
+      # NOTE: Lint step is deliberately NOT in CI yet. eslint.config.js
+      # uses the legacy `extends` key which ESLint 8.57's flat config
+      # rejects, so any lint run errors out on config parsing. Fix the
+      # config (likely via @eslint/eslintrc FlatCompat) and add the
+      # step back here once `npx eslint src/` runs cleanly. See the
+      # 2026-04-29 overnight handoff for the full context.
+
+      # Type-check — fails on any tsc error.
       - name: Type-check
         run: npx tsc --noEmit
 
+      # Scraper unit tests run on plain node:test.
       - name: Run scraper unit tests
         run: node --test scraper/__tests__/*.test.js
 
+      # TypeScript test suites run via tsx --test.
       - name: Run db-mappers unit tests
         run: npx tsx --test src/lib/__tests__/*.test.ts
+
+      # Final guard: actually build the app. Catches Next.js bundler errors
+      # (missing client/server boundaries, dynamic-import paths, etc.) that
+      # tsc happily ignores. Without this, a "type-clean" PR can still break
+      # production. Skipped if NEXT_TELEMETRY_DISABLED isn't set; we set it
+      # to avoid the telemetry prompt blocking CI on a fresh runner.
+      - name: Build
+        env:
+          NEXT_TELEMETRY_DISABLED: '1'
+          # Build needs *some* values for any process.env reads at module
+          # load time. We give safe placeholders here — the build doesn't
+          # actually call Supabase, so wrong values are fine.
+          NEXT_PUBLIC_SUPABASE_URL: 'https://placeholder.supabase.co'
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: 'placeholder-anon-key'
+          SUPABASE_SERVICE_ROLE_KEY: 'placeholder-service-role-key'
+        run: npm run build

@@ -26,7 +26,8 @@ export type RateLimitEndpoint =
   | 'sms-reply-resend'
   | 'test-sms-flow'
   | 'sync-room-assignments'
-  | 'populate-rooms-from-plan';
+  | 'populate-rooms-from-plan'
+  | 'notify-housekeepers-sms';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -46,7 +47,19 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // hammer this. 200/hr is "click 3x per minute for an hour" headroom.
   'sync-room-assignments':    200,
   'populate-rooms-from-plan':  20,
+  // Legacy SMS-fan-out route. Active SMS path is send-shift-confirmations;
+  // this route exists for back-compat. Cap matches morning-resend.
+  'notify-housekeepers-sms':    5,
 };
+
+/**
+ * Sentinel UUID used as the property_id when an SMS-fan-out endpoint accepts
+ * a payload without a `pid` (legacy callers). The zero-UUID is reserved for
+ * "no specific property" and will rate-limit such calls in a single global
+ * bucket — defense in depth against a runaway legacy caller hammering the
+ * route. Real properties never use this UUID.
+ */
+export const NO_PROPERTY_RATE_LIMIT_KEY = '00000000-0000-0000-0000-000000000000';
 
 /**
  * Check the rate limit for (property_id, endpoint) and increment the hour
