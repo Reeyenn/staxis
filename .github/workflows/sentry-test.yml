@@ -19,7 +19,7 @@
 #   (or via CLI: gh workflow run sentry-test.yml)
 #
 # What you should see:
-#   1. The workflow log prints `{"ok":true,"requestId":"...","fired":"synthetic-..."}`
+#   1. The workflow log prints `{"ok":true,"requestId":"...","data":{"fired":"synthetic-...","note":"..."}}`
 #   2. Within ~30s, https://staxis.sentry.io/issues/?project=4511304385888256
 #      shows a new issue titled "[sentry-test] synthetic event synthetic-..."
 #   3. If no issue appears → something in the pipeline is broken; see the
@@ -71,7 +71,9 @@ jobs:
 
           # Extract and bold-print the marker so it's easy to spot in the
           # Sentry issues feed.
-          MARKER=$(echo "$RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("fired",""))')
+          # Marker now lives at body.data.fired (ApiResponse envelope).
+          # The route's data shape is { fired, note }.
+          MARKER=$(echo "$RESPONSE" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("data") or {}).get("fired",""))')
           echo ""
           echo "===================================================="
           echo "Search Sentry for: $MARKER"

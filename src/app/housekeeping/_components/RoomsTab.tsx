@@ -107,12 +107,19 @@ function RoomsTab() {
           date: activeDate,
         }),
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
+      // /api/refresh-from-pms now returns the standard ApiResponse envelope:
+      //   ok=true:  { ok, requestId, data: { pulledAt, createdCount, updatedCount, totalFromHkCenter, elapsedMs } }
+      //   ok=false: { ok, requestId, error, code, details? }
+      const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        data?: { createdCount?: number; updatedCount?: number };
+        error?: string;
+      };
+      if (!res.ok || body?.ok !== true) {
         // Make errors specific about the source so it's obvious WHAT failed.
         // The user shouldn't have to know what "PMS" means — say
         // "Choice Advantage Housekeeping Center" plainly.
-        const reason = data?.error ?? (lang === 'es' ? 'razón desconocida' : 'unknown reason');
+        const reason = body?.error ?? (lang === 'es' ? 'razón desconocida' : 'unknown reason');
         setToastKind('error');
         setToastMessage(lang === 'es'
           ? `❌ No se pudo cargar desde Choice Advantage: ${reason}`
@@ -121,8 +128,8 @@ function RoomsTab() {
         // Success message names the exact source so anyone clicking the
         // button understands what just happened. Includes time of pull
         // so consecutive clicks don't blur together.
-        const created = (data && typeof data.createdCount === 'number') ? data.createdCount : 0;
-        const updated = (data && typeof data.updatedCount === 'number') ? data.updatedCount : 0;
+        const created = (body.data && typeof body.data.createdCount === 'number') ? body.data.createdCount : 0;
+        const updated = (body.data && typeof body.data.updatedCount === 'number') ? body.data.updatedCount : 0;
         const total = created + updated;
         const time = new Date().toLocaleTimeString(lang === 'es' ? 'es-MX' : 'en-US', {
           hour: 'numeric',

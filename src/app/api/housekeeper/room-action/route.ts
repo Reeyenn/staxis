@@ -36,6 +36,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { log, getOrMintRequestId } from '@/lib/log';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -85,21 +86,27 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // and the most "it didn't work" bug reports.
   const requestId = getOrMintRequestId(req);
 
+  // Echo requestId via header — keeps the server-side correlation chain
+  // intact even when callers don't read the body (legacy `.catch()` paths).
+  const headers = { 'x-request-id': requestId };
+
   let body: RequestBody;
   try {
     body = await req.json();
   } catch {
     log.warn('room-action: invalid json', { requestId, route: 'housekeeper/room-action' });
-    return NextResponse.json({ ok: false, error: 'invalid json' }, { status: 400, headers: { 'x-request-id': requestId } });
+    return err('invalid json', { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
   }
   const { pid, staffId, roomId, action, cleaningContext } = body;
   if (!pid || !staffId || !roomId || !action) {
     log.warn('room-action: missing fields', { requestId, route: 'housekeeper/room-action', hasPid: !!pid, hasStaff: !!staffId, hasRoom: !!roomId, hasAction: !!action });
-    return NextResponse.json({ ok: false, error: 'missing pid/staffId/roomId/action' }, { status: 400, headers: { 'x-request-id': requestId } });
+    return err('missing pid/staffId/roomId/action', {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers,
+    });
   }
   if (!['start', 'finish', 'reset', 'stop', 'dnd_on', 'dnd_off', 'issue', 'help'].includes(action)) {
     log.warn('room-action: invalid action', { requestId, route: 'housekeeper/room-action', action });
-    return NextResponse.json({ ok: false, error: 'invalid action' }, { status: 400, headers: { 'x-request-id': requestId } });
+    return err('invalid action', { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
   }
 
   // ─── Capability check ─────────────────────────────────────────────────
@@ -113,10 +120,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       .eq('id', staffId)
       .maybeSingle();
     if (staffErr) {
-      return NextResponse.json({ ok: false, error: 'staff lookup failed' }, { status: 500 });
+      return err('staff lookup failed', { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
     }
     if (!staff || staff.property_id !== pid) {
-      return NextResponse.json({ ok: false, error: 'staff/property mismatch' }, { status: 403 });
+      return err('staff/property mismatch', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
     }
 
     // ─── Room belongs to property check ─────────────────────────────────
@@ -126,24 +133,24 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       .eq('id', roomId)
       .maybeSingle();
     if (roomErr || !room) {
-      return NextResponse.json({ ok: false, error: 'room not found' }, { status: 404 });
+      return err('room not found', { requestId, status: 404, code: ApiErrorCode.NotFound, headers });
     }
     if (room.property_id !== pid) {
-      return NextResponse.json({ ok: false, error: 'room/property mismatch' }, { status: 403 });
+      return err('room/property mismatch', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
     }
 
     const now = new Date().toISOString();
 
     // ─── START ──────────────────────────────────────────────────────────
     if (action === 'start') {
-      const { error } = await supabaseAdmin
+      const { error: updErr } = await supabaseAdmin
         .from('rooms')
         .update({ status: 'in_progress', started_at: now })
         .eq('id', roomId);
-      if (error) {
-        return NextResponse.json({ ok: false, error: errToString(error) }, { status: 500 });
+      if (updErr) {
+        return err(errToString(updErr), { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
       }
-      return NextResponse.json({ ok: true, action: 'start', startedAt: now });
+      return ok({ action: 'start', startedAt: now }, { requestId, headers });
     }
 
     // ─── FINISH ─────────────────────────────────────────────────────────
@@ -161,7 +168,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         })
         .eq('id', roomId);
       if (roomUpdErr) {
-        return NextResponse.json({ ok: false, error: errToString(roomUpdErr) }, { status: 500 });
+        return err(errToString(roomUpdErr), { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
       }
 
       // Audit log — only for checkout/stayover, never vacant.
@@ -197,7 +204,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           log.error('room-action: cleaning_events insert failed (non-fatal)', { requestId, route: 'housekeeper/room-action', pid, staffId, action: 'finish', err: ceErr as unknown as Error });
         }
       }
-      return NextResponse.json({ ok: true, action: 'finish', completedAt, cleaningEventInserted }, { headers: { 'x-request-id': requestId } });
+      return ok({ action: 'finish', completedAt, cleaningEventInserted }, { requestId, headers });
     }
 
     // ─── RESET ──────────────────────────────────────────────────────────
@@ -210,7 +217,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         .update({ status: 'dirty', started_at: null, completed_at: null })
         .eq('id', roomId);
       if (roomResetErr) {
-        return NextResponse.json({ ok: false, error: errToString(roomResetErr) }, { status: 500 });
+        return err(errToString(roomResetErr), {
+          requestId, status: 500, code: ApiErrorCode.InternalError, headers,
+        });
       }
       const cutoff = new Date(Date.now() - 60 * 1000).toISOString();
       const { error: discardErr } = await supabaseAdmin
@@ -225,45 +234,45 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       if (discardErr) {
         log.error('room-action: cleaning_events discard failed (non-fatal)', { requestId, route: 'housekeeper/room-action', pid, staffId, action: 'reset', err: discardErr as unknown as Error });
       }
-      return NextResponse.json({ ok: true, action: 'reset' }, { headers: { 'x-request-id': requestId } });
+      return ok({ action: 'reset' }, { requestId, headers });
     }
 
     // ─── STOP (undo a Start tap) ────────────────────────────────────────
     // in_progress → dirty, clear started_at. No cleaning_events impact —
     // there was no Done, so nothing to discard.
     if (action === 'stop') {
-      const { error } = await supabaseAdmin
+      const { error: stopErr } = await supabaseAdmin
         .from('rooms')
         .update({ status: 'dirty', started_at: null })
         .eq('id', roomId);
-      if (error) {
-        return NextResponse.json({ ok: false, error: errToString(error) }, { status: 500 });
+      if (stopErr) {
+        return err(errToString(stopErr), { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
       }
-      return NextResponse.json({ ok: true, action: 'stop' });
+      return ok({ action: 'stop' }, { requestId, headers });
     }
 
     // ─── DND_ON ────────────────────────────────────────────────────────
     if (action === 'dnd_on') {
-      const { error } = await supabaseAdmin
+      const { error: dndOnErr } = await supabaseAdmin
         .from('rooms')
         .update({ is_dnd: true, dnd_note: body.dndNote ?? null })
         .eq('id', roomId);
-      if (error) {
-        return NextResponse.json({ ok: false, error: errToString(error) }, { status: 500 });
+      if (dndOnErr) {
+        return err(errToString(dndOnErr), { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
       }
-      return NextResponse.json({ ok: true, action: 'dnd_on' });
+      return ok({ action: 'dnd_on' }, { requestId, headers });
     }
 
     // ─── DND_OFF ───────────────────────────────────────────────────────
     if (action === 'dnd_off') {
-      const { error } = await supabaseAdmin
+      const { error: dndOffErr } = await supabaseAdmin
         .from('rooms')
         .update({ is_dnd: false, dnd_note: null })
         .eq('id', roomId);
-      if (error) {
-        return NextResponse.json({ ok: false, error: errToString(error) }, { status: 500 });
+      if (dndOffErr) {
+        return err(errToString(dndOffErr), { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
       }
-      return NextResponse.json({ ok: true, action: 'dnd_off' });
+      return ok({ action: 'dnd_off' }, { requestId, headers });
     }
 
     // ─── HELP REQUEST (flag the room as needing manager attention) ────
@@ -272,14 +281,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // flips the helpRequested flag on the room row so Maria's UI shows
     // the SOS badge — that update was previously silently failing.
     if (action === 'help') {
-      const { error } = await supabaseAdmin
+      const { error: helpErr } = await supabaseAdmin
         .from('rooms')
         .update({ help_requested: true })
         .eq('id', roomId);
-      if (error) {
-        return NextResponse.json({ ok: false, error: errToString(error) }, { status: 500 });
+      if (helpErr) {
+        return err(errToString(helpErr), { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
       }
-      return NextResponse.json({ ok: true, action: 'help' });
+      return ok({ action: 'help' }, { requestId, headers });
     }
 
     // ─── ISSUE NOTE (housekeeper reports a problem) ────────────────────
@@ -287,18 +296,20 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // would break the layout. Trim to 500 chars to be safe.
     if (action === 'issue') {
       const note = (body.issueNote ?? '').slice(0, 500);
-      const { error } = await supabaseAdmin
+      const { error: issueErr } = await supabaseAdmin
         .from('rooms')
         .update({ issue_note: note || null })
         .eq('id', roomId);
-      if (error) {
-        return NextResponse.json({ ok: false, error: errToString(error) }, { status: 500 });
+      if (issueErr) {
+        return err(errToString(issueErr), { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
       }
-      return NextResponse.json({ ok: true, action: 'issue' });
+      return ok({ action: 'issue' }, { requestId, headers });
     }
 
-    return NextResponse.json({ ok: false, error: 'unhandled action' }, { status: 400 });
-  } catch (err) {
-    return NextResponse.json({ ok: false, error: errToString(err) }, { status: 500 });
+    return err('unhandled action', { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
+  } catch (caughtErr) {
+    return err(errToString(caughtErr), {
+      requestId, status: 500, code: ApiErrorCode.InternalError, headers,
+    });
   }
 }

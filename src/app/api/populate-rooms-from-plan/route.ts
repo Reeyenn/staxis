@@ -17,12 +17,14 @@
  *
  * Body: { pid, date, uid?: string }  (uid ignored — legacy)
  */
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { validateUuid, validateDateStr, LIMITS } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { getOrMintRequestId } from '@/lib/log';
 
 interface RequestBody {
   pid: string;
@@ -65,6 +67,7 @@ type PlanRoom = {
 };
 
 export async function POST(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
   // Auth: writes/upserts every room row for the date. Without auth, any
   // caller could rewrite our rooms table.
   const session = await requireSession(req);
@@ -72,19 +75,19 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null) as RequestBody | null;
     if (!body || typeof body !== 'object') {
-      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+      return err('Invalid JSON body', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     }
 
     const pidV = validateUuid(body.pid, 'pid');
-    if (pidV.error) return NextResponse.json({ error: pidV.error }, { status: 400 });
+    if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     const dateV = validateDateStr(body.date, { allowFutureDays: LIMITS.SHIFT_DATE_FUTURE_DAYS, allowPastDays: 14, label: 'date' });
-    if (dateV.error) return NextResponse.json({ error: dateV.error }, { status: 400 });
+    if (dateV.error) return err(dateV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
 
     const pid = pidV.value!;
     const date = dateV.value!;
 
     if (!(await userHasPropertyAccess(session.userId, pid))) {
-      return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+      return err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
     }
     // 20/hour/property is plenty: this is a manual button click that
     // upserts ~74 rows. Anything more than ~1/min is either a bug or abuse.
@@ -102,17 +105,17 @@ export async function POST(req: NextRequest) {
     if (planErr) throw planErr;
 
     if (!planRow) {
-      return NextResponse.json(
-        { error: `No plan_snapshots row found for (${pid}, ${date}) — no CSV has been pulled for that date yet.` },
-        { status: 404 },
+      return err(
+        `No plan_snapshots row found for (${pid}, ${date}) — no CSV has been pulled for that date yet.`,
+        { requestId, status: 404, code: ApiErrorCode.NotFound },
       );
     }
 
     const csvRooms = ((planRow.rooms ?? []) as PlanRoom[]);
     if (csvRooms.length === 0) {
-      return NextResponse.json(
-        { error: `plan_snapshots row has no rooms array — CSV pull may have failed.` },
-        { status: 404 },
+      return err(
+        `plan_snapshots row has no rooms array — CSV pull may have failed.`,
+        { requestId, status: 404, code: ApiErrorCode.NotFound },
       );
     }
 
@@ -234,18 +237,17 @@ export async function POST(req: NextRequest) {
 
     const pulledAt = planRow.pulled_at ? String(planRow.pulled_at) : null;
 
-    return NextResponse.json({
-      ok: true,
+    return ok({
       date,
       created,
       updated,
       total: created + updated,
       csvPulledAt: pulledAt,
-    });
-  } catch (err: unknown) {
+    }, { requestId });
+  } catch (caughtErr: unknown) {
     // Don't echo errToString back — Postgres / supabase-js errors leak
     // schema details. Log full error server-side, generic 500 to caller.
-    console.error('[populate-rooms-from-plan] Error:', errToString(err));
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    console.error('[populate-rooms-from-plan] Error:', errToString(caughtErr));
+    return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

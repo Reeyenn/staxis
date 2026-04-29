@@ -438,18 +438,22 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
             language: lang,
           }),
         });
-        const data = (await res.json().catch(() => ({}))) as {
-          sent?: number;
-          failed?: number;
-          reason?: string;
+        // /api/help-request returns the standard ApiResponse envelope:
+        //   ok=true:  { ok, requestId, data: { sent, failed, reason? } }
+        //   ok=false: { ok, requestId, error, code }
+        const body = (await res.json().catch(() => ({}))) as {
+          ok?: boolean;
+          data?: { sent?: number; failed?: number; reason?: string };
+          error?: string;
         };
-        const actuallySent = res.ok && (data.sent ?? 0) >= 1;
+        const data = body?.data;
+        const actuallySent = res.ok && body?.ok === true && (data?.sent ?? 0) >= 1;
         if (actuallySent) {
           setHelpSent(prev => new Set(prev).add(room.id));
         } else {
           // Don't claim Sent. Surface a distinct "couldn't reach manager"
           // state so the HK knows to physically find help instead of waiting.
-          const reason = data.reason || (res.ok ? 'unknown' : `http_${res.status}`);
+          const reason = data?.reason || body?.error || (res.ok ? 'unknown' : `http_${res.status}`);
           setHelpFailed(prev => new Set(prev).add(room.id));
           console.error(`[housekeeper] help request not delivered: reason=${reason}`);
         }
