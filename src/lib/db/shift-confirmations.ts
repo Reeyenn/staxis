@@ -1,0 +1,37 @@
+// ═══════════════════════════════════════════════════════════════════════════
+// Shift Confirmations — one row per (property, shift_date, staff_id) when
+// Maria sends the SMS confirmations and a housekeeper replies. Powers the
+// "who confirmed for tomorrow" UI.
+// ═══════════════════════════════════════════════════════════════════════════
+
+import type { ShiftConfirmation } from '@/types';
+import { supabase, logErr, subscribeTable } from './_common';
+import { fromShiftConfirmationRow } from '../db-mappers';
+
+export function subscribeToShiftConfirmations(
+  _uid: string, pid: string, shiftDate: string,
+  callback: (confirmations: ShiftConfirmation[]) => void,
+): () => void {
+  return subscribeTable<ShiftConfirmation>(
+    // Single-filter only on realtime — see subscribeToRooms note.
+    `shift_confirmations:${pid}:${shiftDate}`, 'shift_confirmations', `property_id=eq.${pid}`,
+    async () => {
+      const { data, error } = await supabase
+        .from('shift_confirmations').select('*')
+        .eq('property_id', pid).eq('shift_date', shiftDate);
+      if (error) throw error;
+      return (data ?? []).map(fromShiftConfirmationRow);
+    },
+    callback,
+  );
+}
+
+export async function getShiftConfirmationsForDate(
+  _uid: string, pid: string, shiftDate: string,
+): Promise<ShiftConfirmation[]> {
+  const { data, error } = await supabase
+    .from('shift_confirmations').select('*')
+    .eq('property_id', pid).eq('shift_date', shiftDate);
+  if (error) { logErr('getShiftConfirmationsForDate', error); throw error; }
+  return (data ?? []).map(fromShiftConfirmationRow);
+}
