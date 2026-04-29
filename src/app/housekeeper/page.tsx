@@ -74,6 +74,10 @@ function HousekeeperInner() {
           ? 'No se pudo cargar la lista. Verifica tu conexión e intenta de nuevo.'
           : 'Could not load staff list. Check your connection and try again.');
       });
+    // `lang` is intentionally NOT a dep — it's only used to localize the
+    // error toast at the moment of failure. Adding it would re-fetch the
+    // staff list every time the user toggles language, which is wrong.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uid, pid]);
 
   const handleSetup = async () => {
