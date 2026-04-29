@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { requireCronSecret } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
@@ -12,6 +12,9 @@ import {
   NO_PROPERTY_RATE_LIMIT_KEY,
 } from '@/lib/api-ratelimit';
 import { checkIdempotency, recordIdempotency } from '@/lib/idempotency';
+import { NextResponse } from 'next/server';
+import { buildOkBody, err, ApiErrorCode } from '@/lib/api-response';
+import { getOrMintRequestId } from '@/lib/log';
 
 interface SmsEntry {
   phone: string;          // E.164 format, e.g. +15551234567
@@ -30,6 +33,7 @@ function toE164(raw: string): string | null {
 }
 
 export async function POST(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
   try {
     // Lock this route behind CRON_SECRET. /api/notify-housekeepers-sms
     // is currently dead in the codebase (the active SMS path is
@@ -42,7 +46,7 @@ export async function POST(req: NextRequest) {
 
     const reqBody = await req.json().catch(() => null);
     if (reqBody == null) {
-      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+      return err('Invalid JSON body', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     }
 
     // Handle both array format (legacy) and object format with uid/pid.
@@ -68,34 +72,34 @@ export async function POST(req: NextRequest) {
       max: LIMITS.STAFF_ARRAY_MAX,
       label: 'entries',
     });
-    if (arrV.error) return NextResponse.json({ error: arrV.error }, { status: 400 });
+    if (arrV.error) return err(arrV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     if (arrV.value!.length === 0) {
-      return NextResponse.json({ error: 'No entries provided' }, { status: 400 });
+      return err('No entries provided', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     }
 
     const entries: SmsEntry[] = [];
     for (let i = 0; i < arrV.value!.length; i++) {
       const e = arrV.value![i];
       if (!e || typeof e !== 'object') {
-        return NextResponse.json({ error: `entries[${i}] not an object` }, { status: 400 });
+        return err(`entries[${i}] not an object`, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
       }
       const ee = e as Record<string, unknown>;
       const phoneV = validateString(ee.phone, { max: 20, label: `entries[${i}].phone` });
-      if (phoneV.error) return NextResponse.json({ error: phoneV.error }, { status: 400 });
+      if (phoneV.error) return err(phoneV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
       const nameV  = validateString(ee.name,  { max: LIMITS.STAFF_NAME_MAX, label: `entries[${i}].name` });
-      if (nameV.error)  return NextResponse.json({ error: nameV.error  }, { status: 400 });
+      if (nameV.error)  return err(nameV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
       const roomsArr = validateArray<unknown>(ee.rooms, { max: LIMITS.ASSIGNED_ROOMS_MAX, label: `entries[${i}].rooms` });
-      if (roomsArr.error) return NextResponse.json({ error: roomsArr.error }, { status: 400 });
+      if (roomsArr.error) return err(roomsArr.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
       const rooms: string[] = [];
       for (let j = 0; j < roomsArr.value!.length; j++) {
         const r = validateString(roomsArr.value![j], { max: LIMITS.ROOM_NUMBER_MAX, label: `entries[${i}].rooms[${j}]` });
-        if (r.error) return NextResponse.json({ error: r.error }, { status: 400 });
+        if (r.error) return err(r.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
         rooms.push(r.value!);
       }
       let hkId: string | undefined;
       if (ee.housekeeperId != null) {
         const hkV = validateUuid(ee.housekeeperId, `entries[${i}].housekeeperId`);
-        if (hkV.error) return NextResponse.json({ error: hkV.error }, { status: 400 });
+        if (hkV.error) return err(hkV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
         hkId = hkV.value!;
       }
       entries.push({
@@ -165,20 +169,24 @@ export async function POST(req: NextRequest) {
       }
     });
 
-    const responseBody = { sent, failed };
+    // Build the envelope BEFORE storing so the idempotency cache holds the
+    // exact same shape that gets returned to the caller. Without this, a
+    // cache hit returns the raw `{ sent, failed }` while a fresh request
+    // returns the full envelope, which is a real shape inconsistency.
+    const envelope = buildOkBody({ sent, failed }, requestId);
     if (idem.kind === 'first') {
       await recordIdempotency(
         idem.key,
         'notify-housekeepers-sms',
-        responseBody,
+        envelope,
         200,
         pid ?? null,
       );
     }
-    return NextResponse.json(responseBody);
-  } catch (err) {
+    return NextResponse.json(envelope);
+  } catch (caughtErr) {
     // Server-side error detail in log; generic 500 to the caller.
-    console.error('[notify-housekeepers-sms] error:', errToString(err));
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    console.error('[notify-housekeepers-sms] error:', errToString(caughtErr));
+    return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

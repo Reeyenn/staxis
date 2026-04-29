@@ -70,8 +70,12 @@ export default function AccountsPage() {
         headers: { 'x-account-id': user.accountId },
       });
       if (!res.ok) throw new Error('Failed to load accounts');
-      const data = await res.json();
-      setAccounts(data.accounts);
+      // /api/auth/accounts now returns the standard ApiResponse envelope
+      // ({ ok, requestId, data: { accounts: [...] } }) — read accounts off
+      // body.data.accounts.
+      const body = await res.json() as { ok?: boolean; data?: { accounts?: AccountRow[] }; error?: string };
+      if (!body || !body.ok) throw new Error(body?.error ?? 'Failed to load accounts');
+      setAccounts(body.data?.accounts ?? []);
     } catch (err) {
       setError('Failed to load accounts');
       console.error(err);
@@ -124,8 +128,10 @@ export default function AccountsPage() {
           }),
         });
         if (!res.ok) {
-          const d = await res.json();
-          setFormError(d.error || 'Failed to update');
+          // Envelope on error: { ok: false, error }. Fall back if a future
+          // migration ever returns a different shape.
+          const d = await res.json().catch(() => ({})) as { error?: string };
+          setFormError(d?.error || 'Failed to update');
           return;
         }
       } else {
@@ -141,8 +147,8 @@ export default function AccountsPage() {
           }),
         });
         if (!res.ok) {
-          const d = await res.json();
-          setFormError(d.error || 'Failed to create');
+          const d = await res.json().catch(() => ({})) as { error?: string };
+          setFormError(d?.error || 'Failed to create');
           return;
         }
       }
@@ -167,8 +173,8 @@ export default function AccountsPage() {
         headers: { 'x-account-id': user.accountId },
       });
       if (!res.ok) {
-        const d = await res.json();
-        alert(d.error || 'Failed to delete');
+        const d = await res.json().catch(() => ({})) as { error?: string };
+        alert(d?.error || 'Failed to delete');
         return;
       }
       await loadAccounts();

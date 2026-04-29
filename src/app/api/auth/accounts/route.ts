@@ -1,6 +1,8 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { getOrMintRequestId } from '@/lib/log';
 
 // ─── Admin CRUD on the accounts table ──────────────────────────────────────
 // Guarded by the `x-account-id` header → accounts.role === 'admin' check.
@@ -90,8 +92,9 @@ function serializeAccount(row: {
 
 // GET /api/auth/accounts - list all accounts (admin only)
 export async function GET(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
   const caller = await verifyAdmin(req);
-  if (!caller) return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+  if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
 
   const { data, error } = await supabaseAdmin
     .from('accounts')
@@ -100,16 +103,17 @@ export async function GET(req: NextRequest) {
 
   if (error) {
     console.error('[accounts:GET] query failed', error);
-    return NextResponse.json({ error: 'Failed to load accounts' }, { status: 500 });
+    return err('Failed to load accounts', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
-  return NextResponse.json({ accounts: (data ?? []).map(serializeAccount) });
+  return ok({ accounts: (data ?? []).map(serializeAccount) }, { requestId });
 }
 
 // POST /api/auth/accounts - create account (admin only)
 export async function POST(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
   const caller = await verifyAdmin(req);
-  if (!caller) return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+  if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
 
   const body = await req.json();
   const { username, password, displayName, role, propertyAccess } = body as {
@@ -121,25 +125,22 @@ export async function POST(req: NextRequest) {
   };
 
   if (!username || !password || !role) {
-    return NextResponse.json(
-      { error: 'username, password, and role are required' },
-      { status: 400 },
-    );
+    return err('username, password, and role are required', {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
   }
   if (!['admin', 'owner', 'staff'].includes(role)) {
-    return NextResponse.json(
-      { error: 'role must be one of admin, owner, staff' },
-      { status: 400 },
-    );
+    return err('role must be one of admin, owner, staff', {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
   }
   // Enforce a username shape compatible with the synthetic-email scheme.
   // Allowed: lowercase a–z, 0–9, dot, underscore, plus, hyphen.
   const normalizedUsername = username.toLowerCase().trim();
   if (!/^[a-z0-9._+-]{2,40}$/.test(normalizedUsername)) {
-    return NextResponse.json(
-      { error: 'Username must be 2–40 chars: lowercase letters, digits, . _ + -' },
-      { status: 400 },
-    );
+    return err('Username must be 2–40 chars: lowercase letters, digits, . _ + -', {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
   }
 
   // Duplicate check (application-level — also enforced by DB unique index).
@@ -150,10 +151,10 @@ export async function POST(req: NextRequest) {
     .maybeSingle();
   if (exErr) {
     console.error('[accounts:POST] duplicate check failed', exErr);
-    return NextResponse.json({ error: 'Failed to create account' }, { status: 500 });
+    return err('Failed to create account', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   if (existing) {
-    return NextResponse.json({ error: 'Username already exists' }, { status: 409 });
+    return err('Username already exists', { requestId, status: 409, code: ApiErrorCode.IdempotencyConflict });
   }
 
   // Step 1: create the auth.users row. email_confirm: true skips the
@@ -170,10 +171,9 @@ export async function POST(req: NextRequest) {
     console.error('[accounts:POST] auth.admin.createUser failed', authErr);
     // 422 is what Supabase returns for weak-password/invalid-email; surface
     // the message so the settings UI can display it.
-    return NextResponse.json(
-      { error: authErr?.message ?? 'Failed to create auth user' },
-      { status: 400 },
-    );
+    return err(authErr?.message ?? 'Failed to create auth user', {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
   }
 
   // Admin accounts don't get explicit property_access — RLS grants them
@@ -211,20 +211,22 @@ export async function POST(req: NextRequest) {
     }
     if (rollbackError) {
       console.error(`[accounts:POST] AUTH ROLLBACK FAILED — orphaned auth.users row id=${authData.user.id} email=${normalizedUsername}@staxis.local. Insert error: ${errToString(insErr)}. Rollback error: ${rollbackError}`);
-      return NextResponse.json({
-        error: `Failed to create account record. ALSO: rollback of the auth user failed — orphaned auth row remains for username "${normalizedUsername}". Have an admin delete the row manually in Supabase Authentication.`,
-      }, { status: 500 });
+      return err(
+        `Failed to create account record. ALSO: rollback of the auth user failed — orphaned auth row remains for username "${normalizedUsername}". Have an admin delete the row manually in Supabase Authentication.`,
+        { requestId, status: 500, code: ApiErrorCode.InternalError },
+      );
     }
-    return NextResponse.json({ error: 'Failed to create account record' }, { status: 500 });
+    return err('Failed to create account record', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
-  return NextResponse.json({ accountId: inserted.id });
+  return ok({ accountId: inserted.id }, { requestId });
 }
 
 // PUT /api/auth/accounts - update account (admin only)
 export async function PUT(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
   const caller = await verifyAdmin(req);
-  if (!caller) return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+  if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
 
   const body = await req.json();
   const { accountId, displayName, role, propertyAccess, password } = body as {
@@ -236,13 +238,12 @@ export async function PUT(req: NextRequest) {
   };
 
   if (!accountId) {
-    return NextResponse.json({ error: 'accountId required' }, { status: 400 });
+    return err('accountId required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   if (role !== undefined && !['admin', 'owner', 'staff'].includes(role)) {
-    return NextResponse.json(
-      { error: 'role must be one of admin, owner, staff' },
-      { status: 400 },
-    );
+    return err('role must be one of admin, owner, staff', {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
   }
 
   // Fetch the target account so we know its data_user_id for the password
@@ -254,7 +255,7 @@ export async function PUT(req: NextRequest) {
     .maybeSingle();
 
   if (fetchErr || !target) {
-    return NextResponse.json({ error: 'Account not found' }, { status: 404 });
+    return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
 
   // Build the accounts-table update.
@@ -274,7 +275,7 @@ export async function PUT(req: NextRequest) {
       .eq('id', accountId);
     if (updErr) {
       console.error('[accounts:PUT] accounts update failed', updErr);
-      return NextResponse.json({ error: 'Failed to update account' }, { status: 500 });
+      return err('Failed to update account', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
   }
 
@@ -286,34 +287,36 @@ export async function PUT(req: NextRequest) {
     );
     if (pwErr) {
       console.error('[accounts:PUT] password update failed', pwErr);
-      return NextResponse.json(
-        { error: pwErr.message ?? 'Failed to update password' },
-        { status: 400 },
-      );
+      return err(pwErr.message ?? 'Failed to update password', {
+        requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+      });
     }
   }
 
   if (Object.keys(updates).length === 0 && !password) {
-    return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
+    return err('Nothing to update', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  return NextResponse.json({ success: true });
+  return ok({ success: true }, { requestId });
 }
 
 // DELETE /api/auth/accounts?accountId=xxx - delete account (admin only)
 export async function DELETE(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
   const caller = await verifyAdmin(req);
-  if (!caller) return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+  if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
 
   const { searchParams } = new URL(req.url);
   const accountId = searchParams.get('accountId');
   if (!accountId) {
-    return NextResponse.json({ error: 'accountId required' }, { status: 400 });
+    return err('accountId required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
   // Prevent deleting own account (same guard as the Firebase version).
   if (accountId === caller.id) {
-    return NextResponse.json({ error: 'Cannot delete your own account' }, { status: 400 });
+    return err('Cannot delete your own account', {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
   }
 
   const { data: target, error: fetchErr } = await supabaseAdmin
@@ -323,7 +326,7 @@ export async function DELETE(req: NextRequest) {
     .maybeSingle();
 
   if (fetchErr || !target) {
-    return NextResponse.json({ error: 'Account not found' }, { status: 404 });
+    return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
 
   // Delete the auth user — the FK cascade removes the accounts row too.
@@ -336,8 +339,8 @@ export async function DELETE(req: NextRequest) {
     try {
       await supabaseAdmin.from('accounts').delete().eq('id', accountId);
     } catch { /* best effort — primary goal was deleting the auth user */ }
-    return NextResponse.json({ error: 'Failed to delete account' }, { status: 500 });
+    return err('Failed to delete account', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
-  return NextResponse.json({ success: true });
+  return ok({ success: true }, { requestId });
 }

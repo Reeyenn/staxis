@@ -24,6 +24,8 @@ import { validateUuid, validateDateStr, redactPhone, safeBaseUrl, LIMITS } from 
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { checkIdempotency, recordIdempotency } from '@/lib/idempotency';
 import { smartAssignRooms } from '@/lib/room-assignment';
+import { buildOkBody, err, ApiErrorCode } from '@/lib/api-response';
+import { getOrMintRequestId } from '@/lib/log';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -49,6 +51,7 @@ interface RoomRow {
 // ─── Route handler ────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
   try {
     // ── Auth: CRON_SECRET required ────────────────────────────────────────
     // This route fires bulk SMS to every confirmed housekeeper. Without
@@ -62,15 +65,15 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== 'object') {
-      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+      return err('Invalid JSON body', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     }
     const b = body as Record<string, unknown>;
     const pidV = validateUuid(b.pid, 'pid');
-    if (pidV.error) return NextResponse.json({ error: pidV.error }, { status: 400 });
+    if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     const shiftV = validateDateStr(b.shiftDate, {
       label: 'shiftDate', allowFutureDays: LIMITS.SHIFT_DATE_FUTURE_DAYS, allowPastDays: 7,
     });
-    if (shiftV.error) return NextResponse.json({ error: shiftV.error }, { status: 400 });
+    if (shiftV.error) return err(shiftV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     const pid = pidV.value!;
     const shiftDate = shiftV.value!;
     const baseUrl = safeBaseUrl(b.baseUrl);
@@ -89,7 +92,7 @@ export async function POST(req: NextRequest) {
     if (!limit.allowed) return rateLimitedResponse(limit.current, limit.cap, limit.retryAfterSec);
 
     if (!isValidDateStr(shiftDate)) {
-      return NextResponse.json({ error: 'Invalid shiftDate format (expected YYYY-MM-DD)' }, { status: 400 });
+      return err('Invalid shiftDate format (expected YYYY-MM-DD)', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     }
 
     // Fetch hotel name from properties table
@@ -111,7 +114,9 @@ export async function POST(req: NextRequest) {
     if (confErr) throw confErr;
 
     if (!confirmed || confirmed.length === 0) {
-      return NextResponse.json({ message: 'No confirmed HKs for this date', updated: 0 });
+      return NextResponse.json(
+        buildOkBody({ message: 'No confirmed HKs for this date', updated: 0 }, requestId),
+      );
     }
 
     // ── 2. Re-fetch rooms from Supabase ──────────────────────────────────────
@@ -277,23 +282,26 @@ export async function POST(req: NextRequest) {
       console.error('[morning-resend] schedule_assignments mirror failed:', errToString(e));
     }
 
-    const responseBody = {
+    // Build the envelope before recording so cache hits return the same
+    // shape as fresh responses (see notify-housekeepers-sms for the same
+    // pattern + rationale).
+    const envelope = buildOkBody({
       message: `Morning resend complete. ${updatedCount} of ${numHKs} HKs received updated room lists.`,
       updated: updatedCount,
       total: numHKs,
-    };
+    }, requestId);
 
     if (idem.kind === 'first') {
-      await recordIdempotency(idem.key, 'morning-resend', responseBody, 200, pid);
+      await recordIdempotency(idem.key, 'morning-resend', envelope, 200, pid);
     }
-    return NextResponse.json(responseBody);
+    return NextResponse.json(envelope);
 
-  } catch (err) {
-    // Generic 500 — `errToString(err)` may include PG schema names or
-    // Supabase-internal error text. Caller is CRON_SECRET-gated, so
+  } catch (caughtErr) {
+    // Generic 500 — `errToString(caughtErr)` may include PG schema names
+    // or Supabase-internal error text. Caller is CRON_SECRET-gated, so
     // this is defense in depth, but we keep the full detail server-side.
-    const msg = errToString(err);
+    const msg = errToString(caughtErr);
     console.error('morning-resend error:', msg);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

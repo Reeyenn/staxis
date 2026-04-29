@@ -8,10 +8,12 @@
  *
  * Safe to call repeatedly. Returns counts + examples so you can verify.
  */
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { requireCronSecret } from '@/lib/api-auth';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { getOrMintRequestId } from '@/lib/log';
 
 function toE164(raw: string): string | null {
   const digits = raw.replace(/\D/g, '');
@@ -22,6 +24,7 @@ function toE164(raw: string): string | null {
 }
 
 export async function POST(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
   // Mutates every staff row's phone_lookup. CRON_SECRET-only.
   const unauthorized = requireCronSecret(req);
   if (unauthorized) return unauthorized;
@@ -62,17 +65,17 @@ export async function POST(req: NextRequest) {
 
     if (updates.length > 0) await Promise.all(updates);
 
-    return NextResponse.json({
+    return ok({
       scanned: (staff ?? []).length,
       updated,
       alreadyCurrent,
       skippedNoPhone,
       examples,
-    });
-  } catch (err) {
-    const msg = errToString(err);
+    }, { requestId });
+  } catch (caughtErr) {
+    const msg = errToString(caughtErr);
     console.error('backfill-phonelookup error:', msg);
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return err(msg, { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }
 
