@@ -473,12 +473,10 @@ insert into ml_feature_flags (property_id)
 select id from properties
 on conflict (property_id) do nothing;
 
--- ─── 16. Auto-update applied_migrations tracker ───────────────────────────
--- (Existing tracker pattern from migration 0015.)
-do $$ begin
-  if exists (select 1 from information_schema.tables where table_name = 'applied_migrations') then
-    insert into applied_migrations (filename, applied_at)
-    values ('0021_ml_infrastructure.sql', now())
-    on conflict (filename) do nothing;
-  end if;
-end $$;
+-- ─── 16. (No applied_migrations tracker insert) ────────────────────────────
+-- The applied_migrations table in this project uses a different column
+-- shape than the migration 0015 comment suggested. To keep this migration
+-- portable across environments where the tracker may or may not exist
+-- with our expected columns, we skip the auto-tracker step. The migration
+-- itself remains idempotent (`if not exists` guards) so this is purely
+-- cosmetic — the tracker can be hand-updated later if desired.

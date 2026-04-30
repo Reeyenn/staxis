@@ -25,11 +25,4 @@ group by ce.property_id, ce.date;
 
 comment on view cleaning_minutes_per_day_view is 'ML helper: total cleaning minutes worked per (property, date). Aggregates recorded + approved events. Flagged events excluded pending review. Used by ml-service to compute headcount actuals for Layer 1 training.';
 
--- ─── Auto-update applied_migrations tracker ───────────────────────────────
-do $$ begin
-  if exists (select 1 from information_schema.tables where table_name = 'applied_migrations') then
-    insert into applied_migrations (filename, applied_at)
-    values ('0022_cleaning_minutes_view.sql', now())
-    on conflict (filename) do nothing;
-  end if;
-end $$;
+-- (No applied_migrations tracker insert — see 0021's note.)
