@@ -4,11 +4,20 @@
  * Runs on Railway. Stays alive and runs two things off the same tick loop:
  *
  *   1. CSV pulls (hourly, 5am–11pm) — the arrivals/departures CSV from
- *      Choice Advantage. Before 7pm the pull writes to today's snapshot
- *      (pullType='morning'); 7pm and later it writes to tomorrow's snapshot
- *      (pullType='evening') so the next-day plan starts filling in as the
- *      PMS churns through check-ins. csv-scraper upserts each pull into the
- *      same (property_id, date) row, so each hourly pull refines the plan.
+ *      Choice Advantage. Every pull writes to TODAY's plan_snapshot row
+ *      (keyed by current local date). At midnight the date rolls over and
+ *      the next pull lands on the new day's row. csv-scraper upserts each
+ *      pull into the same (property_id, date) row, so each hourly pull
+ *      refines the plan.
+ *
+ *      History: there used to be a 7pm cutover where pulls switched to
+ *      writing TOMORROW's row (pullType='evening') to pre-populate next-day
+ *      planning. That added a confusing morning/evening duality without
+ *      proportional user value (Maria looks at tomorrow's plan tomorrow,
+ *      not tonight) and produced a daily false-alarm "CSV pull failing"
+ *      banner from 9–11pm because today's pulledAt would freeze at the last
+ *      morning pull. Removed 2026-04-30. The pullType='morning' literal is
+ *      kept as the scraper_status key for backward compatibility.
  *
  *   2. Dashboard number pulls (every 15 min, 5am–11pm) — grabs in-house,
  *      arrivals, and departures counts from Choice Advantage's View pages
@@ -118,8 +127,12 @@ function log(msg) {
 // Scraper writes to scraper_status so the app can warn users when the scraper
 // is down or a scrape has failed. Keys:
 //   scraper_status[key='heartbeat']  — bumped every tick (proves the loop is alive)
-//   scraper_status[key='morning']    — last morning scrape result (success or error)
-//   scraper_status[key='evening']    — last evening scrape result (success or error)
+//   scraper_status[key='morning']    — last CSV scrape result (success or error)
+//   scraper_status[key='evening']    — orphan from the pre-2026-04-30 morning/
+//                                      evening split; never written to anymore.
+//                                      Kept readable by scraper-health so the
+//                                      most-recent-wins picker still works
+//                                      without a migration.
 // All writes are best-effort (try/catch) — status reporting must never crash
 // the main loop.
 
@@ -688,12 +701,13 @@ async function maybeRunCSVPull(page, relogin) {
   const now = Date.now();
   if (now - lastCSVPullAt < CSV_INTERVAL_MS) return;
 
-  // Before 7pm → 'morning' (writes to today's plan_snapshot).
-  // 7pm and later → 'evening' (writes to tomorrow's plan_snapshot so the next
-  // day's plan starts filling in as the PMS churns through check-ins).
-  const pullType = hour < 19 ? 'morning' : 'evening';
-
-  const ok = await runCSVScrapeFresh(page, pullType, relogin);
+  // Single CSV pull type. csv-scraper.js always writes to today's
+  // (property_id, date) row regardless of the literal value here. The
+  // 'morning' string is preserved purely as the scraper_status key so
+  // existing dashboards / scraper-health alerts keep reading the same row
+  // without a migration. See header comment for the morning/evening split
+  // we used to do and why we removed it.
+  const ok = await runCSVScrapeFresh(page, 'morning', relogin);
   // Only bump the timestamp on success — a failed pull should retry next tick.
   if (ok) lastCSVPullAt = now;
 }

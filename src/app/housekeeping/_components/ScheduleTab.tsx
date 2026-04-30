@@ -1631,12 +1631,9 @@ function ScheduleTab() {
                 come from the hourly CSV pull (see scraper/scraper.js
                 maybeRunCSVPull). Freshness logic lives in csvFreshness()
                 so it can combine today's snapshot age with the live
-                pipeline status (scraper_status[morning|evening]).
-                The pipeline status matters because today's plan_snapshot
-                only refreshes during 5am–7pm CT — after 7pm the scraper
-                writes to TOMORROW's row by design, so naively comparing
-                today's pulledAt against current time produces a daily
-                false-alarm 9–11pm. csvFreshness() handles that. */}
+                pipeline status (scraper_status[morning]). Single window:
+                the scraper writes to today's row 5am–11pm CT, so anywhere
+                in that range a fresh pull is expected. */}
             {(() => {
               const fr = csvFreshness(planSnapshot, csvPipelineStatus, nowMs);
               const refTime = fr.referenceAt
@@ -1645,17 +1642,6 @@ function ScheduleTab() {
 
               if (fr.state === 'fresh') {
                 if (!refTime) return null;
-                // Slightly different caption for the post-7pm "frozen evening"
-                // case so Maria knows the data is intentionally locked, not stale.
-                if (fr.reason === 'frozen_evening') {
-                  return (
-                    <p style={{ fontSize: '11px', color: '#94a3b8', margin: 0 }}>
-                      {lang === 'es'
-                        ? `Plan de hoy bloqueado a las ${refTime} · planeando mañana`
-                        : `Today's plan locked at ${refTime} · planning tomorrow`}
-                    </p>
-                  );
-                }
                 return (
                   <p style={{ fontSize: '11px', color: '#94a3b8', margin: 0 }}>
                     {lang === 'es' ? `CSV actualizado ${refTime}` : `CSV updated ${refTime}`}

@@ -3,12 +3,8 @@
 // full housekeeping plan output of the Choice Advantage scraper. Powers
 // Maria's Schedule tab and the morning planner.
 //
-// Also exposes the CSV pipeline meta-status (was the last morning/evening
-// pull successful? when?) — Schedule tab needs this to distinguish "today's
-// pulledAt is old because it's 9pm and the scraper has correctly switched
-// to evening (tomorrow) pulls" from "the CSV pipeline has actually broken."
-// Without it, every night 9–11pm produced a false-alarm "CSV pull failing"
-// banner. See csvFreshness() below.
+// Also exposes the CSV pipeline meta-status (was the last pull successful?
+// when?) so the Schedule tab can surface real failures via csvFreshness().
 //
 // fromPlanSnapshotRow is local to this file because no other domain reads
 // the same row shape.
@@ -17,19 +13,14 @@
 import { supabase, subscribeTable } from './_common';
 import { toDate } from '../db-mappers';
 
-// ─── Scraper window constants (must match scraper/scraper.js exactly) ───────
+// ─── Scraper window constants (must match scraper/scraper.js exactly) ──────
 //
-// scraper.js uses these gates:
-//   • Active scraper window:   `hour < 5 || hour >= 23`        (5am–11pm CT)
-//   • Morning vs evening cut:  `pullType = hour < 19 ? 'morning' : 'evening'`
-//
-// The CRITICAL invariant: morning pulls write to TODAY's plan_snapshots row,
-// evening pulls write to TOMORROW's. So today's row only gets refreshed
-// during 5am–7pm — after 7pm it correctly freezes for the day.
+// The scraper pulls hourly during the active window and writes every pull
+// to TODAY's plan_snapshots row (keyed by current local date). At midnight
+// the next pull lands on the new day's row.
 const SCRAPER_TIMEZONE = 'America/Chicago';
 const SCRAPER_WINDOW_START_HOUR = 5;   // inclusive
 const SCRAPER_WINDOW_END_HOUR = 23;    // exclusive
-const MORNING_PULL_END_HOUR = 19;      // exclusive — this is the 7pm cutoff in scraper.js
 
 export interface PlanSnapshot {
   date: string;
@@ -132,23 +123,24 @@ export function subscribeToPlanSnapshot(
 
 // ─── CSV pull pipeline status ──────────────────────────────────────────────
 //
-// scraper_status[key='morning' | 'evening'] is written by the Railway scraper
-// each time it attempts a CSV pull (csv-scraper.js → scraper.js writeScrapeStatus).
+// scraper_status[key='morning'] is written by the Railway scraper each time
+// it attempts a CSV pull (csv-scraper.js → scraper.js writeScrapeStatus).
 //
 // Distinct from PlanSnapshot:
 //   • PlanSnapshot is the OUTPUT of a successful pull (rows, totals, etc.)
 //     — keyed by (property_id, date), only refreshed when a pull succeeds.
 //   • CsvPullStatus is the META about each pull attempt (when it ran,
-//     succeeded or errored, error code if any) — keyed by 'morning' or
-//     'evening', refreshed on every attempt.
+//     succeeded or errored, error code if any) — refreshed on every attempt.
 //
-// Why this matters for the UI: today's PlanSnapshot only gets refreshed
-// during the morning-pull window (5am–7pm CT). After 7pm the scraper
-// switches to evening pulls that write to TOMORROW's row — today's
-// pulledAt freezes intentionally. If the freshness check uses today's
-// pulledAt naively it shows a false-alarm "CSV pull failing" banner every
-// night 9–11pm. The proper signal for "is the pipeline alive" is the most
-// recent of morning/evening status rows.
+// Why we still need this on top of PlanSnapshot.pulledAt: a pull can FAIL
+// (selector miss, login rejected, etc.) and never get to write a snapshot.
+// Without reading scraper_status the UI would just see "snapshot is stale"
+// and have no way to surface the actual error code, and a sudden CA layout
+// change could go unnoticed for hours.
+//
+// 'evening' is left in the interface for backward compat — the field is
+// always null in practice now that the scraper writes a single CSV pull
+// type. See scraper.js header comment for the morning/evening history.
 export interface CsvPullStatus {
   pullType: 'morning' | 'evening';
   at: Date | null;
@@ -232,30 +224,29 @@ export function subscribeToCsvPipelineStatus(
 // answer the only question the UI cares about: "is the CSV pull pipeline OK?"
 //
 // State priority (highest to lowest):
-//   1. error      — pipeline is actively failing (consecutiveFailures ≥ 2 on
-//                   either morning or evening side).
-//   2. error      — today's snapshot is >180 min stale during morning-pull
-//                   window AND no pipeline error reported (catches the case
-//                   where the scraper crashed before writing status).
-//   3. stale      — today's snapshot is 75–180 min stale during morning-pull
+//   1. error      — pipeline is actively failing (consecutiveFailures ≥ 2).
+//   2. error      — today's snapshot is >180 min stale during scraper window
+//                   AND no pipeline error reported (catches the case where
+//                   the scraper crashed before it could write a status row).
+//   3. stale      — today's snapshot is 75–180 min stale during scraper
 //                   window.
-//   4. fresh      — everything else, including the intentionally-frozen
-//                   evening window (7–11pm) and overnight off-hours.
+//   4. fresh      — everything else, including overnight off-hours when the
+//                   scraper is correctly idle.
 //
-// Why morning-pull window (5–19) instead of full scraper window (5–23):
-// evening pulls write to TOMORROW's row, not today's. Applying freshness
-// against today's pulledAt during 19–23 produces a daily false alarm.
+// Single-window logic: every CSV pull writes to TODAY's row, so today's
+// pulledAt should be ≤ ~60 min old anywhere in 5am–11pm CT. (Old code split
+// 5–7pm vs 7–11pm because evening pulls used to write to tomorrow's row.
+// That split was removed 2026-04-30 — see scraper.js header.)
 export type CsvFreshness = 'fresh' | 'stale' | 'error';
 
 export interface CsvFreshnessResult {
   state: CsvFreshness;
   reason:
     | 'pipeline_error'      // scraper_status reports active failure
-    | 'snapshot_stale'      // morning-pull window, today's pulledAt too old, no pipeline error
-    | 'fresh'               // morning-pull window, recent pull
-    | 'frozen_evening'      // 7–11pm: today's snapshot is intentionally frozen
+    | 'snapshot_stale'      // scraper window, today's pulledAt too old, no pipeline error
+    | 'fresh'               // scraper window, recent pull
     | 'off_hours'           // 11pm–5am: scraper isn't running
-    | 'no_snapshot';        // morning window, but no plan_snapshot exists yet
+    | 'no_snapshot';        // scraper window, but no plan_snapshot exists yet
   /** Most relevant timestamp for the UI to display. */
   referenceAt: Date | null;
   minutesAgo: number | null;
@@ -276,6 +267,8 @@ export function csvFreshness(
   // If morning OR evening has hit the consecutive-failure threshold, that's a
   // real outage we should surface no matter what the snapshot age looks like.
   // The threshold matches scraper-health/route.ts (CSV_FAILURE_THRESHOLD = 2).
+  // We still check both keys: 'evening' is an orphan today but a future
+  // refactor that brings it back shouldn't regress this alert path.
   const failingSide =
     pipeline.morning && pipeline.morning.status === 'error'
       && pipeline.morning.consecutiveFailures >= CSV_PIPELINE_FAILURE_THRESHOLD
@@ -296,17 +289,19 @@ export function csvFreshness(
     };
   }
 
-  // ── 2. Pipeline is healthy. Check time-of-day windows. ───────────────────
+  // ── 2. Pipeline is healthy. Check time-of-day window. ────────────────────
   const localHourCT = parseInt(
     new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: SCRAPER_TIMEZONE }).format(new Date(nowMs)),
     10,
   );
-  const inMorningPullWindow = localHourCT >= SCRAPER_WINDOW_START_HOUR && localHourCT < MORNING_PULL_END_HOUR;
-  const isOffHours = localHourCT < SCRAPER_WINDOW_START_HOUR || localHourCT >= SCRAPER_WINDOW_END_HOUR;
+  const inScraperWindow = localHourCT >= SCRAPER_WINDOW_START_HOUR && localHourCT < SCRAPER_WINDOW_END_HOUR;
 
   if (!snapshot?.pulledAt) {
+    // No plan_snapshot for today yet. Inside the scraper window we consider
+    // this stale (worth surfacing — first morning pull hasn't landed). Off
+    // hours it's normal (we don't expect data overnight).
     return {
-      state: inMorningPullWindow ? 'stale' : 'fresh',
+      state: inScraperWindow ? 'stale' : 'fresh',
       reason: 'no_snapshot',
       referenceAt: null,
       minutesAgo: null,
@@ -317,13 +312,12 @@ export function csvFreshness(
 
   const minutesAgo = Math.max(0, Math.round((nowMs - snapshot.pulledAt.getTime()) / 60_000));
 
-  if (!inMorningPullWindow) {
-    // 7–11pm: today's snapshot is intentionally frozen because the scraper
-    // is now writing to tomorrow's row. 11pm–5am: off-hours. Either way,
-    // "stale" is expected and not alarming.
+  if (!inScraperWindow) {
+    // 11pm–5am: scraper is correctly idle. Today's snapshot is naturally
+    // aging out and we don't yell about it.
     return {
       state: 'fresh',
-      reason: isOffHours ? 'off_hours' : 'frozen_evening',
+      reason: 'off_hours',
       referenceAt: snapshot.pulledAt,
       minutesAgo,
       errorCode: null,
@@ -331,7 +325,7 @@ export function csvFreshness(
     };
   }
 
-  // ── 3. Morning-pull window with healthy pipeline — apply staleness. ──────
+  // ── 3. Scraper window with healthy pipeline — apply staleness. ───────────
   if (minutesAgo > CSV_ERROR_MINUTES) {
     return { state: 'error', reason: 'snapshot_stale', referenceAt: snapshot.pulledAt, minutesAgo, errorCode: null, errorMessage: null };
   }

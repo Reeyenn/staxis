@@ -821,7 +821,10 @@ async function writeRoomStayoverDays(supabase, config, snapshot, log) {
  * @param {import('playwright').Page} page       — authenticated CA page
  * @param {import('@supabase/supabase-js').SupabaseClient} supabase
  * @param {object} config   — { PROPERTY_ID, TIMEZONE }
- * @param {string} pullType — "evening" or "morning"
+ * @param {string} pullType — historically "morning" or "evening"; today the
+ *                            scraper only emits "morning" since every pull
+ *                            writes to today's row. Kept as the scraper_status
+ *                            key for backward compatibility.
  * @param {function} log
  */
 async function runCSVScrape(page, supabase, config, pullType, log) {
@@ -829,18 +832,17 @@ async function runCSVScrape(page, supabase, config, pullType, log) {
 
   const timezone = config.TIMEZONE || 'America/Chicago';
 
-  // Determine target date:
-  // Evening (7pm) pull → planning for TOMORROW
-  // Morning (6am) pull → confirming for TODAY
-  let targetDate;
-  if (pullType === 'evening') {
-    const tmr = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    targetDate = new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(tmr);
-  } else {
-    targetDate = new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(new Date());
-  }
+  // Every pull writes to TODAY's (property_id, date) row. At midnight the
+  // local date rolls over and the next pull lands on the new day's row.
+  //
+  // Removed 2026-04-30: the old code branched on `pullType === 'evening'` to
+  // write to TOMORROW's row after 7pm. That added complexity (and a daily
+  // false-alarm "CSV pull failing" banner because today's pulledAt would
+  // freeze at the last morning pull) without proportional user value —
+  // Maria looks at tomorrow's plan tomorrow, not tonight.
+  const targetDate = new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(new Date());
 
-  log(`[CSV] Target date: ${targetDate} (${pullType} pull)`);
+  log(`[CSV] Target date: ${targetDate}`);
 
   try {
     // Step 1: Download CSV from CA

@@ -3,14 +3,16 @@
  *
  * Run via: npx tsx --test src/lib/__tests__/csv-freshness.test.ts
  *
- * History: before this helper, the Schedule tab compared today's
- * planSnapshot.pulledAt against current time and applied a stale/error
- * threshold whenever current time was inside the scraper window (5am–11pm).
- * That window includes 7–11pm — which is when the scraper has CORRECTLY
- * switched to evening pulls writing to TOMORROW's snapshot row, leaving
- * today's pulledAt frozen by design. Result: red "CSV pull failing"
- * banner every night ~9–11pm, no actual outage. These tests pin the new
- * behavior so that bug doesn't regress.
+ * Single-window freshness model:
+ *   • 5am–11pm CT (scraper window):
+ *     - fresh     ≤75 min since last pull
+ *     - stale     75–180 min
+ *     - error     >180 min  (or pipeline reports active failure)
+ *   • 11pm–5am CT (off-hours): always fresh; the scraper is correctly idle.
+ *
+ * The scraper writes EVERY pull to today's plan_snapshots row, so today's
+ * pulledAt should bump every hour throughout the scraper window. There's
+ * no morning/evening split anymore — see scraper.js header for history.
  */
 
 import { test, describe } from 'node:test';
@@ -25,7 +27,7 @@ const EMPTY_PIPELINE: CsvPipelineStatus = { morning: null, evening: null };
 
 function makeSnapshot(pulledAt: Date | null): PlanSnapshot {
   return {
-    date: '2026-04-29',
+    date: '2026-04-30',
     pulledAt,
     pullType: 'morning',
     totalRooms: 74, checkouts: 11, stayovers: 43, stayoverDay1: 0, stayoverDay2: 0,
@@ -49,49 +51,79 @@ function makePullStatus(over: Partial<CsvPullStatus> & { pullType: 'morning' | '
   };
 }
 
-// Convert "YYYY-MM-DD HH:MM CT" to ms-since-epoch. Used to control nowMs
-// regardless of the host machine's timezone — without this, the ms returned
-// would shift if a CI runner is in UTC vs. the dev's CDT.
-//
-// We anchor to America/Chicago by computing the UTC offset for that date.
-// Chicago is UTC-5 (CDT) from mid-March → early November, UTC-6 (CST) otherwise.
-// All dates in these tests fall in CDT (April), so we use -5.
+// Convert "YYYY-MM-DD HH:MM CT" to ms-since-epoch. We anchor to America/Chicago
+// (UTC-5 in CDT, all dates here are in CDT) so tests pass on a UTC CI runner
+// just as they do on the dev's CDT laptop.
 function ctMs(yyyymmdd: string, hhmm: string): number {
   return new Date(`${yyyymmdd}T${hhmm}:00-05:00`).getTime();
 }
 
-// ─── Tests: time-of-day windows with healthy pipeline ──────────────────────
+// ─── Scraper window — 5am to 11pm CT, single uniform behavior ──────────────
 
-describe('csvFreshness — morning-pull window (5am–7pm CT)', () => {
-  test('fresh when snapshot is recent (≤75 min ago)', () => {
-    const now = ctMs('2026-04-29', '09:30');
-    const snap = makeSnapshot(new Date(ctMs('2026-04-29', '09:00'))); // 30 min ago
+describe('csvFreshness — scraper window (5am–11pm CT) is uniform', () => {
+  test('fresh at 9:30am with snapshot 30 min ago', () => {
+    const now = ctMs('2026-04-30', '09:30');
+    const snap = makeSnapshot(new Date(ctMs('2026-04-30', '09:00')));
     const fr = csvFreshness(snap, EMPTY_PIPELINE, now);
     assert.equal(fr.state, 'fresh');
     assert.equal(fr.reason, 'fresh');
     assert.equal(fr.minutesAgo, 30);
   });
 
-  test('stale at 75–180 min', () => {
-    const now = ctMs('2026-04-29', '14:00');
-    const snap = makeSnapshot(new Date(ctMs('2026-04-29', '12:30'))); // 90 min
+  test('fresh at 10:30pm with snapshot 30 min ago — would have falsely alarmed pre-fix', () => {
+    // The reason this case exists: under the previous (post-bb51ac1)
+    // architecture, evening pulls 7–11pm wrote to TOMORROW's row, so
+    // today's snapshot was guaranteed stale by 9pm. After the simplification,
+    // every pull writes to today's row, so 10:30pm with a fresh pull is the
+    // expected steady state.
+    const now = ctMs('2026-04-30', '22:30');
+    const snap = makeSnapshot(new Date(ctMs('2026-04-30', '22:00')));
+    const fr = csvFreshness(snap, EMPTY_PIPELINE, now);
+    assert.equal(fr.state, 'fresh');
+    assert.equal(fr.reason, 'fresh');
+  });
+
+  test('stale at 75–180 min anywhere in window — morning', () => {
+    const now = ctMs('2026-04-30', '14:00');
+    const snap = makeSnapshot(new Date(ctMs('2026-04-30', '12:30'))); // 90 min
     const fr = csvFreshness(snap, EMPTY_PIPELINE, now);
     assert.equal(fr.state, 'stale');
     assert.equal(fr.reason, 'snapshot_stale');
     assert.equal(fr.minutesAgo, 90);
   });
 
-  test('error at >180 min', () => {
-    const now = ctMs('2026-04-29', '16:00');
-    const snap = makeSnapshot(new Date(ctMs('2026-04-29', '12:30'))); // 210 min
+  test('stale at 75–180 min anywhere in window — evening', () => {
+    const now = ctMs('2026-04-30', '21:00');
+    const snap = makeSnapshot(new Date(ctMs('2026-04-30', '19:30'))); // 90 min
+    const fr = csvFreshness(snap, EMPTY_PIPELINE, now);
+    assert.equal(fr.state, 'stale');
+    assert.equal(fr.reason, 'snapshot_stale');
+    assert.equal(fr.minutesAgo, 90);
+  });
+
+  test('error at >180 min — morning', () => {
+    const now = ctMs('2026-04-30', '16:00');
+    const snap = makeSnapshot(new Date(ctMs('2026-04-30', '12:30'))); // 210 min
     const fr = csvFreshness(snap, EMPTY_PIPELINE, now);
     assert.equal(fr.state, 'error');
     assert.equal(fr.reason, 'snapshot_stale');
     assert.equal(fr.minutesAgo, 210);
   });
 
-  test('stale (no_snapshot) when snapshot missing during morning window', () => {
-    const now = ctMs('2026-04-29', '09:30');
+  test('error at >180 min — evening (the case that USED to false-alarm)', () => {
+    // Old simulated bug: 10:45pm, last pull 6:11pm. With the morning/evening
+    // split that used to be expected and OK; with the simplification it's a
+    // real outage and we should surface it. This test pins that.
+    const now = ctMs('2026-04-30', '22:45');
+    const snap = makeSnapshot(new Date(ctMs('2026-04-30', '18:11'))); // 274 min
+    const fr = csvFreshness(snap, EMPTY_PIPELINE, now);
+    assert.equal(fr.state, 'error');
+    assert.equal(fr.reason, 'snapshot_stale');
+    assert.equal(fr.minutesAgo, 274);
+  });
+
+  test('stale (no_snapshot) when snapshot missing during window', () => {
+    const now = ctMs('2026-04-30', '09:30');
     const fr = csvFreshness(null, EMPTY_PIPELINE, now);
     assert.equal(fr.state, 'stale');
     assert.equal(fr.reason, 'no_snapshot');
@@ -100,65 +132,43 @@ describe('csvFreshness — morning-pull window (5am–7pm CT)', () => {
   });
 });
 
-describe('csvFreshness — frozen-evening window (7–11pm CT) — THE bug fix', () => {
-  // The screenshot Reeyen shipped on 2026-04-29 shows last good pull at
-  // 6:11 PM, 274 min ago, banner reads "CSV pull failing. Tell Reeyen."
-  // BEFORE the fix this rendered as state='error'. AFTER, it should be
-  // state='fresh' with reason='frozen_evening'.
-  test('reproduces the 2026-04-29 false alarm — should be fresh, not error', () => {
-    const now = ctMs('2026-04-29', '22:45');                            // 10:45 PM CT
-    const snap = makeSnapshot(new Date(ctMs('2026-04-29', '18:11')));   // 6:11 PM, 274 min ago
-    const fr = csvFreshness(snap, EMPTY_PIPELINE, now);
-    assert.equal(fr.state, 'fresh', 'must NOT be error: today\'s snapshot is intentionally frozen post-7pm');
-    assert.equal(fr.reason, 'frozen_evening');
-    assert.equal(fr.minutesAgo, 274);
-  });
-
-  test('fresh at 7pm sharp — boundary of morning-pull window', () => {
-    const now = ctMs('2026-04-29', '19:00');
-    const snap = makeSnapshot(new Date(ctMs('2026-04-29', '18:11')));
-    const fr = csvFreshness(snap, EMPTY_PIPELINE, now);
-    assert.equal(fr.state, 'fresh');
-    assert.equal(fr.reason, 'frozen_evening');
-  });
-
-  test('still fresh at 9:11pm even though >180 min stale (would have been error before)', () => {
-    const now = ctMs('2026-04-29', '21:11');
-    const snap = makeSnapshot(new Date(ctMs('2026-04-29', '18:11'))); // 180 min
-    const fr = csvFreshness(snap, EMPTY_PIPELINE, now);
-    assert.equal(fr.state, 'fresh');
-    assert.equal(fr.reason, 'frozen_evening');
-  });
-});
+// ─── Off-hours — 11pm–5am CT, scraper is idle, suppress alarms ─────────────
 
 describe('csvFreshness — overnight off-hours (11pm–5am CT)', () => {
-  test('fresh at midnight', () => {
-    const now = ctMs('2026-04-30', '00:30');
-    const snap = makeSnapshot(new Date(ctMs('2026-04-29', '18:11')));
+  test('fresh at midnight even though snapshot is hours old', () => {
+    const now = ctMs('2026-05-01', '00:30');
+    const snap = makeSnapshot(new Date(ctMs('2026-04-30', '22:08')));
     const fr = csvFreshness(snap, EMPTY_PIPELINE, now);
     assert.equal(fr.state, 'fresh');
     assert.equal(fr.reason, 'off_hours');
   });
 
-  test('fresh at 4:59am', () => {
-    const now = ctMs('2026-04-30', '04:59');
-    const snap = makeSnapshot(new Date(ctMs('2026-04-29', '18:11')));
+  test('fresh at 4:59am — boundary, scraper still idle', () => {
+    const now = ctMs('2026-05-01', '04:59');
+    const snap = makeSnapshot(new Date(ctMs('2026-04-30', '22:08')));
     const fr = csvFreshness(snap, EMPTY_PIPELINE, now);
     assert.equal(fr.state, 'fresh');
     assert.equal(fr.reason, 'off_hours');
+  });
+
+  test('no_snapshot during off-hours = fresh (overnight is normal absence)', () => {
+    const now = ctMs('2026-05-01', '02:00');
+    const fr = csvFreshness(null, EMPTY_PIPELINE, now);
+    assert.equal(fr.state, 'fresh');
+    assert.equal(fr.reason, 'no_snapshot');
   });
 });
 
-// ─── Tests: pipeline failure overrides time-of-day ─────────────────────────
+// ─── Pipeline error overrides time-of-day ──────────────────────────────────
 
 describe('csvFreshness — pipeline_error overrides everything', () => {
   test('morning pipeline failing = error even with fresh snapshot', () => {
-    const now = ctMs('2026-04-29', '09:30');
-    const snap = makeSnapshot(new Date(ctMs('2026-04-29', '09:00'))); // 30 min ago, fresh
+    const now = ctMs('2026-04-30', '09:30');
+    const snap = makeSnapshot(new Date(ctMs('2026-04-30', '09:00'))); // fresh
     const pipeline: CsvPipelineStatus = {
       morning: makePullStatus({
         pullType: 'morning',
-        at: new Date(ctMs('2026-04-29', '09:25')),
+        at: new Date(ctMs('2026-04-30', '09:25')),
         status: 'error',
         errorCode: 'selector_miss',
         error: 'CSV checkbox not actionable',
@@ -173,34 +183,40 @@ describe('csvFreshness — pipeline_error overrides everything', () => {
     assert.equal(fr.errorMessage, 'CSV checkbox not actionable');
   });
 
-  test('evening pipeline failing = error even after 7pm', () => {
-    const now = ctMs('2026-04-29', '22:00');
-    const snap = makeSnapshot(new Date(ctMs('2026-04-29', '18:11')));
+  test('orphan evening row with status=success does NOT trigger pipeline_error', () => {
+    // The 'evening' row never gets new writes after the simplification, but
+    // it still exists in scraper_status with its last write (success). The
+    // failure threshold check requires status='error' AND consecutiveFailures>=2,
+    // so a stale 'success' row is correctly ignored.
+    const now = ctMs('2026-04-30', '09:30');
+    const snap = makeSnapshot(new Date(ctMs('2026-04-30', '09:00')));
     const pipeline: CsvPipelineStatus = {
-      morning: null,
+      morning: makePullStatus({
+        pullType: 'morning',
+        at: new Date(ctMs('2026-04-30', '09:25')),
+        status: 'success',
+        consecutiveFailures: 0,
+      }),
       evening: makePullStatus({
         pullType: 'evening',
-        at: new Date(ctMs('2026-04-29', '21:50')),
-        status: 'error',
-        errorCode: 'login_failed',
-        error: 'Credentials rejected',
-        consecutiveFailures: 4,
+        at: new Date(ctMs('2026-04-29', '22:08')), // yesterday, pre-removal
+        status: 'success',
+        consecutiveFailures: 0,
       }),
     };
     const fr = csvFreshness(snap, pipeline, now);
-    assert.equal(fr.state, 'error');
-    assert.equal(fr.reason, 'pipeline_error');
-    assert.equal(fr.errorCode, 'login_failed');
+    assert.equal(fr.state, 'fresh');
+    assert.equal(fr.reason, 'fresh');
   });
 
   test('single failure (consecutiveFailures=1) does NOT trigger pipeline_error', () => {
     // Threshold is 2 — a single transient blip self-recovers next tick.
-    const now = ctMs('2026-04-29', '09:30');
-    const snap = makeSnapshot(new Date(ctMs('2026-04-29', '09:00')));
+    const now = ctMs('2026-04-30', '09:30');
+    const snap = makeSnapshot(new Date(ctMs('2026-04-30', '09:00')));
     const pipeline: CsvPipelineStatus = {
       morning: makePullStatus({
         pullType: 'morning',
-        at: new Date(ctMs('2026-04-29', '09:25')),
+        at: new Date(ctMs('2026-04-30', '09:25')),
         status: 'error',
         consecutiveFailures: 1,
       }),
@@ -212,12 +228,12 @@ describe('csvFreshness — pipeline_error overrides everything', () => {
   });
 
   test('successful most-recent pull (consecutiveFailures=0) clears pipeline_error', () => {
-    const now = ctMs('2026-04-29', '09:30');
-    const snap = makeSnapshot(new Date(ctMs('2026-04-29', '09:00')));
+    const now = ctMs('2026-04-30', '09:30');
+    const snap = makeSnapshot(new Date(ctMs('2026-04-30', '09:00')));
     const pipeline: CsvPipelineStatus = {
       morning: makePullStatus({
         pullType: 'morning',
-        at: new Date(ctMs('2026-04-29', '09:25')),
+        at: new Date(ctMs('2026-04-30', '09:25')),
         status: 'success',
         consecutiveFailures: 0,
       }),
