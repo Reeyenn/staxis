@@ -50,6 +50,7 @@ async def train_demand_model(
         )
         where ce.property_id = '{property_id}'
           and hav.labels_complete = true
+          and ce.status != 'discarded'
         order by ce.created_at
     """
 
@@ -150,23 +151,48 @@ async def train_demand_model(
         and beats_baseline_pct >= settings.baseline_beat_pct_threshold
     )
 
-    # Check consecutive passing runs (simplified: just look at last 2)
+    # Check consecutive passing runs: look at last 5 runs, count backwards
     recent_runs = client.fetch_many(
         "model_runs",
         filters={"property_id": property_id, "layer": "demand"},
         order_by="trained_at",
         descending=True,
-        limit=2,
+        limit=5,
     )
 
-    consecutive_passes = 1
-    if passes_gates and recent_runs:
-        # Check if previous run also passed
-        prev_run = recent_runs[0] if len(recent_runs) > 0 else None
-        if prev_run and prev_run.get("beats_baseline_pct", 0) >= settings.baseline_beat_pct_threshold:
-            consecutive_passes = 2
+    # Count consecutive passing runs (from most recent backwards)
+    consecutive_passes = 1 if passes_gates else 0
+    for prior_run in (recent_runs or []):
+        # Check if this prior run passed gates
+        prior_passes = (
+            prior_run.get("beats_baseline_pct", 0) >= settings.baseline_beat_pct_threshold
+            and prior_run.get("validation_mae", float("inf")) < settings.validation_mae_threshold
+            and prior_run.get("training_row_count", 0) >= settings.training_row_count_activation
+        )
+        if prior_passes and consecutive_passes > 0:
+            consecutive_passes += 1
+            if consecutive_passes > 5:
+                consecutive_passes = 5  # Cap at 5
+        else:
+            break  # Stop counting at first non-passing run
 
     should_activate = passes_gates and consecutive_passes >= settings.consecutive_passing_runs_required
+
+    # Prepare posterior params if Bayesian
+    posterior_params = None
+    if model.get_config()["algorithm"] == "bayesian":
+        # Serialize Bayesian posterior for later inference
+        posterior_params = {
+            "mu_n": model.mu_n.tolist() if model.mu_n is not None else None,
+            "sigma_n": model.sigma_n.tolist() if model.sigma_n is not None else None,
+            "alpha_n": float(model.alpha_n) if model.alpha_n is not None else None,
+            "beta_n": float(model.beta_n) if model.beta_n is not None else None,
+            "mu_0": model.mu_0.tolist() if model.mu_0 is not None else None,
+            "sigma_0": model.sigma_0.tolist() if model.sigma_0 is not None else None,
+            "alpha": float(model.alpha),
+            "beta": float(model.beta),
+            "feature_names": model.feature_names,
+        }
 
     # Create model_runs row
     model_run = client.insert(
@@ -187,6 +213,7 @@ async def train_demand_model(
             "is_active": should_activate,
             "activated_at": datetime.utcnow().isoformat() if should_activate else None,
             "consecutive_passing_runs": consecutive_passes,
+            "posterior_params": json.dumps(posterior_params) if posterior_params else None,
             "hyperparameters": json.dumps(model.get_config()),
         },
     )

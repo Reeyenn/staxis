@@ -53,6 +53,7 @@ async def train_supply_model(
         where property_id = '{property_id}'
           and completed_at is not null
           and started_at is not null
+          and status != 'discarded'
         order by created_at
     """
 
@@ -122,7 +123,32 @@ async def train_supply_model(
         and beats_baseline_pct >= 0.05  # Lower bar for supply
     )
 
-    should_activate = passes_gates
+    # Check consecutive passing runs: look at last 5 runs, count backwards
+    recent_runs = client.fetch_many(
+        "model_runs",
+        filters={"property_id": property_id, "layer": "supply"},
+        order_by="trained_at",
+        descending=True,
+        limit=5,
+    )
+
+    # Count consecutive passing runs (from most recent backwards)
+    consecutive_passes = 1 if passes_gates else 0
+    for prior_run in (recent_runs or []):
+        # Check if this prior run passed gates
+        prior_passes = (
+            prior_run.get("beats_baseline_pct", 0) >= 0.05
+            and prior_run.get("validation_mae", float("inf")) < 10.0
+            and prior_run.get("training_row_count", 0) >= settings.training_row_count_activation
+        )
+        if prior_passes and consecutive_passes > 0:
+            consecutive_passes += 1
+            if consecutive_passes > 5:
+                consecutive_passes = 5  # Cap at 5
+        else:
+            break  # Stop counting at first non-passing run
+
+    should_activate = passes_gates and consecutive_passes >= settings.consecutive_passing_runs_required
 
     # Create model_runs row
     model_run = client.insert(
@@ -142,7 +168,7 @@ async def train_supply_model(
             "validation_holdout_n": len(X_test),
             "is_active": should_activate,
             "activated_at": datetime.utcnow().isoformat() if should_activate else None,
-            "consecutive_passing_runs": 1,
+            "consecutive_passing_runs": consecutive_passes,
             "hyperparameters": json.dumps(model.get_config()),
         },
     )

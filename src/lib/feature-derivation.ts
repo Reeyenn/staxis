@@ -165,11 +165,13 @@ export async function deriveCleaningEventFeatures(input: {
 
     if (!error && schedule) {
       const roomAssignments = schedule.room_assignments as Record<string, string> | null;
-      if (roomAssignments) {
+      if (roomAssignments && Object.keys(roomAssignments).length > 0) {
         const count = Object.values(roomAssignments).filter(
           (staffId) => staffId === input.staffId
         ).length;
         features.totalRoomsAssignedToHk = count;
+      } else {
+        features.totalRoomsAssignedToHk = 0;
       }
     }
   } catch (err) {

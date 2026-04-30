@@ -1,4 +1,5 @@
 """Configuration management for ML Service."""
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -27,6 +28,14 @@ class Settings(BaseSettings):
     auto_rollback_pvalue_threshold: float = 0.05
     disagreement_threshold_fallback: float = 0.30
     disagreement_zscore_threshold: float = 2.0
+
+    @field_validator("ml_service_secret")
+    @classmethod
+    def validate_secret(cls, v: str) -> str:
+        """Validate that ML_SERVICE_SECRET is set and at least 8 chars."""
+        if not v or len(v) < 8:
+            raise ValueError("ML_SERVICE_SECRET must be set and at least 8 chars")
+        return v
 
     class Config:
         env_file = ".env"

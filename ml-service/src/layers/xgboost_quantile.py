@@ -56,20 +56,47 @@ class XGBoostQuantile(BaseModel):
         y_array = y.values if isinstance(y, pd.Series) else y
 
         for q in self.quantiles:
-            model = xgb.XGBRegressor(
-                objective="reg:quantileerror",
-                quantile_alpha=q,
-                max_depth=self.max_depth,
-                learning_rate=self.learning_rate,
-                n_estimators=self.n_estimators,
-                random_state=42,
-                verbosity=0,
-            )
-            model.fit(
-                X_array,
-                y_array,
-                sample_weight=sample_weight,
-            )
+            try:
+                # Try XGBoost 2.0+ API with quantile_alpha as constructor kwarg
+                model = xgb.XGBRegressor(
+                    objective="reg:quantileerror",
+                    quantile_alpha=q,
+                    max_depth=self.max_depth,
+                    learning_rate=self.learning_rate,
+                    n_estimators=self.n_estimators,
+                    random_state=42,
+                    verbosity=0,
+                )
+                model.fit(
+                    X_array,
+                    y_array,
+                    sample_weight=sample_weight,
+                )
+            except TypeError as e:
+                # Fall back to xgb.train() with explicit params if constructor doesn't support quantile_alpha
+                if "quantile_alpha" in str(e):
+                    dtrain = xgb.DMatrix(X_array, label=y_array, weight=sample_weight)
+                    params = {
+                        "objective": "reg:quantileerror",
+                        "quantile_alpha": q,
+                        "max_depth": self.max_depth,
+                        "learning_rate": self.learning_rate,
+                        "random_state": 42,
+                    }
+                    xgb_model = xgb.train(params, dtrain, num_boost_round=self.n_estimators)
+                    # Wrap in XGBRegressor for consistent interface
+                    model = xgb.XGBRegressor(
+                        max_depth=self.max_depth,
+                        learning_rate=self.learning_rate,
+                        n_estimators=self.n_estimators,
+                        random_state=42,
+                    )
+                    model.get_booster().set_attr(
+                        objective="reg:quantileerror", quantile_alpha=str(q)
+                    )
+                else:
+                    raise
+                model.fit(X_array, y_array, sample_weight=sample_weight)
             self.models[q] = model
 
     def predict_quantile(

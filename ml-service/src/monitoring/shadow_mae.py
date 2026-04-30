@@ -1,10 +1,13 @@
 """Rolling 14-day shadow MAE computation and auto-rollback."""
+import json
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
 import numpy as np
+import psycopg2
 from scipy import stats
 
+from src.advisory_lock import advisory_lock
 from src.config import get_settings
 from src.supabase_client import get_supabase_client
 
@@ -72,11 +75,13 @@ async def compute_rolling_shadow_mae(
     active_mae = np.mean(active_errors)
     baseline_mae = np.mean(baseline_errors)
 
-    # Wilcoxon signed-rank test
-    # Null: active and baseline have same median error
-    # Alt: active is worse (higher median)
+    # Mann-Whitney U test (unpaired test for comparing two independent samples)
+    # Null: active and baseline have same distribution
+    # Alt: active is worse (higher errors) — one-tailed
     try:
-        statistic, pvalue = stats.wilcoxon(active_errors, baseline_errors)
+        statistic, pvalue = stats.mannwhitneyu(
+            active_errors, baseline_errors, alternative="greater"
+        )
     except Exception:
         return None
 
@@ -115,22 +120,61 @@ async def check_auto_rollback(
     )
 
     if should_rollback:
-        # Deactivate the model
-        client = get_supabase_client()
-        active_models = client.fetch_many(
-            "model_runs",
-            filters={"property_id": property_id, "layer": layer, "is_active": True},
-            limit=1,
-        )
-        if active_models:
-            client.update(
-                "model_runs",
-                {
-                    "is_active": False,
-                    "deactivated_at": datetime.utcnow().isoformat(),
-                    "deactivation_reason": "auto_rollback",
-                },
-                {"id": active_models[0]["id"]},
+        # Try to acquire advisory lock; skip rollback if another worker is handling it
+        try:
+            settings = get_settings()
+            conn = psycopg2.connect(
+                host=settings.supabase_url.split("://")[1].split("/")[0],
+                database="postgres",
+                user="postgres",
+                password=settings.supabase_service_role_key,
             )
+            with advisory_lock(conn, property_id, layer, blocking=False) as acquired:
+                if not acquired:
+                    # Another worker is handling this rollback; skip
+                    return should_rollback
+
+                # Emit structured log before deactivating
+                print(
+                    json.dumps(
+                        {
+                            "level": "error",
+                            "event": "auto_rollback_triggered",
+                            "property_id": property_id,
+                            "layer": layer,
+                            "active_model_run_id": (
+                                active_models[0]["id"]
+                                if "active_models" in locals() and active_models
+                                else None
+                            ),
+                            "active_mae": float(active_mae),
+                            "baseline_mae": float(baseline_mae),
+                            "pvalue": float(pvalue),
+                            "ts": datetime.utcnow().isoformat(),
+                        }
+                    )
+                )
+
+                # Deactivate the model
+                client = get_supabase_client()
+                active_models = client.fetch_many(
+                    "model_runs",
+                    filters={"property_id": property_id, "layer": layer, "is_active": True},
+                    limit=1,
+                )
+                if active_models:
+                    client.update(
+                        "model_runs",
+                        {
+                            "is_active": False,
+                            "deactivated_at": datetime.utcnow().isoformat(),
+                            "deactivation_reason": "auto_rollback",
+                        },
+                        {"id": active_models[0]["id"]},
+                    )
+            conn.close()
+        except Exception:
+            # If we can't acquire lock or connect, skip this rollback
+            pass
 
     return should_rollback
