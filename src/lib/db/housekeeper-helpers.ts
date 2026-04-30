@@ -22,27 +22,61 @@ export function subscribeToRoomsForStaff(
   staffId: string,
   callback: (rooms: Room[]) => void,
 ): () => void {
+  // Initial fetch + refetch-on-change goes through /api/housekeeper/rooms
+  // (server-side, service-role) instead of supabase.from('rooms') directly.
+  //
+  // Why: this helper powers the public /housekeeper/[id] page. Housekeepers
+  // open it via SMS link with no Staxis login. The browser supabase client
+  // is anon for them, RLS's user_owns_property check returns false, and
+  // every SELECT silently returns []. Worked for Maria (signed in) but
+  // returned zero rooms for every actual housekeeper — the original
+  // 2026-04-30 "no rooms show up" bug. The /api/housekeeper/rooms route
+  // bypasses RLS via supabaseAdmin and applies its own capability check
+  // (staffId must belong to pid). See route.ts header for the full story.
+  //
+  // The realtime channel is still subscribed because Maria/admin sessions
+  // do receive events and benefit from instant updates. For unauthenticated
+  // housekeepers it just no-ops (RLS blocks the postgres_changes payload),
+  // which is fine — the page fetches fresh state on every navigation and
+  // the cards still update locally on Start/Done taps.
+  const fetchRooms = async (): Promise<Room[]> => {
+    const res = await fetch(
+      `/api/housekeeper/rooms?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(staffId)}`,
+      { method: 'GET', headers: { 'Content-Type': 'application/json' } },
+    );
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`/api/housekeeper/rooms ${res.status}: ${body.slice(0, 200)}`);
+    }
+    const json = (await res.json().catch(() => null)) as
+      | { ok?: boolean; data?: unknown; error?: string }
+      | null;
+    if (!json?.ok || !Array.isArray(json.data)) {
+      throw new Error(`/api/housekeeper/rooms unexpected body: ${json?.error ?? 'no data'}`);
+    }
+    // Server already returned camel-cased Room shape via fromRoomRow().
+    return json.data as Room[];
+  };
+
   return subscribeTable<Room>(
     `rooms-hk:${pid}:${staffId}`,
     'rooms',
     // Single-filter only on realtime — see subscribeToRooms note.
     `property_id=eq.${pid}`,
-    async () => {
-      const { data, error } = await supabase
-        .from('rooms').select('*')
-        .eq('property_id', pid)
-        .eq('assigned_to', staffId);
-      if (error) throw error;
-      return (data ?? []).map(fromRoomRow);
-    },
+    fetchRooms,
     callback,
   );
 }
 
 /**
  * Fetch a single staff member by id, scoped to a property.
- * Returns null if not found. Used by the HK-facing pages to read the
- * staff member's saved `language` preference on first render.
+ * Returns null if not found.
+ *
+ * NOTE: This goes through the supabase browser client and therefore needs
+ * an authenticated session (Maria / admin) to work. The publicly-linkable
+ * /housekeeper/[id] page must NOT call this — for unauthenticated housekeepers
+ * RLS silently filters the SELECT to zero rows and you get null back. Use
+ * `getStaffSelfPublic()` from that page instead.
  */
 export async function getStaffMember(pid: string, sid: string): Promise<StaffMember | null> {
   const { data, error } = await supabase
@@ -53,11 +87,79 @@ export async function getStaffMember(pid: string, sid: string): Promise<StaffMem
 }
 
 /**
- * Persist a staff member's language choice. Small convenience wrapper
- * over updateStaffMember — lets the HK-facing language toggle stay
- * one line.
+ * Public-page fetch for the housekeeper's own minimal profile (id, name,
+ * language). Routes through /api/housekeeper/me which uses service-role to
+ * bypass RLS, so it works from the publicly-linkable /housekeeper/[id]
+ * page where the visitor has no Staxis session.
+ *
+ * Returns null on 404 (staff not on property) or any error — the page just
+ * falls back to default language ('en'). Errors are logged for diagnosis
+ * but never throw, because failing to load language should not block the
+ * room list from rendering.
+ */
+export async function getStaffSelfPublic(
+  pid: string,
+  sid: string,
+): Promise<{ id: string; name: string; language: 'en' | 'es' | null } | null> {
+  try {
+    const res = await fetch(
+      `/api/housekeeper/me?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(sid)}`,
+      { method: 'GET', headers: { 'Content-Type': 'application/json' } },
+    );
+    if (!res.ok) {
+      // 404 = unknown staff; any other status = server error. Either way
+      // we just want to return null and let the caller default.
+      return null;
+    }
+    const json = (await res.json().catch(() => null)) as
+      | { ok?: boolean; data?: { id: string; name: string; language: 'en' | 'es' | null } }
+      | null;
+    return json?.ok && json.data ? json.data : null;
+  } catch (err) {
+    logErr('getStaffSelfPublic', err);
+    return null;
+  }
+}
+
+/**
+ * Persist a staff member's language choice (admin / authenticated path).
+ *
+ * NOTE: Like getStaffMember(), this routes through the browser supabase
+ * client and only works when the caller has an auth session that satisfies
+ * the staff RLS policy. The publicly-linkable /housekeeper/[id] and
+ * /laundry/[id] pages must use `saveStaffLanguagePublic()` below — this
+ * one silently no-ops for unauthenticated housekeepers (RLS filters the
+ * UPDATE to zero rows but the supabase client returns 200 OK).
  */
 export async function saveStaffLanguage(sid: string, language: 'en' | 'es'): Promise<void> {
   const { error } = await supabase.from('staff').update({ language }).eq('id', sid);
   if (error) { logErr('saveStaffLanguage', error); throw error; }
+}
+
+/**
+ * Public-page write for the housekeeper's language preference. Routes
+ * through /api/housekeeper/save-language which uses service-role to
+ * bypass RLS, so the toggle on the publicly-linkable /housekeeper/[id]
+ * page actually persists. Errors are non-fatal (logged, swallowed) —
+ * the local UI state has already updated, and the worst outcome is the
+ * preference doesn't carry across sessions.
+ */
+export async function saveStaffLanguagePublic(
+  pid: string,
+  sid: string,
+  language: 'en' | 'es',
+): Promise<void> {
+  try {
+    const res = await fetch('/api/housekeeper/save-language', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pid, staffId: sid, language }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      logErr('saveStaffLanguagePublic', new Error(`http ${res.status}: ${body.slice(0, 200)}`));
+    }
+  } catch (err) {
+    logErr('saveStaffLanguagePublic', err);
+  }
 }

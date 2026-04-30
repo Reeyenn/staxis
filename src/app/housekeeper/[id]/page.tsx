@@ -4,8 +4,8 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import {
   subscribeToRoomsForStaff,
-  getStaffMember,
-  saveStaffLanguage,
+  getStaffSelfPublic,
+  saveStaffLanguagePublic,
   bucketStayoverDay,
 } from '@/lib/db';
 import { useTodayStr } from '@/lib/use-today-str';
@@ -144,7 +144,12 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
 
     (async () => {
       try {
-        const s = await getStaffMember(pid, housekeeperId);
+        // getStaffSelfPublic routes through /api/housekeeper/me which uses
+        // service-role to bypass RLS. The previous getStaffMember() call
+        // went directly through the supabase browser client and silently
+        // returned null for unauthenticated housekeepers — so the page
+        // always defaulted to English regardless of what Maria had set.
+        const s = await getStaffSelfPublic(pid, housekeeperId);
         if (!cancelled && s && (s.language === 'es' || s.language === 'en')) {
           setLang(s.language);
         }
@@ -695,9 +700,13 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
               // Persist to the staff row so Maria's staff modal stays in
               // sync with whatever this HK picked. Best-effort; silent on
               // failure since the UI already updated locally.
-              if (housekeeperId) {
+              if (housekeeperId && pid) {
+                // Goes through /api/housekeeper/save-language (service-role)
+                // because the public page has no auth session. The previous
+                // direct-supabase write silently no-op'd on RLS for every
+                // unauthenticated HK — toggle worked locally, never persisted.
                 try {
-                  await saveStaffLanguage(housekeeperId, next);
+                  await saveStaffLanguagePublic(pid, housekeeperId, next);
                 } catch (err) {
                   console.error('[housekeeper] lang persist failed:', err);
                 }
