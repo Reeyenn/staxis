@@ -26,8 +26,7 @@ export type RateLimitEndpoint =
   | 'sms-reply-resend'
   | 'test-sms-flow'
   | 'sync-room-assignments'
-  | 'populate-rooms-from-plan'
-  | 'notify-housekeepers-sms';
+  | 'populate-rooms-from-plan';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -47,9 +46,6 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // hammer this. 200/hr is "click 3x per minute for an hour" headroom.
   'sync-room-assignments':    200,
   'populate-rooms-from-plan':  20,
-  // Legacy SMS-fan-out route. Active SMS path is send-shift-confirmations;
-  // this route exists for back-compat. Cap matches morning-resend.
-  'notify-housekeepers-sms':    5,
 };
 
 /**
