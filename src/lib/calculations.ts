@@ -222,13 +222,6 @@ export interface AssignConfig {
   stayoverDay2Minutes?: number;
   prepMinutesPerRoom?: number;
   shiftMinutes?: number;
-  /**
-   * Optional supply predictions from active ML model. Map key is "${roomNumber}:${staffId}".
-   * When provided, predicted_minutes_p50 values override static room-minute estimates
-   * in the autoAssign workload calculation. When absent or no entry for a room-staff pair,
-   * falls back to static rules.
-   */
-  supplyPredictions?: Map<string, number>;
 }
 
 export function autoAssignRooms(
@@ -249,10 +242,8 @@ export function autoAssignRooms(
   // honors this — but if Mario manually adds an Excluded housekeeper to
   // today's crew via the Add Staff button, we still want auto-assign to
   // refuse to pile rooms on them. So we re-filter here as a safety net.
-  // Within the remaining pool, 'priority' staff fill first (until at the
-  // shift cap or out of suitable floor stickiness), then 'normal' staff
-  // pick up the spillover. Floor-stickiness and least-load tiebreakers
-  // apply within each tier — same logic as before, just two passes.
+  // Within the remaining pool, 'priority' staff fill first (toward the
+  // shift cap), then 'normal' staff pick up the spillover.
   const available = staff.filter(s =>
     s.scheduledToday && s.schedulePriority !== 'excluded',
   );
@@ -269,20 +260,92 @@ export function autoAssignRooms(
   const staffLoad: Record<string, { minutes: number; floors: Map<string, number> }> = {};
   available.forEach(s => { staffLoad[s.id] = { minutes: 0, floors: new Map() }; });
 
-  // Sort by floor first (proximity), then checkouts before stayovers, then room number
-  const sortedRooms = [...rooms].sort((a, b) => {
-    const floorA = a.number.length >= 3 ? a.number[0] : '1';
-    const floorB = b.number.length >= 3 ? b.number[0] : '1';
-    if (floorA !== floorB) return floorA.localeCompare(floorB);
-    const typeOrder = getRoomSortKey(a.type, a.priority) - getRoomSortKey(b.type, b.priority);
-    if (typeOrder !== 0) return typeOrder;
-    return a.number.localeCompare(b.number);
+  function roomMinutes(room: { type: string; stayoverDay?: number }): number {
+    let baseMins: number;
+    if (room.type === 'checkout') {
+      baseMins = coMins;
+    } else if (typeof room.stayoverDay === 'number' && room.stayoverDay > 0) {
+      baseMins = room.stayoverDay % 2 === 1 ? day1Mins : day2Mins;
+    } else {
+      baseMins = legacySoMins;
+    }
+    return baseMins + prepMins;
+  }
+
+  // ── Floor-block assignment (2026-04-30 redesign) ────────────────────────
+  //
+  // Old behavior (caused Maria's 'why does Cindy have half of two floors?'
+  // complaint): rooms were processed in floor order, and within each floor
+  // the algorithm picked the housekeeper with the most stickiness on that
+  // floor. As soon as the first HK hit the shift cap on a busy floor, the
+  // SECOND HK started taking rooms on the SAME floor — and once both had
+  // some rooms there, the next floor split the same way again. Result:
+  // every busy floor got ping-ponged between the same two HKs.
+  //
+  // New behavior: process floors largest-first, and for each floor try to
+  // give the WHOLE floor to a single HK. Only spill over to a second HK
+  // when the floor is genuinely too big for one shift. The HK who picks
+  // up the spillover then becomes the natural choice for the NEXT-largest
+  // floor (because they're the least loaded), and they end up doing one
+  // small floor + one big one. Other HKs stay on a single floor each.
+  //
+  // For the typical Comfort Suites layout (4 HKs, 4 floors, one floor
+  // bigger than a single shift): the result is one HK shared across 1.x
+  // floors and three HKs each on a single floor. Compare to before where
+  // two HKs were shared across 2 floors each.
+  //
+  // Sorting:
+  //   • Floors processed in order of total cleaning minutes DESCENDING
+  //     (biggest first — biggest is most likely to overflow, so we resolve
+  //     it before assigning small floors to anyone).
+  //   • Within a floor, rooms ordered checkouts-first then ascending number
+  //     so the cleaning sequence makes sense for the HK doing them.
+
+  function getFloor(num: string): string {
+    return num.length >= 3 ? num[0] : '1';
+  }
+
+  // Group rooms by floor and pre-compute minutes per room.
+  type FloorRoom = { id: string; number: string; type: string; mins: number };
+  const byFloor = new Map<string, FloorRoom[]>();
+  for (const r of rooms) {
+    const floor = getFloor(r.number);
+    const mins = roomMinutes(r);
+    const list = byFloor.get(floor);
+    const entry: FloorRoom = { id: r.id, number: r.number, type: r.type, mins };
+    if (list) list.push(entry); else byFloor.set(floor, [entry]);
+  }
+
+  // Within each floor: checkouts first (more involved cleans), then ascending
+  // room number. Keeps the sequence walkable and consistent.
+  for (const list of Array.from(byFloor.values())) {
+    list.sort((a, b) => {
+      const ka = getRoomSortKey(a.type, 'standard');
+      const kb = getRoomSortKey(b.type, 'standard');
+      if (ka !== kb) return ka - kb;
+      return a.number.localeCompare(b.number);
+    });
+  }
+
+  // Order floors by total minutes DESCENDING. Tie-break by floor label so
+  // output is deterministic (same input → same assignment, important so
+  // 'click Auto-assign twice' doesn't shuffle rooms).
+  const floorEntries: Array<[string, FloorRoom[]]> = Array.from(byFloor.entries());
+  floorEntries.sort((a, b) => {
+    const ma = a[1].reduce((s, x) => s + x.mins, 0);
+    const mb = b[1].reduce((s, x) => s + x.mins, 0);
+    if (mb !== ma) return mb - ma;
+    return a[0].localeCompare(b[0]);
   });
 
-  // Pick the best staff out of a candidate pool given a room. Stickiness
-  // first (whoever has the most rooms on this floor), then least-load.
-  // Returns null if the pool is empty or no one has capacity.
-  function pickBest(
+  // pickPool: choose the housekeeper that should claim the next room from
+  // this floor. Among the pool members with capacity:
+  //   1) prefer whoever already has the most rooms on this floor (let them
+  //      finish what they started — minimizes walking),
+  //   2) then prefer whoever has the LEAST total load (so a fresh shoulder
+  //      gets the new floor instead of piling more on someone already busy).
+  // Returns null when no one in the pool can fit even one room of this size.
+  function pickPool(
     pool: StaffMember[],
     floor: string,
     roomTime: number,
@@ -304,62 +367,32 @@ export function autoAssignRooms(
     return best;
   }
 
-  // Track rooms we couldn't fit under the cap — surfaced as unassigned in the UI
-  // so Reeyen can add another housekeeper or manually stretch someone. Never
-  // pile over the cap silently — that's what produced 10h+ shifts in the past.
-  for (const room of sortedRooms) {
-    const floor = room.number.length >= 3 ? room.number[0] : '1';
+  // Assign each floor as a block, splitting only when the floor genuinely
+  // doesn't fit on one shift. Inner loop: take rooms one at a time off the
+  // queue; whoever's least loaded with capacity for the next room takes as
+  // many as they can before we re-pick.
+  for (const [floor, floorRooms] of floorEntries) {
+    const queue: FloorRoom[] = [...floorRooms];
+    while (queue.length > 0) {
+      const next = queue[0];
+      let chosen = pickPool(priorityStaff, floor, next.mins);
+      if (!chosen) chosen = pickPool(normalStaff, floor, next.mins);
+      if (!chosen) break; // nobody has capacity left — leave the rest unassigned
 
-    // Attempt to use ML supply predictions when available. Walk through Priority
-    // staff first (they get first pick), then Normal staff, and find the first
-    // HK with a prediction for this room. If found and ML is active, use the
-    // predicted minutes. Otherwise fall back to static rules.
-    let roomTime: number | null = null;
-
-    if (config?.supplyPredictions) {
-      for (const s of priorityStaff) {
-        const key = `${room.number}:${s.id}`;
-        if (config.supplyPredictions.has(key)) {
-          roomTime = config.supplyPredictions.get(key)!;
-          break;
-        }
+      // Greedy fill: keep handing this HK rooms from this floor until they
+      // hit the shift cap or the floor is empty.
+      while (queue.length > 0) {
+        const r = queue[0];
+        if (staffLoad[chosen.id].minutes + r.mins > shiftCap) break;
+        assignments[r.id] = chosen.id;
+        staffLoad[chosen.id].minutes += r.mins;
+        const fmap = staffLoad[chosen.id].floors;
+        fmap.set(floor, (fmap.get(floor) ?? 0) + 1);
+        queue.shift();
       }
-      if (roomTime === null) {
-        for (const s of normalStaff) {
-          const key = `${room.number}:${s.id}`;
-          if (config.supplyPredictions.has(key)) {
-            roomTime = config.supplyPredictions.get(key)!;
-            break;
-          }
-        }
-      }
+      // chosen is full (or queue empty); outer loop re-picks for any
+      // remaining queue rooms.
     }
-
-    // Fall back to static rules if no ML prediction found
-    if (roomTime === null) {
-      let baseMins: number;
-      if (room.type === 'checkout') {
-        baseMins = coMins;
-      } else if (typeof room.stayoverDay === 'number' && room.stayoverDay > 0) {
-        baseMins = room.stayoverDay % 2 === 1 ? day1Mins : day2Mins;
-      } else {
-        baseMins = legacySoMins;
-      }
-      roomTime = baseMins + prepMins;
-    }
-
-    // Try Priority staff first. Only fall through to Normal staff when no
-    // Priority candidate has capacity for this room. This means Priority
-    // housekeepers fill toward the shift cap before any Normal one picks
-    // up a room — matching the modal's promise of "Priority = picked first".
-    let best = pickBest(priorityStaff, floor, roomTime);
-    if (!best) best = pickBest(normalStaff, floor, roomTime);
-    if (!best) continue; // leave in unassigned pool — no one has capacity
-
-    assignments[room.id] = best.id;
-    staffLoad[best.id].minutes += roomTime;
-    const fmap = staffLoad[best.id].floors;
-    fmap.set(floor, (fmap.get(floor) ?? 0) + 1);
   }
 
   return assignments;
