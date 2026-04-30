@@ -96,7 +96,11 @@ class XGBoostQuantile(BaseModel):
                     )
                 else:
                     raise
-                model.fit(X_array, y_array, sample_weight=sample_weight)
+                # NOTE: do NOT call model.fit() here. The fallback path already
+                # trained the booster via xgb.train() above; calling fit() would
+                # re-train from scratch and discard that work. The success path
+                # in the try block has already trained the model when we reach
+                # this point.
             self.models[q] = model
 
     def predict_quantile(
