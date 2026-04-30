@@ -1,6 +1,7 @@
 """Inference pipeline for Layer 1 Demand predictions."""
 import json
-from datetime import date, datetime, timedelta
+import uuid
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 import numpy as np
@@ -8,6 +9,42 @@ import pandas as pd
 
 from src.config import get_settings
 from src.supabase_client import get_supabase_client
+
+
+# Property timezone — Comfort Suites is in Houston (Central Time). Hard-coded
+# for the single-property deployment. When a `properties.timezone` column is
+# added, switch this to look up per-property.
+PROPERTY_TZ_OFFSET_HOURS = -6  # CST (UTC-6); CDT becomes -5. We compensate below
+                                # by deriving "today/tomorrow" from a TZ-aware
+                                # calculation rather than a fixed offset.
+
+
+def _tomorrow_in_property_tz() -> date:
+    """Return the property's local 'tomorrow' as a date.
+
+    The 5:30 AM CT cron passes prediction_date explicitly, so this is a
+    fallback path for manual triggers. Using naive datetime.utcnow() here
+    silently rolls past the date boundary in the wrong place across the
+    18:00–06:00 UTC window. Compute it in America/Chicago instead.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/Chicago")
+    except Exception:  # pragma: no cover — zoneinfo is stdlib on 3.9+
+        # Fall back to a fixed-offset CST. Slightly wrong during DST half
+        # the year, but better than UTC for a Houston property.
+        tz = timezone(timedelta(hours=PROPERTY_TZ_OFFSET_HOURS))
+    now_local = datetime.now(timezone.utc).astimezone(tz)
+    return (now_local + timedelta(days=1)).date()
+
+
+def _validate_property_id(property_id: str) -> Optional[str]:
+    """Reject any property_id that is not a well-formed UUID."""
+    try:
+        uuid.UUID(str(property_id))
+        return None
+    except (ValueError, AttributeError, TypeError):
+        return f"Invalid property_id: not a UUID ({property_id!r})"
 
 
 async def predict_demand(
@@ -18,16 +55,20 @@ async def predict_demand(
 
     Args:
         property_id: Property UUID
-        prediction_date: Date to predict for (defaults to tomorrow)
+        prediction_date: Date to predict for (defaults to tomorrow in property TZ)
 
     Returns:
         Dictionary with predictions
     """
+    err = _validate_property_id(property_id)
+    if err:
+        return {"error": err, "property_id": property_id, "date": None}
+
     settings = get_settings()
     client = get_supabase_client()
 
     if prediction_date is None:
-        prediction_date = (datetime.utcnow() + timedelta(days=1)).date()
+        prediction_date = _tomorrow_in_property_tz()
 
     # Find active demand model
     active_models = client.fetch_many(
@@ -46,19 +87,28 @@ async def predict_demand(
     model_run = active_models[0]
     model_run_id = model_run["id"]
 
-    # Fetch plan for prediction_date
+    # Fetch plan for prediction_date.
+    # plan_snapshots is one row per (property, date) with already-aggregated
+    # counts (the scraper sums by room_state and writes the totals). The
+    # earlier query referenced a column "room_status" that does not exist on
+    # this table — every inference call would have failed at the SQL layer.
+    # Read the pre-aggregated columns directly. Take the freshest pull if
+    # multiple rows exist for the same date.
     plan_query = f"""
         select
-            coalesce(sum(case when room_status = 'CO' then 1 else 0 end), 0) as checkouts,
-            coalesce(sum(case when room_status = 'SV1' then 1 else 0 end), 0) as stayover_day1,
-            coalesce(sum(case when room_status = 'SV2+' then 1 else 0 end), 0) as stayover_day2plus,
-            coalesce(sum(case when room_status = 'VD' then 1 else 0 end), 0) as vacant_dirty,
-            coalesce(sum(case when room_status = 'OCC' or room_status like 'SV%' then 1 else 0 end), 0) as occupied_count,
-            coalesce(sum(1), 0) as total_count,
-            extract(dow from '{prediction_date}'::date) as dow
+            coalesce(checkouts, 0) as checkouts,
+            coalesce(stayover_day1, 0) as stayover_day_1_count,
+            coalesce(stayover_day2, 0) + coalesce(stayover_arrival_day, 0) + coalesce(stayover_unknown, 0) as stayover_day_2plus_count,
+            coalesce(vacant_dirty, 0) as vacant_dirty_count,
+            coalesce(total_rooms, 0) as total_count,
+            coalesce(total_rooms, 0) - coalesce(vacant_clean, 0) - coalesce(vacant_dirty, 0) - coalesce(ooo, 0) as occupied_count,
+            extract(dow from date)::int as dow,
+            coalesce(total_cleaning_minutes, 0) as scraper_cleaning_minutes
         from plan_snapshots
         where property_id = '{property_id}'
           and date = '{prediction_date}'::date
+        order by pulled_at desc
+        limit 1
     """
 
     try:
@@ -84,16 +134,28 @@ async def predict_demand(
     if occupancy_pct < 0 or occupancy_pct > 100:
         occupancy_pct = 50.0  # Fallback if something is wrong
 
-    # Build features
+    # Build features matching the training column order exactly. The training
+    # query in src/training/demand.py produces these column names; we mirror
+    # them here so the saved posterior aligns with X at inference time.
     features_dict = {
         "intercept": 1.0,
-        "total_checkouts_today": float(plan.get("checkouts", 0)),
-        "day_of_week": int(plan.get("dow", 3)),
+        "total_checkouts": float(plan.get("checkouts", 0) or 0),
+        "stayover_day_1_count": float(plan.get("stayover_day_1_count", 0) or 0),
+        "stayover_day_2plus_count": float(plan.get("stayover_day_2plus_count", 0) or 0),
+        "vacant_dirty_count": float(plan.get("vacant_dirty_count", 0) or 0),
         "occupancy_pct": round(occupancy_pct, 2),
+        "day_of_week": int(plan.get("dow", 3) or 3),
     }
 
-    # Create feature vector
-    feature_cols = ["intercept", "total_checkouts_today", "day_of_week", "occupancy_pct"]
+    feature_cols = [
+        "intercept",
+        "total_checkouts",
+        "stayover_day_1_count",
+        "stayover_day_2plus_count",
+        "vacant_dirty_count",
+        "occupancy_pct",
+        "day_of_week",
+    ]
     X = pd.DataFrame([features_dict])[feature_cols]
 
     # Load and run model based on algorithm
@@ -127,14 +189,33 @@ async def predict_demand(
                 model.alpha = posterior_params["alpha"]
                 model.beta = posterior_params["beta"]
                 model.feature_names = posterior_params["feature_names"]
-            except Exception:
-                # If posterior load fails, initialize with prior only
+            except Exception as exc:
+                # Posterior JSON was corrupt — fall back to prior so we still
+                # return a reasonable number, but log loudly so the issue
+                # surfaces in the model_runs cockpit.
+                print(json.dumps({
+                    "evt": "demand_posterior_load_failed",
+                    "model_run_id": model_run_id,
+                    "error": str(exc),
+                }))
                 model._initialize_prior(X)
         else:
             # No posterior saved; use prior-only inference
             model._initialize_prior(X)
 
-        predictions = model.predict_quantile(X, quantiles)
+        try:
+            predictions = model.predict_quantile(X, quantiles)
+        except ValueError as exc:
+            # Feature-shape mismatch between trained posterior and inference X.
+            # bayesian_regression now raises rather than silently reverting to
+            # the prior. Surface as a structured error so it shows up red in
+            # the /admin/ml cockpit and somebody retrains the model.
+            return {
+                "error": f"Bayesian posterior incompatible with inference features: {exc}",
+                "property_id": property_id,
+                "date": str(prediction_date),
+                "model_version": model_run.get("model_version"),
+            }
 
     elif algorithm == "xgboost-quantile":
         from src.layers.xgboost_quantile import XGBoostQuantile

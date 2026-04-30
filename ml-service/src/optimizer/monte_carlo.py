@@ -1,6 +1,7 @@
 """Layer 3 Optimizer: Monte Carlo simulation for headcount recommendation."""
 import json
-from datetime import date, datetime, timedelta
+import uuid
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -8,6 +9,25 @@ import pandas as pd
 
 from src.config import get_settings
 from src.supabase_client import get_supabase_client
+
+
+def _tomorrow_in_property_tz() -> date:
+    """Tomorrow as seen by a Houston property (matches demand.py)."""
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/Chicago")
+    except Exception:  # pragma: no cover
+        tz = timezone(timedelta(hours=-6))
+    now_local = datetime.now(timezone.utc).astimezone(tz)
+    return (now_local + timedelta(days=1)).date()
+
+
+def _validate_property_id(property_id: str) -> Optional[str]:
+    try:
+        uuid.UUID(str(property_id))
+        return None
+    except (ValueError, AttributeError, TypeError):
+        return f"Invalid property_id: not a UUID ({property_id!r})"
 
 
 async def optimize_headcount(
@@ -27,11 +47,15 @@ async def optimize_headcount(
     Returns:
         Dictionary with recommended_headcount, completion_probability_curve, etc.
     """
+    err = _validate_property_id(property_id)
+    if err:
+        return {"error": err, "property_id": property_id, "date": None}
+
     settings = get_settings()
     client = get_supabase_client()
 
     if prediction_date is None:
-        prediction_date = (datetime.utcnow() + timedelta(days=1)).date()
+        prediction_date = _tomorrow_in_property_tz()
 
     # Fetch active L1 + L2 predictions
     demand_preds = client.fetch_many(
@@ -68,96 +92,92 @@ async def optimize_headcount(
     use_l2_supply = len(supply_preds) >= 10
 
     if use_l2_supply:
-        # L2 path: per-room + per-housekeeper quantile sampling
-        # Group supply predictions by staff_id to estimate per-housekeeper workload
-        supply_by_hk = {}
-        for pred in supply_preds:
-            staff_id = pred.get("staff_id")
-            if staff_id:
-                if staff_id not in supply_by_hk:
-                    supply_by_hk[staff_id] = []
-                supply_by_hk[staff_id].append(pred)
-
-        # Simulate headcount curves using supply data
+        # L2 path: per-room quantile sampling + LPT bin-packing across H abstract workers.
+        #
+        # Why we ignore staff_id from supply_preds here: this Monte Carlo simulates
+        # a hypothetical staffing level (1, 2, 3 …). The actually-assigned staff
+        # from tomorrow's schedule is irrelevant to "what does headcount=H give us?".
+        # We treat each room time as an independent job and pack it onto H workers
+        # via Longest Processing Time first (LPT), the classic greedy approximation
+        # for makespan minimization. Then check whether the slowest worker finishes
+        # within shift_cap_minutes.
+        #
+        # Previous bug: the bin-packing loop did `hk_workloads[staff_id] = room_time`
+        # (assignment, not accumulation), so the same housekeeper's later rooms
+        # overwrote earlier ones. Workload was massively underestimated and the
+        # optimizer recommended too few housekeepers.
         completion_curves = []
-        recommended_headcount = 5  # Default
+        recommended_headcount = None  # decided below
 
         for headcount in range(1, 11):
+            shift_cap = float(settings.shift_cap_minutes)
             total_completed = 0
 
             for _ in range(settings.monte_carlo_draws):
-                # Sample per-room times from supply predictions
-                sampled_room_times = []
+                # Sample per-room times from supply predictions. Uniform between
+                # p25 and p90 is a coarse but unbiased approximation of the
+                # quantile-pinball distribution shape.
+                room_times: List[float] = []
                 for pred in supply_preds:
-                    # Sample from the distribution [p25, p50, p75, p90]
                     p25 = float(pred.get("predicted_minutes_p25", 15))
-                    p50 = float(pred.get("predicted_minutes_p50", 20))
-                    p75 = float(pred.get("predicted_minutes_p75", 25))
                     p90 = float(pred.get("predicted_minutes_p90", 30))
-                    # Simple interpolation: uniform between p25 and p90
-                    sampled_time = np.random.uniform(p25, p90)
-                    sampled_room_times.append(
-                        (sampled_time, pred.get("staff_id"))
-                    )
-
-                # Greedy bin-packing: assign rooms to housekeepers (longest-room-first)
-                sampled_room_times.sort(reverse=True, key=lambda x: x[0])
-                hk_workloads = {}  # staff_id -> total_minutes
-                for room_time, staff_id in sampled_room_times:
-                    if staff_id not in hk_workloads:
-                        hk_workloads[staff_id] = 0
-                    # For simplicity, assign to least-loaded housekeeper available
-                    # (True bin-packing would be more complex)
-                    if len(hk_workloads) < headcount:
-                        hk_workloads[staff_id] = room_time
+                    if p90 <= p25:
+                        # Degenerate distribution — use the midpoint deterministically.
+                        room_times.append((p25 + p90) / 2.0)
                     else:
-                        # Find housekeeper with minimum load
-                        min_hk = min(hk_workloads.keys(), key=lambda h: hk_workloads[h])
-                        hk_workloads[min_hk] += room_time
+                        room_times.append(float(np.random.uniform(p25, p90)))
 
-                # Check if max workload <= shift capacity
-                max_workload = max(hk_workloads.values()) if hk_workloads else 0
-                if max_workload <= settings.shift_cap_minutes:
+                # LPT: longest jobs first → assign each to the currently-least-loaded worker.
+                room_times.sort(reverse=True)
+                worker_loads = [0.0] * headcount
+                for t in room_times:
+                    idx = int(np.argmin(worker_loads))
+                    worker_loads[idx] += t
+
+                makespan = max(worker_loads) if worker_loads else 0.0
+                if makespan <= shift_cap:
                     total_completed += 1
 
             completion_prob = float(total_completed / settings.monte_carlo_draws)
-            completion_curves.append({
-                "headcount": headcount,
-                "p": completion_prob,
-            })
+            completion_curves.append({"headcount": headcount, "p": completion_prob})
 
-            # Check if this headcount meets target
-            if completion_prob >= target_prob and recommended_headcount == 5:
+            # First headcount that meets the target is the recommendation.
+            if recommended_headcount is None and completion_prob >= target_prob:
                 recommended_headcount = headcount
+
+        # If no headcount in 1..10 meets the target, pick the highest curve point
+        # rather than silently defaulting to 5 (the previous default hid this case).
+        if recommended_headcount is None:
+            recommended_headcount = max(completion_curves, key=lambda c: c["p"])["headcount"]
     else:
-        # L1 path: sample total demand uniformly between p50 and p95
-        p50_minutes = demand.get("predicted_minutes_p50", 180.0)
-        p95_minutes = demand.get("predicted_minutes_p95", 240.0)
-        min_demand = float(p50_minutes)
-        max_demand = float(p95_minutes)
+        # L1 path: total demand only. Sample uniformly between p50 and p95
+        # of the predicted minutes distribution. shift_capacity = H × shift_cap;
+        # success = sampled_demand fits in capacity.
+        p50_minutes = float(demand.get("predicted_minutes_p50", 180.0) or 180.0)
+        p95_minutes = float(demand.get("predicted_minutes_p95", 240.0) or 240.0)
+        min_demand = p50_minutes
+        max_demand = max(p95_minutes, p50_minutes + 1.0)  # avoid zero-width range
 
         completion_curves = []
-        recommended_headcount = 5  # Default
+        recommended_headcount = None
 
         for headcount in range(1, 11):
             shift_capacity = headcount * settings.shift_cap_minutes
             total_completed = 0
 
             for _ in range(settings.monte_carlo_draws):
-                # Sample demand
-                sampled_demand = np.random.uniform(min_demand, max_demand)
+                sampled_demand = float(np.random.uniform(min_demand, max_demand))
                 if sampled_demand <= shift_capacity:
                     total_completed += 1
 
             completion_prob = float(total_completed / settings.monte_carlo_draws)
-            completion_curves.append({
-                "headcount": headcount,
-                "p": completion_prob,
-            })
+            completion_curves.append({"headcount": headcount, "p": completion_prob})
 
-            # Check if this headcount meets target
-            if completion_prob >= target_prob and recommended_headcount == 5:
+            if recommended_headcount is None and completion_prob >= target_prob:
                 recommended_headcount = headcount
+
+        if recommended_headcount is None:
+            recommended_headcount = max(completion_curves, key=lambda c: c["p"])["headcount"]
 
     # Write optimizer_results
     optimizer_result = {

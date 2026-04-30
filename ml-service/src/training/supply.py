@@ -1,15 +1,31 @@
 """Training pipeline for Layer 2 Supply model (per-room × per-housekeeper)."""
 import json
+import os
+import uuid
 from datetime import datetime
 from typing import Optional
 
 import numpy as np
 import pandas as pd
+import psycopg2
 
+from src.advisory_lock import advisory_lock
 from src.config import get_settings
 from src.layers.bayesian_regression import BayesianRegression
 from src.layers.xgboost_quantile import XGBoostQuantile
 from src.supabase_client import get_supabase_client
+
+
+SUPPLY_FEATURE_COLS = ["day_of_week", "occupancy_at_start"]
+
+
+def _validate_property_id(property_id: str) -> Optional[str]:
+    """Reject any property_id that is not a well-formed UUID."""
+    try:
+        uuid.UUID(str(property_id))
+        return None
+    except (ValueError, AttributeError, TypeError):
+        return f"Invalid property_id: not a UUID ({property_id!r})"
 
 
 async def train_supply_model(
@@ -33,9 +49,48 @@ async def train_supply_model(
     Returns:
         Dictionary with model_run_id, metrics, is_active
     """
+    err = _validate_property_id(property_id)
+    if err:
+        return {"error": err, "model_run_id": None, "is_active": False}
+
     settings = get_settings()
     client = get_supabase_client()
 
+    db_url = os.environ.get("SUPABASE_DB_URL") or os.environ.get("DATABASE_URL")
+    lock_conn = None
+    if db_url:
+        try:
+            lock_conn = psycopg2.connect(db_url)
+        except Exception as exc:
+            print(json.dumps({
+                "evt": "advisory_lock_connect_failed",
+                "layer": "supply", "property_id": property_id, "error": str(exc),
+            }))
+
+    def _do_train() -> dict:
+        return _train_supply_inner(property_id, max_rows, settings, client)
+
+    try:
+        if lock_conn is not None:
+            with advisory_lock(lock_conn, property_id, "supply", blocking=True):
+                return _do_train()
+        else:
+            return _do_train()
+    finally:
+        if lock_conn is not None:
+            try:
+                lock_conn.close()
+            except Exception:
+                pass
+
+
+def _train_supply_inner(
+    property_id: str,
+    max_rows: Optional[int],
+    settings,
+    client,
+) -> dict:
+    """Inner supply training routine — runs inside the advisory lock."""
     # Fetch cleaning events with duration
     query = f"""
         select
@@ -112,9 +167,14 @@ async def train_supply_model(
     validation_mae = float(np.mean(np.abs(pred_test - y_test.values)))
     training_mae = float(np.mean(np.abs(model.predict(X_train) - y_train.values)))
 
-    # Baseline (mean)
-    baseline_mae = float(np.mean(np.abs(y_test.mean() - y_test.values)))
-    beats_baseline_pct = float(max(0, (baseline_mae - validation_mae) / baseline_mae))
+    # Baseline: predict the training mean for every test row. This is the
+    # simplest "no model" benchmark — anything worth deploying must beat it.
+    baseline_pred = y_train.mean()
+    baseline_mae = float(np.mean(np.abs(baseline_pred - y_test.values)))
+    if baseline_mae > 1e-9:
+        beats_baseline_pct = float(max(0.0, (baseline_mae - validation_mae) / baseline_mae))
+    else:
+        beats_baseline_pct = 0.0
 
     # Check gates
     passes_gates = (
@@ -150,6 +210,23 @@ async def train_supply_model(
 
     should_activate = passes_gates and consecutive_passes >= settings.consecutive_passing_runs_required
 
+    # Serialize Bayesian posterior so supply inference can rebuild the model
+    # without re-fitting. Without this the inference function silently fell
+    # back to a one-row dummy fit and predicted a flat 25 minutes per room.
+    posterior_params = None
+    if model.get_config()["algorithm"] == "bayesian":
+        posterior_params = {
+            "mu_n": model.mu_n.tolist() if model.mu_n is not None else None,
+            "sigma_n": model.sigma_n.tolist() if model.sigma_n is not None else None,
+            "alpha_n": float(model.alpha_n) if model.alpha_n is not None else None,
+            "beta_n": float(model.beta_n) if model.beta_n is not None else None,
+            "mu_0": model.mu_0.tolist() if model.mu_0 is not None else None,
+            "sigma_0": model.sigma_0.tolist() if model.sigma_0 is not None else None,
+            "alpha": float(model.alpha),
+            "beta": float(model.beta),
+            "feature_names": model.feature_names,
+        }
+
     # Create model_runs row
     model_run = client.insert(
         "model_runs",
@@ -169,6 +246,7 @@ async def train_supply_model(
             "is_active": should_activate,
             "activated_at": datetime.utcnow().isoformat() if should_activate else None,
             "consecutive_passing_runs": consecutive_passes,
+            "posterior_params": json.dumps(posterior_params) if posterior_params else None,
             "hyperparameters": json.dumps(model.get_config()),
         },
     )

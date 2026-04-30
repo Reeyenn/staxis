@@ -2,9 +2,10 @@
 import json
 from datetime import date
 from typing import Optional
+from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from src.auth import verify_bearer_token
 from src.config import get_settings
@@ -15,12 +16,31 @@ from src.optimizer.monte_carlo import optimize_headcount
 from src.training.demand import train_demand_model
 from src.training.supply import train_supply_model
 
+
+def _validate_uuid_str(value: str) -> str:
+    """Pydantic v2 validator: ensure property_id is a real UUID before it
+    reaches code that interpolates it into raw SQL. The interior modules also
+    validate, but stopping a bad value at the API boundary keeps stack traces
+    short and prevents log noise from invalid-by-typo requests.
+    """
+    try:
+        UUID(str(value))
+    except (ValueError, AttributeError, TypeError):
+        raise ValueError("property_id must be a valid UUID")
+    return str(value)
+
+
 # Request/Response models
 class TrainDemandRequest(BaseModel):
     """Request to train demand model."""
 
     property_id: str
     max_rows: Optional[int] = None
+
+    @field_validator("property_id")
+    @classmethod
+    def _check_uuid(cls, v: str) -> str:
+        return _validate_uuid_str(v)
 
 
 class TrainDemandResponse(BaseModel):
@@ -42,6 +62,11 @@ class TrainSupplyRequest(BaseModel):
     property_id: str
     max_rows: Optional[int] = None
 
+    @field_validator("property_id")
+    @classmethod
+    def _check_uuid(cls, v: str) -> str:
+        return _validate_uuid_str(v)
+
 
 class TrainSupplyResponse(BaseModel):
     """Response from supply training."""
@@ -60,6 +85,11 @@ class PredictDemandRequest(BaseModel):
 
     property_id: str
     date: Optional[date] = None
+
+    @field_validator("property_id")
+    @classmethod
+    def _check_uuid(cls, v: str) -> str:
+        return _validate_uuid_str(v)
 
 
 class PredictDemandResponse(BaseModel):
@@ -81,6 +111,11 @@ class PredictSupplyRequest(BaseModel):
     property_id: str
     date: Optional[date] = None
 
+    @field_validator("property_id")
+    @classmethod
+    def _check_uuid(cls, v: str) -> str:
+        return _validate_uuid_str(v)
+
 
 class PredictSupplyResponse(BaseModel):
     """Supply prediction response."""
@@ -97,6 +132,11 @@ class OptimizeRequest(BaseModel):
 
     property_id: str
     date: Optional[date] = None
+
+    @field_validator("property_id")
+    @classmethod
+    def _check_uuid(cls, v: str) -> str:
+        return _validate_uuid_str(v)
 
 
 class OptimizeResponse(BaseModel):

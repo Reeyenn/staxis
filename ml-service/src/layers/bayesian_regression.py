@@ -149,14 +149,26 @@ class BayesianRegression(BaseModel):
 
         X_array = X.values if isinstance(X, pd.DataFrame) else X
 
-        # Initialize prior if needed
-        if self.mu_0 is None:
-            self._initialize_prior(X)
-
-        # Check/fix shape mismatch
-        if self.mu_0.shape[0] != X_array.shape[1]:
-            # Re-initialize with correct shape
-            self._initialize_prior(X)
+        # Two distinct cases when shapes don't agree:
+        #   (a) mu_n is None  → no posterior has been fit yet. Silently
+        #       re-initializing the prior to match X loses NOTHING (there's no
+        #       learned posterior to throw away). This keeps cold-start callers
+        #       working when they pass features the prior wasn't sized for.
+        #   (b) mu_n is set   → a real posterior exists. Re-initializing the
+        #       prior here would silently discard learning. Refuse, raise.
+        if self.mu_n is None:
+            # Cold start: (re)initialize prior to match X's shape.
+            if self.mu_0 is None or self.mu_0.shape[0] != X_array.shape[1]:
+                self._initialize_prior(X)
+        else:
+            if self.mu_n.shape[0] != X_array.shape[1]:
+                raise ValueError(
+                    f"BayesianRegression feature shape mismatch: "
+                    f"posterior has {self.mu_n.shape[0]} coefficients "
+                    f"(feature_names={self.feature_names}) but X has "
+                    f"{X_array.shape[1]} features. Refusing to silently "
+                    f"revert to prior — retrain or align features."
+                )
 
         if self.mu_n is None:
             # Use prior (cold-start)
