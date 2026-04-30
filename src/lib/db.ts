@@ -46,3 +46,5 @@ export * from './db/manager-notifications';
 export * from './db/deep-cleaning';
 export * from './db/housekeeper-helpers';
 export * from './db/cleaning-events';
+export * from './db/attendance';
+export * from './db/ml';

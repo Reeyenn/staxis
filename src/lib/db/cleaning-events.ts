@@ -81,6 +81,10 @@ function fromCleaningEventRow(r: Record<string, unknown>): CleaningEvent {
  * Insert one cleaning event. Called by the housekeeper page when "Done" is
  * tapped. Computes duration, status, and flag_reason from the inputs.
  *
+ * Optional ML features: when populating features (on Done tap), pass them
+ * via the features parameter. All features are nullable — if absent, columns
+ * stay NULL. See migration 0021 for the spec of each feature.
+ *
  * Idempotent: re-clicking "Done" with the same started_at/completed_at hits
  * the unique constraint and is silently ignored. Returns null on any error
  * — the caller should NOT block the room update on this insert.
@@ -95,12 +99,25 @@ export async function insertCleaningEvent(input: {
   staffName: string;
   startedAt: Date;
   completedAt: Date;
+  // ML feature snapshot (all optional, all nullable)
+  features?: {
+    dayOfWeek?: number | null;
+    dayOfStayRaw?: number | null;
+    roomFloor?: number | null;
+    occupancyAtStart?: number | null;
+    totalCheckoutsToday?: number | null;
+    totalRoomsAssignedToHk?: number | null;
+    routePosition?: number | null;
+    minutesSinceShiftStart?: number | null;
+    wasDndDuringClean?: boolean | null;
+    weatherClass?: string | null;
+  };
 }): Promise<CleaningEvent | null> {
   const durationMs = input.completedAt.getTime() - input.startedAt.getTime();
   const durationMinutes = Math.max(0, durationMs / 60_000);
   const { status, flagReason } = classifyCleaningEvent(durationMinutes);
 
-  const row = {
+  const row: Record<string, unknown> = {
     property_id: input.propertyId,
     date: input.date,
     room_number: input.roomNumber,
@@ -114,6 +131,20 @@ export async function insertCleaningEvent(input: {
     status,
     flag_reason: flagReason,
   };
+
+  // Populate ML features if provided. All are optional and nullable.
+  if (input.features) {
+    if (input.features.dayOfWeek !== undefined) row.day_of_week = input.features.dayOfWeek;
+    if (input.features.dayOfStayRaw !== undefined) row.day_of_stay_raw = input.features.dayOfStayRaw;
+    if (input.features.roomFloor !== undefined) row.room_floor = input.features.roomFloor;
+    if (input.features.occupancyAtStart !== undefined) row.occupancy_at_start = input.features.occupancyAtStart;
+    if (input.features.totalCheckoutsToday !== undefined) row.total_checkouts_today = input.features.totalCheckoutsToday;
+    if (input.features.totalRoomsAssignedToHk !== undefined) row.total_rooms_assigned_to_hk = input.features.totalRoomsAssignedToHk;
+    if (input.features.routePosition !== undefined) row.route_position = input.features.routePosition;
+    if (input.features.minutesSinceShiftStart !== undefined) row.minutes_since_shift_start = input.features.minutesSinceShiftStart;
+    if (input.features.wasDndDuringClean !== undefined) row.was_dnd_during_clean = input.features.wasDndDuringClean;
+    if (input.features.weatherClass !== undefined) row.weather_class = input.features.weatherClass;
+  }
 
   const { data, error } = await supabase
     .from('cleaning_events')

@@ -29,6 +29,12 @@ export function Header() {
     { href: '/staff',        label: lang === 'es' ? 'Personal' : 'Staff' },
   ];
 
+  // Owner-only ML tab
+  const isOwner = user?.role === 'owner';
+  const ownerNavLinks = isOwner
+    ? [...navLinks, { href: '/admin/ml', label: 'ML' }]
+    : navLinks;
+
   const handleSwitchProperty = (id: string) => {
     setActivePropertyId(id);
     sessionStorage.setItem('hotelops-session-selected', '1');
@@ -67,7 +73,7 @@ export function Header() {
 
           {/* Nav Links */}
           <nav style={{ display: 'flex', gap: '24px' }}>
-            {navLinks.map(link => {
+            {ownerNavLinks.map(link => {
               const isActive = pathname.startsWith(link.href);
               return (
                 <Link
