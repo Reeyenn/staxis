@@ -256,6 +256,52 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   // UPDATE to zero rows but Postgres returns 200 OK so the supabase JS
   // client treats it as success. We were silently losing every Start /
   // Done / Reset tap. The API route uses service-role to bypass RLS.
+  // Force a fresh rooms fetch after a successful action so the UI flips
+  // immediately instead of waiting up to 4s for the polling tick. Anon
+  // sessions don't get postgres_changes events, so without this manual
+  // refetch the room card visibly reverts ('Saving…' → back to 'Start')
+  // even though the database update succeeded — the user only saw the
+  // new state by manually refreshing the tab.
+  const refetchRooms = useCallback(async () => {
+    if (!pid || !housekeeperId) return;
+    try {
+      const res = await fetch(
+        `/api/housekeeper/rooms?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(housekeeperId)}`,
+      );
+      if (!res.ok) return;
+      const json = (await res.json().catch(() => null)) as
+        | { ok?: boolean; data?: RoomRow[] }
+        | null;
+      if (!json?.ok || !Array.isArray(json.data)) return;
+
+      // Same date-bucket selection logic as the subscribe callback.
+      const all = json.data;
+      const byDate = new Map<string, RoomRow[]>();
+      for (const r of all) {
+        if (!r.date) continue;
+        const list = byDate.get(r.date) ?? [];
+        list.push(r);
+        byDate.set(r.date, list);
+      }
+      let chosenDate = today;
+      if (byDate.has(today)) {
+        chosenDate = today;
+      } else {
+        const future = [...byDate.keys()].filter(d => d > today).sort();
+        if (future.length > 0) {
+          chosenDate = future[0];
+        } else {
+          const past = [...byDate.keys()].filter(d => d < today).sort().reverse();
+          if (past.length > 0) chosenDate = past[0];
+        }
+      }
+      setActiveDate(chosenDate);
+      setRooms(sortRooms(byDate.get(chosenDate) ?? []));
+    } catch (err) {
+      console.error('[housekeeper] manual refetch failed:', err);
+    }
+  }, [pid, housekeeperId, today]);
+
   const callRoomActionApi = async (
     room: RoomRow,
     action: 'start' | 'finish' | 'reset' | 'stop' | 'help',
@@ -282,7 +328,15 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
         }),
       });
       const j = await r.json().catch(() => ({}));
-      return r.ok && j?.ok ? { ok: true } : { ok: false, error: j?.error || `http ${r.status}` };
+      const ok = r.ok && j?.ok;
+      if (ok) {
+        // Kick off an immediate refetch so the card updates within a
+        // request round-trip instead of waiting for the next 4s poll.
+        // We don't await it — the action handler can return as soon as
+        // the mutation is confirmed, and the UI will catch up shortly.
+        refetchRooms();
+      }
+      return ok ? { ok: true } : { ok: false, error: j?.error || `http ${r.status}` };
     } catch (err) {
       return { ok: false, error: String(err) };
     }

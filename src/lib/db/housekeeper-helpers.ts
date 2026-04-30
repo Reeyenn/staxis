@@ -36,9 +36,11 @@ export function subscribeToRoomsForStaff(
   //
   // The realtime channel is still subscribed because Maria/admin sessions
   // do receive events and benefit from instant updates. For unauthenticated
-  // housekeepers it just no-ops (RLS blocks the postgres_changes payload),
-  // which is fine — the page fetches fresh state on every navigation and
-  // the cards still update locally on Start/Done taps.
+  // housekeepers postgres_changes don't fire (RLS blocks the payload), so
+  // we ALSO poll every few seconds — that's how a HK on the SMS link sees
+  // their own Start/Done tap reflect on the page. Without the poll the UI
+  // appeared to revert ("Saving…" → back to "Start") because the state
+  // change was happening server-side but no event reached the client.
   const fetchRooms = async (): Promise<Room[]> => {
     const res = await fetch(
       `/api/housekeeper/rooms?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(staffId)}`,
@@ -58,7 +60,7 @@ export function subscribeToRoomsForStaff(
     return json.data as Room[];
   };
 
-  return subscribeTable<Room>(
+  const unsub = subscribeTable<Room>(
     `rooms-hk:${pid}:${staffId}`,
     'rooms',
     // Single-filter only on realtime — see subscribeToRooms note.
@@ -66,6 +68,26 @@ export function subscribeToRoomsForStaff(
     fetchRooms,
     callback,
   );
+
+  // Polling fallback for unauthenticated callers. 4s is the sweet spot:
+  // fast enough that a tap → server update → UI flip feels nearly
+  // immediate, slow enough not to hammer the API. Page-visibility check
+  // skips the poll while the tab is backgrounded so a HK leaving the
+  // page open all shift doesn't burn requests.
+  let cancelled = false;
+  const pollInterval = setInterval(() => {
+    if (cancelled) return;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    fetchRooms()
+      .then(rows => { if (!cancelled) callback(rows); })
+      .catch(err => logErr(`poll rooms-hk:${pid}:${staffId}`, err));
+  }, 4000);
+
+  return () => {
+    cancelled = true;
+    clearInterval(pollInterval);
+    unsub();
+  };
 }
 
 /**
