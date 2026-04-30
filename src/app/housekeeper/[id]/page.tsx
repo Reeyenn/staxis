@@ -289,7 +289,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   };
 
   const handleStartRoom = async (room: RoomRow) => {
-    if (!uid || !pid) return;
+    if (!pid) return;
     await guardRoomAction(room.id, async () => {
       setSavingRoomId(room.id);
       try {
@@ -308,7 +308,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
 
   // ── Stop room (in_progress → dirty, clear startedAt) ──────────────────────
   const handleStopRoom = async (room: RoomRow) => {
-    if (!uid || !pid) return;
+    if (!pid) return;
     await guardRoomAction(room.id, async () => {
       setSavingRoomId(room.id);
       try {
@@ -331,7 +331,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   // audit insert in one shot. See callRoomActionApi() above for the
   // RLS-bypass rationale.
   const handleFinishRoom = async (room: RoomRow) => {
-    if (!uid || !pid) return;
+    if (!pid) return;
     await guardRoomAction(room.id, async () => {
       setSavingRoomId(room.id);
       try {
@@ -366,7 +366,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
 
   // ── Toggle DND on a room ────────────────────────────────────────────────────
   const handleToggleDnd = async (room: RoomRow) => {
-    if (!uid || !pid) return;
+    if (!pid) return;
     await guardRoomAction(room.id, async () => {
       setSavingDnd(room.id);
       try {
@@ -414,7 +414,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   // distinct "couldn't reach manager" state so they know to call instead.
   const handleNeedHelp = async (room: RoomRow) => {
     if (helpSent.has(room.id)) return; // already successfully sent for this room
-    if (!uid || !pid) return;
+    if (!pid) return;
     // Clear any prior failure indicator so the spinner shows during the retry.
     setHelpFailed(prev => {
       if (!prev.has(room.id)) return prev;
@@ -477,7 +477,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   // ── Report Issue ───────────────────────────────────────────────────────────
   const handleSubmitIssue = async () => {
     if (!issueRoomId || !issueNote.trim()) return;
-    if (!uid || !pid) return;
+    if (!pid) return;
     setSavingIssue(true);
     const room = rooms.find(r => r.id === issueRoomId);
     if (!room) {
@@ -518,7 +518,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   // by this HK for this room in the last 60s — the "oops, wrong room —
   // undo" path. Resets >60s after Done are treated as legitimate.
   const handleResetRoom = async (room: RoomRow) => {
-    if (!uid || !pid) return;
+    if (!pid) return;
     setResettingRoomId(room.id);
     try {
       const res = await callRoomActionApi(room, 'reset');
