@@ -6,8 +6,11 @@
 // headcount_actuals_view, the ground-truth for Layer 1 training.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { supabaseAdmin } from '@/lib/supabase-admin';
-import { logErr } from './_common';
+// Browser-callable: this module is imported by Schedule tab UI components
+// via the @/lib/db shim. MUST use the regular `supabase` client, NOT
+// supabaseAdmin (server-only). The user's JWT + RLS owner_rw policy on
+// attendance_marks is what enforces auth.
+import { supabase, logErr } from './_common';
 
 export interface AttendanceMark {
   propertyId: string;
@@ -47,7 +50,7 @@ export async function markAttendance(input: {
   markedBy?: string | null;
 }): Promise<AttendanceMark | null> {
   try {
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await supabase
       .from('attendance_marks')
       .upsert(
         {
@@ -88,7 +91,7 @@ export async function getAttendanceForDate(
   date: string,
 ): Promise<Map<string, AttendanceMark>> {
   try {
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await supabase
       .from('attendance_marks')
       .select('*')
       .eq('property_id', propertyId)

@@ -5,7 +5,11 @@
  * Imported by ScheduleTab.tsx to fetch and format ML data for the UI.
  */
 
-import { supabaseAdmin } from '@/lib/supabase-admin';
+// Browser-callable: imported by ScheduleTab.tsx (a client component).
+// MUST use the regular `supabase` client — supabase-admin would pull
+// SUPABASE_SERVICE_ROLE_KEY into the client bundle and crash at module
+// load. RLS on the ML tables enforces owner-only reads.
+import { supabase } from '@/lib/supabase';
 import { logErr } from './db/_common';
 
 /**
@@ -31,7 +35,7 @@ export async function getActiveOptimizerForTomorrow(
 } | null> {
   try {
     const tomorrow = getTomorrowDateStr();
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await supabase
       .from('optimizer_results')
       .select('recommended_headcount, completion_probability_curve')
       .eq('property_id', propertyId)
@@ -68,7 +72,7 @@ export async function getActiveDemandForTomorrow(
 } | null> {
   try {
     const tomorrow = getTomorrowDateStr();
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await supabase
       .from('demand_predictions')
       .select('predicted_headcount_p80, predicted_headcount_p95')
       .eq('property_id', propertyId)
@@ -99,7 +103,7 @@ export async function getActiveModelRunInfo(
   validationMae: number | null;
 } | null> {
   try {
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await supabase
       .from('model_runs')
       .select('trained_at, validation_mae')
       .eq('property_id', propertyId)
@@ -130,7 +134,7 @@ export async function getActiveSupplyPredictionsForTomorrow(
 ): Promise<Map<string, number>> {
   try {
     const tomorrow = getTomorrowDateStr();
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await supabase
       .from('supply_predictions')
       .select('room_number, staff_id, predicted_minutes_p50')
       .eq('property_id', propertyId)
