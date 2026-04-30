@@ -896,46 +896,45 @@ function ScheduleTab() {
       for (const s of lockedHKs) hkFloor.set(s.id, f);
       hksByFloor.set(f, chosen.map(s => s.id));
 
-      // (4) Split the sorted rooms into contiguous chunks. Target: equal
-      // minutes per HK, respecting each HK's remaining capacity. Use a
-      // simple "fill current HK to target, then advance" approach — keeps
-      // each HK's rooms contiguous in the room number order, which matches
-      // the physical walking path down the hallway.
-      const targetPerHK = chosen.length > 0 ? totalMins / chosen.length : totalMins;
+      // (4) Pour rooms onto HKs in order: fill the FIRST HK to their
+      // remaining cap, then spill onto the second, etc.
+      //
+      // Old behavior (caused Maria's 'Cindy and Astri both have half of
+      // floors 3 and 4' complaint): we computed targetPerHK = totalMins /
+      // chosen.length and advanced when chunkMins hit that target. With
+      // two HKs on a floor, that produced an even 50/50 split — both
+      // housekeepers had to walk the whole floor. Worst case for cart
+      // and elevator usage.
+      //
+      // New behavior: fill HK index 0 until they're at the cap or out of
+      // room minutes, then HK index 1, then 2. The HK who's least loaded
+      // coming in (chosen[0] after the load-asc sort above) gets the
+      // biggest single block. Other HKs only see this floor if there are
+      // truly enough rooms to overflow chosen[0]'s capacity — at which
+      // point we've spent the bare minimum amount of cross-floor walking
+      // to fit the work.
+      //
+      // The sort order above (VIP → checkouts → number) means each chunk
+      // is contiguous in the natural cleaning sequence, so each HK still
+      // walks the floor in numerical order, just over a smaller range of
+      // rooms.
       let hkIdx = 0;
-      let chunkMins = 0;
       for (const r of rooms) {
         const mins = minsForRoom(r) + prepPerRoom;
-        // Advance to next HK if current chunk has reached its share AND
-        // there's another HK to advance to. This is what keeps the split
-        // contiguous and balanced.
-        if (
-          hkIdx + 1 < chosen.length &&
-          chunkMins >= targetPerHK
-        ) {
-          hkIdx++;
-          chunkMins = 0;
-        }
-        // Also advance if adding this room would exceed the current HK's
-        // hard cap — prevents cap violations when preserved rooms already
-        // ate into one HK's capacity unevenly.
-        if (
-          hkIdx + 1 < chosen.length &&
+
+        // Advance through HKs until we find one with capacity for this
+        // room. If no chosen HK can fit it, the room stays unassigned.
+        while (
+          hkIdx < chosen.length &&
           (loadByStaff.get(chosen[hkIdx].id) ?? 0) + mins > shiftLen
         ) {
           hkIdx++;
-          chunkMins = 0;
         }
+        if (hkIdx >= chosen.length) continue;
 
         const pick = chosen[hkIdx];
-        if ((loadByStaff.get(pick.id) ?? 0) + mins > shiftLen) {
-          // Can't fit even on the current HK and no more HKs to roll onto.
-          // Leave the room unassigned — Maria gets to decide.
-          continue;
-        }
         next[r.id] = pick.id;
         loadByStaff.set(pick.id, (loadByStaff.get(pick.id) ?? 0) + mins);
-        chunkMins += mins;
         const fmap = floorCountByStaff.get(pick.id)!;
         fmap.set(f, (fmap.get(f) ?? 0) + 1);
       }
