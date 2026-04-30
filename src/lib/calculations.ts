@@ -222,6 +222,13 @@ export interface AssignConfig {
   stayoverDay2Minutes?: number;
   prepMinutesPerRoom?: number;
   shiftMinutes?: number;
+  /**
+   * Optional supply predictions from active ML model. Map key is "${roomNumber}:${staffId}".
+   * When provided, predicted_minutes_p50 values override static room-minute estimates
+   * in the autoAssign workload calculation. When absent or no entry for a room-staff pair,
+   * falls back to static rules.
+   */
+  supplyPredictions?: Map<string, number>;
 }
 
 export function autoAssignRooms(
@@ -302,15 +309,44 @@ export function autoAssignRooms(
   // pile over the cap silently — that's what produced 10h+ shifts in the past.
   for (const room of sortedRooms) {
     const floor = room.number.length >= 3 ? room.number[0] : '1';
-    let baseMins: number;
-    if (room.type === 'checkout') {
-      baseMins = coMins;
-    } else if (typeof room.stayoverDay === 'number' && room.stayoverDay > 0) {
-      baseMins = room.stayoverDay % 2 === 1 ? day1Mins : day2Mins;
-    } else {
-      baseMins = legacySoMins;
+
+    // Attempt to use ML supply predictions when available. Walk through Priority
+    // staff first (they get first pick), then Normal staff, and find the first
+    // HK with a prediction for this room. If found and ML is active, use the
+    // predicted minutes. Otherwise fall back to static rules.
+    let roomTime: number | null = null;
+
+    if (config?.supplyPredictions) {
+      for (const s of priorityStaff) {
+        const key = `${room.number}:${s.id}`;
+        if (config.supplyPredictions.has(key)) {
+          roomTime = config.supplyPredictions.get(key)!;
+          break;
+        }
+      }
+      if (roomTime === null) {
+        for (const s of normalStaff) {
+          const key = `${room.number}:${s.id}`;
+          if (config.supplyPredictions.has(key)) {
+            roomTime = config.supplyPredictions.get(key)!;
+            break;
+          }
+        }
+      }
     }
-    const roomTime = baseMins + prepMins;
+
+    // Fall back to static rules if no ML prediction found
+    if (roomTime === null) {
+      let baseMins: number;
+      if (room.type === 'checkout') {
+        baseMins = coMins;
+      } else if (typeof room.stayoverDay === 'number' && room.stayoverDay > 0) {
+        baseMins = room.stayoverDay % 2 === 1 ? day1Mins : day2Mins;
+      } else {
+        baseMins = legacySoMins;
+      }
+      roomTime = baseMins + prepMins;
+    }
 
     // Try Priority staff first. Only fall through to Normal staff when no
     // Priority candidate has capacity for this room. This means Priority

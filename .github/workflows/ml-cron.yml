@@ -1,0 +1,64 @@
+name: ML cron
+
+# Triggers the ML training + inference endpoints on a schedule.
+#
+# Cadence chosen to match the existing scraper-health-cron.yml pattern.
+# Vercel Hobby caps native crons at once-per-day; GitHub Actions doesn't,
+# and we already use it for scraper-health, post-deploy-smoke-test, and
+# daily-drift-check. Same secrets, same auth pattern.
+#
+# Why these specific times:
+#   • Sunday 03:00 CT (08:00 UTC)  — train demand model weekly
+#   • Sunday 03:30 CT (08:30 UTC)  — train supply model weekly (+30min so
+#                                     the small Railway service isn't
+#                                     juggling two heavy training jobs)
+#   • Daily 05:30 CT (10:30 UTC)   — inference for tomorrow. After the
+#                                     5am scraper window opens but before
+#                                     Maria's morning planning.
+#
+# Auth: Bearer ${{ secrets.CRON_SECRET }} — same secret value as Vercel +
+# Railway (cross-platform fingerprint check enforces parity via the
+# scraper's heartbeat row).
+
+on:
+  schedule:
+    # cron is UTC. CDT is UTC-5; CST is UTC-6.
+    - cron: '0 8 * * 0'    # Sunday 03:00 CDT — train/demand
+    - cron: '30 8 * * 0'   # Sunday 03:30 CDT — train/supply
+    - cron: '30 10 * * *'  # Daily 05:30 CDT — run inference
+  workflow_dispatch: {}    # manual trigger from the Actions UI
+
+jobs:
+  train-demand:
+    if: github.event.schedule == '0 8 * * 0' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit /api/cron/ml-train-demand
+        run: |
+          curl -fsS --retry 2 --retry-delay 5 \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://hotelops-ai.vercel.app/api/cron/ml-train-demand" | tee /tmp/result.json
+          # Fail the job if the response indicates a problem
+          jq -e '.ok == true' /tmp/result.json
+
+  train-supply:
+    if: github.event.schedule == '30 8 * * 0' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit /api/cron/ml-train-supply
+        run: |
+          curl -fsS --retry 2 --retry-delay 5 \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://hotelops-ai.vercel.app/api/cron/ml-train-supply" | tee /tmp/result.json
+          jq -e '.ok == true' /tmp/result.json
+
+  run-inference:
+    if: github.event.schedule == '30 10 * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit /api/cron/ml-run-inference
+        run: |
+          curl -fsS --retry 2 --retry-delay 5 \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://hotelops-ai.vercel.app/api/cron/ml-run-inference" | tee /tmp/result.json
+          jq -e '.ok == true' /tmp/result.json

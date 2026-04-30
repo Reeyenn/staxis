@@ -1,0 +1,91 @@
+/**
+ * GET /api/cron/ml-run-inference
+ *
+ * Daily cron at 05:30 CT — runs:
+ *   1. /predict/demand on the ML service for tomorrow
+ *   2. /predict/supply for tomorrow
+ *   3. /predict/optimizer (Layer 3 Monte Carlo over L1+L2)
+ *
+ * Sequenced because L3 needs L1 + L2 outputs already written. Uses
+ * AbortSignal.timeout so a stuck ML service doesn't hang Vercel for
+ * 5 minutes.
+ *
+ * Why 05:30 CT: matches the post-CSV-pull window (5am hourly pulls land
+ * tomorrow's plan_snapshot row). Earlier = no data; later = Maria's
+ * morning planning has already happened.
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { requireCronSecret } from '@/lib/api-auth';
+import { supabaseAdmin } from '@/lib/supabase-admin';
+import { getOrMintRequestId, log } from '@/lib/log';
+import { errToString } from '@/lib/utils';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
+
+export async function GET(req: NextRequest): Promise<NextResponse> {
+  const requestId = getOrMintRequestId(req);
+  const unauth = requireCronSecret(req);
+  if (unauth) return unauth;
+
+  const mlServiceUrl = process.env.ML_SERVICE_URL;
+  const mlServiceSecret = process.env.ML_SERVICE_SECRET;
+  if (!mlServiceUrl || !mlServiceSecret) {
+    log.warn('ml-run-inference: ML service not configured — skipping', { requestId });
+    return NextResponse.json({ ok: true, skipped: 'ML service not configured yet', requestId });
+  }
+
+  const { data: properties, error } = await supabaseAdmin
+    .from('properties')
+    .select('id, name');
+  if (error) {
+    return NextResponse.json({ ok: false, error: errToString(error) }, { status: 500 });
+  }
+
+  // Tomorrow in Texas time (matches the scraper + ML service convention).
+  const tzNow = new Date();
+  const ctNow = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago' }).format(tzNow);
+  const tomorrow = new Date(ctNow + 'T12:00:00Z');
+  tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+  const targetDate = tomorrow.toISOString().slice(0, 10);
+
+  const callStage = async (stage: 'demand' | 'supply' | 'optimizer', propertyId: string) => {
+    const path = stage === 'optimizer' ? '/predict/optimizer' : `/predict/${stage}`;
+    const t0 = Date.now();
+    try {
+      const res = await fetch(`${mlServiceUrl.replace(/\/$/, '')}${path}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${mlServiceSecret}`,
+          'Content-Type': 'application/json',
+          'x-request-id': requestId,
+        },
+        body: JSON.stringify({ property_id: propertyId, date: targetDate }),
+        signal: AbortSignal.timeout(45_000),
+      });
+      const json = await res.json().catch(() => ({ status: 'non_json_response', http: res.status }));
+      log.info('ml-run-inference: stage complete', {
+        requestId, stage, property_id: propertyId, elapsedMs: Date.now() - t0,
+        mlStatus: (json as { status?: string }).status ?? 'unknown',
+      });
+      return { stage, status: (json as { status?: string }).status ?? 'unknown', detail: json };
+    } catch (err) {
+      log.error('ml-run-inference: stage failed', { requestId, stage, property_id: propertyId, err: err as Error });
+      return { stage, status: 'error', detail: errToString(err) };
+    }
+  };
+
+  const results: Array<{ property_id: string; demand: unknown; supply: unknown; optimizer: unknown }> = [];
+  for (const property of properties ?? []) {
+    // Sequential per-property: optimizer needs demand+supply. Inter-property
+    // is also serial here for simplicity (1 property today, scales on review).
+    const demandResult    = await callStage('demand',    property.id);
+    const supplyResult    = await callStage('supply',    property.id);
+    const optimizerResult = await callStage('optimizer', property.id);
+    results.push({ property_id: property.id, demand: demandResult, supply: supplyResult, optimizer: optimizerResult });
+  }
+
+  return NextResponse.json({ ok: true, requestId, target_date: targetDate, results });
+}
