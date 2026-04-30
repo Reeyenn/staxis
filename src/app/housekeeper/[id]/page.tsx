@@ -8,6 +8,7 @@ import {
   saveStaffLanguagePublic,
   bucketStayoverDay,
 } from '@/lib/db';
+import { supabase } from '@/lib/supabase';
 import { useTodayStr } from '@/lib/use-today-str';
 import type { Room, RoomStatus } from '@/types';
 import { format } from 'date-fns';
@@ -134,12 +135,68 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
     if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
   }, []);
 
+  // ── Magic-link consumption ─────────────────────────────────────────────
+  // SMS / Schedule-tab links carry an optional `?token=…` param minted by
+  // /api/staff-link (and the Send Shift Confirmations fan-out). On first
+  // mount we exchange that token for a real Supabase session via
+  // verifyOtp. After that, the supabase browser client has a JWT scoped
+  // to this staff member, RLS policies match, and postgres_changes
+  // payloads start arriving over realtime — meaning Start/Done taps
+  // reflect on screen instantly without leaning on the polling fallback.
+  //
+  // Failure is non-fatal: if the token is expired, already consumed, or
+  // missing entirely, the page still works through the service-role
+  // /api/housekeeper/* routes plus polling. Users see no broken UI; they
+  // just don't get the realtime upgrade.
+  //
+  // We strip the token from the URL after consuming it so a refresh
+  // doesn't try to re-verify (Supabase magic links are single-use, so
+  // the second call would 401 and look like an error in DevTools).
+  const [authReady, setAuthReady] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    const token = searchParams.get('token');
+    if (!token) { setAuthReady(true); return; }
+
+    (async () => {
+      try {
+        const { error } = await supabase.auth.verifyOtp({
+          token_hash: token,
+          type: 'magiclink',
+        });
+        if (error) {
+          console.warn('[housekeeper] magic-link consume failed (falling back to anon):', error.message);
+        }
+      } catch (err) {
+        console.warn('[housekeeper] magic-link consume threw:', err);
+      } finally {
+        if (cancelled) return;
+        // Strip ?token= from the URL regardless of success — a second
+        // verify call will fail anyway, and we don't want the token
+        // sitting in browser history.
+        try {
+          const url = new URL(window.location.href);
+          url.searchParams.delete('token');
+          window.history.replaceState({}, '', url.pathname + (url.search || ''));
+        } catch {
+          // ignore — non-DOM environments don't reach this code
+        }
+        setAuthReady(true);
+      }
+    })();
+
+    return () => { cancelled = true; };
+    // searchParams is intentionally read once on mount — token consumption
+    // is a one-shot. Don't make this re-fire on every URL change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Seed the page language from the staff row on mount.
   // The staff table has a `language` column that Maria sets via the Staff
   // modal (and that this page writes back to when the HK hits the lang
   // toggle). Legacy `staffPrefs/{id}` doc from the Firestore era is gone.
   useEffect(() => {
-    if (!housekeeperId || !pid) return;
+    if (!housekeeperId || !pid || !authReady) return;
     let cancelled = false;
 
     (async () => {
@@ -162,7 +219,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   }, [housekeeperId, pid]);
 
   useEffect(() => {
-    if (!housekeeperId || !pid) return;
+    if (!housekeeperId || !pid || !authReady) return;
 
     // Subscribe to every room assigned to this HK (any date), then pick the
     // right date bucket to display. Previously we always filtered to
@@ -221,7 +278,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
     });
 
     return () => { unsub(); };
-  }, [housekeeperId, pid, today]);
+  }, [housekeeperId, pid, today, authReady]);
 
   // ── Re-entrancy guard ─────────────────────────────────────────────────────
   // Mobile users on slow connections double-tap buttons constantly. Without

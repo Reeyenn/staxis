@@ -38,6 +38,7 @@ import { getPublicAreasDueToday, calcPublicAreaMinutes, autoAssignRooms, getOver
 import { getDefaultPublicAreas } from '@/lib/defaults';
 import type { PublicArea } from '@/types';
 import { todayStr, errToString } from '@/lib/utils';
+import { supabase } from '@/lib/supabase';
 import { useTodayStr } from '@/lib/use-today-str';
 import type { Room, RoomStatus, RoomType, RoomPriority, StaffMember, DeepCleanRecord, DeepCleanConfig, ShiftConfirmation, ConfirmationStatus, WorkOrder } from '@/types';
 import { format, subDays } from 'date-fns';
@@ -2231,37 +2232,67 @@ function ScheduleTab() {
                         >
                           {member.name}
                         </button>
-                        {/* HK link + copy — fallback channel if SMS ever breaks.
-                            `hkUrl` points to /housekeeper/{staffId}?uid=…&pid=…,
-                            identical to what the SMS sends. uid/pid are required
-                            for the Need Help / Report Issue buttons on the HK page. */}
+                        {/* HK link + copy — opens the same magic-link URL the SMS
+                            fan-out emits. Click "Link" to mint a fresh single-use
+                            token and open the housekeeper page; click "Copy" to
+                            mint and copy to clipboard. We always mint on demand
+                            (rather than caching) because magic-link tokens are
+                            single-use — the moment a HK clicks one, it's spent. */}
                         {(() => {
-                          const qs = `?uid=${encodeURIComponent(uid)}&pid=${encodeURIComponent(pid)}`;
-                          const hkUrl = typeof window !== 'undefined'
-                            ? `${window.location.origin}/housekeeper/${member.id}${qs}`
-                            : `/housekeeper/${member.id}${qs}`;
                           const isCopied = copiedFor === member.id;
+                          // Mint a magic-link URL via /api/staff-link. Falls back
+                          // to the legacy tokenless URL if the mint call fails so
+                          // Maria still has SOMETHING to share — degraded UX
+                          // (polling, no realtime) is strictly better than a
+                          // dead button.
+                          const mintLink = async (): Promise<string> => {
+                            try {
+                              const sessRes = await supabase.auth.getSession();
+                              const accessToken = sessRes.data.session?.access_token;
+                              const res = await fetch('/api/staff-link', {
+                                method: 'POST',
+                                headers: {
+                                  'Content-Type': 'application/json',
+                                  ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+                                },
+                                body: JSON.stringify({ staffId: member.id, pid }),
+                              });
+                              if (!res.ok) throw new Error(`http ${res.status}`);
+                              const json = await res.json();
+                              if (json?.ok && typeof json.data?.url === 'string') return json.data.url;
+                              throw new Error('mint returned no url');
+                            } catch (mintErr) {
+                              console.warn('[schedule-tab] magic-link mint failed, using tokenless URL:', mintErr);
+                              const qs = `?pid=${encodeURIComponent(pid)}`;
+                              return typeof window !== 'undefined'
+                                ? `${window.location.origin}/housekeeper/${member.id}${qs}`
+                                : `/housekeeper/${member.id}${qs}`;
+                            }
+                          };
                           return (
                             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                              <a
-                                href={hkUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  const url = await mintLink();
+                                  if (typeof window !== 'undefined') window.open(url, '_blank', 'noopener,noreferrer');
+                                }}
                                 title={lang === 'es' ? 'Abrir página del limpiador' : "Open housekeeper's page"}
                                 style={{
                                   display: 'inline-flex', alignItems: 'center', gap: '4px',
                                   padding: '4px 10px', borderRadius: '9999px',
                                   background: 'rgba(54,66,98,0.08)', color: '#364262',
                                   fontFamily: 'var(--font-sans)', fontSize: '11px', fontWeight: 600,
-                                  textDecoration: 'none', cursor: 'pointer',
+                                  cursor: 'pointer',
                                   border: '1px solid rgba(54,66,98,0.15)',
                                 }}
                               >
                                 <Link2 size={12} />
                                 {lang === 'es' ? 'Enlace' : 'Link'}
-                              </a>
+                              </button>
                               <button
                                 onClick={async () => {
+                                  const hkUrl = await mintLink();
                                   try {
                                     await navigator.clipboard.writeText(hkUrl);
                                   } catch {

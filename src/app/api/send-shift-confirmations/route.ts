@@ -41,6 +41,7 @@ import {
 } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { enqueueSms, processSmsJobs } from '@/lib/sms-jobs';
+import { buildHousekeeperLink } from '@/lib/staff-auth';
 import { buildOkBody, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 
@@ -374,10 +375,23 @@ export async function POST(req: NextRequest) {
           void assignedRooms;
           void assignedAreas;
 
-          // Include pid in the HK link so the mobile page can fire
-          // /api/help-request and /api/report-issue. Without it, the
-          // Need Help button silently fails.
-          const hkUrl = `${baseUrl}/housekeeper/${staffId}?pid=${encodeURIComponent(pid)}`;
+          // Magic-link URL via the shared helper. This is BYTE-IDENTICAL to
+          // what the Schedule tab's Link/Copy button mints — same staff-auth
+          // user, same hashed_token format, same path. The token in the URL
+          // lets the housekeeper page auto-sign-in on mount, after which
+          // realtime postgres_changes flow over the supabase channel and the
+          // HK sees Start/Done taps reflect instantly (no 4s polling delay).
+          //
+          // If buildHousekeeperLink throws, we fall back to the legacy
+          // tokenless URL so the SMS still goes out — degraded UX (polling,
+          // no realtime) is strictly better than no SMS at all.
+          let hkUrl: string;
+          try {
+            hkUrl = await buildHousekeeperLink(staffId, pid, baseUrl);
+          } catch (linkErr) {
+            console.error('[send-shift-confirmations] magic-link mint failed, falling back to tokenless URL:', errToString(linkErr));
+            hkUrl = `${baseUrl}/housekeeper/${staffId}?pid=${encodeURIComponent(pid)}`;
+          }
 
           // One shift_confirmation per (shift_date, staff_id). Deterministic
           // token so re-clicking Send doesn't create duplicates — it
