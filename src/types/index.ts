@@ -21,6 +21,7 @@ export interface Property {
   shiftMinutes: number;         // default 480 (8 hrs)
   totalStaffOnRoster: number;
   weeklyBudget?: number;
+  ownerId?: string | null;     // auth.users id of the property owner; drives owner-only UI gating (e.g. /admin/ml).
   morningBriefingTime?: string; // "06:30"
   eveningForecastTime?: string; // "18:00"
   pmsType?: string;

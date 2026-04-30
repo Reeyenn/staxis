@@ -111,6 +111,7 @@ export function fromPropertyRow(r: Record<string, unknown>): Property {
     pmsConnected: (r.pms_connected as boolean) ?? undefined,
     lastSyncedAt: toDate(r.last_synced_at),
     createdAt: toDate(r.created_at) ?? new Date(),
+    ownerId: r.owner_id == null ? null : String(r.owner_id),
   };
 }
 

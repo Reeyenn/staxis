@@ -29,8 +29,16 @@ export function Header() {
     { href: '/staff',        label: lang === 'es' ? 'Personal' : 'Staff' },
   ];
 
-  // Owner-only ML tab
-  const isOwner = user?.role === 'owner';
+  // Owner/admin-only ML tab. AppUser.role is 'admin' | 'owner' | 'staff'
+  // (see contexts/AuthContext.tsx). Reeyen has admin/owner; his dad's
+  // J-login does NOT. Belt-and-suspenders: also match user.uid against
+  // the active property's ownerId so a future role mis-assignment can't
+  // accidentally expose ML to a J-style account.
+  const userIsOwnerByRole = user?.role === 'owner' || user?.role === 'admin';
+  const userIsOwnerByMatch = !!(
+    user?.uid && activeProperty?.ownerId && activeProperty.ownerId === user.uid
+  );
+  const isOwner = userIsOwnerByRole && userIsOwnerByMatch;
   const ownerNavLinks = isOwner
     ? [...navLinks, { href: '/admin/ml', label: 'ML' }]
     : navLinks;

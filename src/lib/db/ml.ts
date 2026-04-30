@@ -304,28 +304,28 @@ export async function getCleaningEventStats(
     .from('cleaning_events')
     .select('id')
     .eq('property_id', propertyId)
-    .gte('done_at', last7d.toISOString());
+    .gte('completed_at', last7d.toISOString());
   if (err2) { logErr('getCleaningEventStats-7d', err2); throw err2; }
 
   const { data: l24h, error: err3 } = await supabase
     .from('cleaning_events')
     .select('id')
     .eq('property_id', propertyId)
-    .gte('done_at', last24h.toISOString());
+    .gte('completed_at', last24h.toISOString());
   if (err3) { logErr('getCleaningEventStats-24h', err3); throw err3; }
 
   const { data: staff, error: err4 } = await supabase
     .from('cleaning_events')
     .select('staff_id')
     .eq('property_id', propertyId)
-    .gte('done_at', last7d.toISOString());
+    .gte('completed_at', last7d.toISOString());
   if (err4) { logErr('getCleaningEventStats-staff', err4); throw err4; }
 
   const { data: rooms, error: err5 } = await supabase
     .from('cleaning_events')
     .select('room_number')
     .eq('property_id', propertyId)
-    .gte('done_at', last7d.toISOString());
+    .gte('completed_at', last7d.toISOString());
   if (err5) { logErr('getCleaningEventStats-rooms', err5); throw err5; }
 
   const distinctStaff = new Set((staff ?? []).map(r => r.staff_id)).size;
@@ -352,7 +352,7 @@ export async function getAdoptionPerHK(
     .from('cleaning_events')
     .select('staff_id, staff_name')
     .eq('property_id', propertyId)
-    .gte('done_at', startDate.toISOString());
+    .gte('completed_at', startDate.toISOString());
   if (evErr) { logErr('getAdoptionPerHK-events', evErr); throw evErr; }
 
   // Get all schedule assignments for this period
@@ -479,16 +479,16 @@ export async function getCleaningEventsPerDay(
 
   const { data, error } = await supabase
     .from('cleaning_events')
-    .select('done_at')
+    .select('completed_at')
     .eq('property_id', propertyId)
-    .gte('done_at', startDate.toISOString());
+    .gte('completed_at', startDate.toISOString());
   if (error) { logErr('getCleaningEventsPerDay', error); throw error; }
 
   const byDate = new Map<string, number>();
   (data ?? []).forEach(row => {
-    const doneAt = row.done_at ? new Date(String(row.done_at)) : null;
-    if (doneAt) {
-      const dateStr = doneAt.toISOString().split('T')[0];
+    const completedAt = row.completed_at ? new Date(String(row.completed_at)) : null;
+    if (completedAt) {
+      const dateStr = completedAt.toISOString().split('T')[0];
       byDate.set(dateStr, (byDate.get(dateStr) ?? 0) + 1);
     }
   });
