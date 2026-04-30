@@ -23,6 +23,8 @@ import {
   getDeepCleanConfig, setDeepCleanConfig, getDeepCleanRecords,
   markRoomDeepCleaned, assignRoomDeepClean, completeRoomDeepClean,
   subscribeToPlanSnapshot,
+  subscribeToCsvPipelineStatus,
+  csvFreshness,
   subscribeToShiftConfirmations,
   subscribeToScheduleAssignments,
   saveScheduleAssignments,
@@ -30,7 +32,7 @@ import {
   getDashboardForDate,
   subscribeToWorkOrders,
 } from '@/lib/db';
-import type { PlanSnapshot, ScheduleAssignments, CsvRoomSnapshot, DashboardNumbers } from '@/lib/db';
+import type { PlanSnapshot, CsvPipelineStatus, ScheduleAssignments, CsvRoomSnapshot, DashboardNumbers } from '@/lib/db';
 import { dashboardFreshness, DASHBOARD_STALE_MINUTES } from '@/lib/db';
 import { getPublicAreasDueToday, calcPublicAreaMinutes, autoAssignRooms, getOverdueRooms, calcDndFreedMinutes, suggestDeepCleans } from '@/lib/calculations';
 import { getDefaultPublicAreas } from '@/lib/defaults';
@@ -92,6 +94,13 @@ function ScheduleTab() {
   // Plan snapshot from CSV scraper (7pm / 6am pulls) — THE source of truth for Schedule tab.
   const [planSnapshot, setPlanSnapshot] = useState<PlanSnapshot | null>(null);
   const [planSnapshotLoaded, setPlanSnapshotLoaded] = useState(false);
+
+  // CSV pipeline meta-status — tells us whether the scraper's most recent
+  // morning/evening pull SUCCEEDED, regardless of which date row it wrote to.
+  // Without this signal, today's planSnapshot.pulledAt being old is ambiguous:
+  // it could mean "scraper is broken" OR "we're past 7pm and the scraper has
+  // correctly switched to evening (tomorrow) pulls." See csvFreshness().
+  const [csvPipelineStatus, setCsvPipelineStatus] = useState<CsvPipelineStatus>({ morning: null, evening: null });
 
   // Live PMS dashboard numbers (In House / Arrivals / Departures) — pulled off
   // Choice Advantage's View pages every 15 min by the Railway scraper.
@@ -230,6 +239,15 @@ function ScheduleTab() {
       setPlanSnapshotLoaded(true);
     });
   }, [uid, pid, shiftDate]);
+
+  // CSV pipeline status — single global subscription, doesn't depend on
+  // shiftDate (the morning/evening rows are property-wide, not per-date).
+  // Today's tab is the only one that needs the live "is the pipeline alive"
+  // signal; historical date tabs show frozen data and don't render the
+  // banner regardless.
+  useEffect(() => {
+    return subscribeToCsvPipelineStatus(setCsvPipelineStatus);
+  }, []);
 
   // Synthetic room list derived from CSV — no rooms-collection dependency.
   const shiftRooms = useMemo(() => snapshotToShiftRooms(planSnapshot, pid), [planSnapshot, pid]);
@@ -1611,55 +1629,41 @@ function ScheduleTab() {
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px', position: 'relative', zIndex: 10 }}>
             {/* CSV caption — Active Checkouts / Stayovers / Staff Needed all
                 come from the hourly CSV pull (see scraper/scraper.js
-                maybeRunCSVPull). Three visual states, mirroring the PMS
-                block below so Maria sees consistent warnings across both
-                data sources:
-                  • fresh (≤75 min):   grey "CSV updated X:XX" caption
-                  • stale (75–180):    amber banner, numbers may lag (1–2
-                                       missed hourly pulls, usually transient)
-                  • error (>180 min):  red banner, scraper is probably down
-                                       (3+ missed pulls — watchdog SMS will
-                                       have already fired by this point) */}
-            {planSnapshot?.pulledAt && (() => {
-              const CSV_STALE_MINUTES = 75;
-              const CSV_ERROR_MINUTES = 180;
-              // Supabase timestamptz already comes back as a Date via fromSnapshotRow.
-              // The old .toDate() fallback was for Firestore Timestamp; no longer needed.
-              const csvPulledAt: Date | null =
-                planSnapshot.pulledAt instanceof Date
-                  ? planSnapshot.pulledAt
-                  : typeof planSnapshot.pulledAt === 'string'
-                  ? new Date(planSnapshot.pulledAt)
-                  : null;
-              if (!csvPulledAt) return null;
-              const csvMinutesAgo = Math.max(0, Math.round((nowMs - csvPulledAt.getTime()) / 60_000));
-              const timeStr = csvPulledAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-              // Off-hours suppression: scraper only runs CSV pulls 5am–11pm
-              // local. Outside that window the data is correctly stale and
-              // showing a red "CSV pull failing" banner is misleading. We
-              // demote stale/error to fresh during off-hours so Mario sees
-              // a normal "CSV updated 10:45 PM" caption instead of a fake
-              // alarm at midnight. Mirrors scraper.js's `hour < 5 || hour >= 23` gate.
-              const localHourCT = parseInt(
-                new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: 'America/Chicago' }).format(new Date()),
-                10,
-              );
-              const inScraperWindow = localHourCT >= 5 && localHourCT < 23;
-              const csvState: 'fresh' | 'stale' | 'error' = !inScraperWindow
-                ? 'fresh'
-                : csvMinutesAgo > CSV_ERROR_MINUTES ? 'error'
-                : csvMinutesAgo > CSV_STALE_MINUTES ? 'stale'
-                : 'fresh';
+                maybeRunCSVPull). Freshness logic lives in csvFreshness()
+                so it can combine today's snapshot age with the live
+                pipeline status (scraper_status[morning|evening]).
+                The pipeline status matters because today's plan_snapshot
+                only refreshes during 5am–7pm CT — after 7pm the scraper
+                writes to TOMORROW's row by design, so naively comparing
+                today's pulledAt against current time produces a daily
+                false-alarm 9–11pm. csvFreshness() handles that. */}
+            {(() => {
+              const fr = csvFreshness(planSnapshot, csvPipelineStatus, nowMs);
+              const refTime = fr.referenceAt
+                ? fr.referenceAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+                : null;
 
-              if (csvState === 'fresh') {
+              if (fr.state === 'fresh') {
+                if (!refTime) return null;
+                // Slightly different caption for the post-7pm "frozen evening"
+                // case so Maria knows the data is intentionally locked, not stale.
+                if (fr.reason === 'frozen_evening') {
+                  return (
+                    <p style={{ fontSize: '11px', color: '#94a3b8', margin: 0 }}>
+                      {lang === 'es'
+                        ? `Plan de hoy bloqueado a las ${refTime} · planeando mañana`
+                        : `Today's plan locked at ${refTime} · planning tomorrow`}
+                    </p>
+                  );
+                }
                 return (
                   <p style={{ fontSize: '11px', color: '#94a3b8', margin: 0 }}>
-                    {lang === 'es' ? `CSV actualizado ${timeStr}` : `CSV updated ${timeStr}`}
+                    {lang === 'es' ? `CSV actualizado ${refTime}` : `CSV updated ${refTime}`}
                   </p>
                 );
               }
 
-              if (csvState === 'stale') {
+              if (fr.state === 'stale') {
                 return (
                   <div style={{
                     display: 'flex', alignItems: 'center', gap: '8px',
@@ -1671,15 +1675,20 @@ function ScheduleTab() {
                   }}>
                     <AlertTriangle size={14} style={{ color: '#b45309', flexShrink: 0 }} />
                     <span>
-                      {lang === 'es'
-                        ? `CSV antiguo — última actualización ${timeStr} (hace ${csvMinutesAgo} min). Debería actualizarse cada hora.`
-                        : `CSV stale — last updated ${timeStr} (${csvMinutesAgo} min ago). Should pull hourly.`}
+                      {fr.reason === 'no_snapshot'
+                        ? (lang === 'es'
+                          ? `Aún no hay plan para hoy — esperando primer CSV.`
+                          : `No plan yet for today — waiting for first CSV pull.`)
+                        : (lang === 'es'
+                          ? `CSV antiguo — última actualización ${refTime} (hace ${fr.minutesAgo} min). Debería actualizarse cada hora.`
+                          : `CSV stale — last updated ${refTime} (${fr.minutesAgo} min ago). Should pull hourly.`)}
                     </span>
                   </div>
                 );
               }
 
-              // error state — 3+ missed hourly pulls
+              // fr.state === 'error' — pipeline_error or snapshot_stale
+              const isPipelineError = fr.reason === 'pipeline_error';
               return (
                 <div style={{
                   display: 'flex', alignItems: 'flex-start', gap: '8px',
@@ -1697,9 +1706,15 @@ function ScheduleTab() {
                         : 'CSV pull failing. Tell Reeyen.'}
                     </div>
                     <div style={{ fontSize: '11px', color: '#991b1b', fontWeight: 400, marginTop: '2px' }}>
-                      {lang === 'es'
-                        ? `Últimos números buenos a las ${timeStr} (hace ${csvMinutesAgo} min).`
-                        : `Last good numbers at ${timeStr} (${csvMinutesAgo} min ago).`}
+                      {isPipelineError && fr.errorCode
+                        ? (lang === 'es'
+                          ? `Código: ${fr.errorCode}${refTime ? ` · último intento ${refTime}` : ''}.`
+                          : `Code: ${fr.errorCode}${refTime ? ` · last attempt ${refTime}` : ''}.`)
+                        : refTime
+                          ? (lang === 'es'
+                            ? `Últimos números buenos a las ${refTime} (hace ${fr.minutesAgo} min).`
+                            : `Last good numbers at ${refTime} (${fr.minutesAgo} min ago).`)
+                          : ''}
                     </div>
                   </div>
                 </div>
