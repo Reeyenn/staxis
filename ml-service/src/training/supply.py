@@ -11,12 +11,21 @@ import psycopg2
 
 from src.advisory_lock import advisory_lock
 from src.config import get_settings
+from src.features.supply_matrix import build_supply_features
 from src.layers.bayesian_regression import BayesianRegression
 from src.layers.xgboost_quantile import XGBoostQuantile
 from src.supabase_client import get_supabase_client
 
 
-SUPPLY_FEATURE_COLS = ["day_of_week", "occupancy_at_start"]
+# Feature set version. Bump when build_supply_features() changes its output
+# columns so old models (trained with a smaller feature set) get retrained
+# rather than producing shape-mismatch errors at inference time.
+#   v1 — day_of_week + occupancy_at_start only (the original 2-feature model)
+#   v2 — adds room_type, stayover_day_2, room_floor, one-hot room_number,
+#        one-hot staff_id. This is what teaches the model to learn that
+#        e.g. room 305 reliably runs longer than room 412 (size effect)
+#        and that Cindy is faster than Astri on stayovers (pace effect).
+FEATURE_SET_VERSION = "v2"
 
 
 def _validate_property_id(property_id: str) -> Optional[str]:
@@ -135,12 +144,15 @@ def _train_supply_inner(
         df = df.tail(max_rows)
 
     # Filter out clearly bad data
-    df = df[(df["actual_minutes"] > 1) & (df["actual_minutes"] < 180)]
+    df = df[(df["actual_minutes"] > 1) & (df["actual_minutes"] < 180)].reset_index(drop=True)
 
-    # Features
-    feature_cols = ["day_of_week", "occupancy_at_start"]
-    X = df[feature_cols].fillna(0)
-    X = pd.concat([pd.Series(np.ones(len(X)), name="intercept"), X], axis=1)
+    # Build the feature matrix via the shared helper. v2 features include
+    # per-room and per-staff one-hot encodings on top of the original
+    # day/occupancy/type signals — see src/features/supply_matrix.py for
+    # the full list. The list of column names is captured here so it can
+    # be persisted on model_runs.posterior_params, and the inference path
+    # rebuilds X with exactly the same column order at predict time.
+    X, feature_names = build_supply_features(df, training=True)
     y = df["actual_minutes"].fillna(25)
 
     # Time-based split
@@ -224,7 +236,12 @@ def _train_supply_inner(
             "sigma_0": model.sigma_0.tolist() if model.sigma_0 is not None else None,
             "alpha": float(model.alpha),
             "beta": float(model.beta),
-            "feature_names": model.feature_names,
+            # Use the column list returned by build_supply_features() rather
+            # than model.feature_names — the helper drops all-zero columns
+            # (rooms / staff that never appeared in training) before fitting,
+            # so the kept column list is what inference must align to.
+            "feature_names": feature_names,
+            "feature_set_version": FEATURE_SET_VERSION,
         }
 
     # Create model_runs row
@@ -235,7 +252,7 @@ def _train_supply_inner(
             "layer": "supply",
             "trained_at": datetime.utcnow().isoformat(),
             "training_row_count": len(df),
-            "feature_set_version": "v1",
+            "feature_set_version": FEATURE_SET_VERSION,
             "model_version": model_version,
             "algorithm": model.get_config()["algorithm"],
             "training_mae": training_mae,

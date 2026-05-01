@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from src.config import get_settings
+from src.features.supply_matrix import build_supply_features
 from src.supabase_client import get_supabase_client
 
 
@@ -187,41 +188,93 @@ async def predict_supply(
     # Generate predictions using the trained Bayesian model.
     quantiles = [0.25, 0.5, 0.75, 0.9]
     predictions = []
-    feature_cols = ["intercept", "day_of_week", "occupancy_at_start"]
 
+    # The trained model's feature_names list is the column order we MUST
+    # build X with. build_supply_features() aligns one-hot columns
+    # (room_<number>, staff_<uuid>) to this list — rooms / staff that
+    # weren't seen at training time silently fall to all-zero rows
+    # (i.e. the baseline intercept + day/occupancy/type effects).
+    saved_feature_names = list(model.feature_names) if model.feature_names else None
+    if not saved_feature_names:
+        return {
+            "error": "Active supply model has no feature_names — retrain needed",
+            "property_id": property_id,
+            "date": str(prediction_date),
+            "model_version": model_run.get("model_version"),
+        }
+
+    # Build the full per-(room, staff) context dataframe up front. Doing
+    # the fanout in one pass lets us shape-validate ALL predictions against
+    # the model's feature_names BEFORE writing anything — previously the
+    # per-room loop could fail mid-schedule and leave half the rooms
+    # written with the prior model and half with no row at all.
+    pair_rows: list[dict] = []
     for sched in schedule_data or []:
         staff_id = sched["staff_id"]
         rooms = sched.get("assigned_rooms", []) or []
-
         for room_number in rooms:
-            features_dict = {
-                "intercept": 1.0,
-                "day_of_week": dow,
-                "occupancy_at_start": occupancy_at_start,
-            }
-            X = pd.DataFrame([features_dict])[feature_cols]
-            try:
-                preds = model.predict_quantile(X, quantiles)
-            except ValueError as exc:
-                # Posterior incompatible with these features. Bail out for the
-                # whole call so it surfaces in the cockpit, rather than writing
-                # half a schedule of garbage rows.
-                return {
-                    "error": f"Supply posterior incompatible with inference features: {exc}",
-                    "property_id": property_id,
-                    "date": str(prediction_date),
-                    "model_version": model_run.get("model_version"),
-                }
-
-            predictions.append({
+            pair_rows.append({
                 "room_number": room_number,
                 "staff_id": staff_id,
-                "predicted_minutes_p25": float(preds[0.25][0]),
-                "predicted_minutes_p50": float(preds[0.5][0]),
-                "predicted_minutes_p75": float(preds[0.75][0]),
-                "predicted_minutes_p90": float(preds[0.9][0]),
-                "features_snapshot": json.dumps(features_dict),
+                "day_of_week": dow,
+                "occupancy_at_start": occupancy_at_start,
+                # Tomorrow's per-room type/stayover_day data isn't on the
+                # supply input today (the schedule_assignments table only
+                # tracks who cleans which room). Fall back to 'stayover'
+                # day-1 — the most common case — and let the model's
+                # day/occupancy/room-floor signals carry the prediction
+                # for now. A future improvement is to look up the actual
+                # room_status from plan_snapshots per room.
+                "room_type": "stayover",
+                "stayover_day": 1,
             })
+
+    if not pair_rows:
+        return {
+            "property_id": property_id,
+            "date": str(prediction_date),
+            "predicted_rooms": 0,
+            "model_version": model_run.get("model_version"),
+        }
+
+    pair_df = pd.DataFrame(pair_rows)
+
+    # Single matrix build → single shape check. If feature_names is
+    # incompatible (e.g. an old v1 model is still active and we trained
+    # the page expecting v2 columns), this raises and we bail before
+    # touching supply_predictions at all.
+    try:
+        X_all, _ = build_supply_features(
+            pair_df, training=False, feature_names=saved_feature_names,
+        )
+        all_preds = model.predict_quantile(X_all, quantiles)
+    except ValueError as exc:
+        return {
+            "error": f"Supply posterior incompatible with inference features: {exc}",
+            "property_id": property_id,
+            "date": str(prediction_date),
+            "model_version": model_run.get("model_version"),
+        }
+
+    # all_preds is a dict { quantile -> ndarray length N }. Pull row-wise.
+    for i, row in enumerate(pair_rows):
+        # Per-(room, staff) snapshot of the actual feature values that
+        # produced this prediction. Useful for debugging "why did room 305
+        # get 35 min when room 412 got 22?" — read this column to see the
+        # one-hot encodings and base features at predict time.
+        features_snapshot = {
+            k: (X_all.iloc[i][k] if k in X_all.columns else 0.0)
+            for k in saved_feature_names
+        }
+        predictions.append({
+            "room_number": row["room_number"],
+            "staff_id": row["staff_id"],
+            "predicted_minutes_p25": float(all_preds[0.25][i]),
+            "predicted_minutes_p50": float(all_preds[0.5][i]),
+            "predicted_minutes_p75": float(all_preds[0.75][i]),
+            "predicted_minutes_p90": float(all_preds[0.9][i]),
+            "features_snapshot": json.dumps(features_snapshot),
+        })
 
     # Write all predictions
     for pred in predictions:
