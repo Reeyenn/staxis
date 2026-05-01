@@ -2896,10 +2896,15 @@ function ScheduleTab() {
         </>
       )}
 
-      {/* Prediction Settings Modal */}
-      {showPredictionSettings && (
+      {/* Prediction Settings Modal — rendered via createPortal so it
+          centers on the actual viewport. Without the portal it inherits
+          the containing block of whatever ancestor up the tree has a
+          `transform`, `filter`, or `will-change` (which kills the
+          position:fixed → viewport contract). The Priority Settings
+          modal nearby uses the same pattern for the same reason. */}
+      {showPredictionSettings && typeof document !== 'undefined' && createPortal(
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 9998, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }} onClick={() => setShowPredictionSettings(false)}>
-          <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: '16px', padding: '28px', width: '100%', maxWidth: '400px', boxShadow: '0 20px 60px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: '16px', padding: '28px', width: '100%', maxWidth: '400px', maxHeight: 'calc(100dvh - 40px)', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', gap: '20px' }}>
             <div>
               <p style={{ fontWeight: 700, fontSize: '18px', color: '#1b1c19', margin: 0 }}>
                 {lang === 'es' ? 'Ajustes de Predicción' : 'Prediction Settings'}
@@ -2988,7 +2993,8 @@ function ScheduleTab() {
               <span style={{ fontSize: '12px', color: '#757684' }}>{areasDueToday.length} {lang === 'es' ? 'para hoy' : 'due today'} · {publicAreaMinutes}m →</span>
             </button>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
       <PublicAreasModal show={showPublicAreas} onClose={() => setShowPublicAreas(false)} />
