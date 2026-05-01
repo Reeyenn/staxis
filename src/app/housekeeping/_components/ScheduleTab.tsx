@@ -64,6 +64,78 @@ import {
 } from './_shared';
 import type { TabKey, HKLive, HKHistory, StaffFormData } from './_shared';
 
+// ── DraftNumberInput ────────────────────────────────────────────────────────
+// Drop-in replacement for <input type="number" value={n} onChange={...}> that
+// keeps a STRING draft while the user is typing. Without this, the previous
+// `value={n} onChange={e => setN(Number(e.target.value) || 0)}` flow forced
+// the field to snap to "0" the moment the user backspaced past every digit —
+// then typing a fresh number produced "030" or "050" because React kept
+// rendering the lingering "0". The component allows the field to be
+// VISUALLY EMPTY mid-edit, commits valid parses to the parent immediately,
+// and restores the last committed value on blur if the field was left blank
+// or out-of-range.
+function DraftNumberInput({
+  value, onCommit, min, max, step = 1, width = '64px',
+}: {
+  value: number;
+  onCommit: (n: number) => void;
+  min: number;
+  max?: number;
+  step?: number;
+  width?: string;
+}) {
+  const [draft, setDraft] = React.useState<string>(String(value));
+  const lastValueRef = React.useRef<number>(value);
+  React.useEffect(() => {
+    // Sync display when the parent value changes externally (e.g. modal
+    // opens with a fresh settingsForm). Skip when our own commit is the
+    // source so we don't jolt the cursor mid-keystroke.
+    if (lastValueRef.current !== value) {
+      setDraft(String(value));
+      lastValueRef.current = value;
+    }
+  }, [value]);
+  return (
+    <input
+      className="input"
+      type="number"
+      min={min}
+      max={max}
+      step={step}
+      value={draft}
+      onChange={e => {
+        const v = e.target.value;
+        setDraft(v);
+        if (v === '') return; // allow visually empty mid-edit
+        const n = Number(v);
+        if (
+          Number.isFinite(n) &&
+          n >= min &&
+          (max === undefined || n <= max)
+        ) {
+          onCommit(n);
+          lastValueRef.current = n;
+        }
+      }}
+      onBlur={() => {
+        const n = Number(draft);
+        if (
+          draft === '' ||
+          !Number.isFinite(n) ||
+          n < min ||
+          (max !== undefined && n > max)
+        ) {
+          // User left the field blank or invalid — snap back to the last
+          // committed value. Better UX than clamping to min, which would
+          // silently change the saved value.
+          setDraft(String(lastValueRef.current));
+        }
+      }}
+      style={{ width, textAlign: 'center', padding: '8px 4px' }}
+    />
+  );
+}
+
 function ScheduleTab() {
   const { user } = useAuth();
   const { activeProperty, activePropertyId, staff, staffLoaded, refreshStaff, refreshProperty } = useProperty();
@@ -2928,19 +3000,12 @@ function ScheduleTab() {
                   </span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
-                  <input
-                    className="input"
-                    type="number"
+                  <DraftNumberInput
+                    value={settingsForm.shiftMinutes / 60}
+                    onCommit={hrs => setSettingsForm(p => ({ ...p, shiftMinutes: Math.round(hrs * 60) }))}
                     min={1}
                     max={24}
                     step={0.25}
-                    value={(settingsForm.shiftMinutes / 60).toString()}
-                    onChange={e => {
-                      const hrs = Number(e.target.value);
-                      if (isNaN(hrs) || hrs <= 0) return;
-                      setSettingsForm(p => ({ ...p, shiftMinutes: Math.round(hrs * 60) }));
-                    }}
-                    style={{ width: '64px', textAlign: 'center', padding: '8px 4px' }}
                   />
                   <span style={{ fontSize: '13px', color: '#757684' }}>hr</span>
                 </div>
@@ -2973,7 +3038,11 @@ function ScheduleTab() {
                     <span style={{ fontSize: '11px', color: '#9a9baa', marginTop: '2px' }}>{sub}</span>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
-                    <input className="input" type="number" min={key === 'prepMinutesPerActivity' ? 0 : 1} value={settingsForm[key]} onChange={e => setSettingsForm(p => ({ ...p, [key]: Number(e.target.value) || 0 }))} style={{ width: '64px', textAlign: 'center', padding: '8px 4px' }} />
+                    <DraftNumberInput
+                      value={settingsForm[key]}
+                      onCommit={n => setSettingsForm(p => ({ ...p, [key]: n }))}
+                      min={key === 'prepMinutesPerActivity' ? 0 : 1}
+                    />
                     <span style={{ fontSize: '13px', color: '#757684' }}>min</span>
                   </div>
                 </div>
