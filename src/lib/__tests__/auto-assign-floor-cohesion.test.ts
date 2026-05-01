@@ -5,9 +5,12 @@
  * between Cindy and Astri, even though one of them could have taken a whole
  * floor and only the second worker should have crossed. This test pins the
  * new floor-block behavior so it can't regress.
+ *
+ * Run via: npx tsx --test src/lib/__tests__/auto-assign-floor-cohesion.test.ts
  */
 
-import { describe, it, expect } from 'vitest';
+import { test, describe } from 'node:test';
+import assert from 'node:assert/strict';
 import { autoAssignRooms } from '../calculations';
 import type { StaffMember } from '@/types';
 
@@ -36,9 +39,7 @@ function summarize(
   assignments: Record<string, string>,
   rooms: Array<{ id: string; number: string }>,
 ) {
-  // staffId -> Set<floor>
   const floorsByStaff: Record<string, Set<string>> = {};
-  // staffId -> roomNumbers[]
   const roomsByStaff: Record<string, string[]> = {};
   for (const r of rooms) {
     const sid = assignments[r.id];
@@ -51,9 +52,8 @@ function summarize(
   return { floorsByStaff, roomsByStaff };
 }
 
-
 describe('autoAssignRooms — floor cohesion (2026-04-30 redesign)', () => {
-  it('gives an entire small-enough floor to ONE housekeeper instead of splitting it', () => {
+  test('gives an entire small-enough floor to ONE housekeeper instead of splitting it', () => {
     // Two floors, each with rooms that easily fit on one HK at the 7h cap.
     // Two HKs available. Expectation: HK1 owns one floor entirely, HK2 owns
     // the other entirely. Zero cross-floor walking.
@@ -72,13 +72,13 @@ describe('autoAssignRooms — floor cohesion (2026-04-30 redesign)', () => {
 
     const { floorsByStaff } = summarize(out, rooms);
     // Each HK should own exactly one floor.
-    expect(Object.keys(floorsByStaff)).toHaveLength(2);
+    assert.equal(Object.keys(floorsByStaff).length, 2);
     for (const sid of Object.keys(floorsByStaff)) {
-      expect(floorsByStaff[sid].size).toBe(1);
+      assert.equal(floorsByStaff[sid].size, 1, `staff ${sid} should own one floor`);
     }
   });
 
-  it('only the spillover housekeeper crosses floors when one floor exceeds a single shift', () => {
+  test('only the spillover housekeeper crosses floors when one floor exceeds a single shift', () => {
     // Floor 3: 21 stayovers × ~25 min each = ~525 min — too big for 1 HK at
     // the 420-min cap. Floor 4: 18 stayovers ≈ 450 min, also too big — but
     // close enough that one HK can take most of it.
@@ -99,20 +99,19 @@ describe('autoAssignRooms — floor cohesion (2026-04-30 redesign)', () => {
     const { floorsByStaff, roomsByStaff } = summarize(out, rooms);
 
     // The algorithm should fill both shifts close to the cap. With 2 HKs at
-    // 420 min and ~25 min/room, expect ~32 rooms placed (the rest correctly
-    // surface as unassigned — Reeyen prefers a flagged overflow over a
-    // silent over-cap shift).
+    // 420 min and ~25 min/room, expect ~30+ rooms placed (the rest correctly
+    // surface as unassigned — flagged overflow over a silent over-cap shift).
     const placed = Object.values(roomsByStaff).reduce((s, arr) => s + arr.length, 0);
-    expect(placed).toBeGreaterThanOrEqual(30);
+    assert.ok(placed >= 30, `expected ≥30 rooms placed, got ${placed}`);
 
     // CRITICAL ASSERTION: at most ONE housekeeper touches both floors.
     // The pre-redesign algorithm split BOTH floors between the same two
     // HKs (each crossing). If this regresses, both HKs will have size > 1.
     const crossers = Object.values(floorsByStaff).filter(s => s.size > 1).length;
-    expect(crossers).toBeLessThanOrEqual(1);
+    assert.ok(crossers <= 1, `at most 1 HK should cross floors, got ${crossers}`);
   });
 
-  it('produces deterministic output (same input → same assignment)', () => {
+  test('produces deterministic output (same input → same assignment)', () => {
     // Mario clicks Auto-assign twice in a row; both clicks must yield the
     // same room → staff mapping. Otherwise the schedule shuffles every
     // time someone accidentally re-clicks the button.
@@ -125,10 +124,10 @@ describe('autoAssignRooms — floor cohesion (2026-04-30 redesign)', () => {
 
     const a1 = autoAssignRooms(rooms, staff);
     const a2 = autoAssignRooms(rooms, staff);
-    expect(a1).toEqual(a2);
+    assert.deepEqual(a1, a2);
   });
 
-  it("respects the shift cap — never piles a HK over the cap to keep them on one floor", () => {
+  test('respects the shift cap — never piles a HK over the cap to keep them on one floor', () => {
     // Pathological: ONE huge floor much larger than any single shift.
     // The spillover MUST go somewhere — we trade some floor-purity for the
     // hard cap. Each HK individually must remain under the cap.
@@ -144,11 +143,11 @@ describe('autoAssignRooms — floor cohesion (2026-04-30 redesign)', () => {
       if (sid) load[sid] = (load[sid] ?? 0) + 35;
     }
     for (const sid of Object.keys(load)) {
-      expect(load[sid]).toBeLessThanOrEqual(420);
+      assert.ok(load[sid] <= 420, `HK ${sid} over cap: ${load[sid]} > 420`);
     }
   });
 
-  it("prefers stickiness when spillover happens (HK already on floor finishes it)", () => {
+  test('prefers stickiness when spillover happens (HK already on floor finishes it)', () => {
     // Floor 1: 10 stayovers (fits) + Floor 2: 30 stayovers (forces split).
     // Algorithm processes floor 2 first (largest). Two HKs split it. Then
     // floor 1 goes to whoever has more capacity — should NOT bring in
@@ -169,6 +168,6 @@ describe('autoAssignRooms — floor cohesion (2026-04-30 redesign)', () => {
       if (f.size === 1) singleFloorCount++;
     }
     // At least 2 of the 3 HKs are single-floor.
-    expect(singleFloorCount).toBeGreaterThanOrEqual(2);
+    assert.ok(singleFloorCount >= 2, `expected ≥2 single-floor HKs, got ${singleFloorCount}`);
   });
 });
