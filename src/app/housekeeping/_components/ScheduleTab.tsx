@@ -815,129 +815,186 @@ function ScheduleTab() {
       });
     }
 
-    // Floor-level metadata: total minutes of dirty work per floor. Used to
-    // (a) decide how many HKs a floor needs, (b) order floors biggest-first
-    // so the hardest floor claims HKs before smaller ones.
+    // Floor-level metadata: total minutes of dirty work per floor.
     const minsByFloor = new Map<string, number>();
     for (const [f, list] of roomsByFloor) {
       const total = list.reduce((s, r) => s + minsForRoom(r) + prepPerRoom, 0);
       minsByFloor.set(f, total);
     }
-    const sortedFloors = [...roomsByFloor.keys()].sort((a, b) => {
-      // Floors with preserved work come first (HKs already locked there need
-      // their remaining floor-mates pulled in first). Then biggest load.
-      const aLocked = [...hkFloor.values()].includes(a) ? 1 : 0;
-      const bLocked = [...hkFloor.values()].includes(b) ? 1 : 0;
-      if (aLocked !== bLocked) return bLocked - aLocked;
-      return (minsByFloor.get(b) ?? 0) - (minsByFloor.get(a) ?? 0);
-    });
 
-    // ── Step 4: assign each floor to HK(s), then split rooms contiguously ──
+    // ── Step 4: dedicate-then-adjacency-bin-pack (2026-04-30 redesign) ──
     //
-    // Per floor:
-    //   1. Find HKs already locked to this floor (preserved rooms). They're in.
-    //   2. If their remaining capacity covers the floor, done — one HK per floor.
-    //   3. If not, pull in more HKs from the unassigned pool until covered.
-    //   4. Split the floor's sorted room list into contiguous chunks of
-    //      roughly equal minutes and assign each chunk to an HK.
+    // The previous algorithm processed floors largest-first and gave each
+    // its own HK, with leftovers redistributed by raw load. That worked
+    // when floors and HKs matched 1:1, but with 4 floors and 3 HKs the
+    // small floor (floor 1, ~140 min) ended up scattered: 4 rooms onto
+    // the floor-2 HK (adjacent ✓) and 2 rooms onto the floor-3 HK (NOT
+    // adjacent — Julia ended up walking floor 3 ↔ floor 1, two flights).
     //
-    // A chunk can't exceed shiftLen (hard cap). If rooms don't fit even
-    // after adding every HK, the leftovers stay unassigned — Maria sees
-    // them in the Unassigned bucket and can manually place them or add
-    // more crew.
+    // New logic — two-phase:
+    //
+    //   PHASE A — Dedicate single-floor HKs.
+    //     Walk floors largest-first. A floor is "dedicate-able" if:
+    //       • its rooms fit in one shift, AND
+    //       • after reserving one HK to that floor, the remaining HKs can
+    //         still cover the remaining floors (slack-aware feasibility).
+    //     Each dedicated floor gets a fresh HK; that HK does ONLY that
+    //     floor. Stops as soon as the next-largest floor would steal too
+    //     much capacity from the rest.
+    //
+    //   PHASE B — Adjacency bin-pack the rest.
+    //     Walk remaining floors in ASCENDING numeric order, pouring rooms
+    //     onto remaining HKs in load-asc order. When an HK fills, advance
+    //     to the next. Because rooms come in ascending floor order, any
+    //     cross-floor work stays adjacent (floor N ↔ floor N+1) — never
+    //     a 2-floor skip.
+    //
+    // For Reeyen's typical Comfort Suites layout (3 HKs / 4 floors, total
+    // work ~96% of total cap) this produces:
+    //   • One HK on floor 4 alone (single-floor — no walking)
+    //   • One HK on floors 1 + most of floor 2 (1-floor walk)
+    //   • One HK on floor 2 spillover + floor 3 (1-floor walk)
+    // Compared to the old output where Julia had to skip a floor.
+    //
+    // Edge cases handled:
+    //   • Preserved/locked HKs (in-progress or pinned rooms) — Phase A
+    //     skips floors that have a locked HK; Phase B keeps that HK on
+    //     their floor.
+    //   • Floor that exceeds shiftLen by itself — never dedicate-able,
+    //     falls through to Phase B which will split it.
+    //   • Total work > total cap — Phase B leaves the overflow rooms
+    //     unassigned, surfaced via the existing toast.
+
     const hksByFloor = new Map<string, string[]>(); // floor -> ordered HK ids
+    const dedicatedFloors = new Set<string>();
+    const dedicatedHKs = new Set<string>();
 
-    for (const f of sortedFloors) {
-      const rooms = roomsByFloor.get(f)!;
-      const totalMins = minsByFloor.get(f) ?? 0;
-
-      // (1) Pre-locked HKs for this floor (have preserved rooms here).
-      const lockedHKs = effectiveCrew.filter(s => hkFloor.get(s.id) === f);
-
-      // (2)+(3) Figure out total HKs needed. Start with locked, add from
-      // the unassigned pool until the floor's total mins is covered by
-      // remaining capacity.
-      const chosen: typeof effectiveCrew = [...lockedHKs];
-      const remainingCap = () => chosen.reduce(
-        (sum, s) => sum + Math.max(0, shiftLen - (loadByStaff.get(s.id) ?? 0)),
-        0,
+    // ── PHASE A ──
+    {
+      const candidateFloors = [...roomsByFloor.keys()].sort(
+        (a, b) => (minsByFloor.get(b) ?? 0) - (minsByFloor.get(a) ?? 0),
       );
-      const unassignedPool = effectiveCrew
-        .filter(s => !hkFloor.has(s.id))
-        .sort((a, b) => (loadByStaff.get(a.id) ?? 0) - (loadByStaff.get(b.id) ?? 0));
-      for (const hk of unassignedPool) {
-        if (remainingCap() >= totalMins) break;
-        chosen.push(hk);
-        hkFloor.set(hk.id, f);
-      }
-      // Degenerate case: more floors than HKs. Borrow the least-loaded
-      // already-assigned HK as a last resort rather than leaving a whole
-      // floor unassigned. Adjacent-floor preference (closer floor numbers
-      // = less walking) breaks ties so e.g. an HK on floor 3 picks up
-      // floor 4 before an HK on floor 1 does.
-      if (chosen.length === 0) {
-        const floorNum = parseInt(f) || 0;
-        const fallback = effectiveCrew
-          .filter(s => (loadByStaff.get(s.id) ?? 0) < shiftLen)
-          .sort((a, b) => {
-            const aFloor = hkFloor.get(a.id);
-            const bFloor = hkFloor.get(b.id);
-            const aDist = aFloor ? Math.abs((parseInt(aFloor) || 0) - floorNum) : 99;
-            const bDist = bFloor ? Math.abs((parseInt(bFloor) || 0) - floorNum) : 99;
-            if (aDist !== bDist) return aDist - bDist;
-            return (loadByStaff.get(a.id) ?? 0) - (loadByStaff.get(b.id) ?? 0);
-          });
-        if (fallback.length > 0) chosen.push(fallback[0]);
-      }
-      if (chosen.length === 0) continue; // still no HKs — rooms stay unassigned
 
-      // Make sure locked HKs also get the floor-lock registered (in case
-      // they weren't already — e.g. they had an in-progress room but we
-      // didn't see it in preserved seeding).
-      for (const s of lockedHKs) hkFloor.set(s.id, f);
-      hksByFloor.set(f, chosen.map(s => s.id));
+      for (const f of candidateFloors) {
+        const fMins = minsByFloor.get(f) ?? 0;
 
-      // (4) Pour rooms onto HKs in order: fill the FIRST HK to their
-      // remaining cap, then spill onto the second, etc.
-      //
-      // Old behavior (caused Maria's 'Cindy and Astri both have half of
-      // floors 3 and 4' complaint): we computed targetPerHK = totalMins /
-      // chosen.length and advanced when chunkMins hit that target. With
-      // two HKs on a floor, that produced an even 50/50 split — both
-      // housekeepers had to walk the whole floor. Worst case for cart
-      // and elevator usage.
-      //
-      // New behavior: fill HK index 0 until they're at the cap or out of
-      // room minutes, then HK index 1, then 2. The HK who's least loaded
-      // coming in (chosen[0] after the load-asc sort above) gets the
-      // biggest single block. Other HKs only see this floor if there are
-      // truly enough rooms to overflow chosen[0]'s capacity — at which
-      // point we've spent the bare minimum amount of cross-floor walking
-      // to fit the work.
-      //
-      // The sort order above (VIP → checkouts → number) means each chunk
-      // is contiguous in the natural cleaning sequence, so each HK still
-      // walks the floor in numerical order, just over a smaller range of
-      // rooms.
-      let hkIdx = 0;
-      for (const r of rooms) {
-        const mins = minsForRoom(r) + prepPerRoom;
+        // Skip floors with a preserved-locked HK — that HK is committed
+        // here regardless. We'll let Phase B finish their floor.
+        const lockedHere = effectiveCrew.find(s => hkFloor.get(s.id) === f);
+        if (lockedHere) continue;
 
-        // Advance through HKs until we find one with capacity for this
-        // room. If no chosen HK can fit it, the room stays unassigned.
-        while (
-          hkIdx < chosen.length &&
-          (loadByStaff.get(chosen[hkIdx].id) ?? 0) + mins > shiftLen
-        ) {
-          hkIdx++;
+        // Doesn't fit one shift on its own → can't dedicate.
+        if (fMins > shiftLen) continue;
+
+        // Capacity-feasibility: after reserving one HK for this floor,
+        // can the remaining HKs cover the remaining floors?
+        const remainingMins = [...minsByFloor.entries()]
+          .filter(([ff]) => ff !== f && !dedicatedFloors.has(ff))
+          .reduce((s, [, m]) => s + m, 0);
+
+        const remainingHKs = effectiveCrew.filter(
+          s => !dedicatedHKs.has(s.id) && !hkFloor.has(s.id),
+        );
+        // -1 because we'd be reserving one of them for this floor.
+        const remainingCap = (remainingHKs.length - 1) * shiftLen;
+
+        if (remainingMins > remainingCap) continue; // can't afford to dedicate
+
+        // Pick the freshest HK (lowest current load) — usually 0.
+        const fresh = remainingHKs
+          .filter(s => !dedicatedHKs.has(s.id))
+          .sort((a, b) => (loadByStaff.get(a.id) ?? 0) - (loadByStaff.get(b.id) ?? 0))[0];
+        if (!fresh) break;
+
+        dedicatedFloors.add(f);
+        dedicatedHKs.add(fresh.id);
+        hkFloor.set(fresh.id, f);
+        hksByFloor.set(f, [fresh.id]);
+
+        const rooms = roomsByFloor.get(f)!;
+        for (const r of rooms) {
+          const mins = minsForRoom(r) + prepPerRoom;
+          if ((loadByStaff.get(fresh.id) ?? 0) + mins > shiftLen) continue;
+          next[r.id] = fresh.id;
+          loadByStaff.set(fresh.id, (loadByStaff.get(fresh.id) ?? 0) + mins);
+          const fmap = floorCountByStaff.get(fresh.id)!;
+          fmap.set(f, (fmap.get(f) ?? 0) + 1);
         }
-        if (hkIdx >= chosen.length) continue;
+      }
+    }
 
-        const pick = chosen[hkIdx];
-        next[r.id] = pick.id;
-        loadByStaff.set(pick.id, (loadByStaff.get(pick.id) ?? 0) + mins);
-        const fmap = floorCountByStaff.get(pick.id)!;
-        fmap.set(f, (fmap.get(f) ?? 0) + 1);
+    // ── PHASE B ──
+    {
+      // Floors not yet handled, in ASCENDING numeric order so an HK
+      // crossing a floor boundary always crosses to the adjacent next
+      // floor — never a skip.
+      const remainingFloors = [...roomsByFloor.keys()]
+        .filter(f => !dedicatedFloors.has(f))
+        .sort((a, b) => (parseInt(a) || 99) - (parseInt(b) || 99));
+
+      // HKs available for Phase B. Already-locked HKs (preserved on a
+      // specific floor by in-progress / pinned work) are placed at the
+      // FRONT of their floor's queue so they finish their own floor
+      // first; other HKs are sorted by current load.
+      const phaseBPool = effectiveCrew
+        .filter(s => !dedicatedHKs.has(s.id))
+        .sort((a, b) => (loadByStaff.get(a.id) ?? 0) - (loadByStaff.get(b.id) ?? 0));
+
+      // For each floor, build a chosen list: locked-here HKs first,
+      // then top up from phaseBPool.
+      const phaseBUsed = new Set<string>();
+      let poolIdx = 0;
+
+      for (const f of remainingFloors) {
+        const rooms = roomsByFloor.get(f)!;
+
+        const lockedHere = phaseBPool.filter(s => hkFloor.get(s.id) === f);
+        const chosen = [...lockedHere];
+        for (const s of lockedHere) phaseBUsed.add(s.id);
+
+        // Pour rooms onto chosen[0] until cap, then fall through to the
+        // pool to draft a fresh HK (or continue with the next chosen[i]
+        // if there are multiple locked HKs).
+        let chosenIdx = 0;
+        for (const r of rooms) {
+          const mins = minsForRoom(r) + prepPerRoom;
+
+          // Find an HK who can fit this room. Try chosen first.
+          while (
+            chosenIdx < chosen.length &&
+            (loadByStaff.get(chosen[chosenIdx].id) ?? 0) + mins > shiftLen
+          ) {
+            chosenIdx++;
+          }
+
+          // chosen exhausted → pull next from pool (skipping ones already
+          // used / dedicated / over cap).
+          while (chosenIdx >= chosen.length) {
+            // Find next pool HK with any capacity left.
+            while (
+              poolIdx < phaseBPool.length &&
+              (phaseBUsed.has(phaseBPool[poolIdx].id) ||
+                (loadByStaff.get(phaseBPool[poolIdx].id) ?? 0) + mins > shiftLen)
+            ) {
+              poolIdx++;
+            }
+            if (poolIdx >= phaseBPool.length) break; // no more HKs to draft
+            const fresh = phaseBPool[poolIdx];
+            chosen.push(fresh);
+            phaseBUsed.add(fresh.id);
+            hkFloor.set(fresh.id, f);
+          }
+
+          if (chosenIdx >= chosen.length) continue; // unassigned
+
+          const pick = chosen[chosenIdx];
+          next[r.id] = pick.id;
+          loadByStaff.set(pick.id, (loadByStaff.get(pick.id) ?? 0) + mins);
+          const fmap = floorCountByStaff.get(pick.id)!;
+          fmap.set(f, (fmap.get(f) ?? 0) + 1);
+        }
+
+        hksByFloor.set(f, chosen.map(s => s.id));
       }
     }
 
