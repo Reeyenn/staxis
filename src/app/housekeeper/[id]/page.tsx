@@ -216,7 +216,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
     })();
 
     return () => { cancelled = true; };
-  }, [housekeeperId, pid]);
+  }, [housekeeperId, pid, authReady]);
 
   useEffect(() => {
     if (!housekeeperId || !pid || !authReady) return;
