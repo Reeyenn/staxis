@@ -37,8 +37,17 @@ export interface CleaningEvent {
 // Business-rule thresholds. Mirror the migration's CASE expressions so we
 // produce identical status values in TS-side inserts. If you change these,
 // re-run the migration to keep historical data consistent.
+//
+// Three thresholds (Reeyen, 2026-05-01):
+//   < 3 min       → discarded (accidental tap, never a real clean)
+//   3–60 min      → recorded (counts toward averages)
+//   60–90 min     → flagged (Maria reviews — could be a tough clean)
+//   > 90 min      → discarded (forgot to tap Done — almost certainly not
+//                   a real clean of one room. Auto-remove rather than
+//                   bury Maria in pointless review work.)
 export const CLEANING_DISCARD_UNDER_MIN = 3;
 export const CLEANING_FLAG_OVER_MIN = 60;
+export const CLEANING_DISCARD_OVER_MIN = 90;
 
 // Computes the bucketed S1/S2 cycle from the raw scraper-set stayover_day
 // (1, 2, 3, 4, …). Odd → 1 (S1 light), Even → 2 (S2 full). Returns null for
@@ -52,6 +61,7 @@ export function bucketStayoverDay(stayoverDay: number | null | undefined, roomTy
 // Pure function for status classification — easy to unit test.
 export function classifyCleaningEvent(durationMinutes: number): { status: CleaningEventStatus; flagReason: string | null } {
   if (durationMinutes < CLEANING_DISCARD_UNDER_MIN) return { status: 'discarded', flagReason: 'under_3min' };
+  if (durationMinutes > CLEANING_DISCARD_OVER_MIN) return { status: 'discarded', flagReason: 'over_90min' };
   if (durationMinutes > CLEANING_FLAG_OVER_MIN) return { status: 'flagged', flagReason: 'over_60min' };
   return { status: 'recorded', flagReason: null };
 }
@@ -81,10 +91,6 @@ function fromCleaningEventRow(r: Record<string, unknown>): CleaningEvent {
  * Insert one cleaning event. Called by the housekeeper page when "Done" is
  * tapped. Computes duration, status, and flag_reason from the inputs.
  *
- * Optional ML features: when populating features (on Done tap), pass them
- * via the features parameter. All features are nullable — if absent, columns
- * stay NULL. See migration 0021 for the spec of each feature.
- *
  * Idempotent: re-clicking "Done" with the same started_at/completed_at hits
  * the unique constraint and is silently ignored. Returns null on any error
  * — the caller should NOT block the room update on this insert.
@@ -99,25 +105,12 @@ export async function insertCleaningEvent(input: {
   staffName: string;
   startedAt: Date;
   completedAt: Date;
-  // ML feature snapshot (all optional, all nullable)
-  features?: {
-    dayOfWeek?: number | null;
-    dayOfStayRaw?: number | null;
-    roomFloor?: number | null;
-    occupancyAtStart?: number | null;
-    totalCheckoutsToday?: number | null;
-    totalRoomsAssignedToHk?: number | null;
-    routePosition?: number | null;
-    minutesSinceShiftStart?: number | null;
-    wasDndDuringClean?: boolean | null;
-    weatherClass?: string | null;
-  };
 }): Promise<CleaningEvent | null> {
   const durationMs = input.completedAt.getTime() - input.startedAt.getTime();
   const durationMinutes = Math.max(0, durationMs / 60_000);
   const { status, flagReason } = classifyCleaningEvent(durationMinutes);
 
-  const row: Record<string, unknown> = {
+  const row = {
     property_id: input.propertyId,
     date: input.date,
     room_number: input.roomNumber,
@@ -131,20 +124,6 @@ export async function insertCleaningEvent(input: {
     status,
     flag_reason: flagReason,
   };
-
-  // Populate ML features if provided. All are optional and nullable.
-  if (input.features) {
-    if (input.features.dayOfWeek !== undefined) row.day_of_week = input.features.dayOfWeek;
-    if (input.features.dayOfStayRaw !== undefined) row.day_of_stay_raw = input.features.dayOfStayRaw;
-    if (input.features.roomFloor !== undefined) row.room_floor = input.features.roomFloor;
-    if (input.features.occupancyAtStart !== undefined) row.occupancy_at_start = input.features.occupancyAtStart;
-    if (input.features.totalCheckoutsToday !== undefined) row.total_checkouts_today = input.features.totalCheckoutsToday;
-    if (input.features.totalRoomsAssignedToHk !== undefined) row.total_rooms_assigned_to_hk = input.features.totalRoomsAssignedToHk;
-    if (input.features.routePosition !== undefined) row.route_position = input.features.routePosition;
-    if (input.features.minutesSinceShiftStart !== undefined) row.minutes_since_shift_start = input.features.minutesSinceShiftStart;
-    if (input.features.wasDndDuringClean !== undefined) row.was_dnd_during_clean = input.features.wasDndDuringClean;
-    if (input.features.weatherClass !== undefined) row.weather_class = input.features.weatherClass;
-  }
 
   const { data, error } = await supabase
     .from('cleaning_events')

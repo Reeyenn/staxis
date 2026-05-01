@@ -37,7 +37,6 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { deriveCleaningEventFeatures } from '@/lib/feature-derivation';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -71,11 +70,30 @@ interface RequestBody {
 // Mirror of the TS-side classifier (db.ts classifyCleaningEvent). Kept here
 // inline so this route doesn't drag the entire client-side db module into
 // the server bundle.
+//
+// Threshold tiers (Reeyen, 2026-05-01):
+//   • duration < 3 min                 → 'discarded' (under_3min)
+//                                        accidental Start→Done tap; never
+//                                        a real clean.
+//   • duration > 90 min                → 'discarded' (over_90min)
+//                                        almost certainly a forgotten Done
+//                                        tap. NO real housekeeper takes 90+
+//                                        minutes on a single room. Auto-
+//                                        remove rather than wasting Maria's
+//                                        review queue.
+//   • duration > 60 min and ≤ 90 min   → 'flagged' (over_60min)
+//                                        worth Maria's review — could be a
+//                                        legitimately tough clean (move-out
+//                                        with damage, deep clean) or a real
+//                                        over-budget shift.
+//   • duration in [3, 60] min          → 'recorded' (counts toward averages)
 const DISCARD_UNDER_MIN = 3;
 const FLAG_OVER_MIN = 60;
+const DISCARD_OVER_MIN = 90;
 function classify(durationMin: number): { status: 'recorded' | 'discarded' | 'flagged'; flag_reason: string | null } {
   if (durationMin < DISCARD_UNDER_MIN) return { status: 'discarded', flag_reason: 'under_3min' };
-  if (durationMin > FLAG_OVER_MIN) return { status: 'flagged', flag_reason: 'over_60min' };
+  if (durationMin > DISCARD_OVER_MIN) return { status: 'discarded', flag_reason: 'over_90min' };
+  if (durationMin > FLAG_OVER_MIN)    return { status: 'flagged',   flag_reason: 'over_60min' };
   return { status: 'recorded', flag_reason: null };
 }
 
@@ -143,50 +161,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const now = new Date().toISOString();
 
     // ─── START ──────────────────────────────────────────────────────────
-    // On Start, capture the current in-house occupancy count so it can be
-    // copied to cleaning_events.occupancy_at_start on the Done tap.
-    // This snapshot is taken at the moment the housekeeper taps Start.
     if (action === 'start') {
-      // Fetch current occupancy from scraper_status[dashboard].data.in_house
-      let lastStartedOccupancy: number | null = null;
-      try {
-        const { data: scraper, error: scraperErr } = await supabaseAdmin
-          .from('scraper_status')
-          .select('data')
-          .eq('key', 'dashboard')
-          .maybeSingle();
-
-        if (!scraperErr && scraper) {
-          const dashData = scraper.data as Record<string, unknown> | null;
-          // Check if data is fresh (not stale — within 4 hours)
-          if (dashData && typeof dashData.in_house === 'number' && dashData.pulledAt) {
-            const pulledAt = new Date(String(dashData.pulledAt));
-            const ageMs = Date.now() - pulledAt.getTime();
-            const fourHoursMs = 4 * 60 * 60 * 1000;
-            if (ageMs <= fourHoursMs) {
-              lastStartedOccupancy = dashData.in_house;
-            }
-          }
-        }
-      } catch (occupancyErr) {
-        // Log but do not fail — occupancy capture is a best-effort feature
-        log.warn('room-action: occupancy capture failed', {
-          requestId, pid, roomId, err: errToString(occupancyErr)
-        });
-      }
-
-      // Update room status + started_at, plus last_started_occupancy if captured
-      const updatePayload: Record<string, unknown> = {
-        status: 'in_progress',
-        started_at: now,
-      };
-      if (lastStartedOccupancy !== null) {
-        updatePayload.last_started_occupancy = lastStartedOccupancy;
-      }
-
       const { error: updErr } = await supabaseAdmin
         .from('rooms')
-        .update(updatePayload)
+        .update({ status: 'in_progress', started_at: now })
         .eq('id', roomId);
       if (updErr) {
         return err(errToString(updErr), { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
@@ -195,8 +173,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
 
     // ─── FINISH ─────────────────────────────────────────────────────────
-    // Updates room AND writes cleaning_events row with ML feature snapshot.
-    // If started_at is null we set it to now (giving a 0-min duration → discarded entry).
+    // Updates room AND writes cleaning_events row. If started_at is null
+    // we set it to now (giving a 0-min duration → discarded entry).
     if (action === 'finish') {
       const startedAt = room.started_at ?? now;
       const completedAt = now;
@@ -212,72 +190,29 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         return err(errToString(roomUpdErr), { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
       }
 
-      // Audit log + ML feature snapshot — only for checkout/stayover, never vacant.
+      // Audit log — only for checkout/stayover, never vacant.
       let cleaningEventInserted = false;
       if (cleaningContext && (cleaningContext.roomType === 'checkout' || cleaningContext.roomType === 'stayover')) {
         const startMs = new Date(cleaningContext.startedAt).getTime();
         const endMs = new Date(cleaningContext.completedAt).getTime();
         const durationMin = Math.max(0, (endMs - startMs) / 60_000);
         const { status, flag_reason } = classify(durationMin);
-
-        // Derive ML features. All failures are non-fatal and logged separately.
-        let features = {
-          dayOfWeek: null as number | null,
-          dayOfStayRaw: null as number | null,
-          roomFloor: null as number | null,
-          occupancyAtStart: null as number | null,
-          totalCheckoutsToday: null as number | null,
-          totalRoomsAssignedToHk: null as number | null,
-          routePosition: null as number | null,
-          minutesSinceShiftStart: null as number | null,
-          wasDndDuringClean: null as boolean | null,
-          weatherClass: null as string | null,
-        };
-        try {
-          features = await deriveCleaningEventFeatures({
-            propertyId: pid,
-            date: cleaningContext.date,
-            roomNumber: cleaningContext.roomNumber,
-            staffId,
-            startedAt: new Date(cleaningContext.startedAt),
-            completedAt: new Date(cleaningContext.completedAt),
-          });
-        } catch (featureErr) {
-          log.error('room-action: feature derivation threw (unexpected)', {
-            requestId, pid, staffId, action: 'finish', err: featureErr as unknown as Error
-          });
-          // Continue with null features — the insert must proceed.
-        }
-
-        const cePayload: Record<string, unknown> = {
-          property_id: pid,
-          date: cleaningContext.date,
-          room_number: cleaningContext.roomNumber,
-          room_type: cleaningContext.roomType,
-          stayover_day: cleaningContext.stayoverDayBucket,
-          staff_id: staffId,
-          staff_name: cleaningContext.staffName || staff.name || 'Housekeeper',
-          started_at: cleaningContext.startedAt,
-          completed_at: cleaningContext.completedAt,
-          duration_minutes: Number(durationMin.toFixed(2)),
-          status,
-          flag_reason,
-          // ML features
-          day_of_week: features.dayOfWeek,
-          day_of_stay_raw: features.dayOfStayRaw,
-          room_floor: features.roomFloor,
-          occupancy_at_start: features.occupancyAtStart,
-          total_checkouts_today: features.totalCheckoutsToday,
-          total_rooms_assigned_to_hk: features.totalRoomsAssignedToHk,
-          route_position: features.routePosition,
-          minutes_since_shift_start: features.minutesSinceShiftStart,
-          was_dnd_during_clean: features.wasDndDuringClean,
-          weather_class: features.weatherClass,
-        };
-
         const { error: ceErr } = await supabaseAdmin
           .from('cleaning_events')
-          .upsert(cePayload, {
+          .upsert({
+            property_id: pid,
+            date: cleaningContext.date,
+            room_number: cleaningContext.roomNumber,
+            room_type: cleaningContext.roomType,
+            stayover_day: cleaningContext.stayoverDayBucket,
+            staff_id: staffId,
+            staff_name: cleaningContext.staffName || staff.name || 'Housekeeper',
+            started_at: cleaningContext.startedAt,
+            completed_at: cleaningContext.completedAt,
+            duration_minutes: Number(durationMin.toFixed(2)),
+            status,
+            flag_reason,
+          }, {
             onConflict: 'property_id,date,room_number,started_at,completed_at',
             ignoreDuplicates: true,
           });
