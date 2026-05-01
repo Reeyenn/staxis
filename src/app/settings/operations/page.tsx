@@ -5,6 +5,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
+import { DraftNumberInput } from '@/components/DraftNumberInput';
 import {
   getPublicAreas, setPublicArea, deletePublicArea,
   getDeepCleanConfig, setDeepCleanConfig,
@@ -21,30 +22,57 @@ import { Wrench, Plus, Trash2, Check, ChevronDown, ChevronUp, Sparkles, AlertTri
 
 const Field = ({
   label, value, onChange, type = 'text', suffix = '', style = {},
+  numberMin, numberMax,
 }: {
   label: string; value: string | number; onChange: (v: string) => void;
   type?: string; suffix?: string; style?: React.CSSProperties;
-}) => (
-  <div style={{ ...style }}>
-    <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-      {label}
-    </label>
-    <div style={{ position: 'relative' }}>
-      <input
-        type={type}
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        className="input"
-        style={suffix ? { paddingRight: '42px' } : {}}
-      />
-      {suffix && (
-        <span style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', fontSize: '13px' }}>
-          {suffix}
-        </span>
-      )}
+  /** When type === 'number', minimum allowed value. The field will refuse
+   *  to commit values below this and snap back to the last valid number on
+   *  blur if the user leaves it blank. Defaults to 0. */
+  numberMin?: number;
+  numberMax?: number;
+}) => {
+  // Number-typed fields use DraftNumberInput so backspacing past every digit
+  // doesn't snap to the parent's `|| default` zero, leaving the user with
+  // a sticky leading 0 on their next keystroke. See src/components/
+  // DraftNumberInput.tsx for the full bug story.
+  const isNumber = type === 'number';
+  const numericValue = typeof value === 'number'
+    ? value
+    : (Number.isFinite(Number(value)) ? Number(value) : 0);
+  return (
+    <div style={{ ...style }}>
+      <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+        {label}
+      </label>
+      <div style={{ position: 'relative' }}>
+        {isNumber ? (
+          <DraftNumberInput
+            value={numericValue}
+            onCommit={n => onChange(String(n))}
+            min={numberMin ?? 0}
+            max={numberMax}
+            width="100%"
+            style={{ width: '100%', ...(suffix ? { paddingRight: '42px' } : {}) }}
+          />
+        ) : (
+          <input
+            type={type}
+            value={value}
+            onChange={e => onChange(e.target.value)}
+            className="input"
+            style={suffix ? { paddingRight: '42px' } : {}}
+          />
+        )}
+        {suffix && (
+          <span style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', fontSize: '13px', pointerEvents: 'none' }}>
+            {suffix}
+          </span>
+        )}
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 // ── Floor labels ───────────────────────────────────────────────────────────
 

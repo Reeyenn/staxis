@@ -6,6 +6,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import { AppLayout } from '@/components/layout/AppLayout';
+import { DraftNumberInput } from '@/components/DraftNumberInput';
 import {
   addStaffMember, updateStaffMember, deleteStaffMember,
   subscribeToShiftConfirmations, subscribeToManagerNotifications,
@@ -1424,13 +1425,24 @@ export default function StaffPage() {
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                   <div>
                     <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#454652', marginBottom: '6px', fontFamily: 'Inter, sans-serif' }}>{t('maxWeeklyHoursLabel', lang)}</label>
-                    <input type="number" value={form.maxWeeklyHours} min="1" onChange={e => setForm(f => ({ ...f, maxWeeklyHours: parseInt(e.target.value) || 40 }))}
-                      style={{ width: '100%', padding: '12px 16px', border: '1px solid #d5d2ca', borderRadius: '16px', background: '#fff', fontSize: '14px', fontFamily: "'JetBrains Mono', monospace", color: '#1b1c19', outline: 'none', boxSizing: 'border-box' }} />
+                    <DraftNumberInput
+                      value={form.maxWeeklyHours}
+                      onCommit={n => setForm(f => ({ ...f, maxWeeklyHours: n }))}
+                      min={1}
+                      width="100%"
+                      style={{ padding: '12px 16px', border: '1px solid #d5d2ca', borderRadius: '16px', background: '#fff', fontSize: '14px', fontFamily: "'JetBrains Mono', monospace", color: '#1b1c19', outline: 'none', boxSizing: 'border-box', textAlign: 'left' }}
+                    />
                   </div>
                   <div>
                     <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#454652', marginBottom: '6px', fontFamily: 'Inter, sans-serif' }}>{t('maxDaysPerWeekLabel', lang)}</label>
-                    <input type="number" value={form.maxDaysPerWeek} min="1" max="7" onChange={e => setForm(f => ({ ...f, maxDaysPerWeek: parseInt(e.target.value) || 5 }))}
-                      style={{ width: '100%', padding: '12px 16px', border: '1px solid #d5d2ca', borderRadius: '16px', background: '#fff', fontSize: '14px', fontFamily: "'JetBrains Mono', monospace", color: '#1b1c19', outline: 'none', boxSizing: 'border-box' }} />
+                    <DraftNumberInput
+                      value={form.maxDaysPerWeek}
+                      onCommit={n => setForm(f => ({ ...f, maxDaysPerWeek: n }))}
+                      min={1}
+                      max={7}
+                      width="100%"
+                      style={{ padding: '12px 16px', border: '1px solid #d5d2ca', borderRadius: '16px', background: '#fff', fontSize: '14px', fontFamily: "'JetBrains Mono', monospace", color: '#1b1c19', outline: 'none', boxSizing: 'border-box', textAlign: 'left' }}
+                    />
                   </div>
                 </div>
 

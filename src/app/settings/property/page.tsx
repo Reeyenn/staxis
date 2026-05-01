@@ -9,22 +9,45 @@ import { updateProperty, createProperty } from '@/lib/db';
 import { t } from '@/lib/translations';
 import { Building2, Plus, Check } from 'lucide-react';
 import Link from 'next/link';
+import { DraftNumberInput } from '@/components/DraftNumberInput';
 
-const Field = ({ label, field, type = 'text', suffix = '', form, setForm }: { label: string; field: string; type?: string; suffix?: string; form: Record<string, any>; setForm: React.Dispatch<React.SetStateAction<any>> }) => (
-  <div style={{ marginBottom: '16px' }}>
-    <label className="label">{label}</label>
-    <div style={{ position: 'relative' }}>
-      <input
-        type={type}
-        value={form[field]}
-        onChange={e => setForm((f: any) => ({ ...f, [field]: type === 'number' ? Number(e.target.value) : e.target.value }))}
-        className="input"
-        style={suffix ? { paddingRight: '48px' } : {}}
-      />
-      {suffix && <span style={{ position: 'absolute', right: '14px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', fontSize: '13px' }}>{suffix}</span>}
+// Number-typed Field uses DraftNumberInput so the input doesn't snap to
+// the parent's number state when the user backspaces past every digit.
+// Without this, clearing the field made it stick at 0 and any subsequent
+// keystroke produced a leading zero (e.g. typing 30 produced "030"). See
+// src/components/DraftNumberInput.tsx for the full bug story.
+const Field = ({ label, field, type = 'text', suffix = '', form, setForm }: { label: string; field: string; type?: string; suffix?: string; form: Record<string, any>; setForm: React.Dispatch<React.SetStateAction<any>> }) => {
+  const isNumber = type === 'number';
+  const value = form[field];
+  const numericValue = typeof value === 'number'
+    ? value
+    : (Number.isFinite(Number(value)) ? Number(value) : 0);
+  return (
+    <div style={{ marginBottom: '16px' }}>
+      <label className="label">{label}</label>
+      <div style={{ position: 'relative' }}>
+        {isNumber ? (
+          <DraftNumberInput
+            value={numericValue}
+            onCommit={n => setForm((f: any) => ({ ...f, [field]: n }))}
+            min={0}
+            width="100%"
+            style={{ width: '100%', ...(suffix ? { paddingRight: '48px' } : {}) }}
+          />
+        ) : (
+          <input
+            type={type}
+            value={value}
+            onChange={e => setForm((f: any) => ({ ...f, [field]: e.target.value }))}
+            className="input"
+            style={suffix ? { paddingRight: '48px' } : {}}
+          />
+        )}
+        {suffix && <span style={{ position: 'absolute', right: '14px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', fontSize: '13px', pointerEvents: 'none' }}>{suffix}</span>}
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 export default function PropertySettingsPage() {
   const { user } = useAuth();

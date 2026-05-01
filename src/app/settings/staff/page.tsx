@@ -10,6 +10,7 @@ import { addStaffMember, updateStaffMember, deleteStaffMember } from '@/lib/db';
 import { generateId } from '@/lib/utils';
 import type { StaffMember } from '@/types';
 import { Modal } from '@/components/ui/Modal';
+import { DraftNumberInput } from '@/components/DraftNumberInput';
 import { Users, Plus, Trash2, Star, AlertTriangle, Clock } from 'lucide-react';
 import Link from 'next/link';
 
@@ -164,17 +165,18 @@ export default function StaffPage() {
                         </div>
                       </div>
 
-                      {/* Weekly hours input */}
+                      {/* Weekly hours input — DraftNumberInput so backspacing
+                          past every digit doesn't snap to 0 (which then
+                          left a sticky leading zero on the next keystroke). */}
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                         <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{lang === 'es' ? 'Horas trabajadas esta semana:' : 'Hours worked this week:'}</span>
-                        <input
-                          type="number"
+                        <DraftNumberInput
                           value={member.weeklyHours}
+                          onCommit={n => handleHoursUpdate(member, n)}
                           min={0}
                           max={60}
-                          onChange={e => handleHoursUpdate(member, Number(e.target.value))}
+                          width="60px"
                           style={{
-                            width: '60px',
                             padding: '4px 8px',
                             background: 'rgba(0,0,0,0.05)',
                             border: '1px solid var(--border)',
