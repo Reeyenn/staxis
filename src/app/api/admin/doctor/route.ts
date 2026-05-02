@@ -124,6 +124,11 @@ const checks: Array<[string, CheckFn]> = [
   ['cron_secret_cross_platform',     checkCronSecretCrossPlatform],
   ['watchdog_alert_path',            checkWatchdogAlertPath],
   ['scraper_pull_latency',           checkScraperPullLatency],
+  // Smoke-detectors for silent ML feature failures. Both paths fall back
+  // to NULL fields and let the housekeeper tap "succeed" — the only way
+  // we know they fired is by reading these counters.
+  ['ml_occupancy_capture_failures',  checkOccupancyCaptureFailures],
+  ['ml_feature_derivation_failures', checkFeatureDerivationFailures],
 ];
 
 // ─── Individual checks ───────────────────────────────────────────────────
@@ -1240,6 +1245,89 @@ async function checkScraperPullLatency(): Promise<Omit<Check, 'name' | 'duration
   } catch (err) {
     return { status: 'warn', detail: `pull-latency check raised: ${errToString(err)}` };
   }
+}
+
+/**
+ * Smoke-detector for silent ML feature failures.
+ *
+ * /api/housekeeper/room-action has two best-effort paths whose failures are
+ * invisible to the housekeeper (the tap "works"), invisible to Maria (no
+ * UI signal), and invisible to Reeyen (just a Vercel log line):
+ *
+ *   - occupancy_capture: scraper_status.dashboard.in_house wasn't readable
+ *     when the housekeeper tapped Start. Done lands with
+ *     cleaning_events.occupancy_at_start = NULL.
+ *   - feature_derivation: deriveCleaningEventFeatures() threw (schema drift,
+ *     helper bug). Done lands with all 10 ML feature columns NULL.
+ *
+ * Both paths increment a counter in scraper_status[ml_failures:<kind>]. If
+ * any failure landed in the last 24h, this check goes RED so the daily
+ * drift cron fires an SMS within hours of the first occurrence.
+ *
+ * `count > 0 in last 24h` is enough — we don't need exact counts. The fix
+ * is always "go read the room-action logs for the failing kind."
+ */
+async function checkMLFailureCounter(
+  kind: 'occupancy_capture' | 'feature_derivation',
+  fix: string,
+): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('scraper_status')
+      .select('data')
+      .eq('key', `ml_failures:${kind}`)
+      .maybeSingle();
+    if (error) {
+      return {
+        status: 'warn',
+        detail: `ml_failures:${kind} read failed: ${errToString(error)}`,
+      };
+    }
+    if (!data?.data) {
+      return { status: 'ok', detail: `no ${kind} failures recorded` };
+    }
+    const row = data.data as {
+      recent?: Array<{ at: string; pid: string; err: string }>;
+      total?: number;
+    };
+    const recent = row.recent ?? [];
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    const last24h = recent.filter((r) => {
+      const t = new Date(r.at).getTime();
+      return Number.isFinite(t) && t > cutoff;
+    });
+    if (last24h.length === 0) {
+      return {
+        status: 'ok',
+        detail: `no ${kind} failures in last 24h (lifetime total: ${row.total ?? 0})`,
+      };
+    }
+    const sample = last24h[0];
+    return {
+      status: 'fail',
+      detail: `${last24h.length} ${kind} failure(s) in last 24h. Most recent: ${sample.at} pid=${(sample.pid ?? '').slice(0, 8)} err="${(sample.err ?? '').slice(0, 80)}"`,
+      fix,
+    };
+  } catch (err) {
+    return {
+      status: 'warn',
+      detail: `ml_failures:${kind} check raised: ${errToString(err)}`,
+    };
+  }
+}
+
+async function checkOccupancyCaptureFailures(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  return checkMLFailureCounter(
+    'occupancy_capture',
+    'Inspect Vercel logs for /api/housekeeper/room-action "occupancy capture failed" warnings. Most likely cause: scraper_status.dashboard row stale (>4h) or missing the in_house field. Until fixed, every Start tap lands with cleaning_events.occupancy_at_start = NULL — supply model loses one of its strongest features.',
+  );
+}
+
+async function checkFeatureDerivationFailures(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  return checkMLFailureCounter(
+    'feature_derivation',
+    'Inspect Vercel logs for /api/housekeeper/room-action "feature derivation threw" errors. The helper swallows its own internal failures, so reaching the outer catch means an upstream contract broke (schema drift, helper signature change, missing column). Cleaning_events lands with all 10 ML feature columns NULL until fixed — supply model retrains on null-padded rows.',
+  );
 }
 
 // ─── Handler ─────────────────────────────────────────────────────────────

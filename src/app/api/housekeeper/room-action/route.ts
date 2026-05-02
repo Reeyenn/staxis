@@ -38,6 +38,7 @@ import { errToString } from '@/lib/utils';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { deriveCleaningEventFeatures } from '@/lib/feature-derivation';
+import { incrementMLFailureCounter } from '@/lib/ml-failure-counters';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -180,10 +181,15 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           }
         }
       } catch (occupancyErr) {
-        // Log but do not fail — occupancy capture is a best-effort feature
+        // Log but do not fail — occupancy capture is a best-effort feature.
+        // Also bump the smoke-detector counter so /api/admin/doctor turns red
+        // and the daily-drift cron surfaces this within hours. Without it,
+        // a silent occupancy_at_start = NULL streak would degrade the supply
+        // model's training data with nobody noticing.
         log.warn('room-action: occupancy capture failed', {
           requestId, pid, roomId, err: errToString(occupancyErr)
         });
+        await incrementMLFailureCounter(pid, 'occupancy_capture', occupancyErr);
       }
 
       // Update room status + started_at, plus last_started_occupancy if captured
@@ -257,6 +263,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           log.error('room-action: feature derivation threw (unexpected)', {
             requestId, pid, staffId, action: 'finish', err: featureErr as unknown as Error
           });
+          // Smoke-detector: deriveCleaningEventFeatures already swallows its
+          // own internal failures and returns null fields, so reaching this
+          // outer catch means an upstream contract broke (schema drift,
+          // helper signature change, etc.). Bump the counter so the doctor
+          // surfaces it before the supply model retrains on null-padded data.
+          await incrementMLFailureCounter(pid, 'feature_derivation', featureErr);
           // Continue with null features — the insert must proceed.
         }
 
