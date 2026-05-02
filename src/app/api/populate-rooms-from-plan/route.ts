@@ -120,16 +120,23 @@ export async function POST(req: NextRequest) {
     }
 
     // Pull existing room rows for this date so we can preserve assignments.
+    // Include `status` so we can detect rooms that are currently in_progress
+    // (housekeeper has tapped Start). The CSV reports "Dirty" for those
+    // rooms — the PMS doesn't know about our internal Start tap — and we
+    // need to NOT wipe started_at on rooms that are mid-clean.
     const { data: existing, error: existErr } = await supabaseAdmin
       .from('rooms')
-      .select('id, number')
+      .select('id, number, status')
       .eq('property_id', pid)
       .eq('date', date);
     if (existErr) throw existErr;
 
-    const existingByNumber = new Map<string, { id: string }>();
+    const existingByNumber = new Map<string, { id: string; status: string | null }>();
     for (const r of (existing ?? [])) {
-      if (r.number) existingByNumber.set(r.number as string, { id: r.id as string });
+      if (r.number) existingByNumber.set(r.number as string, {
+        id: r.id as string,
+        status: (r.status as string | null) ?? null,
+      });
     }
 
     let created = 0;
@@ -155,25 +162,45 @@ export async function POST(req: NextRequest) {
         // Overwrite type + status with CSV baseline. Preserve assigned_to /
         // assigned_name (so Maria's shift Send isn't blown away) and is_dnd.
         //
-        // Timestamps (started_at / completed_at): ONLY clear when the new
-        // status is 'dirty' — that means the PMS reported the room as
-        // dirty, which represents a real reset (next day's baseline OR
-        // guest re-checked-in). When the new status is 'clean' or
-        // 'inspected', preserve the existing timestamps because they
-        // represent a real housekeeper action that we DON'T want the next
-        // CSV pull to silently erase. (This was a pre-2026-04-27 bug:
-        // unconditionally nulling these wiped per-clean durations within
-        // minutes of capture, breaking the Performance tab averages and
-        // the in-progress elapsed-time displays.)
+        // Timestamps (started_at / completed_at): we used to wipe these
+        // any time the CSV reported "dirty" — which the comments below
+        // claim was safe ("dirty = real reset"). It wasn't.
+        //
+        // The PMS only flips a room to "Clean" when housekeeping checks
+        // out the room in the PMS. Until that moment, the CSV reports
+        // "Dirty" — even while a housekeeper is mid-clean. So a clean
+        // that takes longer than the scraper interval (60 min) lost its
+        // started_at to the next hourly pull, and when the housekeeper
+        // finally tapped Done the page fell back to started_at =
+        // completed_at and the cleaning_event landed with duration 0
+        // and got auto-discarded as under_3min.
+        //
+        // Maria 2026-05-02: 'everyone is using Start and Done correctly'
+        // — and yet 70 of 76 events on production were sub-3-min. This
+        // was the cause.
+        //
+        // Fix: when the room is currently in_progress in OUR table, the
+        // housekeeper has tapped Start and not yet Done; the CSV has no
+        // way to know that, so its "dirty" reading is stale relative to
+        // our state. Preserve our timestamps. Only wipe when the room is
+        // genuinely between cleans (not in_progress).
         const patch: Record<string, unknown> = {
           type,
           status,
           issue_note:   null,
           help_requested: false,
         };
-        if (status === 'dirty') {
+        const isMidClean = row.status === 'in_progress';
+        if (status === 'dirty' && !isMidClean) {
           patch.started_at = null;
           patch.completed_at = null;
+        }
+        // Don't downgrade an in_progress room to dirty. Dirty is the
+        // PMS-baseline view; in_progress is OUR view of housekeeping
+        // state. Letting the CSV overwrite would also drop the room
+        // out of the active-cleaning UI mid-shift.
+        if (isMidClean) {
+          patch.status = 'in_progress';
         }
         if (csv.stayoverDay !== null && csv.stayoverDay !== undefined) {
           patch.stayover_day = csv.stayoverDay;
