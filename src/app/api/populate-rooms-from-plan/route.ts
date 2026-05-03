@@ -131,6 +131,22 @@ export async function POST(req: NextRequest) {
       .eq('date', date);
     if (existErr) throw existErr;
 
+    // Pull the property's master room inventory (migration 0025). The CSV
+    // from Choice Advantage only contains rooms that need housekeeping
+    // attention — vacant clean rooms get omitted entirely. Without this
+    // list the Rooms tab would only show the ~45 of 74 rooms that happen
+    // to need work today. The phantom-seed loop below adds the missing
+    // ones as vacant clean so every room always renders. Empty inventory
+    // (the schema default) skips the union, preserving CSV-only behavior
+    // for properties whose inventory hasn't been configured yet.
+    const { data: propRow, error: propErr } = await supabaseAdmin
+      .from('properties')
+      .select('room_inventory')
+      .eq('id', pid)
+      .maybeSingle();
+    if (propErr) throw propErr;
+    const inventory = (propRow?.room_inventory as string[] | null) ?? [];
+
     const existingByNumber = new Map<string, { id: string; status: string | null }>();
     for (const r of (existing ?? [])) {
       if (r.number) existingByNumber.set(r.number as string, {
@@ -262,12 +278,59 @@ export async function POST(req: NextRequest) {
       await Promise.all(updates);
     }
 
+    // ─── Phantom seed: rooms in inventory but not in CSV ──────────────────
+    // The CSV from Choice Advantage skips vacant-clean rooms entirely (the
+    // "Housekeeping Check-off List" report only lists rooms that need
+    // attention). Without this step, the Rooms tab would show ~45 of 74
+    // because Choice Advantage decided 29 rooms didn't need housekeeping
+    // input today. We seed the missing ones as vacant + clean so every
+    // room from the property's inventory always renders.
+    //
+    //   • CSV mentioned the room → already handled above (insert OR update)
+    //   • Existing row in DB     → already handled above (update path,
+    //                              even if not in CSV — we don't touch it
+    //                              here so we don't blow away an in-progress
+    //                              clean or a manual override)
+    //   • In inventory, not in CSV, no DB row → seed as vacant clean
+    //
+    // upsert with onConflict='property_id,date,number' is doubly safe — if
+    // a parallel request created the row between our SELECT and our INSERT,
+    // the upsert silently no-ops instead of failing.
+    let phantomCreated = 0;
+    if (inventory.length > 0) {
+      const csvNumbers = new Set(
+        csvRooms.map((r) => r.number).filter((n): n is string => !!n),
+      );
+      const phantomRows: Array<Record<string, unknown>> = [];
+      for (const num of inventory) {
+        if (csvNumbers.has(num)) continue;          // CSV already covered it
+        if (existingByNumber.has(num)) continue;    // existing row — leave alone
+        phantomRows.push({
+          property_id: pid,
+          number: num,
+          date,
+          type: 'vacant',
+          status: 'clean',
+          priority: 'standard',
+        });
+      }
+      if (phantomRows.length > 0) {
+        const { error: phantomErr } = await supabaseAdmin
+          .from('rooms')
+          .upsert(phantomRows, { onConflict: 'property_id,date,number' });
+        if (phantomErr) throw phantomErr;
+        phantomCreated = phantomRows.length;
+        created += phantomCreated;
+      }
+    }
+
     const pulledAt = planRow.pulled_at ? String(planRow.pulled_at) : null;
 
     return ok({
       date,
       created,
       updated,
+      phantomCreated,
       total: created + updated,
       csvPulledAt: pulledAt,
     }, { requestId });
