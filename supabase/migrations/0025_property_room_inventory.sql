@@ -58,6 +58,6 @@ where name ilike '%comfort suites%'
   and (room_inventory is null or array_length(room_inventory, 1) is null);
 
 -- 3. Track migration so the doctor's EXPECTED_MIGRATIONS check stays green ─
-insert into applied_migrations (version, name)
-values ('0025', 'property_room_inventory')
+insert into applied_migrations (version, description)
+values ('0025', 'property_room_inventory: master room list per property + Comfort Suites backfill')
 on conflict (version) do nothing;
