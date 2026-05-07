@@ -39,6 +39,20 @@ const isUuid = (s: unknown): s is string =>
 const ALERT_DEDUPE_MS = 24 * 60 * 60 * 1000; // 24h
 
 export async function POST(req: NextRequest) {
+  // KILL SWITCH (2026-05-06, Reeyen): a Cowork QA pass triggered ~10 SMS to
+  // MANAGER_PHONE at once because every item that ended up below par after
+  // the count was treated as "newly critical". Until we tighten the trigger
+  // to "transitioned from non-critical to critical" instead of "currently
+  // critical", this endpoint no-ops to prevent further SMS bursts.
+  if (process.env.INVENTORY_ALERTS_ENABLED !== 'true') {
+    return NextResponse.json({
+      ok: true,
+      sent: 0,
+      skipped: 0,
+      reason: 'disabled_pending_threshold_logic_fix',
+    });
+  }
+
   let body: RequestBody;
   try {
     body = await req.json();
