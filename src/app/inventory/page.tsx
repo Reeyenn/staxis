@@ -20,7 +20,8 @@ import type { InventoryItem, InventoryCategory, InventoryCount, InventoryOrder }
 import {
   Plus, Package, ClipboardCheck, AlertTriangle, Check, Info, Settings,
   TrendingDown, DollarSign, Truck, Clock, ChevronDown, ChevronRight,
-  ShoppingCart, FileText, BarChart3, Printer, Copy,
+  ShoppingCart, FileText, BarChart3, Printer, Copy, Camera, Upload, ScanLine,
+  X as XIcon,
 } from 'lucide-react';
 import Link from 'next/link';
 
@@ -93,7 +94,7 @@ const STATUS_COLORS = { good: '#006565', low: '#364262', out: '#ba1a1a' };
 
 export default function InventoryPage() {
   const { user, loading: authLoading } = useAuth();
-  const { activePropertyId, loading: propLoading } = useProperty();
+  const { activePropertyId, loading: propLoading, properties } = useProperty();
   const { lang } = useLang();
   const router = useRouter();
 
@@ -106,6 +107,7 @@ export default function InventoryPage() {
   const [showHistory, setShowHistory] = useState(false);
   const [showReorderList, setShowReorderList] = useState(false);
   const [showReport, setShowReport] = useState(false);
+  const [showScanInvoice, setShowScanInvoice] = useState(false);
   const [editItem, setEditItem] = useState<InventoryItem | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [reconciliation, setReconciliation] = useState<ReconciliationData | null>(null);
@@ -598,6 +600,33 @@ export default function InventoryPage() {
                 <BarChart3 size={13} />
                 {lang === 'es' ? 'Analíticas' : 'Analytics'}
               </Link>
+              <button
+                onClick={() => setShowScanInvoice(true)}
+                style={{
+                  background: '#006565', color: '#fff', border: 'none',
+                  padding: '8px 16px', borderRadius: '9999px',
+                  fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
+                }}
+              >
+                <ScanLine size={13} />
+                {lang === 'es' ? 'Escanear Factura' : 'Scan Invoice'}
+              </button>
+              {properties.length > 1 && (
+                <Link
+                  href="/inventory/compare"
+                  style={{
+                    background: 'transparent', color: '#364262', border: '1px solid #c5c5d4',
+                    padding: '8px 16px', borderRadius: '9999px',
+                    fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+                    cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
+                    textDecoration: 'none',
+                  }}
+                >
+                  <Package size={13} />
+                  {lang === 'es' ? 'Comparar' : 'Compare'}
+                </Link>
+              )}
             </div>
           </div>
         </header>
@@ -849,6 +878,18 @@ export default function InventoryPage() {
         />
       )}
 
+      {/* Invoice OCR */}
+      {showScanInvoice && (
+        <ScanInvoiceModal
+          items={items}
+          uid={user.uid}
+          pid={activePropertyId}
+          lang={lang}
+          onClose={() => setShowScanInvoice(false)}
+          showToast={showToast}
+        />
+      )}
+
       {/* Reconciliation */}
       {reconciliation && (
         <ReconciliationModal
@@ -965,6 +1006,72 @@ function CountMode({
   const [saving, setSaving] = useState(false);
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
+  // Photo Count state — tracks which inputs were filled by AI and at what
+  // confidence level so we can render the colored "AI" badge per row.
+  // Multiple photos accumulate: later photos only fill items the AI didn't
+  // touch yet (we never overwrite a previous AI value with a later AI value).
+  const [aiFilled, setAiFilled] = useState<Record<string, 'high' | 'medium' | 'low'>>({});
+  const [showPhotoPicker, setShowPhotoPicker] = useState(false);
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+
+  const handlePhotoPicked = useCallback(async (img: PickedImage) => {
+    setShowPhotoPicker(false);
+    setPhotoBusy(true);
+    setPhotoError(null);
+    try {
+      const res = await fetch('/api/inventory/photo-count', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pid, imageBase64: img.base64, mediaType: img.mediaType,
+          itemNames: items.map(i => i.name),
+        }),
+      });
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.detail || json.error || 'photo_count_failed');
+
+      // Best-effort upload to Storage for audit. Non-fatal.
+      try {
+        const ext = img.mediaType.split('/')[1] || 'jpg';
+        await supabase.storage.from('counts').upload(`${pid}/${Date.now()}.${ext}`, img.file, {
+          contentType: img.mediaType,
+          upsert: false,
+        });
+      } catch { /* non-fatal */ }
+
+      const fresh: Record<string, 'high' | 'medium' | 'low'> = {};
+      const updates: Record<string, string> = {};
+      const counts: Array<{ item_name: string; estimated_count: number; confidence: 'high' | 'medium' | 'low' }> = json.counts ?? [];
+      for (const c of counts) {
+        const item = items.find(i => i.name === c.item_name);
+        if (!item) continue;
+        // Don't overwrite a value we already AI-filled in a previous photo.
+        if (aiFilled[item.id]) continue;
+        updates[item.id] = String(c.estimated_count);
+        fresh[item.id] = c.confidence;
+      }
+      if (Object.keys(updates).length === 0) {
+        setPhotoError(
+          lang === 'es'
+            ? 'No se identificaron artículos. Pruebe con otra foto.'
+            : "No items identified. Try another photo.",
+        );
+      } else {
+        setCounts(prev => ({ ...prev, ...updates }));
+        setAiFilled(prev => ({ ...prev, ...fresh }));
+      }
+    } catch (e) {
+      setPhotoError(
+        lang === 'es'
+          ? 'No se pudo procesar la foto. Continúe con conteo manual.'
+          : 'Photo processing failed. Continue with manual count.',
+      );
+    } finally {
+      setPhotoBusy(false);
+    }
+  }, [pid, items, aiFilled, lang]);
+
   const handleSave = async () => {
     setSaving(true);
     try {
@@ -1021,6 +1128,60 @@ function CountMode({
           </button>
         </div>
 
+        {/* Photo Count helper bar */}
+        <div style={{ padding: '12px 24px', background: 'rgba(0,101,101,0.04)', borderBottom: '1px solid rgba(197,197,212,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <button
+              onClick={() => { setShowPhotoPicker(true); setPhotoError(null); }}
+              disabled={photoBusy}
+              style={{
+                padding: '8px 14px', borderRadius: '9999px', border: 'none',
+                background: '#006565', color: '#fff', cursor: photoBusy ? 'wait' : 'pointer',
+                fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+                display: 'inline-flex', alignItems: 'center', gap: '6px', opacity: photoBusy ? 0.6 : 1,
+              }}
+            >
+              <Camera size={13} />
+              {photoBusy
+                ? (lang === 'es' ? 'Contando...' : 'Counting...')
+                : (lang === 'es' ? 'Contar con Foto' : 'Photo Count')}
+            </button>
+            <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '10px', color: '#757684', marginTop: '4px' }}>
+              {lang === 'es'
+                ? 'Funciona mejor para artículos en estantes. Las sábanas apiladas pueden ser inexactas.'
+                : 'Works best for items on shelves. Stacked linens may be inaccurate.'}
+            </div>
+          </div>
+          {Object.keys(aiFilled).length > 0 && (
+            <span style={{
+              fontFamily: "'JetBrains Mono', monospace", fontSize: '10px', fontWeight: 700,
+              background: '#006565', color: '#fff', padding: '3px 8px', borderRadius: '6px',
+              textTransform: 'uppercase', letterSpacing: '0.06em',
+            }}>
+              {Object.keys(aiFilled).length} {lang === 'es' ? 'pre-llenado' : 'filled'}
+            </span>
+          )}
+        </div>
+        {photoError && (
+          <div style={{ padding: '10px 24px', background: 'rgba(186,26,26,0.08)', color: '#ba1a1a', fontFamily: "'Inter', sans-serif", fontSize: '12px' }}>
+            {photoError}
+          </div>
+        )}
+        {showPhotoPicker && (
+          <div style={{ borderBottom: '1px solid rgba(197,197,212,0.2)' }}>
+            <ImagePickerStage lang={lang} onPicked={handlePhotoPicked} />
+            <button
+              onClick={() => setShowPhotoPicker(false)}
+              style={{
+                width: '100%', padding: '10px', background: 'transparent', border: 'none',
+                color: '#757684', cursor: 'pointer', fontFamily: "'Inter', sans-serif", fontSize: '12px',
+              }}
+            >
+              {lang === 'es' ? 'Cancelar foto' : 'Cancel photo'}
+            </button>
+          </div>
+        )}
+
         <div style={{ overflowY: 'auto', flex: 1 }}>
           <div style={{
             display: 'grid', gridTemplateColumns: '1fr 64px 80px 50px',
@@ -1062,28 +1223,58 @@ function CountMode({
                 <div style={{ textAlign: 'right', fontSize: '12px', color: est?.hasEstimate ? '#006565' : '#c5c5d4', fontFamily: "'JetBrains Mono', monospace", fontWeight: 600 }}>
                   {est?.hasEstimate ? Math.round(est.estimated) : '—'}
                 </div>
-                <input
-                  ref={el => { inputRefs.current[item.id] = el; }}
-                  type="number"
-                  min="0"
-                  value={counts[item.id] ?? '0'}
-                  onChange={e => setCounts(prev => ({ ...prev, [item.id]: e.target.value }))}
-                  onFocus={e => e.target.select()}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' || e.key === 'Tab') {
-                      e.preventDefault();
-                      const nextItem = sorted[idx + 1];
-                      if (nextItem) inputRefs.current[nextItem.id]?.focus();
-                    }
-                  }}
-                  style={{
-                    width: '100%', padding: '8px 6px', borderRadius: '12px',
-                    border: `2px solid ${changed ? '#006565' : '#c5c5d4'}`,
-                    background: '#fff', fontSize: '16px', fontWeight: 700,
-                    fontFamily: "'JetBrains Mono', monospace", textAlign: 'center',
-                    color: STATUS_COLORS[status], outline: 'none',
-                  }}
-                />
+                <div style={{ position: 'relative' }}>
+                  <input
+                    ref={el => { inputRefs.current[item.id] = el; }}
+                    type="number"
+                    min="0"
+                    value={counts[item.id] ?? '0'}
+                    onChange={e => {
+                      setCounts(prev => ({ ...prev, [item.id]: e.target.value }));
+                      // Manual edit clears the AI badge for this row.
+                      setAiFilled(prev => {
+                        if (!prev[item.id]) return prev;
+                        const { [item.id]: _drop, ...rest } = prev;
+                        return rest;
+                      });
+                    }}
+                    onFocus={e => e.target.select()}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' || e.key === 'Tab') {
+                        e.preventDefault();
+                        const nextItem = sorted[idx + 1];
+                        if (nextItem) inputRefs.current[nextItem.id]?.focus();
+                      }
+                    }}
+                    style={{
+                      width: '100%', padding: '8px 6px', borderRadius: '12px',
+                      border: `2px solid ${changed ? '#006565' : '#c5c5d4'}`,
+                      background: '#fff', fontSize: '16px', fontWeight: 700,
+                      fontFamily: "'JetBrains Mono', monospace", textAlign: 'center',
+                      color: STATUS_COLORS[status], outline: 'none',
+                    }}
+                  />
+                  {aiFilled[item.id] && (
+                    <span
+                      title={`${lang === 'es' ? 'Pre-llenado por IA' : 'AI-filled'} (${aiFilled[item.id]})`}
+                      style={{
+                        position: 'absolute', top: '-6px', right: '-4px',
+                        background: '#1b1c19', color: '#fff',
+                        fontFamily: "'Inter', sans-serif", fontSize: '8px', fontWeight: 700,
+                        padding: '2px 5px', borderRadius: '6px',
+                        display: 'inline-flex', alignItems: 'center', gap: '3px',
+                        boxShadow: '0 1px 4px rgba(0,0,0,0.2)',
+                      }}
+                    >
+                      <span style={{
+                        width: '5px', height: '5px', borderRadius: '50%',
+                        background: aiFilled[item.id] === 'high' ? '#00a050'
+                          : aiFilled[item.id] === 'medium' ? '#f0ad4e' : '#dc3545',
+                      }} />
+                      AI
+                    </span>
+                  )}
+                </div>
                 <div style={{ textAlign: 'right', fontSize: '13px', color: '#757684', fontFamily: "'JetBrains Mono', monospace" }}>
                   {item.parLevel}
                 </div>
@@ -2670,6 +2861,461 @@ function ReportStat({ label, value, tone }: { label: string; value: string; tone
       <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '18px', fontWeight: 700, color: valueColor, marginTop: '4px' }}>
         {value}
       </div>
+    </div>
+  );
+}
+
+// ─── Image picker helper (shared by Invoice OCR and Photo Counting) ─────────
+//
+// Two-step pattern: (a) pick a file via camera or gallery, (b) confirm + upload.
+// Reads the file as a base64 data URL for two reasons: (1) we send the bytes
+// to /api/inventory/* anyway, (2) we display a preview before upload. Returns
+// { base64, mediaType, file } so the caller can decide whether to ALSO upload
+// to Supabase Storage for record-keeping.
+
+interface PickedImage {
+  base64: string;        // raw base64, no data: prefix
+  mediaType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
+  file: File;
+  previewUrl: string;    // data: URL for <img src=>
+}
+
+function ImagePickerStage({ lang, onPicked, accept = 'image/*' }: {
+  lang: 'en' | 'es';
+  onPicked: (img: PickedImage) => void;
+  accept?: string;
+}) {
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFile = (file: File) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      // result is "data:image/jpeg;base64,...."
+      const m = result.match(/^data:([^;]+);base64,(.+)$/);
+      if (!m) return;
+      const mediaType = m[1] as PickedImage['mediaType'];
+      const base64 = m[2];
+      onPicked({ base64, mediaType, file, previewUrl: result });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '24px' }}>
+      <input
+        ref={cameraInputRef}
+        type="file" accept="image/*" capture="environment"
+        onChange={e => e.target.files?.[0] && handleFile(e.target.files[0])}
+        style={{ display: 'none' }}
+      />
+      <input
+        ref={fileInputRef}
+        type="file" accept={accept}
+        onChange={e => e.target.files?.[0] && handleFile(e.target.files[0])}
+        style={{ display: 'none' }}
+      />
+      <button
+        onClick={() => cameraInputRef.current?.click()}
+        style={{
+          padding: '14px', borderRadius: '14px', border: '1px solid #c5c5d4',
+          background: '#fff', color: '#1b1c19', cursor: 'pointer',
+          fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 600,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px',
+        }}
+      >
+        <Camera size={16} />
+        {lang === 'es' ? 'Tomar Foto' : 'Take Photo'}
+      </button>
+      <button
+        onClick={() => fileInputRef.current?.click()}
+        style={{
+          padding: '14px', borderRadius: '14px', border: '1px solid #c5c5d4',
+          background: '#fff', color: '#1b1c19', cursor: 'pointer',
+          fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 600,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px',
+        }}
+      >
+        <Upload size={16} />
+        {lang === 'es' ? 'Cargar Archivo' : 'Upload File'}
+      </button>
+    </div>
+  );
+}
+
+// ─── Scan Invoice Modal ──────────────────────────────────────────────────────
+//
+// 4-step state machine: pick → uploading → confirm → done.
+//
+//   pick:       ImagePickerStage. User chooses camera or upload.
+//   uploading:  POST image to /api/inventory/scan-invoice. Spinner.
+//   confirm:    Render extracted line items in an editable table. User
+//               unchecks rows they don't want, picks a fuzzy-matched item
+//               for each row, edits qty/cost, then Confirms.
+//   done:       Closed by parent via onClose after success toast.
+//
+// Image is also uploaded to Supabase Storage (invoices bucket) for the
+// audit trail. Failure to upload to Storage is non-fatal — we still extract.
+
+interface ExtractedLine {
+  item_name: string;
+  quantity: number;
+  unit_cost: number | null;
+  total_cost: number | null;
+}
+
+interface ConfirmRow {
+  raw: ExtractedLine;
+  enabled: boolean;
+  matchedItemId: string | 'new' | '';  // '' = unmatched, 'new' = create-new
+  matchedNewName: string;              // used when 'new'
+  qty: string;                          // string for input
+  unitCost: string;
+}
+
+function ScanInvoiceModal({ items, uid, pid, lang, onClose, showToast }: {
+  items: InventoryItem[];
+  uid: string;
+  pid: string;
+  lang: 'en' | 'es';
+  onClose: () => void;
+  showToast: (msg: string) => void;
+}) {
+  type Stage = 'pick' | 'uploading' | 'confirm' | 'saving';
+  const [stage, setStage] = useState<Stage>('pick');
+  const [picked, setPicked] = useState<PickedImage | null>(null);
+  const [vendorName, setVendorName] = useState('');
+  const [invoiceDate, setInvoiceDate] = useState('');
+  const [invoiceNumber, setInvoiceNumber] = useState('');
+  const [rows, setRows] = useState<ConfirmRow[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  const itemNamesLower = useMemo(() => items.map(i => ({ id: i.id, lower: i.name.toLowerCase() })), [items]);
+
+  // Lightweight fuzzy match — substring containment in either direction.
+  // Good enough for "Bath Towels" vs "BATH TOWEL 27x52" without dragging in
+  // a Levenshtein dependency.
+  const fuzzyMatch = useCallback((rawName: string): string => {
+    const lower = rawName.toLowerCase();
+    if (!lower) return '';
+    // Exact
+    const exact = itemNamesLower.find(i => i.lower === lower);
+    if (exact) return exact.id;
+    // Inventory-name contained in invoice-name
+    const partial = itemNamesLower.find(i => lower.includes(i.lower));
+    if (partial) return partial.id;
+    // Invoice-name contained in inventory-name
+    const reverse = itemNamesLower.find(i => i.lower.includes(lower));
+    if (reverse) return reverse.id;
+    return '';
+  }, [itemNamesLower]);
+
+  const handlePicked = useCallback(async (img: PickedImage) => {
+    setPicked(img);
+    setStage('uploading');
+    setError(null);
+
+    // Best-effort upload to Storage for audit. Non-blocking on failure.
+    try {
+      const ext = img.mediaType.split('/')[1] || 'jpg';
+      const path = `${pid}/${Date.now()}.${ext}`;
+      await supabase.storage.from('invoices').upload(path, img.file, {
+        contentType: img.mediaType,
+        upsert: false,
+      });
+    } catch {
+      /* non-fatal */
+    }
+
+    try {
+      const res = await fetch('/api/inventory/scan-invoice', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pid, imageBase64: img.base64, mediaType: img.mediaType }),
+      });
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.detail || json.error || 'extraction_failed');
+
+      setVendorName(json.vendor_name ?? '');
+      setInvoiceDate(json.invoice_date ?? '');
+      setInvoiceNumber(json.invoice_number ?? '');
+      const extracted: ExtractedLine[] = json.items ?? [];
+      setRows(extracted.map(line => {
+        const matched = fuzzyMatch(line.item_name);
+        return {
+          raw: line,
+          enabled: true,
+          matchedItemId: matched || '',
+          matchedNewName: line.item_name,
+          qty: String(line.quantity),
+          unitCost: line.unit_cost != null ? String(line.unit_cost) : '',
+        };
+      }));
+      setStage('confirm');
+    } catch (e) {
+      setError(
+        lang === 'es'
+          ? 'No se pudo leer esta factura. Intente con una foto más clara o ingrese manualmente.'
+          : "Couldn't read this invoice. Try a clearer photo or enter manually.",
+      );
+      setStage('pick');
+    }
+  }, [pid, fuzzyMatch, lang]);
+
+  const handleConfirm = async () => {
+    setStage('saving');
+    let logged = 0;
+    try {
+      for (const row of rows) {
+        if (!row.enabled) continue;
+        const qty = parseFloat(row.qty) || 0;
+        if (qty <= 0) continue;
+        const unitCostNum = row.unitCost.trim() === '' ? undefined : parseFloat(row.unitCost);
+
+        let itemId = row.matchedItemId;
+
+        // Create new item if user opted to.
+        if (itemId === 'new' || itemId === '') {
+          const created = await addInventoryItem(uid, pid, {
+            propertyId: pid,
+            name: row.matchedNewName.trim() || row.raw.item_name,
+            category: 'housekeeping',
+            currentStock: qty,            // first stock = the qty received
+            parLevel: Math.max(qty * 2, 10),
+            unit: 'units',
+            unitCost: unitCostNum,
+            vendorName: vendorName || undefined,
+          });
+          itemId = created;
+          logged++;
+        } else {
+          // Bump existing item: stock += qty, optionally update unit_cost.
+          const item = items.find(i => i.id === itemId);
+          if (!item) continue;
+          const newStock = item.currentStock + qty;
+          const patch: Partial<InventoryItem> = { currentStock: newStock };
+          if (unitCostNum != null && (item.unitCost == null || Math.abs(item.unitCost - unitCostNum) > 0.005)) {
+            patch.unitCost = unitCostNum;
+          }
+          if (vendorName && !item.vendorName) patch.vendorName = vendorName;
+          await updateInventoryItem(uid, pid, itemId, patch);
+          logged++;
+        }
+
+        // Always log to inventory_orders for the spend ledger.
+        await addInventoryOrder(uid, pid, {
+          propertyId: pid,
+          itemId,
+          itemName: row.matchedNewName || row.raw.item_name,
+          quantity: qty,
+          unitCost: unitCostNum,
+          vendorName: vendorName || undefined,
+          receivedAt: invoiceDate ? new Date(invoiceDate) : new Date(),
+          notes: invoiceNumber ? `Invoice #${invoiceNumber}` : undefined,
+        });
+      }
+      onClose();
+      showToast(
+        lang === 'es'
+          ? `${logged} artículo(s) reabastecidos desde factura`
+          : `${logged} item${logged === 1 ? '' : 's'} restocked from invoice`,
+      );
+    } catch (e) {
+      setError(lang === 'es' ? 'Error al guardar. Intente de nuevo.' : 'Save failed. Please try again.');
+      setStage('confirm');
+    }
+  };
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 60,
+        background: 'rgba(27,28,25,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
+      }}
+      onClick={e => { if (e.target === e.currentTarget && stage !== 'uploading' && stage !== 'saving') onClose(); }}
+    >
+      <div style={{
+        background: '#fbf9f4', borderRadius: '24px',
+        width: '100%', maxWidth: stage === 'confirm' ? '720px' : '480px',
+        maxHeight: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+      }}>
+        {/* Header */}
+        <div style={{ padding: '18px 24px', borderBottom: '1px solid rgba(197,197,212,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <ScanLine size={18} color="#006565" />
+            <div>
+              <h2 style={{ fontFamily: "'Inter', sans-serif", fontSize: '17px', fontWeight: 700, color: '#1b1c19', margin: 0 }}>
+                {lang === 'es' ? 'Escanear Factura' : 'Scan Invoice'}
+              </h2>
+              <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#757684', margin: '2px 0 0' }}>
+                {stage === 'pick' && (lang === 'es' ? 'Tome una foto o cargue su factura.' : 'Take a photo or upload your invoice.')}
+                {stage === 'uploading' && (lang === 'es' ? 'Leyendo factura...' : 'Reading invoice...')}
+                {stage === 'confirm' && (lang === 'es' ? `${rows.length} artículo${rows.length === 1 ? '' : 's'} encontrado${rows.length === 1 ? '' : 's'}${vendorName ? ' de ' + vendorName : ''}` : `${rows.length} item${rows.length === 1 ? '' : 's'} found${vendorName ? ' from ' + vendorName : ''}`)}
+                {stage === 'saving' && (lang === 'es' ? 'Guardando...' : 'Saving...')}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            disabled={stage === 'uploading' || stage === 'saving'}
+            style={{ background: '#eae8e3', border: 'none', cursor: 'pointer', padding: '8px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: stage === 'uploading' || stage === 'saving' ? 0.4 : 1 }}
+          >
+            <XIcon size={14} color="#454652" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div style={{ overflowY: 'auto', flex: 1 }}>
+          {error && (
+            <div style={{ padding: '12px 24px', background: 'rgba(186,26,26,0.08)', color: '#ba1a1a', fontFamily: "'Inter', sans-serif", fontSize: '13px' }}>
+              {error}
+            </div>
+          )}
+
+          {stage === 'pick' && <ImagePickerStage lang={lang} onPicked={handlePicked} accept="image/*,application/pdf" />}
+
+          {stage === 'uploading' && (
+            <div style={{ padding: '60px 24px', textAlign: 'center' }}>
+              <div className="animate-spin" style={{ width: '32px', height: '32px', margin: '0 auto 12px', border: '3px solid #c5c5d4', borderTopColor: '#006565', borderRadius: '50%' }} />
+              <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#757684' }}>
+                {lang === 'es' ? 'Leyendo factura...' : 'Reading invoice...'}
+              </div>
+            </div>
+          )}
+
+          {stage === 'confirm' && (
+            <div style={{ padding: '14px 24px 18px' }}>
+              {/* Vendor / date / invoice# header */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr 1fr', gap: '8px', marginBottom: '14px' }}>
+                <FieldSmall label={lang === 'es' ? 'Proveedor' : 'Vendor'}>
+                  <input value={vendorName} onChange={e => setVendorName(e.target.value)} style={smallInputStyle} />
+                </FieldSmall>
+                <FieldSmall label={lang === 'es' ? 'Fecha' : 'Date'}>
+                  <input type="date" value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} style={smallInputStyle} />
+                </FieldSmall>
+                <FieldSmall label={lang === 'es' ? 'Factura #' : 'Invoice #'}>
+                  <input value={invoiceNumber} onChange={e => setInvoiceNumber(e.target.value)} style={smallInputStyle} />
+                </FieldSmall>
+              </div>
+
+              {/* Line items */}
+              {rows.length === 0 ? (
+                <div style={{ padding: '24px', textAlign: 'center', color: '#757684', fontFamily: "'Inter', sans-serif", fontSize: '13px' }}>
+                  {lang === 'es' ? 'No se detectaron artículos. Pruebe con una foto más clara.' : 'No line items detected. Try a clearer photo.'}
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {rows.map((row, idx) => (
+                    <div key={idx} style={{
+                      background: '#fff', border: '1px solid #c5c5d4', borderRadius: '12px',
+                      padding: '10px 12px',
+                      display: 'grid', gridTemplateColumns: '20px 1.6fr 1.6fr 70px 80px',
+                      gap: '8px', alignItems: 'center',
+                      opacity: row.enabled ? 1 : 0.5,
+                    }}>
+                      <input
+                        type="checkbox"
+                        checked={row.enabled}
+                        onChange={e => setRows(prev => prev.map((r, i) => i === idx ? { ...r, enabled: e.target.checked } : r))}
+                      />
+                      <div>
+                        <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#454652', fontWeight: 600 }}>
+                          {row.raw.item_name}
+                        </div>
+                        <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '10px', color: '#757684' }}>
+                          {lang === 'es' ? 'línea de factura' : 'invoice line'}
+                        </div>
+                      </div>
+                      <div>
+                        <select
+                          value={row.matchedItemId}
+                          onChange={e => setRows(prev => prev.map((r, i) => i === idx ? { ...r, matchedItemId: e.target.value as ConfirmRow['matchedItemId'] } : r))}
+                          style={{ ...smallInputStyle, width: '100%' }}
+                        >
+                          <option value="">{lang === 'es' ? '— Seleccionar —' : '— Select —'}</option>
+                          <option value="new">+ {lang === 'es' ? 'Agregar como nuevo' : 'Add as new item'}</option>
+                          {items.map(it => (
+                            <option key={it.id} value={it.id}>{it.name}</option>
+                          ))}
+                        </select>
+                        {row.matchedItemId === 'new' && (
+                          <input
+                            value={row.matchedNewName}
+                            onChange={e => setRows(prev => prev.map((r, i) => i === idx ? { ...r, matchedNewName: e.target.value } : r))}
+                            placeholder={lang === 'es' ? 'Nombre del nuevo artículo' : 'New item name'}
+                            style={{ ...smallInputStyle, width: '100%', marginTop: '4px' }}
+                          />
+                        )}
+                      </div>
+                      <input
+                        type="number" min="0" value={row.qty}
+                        onChange={e => setRows(prev => prev.map((r, i) => i === idx ? { ...r, qty: e.target.value } : r))}
+                        style={{ ...smallInputStyle, fontFamily: "'JetBrains Mono', monospace", textAlign: 'right' }}
+                      />
+                      <input
+                        type="number" step="0.01" min="0" value={row.unitCost}
+                        onChange={e => setRows(prev => prev.map((r, i) => i === idx ? { ...r, unitCost: e.target.value } : r))}
+                        placeholder="$"
+                        style={{ ...smallInputStyle, fontFamily: "'JetBrains Mono', monospace", textAlign: 'right' }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {stage === 'saving' && (
+            <div style={{ padding: '60px 24px', textAlign: 'center' }}>
+              <div className="animate-spin" style={{ width: '32px', height: '32px', margin: '0 auto 12px', border: '3px solid #c5c5d4', borderTopColor: '#006565', borderRadius: '50%' }} />
+              <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#757684' }}>
+                {lang === 'es' ? 'Guardando artículos...' : 'Saving items...'}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        {stage === 'confirm' && rows.length > 0 && (
+          <div style={{ padding: '14px 24px', borderTop: '1px solid rgba(197,197,212,0.2)' }}>
+            <button
+              onClick={handleConfirm}
+              style={{
+                width: '100%', padding: '14px', borderRadius: '9999px', border: 'none',
+                background: '#364262', color: '#fff', cursor: 'pointer',
+                fontFamily: "'Inter', sans-serif", fontSize: '15px', fontWeight: 600,
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+              }}
+            >
+              <Check size={16} />
+              {lang === 'es'
+                ? `Confirmar e Importar (${rows.filter(r => r.enabled).length})`
+                : `Confirm & Import (${rows.filter(r => r.enabled).length})`}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const smallInputStyle: React.CSSProperties = {
+  padding: '8px 10px', borderRadius: '8px', border: '1px solid #c5c5d4',
+  background: '#fff', fontFamily: "'Inter', sans-serif", fontSize: '13px',
+  color: '#1b1c19', outline: 'none',
+};
+
+function FieldSmall({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '10px', fontWeight: 600, color: '#757684', textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: '4px' }}>
+        {label}
+      </label>
+      {children}
     </div>
   );
 }

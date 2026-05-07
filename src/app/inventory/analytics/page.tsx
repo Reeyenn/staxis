@@ -21,6 +21,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
+// listInventoryOrders / listInventoryCounts / subscribeToInventory come from
+// the same db barrel as the rest of the app.
 import { listInventoryOrders, listInventoryCounts, subscribeToInventory } from '@/lib/db';
 import { fetchDailyAverages } from '@/lib/inventory-predictions';
 import { supabase } from '@/lib/supabase';
@@ -56,7 +58,7 @@ type Range = '30' | '90' | 'all';
 
 export default function InventoryAnalyticsPage() {
   const { user, loading: authLoading } = useAuth();
-  const { activePropertyId, loading: propLoading } = useProperty();
+  const { activePropertyId, loading: propLoading, properties } = useProperty();
   const { lang } = useLang();
   const router = useRouter();
 
@@ -277,23 +279,33 @@ export default function InventoryAnalyticsPage() {
               {lang === 'es' ? 'Analíticas de Inventario' : 'Inventory Analytics'}
             </h1>
           </div>
-          {/* Range selector */}
-          <div style={{ display: 'flex', gap: '6px', background: '#f0eee9', padding: '4px', borderRadius: '9999px' }}>
-            {(['30', '90', 'all'] as const).map(r => (
-              <button
-                key={r}
-                onClick={() => setRange(r)}
-                style={{
-                  padding: '6px 14px', borderRadius: '9999px', border: 'none',
-                  fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
-                  cursor: 'pointer',
-                  background: range === r ? '#364262' : 'transparent',
-                  color: range === r ? '#fff' : '#454652',
-                }}
-              >
-                {r === 'all' ? (lang === 'es' ? 'Todo' : 'All') : `${r}d`}
-              </button>
-            ))}
+          <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+            {properties.length > 1 && (
+              <Link href="/inventory/compare" style={{
+                fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#006565',
+                textDecoration: 'none', fontWeight: 600,
+              }}>
+                {lang === 'es' ? 'Comparar entre propiedades →' : 'Compare across properties →'}
+              </Link>
+            )}
+            {/* Range selector */}
+            <div style={{ display: 'flex', gap: '6px', background: '#f0eee9', padding: '4px', borderRadius: '9999px' }}>
+              {(['30', '90', 'all'] as const).map(r => (
+                <button
+                  key={r}
+                  onClick={() => setRange(r)}
+                  style={{
+                    padding: '6px 14px', borderRadius: '9999px', border: 'none',
+                    fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+                    cursor: 'pointer',
+                    background: range === r ? '#364262' : 'transparent',
+                    color: range === r ? '#fff' : '#454652',
+                  }}
+                >
+                  {r === 'all' ? (lang === 'es' ? 'Todo' : 'All') : `${r}d`}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
