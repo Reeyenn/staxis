@@ -184,20 +184,30 @@ export function generateColdStartAlerts(
       }
     }
 
-    // PM overdue
+    // PM overdue. If we've never recorded a PM (lastPmAt is null), don't
+    // claim it's "Infinity days overdue" — the equipment may be brand new.
+    // Fall back to installDate, then equipment.createdAt as the anchor.
     if (eq.pmIntervalDays && eq.pmIntervalDays > 0) {
-      const lastPm = eq.lastPmAt ? eq.lastPmAt.getTime() : 0;
-      const daysSinceLastPm = lastPm > 0 ? (now - lastPm) / DAY_MS : Infinity;
-      if (daysSinceLastPm > eq.pmIntervalDays) {
-        const overdueDays = Math.round(daysSinceLastPm - eq.pmIntervalDays);
-        alerts.push({
-          equipmentId: eq.id,
-          alertType: 'pm_overdue',
-          severity: overdueDays > eq.pmIntervalDays ? 'critical' : 'warning',
-          message: `${eq.name} preventive maintenance is ${overdueDays} day${overdueDays === 1 ? '' : 's'} overdue`,
-          recommendation: `Recommended PM interval: every ${eq.pmIntervalDays} days. Schedule a PM visit.`,
-          data: { overdueDays, intervalDays: eq.pmIntervalDays },
-        });
+      const anchor = eq.lastPmAt?.getTime()
+        ?? eq.installDate?.getTime()
+        ?? eq.createdAt?.getTime()
+        ?? 0;
+      if (anchor > 0) {
+        const daysSinceAnchor = (now - anchor) / DAY_MS;
+        if (daysSinceAnchor > eq.pmIntervalDays) {
+          const overdueDays = Math.round(daysSinceAnchor - eq.pmIntervalDays);
+          const neverDone = !eq.lastPmAt;
+          alerts.push({
+            equipmentId: eq.id,
+            alertType: 'pm_overdue',
+            severity: overdueDays > eq.pmIntervalDays ? 'critical' : 'warning',
+            message: neverDone
+              ? `${eq.name} has no recorded preventive maintenance — ${overdueDays} day${overdueDays === 1 ? '' : 's'} past the recommended ${eq.pmIntervalDays}-day cadence`
+              : `${eq.name} preventive maintenance is ${overdueDays} day${overdueDays === 1 ? '' : 's'} overdue`,
+            recommendation: `Recommended PM interval: every ${eq.pmIntervalDays} days. Schedule a PM visit.`,
+            data: { overdueDays, intervalDays: eq.pmIntervalDays, neverDone },
+          });
+        }
       }
     }
 
