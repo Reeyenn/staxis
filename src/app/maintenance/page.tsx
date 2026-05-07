@@ -157,7 +157,7 @@ export default function MaintenancePage() {
     // Initial read from URL (?tab=preventive) so refresh keeps the tab.
     if (typeof window === 'undefined') return 'workOrders';
     const p = new URLSearchParams(window.location.search).get('tab');
-    if (p === 'preventive' || p === 'landscaping' || p === 'workOrders') return p;
+    if (p === 'preventive' || p === 'landscaping' || p === 'workOrders' || p === 'equipment') return p;
     return 'workOrders';
   });
   const setActiveTab = useCallback((tab: TabKey) => {
