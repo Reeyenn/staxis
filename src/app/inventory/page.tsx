@@ -1038,24 +1038,35 @@ function CountMode({
       } catch { /* non-fatal */ }
 
       const fresh: Record<string, 'high' | 'medium' | 'low'> = {};
-      const updates: Record<string, string> = {};
-      const counts: Array<{ item_name: string; estimated_count: number; confidence: 'high' | 'medium' | 'low' }> = json.counts ?? [];
-      for (const c of counts) {
-        const item = items.find(i => i.name === c.item_name);
-        if (!item) continue;
-        // Don't overwrite a value we already AI-filled in a previous photo.
-        if (aiFilled[item.id]) continue;
-        updates[item.id] = String(c.estimated_count);
-        fresh[item.id] = c.confidence;
-      }
-      if (Object.keys(updates).length === 0) {
+      const apiCounts: Array<{ item_name: string; estimated_count: number; confidence: 'high' | 'medium' | 'low' }> = json.counts ?? [];
+      // Use functional setCounts so we read the latest value at apply time —
+      // protects against the user editing rows while the photo is processing.
+      // For each item the AI returned: skip if any prior AI photo already
+      // filled it, OR if the value differs from the original (meaning the
+      // user manually edited it). Both cases preserve the human/earlier-AI
+      // signal — later photos only fill rows that are still untouched.
+      let acceptedCount = 0;
+      setCounts(prev => {
+        const next = { ...prev };
+        for (const c of apiCounts) {
+          const item = items.find(i => i.name === c.item_name);
+          if (!item) continue;
+          if (aiFilled[item.id]) continue;
+          const isUntouched = (prev[item.id] ?? '0') === String(item.currentStock);
+          if (!isUntouched) continue;
+          next[item.id] = String(c.estimated_count);
+          fresh[item.id] = c.confidence;
+          acceptedCount++;
+        }
+        return next;
+      });
+      if (acceptedCount === 0) {
         setPhotoError(
           lang === 'es'
-            ? 'No se identificaron artículos. Pruebe con otra foto.'
-            : "No items identified. Try another photo.",
+            ? 'No se identificaron artículos nuevos. Pruebe con otra foto.'
+            : "No new items identified. Try another photo.",
         );
       } else {
-        setCounts(prev => ({ ...prev, ...updates }));
         setAiFilled(prev => ({ ...prev, ...fresh }));
       }
     } catch (e) {

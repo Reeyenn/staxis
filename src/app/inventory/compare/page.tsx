@@ -111,7 +111,15 @@ export default function ComparePage() {
 
   // Multi-property fetch — Promise.all over each selected property.
   useEffect(() => {
-    if (!user || selectedIds.size === 0) return;
+    if (!user) return;
+    // If the user toggled every property off, clear the chart/table state
+    // explicitly. Without this the previous metrics linger on screen even
+    // though the underlying selection is empty.
+    if (selectedIds.size === 0) {
+      setMetrics([]);
+      setLoading(false);
+      return;
+    }
     let alive = true;
     setLoading(true);
 

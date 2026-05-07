@@ -99,15 +99,22 @@ export async function POST(req: NextRequest) {
 
     const allowedNames = new Set(itemNames);
     const counts = (Array.isArray(result.counts) ? result.counts : [])
-      .map(c => ({
-        item_name: String(c.item_name ?? '').trim(),
-        estimated_count: Number(c.estimated_count ?? 0),
-        confidence: (c.confidence === 'high' || c.confidence === 'medium' || c.confidence === 'low')
-          ? c.confidence
-          : 'low' as const,
-      }))
+      .map(c => {
+        // Coerce to a non-negative integer — the model occasionally returns
+        // floats (e.g. "3.5") or strings, and the input field can't display
+        // a fraction sensibly. NaN and negatives become 0 via Math.max+|0.
+        const raw = Number(c.estimated_count ?? 0);
+        const estimated_count = Number.isFinite(raw) ? Math.max(0, Math.floor(raw)) : 0;
+        return {
+          item_name: String(c.item_name ?? '').trim(),
+          estimated_count,
+          confidence: (c.confidence === 'high' || c.confidence === 'medium' || c.confidence === 'low')
+            ? c.confidence
+            : 'low' as const,
+        };
+      })
       // Drop any count for an item we don't track (model hallucinated a name).
-      .filter(c => c.item_name.length > 0 && allowedNames.has(c.item_name) && c.estimated_count >= 0);
+      .filter(c => c.item_name.length > 0 && allowedNames.has(c.item_name));
 
     return NextResponse.json({ ok: true, counts });
   } catch (e) {

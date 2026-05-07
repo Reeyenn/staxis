@@ -385,10 +385,15 @@ export default function MaintenancePage() {
       setResolvingOrder(null);
       setSupplyUsage({});
       setShowSupplyList(false);
+    } catch (err) {
+      console.error('[maintenance] resolve failed:', err);
+      setToast(lang === 'es'
+        ? 'No se pudo completar la orden. Inténtelo de nuevo.'
+        : 'Could not resolve work order. Please try again.');
     } finally {
       setResolving(false);
     }
-  }, [user, activePropertyId]);
+  }, [user, activePropertyId, lang]);
 
   // Confirm-and-resolve: deduct each supply from inventory, accumulate the
   // names into parts_used, then mark the work order resolved. Stock is
@@ -419,6 +424,16 @@ export default function MaintenancePage() {
       setResolvingOrder(null);
       setSupplyUsage({});
       setShowSupplyList(false);
+    } catch (err) {
+      // If we got partway through (some inventory deductions succeeded but
+      // a later call failed), the deductions already persisted. Tell the
+      // user so they can verify stock manually rather than silently leaving
+      // the modal open. The work order itself is NOT marked resolved on
+      // failure — they can retry or fall back to "Just mark complete".
+      console.error('[maintenance] resolve+deduct failed:', err);
+      setToast(lang === 'es'
+        ? 'Hubo un error al completar la orden. Verifique el inventario y vuelva a intentar.'
+        : 'Error resolving work order. Please verify inventory and try again.');
     } finally {
       setResolving(false);
     }
@@ -2983,6 +2998,7 @@ function PreventiveIntelligence({
 
   const handleCreateAll = async () => {
     setCreating(true);
+    let created = 0;
     try {
       for (const eq of candidates) {
         if (!eq.pmIntervalDays) continue;
@@ -2993,11 +3009,19 @@ function PreventiveIntelligence({
           equipmentId: eq.id,
           lastCompletedAt: null,
         });
+        created++;
       }
       onToast(lang === 'es'
-        ? `${candidates.length} tarea${candidates.length === 1 ? '' : 's'} de MP creada${candidates.length === 1 ? '' : 's'} ✓`
-        : `${candidates.length} PM task${candidates.length === 1 ? '' : 's'} created ✓`);
+        ? `${created} tarea${created === 1 ? '' : 's'} de MP creada${created === 1 ? '' : 's'} ✓`
+        : `${created} PM task${created === 1 ? '' : 's'} created ✓`);
       setAutoGenOpen(false);
+    } catch (err) {
+      // Partial-success: report how many made it before the error so the
+      // user knows the rest still need creating. Modal stays open.
+      console.error('[maintenance] auto-generate PM failed:', err);
+      onToast(lang === 'es'
+        ? `Error: ${created} de ${candidates.length} tareas creadas. Inténtelo de nuevo.`
+        : `Error: ${created} of ${candidates.length} tasks created. Please try again.`);
     } finally {
       setCreating(false);
     }

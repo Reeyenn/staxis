@@ -14,7 +14,7 @@ import Anthropic from '@anthropic-ai/sdk';
 
 // Pin the model — the prompts in this file are calibrated for Sonnet 4-class
 // vision quality. Bumping the version requires a re-test of both prompts.
-const MODEL = 'claude-sonnet-4-5-20250929';
+const MODEL = 'claude-sonnet-4-6';
 
 /** Throws if ANTHROPIC_API_KEY is missing — caller catches and 500s the route. */
 function getClient(): Anthropic {

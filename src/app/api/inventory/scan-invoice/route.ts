@@ -94,14 +94,24 @@ export async function POST(req: NextRequest) {
       PROMPT,
     );
 
-    // Defensive normalization — coerce numbers, drop malformed rows.
+    // Defensive normalization — coerce numbers, drop malformed rows. NaN
+    // and non-finite values from the model are mapped to null/0 so we never
+    // persist garbage into the database.
+    const safeNumOrNull = (v: unknown): number | null => {
+      if (v == null) return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
     const items = (Array.isArray(result.items) ? result.items : [])
-      .map(it => ({
-        item_name: String(it.item_name ?? '').trim(),
-        quantity: Number(it.quantity ?? 0),
-        unit_cost: it.unit_cost == null ? null : Number(it.unit_cost),
-        total_cost: it.total_cost == null ? null : Number(it.total_cost),
-      }))
+      .map(it => {
+        const qtyRaw = Number(it.quantity ?? 0);
+        return {
+          item_name: String(it.item_name ?? '').trim(),
+          quantity: Number.isFinite(qtyRaw) ? Math.max(0, qtyRaw) : 0,
+          unit_cost: safeNumOrNull(it.unit_cost),
+          total_cost: safeNumOrNull(it.total_cost),
+        };
+      })
       .filter(it => it.item_name.length > 0 && it.quantity > 0);
 
     return NextResponse.json({
