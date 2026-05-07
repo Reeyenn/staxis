@@ -21,13 +21,23 @@ export function Header() {
   const [showPropMenu, setShowPropMenu] = React.useState(false);
   const [showUserMenu, setShowUserMenu] = React.useState(false);
 
-  const navLinks = [
+  const baseNavLinks = [
     { href: '/dashboard',    label: lang === 'es' ? 'Panel' : 'Dashboard' },
     { href: '/housekeeping', label: lang === 'es' ? 'Limpieza' : 'Housekeeping' },
     { href: '/maintenance',  label: lang === 'es' ? 'Mantenimiento' : 'Maintenance' },
     { href: '/inventory',    label: lang === 'es' ? 'Inventario' : 'Inventory' },
     { href: '/staff',        label: lang === 'es' ? 'Personal' : 'Staff' },
   ];
+
+  // Owner/admin-only ML tab. AppUser.role is 'admin' | 'owner' | 'staff'
+  // (see contexts/AuthContext.tsx). Reeyen has admin/owner; the J-login (his
+  // dad) does not. Role-only gate — no ownerId match because Property doesn't
+  // expose that column. Cockpit data is currently stubbed; restoring the link
+  // so the page is reachable for development + future wiring.
+  const isOwner = user?.role === 'owner' || user?.role === 'admin';
+  const navLinks = isOwner
+    ? [...baseNavLinks, { href: '/admin/ml', label: 'ML' }]
+    : baseNavLinks;
 
   const handleSwitchProperty = (id: string) => {
     setActivePropertyId(id);
