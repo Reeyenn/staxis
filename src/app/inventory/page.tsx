@@ -280,11 +280,16 @@ export default function InventoryPage() {
         varianceValue,
       });
 
-      // If stock went up, candidate for order logging
+      // If stock went up, candidate for order logging.
+      // Snapshot previous + new explicitly so the modal doesn't have to
+      // re-derive them from a captured `item` whose currentStock is the
+      // pre-count value.
       if (counted > previous) {
         orderRows.push({
           item,
           delta: counted - previous,
+          previousStock: previous,
+          newStock: counted,
         });
       }
     });
@@ -307,20 +312,31 @@ export default function InventoryPage() {
         .catch(err => console.error('[inventory] count log failed:', err));
     }
 
-    // Critical SMS alerts: items that are critical right now (post-count).
-    const criticalNowIds = items
+    // Critical SMS alerts: ONLY items that newly transitioned into critical
+    // status during this count. An item that was already critical before the
+    // count (e.g. zero stock that's still zero, or an item that started below
+    // its reorder threshold and is still below) does NOT re-alert. This
+    // prevents the SMS-burst bug where every below-par item fired an alert
+    // every time the user saved a count.
+    //
+    // Transition definition: stockStatus(previous) was 'good' OR 'low', AND
+    // stockStatus(counted) is 'out'. The 24h dedupe inside the API route is
+    // a second line of defense if a transition happens twice in a window.
+    const transitionedIds = items
       .filter(item => {
         const counted = updatedCounts[item.id];
         if (counted == null) return false;
-        return stockStatus(counted, item.parLevel, item.reorderAt) === 'out';
+        const prevStatus = stockStatus(item.currentStock, item.parLevel, item.reorderAt);
+        const newStatus = stockStatus(counted, item.parLevel, item.reorderAt);
+        return prevStatus !== 'out' && newStatus === 'out';
       })
       .map(i => i.id);
 
-    if (criticalNowIds.length > 0 && activePropertyId) {
+    if (transitionedIds.length > 0 && activePropertyId) {
       fetch('/api/inventory/check-alerts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pid: activePropertyId, criticalItemIds: criticalNowIds }),
+        body: JSON.stringify({ pid: activePropertyId, criticalItemIds: transitionedIds }),
       })
         .then(r => r.json())
         .then(data => {
@@ -740,6 +756,15 @@ interface ReconciliationData {
 interface OrderPromptRow {
   item: InventoryItem;
   delta: number;
+  /**
+   * Stock BEFORE the count. The captured `item.currentStock` is also the
+   * pre-count value (Realtime hasn't refreshed yet at capture time), but
+   * we snapshot it explicitly so the modal isn't subtly tied to that
+   * race-condition.
+   */
+  previousStock: number;
+  /** Stock AFTER the count (= previousStock + delta). */
+  newStock: number;
 }
 
 interface OrderPromptData {
@@ -1123,8 +1148,8 @@ function OrderLoggingModal({
           </div>
           <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#757684', margin: 0 }}>
             <strong>{current.item.name}</strong> — {lang === 'es'
-              ? `el stock subió de ${current.item.currentStock - current.delta} a ${current.item.currentStock} (+${current.delta}).`
-              : `stock went from ${current.item.currentStock - current.delta} to ${current.item.currentStock} (+${current.delta}).`}
+              ? `el stock subió de ${current.previousStock} a ${current.newStock} (+${current.delta}).`
+              : `stock went from ${current.previousStock} to ${current.newStock} (+${current.delta}).`}
           </p>
           <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684', margin: '6px 0 0' }}>
             {lang === 'es' ? `Item ${index + 1} de ${rows.length}` : `Item ${index + 1} of ${rows.length}`}
