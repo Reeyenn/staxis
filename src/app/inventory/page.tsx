@@ -10,7 +10,7 @@ import {
   subscribeToInventory, addInventoryItem, updateInventoryItem, deleteInventoryItem,
   addInventoryCountBatch, addInventoryOrder,
 } from '@/lib/db';
-import { fetchOccupancySinceLastCount, calculateEstimatedStock, type OccupancySinceLastCount } from '@/lib/inventory-estimate';
+import { fetchOccupancyBundle, computeOccupancyForItem, calculateEstimatedStock, type OccupancyBundle } from '@/lib/inventory-estimate';
 import type { InventoryItem, InventoryCategory } from '@/types';
 import {
   Plus, Package, ClipboardCheck, AlertTriangle, Check, Info, Settings,
@@ -91,7 +91,7 @@ export default function InventoryPage() {
   const router = useRouter();
 
   const [items, setItems] = useState<InventoryItem[]>([]);
-  const [occupancy, setOccupancy] = useState<OccupancySinceLastCount | null>(null);
+  const [occupancyBundle, setOccupancyBundle] = useState<OccupancyBundle | null>(null);
   const [counting, setCounting] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showBulkRates, setShowBulkRates] = useState(false);
@@ -158,35 +158,34 @@ export default function InventoryPage() {
     return unsub;
   }, [user, activePropertyId]);
 
-  // Fetch occupancy data once items load (uses earliest updatedAt as window start)
+  // Fetch occupancy events once. Window starts at the earliest item-anchor
+  // (lastCountedAt, falling back to updatedAt for pre-migration rows). We then
+  // partition events per-item locally so each item gets its own window.
   useEffect(() => {
     if (!activePropertyId || items.length === 0) return;
-    const earliest = items
-      .map(i => i.updatedAt ? new Date(i.updatedAt).getTime() : null)
+    const anchors = items
+      .map(i => {
+        const ts = (i.lastCountedAt ?? i.updatedAt)?.getTime();
+        return typeof ts === 'number' && ts > 0 ? ts : null;
+      })
       .filter((t): t is number => t !== null);
-    if (earliest.length === 0) return;
-    const since = new Date(Math.min(...earliest));
-    fetchOccupancySinceLastCount(activePropertyId, since)
-      .then(setOccupancy)
+    if (anchors.length === 0) return;
+    const since = new Date(Math.min(...anchors));
+    fetchOccupancyBundle(activePropertyId, since)
+      .then(setOccupancyBundle)
       .catch(err => console.error('[inventory] occupancy fetch failed:', err));
   }, [activePropertyId, items]);
 
-  // Per-item estimates
+  // Per-item estimates — each item's window starts at its own last_counted_at.
   const estimates = useMemo(() => {
     const map = new Map<string, ReturnType<typeof calculateEstimatedStock>>();
-    if (!occupancy) return map;
+    if (!occupancyBundle) return map;
     items.forEach(item => {
-      // Pass the per-item window: occupancy since THIS item's last count.
-      // We approximate using the global occupancy here — for more precision
-      // each item would need its own occupancy fetch, but this is good
-      // enough for the common case where everything was counted recently.
-      const itemOccupancy: OccupancySinceLastCount = item.updatedAt
-        ? occupancy
-        : { ...occupancy, source: 'none' };
+      const itemOccupancy = computeOccupancyForItem(occupancyBundle, item);
       map.set(item.id, calculateEstimatedStock(item, itemOccupancy));
     });
     return map;
-  }, [items, occupancy]);
+  }, [items, occupancyBundle]);
 
   // Effective stock used for status decisions (estimated when available, else raw)
   const effectiveStock = useCallback((item: InventoryItem): number => {
@@ -211,7 +210,14 @@ export default function InventoryPage() {
   const itemsWithCost = useMemo(() => items.filter(i => i.unitCost != null).length, [items]);
 
   const lastCounted = useMemo(() => {
-    const timestamps = items.map(i => i.updatedAt ? new Date(i.updatedAt).getTime() : 0).filter(t => t > 0);
+    // Prefer last_counted_at — only bumps when current_stock changes — so the
+    // hero's "Last counted" reflects an actual count, not a metadata edit.
+    const timestamps = items
+      .map(i => {
+        const ts = (i.lastCountedAt ?? i.updatedAt)?.getTime();
+        return typeof ts === 'number' ? ts : 0;
+      })
+      .filter(t => t > 0);
     if (timestamps.length === 0) return null;
     return new Date(Math.max(...timestamps));
   }, [items]);
@@ -529,7 +535,7 @@ export default function InventoryPage() {
                           textTransform: 'uppercase', letterSpacing: '0.05em',
                           flexShrink: 0,
                         }}>
-                          {timeAgo(item.updatedAt)}
+                          {timeAgo(item.lastCountedAt ?? item.updatedAt)}
                         </span>
                       </div>
 

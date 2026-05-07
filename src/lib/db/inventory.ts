@@ -27,7 +27,14 @@ export async function addInventoryItem(
   _uid: string, pid: string,
   item: Omit<InventoryItem, 'id' | 'updatedAt'>,
 ): Promise<string> {
-  const row = { ...toInventoryRow({ ...item, propertyId: pid }), property_id: pid };
+  // Stamp last_counted_at on insert iff a positive currentStock was provided —
+  // means the user is recording an actual count at item creation time. Defaults
+  // (currentStock=0) leave last_counted_at null so the UI shows "Never" instead
+  // of "Just now" right after seeding.
+  const row: Record<string, unknown> = { ...toInventoryRow({ ...item, propertyId: pid }), property_id: pid };
+  if (typeof item.currentStock === 'number' && item.currentStock > 0) {
+    row.last_counted_at = new Date().toISOString();
+  }
   const { data: inserted, error } = await supabase
     .from('inventory').insert(row).select('id').single();
   if (error) { logErr('addInventoryItem', error); throw error; }
@@ -37,7 +44,20 @@ export async function addInventoryItem(
 export async function updateInventoryItem(
   _uid: string, _pid: string, iid: string, data: Partial<InventoryItem>,
 ): Promise<void> {
-  const { error } = await supabase.from('inventory').update(toInventoryRow(data)).eq('id', iid);
+  // Server-side guarantee: if the caller is changing current_stock, they're
+  // recording a count, so stamp last_counted_at. Metadata edits (vendor, lead
+  // days, usage rates, unit cost, etc.) leave last_counted_at alone — that
+  // way the estimate window stays anchored to the real last count and doesn't
+  // collapse to "now" every time someone tweaks a number.
+  //
+  // Caller can still override by explicitly passing lastCountedAt in the patch
+  // (used by Count Mode bulk save which already wrote a count and may want
+  // to set a uniform timestamp across items).
+  const patch: Partial<InventoryItem> = { ...data };
+  if ('currentStock' in data && data.currentStock !== undefined && !('lastCountedAt' in data)) {
+    patch.lastCountedAt = new Date();
+  }
+  const { error } = await supabase.from('inventory').update(toInventoryRow(patch)).eq('id', iid);
   if (error) { logErr('updateInventoryItem', error); throw error; }
 }
 

@@ -160,6 +160,7 @@ export interface InventoryItem {
   lastOrderedAt?: Date | null;  // when last ordered
   unitCost?: number;            // dollars per unit (drives Total Inventory Value + variance $)
   lastAlertedAt?: Date | null;  // when this item last triggered a critical SMS alert (24h dedupe)
+  lastCountedAt?: Date | null;  // when current_stock was last manually changed (only bumps on count, NOT on metadata edits)
 }
 
 // One row per item per Count Mode save. Powers reconciliation history and shrinkage trends.

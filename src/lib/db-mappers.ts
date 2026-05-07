@@ -465,6 +465,7 @@ export function fromInventoryRow(r: Record<string, unknown>): InventoryItem {
     lastOrderedAt: toDate(r.last_ordered_at),
     unitCost: r.unit_cost == null ? undefined : Number(r.unit_cost),
     lastAlertedAt: toDate(r.last_alerted_at),
+    lastCountedAt: toDate(r.last_counted_at),
   };
 }
 
@@ -485,6 +486,7 @@ export function toInventoryRow(i: Partial<InventoryItem>): Record<string, unknow
     last_ordered_at: toISO(i.lastOrderedAt),
     unit_cost: i.unitCost,
     last_alerted_at: toISO(i.lastAlertedAt),
+    last_counted_at: toISO(i.lastCountedAt),
   });
 }
 

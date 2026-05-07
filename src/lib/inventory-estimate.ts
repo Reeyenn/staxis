@@ -8,20 +8,25 @@
 //
 // Two responsibilities:
 //
-//   1. fetchOccupancySinceLastCount(pid, since) — return the number of
-//      checkouts and stayovers that have happened at this property since
-//      a given timestamp. Reads from the cleaning_events table because
-//      that's the only table that reliably distinguishes the two.
-//      Three-tier fallback documented inline.
+//   1. fetchOccupancyEvents(pid, since)
+//      Pulls every cleaning event in the property since `since`. Returns
+//      raw events with completed_at timestamps so the caller can compute
+//      a per-item window (each item has its own last_counted_at).
 //
-//   2. calculateEstimatedStock(item, occupancy) — apply the per-item
-//      usage rates to the occupancy counts. Pure, no DB. Returns the
-//      input stock unchanged when no usage rates are configured.
+//   2. computeOccupancyForItem(events, item)
+//      Counts checkouts and stayovers in `events` whose completed_at is
+//      after the item's lastCountedAt. Returns OccupancySinceLastCount.
 //
-// Why pure utility instead of in-page math: this also gets called from
-// /api/inventory/check-alerts (server-side, after Count Mode saves) and
-// will get called from a daily cron later for proactive critical alerts
-// before anyone touches the page.
+//   3. calculateEstimatedStock(item, occupancy)
+//      Pure deduction: stock - checkouts*usagePerCheckout - stayovers*usagePerStayover.
+//      Floors at zero. Returns the input stock unchanged when no usage rates
+//      are configured or the source is 'none'.
+//
+// Why per-item instead of global: each item was last counted at a different
+// time. A bath towel counted yesterday should deduct only yesterday's
+// occupancy; a coffee pod stockpile counted three weeks ago should deduct
+// three weeks. Using a single global window over-deducts items counted
+// recently and under-deducts items counted long ago.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { InventoryItem } from '@/types';
@@ -30,125 +35,159 @@ import { supabase } from './supabase';
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 export interface OccupancySinceLastCount {
-  /** Number of checkouts cleaned in the window. */
   checkouts: number;
-  /** Number of stayover cleans in the window (light + full combined). */
   stayovers: number;
-  /** ISO timestamp of the start of the window. */
   windowStart: string;
-  /** Source we pulled the data from — useful for diagnostics. */
   source: 'cleaning_events' | 'daily_logs' | 'none';
 }
 
-// ─── Occupancy fetch ────────────────────────────────────────────────────────
-//
-// Three-tier fallback:
-//
-//   Tier 1 — cleaning_events table
-//     Each completed clean writes a row with room_type ∈ {'checkout','stayover'}.
-//     This is the most precise source — it's literally what the housekeepers
-//     finished, not what the PMS planned. Used when the property is actively
-//     using the housekeeping module (Comfort Suites is).
-//
-//   Tier 2 — daily_logs table
-//     The morning-setup numbers Mario types in (or the PMS-pulled forecast).
-//     Less precise — these are predictions of the day's checkouts, not
-//     completions. Use when cleaning_events is empty for the window
-//     (e.g., the property uses inventory but not housekeeping yet).
-//
-//   Tier 3 — none
-//     If neither table has data, return zeros. The caller should NOT show
-//     an "estimated" value in this case — it'd be misleading. Just fall
-//     back to the regular currentStock display.
+/** Lightweight row used for per-item windowing. */
+export interface OccupancyEvent {
+  completedAt: string;        // ISO timestamp
+  roomType: 'checkout' | 'stayover';
+}
 
-export async function fetchOccupancySinceLastCount(
+export interface OccupancyBundle {
+  events: OccupancyEvent[];
+  /** Where the events came from. 'none' means we have nothing reliable. */
+  source: 'cleaning_events' | 'daily_logs' | 'none';
+  /** When the earliest event in the bundle is from. ISO. */
+  windowStart: string;
+}
+
+// ─── Bulk occupancy fetch ───────────────────────────────────────────────────
+//
+// One round-trip, returns every event in the property since `since`. Caller
+// then partitions per-item locally — vastly cheaper than N item-scoped fetches.
+//
+// Three-tier source order, same as before:
+//   1. cleaning_events  (precise, per-room completions)
+//   2. daily_logs       (PMS / morning-setup totals)
+//   3. none             (caller falls back to raw current_stock)
+//
+// The daily_logs tier is approximate: we don't know which rooms were cleaned
+// at what time, so we fan a day's totals out as fake events at noon local.
+// Fine for windowing math because day granularity is already the input.
+
+export async function fetchOccupancyBundle(
   pid: string,
   since: Date | null,
-): Promise<OccupancySinceLastCount> {
-  // No prior count → nothing to estimate against. Caller falls back to
-  // raw currentStock display.
+): Promise<OccupancyBundle> {
   if (!since) {
-    return { checkouts: 0, stayovers: 0, windowStart: new Date(0).toISOString(), source: 'none' };
+    return { events: [], source: 'none', windowStart: new Date(0).toISOString() };
   }
 
   const sinceISO = since.toISOString();
-  const sinceDate = since.toISOString().slice(0, 10); // YYYY-MM-DD
+  const sinceDate = since.toISOString().slice(0, 10);
 
   // ── Tier 1: cleaning_events ─────────────────────────────────────────────
-  // Filter on completed_at because that's when the consumable was actually
-  // used — sheets/towels swapped out, soap restocked. created_at would
-  // double-count rows backfilled from history.
   try {
-    const { data: events, error } = await supabase
+    const { data: rows, error } = await supabase
       .from('cleaning_events')
-      .select('room_type, status')
+      .select('completed_at, room_type, status')
       .eq('property_id', pid)
       .gte('completed_at', sinceISO)
-      .in('status', ['recorded', 'approved']); // exclude flagged/rejected/discarded
+      .in('status', ['recorded', 'approved'])
+      .order('completed_at', { ascending: true });
 
-    if (!error && events && events.length > 0) {
-      let checkouts = 0;
-      let stayovers = 0;
-      for (const e of events) {
-        if (e.room_type === 'checkout') checkouts++;
-        else if (e.room_type === 'stayover') stayovers++;
-      }
-      return {
-        checkouts,
-        stayovers,
-        windowStart: sinceISO,
-        source: 'cleaning_events',
-      };
+    if (!error && rows && rows.length > 0) {
+      const events: OccupancyEvent[] = rows
+        .filter(r => r.room_type === 'checkout' || r.room_type === 'stayover')
+        .map(r => ({
+          completedAt: String(r.completed_at),
+          roomType: r.room_type as 'checkout' | 'stayover',
+        }));
+      return { events, source: 'cleaning_events', windowStart: sinceISO };
     }
   } catch {
-    // fall through to tier 2
+    /* fall through */
   }
 
   // ── Tier 2: daily_logs ──────────────────────────────────────────────────
-  // Sum the daily morning-setup counts across the window. Less precise but
-  // catches properties that bypass the housekeeping module.
   try {
-    const { data: logs, error } = await supabase
+    const { data: rows, error } = await supabase
       .from('daily_logs')
-      .select('checkouts, stayovers')
+      .select('date, checkouts, stayovers')
       .eq('property_id', pid)
-      .gte('date', sinceDate);
+      .gte('date', sinceDate)
+      .order('date', { ascending: true });
 
-    if (!error && logs && logs.length > 0) {
-      const checkouts = logs.reduce((s, l) => s + Number(l.checkouts ?? 0), 0);
-      const stayovers = logs.reduce((s, l) => s + Number(l.stayovers ?? 0), 0);
-      return {
-        checkouts,
-        stayovers,
-        windowStart: sinceISO,
-        source: 'daily_logs',
-      };
+    if (!error && rows && rows.length > 0) {
+      const events: OccupancyEvent[] = [];
+      for (const row of rows) {
+        // Place all of a day's events at noon local (12:00 UTC ≈ noon-ish for
+        // the US Central tz this app cares about). Granularity for windowing
+        // is daily anyway.
+        const ts = `${row.date}T12:00:00Z`;
+        const co = Number(row.checkouts ?? 0);
+        const so = Number(row.stayovers ?? 0);
+        for (let i = 0; i < co; i++) events.push({ completedAt: ts, roomType: 'checkout' });
+        for (let i = 0; i < so; i++) events.push({ completedAt: ts, roomType: 'stayover' });
+      }
+      return { events, source: 'daily_logs', windowStart: sinceISO };
     }
   } catch {
-    // fall through to tier 3
+    /* fall through */
   }
 
   // ── Tier 3: nothing ─────────────────────────────────────────────────────
-  return { checkouts: 0, stayovers: 0, windowStart: sinceISO, source: 'none' };
+  return { events: [], source: 'none', windowStart: sinceISO };
+}
+
+// ─── Per-item occupancy computation ────────────────────────────────────────
+
+/**
+ * Count checkouts/stayovers in `bundle.events` whose completed_at is at or
+ * after the item's lastCountedAt. Returns 'none' source if bundle source is
+ * 'none' OR if the item has no last-count timestamp (so we can't define a
+ * window).
+ */
+export function computeOccupancyForItem(
+  bundle: OccupancyBundle,
+  item: Pick<InventoryItem, 'lastCountedAt' | 'updatedAt'>,
+): OccupancySinceLastCount {
+  // Use lastCountedAt if available; fall back to updatedAt for backward
+  // compatibility (existing rows pre-migration 0027 only have updated_at).
+  const itemAnchor = item.lastCountedAt ?? item.updatedAt;
+  if (!itemAnchor || bundle.source === 'none') {
+    return {
+      checkouts: 0, stayovers: 0,
+      windowStart: bundle.windowStart, source: 'none',
+    };
+  }
+
+  const anchorMs = itemAnchor.getTime();
+  let checkouts = 0;
+  let stayovers = 0;
+  for (const e of bundle.events) {
+    if (new Date(e.completedAt).getTime() >= anchorMs) {
+      if (e.roomType === 'checkout') checkouts++;
+      else stayovers++;
+    }
+  }
+
+  return {
+    checkouts,
+    stayovers,
+    windowStart: itemAnchor.toISOString(),
+    source: bundle.source,
+  };
 }
 
 // ─── Estimate calculation ──────────────────────────────────────────────────
 
 export interface EstimatedStockResult {
-  /** The estimated current stock. Equals item.currentStock when usage rates aren't configured. */
   estimated: number;
-  /** True iff usage rates were configured AND occupancy data was available. */
   hasEstimate: boolean;
-  /** How many units were deducted from the last count. 0 when no estimate. */
   deducted: number;
 }
 
 /**
  * Apply per-item usage rates to occupancy counts.
  *
- * Returns the original currentStock (with hasEstimate=false) in any of:
- *   - both usage rates are unset (item isn't configured)
- *   - occupancy source is 'none' (no data to estimate against)
+ * Returns the original currentStock (with hasEstimate=false) when:
+ *   - both usage rates are unset/zero (item isn't configured)
+ *   - occupancy source is 'none' (no data, or no last-count anchor)
  *
  * Floors at zero — we don't show negative stock; if the math says we're at
  * -5, we show 0 and the status logic flags it as critical anyway.
@@ -160,12 +199,9 @@ export function calculateEstimatedStock(
   const perCheckout = item.usagePerCheckout ?? 0;
   const perStayover = item.usagePerStayover ?? 0;
 
-  // No usage rates configured for this item → caller falls back to raw stock.
   if (perCheckout === 0 && perStayover === 0) {
     return { estimated: item.currentStock, hasEstimate: false, deducted: 0 };
   }
-
-  // No occupancy data → can't estimate honestly. Show raw.
   if (occupancy.source === 'none') {
     return { estimated: item.currentStock, hasEstimate: false, deducted: 0 };
   }
@@ -173,6 +209,30 @@ export function calculateEstimatedStock(
   const deducted =
     occupancy.checkouts * perCheckout + occupancy.stayovers * perStayover;
   const estimated = Math.max(0, item.currentStock - deducted);
-
   return { estimated, hasEstimate: true, deducted };
+}
+
+// ─── Backward-compatible single-item helper ────────────────────────────────
+//
+// Kept so callers that only need one item (server routes, future cron) don't
+// have to deal with the bundle dance. Just calls the bundle path under the
+// hood.
+
+export async function fetchOccupancySinceLastCount(
+  pid: string,
+  since: Date | null,
+): Promise<OccupancySinceLastCount> {
+  const bundle = await fetchOccupancyBundle(pid, since);
+  if (bundle.source === 'none' || !since) {
+    return { checkouts: 0, stayovers: 0, windowStart: bundle.windowStart, source: 'none' };
+  }
+  // Treat the entire bundle as one item's worth of events (caller passed `since`
+  // = that item's last count timestamp).
+  let checkouts = 0;
+  let stayovers = 0;
+  for (const e of bundle.events) {
+    if (e.roomType === 'checkout') checkouts++;
+    else stayovers++;
+  }
+  return { checkouts, stayovers, windowStart: since.toISOString(), source: bundle.source };
 }
