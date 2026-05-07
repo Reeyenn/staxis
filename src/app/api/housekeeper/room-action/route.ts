@@ -45,7 +45,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 15;
 
-type RoomAction = 'start' | 'finish' | 'reset' | 'stop' | 'dnd_on' | 'dnd_off' | 'issue' | 'help';
+type RoomAction = 'finish' | 'reset' | 'dnd_on' | 'dnd_off' | 'issue' | 'help';
 
 interface RequestBody {
   pid: string;
@@ -180,7 +180,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers,
     });
   }
-  if (!['start', 'finish', 'reset', 'stop', 'dnd_on', 'dnd_off', 'issue', 'help'].includes(action)) {
+  if (!['finish', 'reset', 'dnd_on', 'dnd_off', 'issue', 'help'].includes(action)) {
     log.warn('room-action: invalid action', { requestId, route: 'housekeeper/room-action', action });
     return err('invalid action', { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
   }
@@ -217,62 +217,22 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     const now = new Date().toISOString();
 
-    // ─── START ──────────────────────────────────────────────────────────
-    // On Start, capture the current in-house occupancy count so it can be
-    // copied to cleaning_events.occupancy_at_start on the Done tap.
-    // This snapshot is taken at the moment the housekeeper taps Start.
-    if (action === 'start') {
-      // Fetch current occupancy from scraper_status[dashboard].data.in_house
-      let lastStartedOccupancy: number | null = null;
-      try {
-        const { data: scraper, error: scraperErr } = await supabaseAdmin
-          .from('scraper_status')
-          .select('data')
-          .eq('key', 'dashboard')
-          .maybeSingle();
-
-        if (!scraperErr && scraper) {
-          const dashData = scraper.data as Record<string, unknown> | null;
-          // Check if data is fresh (not stale — within 4 hours)
-          if (dashData && typeof dashData.in_house === 'number' && dashData.pulledAt) {
-            const pulledAt = new Date(String(dashData.pulledAt));
-            const ageMs = Date.now() - pulledAt.getTime();
-            const fourHoursMs = 4 * 60 * 60 * 1000;
-            if (ageMs <= fourHoursMs) {
-              lastStartedOccupancy = dashData.in_house;
-            }
-          }
-        }
-      } catch (occupancyErr) {
-        // Log but do not fail — occupancy capture is a best-effort feature.
-        // Also bump the smoke-detector counter so /api/admin/doctor turns red
-        // and the daily-drift cron surfaces this within hours. Without it,
-        // a silent occupancy_at_start = NULL streak would degrade the supply
-        // model's training data with nobody noticing.
-        log.warn('room-action: occupancy capture failed', {
-          requestId, pid, roomId, err: errToString(occupancyErr)
-        });
-        await incrementMLFailureCounter(pid, 'occupancy_capture', occupancyErr);
-      }
-
-      // Update room status + started_at, plus last_started_occupancy if captured
-      const updatePayload: Record<string, unknown> = {
-        status: 'in_progress',
-        started_at: now,
-      };
-      if (lastStartedOccupancy !== null) {
-        updatePayload.last_started_occupancy = lastStartedOccupancy;
-      }
-
-      const { error: updErr } = await supabaseAdmin
-        .from('rooms')
-        .update(updatePayload)
-        .eq('id', roomId);
-      if (updErr) {
-        return err(errToString(updErr), { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
-      }
-      return ok({ action: 'start', startedAt: now }, { requestId, headers });
-    }
+    // ─── START ── REMOVED 2026-05-07 ────────────────────────────────────
+    // Per-room Start was removed when we collapsed the housekeeper flow
+    // to a single Done tap (Maria's request). The 'start' action and the
+    // matching 'stop' below used to set rooms.status='in_progress' and
+    // capture lastStartedOccupancy from scraper_status. Both are gone.
+    //
+    // Backward compat: any older client bundle (cached on a HK's phone)
+    // that still sends action='start' will hit the validation list above
+    // and get a 400 — same as any unknown action. The HK sees an error
+    // toast and refreshes, picking up the new bundle without per-room
+    // Start. Brief transitional pain is preferable to keeping dead
+    // server branches alive forever.
+    //
+    // The 'occupancy_at_start' ML feature is now derived at Done time
+    // by deriveCleaningEventFeatures (which reads scraper_status itself
+    // — same source, just queried later in the flow).
 
     // ─── FINISH ─────────────────────────────────────────────────────────
     // Updates room AND writes cleaning_events row with ML feature snapshot.
@@ -292,11 +252,45 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       // the housekeeper hit Done"); fall back to server-now for vacant
       // rooms or any flow without a cleaningContext.
       const completedAt = cleaningContext?.completedAt ?? now;
+      const isCleanable = !!cleaningContext && (cleaningContext.roomType === 'checkout' || cleaningContext.roomType === 'stayover');
+
+      // ─── Idempotency guard for retries ────────────────────────────
+      // Network-retry scenario: HK taps Done, request times out at 30s,
+      // server actually completed in 100ms. HK manually retaps. Without
+      // this guard the second tap inserts a SECOND cleaning_event row
+      // with slightly different started_at and completedAt — the unique
+      // constraint doesn't catch it because both timestamps moved.
+      // Performance tab then shows the room cleaned twice.
+      //
+      // 90s window: long enough to absorb retries; shorter than the
+      // 'reset' undo window above (60s) so legitimate "I cleaned it,
+      // realized I marked the wrong room, reset, re-cleaned" still
+      // works (the reset would have marked the prior row 'discarded'
+      // which our query filters out).
+      let isDuplicate = false;
+      if (isCleanable && cleaningContext) {
+        const dedupeWindow = new Date(Date.now() - 90_000).toISOString();
+        const { data: recent } = await supabaseAdmin
+          .from('cleaning_events')
+          .select('id, completed_at')
+          .eq('property_id', pid)
+          .eq('staff_id', staffId)
+          .eq('room_number', cleaningContext.roomNumber)
+          .eq('date', cleaningContext.date)
+          .neq('status', 'discarded')
+          .gte('completed_at', dedupeWindow)
+          .order('completed_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (recent) isDuplicate = true;
+      }
 
       // Derive canonical started_at for cleanable rooms. Vacant rooms
       // don't get a cleaning_events row, so they get no derivation.
+      // Skip the deriveStartedAt query entirely on duplicates — saves a
+      // round-trip on retries.
       let derivedStartedAt: string | null = null;
-      if (cleaningContext && (cleaningContext.roomType === 'checkout' || cleaningContext.roomType === 'stayover')) {
+      if (isCleanable && cleaningContext && !isDuplicate) {
         derivedStartedAt = await deriveStartedAt({
           pid,
           staffId,
@@ -323,9 +317,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         return err(errToString(roomUpdErr), { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
       }
 
-      // Audit log + ML feature snapshot — only for checkout/stayover, never vacant.
+      // Audit log + ML feature snapshot — only for checkout/stayover, never
+      // vacant, and never on a deduped retry (derivedStartedAt would be null
+      // for those, but be explicit).
       let cleaningEventInserted = false;
-      if (cleaningContext && derivedStartedAt && (cleaningContext.roomType === 'checkout' || cleaningContext.roomType === 'stayover')) {
+      if (!isDuplicate && cleaningContext && derivedStartedAt && (cleaningContext.roomType === 'checkout' || cleaningContext.roomType === 'stayover')) {
         // Both rooms.completed_at and cleaning_events.completed_at use the
         // same `completedAt` (the canonical Done time computed above).
         const startMs = new Date(derivedStartedAt).getTime();
@@ -407,7 +403,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           log.error('room-action: cleaning_events insert failed (non-fatal)', { requestId, route: 'housekeeper/room-action', pid, staffId, action: 'finish', err: ceErr as unknown as Error });
         }
       }
-      return ok({ action: 'finish', completedAt, cleaningEventInserted }, { requestId, headers });
+      return ok({ action: 'finish', completedAt, cleaningEventInserted, deduped: isDuplicate }, { requestId, headers });
     }
 
     // ─── RESET ──────────────────────────────────────────────────────────
@@ -440,19 +436,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       return ok({ action: 'reset' }, { requestId, headers });
     }
 
-    // ─── STOP (undo a Start tap) ────────────────────────────────────────
-    // in_progress → dirty, clear started_at. No cleaning_events impact —
-    // there was no Done, so nothing to discard.
-    if (action === 'stop') {
-      const { error: stopErr } = await supabaseAdmin
-        .from('rooms')
-        .update({ status: 'dirty', started_at: null })
-        .eq('id', roomId);
-      if (stopErr) {
-        return err(errToString(stopErr), { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
-      }
-      return ok({ action: 'stop' }, { requestId, headers });
-    }
+    // ─── STOP ── REMOVED 2026-05-07 ──────────────────────────────────────
+    // The companion to 'start' above. Removed in the same flow collapse.
 
     // ─── DND_ON ────────────────────────────────────────────────────────
     if (action === 'dnd_on') {

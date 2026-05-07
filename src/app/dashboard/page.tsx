@@ -15,6 +15,7 @@ import {
   subscribeToDashboardNumbers,
   type DashboardNumbers,
 } from '@/lib/db';
+import { dashboardFreshness } from '@/lib/db/dashboard';
 import { getOverdueRooms, calcDndFreedMinutes, suggestDeepCleans } from '@/lib/calculations';
 import { useTodayStr } from '@/lib/use-today-str';
 import type { Room, DeepCleanConfig, DeepCleanRecord, WorkOrder, HandoffEntry } from '@/types';
@@ -166,8 +167,21 @@ export default function DashboardPage() {
   // figure, falls back to CSV-derived if scraper hasn't run yet),
   // denominator = totalPropertyRooms - blockedRooms (rooms with
   // blockedRoom=true on an open work order).
-  const inHouseRooms = typeof dashboardNums?.inHouse === 'number'
-    ? dashboardNums.inHouse
+  // Trust dashboardNums.inHouse only when the scraper data is fresh, finite,
+  // and non-negative. dashboardFreshness already handles the off-hours-Central
+  // window plus the 25-min staleness threshold and error states — using it
+  // here means a dead scraper or a corrupt write silently falls back to the
+  // CSV-derived sum (checkouts + stayovers) instead of pinning Maria to a
+  // hours-old number with no warning. Negative / NaN guards are a separate
+  // belt for corrupt-write scenarios where freshness alone wouldn't catch
+  // bad data (e.g., -5 with a current pulledAt).
+  const inHouseFresh =
+    dashboardFreshness(dashboardNums ?? null) === 'fresh' &&
+    typeof dashboardNums?.inHouse === 'number' &&
+    Number.isFinite(dashboardNums.inHouse) &&
+    dashboardNums.inHouse >= 0;
+  const inHouseRooms = inHouseFresh
+    ? (dashboardNums!.inHouse as number)
     : (checkouts + stayovers);
   const sellableRooms = Math.max(0, totalPropertyRooms - blockedRooms);
   const occupancyPct = sellableRooms > 0 ? Math.round((inHouseRooms / sellableRooms) * 100) : 0;

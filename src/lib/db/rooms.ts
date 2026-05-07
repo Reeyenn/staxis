@@ -89,26 +89,9 @@ export async function getRoomsForDate(_uid: string, pid: string, date: string): 
   return (data ?? []).map(fromRoomRow);
 }
 
-// 2026-05-07: Currently unused (no callers in src/), but if it's ever wired up
-// it MUST preserve `assigned_to` / `assigned_name` / `assigned_at` so Maria's
-// manual board doesn't get silently nuked when rolling rooms forward to a
-// new date. The previous version of this function omitted those fields,
-// which would have set them to NULL on the new date. Don't reintroduce that.
-export async function carryOverRooms(_uid: string, pid: string, fromDate: string, toDate: string): Promise<number> {
-  const yesterday = await getRoomsForDate(_uid, pid, fromDate);
-  if (yesterday.length === 0) return 0;
-  const rows = yesterday.map(r => ({
-    property_id: pid,
-    number: r.number,
-    type: r.type,
-    priority: r.priority,
-    status: 'dirty',
-    date: toDate,
-    // Preserve assignment so a forward-roll doesn't wipe Maria's board.
-    assigned_to: r.assignedTo ?? null,
-    assigned_name: r.assignedName ?? null,
-  }));
-  const { error } = await supabase.from('rooms').insert(rows);
-  if (error) { logErr('carryOverRooms', error); throw error; }
-  return yesterday.length;
-}
+// 2026-05-07: carryOverRooms() was deleted. It had no callers and copying
+// rooms forward without re-deriving `type` from the new date's plan_snapshot
+// would produce stale labels (yesterday's checkout becomes today's
+// stayover/vacant in CA, but the carried-over row would still say
+// 'checkout'). Don't re-introduce it without rebuilding the type-rederive
+// path AND re-checking the assignment-preservation logic.
