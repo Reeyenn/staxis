@@ -518,11 +518,41 @@ function ScheduleTab() {
   }, [crewOverride, eligiblePool, recommendedStaff, totalRooms, staff]);
 
   // Auto-assign: full assign on first load, then only assign unassigned rooms on crew changes
+  //
+  // 2026-05-07 BUG FIX (Maria's "rooms keep reshuffling" complaint):
+  // The previous version did `setAssignments({}); hasInitialAssign.current = false`
+  // whenever `selectedCrew` or `assignableRooms` were briefly empty (e.g. during a
+  // page reload while the staff query was still in flight). That single render
+  // un-armed the hydration guard, then on the very next render the auto-assign
+  // re-ran and silently overwrote whatever Maria had saved on the schedule
+  // board. The autosave 400ms later then mirrored the algorithm's choices into
+  // `rooms.assigned_to`, so the housekeepers' phone links showed reshuffled
+  // rooms instead of what Maria actually assigned.
+  //
+  // Two-part fix:
+  //   1. The empty-input guard now just bails out (no state wipe). A momentary
+  //      empty crew is a loading hiccup, not a signal to nuke saved work.
+  //   2. Auto-assign is now hard-gated on (a) hydration having settled for this
+  //      date and (b) NO saved schedule_assignments doc existing for this date.
+  //      If Maria has ever saved for this date, the algorithm cannot overwrite
+  //      her board — only her own drag-drops can change assignments from there.
   useEffect(() => {
-    if (assignableRooms.length === 0 || selectedCrew.length === 0) { setAssignments({}); hasInitialAssign.current = false; return; }
+    // Bail out on bad/incomplete inputs WITHOUT wiping state. The previous
+    // `setAssignments({}); hasInitialAssign.current = false` line was the
+    // foot-gun that caused the reshuffle bug.
+    if (assignableRooms.length === 0 || selectedCrew.length === 0) return;
+
+    // Don't auto-assign until hydration has settled for the current date —
+    // otherwise we race the schedule_assignments doc load and risk
+    // overwriting Maria's saved work.
+    if (hydratedForDate.current !== shiftDate) return;
+
+    // If a saved schedule_assignments doc exists for this date, RESPECT IT.
+    // The algorithm only seeds initial state when there's nothing saved yet.
+    if (scheduleAssignmentsDoc) return;
 
     if (!hasInitialAssign.current) {
-      // First time: full auto-assign
+      // First time on a fresh date with no saved doc: seed from algorithm.
       const fakeScheduled = selectedCrew.map(s => ({ ...s, scheduledToday: true }));
       const auto = autoAssignRooms(assignableRooms, fakeScheduled, {
         checkoutMinutes: coMins,
@@ -550,7 +580,7 @@ function ScheduleTab() {
     // shadow of soMins consulted only inside this branch and would not change
     // independently of soMins.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedCrew, assignableRooms, coMins, soMins, day1Mins, day2Mins, prepPerRoom, shiftLen]);
+  }, [selectedCrew, assignableRooms, coMins, soMins, day1Mins, day2Mins, prepPerRoom, shiftLen, shiftDate, scheduleAssignmentsDoc]);
 
   const toggleCrewMember = (memberId: string) => {
     userEditedCrew.current = true;

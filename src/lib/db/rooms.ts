@@ -89,6 +89,11 @@ export async function getRoomsForDate(_uid: string, pid: string, date: string): 
   return (data ?? []).map(fromRoomRow);
 }
 
+// 2026-05-07: Currently unused (no callers in src/), but if it's ever wired up
+// it MUST preserve `assigned_to` / `assigned_name` / `assigned_at` so Maria's
+// manual board doesn't get silently nuked when rolling rooms forward to a
+// new date. The previous version of this function omitted those fields,
+// which would have set them to NULL on the new date. Don't reintroduce that.
 export async function carryOverRooms(_uid: string, pid: string, fromDate: string, toDate: string): Promise<number> {
   const yesterday = await getRoomsForDate(_uid, pid, fromDate);
   if (yesterday.length === 0) return 0;
@@ -99,6 +104,9 @@ export async function carryOverRooms(_uid: string, pid: string, fromDate: string
     priority: r.priority,
     status: 'dirty',
     date: toDate,
+    // Preserve assignment so a forward-roll doesn't wipe Maria's board.
+    assigned_to: r.assignedTo ?? null,
+    assigned_name: r.assignedName ?? null,
   }));
   const { error } = await supabase.from('rooms').insert(rows);
   if (error) { logErr('carryOverRooms', error); throw error; }
