@@ -39,6 +39,7 @@ import { log, getOrMintRequestId } from '@/lib/log';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { deriveCleaningEventFeatures } from '@/lib/feature-derivation';
 import { incrementMLFailureCounter } from '@/lib/ml-failure-counters';
+import { deriveStartedAtPure } from '@/lib/cleaning-event-derivation';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -98,35 +99,16 @@ interface RequestBody {
 const DISCARD_UNDER_MIN = 3;
 const FLAG_OVER_MIN = 60;
 const DISCARD_OVER_MIN = 90;
-// Default per-room "started_at" fallback (minutes before completed_at) when
-// we have no other anchor for this housekeeper today. Conservative — picked
-// to slot into the 'recorded' band, not flagged or discarded.
-const DEFAULT_DURATION_MIN: Record<'checkout' | 'stayover', number> = {
-  checkout: 30,
-  stayover: 20,
-};
-
-// Largest "previous cleaning" gap we'll trust as the start of the next room.
-// Anything beyond this looks like a break, not the start of cleaning.
-const MAX_GAP_BETWEEN_CLEANINGS_MS = 4 * 60 * 60 * 1000; // 4h
-
 /**
  * Derive a sensible started_at for a "finish" tap, server-side.
  *
- * Order of preference (most reliable first):
- *   1. The most recent cleaning_event by this staff today — its completed_at
- *      becomes the next clean's started_at, IF the gap is < 4h. Real
- *      observed wall-clock between Done taps. Slightly contaminated by
- *      breaks but accurate enough for performance regression.
- *   2. The shift-start anchor (when the housekeeper tapped "Start Shift")
- *      if it's older than completedAt by at least DISCARD_UNDER_MIN.
- *      Used for the first room of the day.
- *   3. Fallback: completedAt - DEFAULT_DURATION_MIN[type]. Synthetic but
- *      keeps the row out of the 'discarded' bucket so it stays visible
- *      in the Performance tab.
+ * Thin wrapper: looks up the most recent prior cleaning_event for this
+ * (pid, staffId, date) in Postgres, then hands all four candidate
+ * anchors to `deriveStartedAtPure` for the actual decision logic.
  *
- * Always clamped to (completedAt - 4h, completedAt - 30s) so the row
- * passes the cleaning_events CHECK constraint and isn't absurdly old.
+ * The pure function is unit-tested in
+ * src/lib/__tests__/cleaning-event-derivation.test.ts — that's where
+ * the hard cases live (rapid Done batches, stale shift anchors, etc.).
  */
 async function deriveStartedAt(args: {
   pid: string;
@@ -136,10 +118,7 @@ async function deriveStartedAt(args: {
   roomType: 'checkout' | 'stayover';
   shiftStartedAt: string | null;
 }): Promise<string> {
-  const completedAtMs = new Date(args.completedAt).getTime();
-
-  // 1. Most recent prior cleaning_event by this staff today
-  let priorMs: number | null = null;
+  let priorCompletedAt: string | null = null;
   try {
     const { data } = await supabaseAdmin
       .from('cleaning_events')
@@ -153,36 +132,19 @@ async function deriveStartedAt(args: {
       .limit(1)
       .maybeSingle();
     if (data?.completed_at) {
-      const ms = new Date(data.completed_at as string).getTime();
-      if (Number.isFinite(ms) && completedAtMs - ms <= MAX_GAP_BETWEEN_CLEANINGS_MS) {
-        priorMs = ms;
-      }
+      priorCompletedAt = data.completed_at as string;
     }
   } catch {
-    // Silent — fall through to next anchor.
+    // Lookup failure → behave as if no prior cleaning. The pure function
+    // will fall through to the shift anchor or the synthetic fallback.
   }
 
-  // 2. Shift-start anchor (only relevant for the first room of the day)
-  const shiftMs = args.shiftStartedAt ? new Date(args.shiftStartedAt).getTime() : NaN;
-  const shiftValid =
-    Number.isFinite(shiftMs) &&
-    shiftMs < completedAtMs &&
-    completedAtMs - shiftMs <= MAX_GAP_BETWEEN_CLEANINGS_MS;
-
-  // 3. Synthetic fallback by room type
-  const fallbackMs = completedAtMs - DEFAULT_DURATION_MIN[args.roomType] * 60_000;
-
-  let chosenMs: number;
-  if (priorMs !== null) chosenMs = priorMs;
-  else if (shiftValid) chosenMs = shiftMs;
-  else chosenMs = fallbackMs;
-
-  // Clamp to (completedAt - 4h, completedAt - 30s) so we never violate the
-  // CHECK constraint or produce a wildly stale started_at.
-  const minMs = completedAtMs - MAX_GAP_BETWEEN_CLEANINGS_MS;
-  const maxMs = completedAtMs - 30_000;
-  chosenMs = Math.max(minMs, Math.min(maxMs, chosenMs));
-  return new Date(chosenMs).toISOString();
+  return deriveStartedAtPure({
+    completedAt: args.completedAt,
+    priorCompletedAt,
+    shiftStartedAt: args.shiftStartedAt,
+    roomType: args.roomType,
+  });
 }
 
 function classify(durationMin: number): { status: 'recorded' | 'discarded' | 'flagged'; flag_reason: string | null } {
@@ -314,16 +276,39 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     // ─── FINISH ─────────────────────────────────────────────────────────
     // Updates room AND writes cleaning_events row with ML feature snapshot.
-    // If started_at is null we set it to now (giving a 0-min duration → discarded entry).
+    //
+    // 2026-05-07: With per-room Start gone, room.started_at is null at this
+    // point on the new flow. We derive a canonical started_at server-side
+    // (see deriveStartedAt below) and write it to BOTH the rooms table and
+    // the cleaning_events row, so any UI reading "Cleaned in X min" off
+    // the rooms table sees the same number as the Performance tab.
     if (action === 'finish') {
-      const startedAt = room.started_at ?? now;
       const completedAt = now;
+
+      // Derive canonical started_at for cleanable rooms. Vacant rooms
+      // don't get a cleaning_events row, so they get no derivation.
+      let derivedStartedAt: string | null = null;
+      if (cleaningContext && (cleaningContext.roomType === 'checkout' || cleaningContext.roomType === 'stayover')) {
+        derivedStartedAt = await deriveStartedAt({
+          pid,
+          staffId,
+          date: cleaningContext.date,
+          completedAt: cleaningContext.completedAt,
+          roomType: cleaningContext.roomType,
+          shiftStartedAt: cleaningContext.shiftStartedAt ?? null,
+        });
+      }
+
+      // The rooms.started_at value: derived for cleanable rooms (so UI
+      // shows the same duration as Performance tab); preserve any legacy
+      // value otherwise; fall back to completedAt for vacant.
+      const roomStartedAt = derivedStartedAt ?? room.started_at ?? completedAt;
       const { error: roomUpdErr } = await supabaseAdmin
         .from('rooms')
         .update({
           status: 'clean',
           completed_at: completedAt,
-          ...(room.started_at ? {} : { started_at: startedAt }),
+          started_at: roomStartedAt,
         })
         .eq('id', roomId);
       if (roomUpdErr) {
@@ -332,18 +317,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
       // Audit log + ML feature snapshot — only for checkout/stayover, never vacant.
       let cleaningEventInserted = false;
-      if (cleaningContext && (cleaningContext.roomType === 'checkout' || cleaningContext.roomType === 'stayover')) {
-        // 2026-05-07: Derive started_at server-side instead of trusting the
-        // client's value. See `deriveStartedAt` for the reasoning. The
-        // client's `cleaningContext.startedAt` is now ignored.
-        const derivedStartedAt = await deriveStartedAt({
-          pid,
-          staffId,
-          date: cleaningContext.date,
-          completedAt: cleaningContext.completedAt,
-          roomType: cleaningContext.roomType,
-          shiftStartedAt: cleaningContext.shiftStartedAt ?? null,
-        });
+      if (cleaningContext && derivedStartedAt && (cleaningContext.roomType === 'checkout' || cleaningContext.roomType === 'stayover')) {
         const startMs = new Date(derivedStartedAt).getTime();
         const endMs = new Date(cleaningContext.completedAt).getTime();
         const durationMin = Math.max(0, (endMs - startMs) / 60_000);

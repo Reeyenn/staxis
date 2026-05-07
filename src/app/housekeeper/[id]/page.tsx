@@ -444,42 +444,12 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
     }
   };
 
-  const handleStartRoom = async (room: RoomRow) => {
-    if (!pid) return;
-    await guardRoomAction(room.id, async () => {
-      setSavingRoomId(room.id);
-      try {
-        const res = await callRoomActionApi(room, 'start');
-        if (!res.ok) {
-          console.error('[housekeeper] start room error:', res.error);
-          showActionError(lang === 'es'
-            ? 'No se pudo iniciar. Verifica tu conexión.'
-            : 'Couldn\u2019t start room. Check your connection.');
-        }
-      } finally {
-        setSavingRoomId(null);
-      }
-    });
-  };
-
-  // ── Stop room (in_progress → dirty, clear startedAt) ──────────────────────
-  const handleStopRoom = async (room: RoomRow) => {
-    if (!pid) return;
-    await guardRoomAction(room.id, async () => {
-      setSavingRoomId(room.id);
-      try {
-        const res = await callRoomActionApi(room, 'stop');
-        if (!res.ok) {
-          console.error('[housekeeper] stop room error:', res.error);
-          showActionError(lang === 'es'
-            ? 'No se pudo detener. Verifica tu conexión.'
-            : 'Couldn\u2019t stop room. Check your connection.');
-        }
-      } finally {
-        setSavingRoomId(null);
-      }
-    });
-  };
+  // 2026-05-07: handleStartRoom and handleStopRoom were removed when we
+  // collapsed the per-room flow to a single Done tap (Maria's request —
+  // her HKs were skipping per-room Start, which silently zero-duration'd
+  // every cleaning event). The 'start' and 'stop' API actions still exist
+  // on the server route for backward compat with any older client bundle
+  // that hasn't roll-deployed yet, but nothing in this page calls them.
 
   // ── Finish room (in_progress → clean) ─────────────────────────────────────
   // Requires hold-to-confirm on the button - accidental taps are ignored.
@@ -492,22 +462,22 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       setSavingRoomId(room.id);
       try {
         const completedAt = new Date();
-        // If Start was never tapped (or got wiped by a re-pull), we use
-        // completedAt for both timestamps. Duration = 0 → server-side
-        // classifier auto-discards it from analytics. Audit row still gets
-        // written so we have a record.
-        const startedAt = room.startedAt ?? completedAt;
         const isCleanable = room.type === 'checkout' || room.type === 'stayover';
+        // 2026-05-07: With per-room Start gone, room.startedAt is always
+        // null at this point — the client no longer has the data needed
+        // to compute a sensible started_at. The server derives the
+        // canonical value from prior cleanings + the shiftStartedAt
+        // anchor below; see deriveStartedAtPure in lib/cleaning-event-derivation.
+        // We still send startedAt = completedAt for wire-compat with
+        // any in-flight requests on older server versions, but the
+        // current server ignores it.
         const ctx = isCleanable ? {
           roomNumber: room.number,
           roomType: room.type as 'checkout' | 'stayover',
           stayoverDayBucket: bucketStayoverDay(room.stayoverDay, room.type),
           staffName: room.assignedName || 'Housekeeper',
           date: room.date ?? today,
-          // Advisory only — server derives canonical started_at. Sent for
-          // backward compat with any older client/server versions still
-          // talking to each other mid-deploy.
-          startedAt: startedAt instanceof Date ? startedAt.toISOString() : new Date(startedAt as unknown as string).toISOString(),
+          startedAt: completedAt.toISOString(), // server-overridden
           completedAt: completedAt.toISOString(),
           // Shift Start anchor for the first Done of the day. Server uses
           // this only when there's no prior cleaning_event by this staff
@@ -1014,9 +984,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
               isSavingHelp={savingHelp === room.id}
               helpAlreadySent={helpSent.has(room.id)}
               helpDeliveryFailed={helpFailed.has(room.id)}
-              onStart={() => handleStartRoom(room)}
               onFinish={() => handleFinishRoom(room)}
-              onStop={() => handleStopRoom(room)}
               onReset={() => handleResetRoom(room)}
               isResetting={resettingRoomId === room.id}
               onReportIssue={() => {
@@ -1130,9 +1098,7 @@ function RoomCard({
   isSavingHelp,
   helpAlreadySent,
   helpDeliveryFailed,
-  onStart,
   onFinish,
-  onStop,
   onReset,
   isResetting,
   onReportIssue,
@@ -1151,9 +1117,7 @@ function RoomCard({
    *  from helpAlreadySent so the UI can show a "tell someone in person"
    *  state instead of falsely claiming the alert was sent. */
   helpDeliveryFailed: boolean;
-  onStart: () => void;
   onFinish: () => void;
-  onStop: () => void;
   onReset: () => void;
   isResetting: boolean;
   onReportIssue: () => void;
@@ -1486,44 +1450,6 @@ function RoomCard({
 }
 
 /* ── Start Button - single tap, no protection needed ── */
-function StartButton({
-  lang,
-  isSaving,
-  onStart,
-}: {
-  lang: Language;
-  isSaving: boolean;
-  onStart: () => void;
-}) {
-  const [pressed, setPressed] = useState(false);
-
-  return (
-    <button
-      onClick={onStart}
-      disabled={isSaving}
-      onPointerDown={() => !isSaving && setPressed(true)}
-      onPointerUp={() => setPressed(false)}
-      onPointerLeave={() => setPressed(false)}
-      style={{
-        width: '100%', height: '68px', border: 'none', borderRadius: '14px',
-        background: isSaving ? 'var(--border)' : pressed ? 'var(--navy)' : 'var(--navy-light, #2563EB)',
-        color: isSaving ? 'var(--text-muted)' : 'white',
-        fontSize: '20px', fontWeight: 800,
-        cursor: isSaving ? 'not-allowed' : 'pointer',
-        letterSpacing: '-0.01em',
-        transform: pressed && !isSaving ? 'scale(0.97)' : 'scale(1)',
-        transition: 'background 100ms ease, transform 80ms ease',
-        WebkitTapHighlightColor: 'transparent',
-        boxShadow: pressed || isSaving ? 'none' : '0 4px 12px rgba(37,99,235,0.35)',
-      }}
-    >
-      {isSaving
-        ? t('savingDots', lang)
-        : (lang === 'es' ? '▶ Empezar' : '▶ ' + t('start', lang))}
-    </button>
-  );
-}
-
 /* ── Complete Button - simple tap to mark done ── */
 function CompleteButton({
   lang,
