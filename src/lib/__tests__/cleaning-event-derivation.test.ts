@@ -97,14 +97,19 @@ describe('deriveStartedAtPure', () => {
   // ─── The rapid-Done bug — primary correctness test ─────────────────
 
   describe('rapid-Done batch (the bug fix this whole module exists for)', () => {
-    test('gap < 3 minutes does NOT anchor to prior — falls through', () => {
+    test('gap < 3 minutes does NOT anchor to prior, AND skips shift anchor too', () => {
       // Housekeeper finished cleaning rooms 101, 102, 103 at 09:30, 10:00,
       // 10:25 in actual wall-clock. They batched the Dones at 10:25:00,
       // 10:25:01, 10:25:02. The first Done has a real prior anchor; the
       // 2nd and 3rd Done's prior is essentially "now".
+      //
+      // Critically, falling back to the shift anchor here would produce
+      // a multi-hour duration that the classifier marks as flagged or
+      // discarded. The right answer is the synthetic per-type fallback,
+      // which lands inside the 'recorded' band.
       const completedAt = Date.parse('2026-05-07T15:25:01.000Z');
       const prior = Date.parse('2026-05-07T15:25:00.000Z'); // 1 SECOND ago
-      const shift = Date.parse('2026-05-07T13:00:00.000Z'); // earlier today
+      const shift = Date.parse('2026-05-07T13:00:00.000Z'); // 2h25m ago
 
       const out = deriveStartedAtPure({
         completedAt: ISO(completedAt),
@@ -113,14 +118,16 @@ describe('deriveStartedAtPure', () => {
         roomType: 'stayover',
       });
 
-      // Should NOT use the 1-second-ago prior. Should fall through to the
-      // shift anchor (still valid — 2h25m old, within MAX_GAP).
-      assert.equal(out, ISO(shift), 'batched Done falls through to shift anchor');
-      const durationMs = completedAt - new Date(out).getTime();
-      assert.ok(
-        durationMs >= MIN_PLAUSIBLE_GAP_MS,
-        `duration ${durationMs}ms should be >= MIN_PLAUSIBLE_GAP_MS (${MIN_PLAUSIBLE_GAP_MS}ms) — would otherwise be discarded by classifier`,
+      // Should NOT use the 1-second-ago prior AND must skip the stale
+      // shift anchor. Synthetic 20-min fallback for stayover.
+      const expectedSynthetic = completedAt - 20 * 60_000;
+      assert.equal(
+        out,
+        ISO(expectedSynthetic),
+        'batched Done with shift present must still use synthetic fallback (not shift)',
       );
+      const durationMin = (completedAt - new Date(out).getTime()) / 60_000;
+      assert.ok(durationMin >= 3 && durationMin <= 60, `duration ${durationMin}min in 'recorded' band`);
     });
 
     test('gap < 3 minutes with no shift anchor → synthetic fallback', () => {
@@ -135,6 +142,39 @@ describe('deriveStartedAtPure', () => {
       });
       const expected = completedAt - DEFAULT_DURATION_MIN.checkout * 60_000;
       assert.equal(out, ISO(expected), 'no shift anchor → 30-min synthetic');
+    });
+
+    test('batched Done MID-DAY does NOT use stale shift anchor', () => {
+      // The mid-day batch case. HK started shift at 9am, did 5 rooms in
+      // the morning (each got sequential anchor + recorded). At 3pm they
+      // batch 3 more Dones within 1 second. The 2nd batched tap has:
+      //   • prior = 1s ago → rejected
+      //   • shift = 9am (6h ago) → if we used it, duration = 6h →
+      //     classifier marks > 90min → DISCARDED. Same Performance-blank
+      //     bug as the original day-2 issue.
+      // Correct behavior: skip shift, fall to synthetic 30/20-min fallback.
+      const completedAt = Date.parse('2026-05-07T20:00:00.000Z'); // 3pm Central
+      const prior = completedAt - 1000;                            // 1s ago
+      const shift = Date.parse('2026-05-07T14:00:00.000Z');        // 9am Central, 6h ago
+
+      const out = deriveStartedAtPure({
+        completedAt: ISO(completedAt),
+        priorCompletedAt: ISO(prior),
+        shiftStartedAt: ISO(shift),
+        roomType: 'checkout',
+      });
+
+      // Should be the synthetic fallback (30 min before completedAt for checkout).
+      const expectedSynthetic = completedAt - DEFAULT_DURATION_MIN.checkout * 60_000;
+      assert.equal(
+        out,
+        ISO(expectedSynthetic),
+        'mid-day batched Done must not use the morning shift anchor',
+      );
+
+      const durationMs = completedAt - new Date(out).getTime();
+      const durationMin = durationMs / 60_000;
+      assert.ok(durationMin >= 3 && durationMin <= 60, `duration ${durationMin}min must be in 'recorded' band`);
     });
 
     test('gap exactly at MIN_PLAUSIBLE_GAP boundary IS accepted', () => {

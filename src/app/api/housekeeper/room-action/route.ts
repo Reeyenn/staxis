@@ -283,7 +283,15 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // the cleaning_events row, so any UI reading "Cleaned in X min" off
     // the rooms table sees the same number as the Performance tab.
     if (action === 'finish') {
-      const completedAt = now;
+      // Single canonical "Done time" for both rooms.completed_at AND
+      // cleaning_events.completed_at. Previously the rooms row used
+      // server-now while cleaning_events used cleaningContext.completedAt
+      // (client tap time) — they could differ by hundreds of ms due to
+      // network latency, breaking any UI cross-referencing the two.
+      // Prefer the client tap time when supplied (more accurate "moment
+      // the housekeeper hit Done"); fall back to server-now for vacant
+      // rooms or any flow without a cleaningContext.
+      const completedAt = cleaningContext?.completedAt ?? now;
 
       // Derive canonical started_at for cleanable rooms. Vacant rooms
       // don't get a cleaning_events row, so they get no derivation.
@@ -293,7 +301,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           pid,
           staffId,
           date: cleaningContext.date,
-          completedAt: cleaningContext.completedAt,
+          completedAt,
           roomType: cleaningContext.roomType,
           shiftStartedAt: cleaningContext.shiftStartedAt ?? null,
         });
@@ -318,8 +326,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       // Audit log + ML feature snapshot — only for checkout/stayover, never vacant.
       let cleaningEventInserted = false;
       if (cleaningContext && derivedStartedAt && (cleaningContext.roomType === 'checkout' || cleaningContext.roomType === 'stayover')) {
+        // Both rooms.completed_at and cleaning_events.completed_at use the
+        // same `completedAt` (the canonical Done time computed above).
         const startMs = new Date(derivedStartedAt).getTime();
-        const endMs = new Date(cleaningContext.completedAt).getTime();
+        const endMs = new Date(completedAt).getTime();
         const durationMin = Math.max(0, (endMs - startMs) / 60_000);
         const { status, flag_reason } = classify(durationMin);
 
@@ -343,7 +353,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             roomNumber: cleaningContext.roomNumber,
             staffId,
             startedAt: new Date(derivedStartedAt),
-            completedAt: new Date(cleaningContext.completedAt),
+            completedAt: new Date(completedAt),
           });
         } catch (featureErr) {
           log.error('room-action: feature derivation threw (unexpected)', {
@@ -367,7 +377,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           staff_id: staffId,
           staff_name: cleaningContext.staffName || staff.name || 'Housekeeper',
           started_at: derivedStartedAt,
-          completed_at: cleaningContext.completedAt,
+          completed_at: completedAt,
           duration_minutes: Number(durationMin.toFixed(2)),
           status,
           flag_reason,

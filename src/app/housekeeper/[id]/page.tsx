@@ -121,8 +121,21 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
     if (!shiftStorageKey) return;
     try {
       const stored = window.localStorage.getItem(shiftStorageKey);
-      if (stored) setShiftStartedAt(stored);
-      else setShiftStartedAt(null);
+      if (!stored) {
+        setShiftStartedAt(null);
+        return;
+      }
+      // Defensive parse — if localStorage was tampered with or stores a
+      // value that's not a valid ISO timestamp, the banner below would
+      // crash the entire page on `format(new Date(...), ...)`. Validate
+      // before trusting.
+      const parsedMs = Date.parse(stored);
+      if (!Number.isFinite(parsedMs)) {
+        try { window.localStorage.removeItem(shiftStorageKey); } catch {}
+        setShiftStartedAt(null);
+        return;
+      }
+      setShiftStartedAt(stored);
     } catch {
       // private mode / quota — ignore, just won't persist across reload
     }
@@ -1449,7 +1462,6 @@ function RoomCard({
   );
 }
 
-/* ── Start Button - single tap, no protection needed ── */
 /* ── Complete Button - simple tap to mark done ── */
 function CompleteButton({
   lang,

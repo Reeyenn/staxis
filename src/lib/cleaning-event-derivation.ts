@@ -74,6 +74,18 @@ export interface DerivationInputs {
  * completedAt - MIN_DURATION_MS) and >= completedAt - MAX_GAP_MS.
  * That keeps the row inside the cleaning_events CHECK constraints
  * and prevents wildly stale values.
+ *
+ * IMPORTANT — the "rapid-Done in the middle of the day" case:
+ *   Housekeeper does 5 rooms in the morning (each gets a sequential
+ *   anchor), then in the afternoon batches another 3 Dones in quick
+ *   succession. For the 2nd and 3rd of the afternoon batch:
+ *     • Prior cleaning is 1 second ago → REJECTED (gap < MIN_PLAUSIBLE_GAP)
+ *     • Shift anchor is 6 hours old → would give a 6h duration → DISCARDED
+ *       by the classifier (> 90min). Same blank-Performance bug, new shape.
+ *   So when prior is rejected as too-close, we DO NOT fall through to
+ *   the shift anchor — we go straight to the synthetic fallback. The
+ *   shift anchor only makes sense for the truly first room of the day,
+ *   not for "first of a batch later in the day."
  */
 export function deriveStartedAtPure(input: DerivationInputs): string {
   const completedAtMs = new Date(input.completedAt).getTime();
@@ -81,25 +93,25 @@ export function deriveStartedAtPure(input: DerivationInputs): string {
     throw new Error('deriveStartedAtPure: completedAt is not a valid ISO timestamp');
   }
 
-  // 1. Prior cleaning anchor — only if the gap is plausibly an actual cleaning.
+  // Parse and classify the prior-cleaning anchor.
   let priorMs: number | null = null;
+  let priorRejectedTooClose = false;
   if (input.priorCompletedAt) {
     const ms = new Date(input.priorCompletedAt).getTime();
     if (Number.isFinite(ms)) {
       const gapMs = completedAtMs - ms;
-      // Plausible-gap test: between MIN_PLAUSIBLE_GAP and MAX_GAP. Anything
-      // shorter is a Done-batch (housekeeper tapped multiple Dones in
-      // quick succession after finishing a cluster of rooms); we don't
-      // want to anchor to it because it would zero-out the duration.
-      // Anything longer is an off-shift gap (lunch, end of day, etc.).
-      if (gapMs >= MIN_PLAUSIBLE_GAP_MS && gapMs <= MAX_GAP_BETWEEN_CLEANINGS_MS) {
+      if (gapMs < MIN_PLAUSIBLE_GAP_MS) {
+        // Batched Done — implausibly short gap.
+        priorRejectedTooClose = true;
+      } else if (gapMs <= MAX_GAP_BETWEEN_CLEANINGS_MS) {
+        // Sequential cleaning — gap looks like real wall-clock work.
         priorMs = ms;
       }
+      // gap > MAX_GAP: off-shift gap (lunch, end of day). Treat as no prior.
     }
   }
 
-  // 2. Shift-start anchor — only valid for the FIRST room of the day,
-  // and only if it's within MAX_GAP of completedAt.
+  // Parse and validate the shift-start anchor.
   let shiftMs: number | null = null;
   if (input.shiftStartedAt) {
     const ms = new Date(input.shiftStartedAt).getTime();
@@ -112,13 +124,25 @@ export function deriveStartedAtPure(input: DerivationInputs): string {
     }
   }
 
-  // 3. Synthetic fallback by room type.
   const fallbackMs = completedAtMs - DEFAULT_DURATION_MIN[input.roomType] * 60_000;
 
+  // Anchor priority:
+  //   1. If we have a valid sequential prior, use it.
+  //   2. If prior was rejected as a Done-batch, skip the shift anchor
+  //      (it would balloon the duration over a multi-hour shift) and go
+  //      straight to synthetic fallback.
+  //   3. No prior and shift anchor present (truly first room of day) → shift.
+  //   4. No prior and no shift anchor (first room, no Start tap) → synthetic.
   let chosenMs: number;
-  if (priorMs !== null) chosenMs = priorMs;
-  else if (shiftMs !== null) chosenMs = shiftMs;
-  else chosenMs = fallbackMs;
+  if (priorMs !== null) {
+    chosenMs = priorMs;
+  } else if (priorRejectedTooClose) {
+    chosenMs = fallbackMs;
+  } else if (shiftMs !== null) {
+    chosenMs = shiftMs;
+  } else {
+    chosenMs = fallbackMs;
+  }
 
   // Final clamp.
   const minMs = completedAtMs - MAX_GAP_BETWEEN_CLEANINGS_MS;
