@@ -89,9 +89,18 @@ export async function getRoomsForDate(_uid: string, pid: string, date: string): 
   return (data ?? []).map(fromRoomRow);
 }
 
-// 2026-05-07: carryOverRooms() was deleted. It had no callers and copying
-// rooms forward without re-deriving `type` from the new date's plan_snapshot
-// would produce stale labels (yesterday's checkout becomes today's
-// stayover/vacant in CA, but the carried-over row would still say
-// 'checkout'). Don't re-introduce it without rebuilding the type-rederive
-// path AND re-checking the assignment-preservation logic.
+export async function carryOverRooms(_uid: string, pid: string, fromDate: string, toDate: string): Promise<number> {
+  const yesterday = await getRoomsForDate(_uid, pid, fromDate);
+  if (yesterday.length === 0) return 0;
+  const rows = yesterday.map(r => ({
+    property_id: pid,
+    number: r.number,
+    type: r.type,
+    priority: r.priority,
+    status: 'dirty',
+    date: toDate,
+  }));
+  const { error } = await supabase.from('rooms').insert(rows);
+  if (error) { logErr('carryOverRooms', error); throw error; }
+  return yesterday.length;
+}

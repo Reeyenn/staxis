@@ -4,8 +4,11 @@ import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useTodayStr } from '@/lib/use-today-str';
 import {
-  getStaffSelfPublic,
-  saveStaffLanguagePublic,
+  getPublicAreas,
+  getLaundryConfig,
+  subscribeToRooms,
+  getStaffMember,
+  saveStaffLanguage,
 } from '@/lib/db';
 import { isAreaDueToday, calcLaundryMinutes } from '@/lib/calculations';
 import type { PublicArea, LaundryCategory, Room } from '@/types';
@@ -39,18 +42,17 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
   const [completedAreas, setCompletedAreas] = useState<Set<string>>(new Set());
   const [completedLoads, setCompletedLoads] = useState<Set<string>>(new Set());
 
-  // Seed the page language from the staff row on mount. Goes through
-  // /api/housekeeper/me (service-role) instead of getStaffMember(), because
-  // this page has no auth session and the supabase browser client would
-  // silently return null under RLS. Same RLS-blocks-anon trap as the
-  // 2026-04-30 housekeeper rooms bug.
+  // Seed the page language from the staff row on mount. Source of truth is
+  // the `language` column on the staff table (written by Maria in the Staff
+  // modal, and by this page when the HK hits the language toggle). Legacy
+  // Firestore `staffPrefs/{id}` is gone.
   useEffect(() => {
     if (!laundryPersonId || !pid) return;
     let cancelled = false;
 
     (async () => {
       try {
-        const s = await getStaffSelfPublic(pid, laundryPersonId);
+        const s = await getStaffMember(pid, laundryPersonId);
         if (!cancelled && s && (s.language === 'es' || s.language === 'en')) {
           setLang(s.language);
         }
@@ -64,9 +66,9 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
 
   // Load laundry person name from staff list
   useEffect(() => {
-    if (!pid || !laundryPersonId) return;
+    if (!uid || !pid || !laundryPersonId) return;
 
-    fetch(`/api/staff-list?pid=${pid}`)
+    fetch(`/api/staff-list?uid=${uid}&pid=${pid}`)
       .then(r => r.json())
       .then((body: { ok?: boolean; data?: Array<{ id: string; name: string }> }) => {
         // Standard ApiResponse envelope — read the array off `.data`.
@@ -79,53 +81,35 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
       .catch(err => console.error('[laundry] staff name load failed:', err));
   }, [uid, pid, laundryPersonId]);
 
-  // Bootstrap fetch — public_areas + laundry_config + today's rooms in
-  // one server-side round-trip. Goes through /api/laundry/bootstrap
-  // (service-role, RLS-bypass) because the laundry worker has no Staxis
-  // session and the supabase browser client would silently return [] for
-  // each table under RLS. Same root cause as the housekeeper "no rooms"
-  // bug from earlier today.
-  //
-  // Polled every 30s instead of using realtime — anon clients don't get
-  // postgres_changes events under RLS anyway, and the laundry workflow is
-  // not as latency-sensitive as the per-room housekeeper actions.
+  // Load public areas and laundry config
   useEffect(() => {
-    if (!pid || !laundryPersonId) return;
-    let cancelled = false;
+    if (!uid || !pid) return;
 
-    const loadBootstrap = async () => {
-      try {
-        const res = await fetch(
-          `/api/laundry/bootstrap?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(laundryPersonId)}&date=${encodeURIComponent(today)}`,
-        );
-        if (!res.ok) {
-          console.error('[laundry] bootstrap http', res.status);
-          if (!cancelled) setLoading(false);
-          return;
-        }
-        const json = (await res.json().catch(() => null)) as
-          | { ok?: boolean; data?: { publicAreas?: PublicArea[]; laundryConfig?: LaundryCategory[]; rooms?: Room[] }; error?: string }
-          | null;
-        if (!json?.ok || !json.data) {
-          console.error('[laundry] bootstrap unexpected body', json?.error || 'no data');
-          if (!cancelled) setLoading(false);
-          return;
-        }
-        if (cancelled) return;
-        setPublicAreas(json.data.publicAreas || []);
-        setLaundryConfig(json.data.laundryConfig || []);
-        setRooms(json.data.rooms || []);
+    Promise.all([
+      getPublicAreas(uid, pid),
+      getLaundryConfig(uid, pid),
+    ])
+      .then(([areas, config]) => {
+        setPublicAreas(areas);
+        setLaundryConfig(config);
         setLoading(false);
-      } catch (err) {
-        console.error('[laundry] bootstrap error:', err);
-        if (!cancelled) setLoading(false);
-      }
-    };
+      })
+      .catch(err => {
+        console.error('[laundry] load config error:', err);
+        setLoading(false);
+      });
+  }, [uid, pid]);
 
-    loadBootstrap();
-    const interval = setInterval(loadBootstrap, 30_000);
-    return () => { cancelled = true; clearInterval(interval); };
-  }, [pid, laundryPersonId, today]);
+  // Subscribe to rooms for today. No auth dance — the Supabase browser client
+  // uses the anon key and the capability URL (uid+pid+staffId) is the access
+  // token for this page.
+  useEffect(() => {
+    if (!uid || !pid) return;
+    const unsub = subscribeToRooms(uid, pid, today, (data: Room[]) => {
+      setRooms(data);
+    });
+    return () => unsub();
+  }, [uid, pid, today]);
 
   // Calculate today's date for area filtering
   const todayDate = new Date();
@@ -163,11 +147,11 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
 
   const firstName = laundryPersonName.split(' ')[0] || 'Laundry';
 
-  // Missing pid means the SMS link was mangled. Without this guard the
-  // useEffects above return early, never set loading=false, and the spinner
-  // runs forever. Render a concrete error so the worker can flag it. uid
-  // is no longer required (Firebase legacy; SMS links don't include it).
-  if (!pid || !laundryPersonId) {
+  // Missing uid or pid means a mangled SMS/shared link — useEffects below
+  // return early without ever setting loading=false, so without this guard
+  // the spinner runs forever on the laundry person's phone. Render a concrete
+  // error instead.
+  if (!pid || !uid || !laundryPersonId) {
     return (
       <div style={{
         minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -237,13 +221,9 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
             onClick={async () => {
               const next: Language = lang === 'en' ? 'es' : 'en';
               setLang(next);
-              if (laundryPersonId && pid) {
-                // Service-role write — same reasoning as the housekeeper
-                // page's switch from saveStaffLanguage to the *Public
-                // variant. The browser-client write silently no-op'd
-                // under RLS for unauthenticated laundry workers.
+              if (laundryPersonId) {
                 try {
-                  await saveStaffLanguagePublic(pid, laundryPersonId, next);
+                  await saveStaffLanguage(laundryPersonId, next);
                 } catch (err) {
                   console.error('[laundry] lang persist failed:', err);
                 }

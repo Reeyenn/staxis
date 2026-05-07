@@ -1,0 +1,130 @@
+/**
+ * Recipe loader — server-only helpers for reading/writing pms_recipes.
+ *
+ * Used by:
+ *   - The CUA worker (cua-service/) to fetch the recipe to replay, or to
+ *     persist a freshly-learned recipe.
+ *   - Next.js API routes that need to know "do we already have a recipe
+ *     for this PMS type?" before queueing an onboarding job.
+ *
+ * Never imported into client components — uses supabase-admin which has
+ * the service-role key.
+ */
+
+import { supabaseAdmin } from '@/lib/supabase-admin';
+import type { Recipe } from './recipe';
+import { isRecipeShape } from './recipe';
+import type { PMSType } from './types';
+
+export interface StoredRecipe {
+  id: string;
+  pmsType: PMSType;
+  version: number;
+  recipe: Recipe;
+  status: 'draft' | 'active' | 'deprecated';
+  learnedByPropertyId: string | null;
+  notes: string | null;
+}
+
+/**
+ * Returns the highest-version active recipe for a PMS type, or null if
+ * none exists (caller should kick off a CUA mapping run).
+ */
+export async function loadActiveRecipe(pmsType: PMSType): Promise<StoredRecipe | null> {
+  const { data, error } = await supabaseAdmin
+    .from('pms_recipes')
+    .select('id, pms_type, version, recipe, status, learned_by_property_id, notes')
+    .eq('pms_type', pmsType)
+    .eq('status', 'active')
+    .order('version', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  if (!isRecipeShape(data.recipe)) return null;
+
+  return {
+    id: data.id as string,
+    pmsType: data.pms_type as PMSType,
+    version: data.version as number,
+    recipe: data.recipe as Recipe,
+    status: data.status as 'draft' | 'active' | 'deprecated',
+    learnedByPropertyId: (data.learned_by_property_id as string) ?? null,
+    notes: (data.notes as string) ?? null,
+  };
+}
+
+/**
+ * Inserts a new recipe row in 'draft' status. The CUA worker calls this
+ * after a successful mapping run. Promotion to 'active' happens after the
+ * first successful end-to-end pull (handled by the worker, not here).
+ */
+export async function saveDraftRecipe(args: {
+  pmsType: PMSType;
+  recipe: Recipe;
+  learnedByPropertyId: string;
+  notes?: string;
+}): Promise<{ id: string; version: number } | { error: string }> {
+  // Determine the next version: max(version)+1 across all rows for this PMS.
+  const { data: latest } = await supabaseAdmin
+    .from('pms_recipes')
+    .select('version')
+    .eq('pms_type', args.pmsType)
+    .order('version', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const nextVersion = ((latest?.version as number) ?? 0) + 1;
+
+  const { data, error } = await supabaseAdmin
+    .from('pms_recipes')
+    .insert({
+      pms_type: args.pmsType,
+      version: nextVersion,
+      recipe: args.recipe,
+      status: 'draft',
+      learned_by_property_id: args.learnedByPropertyId,
+      notes: args.notes ?? null,
+    })
+    .select('id, version')
+    .single();
+
+  if (error || !data) {
+    return { error: error?.message ?? 'failed to save draft recipe' };
+  }
+  return { id: data.id as string, version: data.version as number };
+}
+
+/**
+ * Promote a draft to active. Called by the worker after the first
+ * end-to-end pull using this recipe succeeds. Demotes any older active
+ * recipes for the same PMS to 'deprecated' in the same transaction.
+ */
+export async function promoteRecipeToActive(recipeId: string): Promise<{ ok: true } | { error: string }> {
+  const { data: row, error: fetchErr } = await supabaseAdmin
+    .from('pms_recipes')
+    .select('id, pms_type, status')
+    .eq('id', recipeId)
+    .maybeSingle();
+
+  if (fetchErr || !row) return { error: fetchErr?.message ?? 'recipe not found' };
+  if (row.status === 'active') return { ok: true };
+  if (row.status === 'deprecated') return { error: 'cannot promote deprecated recipe' };
+
+  // Demote previous actives for this PMS.
+  const { error: demoteErr } = await supabaseAdmin
+    .from('pms_recipes')
+    .update({ status: 'deprecated' })
+    .eq('pms_type', row.pms_type)
+    .eq('status', 'active');
+  if (demoteErr) return { error: demoteErr.message };
+
+  // Promote this draft.
+  const { error: promoteErr } = await supabaseAdmin
+    .from('pms_recipes')
+    .update({ status: 'active' })
+    .eq('id', recipeId);
+  if (promoteErr) return { error: promoteErr.message };
+
+  return { ok: true };
+}

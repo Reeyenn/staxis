@@ -1,0 +1,3 @@
+{
+  "/api/cron/scraper-health/route": "app/api/cron/scraper-health/route.js"
+}

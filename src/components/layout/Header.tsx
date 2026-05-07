@@ -21,7 +21,7 @@ export function Header() {
   const [showPropMenu, setShowPropMenu] = React.useState(false);
   const [showUserMenu, setShowUserMenu] = React.useState(false);
 
-  const baseNavLinks = [
+  const navLinks = [
     { href: '/dashboard',    label: lang === 'es' ? 'Panel' : 'Dashboard' },
     { href: '/housekeeping', label: lang === 'es' ? 'Limpieza' : 'Housekeeping' },
     { href: '/maintenance',  label: lang === 'es' ? 'Mantenimiento' : 'Maintenance' },
@@ -30,14 +30,18 @@ export function Header() {
   ];
 
   // Owner/admin-only ML tab. AppUser.role is 'admin' | 'owner' | 'staff'
-  // (see contexts/AuthContext.tsx). Reeyen has admin/owner; the J-login (his
-  // dad) does not. Role-only gate — no ownerId match because Property doesn't
-  // expose that column. Cockpit data is currently stubbed; restoring the link
-  // so the page is reachable for development + future wiring.
-  const isOwner = user?.role === 'owner' || user?.role === 'admin';
-  const navLinks = isOwner
-    ? [...baseNavLinks, { href: '/admin/ml', label: 'ML' }]
-    : baseNavLinks;
+  // (see contexts/AuthContext.tsx). Reeyen has admin/owner; his dad's
+  // J-login does NOT. Belt-and-suspenders: also match user.uid against
+  // the active property's ownerId so a future role mis-assignment can't
+  // accidentally expose ML to a J-style account.
+  const userIsOwnerByRole = user?.role === 'owner' || user?.role === 'admin';
+  const userIsOwnerByMatch = !!(
+    user?.uid && activeProperty?.ownerId && activeProperty.ownerId === user.uid
+  );
+  const isOwner = userIsOwnerByRole && userIsOwnerByMatch;
+  const ownerNavLinks = isOwner
+    ? [...navLinks, { href: '/admin/ml', label: 'ML' }]
+    : navLinks;
 
   const handleSwitchProperty = (id: string) => {
     setActivePropertyId(id);
@@ -77,7 +81,7 @@ export function Header() {
 
           {/* Nav Links */}
           <nav style={{ display: 'flex', gap: '24px' }}>
-            {navLinks.map(link => {
+            {ownerNavLinks.map(link => {
               const isActive = pathname.startsWith(link.href);
               return (
                 <Link

@@ -1,0 +1,3 @@
+{
+  "/api/sync-room-assignments/route": "app/api/sync-room-assignments/route.js"
+}

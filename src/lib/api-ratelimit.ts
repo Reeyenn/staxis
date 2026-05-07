@@ -47,9 +47,9 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // hammer this. 200/hr is "click 3x per minute for an hour" headroom.
   'sync-room-assignments':    200,
   'populate-rooms-from-plan':  20,
-  // SMS fan-out to housekeepers — Maria might re-broadcast after schedule
-  // tweaks. 30/hr covers normal use and stops a runaway loop dead.
-  'notify-housekeepers-sms':   30,
+  // Legacy SMS-fan-out route. Active SMS path is send-shift-confirmations;
+  // this route exists for back-compat. Cap matches morning-resend.
+  'notify-housekeepers-sms':    5,
 };
 
 /**

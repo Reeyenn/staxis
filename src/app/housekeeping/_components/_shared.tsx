@@ -21,7 +21,6 @@ import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { Modal } from '@/components/ui/Modal';
-import { DraftNumberInput } from '@/components/DraftNumberInput';
 import { useSyncContext } from '@/contexts/SyncContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import {
@@ -721,11 +720,11 @@ export function PublicAreasModal({ show, onClose }: { show: boolean; onClose: ()
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
               <div>
                 <label className="label">{t('minutesPerClean', lang)}</label>
-                <DraftNumberInput value={newArea.minutesPerClean} onCommit={n => setNewArea(p => ({ ...p, minutesPerClean: n }))} min={0} width="100%" />
+                <input className="input" type="number" value={newArea.minutesPerClean} onChange={e => setNewArea(p => ({ ...p, minutesPerClean: Number(e.target.value) || 0 }))} />
               </div>
               <div>
                 <label className="label">{t('locations', lang)}</label>
-                <DraftNumberInput value={newArea.locations} onCommit={n => setNewArea(p => ({ ...p, locations: n }))} min={1} width="100%" />
+                <input className="input" type="number" value={newArea.locations} onChange={e => setNewArea(p => ({ ...p, locations: Number(e.target.value) || 1 }))} />
               </div>
             </div>
 
@@ -767,11 +766,11 @@ export function PublicAreasModal({ show, onClose }: { show: boolean; onClose: ()
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
                 <div>
                   <label className="label">{t('minutesPerClean', lang)}</label>
-                  <DraftNumberInput value={area.minutesPerClean} onCommit={n => handleUpdate(area.id, { minutesPerClean: n })} min={0} width="100%" />
+                  <input className="input" type="number" value={area.minutesPerClean} onChange={e => handleUpdate(area.id, { minutesPerClean: Number(e.target.value) || 0 })} />
                 </div>
                 <div>
                   <label className="label">{t('locations', lang)}</label>
-                  <DraftNumberInput value={area.locations} onCommit={n => handleUpdate(area.id, { locations: n })} min={1} width="100%" />
+                  <input className="input" type="number" value={area.locations} onChange={e => handleUpdate(area.id, { locations: Number(e.target.value) || 1 })} />
                 </div>
               </div>
 

@@ -1,0 +1,3 @@
+{
+  "/api/cron/scraper-weekly-digest/route": "app/api/cron/scraper-weekly-digest/route.js"
+}

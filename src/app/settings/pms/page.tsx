@@ -1,25 +1,25 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { updateProperty } from '@/lib/db';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
-import { Wifi, WifiOff, Shield, Zap, AlertCircle, CheckCircle, ChevronDown } from 'lucide-react';
+import { fetchWithAuth } from '@/lib/api-fetch';
+import { PMS_DROPDOWN_OPTIONS } from '@/lib/pms';
+import { Wifi, WifiOff, Shield, Zap, AlertCircle, CheckCircle, ChevronDown, Loader2 } from 'lucide-react';
 import Link from 'next/link';
 
-const PMS_SYSTEMS = [
-  { value: 'choice_advantage', label: 'Choice Advantage (Comfort Suites, Quality Inn…)' },
-  { value: 'opera_cloud', label: 'Opera Cloud (Marriott, Hilton…)' },
-  { value: 'cloudbeds', label: 'Cloudbeds' },
-  { value: 'roomkey', label: 'RoomKey PMS' },
-  { value: 'skytouch', label: 'SkyTouch Hotel OS' },
-  { value: 'webrezpro', label: 'WebRezPro' },
-  { value: 'hotelogix', label: 'Hotelogix' },
-  { value: 'other', label: 'Other' },
-];
+// PMS dropdown options come from the registry (src/lib/pms/registry.ts).
+// Adding a new PMS is a one-line change there — keeps the dropdown,
+// the type system, and the DB constraint in sync.
+const PMS_SYSTEMS = PMS_DROPDOWN_OPTIONS.map((d) => ({
+  value: d.id,
+  label: `${d.label}${d.hint ? ` (${d.hint})` : ''}`,
+  defaultLoginUrl: d.defaultLoginUrl,
+}));
 
 const SYNC_STATUS = {
   idle: null,
@@ -41,42 +41,180 @@ export default function PMSPage() {
   const [testMessage, setTestMessage] = useState('');
   const [saving, setSaving] = useState(false);
 
+  // Onboarding job state — populated when the user clicks "Save & Onboard"
+  // and we kick off a CUA mapping/extraction job on the Fly.io worker.
+  // The page polls /api/pms/job-status every 3s while a job is in flight
+  // and renders a progress widget.
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [jobStatus, setJobStatus] = useState<{
+    status: 'queued' | 'running' | 'mapping' | 'extracting' | 'complete' | 'failed';
+    step: string | null;
+    progressPct: number;
+    error: string | null;
+    result: Record<string, unknown> | null;
+  } | null>(null);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // When the user picks a PMS, prefill the login URL with the registry's
+  // default — saves typing for the 95% case where they use the standard
+  // login URL. They can still edit it after.
+  const handlePmsTypeChange = (value: string) => {
+    setPmsType(value);
+    const def = PMS_SYSTEMS.find(p => p.value === value);
+    if (def?.defaultLoginUrl && !pmsUrl) {
+      setPmsUrl(def.defaultLoginUrl);
+    }
+  };
+
+  // ─── Test Connection ──────────────────────────────────────────────────────
+  // "Test" persists the credentials to scraper_credentials so the next click
+  // of Save can use them, and confirms the URL is reachable. The actual login
+  // attempt happens during the onboarding job (Fly worker, not Vercel).
   const handleTest = async () => {
     if (!pmsType || !pmsUrl || !username || !password) {
       setTestStatus('error');
-      setTestMessage('Please fill in all fields before testing.');
+      setTestMessage(lang === 'es'
+        ? 'Por favor completa todos los campos antes de probar.'
+        : 'Please fill in all fields before testing.');
+      return;
+    }
+    if (!activePropertyId) {
+      setTestStatus('error');
+      setTestMessage(lang === 'es' ? 'Propiedad no seleccionada.' : 'No property selected.');
       return;
     }
     setTestStatus('testing');
     setTestMessage('');
 
-    // Simulate CUA test - in production this would call /api/pms/test
-    await new Promise(r => setTimeout(r, 2500));
-
-    // For demo purposes, always succeed for known PMS systems
-    if (PMS_SYSTEMS.find(p => p.value === pmsType && pmsType !== 'other')) {
+    try {
+      const res = await fetchWithAuth('/api/pms/save-credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          propertyId: activePropertyId,
+          pmsType,
+          loginUrl: pmsUrl,
+          username,
+          password,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) {
+        setTestStatus('error');
+        setTestMessage(json.error ?? (lang === 'es'
+          ? 'No pudimos guardar tus credenciales.'
+          : 'Could not save your credentials.'));
+        return;
+      }
+      const label = PMS_SYSTEMS.find(p => p.value === pmsType)?.label ?? pmsType;
       setTestStatus('success');
-      setTestMessage(`Connected to ${PMS_SYSTEMS.find(p => p.value === pmsType)?.label}. Occupancy data found.`);
-    } else {
+      setTestMessage(lang === 'es'
+        ? `Credenciales guardadas para ${label}. Haz clic en Guardar para iniciar la sincronización.`
+        : `Credentials saved for ${label}. Click Save & Onboard to start the first sync.`);
+    } catch (err) {
       setTestStatus('error');
-      setTestMessage('Could not connect. Check your URL and credentials, or contact support for help with this PMS.');
+      setTestMessage(lang === 'es'
+        ? 'Problema de red. Revisa tu conexión y vuelve a intentar.'
+        : 'Network problem. Check your connection and try again.');
     }
   };
 
+  // ─── Save & Onboard ───────────────────────────────────────────────────────
+  // Kicks off the full onboarding job (CUA mapping if needed + data
+  // extraction) on the Fly worker, then polls /api/pms/job-status until
+  // it reaches 'complete' or 'failed'.
   const handleSave = async () => {
     if (!user || !activePropertyId) return;
+    if (testStatus !== 'success') {
+      setTestStatus('error');
+      setTestMessage(lang === 'es'
+        ? 'Primero prueba la conexión para guardar tus credenciales.'
+        : 'Please Test Connection first so we can save your credentials.');
+      return;
+    }
     setSaving(true);
+
     try {
+      // Persist pms_type + pms_url onto the properties row (legacy field
+      // path that the rest of the app reads from). The credentials are
+      // already in scraper_credentials from handleTest.
       await updateProperty(user.uid, activePropertyId, {
         pmsType,
         pmsUrl,
-        pmsConnected: testStatus === 'success',
       });
       await refreshProperty();
-    } finally {
+
+      // Queue the onboarding job.
+      const res = await fetchWithAuth('/api/pms/onboard', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ propertyId: activePropertyId }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) {
+        setSaving(false);
+        setTestStatus('error');
+        setTestMessage(json.error ?? (lang === 'es'
+          ? 'No pudimos iniciar la sincronización.'
+          : 'Could not start the sync.'));
+        return;
+      }
+
+      setJobId(json.data.jobId);
+      setJobStatus({
+        status: 'queued',
+        step: lang === 'es' ? 'Esperando un trabajador…' : 'Waiting for a worker…',
+        progressPct: 0,
+        error: null,
+        result: null,
+      });
+      // Polling kicks in via the useEffect below.
+    } catch (err) {
       setSaving(false);
+      setTestStatus('error');
+      setTestMessage(lang === 'es'
+        ? 'Error inesperado. Por favor intenta de nuevo.'
+        : 'Unexpected error. Please try again.');
     }
   };
+
+  // ─── Job polling ──────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!jobId) return;
+    let cancelled = false;
+
+    const poll = async () => {
+      if (cancelled) return;
+      try {
+        const res = await fetchWithAuth(`/api/pms/job-status?id=${jobId}`);
+        const json = await res.json();
+        if (cancelled) return;
+        if (res.ok && json.ok) {
+          setJobStatus({
+            status: json.data.status,
+            step: json.data.step,
+            progressPct: json.data.progressPct,
+            error: json.data.error,
+            result: json.data.result,
+          });
+          if (json.data.status === 'complete' || json.data.status === 'failed') {
+            setSaving(false);
+            await refreshProperty();
+            return; // stop polling
+          }
+        }
+      } catch {
+        // Transient error — keep polling.
+      }
+      pollTimerRef.current = setTimeout(poll, 3000);
+    };
+
+    void poll();
+    return () => {
+      cancelled = true;
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+    };
+  }, [jobId, refreshProperty]);
 
   return (
     <AppLayout>
@@ -165,7 +303,7 @@ export default function PMSPage() {
         <div className="card" style={{ padding: '20px', marginBottom: '16px' }}>
           <div style={{ marginBottom: '16px' }}>
             <label className="label">{lang === 'es' ? 'Sistema PMS' : 'PMS System'}</label>
-            <select value={pmsType} onChange={e => setPmsType(e.target.value)} className="input">
+            <select value={pmsType} onChange={e => handlePmsTypeChange(e.target.value)} className="input">
               <option value="">{lang === 'es' ? '- Selecciona tu PMS -' : '- Select your PMS -'}</option>
               {PMS_SYSTEMS.map(pms => (
                 <option key={pms.value} value={pms.value}>{pms.label}</option>
@@ -244,7 +382,7 @@ export default function PMSPage() {
         <div style={{ display: 'flex', gap: '10px' }}>
           <button
             onClick={handleTest}
-            disabled={testStatus === 'testing'}
+            disabled={testStatus === 'testing' || saving}
             className="btn btn-secondary"
             style={{ flex: 1, justifyContent: 'center' }}
           >
@@ -259,13 +397,98 @@ export default function PMSPage() {
           </button>
           <button
             onClick={handleSave}
-            disabled={saving || !pmsType}
+            disabled={saving || !pmsType || testStatus !== 'success'}
             className="btn btn-primary"
             style={{ flex: 1, justifyContent: 'center' }}
           >
-            {saving ? (lang === 'es' ? 'Guardando…' : 'Saving…') : (lang === 'es' ? 'Guardar' : 'Save')}
+            {saving
+              ? (lang === 'es' ? 'Sincronizando…' : 'Onboarding…')
+              : (lang === 'es' ? 'Guardar y Sincronizar' : 'Save & Onboard')}
           </button>
         </div>
+
+        {/* Onboarding job progress — shown only while a job is in flight or
+            just completed. Polls /api/pms/job-status every 3s. */}
+        {jobStatus && (
+          <div
+            style={{
+              marginTop: '16px',
+              padding: '16px',
+              background: jobStatus.status === 'failed'
+                ? 'var(--red-dim)'
+                : jobStatus.status === 'complete'
+                  ? 'var(--green-dim)'
+                  : 'rgba(212,144,64,0.06)',
+              border: `1px solid ${jobStatus.status === 'failed'
+                ? 'var(--red-border, rgba(239,68,68,0.25))'
+                : jobStatus.status === 'complete'
+                  ? 'var(--green-border, rgba(34,197,94,0.25))'
+                  : 'rgba(212,144,64,0.2)'}`,
+              borderRadius: '12px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
+              {jobStatus.status === 'complete' ? (
+                <CheckCircle size={18} color="var(--green)" />
+              ) : jobStatus.status === 'failed' ? (
+                <AlertCircle size={18} color="var(--red)" />
+              ) : (
+                <Loader2 size={18} color="var(--amber)" style={{ animation: 'spin 1.2s linear infinite' }} />
+              )}
+              <p style={{
+                fontWeight: 600,
+                fontSize: '14px',
+                color: jobStatus.status === 'failed' ? 'var(--red)'
+                     : jobStatus.status === 'complete' ? 'var(--green)'
+                     : 'var(--text-primary)',
+              }}>
+                {jobStatus.status === 'complete'
+                  ? (lang === 'es' ? '¡Sincronización completa!' : 'Onboarding complete!')
+                  : jobStatus.status === 'failed'
+                    ? (lang === 'es' ? 'Sincronización falló' : 'Onboarding failed')
+                    : (jobStatus.step ?? (lang === 'es' ? 'Trabajando…' : 'Working…'))}
+              </p>
+            </div>
+
+            {/* Progress bar — hidden once complete or failed */}
+            {jobStatus.status !== 'complete' && jobStatus.status !== 'failed' && (
+              <div style={{
+                width: '100%',
+                height: '6px',
+                background: 'rgba(0,0,0,0.08)',
+                borderRadius: '3px',
+                overflow: 'hidden',
+                marginBottom: '8px',
+              }}>
+                <div style={{
+                  width: `${Math.max(5, jobStatus.progressPct)}%`,
+                  height: '100%',
+                  background: 'var(--amber)',
+                  transition: 'width 0.3s ease',
+                }} />
+              </div>
+            )}
+
+            {jobStatus.status === 'failed' && jobStatus.error && (
+              <p style={{ fontSize: '13px', color: 'var(--red)', lineHeight: 1.5 }}>
+                {jobStatus.error}
+              </p>
+            )}
+
+            {jobStatus.status === 'complete' && jobStatus.result && (
+              <div style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                {(() => {
+                  const r = jobStatus.result as Record<string, unknown>;
+                  const rooms = (r.rooms_count as number) ?? 0;
+                  const staff = (r.staff_count as number) ?? 0;
+                  return lang === 'es'
+                    ? `Encontramos ${rooms} habitaciones y ${staff} miembros del personal. Tu panel está listo.`
+                    : `We found ${rooms} rooms and ${staff} staff members. Your dashboard is ready.`;
+                })()}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* CUA architecture note */}
         <div style={{ marginTop: '24px', padding: '16px', background: 'rgba(0,0,0,0.02)', border: '1px solid var(--border)', borderRadius: '12px' }}>

@@ -1,0 +1,51 @@
+# ─────────────────────────────────────────────────────────────────────────
+# Fly.io app: staxis-cua
+#
+# Worker pattern, not HTTP service. The CUA service polls Supabase for
+# queued onboarding_jobs and processes them. No public ingress required.
+#
+# Region: iad (Ashburn). Anthropic API + Supabase Postgres are both
+# US-East-friendly. Move closer if we add more regions later.
+#
+# Sizing: shared-cpu-1x (1 vCPU, 1GB RAM) is enough for one concurrent
+# Playwright session per machine. We scale by adding machines, not by
+# upsizing — agents are pleasingly parallel.
+#
+# Secrets needed (set via `fly secrets set`):
+#   ANTHROPIC_API_KEY            — from console.anthropic.com
+#   NEXT_PUBLIC_SUPABASE_URL     — same as the Vercel app
+#   SUPABASE_SERVICE_ROLE_KEY    — same as the Vercel app
+#   CRON_SECRET                  — shared with Vercel/GitHub Actions
+# ─────────────────────────────────────────────────────────────────────────
+
+app = "staxis-cua"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  POLL_INTERVAL_MS = "5000"
+  WORKER_ID_PREFIX = "fly-cua"
+  # Cap each Playwright session to 4 minutes to prevent runaway agents
+  # from holding a machine indefinitely. The job runner respects this.
+  JOB_TIMEOUT_MS = "240000"
+
+# No [[services]] block — this is a worker, not an HTTP service. Fly
+# still keeps it alive via the `auto_stop_machines = false` flag below.
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"
+  cpus = 1
+
+[deploy]
+  # Rolling restart: at least one machine is always running so jobs
+  # don't pile up while we deploy.
+  strategy = "rolling"
+
+# Don't auto-stop. The worker needs to keep polling.
+[[restart]]
+  policy = "on-failure"
+  max_retries = 5

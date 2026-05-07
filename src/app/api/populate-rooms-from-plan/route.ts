@@ -120,39 +120,16 @@ export async function POST(req: NextRequest) {
     }
 
     // Pull existing room rows for this date so we can preserve assignments.
-    // Include `status` so we can detect rooms that are currently in_progress
-    // (housekeeper has tapped Start). The CSV reports "Dirty" for those
-    // rooms — the PMS doesn't know about our internal Start tap — and we
-    // need to NOT wipe started_at on rooms that are mid-clean.
     const { data: existing, error: existErr } = await supabaseAdmin
       .from('rooms')
-      .select('id, number, status')
+      .select('id, number')
       .eq('property_id', pid)
       .eq('date', date);
     if (existErr) throw existErr;
 
-    // Pull the property's master room inventory (migration 0025). The CSV
-    // from Choice Advantage only contains rooms that need housekeeping
-    // attention — vacant clean rooms get omitted entirely. Without this
-    // list the Rooms tab would only show the ~45 of 74 rooms that happen
-    // to need work today. The phantom-seed loop below adds the missing
-    // ones as vacant clean so every room always renders. Empty inventory
-    // (the schema default) skips the union, preserving CSV-only behavior
-    // for properties whose inventory hasn't been configured yet.
-    const { data: propRow, error: propErr } = await supabaseAdmin
-      .from('properties')
-      .select('room_inventory')
-      .eq('id', pid)
-      .maybeSingle();
-    if (propErr) throw propErr;
-    const inventory = (propRow?.room_inventory as string[] | null) ?? [];
-
-    const existingByNumber = new Map<string, { id: string; status: string | null }>();
+    const existingByNumber = new Map<string, { id: string }>();
     for (const r of (existing ?? [])) {
-      if (r.number) existingByNumber.set(r.number as string, {
-        id: r.id as string,
-        status: (r.status as string | null) ?? null,
-      });
+      if (r.number) existingByNumber.set(r.number as string, { id: r.id as string });
     }
 
     let created = 0;
@@ -178,45 +155,25 @@ export async function POST(req: NextRequest) {
         // Overwrite type + status with CSV baseline. Preserve assigned_to /
         // assigned_name (so Maria's shift Send isn't blown away) and is_dnd.
         //
-        // Timestamps (started_at / completed_at): we used to wipe these
-        // any time the CSV reported "dirty" — which the comments below
-        // claim was safe ("dirty = real reset"). It wasn't.
-        //
-        // The PMS only flips a room to "Clean" when housekeeping checks
-        // out the room in the PMS. Until that moment, the CSV reports
-        // "Dirty" — even while a housekeeper is mid-clean. So a clean
-        // that takes longer than the scraper interval (60 min) lost its
-        // started_at to the next hourly pull, and when the housekeeper
-        // finally tapped Done the page fell back to started_at =
-        // completed_at and the cleaning_event landed with duration 0
-        // and got auto-discarded as under_3min.
-        //
-        // Maria 2026-05-02: 'everyone is using Start and Done correctly'
-        // — and yet 70 of 76 events on production were sub-3-min. This
-        // was the cause.
-        //
-        // Fix: when the room is currently in_progress in OUR table, the
-        // housekeeper has tapped Start and not yet Done; the CSV has no
-        // way to know that, so its "dirty" reading is stale relative to
-        // our state. Preserve our timestamps. Only wipe when the room is
-        // genuinely between cleans (not in_progress).
+        // Timestamps (started_at / completed_at): ONLY clear when the new
+        // status is 'dirty' — that means the PMS reported the room as
+        // dirty, which represents a real reset (next day's baseline OR
+        // guest re-checked-in). When the new status is 'clean' or
+        // 'inspected', preserve the existing timestamps because they
+        // represent a real housekeeper action that we DON'T want the next
+        // CSV pull to silently erase. (This was a pre-2026-04-27 bug:
+        // unconditionally nulling these wiped per-clean durations within
+        // minutes of capture, breaking the Performance tab averages and
+        // the in-progress elapsed-time displays.)
         const patch: Record<string, unknown> = {
           type,
           status,
           issue_note:   null,
           help_requested: false,
         };
-        const isMidClean = row.status === 'in_progress';
-        if (status === 'dirty' && !isMidClean) {
+        if (status === 'dirty') {
           patch.started_at = null;
           patch.completed_at = null;
-        }
-        // Don't downgrade an in_progress room to dirty. Dirty is the
-        // PMS-baseline view; in_progress is OUR view of housekeeping
-        // state. Letting the CSV overwrite would also drop the room
-        // out of the active-cleaning UI mid-shift.
-        if (isMidClean) {
-          patch.status = 'in_progress';
         }
         if (csv.stayoverDay !== null && csv.stayoverDay !== undefined) {
           patch.stayover_day = csv.stayoverDay;
@@ -278,59 +235,12 @@ export async function POST(req: NextRequest) {
       await Promise.all(updates);
     }
 
-    // ─── Phantom seed: rooms in inventory but not in CSV ──────────────────
-    // The CSV from Choice Advantage skips vacant-clean rooms entirely (the
-    // "Housekeeping Check-off List" report only lists rooms that need
-    // attention). Without this step, the Rooms tab would show ~45 of 74
-    // because Choice Advantage decided 29 rooms didn't need housekeeping
-    // input today. We seed the missing ones as vacant + clean so every
-    // room from the property's inventory always renders.
-    //
-    //   • CSV mentioned the room → already handled above (insert OR update)
-    //   • Existing row in DB     → already handled above (update path,
-    //                              even if not in CSV — we don't touch it
-    //                              here so we don't blow away an in-progress
-    //                              clean or a manual override)
-    //   • In inventory, not in CSV, no DB row → seed as vacant clean
-    //
-    // upsert with onConflict='property_id,date,number' is doubly safe — if
-    // a parallel request created the row between our SELECT and our INSERT,
-    // the upsert silently no-ops instead of failing.
-    let phantomCreated = 0;
-    if (inventory.length > 0) {
-      const csvNumbers = new Set(
-        csvRooms.map((r) => r.number).filter((n): n is string => !!n),
-      );
-      const phantomRows: Array<Record<string, unknown>> = [];
-      for (const num of inventory) {
-        if (csvNumbers.has(num)) continue;          // CSV already covered it
-        if (existingByNumber.has(num)) continue;    // existing row — leave alone
-        phantomRows.push({
-          property_id: pid,
-          number: num,
-          date,
-          type: 'vacant',
-          status: 'clean',
-          priority: 'standard',
-        });
-      }
-      if (phantomRows.length > 0) {
-        const { error: phantomErr } = await supabaseAdmin
-          .from('rooms')
-          .upsert(phantomRows, { onConflict: 'property_id,date,number' });
-        if (phantomErr) throw phantomErr;
-        phantomCreated = phantomRows.length;
-        created += phantomCreated;
-      }
-    }
-
     const pulledAt = planRow.pulled_at ? String(planRow.pulled_at) : null;
 
     return ok({
       date,
       created,
       updated,
-      phantomCreated,
       total: created + updated,
       csvPulledAt: pulledAt,
     }, { requestId });

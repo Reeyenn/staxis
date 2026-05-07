@@ -1,0 +1,137 @@
+/**
+ * CUA Service entry point — poll, claim, run.
+ *
+ * Lifecycle:
+ *   1. Verify ANTHROPIC_API_KEY + Supabase service-role key at startup
+ *      (anthropic-client.ts and supabase.ts already throw if missing).
+ *   2. Verify Supabase reachability via verifyConnection().
+ *   3. Enter the poll loop:
+ *      - Every POLL_INTERVAL_MS, look for the oldest queued onboarding_job.
+ *      - Claim it (atomic update from 'queued' → 'running' with worker_id).
+ *      - Hand to runJob() which orchestrates mapping + extraction.
+ *      - On finish (success or failure), the job row reflects the outcome.
+ *   4. On SIGTERM (deploys), finish the in-flight job before exiting.
+ *
+ * Concurrency: one job at a time per machine. Scale by adding machines on
+ * Fly. We don't need SKIP LOCKED-style queueing yet — at our current
+ * volume the claim race is benign (two workers occasionally both see the
+ * same row, only one wins the UPDATE).
+ */
+
+import 'dotenv/config';
+import { supabase, verifyConnection } from './supabase.js';
+import { log, makeWorkerId } from './log.js';
+import { runJob } from './job-runner.js';
+
+const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS ?? '5000', 10);
+const WORKER_ID = makeWorkerId();
+
+// Graceful-shutdown latch. Set true on SIGTERM; the poll loop checks it
+// after each iteration. Mid-job, we let the current job finish so the
+// onboarding_jobs row doesn't get stuck in 'running' forever.
+let shuttingDown = false;
+let inFlightJobId: string | null = null;
+
+async function claimNextJob(): Promise<{ id: string } | null> {
+  // Atomic claim: find any 'queued' row, update to 'running' with our
+  // worker_id, return the row only if the update succeeded. If two
+  // workers race here, only one's UPDATE will affect the row.
+  const { data: candidate } = await supabase
+    .from('onboarding_jobs')
+    .select('id')
+    .eq('status', 'queued')
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (!candidate) return null;
+
+  const { data: claimed } = await supabase
+    .from('onboarding_jobs')
+    .update({
+      status: 'running',
+      worker_id: WORKER_ID,
+      started_at: new Date().toISOString(),
+      step: 'starting',
+      progress_pct: 5,
+    })
+    .eq('id', candidate.id)
+    .eq('status', 'queued') // double-check: only claim if still queued
+    .select('id')
+    .maybeSingle();
+
+  return claimed ? { id: claimed.id as string } : null;
+}
+
+async function pollLoop(): Promise<void> {
+  log.info('CUA worker started', { workerId: WORKER_ID, pollIntervalMs: POLL_INTERVAL_MS });
+
+  while (!shuttingDown) {
+    try {
+      const job = await claimNextJob();
+      if (job) {
+        inFlightJobId = job.id;
+        log.info('claimed job', { jobId: job.id, workerId: WORKER_ID });
+        try {
+          await runJob(job.id, WORKER_ID);
+        } catch (err) {
+          // runJob owns marking the job 'failed' on exception. This catch
+          // is the absolute backstop — if the job-runner itself crashed,
+          // we still want the worker process to keep polling.
+          log.error('runJob threw — should have been caught inside', {
+            jobId: job.id,
+            err: (err as Error).message,
+          });
+        }
+        inFlightJobId = null;
+      }
+    } catch (err) {
+      log.error('poll iteration failed', { err: (err as Error).message });
+    }
+
+    if (shuttingDown) break;
+    await sleep(POLL_INTERVAL_MS);
+  }
+
+  log.info('poll loop exited cleanly');
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function setupSignalHandlers(): void {
+  const handle = (sig: string) => () => {
+    log.info(`received ${sig} — finishing in-flight job before exit`, { inFlightJobId });
+    shuttingDown = true;
+    // If no job in flight, exit immediately. Otherwise the loop will
+    // exit naturally after the current job finishes.
+    if (!inFlightJobId) {
+      setTimeout(() => process.exit(0), 100);
+    } else {
+      // Hard-cap: don't let a stuck job keep us alive past 5 min on
+      // shutdown. Fly will kill us anyway after grace_period.
+      setTimeout(() => {
+        log.warn('grace period expired with job still running — exiting');
+        process.exit(0);
+      }, 5 * 60_000);
+    }
+  };
+  process.on('SIGTERM', handle('SIGTERM'));
+  process.on('SIGINT',  handle('SIGINT'));
+}
+
+async function main(): Promise<void> {
+  setupSignalHandlers();
+  const conn = await verifyConnection();
+  if (!conn.ok) {
+    log.error('supabase connection failed at startup', { err: conn.error });
+    process.exit(1);
+  }
+  await pollLoop();
+}
+
+main().catch((err) => {
+  log.error('main crashed', { err: (err as Error).message, stack: (err as Error).stack });
+  process.exit(1);
+});

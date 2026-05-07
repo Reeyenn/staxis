@@ -1,6 +1,4 @@
 """Postgres advisory lock helpers for per-property concurrency control."""
-import hashlib
-import zlib
 from contextlib import contextmanager
 from typing import Generator
 
@@ -9,25 +7,19 @@ from psycopg2 import sql
 
 
 def hash_property_layer(property_id: str, layer: str) -> int:
-    """Hash property_id + layer into a *deterministic* advisory lock ID.
-
-    Critical: Python's built-in hash() is randomized per process
-    (PYTHONHASHSEED), which means two ML service workers computing the lock
-    id for the same (property, layer) pair would get DIFFERENT integers —
-    so they'd lock on different rows and never actually serialize. We use
-    a stable hash (CRC32 of an MD5 digest) so every process agrees.
+    """Hash property_id + layer into advisory lock ID.
 
     Args:
         property_id: Property UUID
         layer: Layer name (demand, supply, optimizer)
 
     Returns:
-        Deterministic 31-bit positive lock ID
+        32-bit lock ID
     """
-    combined = f"{property_id}:{layer}".encode("utf-8")
-    # MD5 → 128-bit digest → CRC32 → 32-bit unsigned → mask to 31 bits positive.
-    digest = hashlib.md5(combined).digest()
-    return zlib.crc32(digest) & 0x7FFFFFFF
+    combined = f"{property_id}:{layer}"
+    # Use Python's hash and clamp to 32-bit signed int
+    h = hash(combined)
+    return h & 0x7FFFFFFF  # Keep positive 31-bit
 
 
 @contextmanager

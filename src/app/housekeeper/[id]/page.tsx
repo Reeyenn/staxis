@@ -4,11 +4,10 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import {
   subscribeToRoomsForStaff,
-  getStaffSelfPublic,
-  saveStaffLanguagePublic,
+  getStaffMember,
+  saveStaffLanguage,
   bucketStayoverDay,
 } from '@/lib/db';
-import { supabase } from '@/lib/supabase';
 import { useTodayStr } from '@/lib/use-today-str';
 import type { Room, RoomStatus } from '@/types';
 import { format } from 'date-fns';
@@ -95,64 +94,6 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   const [savingHelp, setSavingHelp] = useState<string | null>(null);
   const [resettingRoomId, setResettingRoomId] = useState<string | null>(null);
 
-  // ── Shift Start anchor ─────────────────────────────────────────────────
-  // 2026-05-07: Maria asked us to remove the per-room Start button — her
-  // housekeepers were skipping it, which meant every Done tap got recorded
-  // with started_at = completed_at, duration = 0, and the cleaning_events
-  // row was auto-discarded (under_3min). The Performance tab went blank
-  // on day 2.
-  //
-  // The fix is two-part:
-  //   1. Server-side derives started_at from the previous Done tap by
-  //      this housekeeper today (see /api/housekeeper/room-action).
-  //   2. For the FIRST room of the day, the housekeeper taps a single
-  //      "Start Shift" button at the top of this page. The timestamp is
-  //      kept in localStorage (so it survives refresh) and sent along
-  //      with each Done tap as `cleaningContext.shiftStartedAt`. Server
-  //      uses it as the anchor for room #1 only — subsequent rooms
-  //      anchor to the previous Done timestamp.
-  //
-  // localStorage key: `staxis:shift_start:${pid}:${staffId}:${YYYY-MM-DD}`.
-  // Per-day key so yesterday's anchor doesn't bleed into today.
-  const shiftStorageKey = pid && housekeeperId ? `staxis:shift_start:${pid}:${housekeeperId}:${today}` : null;
-  const [shiftStartedAt, setShiftStartedAt] = useState<string | null>(null);
-  const [shiftStarting, setShiftStarting] = useState(false);
-  useEffect(() => {
-    if (!shiftStorageKey) return;
-    try {
-      const stored = window.localStorage.getItem(shiftStorageKey);
-      if (!stored) {
-        setShiftStartedAt(null);
-        return;
-      }
-      // Defensive parse — if localStorage was tampered with or stores a
-      // value that's not a valid ISO timestamp, the banner below would
-      // crash the entire page on `format(new Date(...), ...)`. Validate
-      // before trusting.
-      const parsedMs = Date.parse(stored);
-      if (!Number.isFinite(parsedMs)) {
-        try { window.localStorage.removeItem(shiftStorageKey); } catch {}
-        setShiftStartedAt(null);
-        return;
-      }
-      setShiftStartedAt(stored);
-    } catch {
-      // private mode / quota — ignore, just won't persist across reload
-    }
-  }, [shiftStorageKey]);
-  const handleStartShift = useCallback(() => {
-    if (!shiftStorageKey || shiftStarting) return;
-    setShiftStarting(true);
-    try {
-      const stamp = new Date().toISOString();
-      try { window.localStorage.setItem(shiftStorageKey, stamp); } catch {}
-      setShiftStartedAt(stamp);
-    } finally {
-      // brief lockout to absorb double-taps
-      setTimeout(() => setShiftStarting(false), 600);
-    }
-  }, [shiftStorageKey, shiftStarting]);
-
   // ── Online/offline indicator ────────────────────────────────────────────
   // Hotels have notoriously patchy wifi — basement laundry rooms, dead
   // spots between floors, the back stairwell where the AP doesn't reach.
@@ -193,78 +134,17 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
     if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
   }, []);
 
-  // ── Magic-link consumption ─────────────────────────────────────────────
-  // SMS / Schedule-tab links carry an optional `?token=…` param minted by
-  // /api/staff-link (and the Send Shift Confirmations fan-out). On first
-  // mount we exchange that token for a real Supabase session via
-  // verifyOtp. After that, the supabase browser client has a JWT scoped
-  // to this staff member, RLS policies match, and postgres_changes
-  // payloads start arriving over realtime — meaning Start/Done taps
-  // reflect on screen instantly without leaning on the polling fallback.
-  //
-  // Failure is non-fatal: if the token is expired, already consumed, or
-  // missing entirely, the page still works through the service-role
-  // /api/housekeeper/* routes plus polling. Users see no broken UI; they
-  // just don't get the realtime upgrade.
-  //
-  // We strip the token from the URL after consuming it so a refresh
-  // doesn't try to re-verify (Supabase magic links are single-use, so
-  // the second call would 401 and look like an error in DevTools).
-  const [authReady, setAuthReady] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    const token = searchParams.get('token');
-    if (!token) { setAuthReady(true); return; }
-
-    (async () => {
-      try {
-        const { error } = await supabase.auth.verifyOtp({
-          token_hash: token,
-          type: 'magiclink',
-        });
-        if (error) {
-          console.warn('[housekeeper] magic-link consume failed (falling back to anon):', error.message);
-        }
-      } catch (err) {
-        console.warn('[housekeeper] magic-link consume threw:', err);
-      } finally {
-        if (cancelled) return;
-        // Strip ?token= from the URL regardless of success — a second
-        // verify call will fail anyway, and we don't want the token
-        // sitting in browser history.
-        try {
-          const url = new URL(window.location.href);
-          url.searchParams.delete('token');
-          window.history.replaceState({}, '', url.pathname + (url.search || ''));
-        } catch {
-          // ignore — non-DOM environments don't reach this code
-        }
-        setAuthReady(true);
-      }
-    })();
-
-    return () => { cancelled = true; };
-    // searchParams is intentionally read once on mount — token consumption
-    // is a one-shot. Don't make this re-fire on every URL change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   // Seed the page language from the staff row on mount.
   // The staff table has a `language` column that Maria sets via the Staff
   // modal (and that this page writes back to when the HK hits the lang
   // toggle). Legacy `staffPrefs/{id}` doc from the Firestore era is gone.
   useEffect(() => {
-    if (!housekeeperId || !pid || !authReady) return;
+    if (!housekeeperId || !pid) return;
     let cancelled = false;
 
     (async () => {
       try {
-        // getStaffSelfPublic routes through /api/housekeeper/me which uses
-        // service-role to bypass RLS. The previous getStaffMember() call
-        // went directly through the supabase browser client and silently
-        // returned null for unauthenticated housekeepers — so the page
-        // always defaulted to English regardless of what Maria had set.
-        const s = await getStaffSelfPublic(pid, housekeeperId);
+        const s = await getStaffMember(pid, housekeeperId);
         if (!cancelled && s && (s.language === 'es' || s.language === 'en')) {
           setLang(s.language);
         }
@@ -274,10 +154,10 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
     })();
 
     return () => { cancelled = true; };
-  }, [housekeeperId, pid, authReady]);
+  }, [housekeeperId, pid]);
 
   useEffect(() => {
-    if (!housekeeperId || !pid || !authReady) return;
+    if (!housekeeperId || !pid) return;
 
     // Subscribe to every room assigned to this HK (any date), then pick the
     // right date bucket to display. Previously we always filtered to
@@ -336,7 +216,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
     });
 
     return () => { unsub(); };
-  }, [housekeeperId, pid, today, authReady]);
+  }, [housekeeperId, pid, today]);
 
   // ── Re-entrancy guard ─────────────────────────────────────────────────────
   // Mobile users on slow connections double-tap buttons constantly. Without
@@ -363,60 +243,14 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
     [],
   );
 
-  // ── refetchRooms — trigger a fresh /api/housekeeper/rooms pull ─────────
+  // ── Start room (dirty → in_progress) ──────────────────────────────────────
   // 2026-04-28 fix: ALL room mutations from this page MUST go through the
   // server-side /api/housekeeper/room-action route. Direct
   // supabase.from('rooms').update() silently no-ops in production because
   // the housekeeper opens this URL with no auth session — RLS filters the
   // UPDATE to zero rows but Postgres returns 200 OK so the supabase JS
-  // client treats it as success. We were silently losing every Done /
-  // Reset / DND tap. The API route uses service-role to bypass RLS.
-  // Force a fresh rooms fetch after a successful action so the UI flips
-  // immediately instead of waiting up to 4s for the polling tick. Anon
-  // sessions don't get postgres_changes events, so without this manual
-  // refetch the room card visibly reverts ('Saving…' → back to 'Start')
-  // even though the database update succeeded — the user only saw the
-  // new state by manually refreshing the tab.
-  const refetchRooms = useCallback(async () => {
-    if (!pid || !housekeeperId) return;
-    try {
-      const res = await fetch(
-        `/api/housekeeper/rooms?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(housekeeperId)}`,
-      );
-      if (!res.ok) return;
-      const json = (await res.json().catch(() => null)) as
-        | { ok?: boolean; data?: RoomRow[] }
-        | null;
-      if (!json?.ok || !Array.isArray(json.data)) return;
-
-      // Same date-bucket selection logic as the subscribe callback.
-      const all = json.data;
-      const byDate = new Map<string, RoomRow[]>();
-      for (const r of all) {
-        if (!r.date) continue;
-        const list = byDate.get(r.date) ?? [];
-        list.push(r);
-        byDate.set(r.date, list);
-      }
-      let chosenDate = today;
-      if (byDate.has(today)) {
-        chosenDate = today;
-      } else {
-        const future = [...byDate.keys()].filter(d => d > today).sort();
-        if (future.length > 0) {
-          chosenDate = future[0];
-        } else {
-          const past = [...byDate.keys()].filter(d => d < today).sort().reverse();
-          if (past.length > 0) chosenDate = past[0];
-        }
-      }
-      setActiveDate(chosenDate);
-      setRooms(sortRooms(byDate.get(chosenDate) ?? []));
-    } catch (err) {
-      console.error('[housekeeper] manual refetch failed:', err);
-    }
-  }, [pid, housekeeperId, today]);
-
+  // client treats it as success. We were silently losing every Start /
+  // Done / Reset tap. The API route uses service-role to bypass RLS.
   const callRoomActionApi = async (
     room: RoomRow,
     action: 'start' | 'finish' | 'reset' | 'stop' | 'help',
@@ -443,58 +277,74 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
         }),
       });
       const j = await r.json().catch(() => ({}));
-      const ok = r.ok && j?.ok;
-      if (ok) {
-        // Kick off an immediate refetch so the card updates within a
-        // request round-trip instead of waiting for the next 4s poll.
-        // We don't await it — the action handler can return as soon as
-        // the mutation is confirmed, and the UI will catch up shortly.
-        refetchRooms();
-      }
-      return ok ? { ok: true } : { ok: false, error: j?.error || `http ${r.status}` };
+      return r.ok && j?.ok ? { ok: true } : { ok: false, error: j?.error || `http ${r.status}` };
     } catch (err) {
       return { ok: false, error: String(err) };
     }
   };
 
-  // 2026-05-07: handleStartRoom and handleStopRoom were removed when we
-  // collapsed the per-room flow to a single Done tap (Maria's request —
-  // her HKs were skipping per-room Start, which silently zero-duration'd
-  // every cleaning event). The 'start' and 'stop' API actions still exist
-  // on the server route for backward compat with any older client bundle
-  // that hasn't roll-deployed yet, but nothing in this page calls them.
+  const handleStartRoom = async (room: RoomRow) => {
+    if (!uid || !pid) return;
+    await guardRoomAction(room.id, async () => {
+      setSavingRoomId(room.id);
+      try {
+        const res = await callRoomActionApi(room, 'start');
+        if (!res.ok) {
+          console.error('[housekeeper] start room error:', res.error);
+          showActionError(lang === 'es'
+            ? 'No se pudo iniciar. Verifica tu conexión.'
+            : 'Couldn\u2019t start room. Check your connection.');
+        }
+      } finally {
+        setSavingRoomId(null);
+      }
+    });
+  };
 
-  // ── Finish room (dirty → clean, single tap) ───────────────────────────────
-  // Server-side route does the room update, the cleaning_events audit
-  // insert, AND a 90-second dedupe check (network-retry guard) in one
-  // shot. See callRoomActionApi() above for the RLS-bypass rationale.
+  // ── Stop room (in_progress → dirty, clear startedAt) ──────────────────────
+  const handleStopRoom = async (room: RoomRow) => {
+    if (!uid || !pid) return;
+    await guardRoomAction(room.id, async () => {
+      setSavingRoomId(room.id);
+      try {
+        const res = await callRoomActionApi(room, 'stop');
+        if (!res.ok) {
+          console.error('[housekeeper] stop room error:', res.error);
+          showActionError(lang === 'es'
+            ? 'No se pudo detener. Verifica tu conexión.'
+            : 'Couldn\u2019t stop room. Check your connection.');
+        }
+      } finally {
+        setSavingRoomId(null);
+      }
+    });
+  };
+
+  // ── Finish room (in_progress → clean) ─────────────────────────────────────
+  // Requires hold-to-confirm on the button - accidental taps are ignored.
+  // Server-side route does both the room update AND the cleaning_events
+  // audit insert in one shot. See callRoomActionApi() above for the
+  // RLS-bypass rationale.
   const handleFinishRoom = async (room: RoomRow) => {
-    if (!pid) return;
+    if (!uid || !pid) return;
     await guardRoomAction(room.id, async () => {
       setSavingRoomId(room.id);
       try {
         const completedAt = new Date();
+        // If Start was never tapped (or got wiped by a re-pull), we use
+        // completedAt for both timestamps. Duration = 0 → server-side
+        // classifier auto-discards it from analytics. Audit row still gets
+        // written so we have a record.
+        const startedAt = room.startedAt ?? completedAt;
         const isCleanable = room.type === 'checkout' || room.type === 'stayover';
-        // 2026-05-07: With per-room Start gone, room.startedAt is always
-        // null at this point — the client no longer has the data needed
-        // to compute a sensible started_at. The server derives the
-        // canonical value from prior cleanings + the shiftStartedAt
-        // anchor below; see deriveStartedAtPure in lib/cleaning-event-derivation.
-        // We still send startedAt = completedAt for wire-compat with
-        // any in-flight requests on older server versions, but the
-        // current server ignores it.
         const ctx = isCleanable ? {
           roomNumber: room.number,
           roomType: room.type as 'checkout' | 'stayover',
           stayoverDayBucket: bucketStayoverDay(room.stayoverDay, room.type),
           staffName: room.assignedName || 'Housekeeper',
           date: room.date ?? today,
-          startedAt: completedAt.toISOString(), // server-overridden
+          startedAt: startedAt instanceof Date ? startedAt.toISOString() : new Date(startedAt as unknown as string).toISOString(),
           completedAt: completedAt.toISOString(),
-          // Shift Start anchor for the first Done of the day. Server uses
-          // this only when there's no prior cleaning_event by this staff
-          // today — subsequent rooms anchor to the previous Done.
-          shiftStartedAt: shiftStartedAt ?? undefined,
         } : undefined;
         const res = await callRoomActionApi(room, 'finish', ctx);
         if (!res.ok) {
@@ -511,7 +361,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
 
   // ── Toggle DND on a room ────────────────────────────────────────────────────
   const handleToggleDnd = async (room: RoomRow) => {
-    if (!pid) return;
+    if (!uid || !pid) return;
     await guardRoomAction(room.id, async () => {
       setSavingDnd(room.id);
       try {
@@ -559,7 +409,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   // distinct "couldn't reach manager" state so they know to call instead.
   const handleNeedHelp = async (room: RoomRow) => {
     if (helpSent.has(room.id)) return; // already successfully sent for this room
-    if (!pid) return;
+    if (!uid || !pid) return;
     // Clear any prior failure indicator so the spinner shows during the retry.
     setHelpFailed(prev => {
       if (!prev.has(room.id)) return prev;
@@ -622,7 +472,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   // ── Report Issue ───────────────────────────────────────────────────────────
   const handleSubmitIssue = async () => {
     if (!issueRoomId || !issueNote.trim()) return;
-    if (!pid) return;
+    if (!uid || !pid) return;
     setSavingIssue(true);
     const room = rooms.find(r => r.id === issueRoomId);
     if (!room) {
@@ -659,13 +509,11 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   };
 
   // ── Reset room (clean/inspected → dirty, clear times) ─────────────────────
-  // The server-side route also discards the most recent non-discarded
-  // cleaning_event for this (HK, room, date) — the "oops, wrong room —
-  // undo" path. The 60-second wall-clock cutoff was removed 2026-05-07;
-  // Reset is now an explicit user action and respects whatever the user
-  // wants to undo regardless of timing.
+  // The server-side route also discards any cleaning_events row created
+  // by this HK for this room in the last 60s — the "oops, wrong room —
+  // undo" path. Resets >60s after Done are treated as legitimate.
   const handleResetRoom = async (room: RoomRow) => {
-    if (!pid) return;
+    if (!uid || !pid) return;
     setResettingRoomId(room.id);
     try {
       const res = await callRoomActionApi(room, 'reset');
@@ -847,13 +695,9 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
               // Persist to the staff row so Maria's staff modal stays in
               // sync with whatever this HK picked. Best-effort; silent on
               // failure since the UI already updated locally.
-              if (housekeeperId && pid) {
-                // Goes through /api/housekeeper/save-language (service-role)
-                // because the public page has no auth session. The previous
-                // direct-supabase write silently no-op'd on RLS for every
-                // unauthenticated HK — toggle worked locally, never persisted.
+              if (housekeeperId) {
                 try {
-                  await saveStaffLanguagePublic(pid, housekeeperId, next);
+                  await saveStaffLanguage(housekeeperId, next);
                 } catch (err) {
                   console.error('[housekeeper] lang persist failed:', err);
                 }
@@ -904,53 +748,6 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       {/* ── Room list ── */}
       <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
 
-        {/* ── Shift Start ──────────────────────────────────────────────────
-            One tap at the start of the day. The timestamp is the anchor for
-            the FIRST room's started_at — every subsequent room anchors to
-            the previous Done. See server's deriveStartedAt for the
-            derivation logic. localStorage-backed so it survives reload. */}
-        {total > 0 && !allDone && !shiftStartedAt && (
-          <button
-            onClick={handleStartShift}
-            disabled={shiftStarting}
-            style={{
-              width: '100%',
-              height: '64px',
-              border: 'none',
-              borderRadius: '14px',
-              background: 'var(--green, #006565)',
-              color: 'white',
-              fontSize: '18px',
-              fontWeight: 700,
-              cursor: shiftStarting ? 'not-allowed' : 'pointer',
-              opacity: shiftStarting ? 0.6 : 1,
-              letterSpacing: '0.02em',
-              WebkitTapHighlightColor: 'transparent',
-              touchAction: 'manipulation',
-              boxShadow: '0 2px 8px rgba(0,101,101,0.18)',
-              marginBottom: '4px',
-            }}
-          >
-            {shiftStarting
-              ? '...'
-              : (lang === 'es' ? 'Comenzar Turno' : 'Start Shift')}
-          </button>
-        )}
-        {shiftStartedAt && total > 0 && !allDone && (
-          <div style={{
-            padding: '10px 14px',
-            background: 'var(--green-dim, #DCFCE7)',
-            borderRadius: '10px',
-            fontSize: '13px',
-            fontWeight: 600,
-            color: 'var(--green, #006565)',
-            textAlign: 'center',
-            marginBottom: '4px',
-          }}>
-            {lang === 'es' ? 'Turno iniciado' : 'Shift started'} · {format(new Date(shiftStartedAt), 'h:mm a', lang === 'es' ? { locale: esLocale } : undefined)}
-          </div>
-        )}
-
         {allDone && (
           <div style={{
             textAlign: 'center', padding: '32px 24px', background: 'white',
@@ -998,7 +795,9 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
               isSavingHelp={savingHelp === room.id}
               helpAlreadySent={helpSent.has(room.id)}
               helpDeliveryFailed={helpFailed.has(room.id)}
+              onStart={() => handleStartRoom(room)}
               onFinish={() => handleFinishRoom(room)}
+              onStop={() => handleStopRoom(room)}
               onReset={() => handleResetRoom(room)}
               isResetting={resettingRoomId === room.id}
               onReportIssue={() => {
@@ -1112,7 +911,9 @@ function RoomCard({
   isSavingHelp,
   helpAlreadySent,
   helpDeliveryFailed,
+  onStart,
   onFinish,
+  onStop,
   onReset,
   isResetting,
   onReportIssue,
@@ -1131,7 +932,9 @@ function RoomCard({
    *  from helpAlreadySent so the UI can show a "tell someone in person"
    *  state instead of falsely claiming the alert was sent. */
   helpDeliveryFailed: boolean;
+  onStart: () => void;
   onFinish: () => void;
+  onStop: () => void;
   onReset: () => void;
   isResetting: boolean;
   onReportIssue: () => void;
@@ -1359,6 +1162,31 @@ function RoomCard({
               : (lang === 'es' ? 'Revertir' : 'Reset')}
           </button>
         </div>
+      ) : isInProgress ? (
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button
+            onClick={onStop}
+            disabled={isSaving}
+            style={{
+              width: '68px', height: '68px', flexShrink: 0,
+              border: '2px solid var(--border-light, #E5E7EB)',
+              borderRadius: '14px',
+              background: 'white',
+              color: 'var(--text-secondary)',
+              fontSize: '13px', fontWeight: 700,
+              cursor: isSaving ? 'not-allowed' : 'pointer',
+              opacity: isSaving ? 0.4 : 1,
+              WebkitTapHighlightColor: 'transparent',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              transition: 'all 150ms ease',
+            }}
+          >
+            {lang === 'es' ? 'Parar' : 'Stop'}
+          </button>
+          <div style={{ flex: 1 }}>
+            <CompleteButton lang={lang} isSaving={isSaving} onFinish={onFinish} />
+          </div>
+        </div>
       ) : room.isDnd ? (
         <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px',
@@ -1394,20 +1222,11 @@ function RoomCard({
           </button>
         </div>
       ) : (
-        // 2026-05-07: Maria asked us to remove per-room Start (her HKs
-        // skipped it, which silently zero-duration'd every cleaning event
-        // and emptied the Performance tab on day 2). The room's Action
-        // area now goes straight to "Done" — one tap, room marked clean,
-        // server-derived started_at anchored to the previous Done or the
-        // shift Start button at the top of the page.
-        <CompleteButton lang={lang} isSaving={isSaving} onFinish={onFinish} />
+        <StartButton lang={lang} isSaving={isSaving} onStart={onStart} />
       )}
 
-      {/* ── Need Help button — visible whenever room isn't done or DND ──
-          Used to be gated on isInProgress (per-room Start tapped). With
-          per-room Start removed, we expose Help for any cleanable room
-          that's still pending. Sends an SMS to the manager. */}
-      {!isDone && !room.isDnd && (
+      {/* ── Need Help button — visible when in progress ── */}
+      {isInProgress && (
         <button
           onClick={onNeedHelp}
           // Allow re-tapping after a delivery failure — maybe Twilio recovered.
@@ -1460,6 +1279,45 @@ function RoomCard({
         </button>
       )}
     </div>
+  );
+}
+
+/* ── Start Button - single tap, no protection needed ── */
+function StartButton({
+  lang,
+  isSaving,
+  onStart,
+}: {
+  lang: Language;
+  isSaving: boolean;
+  onStart: () => void;
+}) {
+  const [pressed, setPressed] = useState(false);
+
+  return (
+    <button
+      onClick={onStart}
+      disabled={isSaving}
+      onPointerDown={() => !isSaving && setPressed(true)}
+      onPointerUp={() => setPressed(false)}
+      onPointerLeave={() => setPressed(false)}
+      style={{
+        width: '100%', height: '68px', border: 'none', borderRadius: '14px',
+        background: isSaving ? 'var(--border)' : pressed ? 'var(--navy)' : 'var(--navy-light, #2563EB)',
+        color: isSaving ? 'var(--text-muted)' : 'white',
+        fontSize: '20px', fontWeight: 800,
+        cursor: isSaving ? 'not-allowed' : 'pointer',
+        letterSpacing: '-0.01em',
+        transform: pressed && !isSaving ? 'scale(0.97)' : 'scale(1)',
+        transition: 'background 100ms ease, transform 80ms ease',
+        WebkitTapHighlightColor: 'transparent',
+        boxShadow: pressed || isSaving ? 'none' : '0 4px 12px rgba(37,99,235,0.35)',
+      }}
+    >
+      {isSaving
+        ? t('savingDots', lang)
+        : (lang === 'es' ? '▶ Empezar' : '▶ ' + t('start', lang))}
+    </button>
   );
 }
 

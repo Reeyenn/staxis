@@ -1,0 +1,3 @@
+{
+  "/api/send-shift-confirmations/route": "app/api/send-shift-confirmations/route.js"
+}

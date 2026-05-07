@@ -37,16 +37,8 @@ export interface CleaningEvent {
 // Business-rule thresholds. Mirror the migration's CASE expressions so we
 // produce identical status values in TS-side inserts. If you change these,
 // re-run the migration to keep historical data consistent.
-//
-// Three-tier classification (Reeyen, 2026-05-01):
-//   < 3 min      → discarded (accidental tap, never a real clean)
-//   3–60 min     → recorded  (counts toward averages)
-//   60–90 min    → flagged   (Maria reviews — could be a tough clean)
-//   > 90 min     → discarded (forgot to tap Done — auto-remove rather than
-//                  bury Maria in pointless review work)
 export const CLEANING_DISCARD_UNDER_MIN = 3;
 export const CLEANING_FLAG_OVER_MIN = 60;
-export const CLEANING_DISCARD_OVER_MIN = 90;
 
 // Computes the bucketed S1/S2 cycle from the raw scraper-set stayover_day
 // (1, 2, 3, 4, …). Odd → 1 (S1 light), Even → 2 (S2 full). Returns null for
@@ -60,7 +52,6 @@ export function bucketStayoverDay(stayoverDay: number | null | undefined, roomTy
 // Pure function for status classification — easy to unit test.
 export function classifyCleaningEvent(durationMinutes: number): { status: CleaningEventStatus; flagReason: string | null } {
   if (durationMinutes < CLEANING_DISCARD_UNDER_MIN) return { status: 'discarded', flagReason: 'under_3min' };
-  if (durationMinutes > CLEANING_DISCARD_OVER_MIN) return { status: 'discarded', flagReason: 'over_90min' };
   if (durationMinutes > CLEANING_FLAG_OVER_MIN) return { status: 'flagged', flagReason: 'over_60min' };
   return { status: 'recorded', flagReason: null };
 }

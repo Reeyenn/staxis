@@ -38,7 +38,6 @@ import { getPublicAreasDueToday, calcPublicAreaMinutes, autoAssignRooms, getOver
 import { getDefaultPublicAreas } from '@/lib/defaults';
 import type { PublicArea } from '@/types';
 import { todayStr, errToString } from '@/lib/utils';
-import { supabase } from '@/lib/supabase';
 import { useTodayStr } from '@/lib/use-today-str';
 import type { Room, RoomStatus, RoomType, RoomPriority, StaffMember, DeepCleanRecord, DeepCleanConfig, ShiftConfirmation, ConfirmationStatus, WorkOrder } from '@/types';
 import { format, subDays } from 'date-fns';
@@ -63,7 +62,6 @@ import {
   PublicAreasModal, PA_FLOOR_VALUES, SLIDER_MAX,
 } from './_shared';
 import type { TabKey, HKLive, HKHistory, StaffFormData } from './_shared';
-import { DraftNumberInput } from '@/components/DraftNumberInput';
 
 function ScheduleTab() {
   const { user } = useAuth();
@@ -518,41 +516,11 @@ function ScheduleTab() {
   }, [crewOverride, eligiblePool, recommendedStaff, totalRooms, staff]);
 
   // Auto-assign: full assign on first load, then only assign unassigned rooms on crew changes
-  //
-  // 2026-05-07 BUG FIX (Maria's "rooms keep reshuffling" complaint):
-  // The previous version did `setAssignments({}); hasInitialAssign.current = false`
-  // whenever `selectedCrew` or `assignableRooms` were briefly empty (e.g. during a
-  // page reload while the staff query was still in flight). That single render
-  // un-armed the hydration guard, then on the very next render the auto-assign
-  // re-ran and silently overwrote whatever Maria had saved on the schedule
-  // board. The autosave 400ms later then mirrored the algorithm's choices into
-  // `rooms.assigned_to`, so the housekeepers' phone links showed reshuffled
-  // rooms instead of what Maria actually assigned.
-  //
-  // Two-part fix:
-  //   1. The empty-input guard now just bails out (no state wipe). A momentary
-  //      empty crew is a loading hiccup, not a signal to nuke saved work.
-  //   2. Auto-assign is now hard-gated on (a) hydration having settled for this
-  //      date and (b) NO saved schedule_assignments doc existing for this date.
-  //      If Maria has ever saved for this date, the algorithm cannot overwrite
-  //      her board — only her own drag-drops can change assignments from there.
   useEffect(() => {
-    // Bail out on bad/incomplete inputs WITHOUT wiping state. The previous
-    // `setAssignments({}); hasInitialAssign.current = false` line was the
-    // foot-gun that caused the reshuffle bug.
-    if (assignableRooms.length === 0 || selectedCrew.length === 0) return;
-
-    // Don't auto-assign until hydration has settled for the current date —
-    // otherwise we race the schedule_assignments doc load and risk
-    // overwriting Maria's saved work.
-    if (hydratedForDate.current !== shiftDate) return;
-
-    // If a saved schedule_assignments doc exists for this date, RESPECT IT.
-    // The algorithm only seeds initial state when there's nothing saved yet.
-    if (scheduleAssignmentsDoc) return;
+    if (assignableRooms.length === 0 || selectedCrew.length === 0) { setAssignments({}); hasInitialAssign.current = false; return; }
 
     if (!hasInitialAssign.current) {
-      // First time on a fresh date with no saved doc: seed from algorithm.
+      // First time: full auto-assign
       const fakeScheduled = selectedCrew.map(s => ({ ...s, scheduledToday: true }));
       const auto = autoAssignRooms(assignableRooms, fakeScheduled, {
         checkoutMinutes: coMins,
@@ -580,7 +548,7 @@ function ScheduleTab() {
     // shadow of soMins consulted only inside this branch and would not change
     // independently of soMins.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedCrew, assignableRooms, coMins, soMins, day1Mins, day2Mins, prepPerRoom, shiftLen, shiftDate, scheduleAssignmentsDoc]);
+  }, [selectedCrew, assignableRooms, coMins, soMins, day1Mins, day2Mins, prepPerRoom, shiftLen]);
 
   const toggleCrewMember = (memberId: string) => {
     userEditedCrew.current = true;
@@ -846,186 +814,130 @@ function ScheduleTab() {
       });
     }
 
-    // Floor-level metadata: total minutes of dirty work per floor.
+    // Floor-level metadata: total minutes of dirty work per floor. Used to
+    // (a) decide how many HKs a floor needs, (b) order floors biggest-first
+    // so the hardest floor claims HKs before smaller ones.
     const minsByFloor = new Map<string, number>();
     for (const [f, list] of roomsByFloor) {
       const total = list.reduce((s, r) => s + minsForRoom(r) + prepPerRoom, 0);
       minsByFloor.set(f, total);
     }
+    const sortedFloors = [...roomsByFloor.keys()].sort((a, b) => {
+      // Floors with preserved work come first (HKs already locked there need
+      // their remaining floor-mates pulled in first). Then biggest load.
+      const aLocked = [...hkFloor.values()].includes(a) ? 1 : 0;
+      const bLocked = [...hkFloor.values()].includes(b) ? 1 : 0;
+      if (aLocked !== bLocked) return bLocked - aLocked;
+      return (minsByFloor.get(b) ?? 0) - (minsByFloor.get(a) ?? 0);
+    });
 
-    // ── Step 4: dedicate-then-adjacency-bin-pack (2026-04-30 redesign) ──
+    // ── Step 4: assign each floor to HK(s), then split rooms contiguously ──
     //
-    // The previous algorithm processed floors largest-first and gave each
-    // its own HK, with leftovers redistributed by raw load. That worked
-    // when floors and HKs matched 1:1, but with 4 floors and 3 HKs the
-    // small floor (floor 1, ~140 min) ended up scattered: 4 rooms onto
-    // the floor-2 HK (adjacent ✓) and 2 rooms onto the floor-3 HK (NOT
-    // adjacent — Julia ended up walking floor 3 ↔ floor 1, two flights).
+    // Per floor:
+    //   1. Find HKs already locked to this floor (preserved rooms). They're in.
+    //   2. If their remaining capacity covers the floor, done — one HK per floor.
+    //   3. If not, pull in more HKs from the unassigned pool until covered.
+    //   4. Split the floor's sorted room list into contiguous chunks of
+    //      roughly equal minutes and assign each chunk to an HK.
     //
-    // New logic — two-phase:
-    //
-    //   PHASE A — Dedicate single-floor HKs.
-    //     Walk floors largest-first. A floor is "dedicate-able" if:
-    //       • its rooms fit in one shift, AND
-    //       • after reserving one HK to that floor, the remaining HKs can
-    //         still cover the remaining floors (slack-aware feasibility).
-    //     Each dedicated floor gets a fresh HK; that HK does ONLY that
-    //     floor. Stops as soon as the next-largest floor would steal too
-    //     much capacity from the rest.
-    //
-    //   PHASE B — Adjacency bin-pack the rest.
-    //     Walk remaining floors in ASCENDING numeric order, pouring rooms
-    //     onto remaining HKs in load-asc order. When an HK fills, advance
-    //     to the next. Because rooms come in ascending floor order, any
-    //     cross-floor work stays adjacent (floor N ↔ floor N+1) — never
-    //     a 2-floor skip.
-    //
-    // For Reeyen's typical Comfort Suites layout (3 HKs / 4 floors, total
-    // work ~96% of total cap) this produces:
-    //   • One HK on floor 4 alone (single-floor — no walking)
-    //   • One HK on floors 1 + most of floor 2 (1-floor walk)
-    //   • One HK on floor 2 spillover + floor 3 (1-floor walk)
-    // Compared to the old output where Julia had to skip a floor.
-    //
-    // Edge cases handled:
-    //   • Preserved/locked HKs (in-progress or pinned rooms) — Phase A
-    //     skips floors that have a locked HK; Phase B keeps that HK on
-    //     their floor.
-    //   • Floor that exceeds shiftLen by itself — never dedicate-able,
-    //     falls through to Phase B which will split it.
-    //   • Total work > total cap — Phase B leaves the overflow rooms
-    //     unassigned, surfaced via the existing toast.
-
+    // A chunk can't exceed shiftLen (hard cap). If rooms don't fit even
+    // after adding every HK, the leftovers stay unassigned — Maria sees
+    // them in the Unassigned bucket and can manually place them or add
+    // more crew.
     const hksByFloor = new Map<string, string[]>(); // floor -> ordered HK ids
-    const dedicatedFloors = new Set<string>();
-    const dedicatedHKs = new Set<string>();
 
-    // ── PHASE A ──
-    {
-      const candidateFloors = [...roomsByFloor.keys()].sort(
-        (a, b) => (minsByFloor.get(b) ?? 0) - (minsByFloor.get(a) ?? 0),
+    for (const f of sortedFloors) {
+      const rooms = roomsByFloor.get(f)!;
+      const totalMins = minsByFloor.get(f) ?? 0;
+
+      // (1) Pre-locked HKs for this floor (have preserved rooms here).
+      const lockedHKs = effectiveCrew.filter(s => hkFloor.get(s.id) === f);
+
+      // (2)+(3) Figure out total HKs needed. Start with locked, add from
+      // the unassigned pool until the floor's total mins is covered by
+      // remaining capacity.
+      const chosen: typeof effectiveCrew = [...lockedHKs];
+      const remainingCap = () => chosen.reduce(
+        (sum, s) => sum + Math.max(0, shiftLen - (loadByStaff.get(s.id) ?? 0)),
+        0,
       );
-
-      for (const f of candidateFloors) {
-        const fMins = minsByFloor.get(f) ?? 0;
-
-        // Skip floors with a preserved-locked HK — that HK is committed
-        // here regardless. We'll let Phase B finish their floor.
-        const lockedHere = effectiveCrew.find(s => hkFloor.get(s.id) === f);
-        if (lockedHere) continue;
-
-        // Doesn't fit one shift on its own → can't dedicate.
-        if (fMins > shiftLen) continue;
-
-        // Capacity-feasibility: after reserving one HK for this floor,
-        // can the remaining HKs cover the remaining floors?
-        const remainingMins = [...minsByFloor.entries()]
-          .filter(([ff]) => ff !== f && !dedicatedFloors.has(ff))
-          .reduce((s, [, m]) => s + m, 0);
-
-        const remainingHKs = effectiveCrew.filter(
-          s => !dedicatedHKs.has(s.id) && !hkFloor.has(s.id),
-        );
-        // -1 because we'd be reserving one of them for this floor.
-        const remainingCap = (remainingHKs.length - 1) * shiftLen;
-
-        if (remainingMins > remainingCap) continue; // can't afford to dedicate
-
-        // Pick the freshest HK (lowest current load) — usually 0.
-        const fresh = remainingHKs
-          .filter(s => !dedicatedHKs.has(s.id))
-          .sort((a, b) => (loadByStaff.get(a.id) ?? 0) - (loadByStaff.get(b.id) ?? 0))[0];
-        if (!fresh) break;
-
-        dedicatedFloors.add(f);
-        dedicatedHKs.add(fresh.id);
-        hkFloor.set(fresh.id, f);
-        hksByFloor.set(f, [fresh.id]);
-
-        const rooms = roomsByFloor.get(f)!;
-        for (const r of rooms) {
-          const mins = minsForRoom(r) + prepPerRoom;
-          if ((loadByStaff.get(fresh.id) ?? 0) + mins > shiftLen) continue;
-          next[r.id] = fresh.id;
-          loadByStaff.set(fresh.id, (loadByStaff.get(fresh.id) ?? 0) + mins);
-          const fmap = floorCountByStaff.get(fresh.id)!;
-          fmap.set(f, (fmap.get(f) ?? 0) + 1);
-        }
-      }
-    }
-
-    // ── PHASE B ──
-    {
-      // Floors not yet handled, in ASCENDING numeric order so an HK
-      // crossing a floor boundary always crosses to the adjacent next
-      // floor — never a skip.
-      const remainingFloors = [...roomsByFloor.keys()]
-        .filter(f => !dedicatedFloors.has(f))
-        .sort((a, b) => (parseInt(a) || 99) - (parseInt(b) || 99));
-
-      // HKs available for Phase B. Already-locked HKs (preserved on a
-      // specific floor by in-progress / pinned work) are placed at the
-      // FRONT of their floor's queue so they finish their own floor
-      // first; other HKs are sorted by current load.
-      const phaseBPool = effectiveCrew
-        .filter(s => !dedicatedHKs.has(s.id))
+      const unassignedPool = effectiveCrew
+        .filter(s => !hkFloor.has(s.id))
         .sort((a, b) => (loadByStaff.get(a.id) ?? 0) - (loadByStaff.get(b.id) ?? 0));
+      for (const hk of unassignedPool) {
+        if (remainingCap() >= totalMins) break;
+        chosen.push(hk);
+        hkFloor.set(hk.id, f);
+      }
+      // Degenerate case: more floors than HKs. Borrow the least-loaded
+      // already-assigned HK as a last resort rather than leaving a whole
+      // floor unassigned. Adjacent-floor preference (closer floor numbers
+      // = less walking) breaks ties so e.g. an HK on floor 3 picks up
+      // floor 4 before an HK on floor 1 does.
+      if (chosen.length === 0) {
+        const floorNum = parseInt(f) || 0;
+        const fallback = effectiveCrew
+          .filter(s => (loadByStaff.get(s.id) ?? 0) < shiftLen)
+          .sort((a, b) => {
+            const aFloor = hkFloor.get(a.id);
+            const bFloor = hkFloor.get(b.id);
+            const aDist = aFloor ? Math.abs((parseInt(aFloor) || 0) - floorNum) : 99;
+            const bDist = bFloor ? Math.abs((parseInt(bFloor) || 0) - floorNum) : 99;
+            if (aDist !== bDist) return aDist - bDist;
+            return (loadByStaff.get(a.id) ?? 0) - (loadByStaff.get(b.id) ?? 0);
+          });
+        if (fallback.length > 0) chosen.push(fallback[0]);
+      }
+      if (chosen.length === 0) continue; // still no HKs — rooms stay unassigned
 
-      // For each floor, build a chosen list: locked-here HKs first,
-      // then top up from phaseBPool.
-      const phaseBUsed = new Set<string>();
-      let poolIdx = 0;
+      // Make sure locked HKs also get the floor-lock registered (in case
+      // they weren't already — e.g. they had an in-progress room but we
+      // didn't see it in preserved seeding).
+      for (const s of lockedHKs) hkFloor.set(s.id, f);
+      hksByFloor.set(f, chosen.map(s => s.id));
 
-      for (const f of remainingFloors) {
-        const rooms = roomsByFloor.get(f)!;
-
-        const lockedHere = phaseBPool.filter(s => hkFloor.get(s.id) === f);
-        const chosen = [...lockedHere];
-        for (const s of lockedHere) phaseBUsed.add(s.id);
-
-        // Pour rooms onto chosen[0] until cap, then fall through to the
-        // pool to draft a fresh HK (or continue with the next chosen[i]
-        // if there are multiple locked HKs).
-        let chosenIdx = 0;
-        for (const r of rooms) {
-          const mins = minsForRoom(r) + prepPerRoom;
-
-          // Find an HK who can fit this room. Try chosen first.
-          while (
-            chosenIdx < chosen.length &&
-            (loadByStaff.get(chosen[chosenIdx].id) ?? 0) + mins > shiftLen
-          ) {
-            chosenIdx++;
-          }
-
-          // chosen exhausted → pull next from pool (skipping ones already
-          // used / dedicated / over cap).
-          while (chosenIdx >= chosen.length) {
-            // Find next pool HK with any capacity left.
-            while (
-              poolIdx < phaseBPool.length &&
-              (phaseBUsed.has(phaseBPool[poolIdx].id) ||
-                (loadByStaff.get(phaseBPool[poolIdx].id) ?? 0) + mins > shiftLen)
-            ) {
-              poolIdx++;
-            }
-            if (poolIdx >= phaseBPool.length) break; // no more HKs to draft
-            const fresh = phaseBPool[poolIdx];
-            chosen.push(fresh);
-            phaseBUsed.add(fresh.id);
-            hkFloor.set(fresh.id, f);
-          }
-
-          if (chosenIdx >= chosen.length) continue; // unassigned
-
-          const pick = chosen[chosenIdx];
-          next[r.id] = pick.id;
-          loadByStaff.set(pick.id, (loadByStaff.get(pick.id) ?? 0) + mins);
-          const fmap = floorCountByStaff.get(pick.id)!;
-          fmap.set(f, (fmap.get(f) ?? 0) + 1);
+      // (4) Split the sorted rooms into contiguous chunks. Target: equal
+      // minutes per HK, respecting each HK's remaining capacity. Use a
+      // simple "fill current HK to target, then advance" approach — keeps
+      // each HK's rooms contiguous in the room number order, which matches
+      // the physical walking path down the hallway.
+      const targetPerHK = chosen.length > 0 ? totalMins / chosen.length : totalMins;
+      let hkIdx = 0;
+      let chunkMins = 0;
+      for (const r of rooms) {
+        const mins = minsForRoom(r) + prepPerRoom;
+        // Advance to next HK if current chunk has reached its share AND
+        // there's another HK to advance to. This is what keeps the split
+        // contiguous and balanced.
+        if (
+          hkIdx + 1 < chosen.length &&
+          chunkMins >= targetPerHK
+        ) {
+          hkIdx++;
+          chunkMins = 0;
+        }
+        // Also advance if adding this room would exceed the current HK's
+        // hard cap — prevents cap violations when preserved rooms already
+        // ate into one HK's capacity unevenly.
+        if (
+          hkIdx + 1 < chosen.length &&
+          (loadByStaff.get(chosen[hkIdx].id) ?? 0) + mins > shiftLen
+        ) {
+          hkIdx++;
+          chunkMins = 0;
         }
 
-        hksByFloor.set(f, chosen.map(s => s.id));
+        const pick = chosen[hkIdx];
+        if ((loadByStaff.get(pick.id) ?? 0) + mins > shiftLen) {
+          // Can't fit even on the current HK and no more HKs to roll onto.
+          // Leave the room unassigned — Maria gets to decide.
+          continue;
+        }
+        next[r.id] = pick.id;
+        loadByStaff.set(pick.id, (loadByStaff.get(pick.id) ?? 0) + mins);
+        chunkMins += mins;
+        const fmap = floorCountByStaff.get(pick.id)!;
+        fmap.set(f, (fmap.get(f) ?? 0) + 1);
       }
     }
 
@@ -2320,67 +2232,37 @@ function ScheduleTab() {
                         >
                           {member.name}
                         </button>
-                        {/* HK link + copy — opens the same magic-link URL the SMS
-                            fan-out emits. Click "Link" to mint a fresh single-use
-                            token and open the housekeeper page; click "Copy" to
-                            mint and copy to clipboard. We always mint on demand
-                            (rather than caching) because magic-link tokens are
-                            single-use — the moment a HK clicks one, it's spent. */}
+                        {/* HK link + copy — fallback channel if SMS ever breaks.
+                            `hkUrl` points to /housekeeper/{staffId}?uid=…&pid=…,
+                            identical to what the SMS sends. uid/pid are required
+                            for the Need Help / Report Issue buttons on the HK page. */}
                         {(() => {
+                          const qs = `?uid=${encodeURIComponent(uid)}&pid=${encodeURIComponent(pid)}`;
+                          const hkUrl = typeof window !== 'undefined'
+                            ? `${window.location.origin}/housekeeper/${member.id}${qs}`
+                            : `/housekeeper/${member.id}${qs}`;
                           const isCopied = copiedFor === member.id;
-                          // Mint a magic-link URL via /api/staff-link. Falls back
-                          // to the legacy tokenless URL if the mint call fails so
-                          // Maria still has SOMETHING to share — degraded UX
-                          // (polling, no realtime) is strictly better than a
-                          // dead button.
-                          const mintLink = async (): Promise<string> => {
-                            try {
-                              const sessRes = await supabase.auth.getSession();
-                              const accessToken = sessRes.data.session?.access_token;
-                              const res = await fetch('/api/staff-link', {
-                                method: 'POST',
-                                headers: {
-                                  'Content-Type': 'application/json',
-                                  ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-                                },
-                                body: JSON.stringify({ staffId: member.id, pid }),
-                              });
-                              if (!res.ok) throw new Error(`http ${res.status}`);
-                              const json = await res.json();
-                              if (json?.ok && typeof json.data?.url === 'string') return json.data.url;
-                              throw new Error('mint returned no url');
-                            } catch (mintErr) {
-                              console.warn('[schedule-tab] magic-link mint failed, using tokenless URL:', mintErr);
-                              const qs = `?pid=${encodeURIComponent(pid)}`;
-                              return typeof window !== 'undefined'
-                                ? `${window.location.origin}/housekeeper/${member.id}${qs}`
-                                : `/housekeeper/${member.id}${qs}`;
-                            }
-                          };
                           return (
                             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  const url = await mintLink();
-                                  if (typeof window !== 'undefined') window.open(url, '_blank', 'noopener,noreferrer');
-                                }}
+                              <a
+                                href={hkUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
                                 title={lang === 'es' ? 'Abrir página del limpiador' : "Open housekeeper's page"}
                                 style={{
                                   display: 'inline-flex', alignItems: 'center', gap: '4px',
                                   padding: '4px 10px', borderRadius: '9999px',
                                   background: 'rgba(54,66,98,0.08)', color: '#364262',
                                   fontFamily: 'var(--font-sans)', fontSize: '11px', fontWeight: 600,
-                                  cursor: 'pointer',
+                                  textDecoration: 'none', cursor: 'pointer',
                                   border: '1px solid rgba(54,66,98,0.15)',
                                 }}
                               >
                                 <Link2 size={12} />
                                 {lang === 'es' ? 'Enlace' : 'Link'}
-                              </button>
+                              </a>
                               <button
                                 onClick={async () => {
-                                  const hkUrl = await mintLink();
                                   try {
                                     await navigator.clipboard.writeText(hkUrl);
                                   } catch {
@@ -2927,15 +2809,10 @@ function ScheduleTab() {
         </>
       )}
 
-      {/* Prediction Settings Modal — rendered via createPortal so it
-          centers on the actual viewport. Without the portal it inherits
-          the containing block of whatever ancestor up the tree has a
-          `transform`, `filter`, or `will-change` (which kills the
-          position:fixed → viewport contract). The Priority Settings
-          modal nearby uses the same pattern for the same reason. */}
-      {showPredictionSettings && typeof document !== 'undefined' && createPortal(
+      {/* Prediction Settings Modal */}
+      {showPredictionSettings && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 9998, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }} onClick={() => setShowPredictionSettings(false)}>
-          <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: '16px', padding: '28px', width: '100%', maxWidth: '400px', maxHeight: 'calc(100dvh - 40px)', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: '16px', padding: '28px', width: '100%', maxWidth: '400px', boxShadow: '0 20px 60px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', gap: '20px' }}>
             <div>
               <p style={{ fontWeight: 700, fontSize: '18px', color: '#1b1c19', margin: 0 }}>
                 {lang === 'es' ? 'Ajustes de Predicción' : 'Prediction Settings'}
@@ -2959,12 +2836,19 @@ function ScheduleTab() {
                   </span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
-                  <DraftNumberInput
-                    value={settingsForm.shiftMinutes / 60}
-                    onCommit={hrs => setSettingsForm(p => ({ ...p, shiftMinutes: Math.round(hrs * 60) }))}
+                  <input
+                    className="input"
+                    type="number"
                     min={1}
                     max={24}
                     step={0.25}
+                    value={(settingsForm.shiftMinutes / 60).toString()}
+                    onChange={e => {
+                      const hrs = Number(e.target.value);
+                      if (isNaN(hrs) || hrs <= 0) return;
+                      setSettingsForm(p => ({ ...p, shiftMinutes: Math.round(hrs * 60) }));
+                    }}
+                    style={{ width: '64px', textAlign: 'center', padding: '8px 4px' }}
                   />
                   <span style={{ fontSize: '13px', color: '#757684' }}>hr</span>
                 </div>
@@ -2997,11 +2881,7 @@ function ScheduleTab() {
                     <span style={{ fontSize: '11px', color: '#9a9baa', marginTop: '2px' }}>{sub}</span>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
-                    <DraftNumberInput
-                      value={settingsForm[key]}
-                      onCommit={n => setSettingsForm(p => ({ ...p, [key]: n }))}
-                      min={key === 'prepMinutesPerActivity' ? 0 : 1}
-                    />
+                    <input className="input" type="number" min={key === 'prepMinutesPerActivity' ? 0 : 1} value={settingsForm[key]} onChange={e => setSettingsForm(p => ({ ...p, [key]: Number(e.target.value) || 0 }))} style={{ width: '64px', textAlign: 'center', padding: '8px 4px' }} />
                     <span style={{ fontSize: '13px', color: '#757684' }}>min</span>
                   </div>
                 </div>
@@ -3021,8 +2901,7 @@ function ScheduleTab() {
               <span style={{ fontSize: '12px', color: '#757684' }}>{areasDueToday.length} {lang === 'es' ? 'para hoy' : 'due today'} · {publicAreaMinutes}m →</span>
             </button>
           </div>
-        </div>,
-        document.body,
+        </div>
       )}
 
       <PublicAreasModal show={showPublicAreas} onClose={() => setShowPublicAreas(false)} />

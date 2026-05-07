@@ -15,7 +15,6 @@ import {
   subscribeToDashboardNumbers,
   type DashboardNumbers,
 } from '@/lib/db';
-import { dashboardFreshness } from '@/lib/db/dashboard';
 import { getOverdueRooms, calcDndFreedMinutes, suggestDeepCleans } from '@/lib/calculations';
 import { useTodayStr } from '@/lib/use-today-str';
 import type { Room, DeepCleanConfig, DeepCleanRecord, WorkOrder, HandoffEntry } from '@/types';
@@ -152,41 +151,9 @@ export default function DashboardPage() {
   const pct        = total > 0 ? Math.round((clean / total) * 100) : 0;
 
   const totalPropertyRooms = activeProperty?.totalRooms || 0;
-  // 2026-05-07: Maria reported the dashboard showing 88% occupancy while
-  // Choice Advantage showed 84.93%. Two distinct bugs were stacked:
-  //   1. Numerator: we were summing checkouts + stayovers from the CSV
-  //      Housekeeping pull (which captures the morning state). Choice
-  //      Advantage's "% Occupancy" uses the live "In House" count from the
-  //      dashboard view — that count drops as guests check out during the
-  //      day. By 11am the two numbers drift by a few rooms.
-  //   2. Denominator: we used totalPropertyRooms (the full physical room
-  //      count). Choice Advantage uses *sellable* rooms — total minus
-  //      out-of-order rooms. With one OOO room blocked for maintenance
-  //      that shifted the % by ~1pt.
-  // Fix: numerator = scraped in-house count (CA's authoritative live
-  // figure, falls back to CSV-derived if scraper hasn't run yet),
-  // denominator = totalPropertyRooms - blockedRooms (rooms with
-  // blockedRoom=true on an open work order).
-  // Trust dashboardNums.inHouse only when the scraper data is fresh, finite,
-  // and non-negative. dashboardFreshness already handles the off-hours-Central
-  // window plus the 25-min staleness threshold and error states — using it
-  // here means a dead scraper or a corrupt write silently falls back to the
-  // CSV-derived sum (checkouts + stayovers) instead of pinning Maria to a
-  // hours-old number with no warning. Negative / NaN guards are a separate
-  // belt for corrupt-write scenarios where freshness alone wouldn't catch
-  // bad data (e.g., -5 with a current pulledAt).
-  const inHouseFresh =
-    dashboardFreshness(dashboardNums ?? null) === 'fresh' &&
-    typeof dashboardNums?.inHouse === 'number' &&
-    Number.isFinite(dashboardNums.inHouse) &&
-    dashboardNums.inHouse >= 0;
-  const inHouseRooms = inHouseFresh
-    ? (dashboardNums!.inHouse as number)
-    : (checkouts + stayovers);
-  const sellableRooms = Math.max(0, totalPropertyRooms - blockedRooms);
-  const occupancyPct = sellableRooms > 0 ? Math.round((inHouseRooms / sellableRooms) * 100) : 0;
-  const rentedRooms = inHouseRooms;
-  const revpar = sellableRooms > 0 && adr > 0 ? Math.round((adr * rentedRooms) / sellableRooms) : 0;
+  const rentedRooms = checkouts + stayovers;
+  const occupancyPct = totalPropertyRooms > 0 ? Math.round((rentedRooms / totalPropertyRooms) * 100) : 0;
+  const revpar = totalPropertyRooms > 0 && adr > 0 ? Math.round((adr * rentedRooms) / totalPropertyRooms) : 0;
 
 
   const overdueRooms = dcConfig && dcRecords.length > 0
