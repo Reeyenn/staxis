@@ -482,7 +482,7 @@ export default function MaintenancePage() {
   //      enough data and a high-confidence finding worth surfacing.
   //   2. Layer 1 cold-start alert (recurrence / cost / spatial / PM / age).
   //   3. Status-based fallback (existing copy).
-  const aiInsightText = useMemo(() => {
+  const aiInsightText = (() => {
     // ── Layer 2 ──────────────────────────────────────────────────────────
     const recommendations = repairVsReplace(equipment, orders);
     const replaceNow = recommendations.find(r => r.recommendation === 'replace_now');
@@ -562,7 +562,7 @@ export default function MaintenancePage() {
     return lang === 'es'
       ? `${openCount} orden${openCount !== 1 ? 'es' : ''} abierta${openCount !== 1 ? 's' : ''}. ${urgentCount > 0 ? `${urgentCount} urgente${urgentCount !== 1 ? 's' : ''}.` : 'Sin urgencias.'}`
       : `${openCount} open work order${openCount !== 1 ? 's' : ''} currently tracked. ${urgentCount > 0 ? `${urgentCount} urgent.` : 'No urgent items.'} Maintenance pipeline is manageable.`;
-  }, [orders, equipment, preventiveTasks, lang]);
+  })();
 
   // Occupancy / dirty rooms from property context (fallback to order-derived)
   const dirtyRoomCount = orders.filter(o => o.blockedRoom && o.status !== 'resolved').length;
@@ -2223,8 +2223,7 @@ function EquipmentTab({
             })}
           </section>
         ))}
-      {/* Suppress unused warnings — uid/pid passed for future inline actions */}
-      {void uid}{void pid}
+      {/* uid/pid passed for future inline actions (not yet wired to UI) */}
     </div>
   );
 }
