@@ -29,6 +29,7 @@ import type {
   Room,
   DailyLog,
   WorkOrder,
+  Equipment,
   PreventiveTask,
   InventoryItem,
   InventoryCount,
@@ -361,6 +362,9 @@ export function toWorkOrderRow(o: Partial<WorkOrder>): Record<string, unknown> {
     ca_work_order_number: o.caWorkOrderNumber,
     ca_from_date: o.caFromDate,
     ca_to_date: o.caToDate,
+    equipment_id: o.equipmentId,
+    repair_cost: o.repairCost,
+    parts_used: o.partsUsed,
     resolved_at: toISO(o.resolvedAt),
   });
 }
@@ -384,10 +388,56 @@ export function fromWorkOrderRow(r: Record<string, unknown>): WorkOrder {
     caWorkOrderNumber: (r.ca_work_order_number as string) ?? undefined,
     caFromDate: (r.ca_from_date as string) ?? undefined,
     caToDate: (r.ca_to_date as string) ?? undefined,
+    equipmentId: (r.equipment_id as string) ?? undefined,
+    repairCost: r.repair_cost == null ? undefined : Number(r.repair_cost),
+    partsUsed: (r.parts_used as string[]) ?? undefined,
     createdAt: toDate(r.created_at),
     updatedAt: toDate(r.updated_at),
     resolvedAt: toDate(r.resolved_at),
   };
+}
+
+// ─── Equipment ──────────────────────────────────────────────────────────────
+
+export function fromEquipmentRow(r: Record<string, unknown>): Equipment {
+  return {
+    id: String(r.id),
+    propertyId: String(r.property_id ?? ''),
+    name: String(r.name ?? ''),
+    category: (r.category as Equipment['category']) ?? 'other',
+    location: (r.location as string) ?? undefined,
+    modelNumber: (r.model_number as string) ?? undefined,
+    manufacturer: (r.manufacturer as string) ?? undefined,
+    installDate: toDate(r.install_date),
+    expectedLifetimeYears: r.expected_lifetime_years == null ? undefined : Number(r.expected_lifetime_years),
+    purchaseCost: r.purchase_cost == null ? undefined : Number(r.purchase_cost),
+    replacementCost: r.replacement_cost == null ? undefined : Number(r.replacement_cost),
+    status: (r.status as Equipment['status']) ?? 'operational',
+    pmIntervalDays: r.pm_interval_days == null ? undefined : Number(r.pm_interval_days),
+    lastPmAt: toDate(r.last_pm_at),
+    notes: (r.notes as string) ?? undefined,
+    createdAt: toDate(r.created_at) ?? new Date(),
+    updatedAt: toDate(r.updated_at) ?? new Date(),
+  };
+}
+
+export function toEquipmentRow(e: Partial<Equipment>): Record<string, unknown> {
+  return dropUndefined({
+    property_id: e.propertyId,
+    name: e.name,
+    category: e.category,
+    location: e.location,
+    model_number: e.modelNumber,
+    manufacturer: e.manufacturer,
+    install_date: e.installDate ? (e.installDate instanceof Date ? e.installDate.toISOString().slice(0, 10) : e.installDate) : undefined,
+    expected_lifetime_years: e.expectedLifetimeYears,
+    purchase_cost: e.purchaseCost,
+    replacement_cost: e.replacementCost,
+    status: e.status,
+    pm_interval_days: e.pmIntervalDays,
+    last_pm_at: toISO(e.lastPmAt),
+    notes: e.notes,
+  });
 }
 
 // ─── Preventive ─────────────────────────────────────────────────────────────
@@ -401,6 +451,7 @@ export function fromPreventiveRow(r: Record<string, unknown>): PreventiveTask {
     lastCompletedAt: toDate(r.last_completed_at),
     lastCompletedBy: (r.last_completed_by as string) ?? undefined,
     notes: (r.notes as string) ?? undefined,
+    equipmentId: (r.equipment_id as string) ?? undefined,
     createdAt: toDate(r.created_at),
   };
 }
@@ -413,6 +464,7 @@ export function toPreventiveRow(t: Partial<PreventiveTask>): Record<string, unkn
     last_completed_at: toISO(t.lastCompletedAt),
     last_completed_by: t.lastCompletedBy,
     notes: t.notes,
+    equipment_id: t.equipmentId,
   });
 }
 

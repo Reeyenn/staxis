@@ -13,16 +13,66 @@ import { timeAgo } from '@/lib/utils';
 import {
   subscribeToWorkOrders, addWorkOrder, updateWorkOrder, deleteWorkOrder,
   subscribeToLandscapingTasks, addLandscapingTask, updateLandscapingTask, deleteLandscapingTask,
+  subscribeToEquipment, addEquipment, updateEquipment, deleteEquipment,
+  subscribeToPreventiveTasks,
 } from '@/lib/db';
-import type { WorkOrder, WorkOrderSeverity, WorkOrderStatus, LandscapingTask, LandscapingSeason } from '@/types';
+import type { WorkOrder, WorkOrderSeverity, WorkOrderStatus, LandscapingTask, LandscapingSeason, Equipment, EquipmentCategory, EquipmentStatus, PreventiveTask } from '@/types';
+import {
+  generateColdStartAlerts, predictFailures, repairVsReplace,
+  type MaintenanceAlert,
+} from '@/lib/maintenance-ml';
+import Link from 'next/link';
 import {
   Plus, X, Trash2, Wrench, CheckCircle2, Check, Clock, ChevronDown, ChevronUp,
   TreePine, Leaf, Sun, Snowflake, Flower2,
+  Settings, AlertTriangle, BarChart3,
 } from 'lucide-react';
 
 // ─── Tab config ──────────────────────────────────────────────────────────────
 
-type TabKey = 'workOrders' | 'preventive' | 'landscaping';
+type TabKey = 'workOrders' | 'preventive' | 'equipment' | 'landscaping';
+
+// Default equipment seed — first time the equipment tab loads with zero
+// rows, we drop these in so the user has a starting point. They edit
+// locations/manufacturers/dates per their property.
+const EQUIPMENT_SEED: Omit<Equipment, 'id' | 'propertyId' | 'createdAt' | 'updatedAt'>[] = [
+  { name: 'Boiler / Water Heater',  category: 'plumbing',  status: 'operational', expectedLifetimeYears: 12, pmIntervalDays: 180 },
+  { name: 'Front Desk HVAC',         category: 'hvac',      status: 'operational', expectedLifetimeYears: 15, pmIntervalDays: 90 },
+  { name: 'Lobby HVAC',              category: 'hvac',      status: 'operational', expectedLifetimeYears: 15, pmIntervalDays: 90 },
+  { name: 'Elevator',                category: 'elevator',  status: 'operational', expectedLifetimeYears: 25, pmIntervalDays: 30 },
+  { name: 'Pool Pump',               category: 'pool',      status: 'operational', expectedLifetimeYears: 8,  pmIntervalDays: 90 },
+  { name: 'Pool Heater',             category: 'pool',      status: 'operational', expectedLifetimeYears: 10, pmIntervalDays: 180 },
+  { name: 'Ice Machine',             category: 'appliance', status: 'operational', expectedLifetimeYears: 7,  pmIntervalDays: 90 },
+  { name: 'Industrial Washer',       category: 'laundry',   status: 'operational', expectedLifetimeYears: 10, pmIntervalDays: 90 },
+  { name: 'Industrial Dryer',        category: 'laundry',   status: 'operational', expectedLifetimeYears: 10, pmIntervalDays: 90 },
+  { name: 'Breakfast Coffee Machine', category: 'kitchen',  status: 'operational', expectedLifetimeYears: 5,  pmIntervalDays: 60 },
+  { name: 'Refrigerator (Breakfast)', category: 'kitchen',  status: 'operational', expectedLifetimeYears: 10, pmIntervalDays: 180 },
+  { name: 'Backup Generator',        category: 'electrical', status: 'operational', expectedLifetimeYears: 20, pmIntervalDays: 90 },
+];
+
+const EQUIPMENT_CATEGORY_LABEL = (cat: EquipmentCategory, lang: 'en' | 'es'): string => {
+  const map: Record<EquipmentCategory, [string, string]> = {
+    hvac:       ['HVAC', 'HVAC'],
+    plumbing:   ['Plumbing', 'Plomería'],
+    electrical: ['Electrical', 'Eléctrico'],
+    appliance:  ['Appliance', 'Electrodoméstico'],
+    structural: ['Structural', 'Estructural'],
+    elevator:   ['Elevator', 'Ascensor'],
+    pool:       ['Pool', 'Piscina'],
+    laundry:    ['Laundry', 'Lavandería'],
+    kitchen:    ['Kitchen', 'Cocina'],
+    other:      ['Other', 'Otro'],
+  };
+  return map[cat][lang === 'es' ? 1 : 0];
+};
+
+const EQUIPMENT_STATUS_STYLE: Record<EquipmentStatus, { bg: string; color: string; labelEn: string; labelEs: string }> = {
+  operational:    { bg: 'rgba(0,101,101,0.10)', color: '#006565', labelEn: 'Operational',    labelEs: 'Operativo' },
+  degraded:       { bg: 'rgba(201,138,20,0.10)', color: '#c98a14', labelEn: 'Degraded',       labelEs: 'Deteriorado' },
+  failed:         { bg: 'rgba(186,26,26,0.10)',  color: '#ba1a1a', labelEn: 'Failed',         labelEs: 'Fallado' },
+  replaced:       { bg: 'rgba(54,66,98,0.10)',   color: '#364262', labelEn: 'Replaced',       labelEs: 'Reemplazado' },
+  decommissioned: { bg: 'rgba(117,118,132,0.10)', color: '#757684', labelEn: 'Decommissioned', labelEs: 'Retirado' },
+};
 
 // ─── Filter config ───────────────────────────────────────────────────────────
 
@@ -149,6 +199,13 @@ export default function MaintenancePage() {
 
   const lsSeededRef = useRef(false);
 
+  // Equipment registry
+  const [equipment, setEquipment] = useState<Equipment[]>([]);
+  const [preventiveTasks, setPreventiveTasks] = useState<PreventiveTask[]>([]);
+  const [showEquipmentModal, setShowEquipmentModal] = useState(false);
+  const [editingEquipment, setEditingEquipment] = useState<Equipment | null>(null);
+  const equipmentSeededRef = useRef(false);
+
   // ─── Auth guard ──────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -175,6 +232,28 @@ export default function MaintenancePage() {
         });
       }
     });
+  }, [user, activePropertyId]);
+
+  // Equipment subscription — seeds the default fleet on first load.
+  useEffect(() => {
+    if (!user || !activePropertyId) return;
+    return subscribeToEquipment(user.uid, activePropertyId, (incoming) => {
+      setEquipment(incoming);
+      if (incoming.length === 0 && !equipmentSeededRef.current) {
+        equipmentSeededRef.current = true;
+        EQUIPMENT_SEED.forEach(d => {
+          addEquipment(user.uid, activePropertyId, {
+            ...d, propertyId: activePropertyId,
+          }).catch(err => console.error('[equipment] seed failed:', err));
+        });
+      }
+    });
+  }, [user, activePropertyId]);
+
+  // Preventive tasks — used by the ML utility's PM-overdue rule.
+  useEffect(() => {
+    if (!user || !activePropertyId) return;
+    return subscribeToPreventiveTasks(user.uid, activePropertyId, setPreventiveTasks);
   }, [user, activePropertyId]);
 
   // Material Symbols font is loaded globally via globals.css
@@ -398,26 +477,92 @@ export default function MaintenancePage() {
 
 
   // ─── AI Insight computation ─────────────────────────────────────────────
-  const aiInsightText = (() => {
+  // Three tiers, in priority order:
+  //   1. Layer 2 prediction (Weibull + repair-vs-replace) when there's
+  //      enough data and a high-confidence finding worth surfacing.
+  //   2. Layer 1 cold-start alert (recurrence / cost / spatial / PM / age).
+  //   3. Status-based fallback (existing copy).
+  const aiInsightText = useMemo(() => {
+    // ── Layer 2 ──────────────────────────────────────────────────────────
+    const recommendations = repairVsReplace(equipment, orders);
+    const replaceNow = recommendations.find(r => r.recommendation === 'replace_now');
+    if (replaceNow) {
+      const eq = equipment.find(e => e.id === replaceNow.equipmentId);
+      if (eq) {
+        return lang === 'es'
+          ? `${eq.name} ha costado ${formatShortDollars(replaceNow.cumulativeRepairCost)} en reparaciones (vs ${formatShortDollars(replaceNow.replacementCost)} de reemplazo). Recomendación: reemplazar ahora — ${replaceNow.reasoning.toLowerCase()}`
+          : `${eq.name} has cost ${formatShortDollars(replaceNow.cumulativeRepairCost)} in repairs (vs ${formatShortDollars(replaceNow.replacementCost)} to replace). Recommend replacing now — ${replaceNow.reasoning.toLowerCase()}`;
+      }
+    }
+    const planReplace = recommendations.find(r => r.recommendation === 'plan_replacement');
+    if (planReplace) {
+      const eq = equipment.find(e => e.id === planReplace.equipmentId);
+      if (eq) {
+        return lang === 'es'
+          ? `${eq.name} se acerca al punto de reemplazo. Reparaciones acumuladas: ${formatShortDollars(planReplace.cumulativeRepairCost)} (${Math.round(planReplace.cumulativeRepairCost / planReplace.replacementCost * 100)}% del costo de reemplazo). Considere reemplazar en su próxima ventana de baja ocupación.`
+          : `${eq.name} is approaching replacement territory. Cumulative repairs: ${formatShortDollars(planReplace.cumulativeRepairCost)} (${Math.round(planReplace.cumulativeRepairCost / planReplace.replacementCost * 100)}% of replacement cost). Consider scheduling replacement during your next low-occupancy window.`;
+      }
+    }
+
+    const failurePreds = predictFailures(equipment, orders);
+    const highRisk = failurePreds
+      .filter(p => p.confidenceLevel !== 'low' && p.probabilityOfFailure30d > 0.5)
+      .sort((a, b) => b.probabilityOfFailure30d - a.probabilityOfFailure30d)[0];
+    if (highRisk) {
+      const eq = equipment.find(e => e.id === highRisk.equipmentId);
+      if (eq) {
+        const pct = Math.round(highRisk.probabilityOfFailure30d * 100);
+        return lang === 'es'
+          ? `${eq.name} tiene ${pct}% probabilidad de fallar en los próximos 30 días según patrones históricos. Programar mantenimiento preventivo proactivo.`
+          : `${eq.name} has a ${pct}% chance of failing in the next 30 days based on historical patterns. Schedule proactive PM.`;
+      }
+    }
+
+    // ── Layer 1 ──────────────────────────────────────────────────────────
+    const alerts = generateColdStartAlerts(equipment, orders, preventiveTasks);
+    const critical = alerts.find(a => a.severity === 'critical');
+    if (critical) {
+      return lang === 'es'
+        ? `${critical.message}. ${critical.recommendation}`
+        : `${critical.message}. ${critical.recommendation}`;
+    }
+    const warning = alerts.find(a => a.severity === 'warning');
+    if (warning) {
+      return lang === 'es'
+        ? `${warning.message}. ${warning.recommendation}`
+        : `${warning.message}. ${warning.recommendation}`;
+    }
+
+    // ── Layer 0: status fallback (existing copy) ─────────────────────────
     const openCount = orders.filter(o => o.status !== 'resolved').length;
     const urgentCount = orders.filter(o => o.severity === 'urgent' && o.status !== 'resolved').length;
     const resolvedCount = orders.filter(o => o.status === 'resolved').length;
     const blockedCount = orders.filter(o => o.blockedRoom && o.status !== 'resolved').length;
 
     if (urgentCount >= 2) {
-      return `${urgentCount} urgent work orders require immediate attention. ${blockedCount > 0 ? `${blockedCount} room${blockedCount > 1 ? 's' : ''} blocked from rental until resolved.` : 'Recommend prioritizing dispatch for these units.'}`;
+      return lang === 'es'
+        ? `${urgentCount} órdenes urgentes requieren atención inmediata. ${blockedCount > 0 ? `${blockedCount} habitación${blockedCount > 1 ? 'es' : ''} bloqueada hasta resolver.` : 'Priorice el despacho.'}`
+        : `${urgentCount} urgent work orders require immediate attention. ${blockedCount > 0 ? `${blockedCount} room${blockedCount > 1 ? 's' : ''} blocked from rental until resolved.` : 'Recommend prioritizing dispatch for these units.'}`;
     }
     if (openCount > 5) {
-      return `Work order volume is higher than typical. ${openCount} open orders across the property. ${urgentCount > 0 ? `${urgentCount} marked urgent.` : 'No urgent items currently.'} Consider scheduling additional maintenance staff.`;
+      return lang === 'es'
+        ? `Volumen de órdenes mayor que lo típico. ${openCount} órdenes abiertas. Considere agregar personal de mantenimiento.`
+        : `Work order volume is higher than typical. ${openCount} open orders across the property. ${urgentCount > 0 ? `${urgentCount} marked urgent.` : 'No urgent items currently.'} Consider scheduling additional maintenance staff.`;
     }
     if (resolvedCount > 0 && openCount <= 3) {
-      return `Operations running smoothly — ${resolvedCount} order${resolvedCount > 1 ? 's' : ''} resolved with only ${openCount} remaining open. Team efficiency is strong.`;
+      return lang === 'es'
+        ? `Operaciones funcionando bien — ${resolvedCount} resuelta${resolvedCount > 1 ? 's' : ''} con solo ${openCount} pendiente${openCount !== 1 ? 's' : ''}.`
+        : `Operations running smoothly — ${resolvedCount} order${resolvedCount > 1 ? 's' : ''} resolved with only ${openCount} remaining open. Team efficiency is strong.`;
     }
     if (openCount === 0) {
-      return 'All work orders resolved. No outstanding maintenance issues. Property is in excellent operational condition.';
+      return lang === 'es'
+        ? 'Todas las órdenes resueltas. Sin problemas de mantenimiento pendientes.'
+        : 'All work orders resolved. No outstanding maintenance issues. Property is in excellent operational condition.';
     }
-    return `${openCount} open work order${openCount !== 1 ? 's' : ''} currently tracked. ${urgentCount > 0 ? `${urgentCount} urgent.` : 'No urgent items.'} Maintenance pipeline is manageable.`;
-  })();
+    return lang === 'es'
+      ? `${openCount} orden${openCount !== 1 ? 'es' : ''} abierta${openCount !== 1 ? 's' : ''}. ${urgentCount > 0 ? `${urgentCount} urgente${urgentCount !== 1 ? 's' : ''}.` : 'Sin urgencias.'}`
+      : `${openCount} open work order${openCount !== 1 ? 's' : ''} currently tracked. ${urgentCount > 0 ? `${urgentCount} urgent.` : 'No urgent items.'} Maintenance pipeline is manageable.`;
+  }, [orders, equipment, preventiveTasks, lang]);
 
   // Occupancy / dirty rooms from property context (fallback to order-derived)
   const dirtyRoomCount = orders.filter(o => o.blockedRoom && o.status !== 'resolved').length;
@@ -448,11 +593,13 @@ export default function MaintenancePage() {
 
       <div style={{ maxWidth: '768px', margin: '0 auto', padding: '16px 24px 160px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
 
-        {/* ── Tabs ── */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '24px', marginBottom: '4px' }}>
+        {/* ── Tabs + Analytics link ── */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
           {([
             { key: 'workOrders' as TabKey, label: t('workOrders', lang) },
             { key: 'preventive' as TabKey, label: t('preventive', lang) },
+            { key: 'equipment' as TabKey, label: lang === 'es' ? 'Equipos' : 'Equipment' },
             { key: 'landscaping' as TabKey, label: t('landscaping', lang) },
           ]).map(tab => (
             <button
@@ -473,6 +620,19 @@ export default function MaintenancePage() {
               {tab.label}
             </button>
           ))}
+        </div>
+        <Link
+          href="/maintenance/analytics"
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: '6px',
+            padding: '6px 12px', borderRadius: '9999px', border: '1px solid #c5c5d4',
+            background: 'transparent', color: '#364262', textDecoration: 'none',
+            fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+          }}
+        >
+          <BarChart3 size={13} />
+          {lang === 'es' ? 'Analíticas' : 'Analytics'}
+        </Link>
         </div>
 
         {/* ── Tab content ──
@@ -672,6 +832,17 @@ export default function MaintenancePage() {
           <div key="preventive" className="animate-in stagger-1">
             <InspectionsView />
           </div>
+        ) : activeTab === 'equipment' ? (
+          /* ── Equipment Registry Tab ── */
+          <EquipmentTab
+            equipment={equipment}
+            workOrders={orders}
+            uid={user!.uid}
+            pid={activePropertyId!}
+            lang={lang}
+            onEdit={(e) => { setEditingEquipment(e); setShowEquipmentModal(true); }}
+            onAdd={() => { setEditingEquipment(null); setShowEquipmentModal(true); }}
+          />
         ) : (
           /* ── Landscaping Tab — Stitch Concierge Layout ── */
           <div key="landscaping" className="animate-in stagger-1" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -1574,6 +1745,18 @@ export default function MaintenancePage() {
           {toast}
         </div>
       )}
+
+      {/* Equipment edit modal */}
+      {showEquipmentModal && user && activePropertyId && (
+        <EquipmentEditModal
+          item={editingEquipment}
+          uid={user.uid}
+          pid={activePropertyId}
+          lang={lang}
+          onClose={() => { setShowEquipmentModal(false); setEditingEquipment(null); }}
+          onSaved={(_msg) => { setShowEquipmentModal(false); setEditingEquipment(null); }}
+        />
+      )}
     </AppLayout>
   );
 }
@@ -1849,4 +2032,422 @@ function getLsDaysUntilDue(task: LandscapingTask, now: number): number {
   if (!completed) return -task.frequencyDays;
   const daysSince = Math.floor((now - completed.getTime()) / (1000 * 60 * 60 * 24));
   return task.frequencyDays - daysSince;
+}
+
+// ─── Format helper used in AI insight ───────────────────────────────────────
+function formatShortDollars(n: number): string {
+  if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(1)}k`;
+  return `$${n.toFixed(0)}`;
+}
+
+// ─── Equipment Tab ──────────────────────────────────────────────────────────
+function EquipmentTab({
+  equipment, workOrders, uid, pid, lang, onEdit, onAdd,
+}: {
+  equipment: Equipment[];
+  workOrders: WorkOrder[];
+  uid: string;
+  pid: string;
+  lang: 'en' | 'es';
+  onEdit: (e: Equipment) => void;
+  onAdd: () => void;
+}) {
+  // Cold-start alerts for the banner at the top of this tab.
+  const alerts = useMemo(
+    () => generateColdStartAlerts(equipment, workOrders, []),
+    [equipment, workOrders],
+  );
+  const criticalCount = alerts.filter(a => a.severity === 'critical').length;
+  const warningCount = alerts.filter(a => a.severity === 'warning').length;
+
+  // Group equipment by category for visual organization.
+  const grouped = useMemo(() => {
+    const m = new Map<EquipmentCategory, Equipment[]>();
+    for (const e of equipment) {
+      const list = m.get(e.category) ?? [];
+      list.push(e);
+      m.set(e.category, list);
+    }
+    return m;
+  }, [equipment]);
+
+  // Per-equipment health score (0-100). Lower = worse.
+  const healthOf = useCallback((eq: Equipment): number => {
+    let score = 100;
+    if (eq.installDate && eq.expectedLifetimeYears) {
+      const ageYears = (Date.now() - eq.installDate.getTime()) / (1000 * 60 * 60 * 24 * 365);
+      const ratio = ageYears / eq.expectedLifetimeYears;
+      score -= Math.min(40, ratio * 40); // up to -40 from age
+    }
+    const recent = workOrders.filter(o =>
+      o.equipmentId === eq.id && o.createdAt &&
+      Date.now() - o.createdAt.getTime() < 90 * 24 * 60 * 60 * 1000,
+    );
+    score -= Math.min(40, recent.length * 10); // up to -40 from recurrences
+    if (eq.status === 'failed') score -= 30;
+    if (eq.status === 'degraded') score -= 15;
+    return Math.max(0, Math.round(score));
+  }, [workOrders]);
+
+  return (
+    <div className="animate-in stagger-1" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+      {/* Alerts banner */}
+      {(criticalCount + warningCount) > 0 && (
+        <div style={{
+          background: criticalCount > 0 ? 'rgba(186,26,26,0.06)' : 'rgba(201,138,20,0.06)',
+          border: criticalCount > 0 ? '1px solid rgba(186,26,26,0.18)' : '1px solid rgba(201,138,20,0.18)',
+          borderRadius: '12px', padding: '12px 14px',
+          display: 'flex', alignItems: 'center', gap: '10px',
+        }}>
+          <AlertTriangle size={16} color={criticalCount > 0 ? '#ba1a1a' : '#c98a14'} />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 700, color: '#1b1c19' }}>
+              {lang === 'es'
+                ? `${criticalCount + warningCount} alerta${criticalCount + warningCount === 1 ? '' : 's'} de equipos`
+                : `${criticalCount + warningCount} equipment alert${criticalCount + warningCount === 1 ? '' : 's'}`}
+            </div>
+            <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684' }}>
+              {alerts.slice(0, 2).map(a => a.message).join(' · ')}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Header + Add button */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <h2 style={{ fontFamily: "'Inter', sans-serif", fontSize: '15px', fontWeight: 700, color: '#1b1c19', margin: 0 }}>
+          {lang === 'es' ? 'Registro de Equipos' : 'Equipment Registry'}
+          <span style={{ marginLeft: '8px', fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', color: '#757684', fontWeight: 500 }}>
+            {equipment.length}
+          </span>
+        </h2>
+        <button
+          onClick={onAdd}
+          style={{
+            background: '#364262', color: '#fff', border: 'none',
+            padding: '8px 14px', borderRadius: '9999px',
+            fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+            cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
+          }}
+        >
+          <Plus size={13} />
+          {lang === 'es' ? 'Agregar' : 'Add'}
+        </button>
+      </div>
+
+      {/* Empty state */}
+      {equipment.length === 0 && (
+        <div style={{
+          padding: '32px 12px', textAlign: 'center', borderRadius: '14px',
+          background: 'rgba(0,0,0,0.02)', border: '1px dashed #c5c5d4',
+        }}>
+          <Settings size={20} color="#757684" style={{ margin: '0 auto 6px' }} />
+          <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#757684' }}>
+            {lang === 'es' ? 'Sin equipos registrados' : 'No equipment registered yet'}
+          </p>
+        </div>
+      )}
+
+      {/* Per-category lists */}
+      {Array.from(grouped.entries())
+        .sort(([a], [b]) => EQUIPMENT_CATEGORY_LABEL(a, lang).localeCompare(EQUIPMENT_CATEGORY_LABEL(b, lang)))
+        .map(([cat, items]) => (
+          <section key={cat} style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div style={{
+              fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 700,
+              color: '#454652', textTransform: 'uppercase', letterSpacing: '0.06em',
+              padding: '4px 2px',
+            }}>
+              {EQUIPMENT_CATEGORY_LABEL(cat, lang)} <span style={{ color: '#757684', fontWeight: 500 }}>· {items.length}</span>
+            </div>
+            {items.sort((a, b) => a.name.localeCompare(b.name)).map(eq => {
+              const status = EQUIPMENT_STATUS_STYLE[eq.status];
+              const ageYears = eq.installDate
+                ? ((Date.now() - eq.installDate.getTime()) / (1000 * 60 * 60 * 24 * 365)).toFixed(1)
+                : null;
+              const health = healthOf(eq);
+              const healthColor = health >= 70 ? '#006565' : health >= 40 ? '#c98a14' : '#ba1a1a';
+              return (
+                <div
+                  key={eq.id}
+                  onClick={() => onEdit(eq)}
+                  style={{
+                    background: '#fff', borderRadius: '12px', padding: '10px 12px',
+                    border: '1px solid rgba(78,90,122,0.06)', cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', gap: '12px',
+                  }}
+                >
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+                      <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 600, color: '#1b1c19' }}>
+                        {eq.name}
+                      </span>
+                      {eq.location && (
+                        <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684' }}>
+                          {eq.location}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '3px' }}>
+                      <span style={{
+                        fontFamily: "'Inter', sans-serif", fontSize: '10px', fontWeight: 600,
+                        background: status.bg, color: status.color,
+                        padding: '2px 7px', borderRadius: '6px',
+                        textTransform: 'uppercase', letterSpacing: '0.04em',
+                      }}>
+                        {lang === 'es' ? status.labelEs : status.labelEn}
+                      </span>
+                      {ageYears != null && (
+                        <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '10px', color: '#757684' }}>
+                          {ageYears}y
+                        </span>
+                      )}
+                      {eq.replacementCost != null && (
+                        <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '10px', color: '#757684' }}>
+                          {formatShortDollars(eq.replacementCost)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  {/* Health bar */}
+                  <div style={{ width: '60px', textAlign: 'right' }}>
+                    <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', fontWeight: 700, color: healthColor }}>
+                      {health}%
+                    </div>
+                    <div style={{ width: '60px', height: '3px', background: '#f0eee9', borderRadius: '9999px', marginTop: '2px', overflow: 'hidden' }}>
+                      <div style={{ width: `${health}%`, height: '100%', background: healthColor }} />
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </section>
+        ))}
+      {/* Suppress unused warnings — uid/pid passed for future inline actions */}
+      {void uid}{void pid}
+    </div>
+  );
+}
+
+// ─── Equipment Edit Modal ───────────────────────────────────────────────────
+function EquipmentEditModal({
+  item, uid, pid, lang, onClose, onSaved,
+}: {
+  item: Equipment | null;     // null = creating
+  uid: string;
+  pid: string;
+  lang: 'en' | 'es';
+  onClose: () => void;
+  onSaved: (msg: string) => void;
+}) {
+  const [name, setName] = useState(item?.name ?? '');
+  const [category, setCategory] = useState<EquipmentCategory>(item?.category ?? 'hvac');
+  const [location, setLocation] = useState(item?.location ?? '');
+  const [manufacturer, setManufacturer] = useState(item?.manufacturer ?? '');
+  const [modelNumber, setModelNumber] = useState(item?.modelNumber ?? '');
+  const [installDate, setInstallDate] = useState(
+    item?.installDate ? item.installDate.toISOString().slice(0, 10) : '',
+  );
+  const [expectedLifetime, setExpectedLifetime] = useState(item?.expectedLifetimeYears != null ? String(item.expectedLifetimeYears) : '');
+  const [purchaseCost, setPurchaseCost] = useState(item?.purchaseCost != null ? String(item.purchaseCost) : '');
+  const [replacementCost, setReplacementCost] = useState(item?.replacementCost != null ? String(item.replacementCost) : '');
+  const [pmInterval, setPmInterval] = useState(item?.pmIntervalDays != null ? String(item.pmIntervalDays) : '');
+  const [status, setStatus] = useState<EquipmentStatus>(item?.status ?? 'operational');
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    if (!name.trim()) return;
+    setSaving(true);
+    try {
+      const patch: Partial<Equipment> = {
+        name: name.trim(), category, status,
+        location: location.trim() || undefined,
+        manufacturer: manufacturer.trim() || undefined,
+        modelNumber: modelNumber.trim() || undefined,
+        installDate: installDate ? new Date(installDate) : null,
+        expectedLifetimeYears: expectedLifetime ? parseFloat(expectedLifetime) : undefined,
+        purchaseCost: purchaseCost ? parseFloat(purchaseCost) : undefined,
+        replacementCost: replacementCost ? parseFloat(replacementCost) : undefined,
+        pmIntervalDays: pmInterval ? parseInt(pmInterval) : undefined,
+      };
+      if (item) {
+        await updateEquipment(uid, pid, item.id, patch);
+        onSaved(lang === 'es' ? 'Equipo actualizado ✓' : 'Equipment updated ✓');
+      } else {
+        await addEquipment(uid, pid, { ...patch, propertyId: pid } as Omit<Equipment, 'id' | 'createdAt' | 'updatedAt'>);
+        onSaved(lang === 'es' ? 'Equipo agregado ✓' : 'Equipment added ✓');
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!item) return;
+    if (!confirm(lang === 'es' ? `¿Eliminar "${item.name}"?` : `Delete "${item.name}"?`)) return;
+    setSaving(true);
+    try {
+      await deleteEquipment(uid, pid, item.id);
+      onSaved(lang === 'es' ? 'Equipo eliminado ✓' : 'Equipment deleted ✓');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '10px 12px', borderRadius: '12px',
+    border: '1px solid #c5c5d4', background: '#fff',
+    fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#1b1c19',
+    outline: 'none',
+  };
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 60,
+        background: 'rgba(27,28,25,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
+      }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{
+        background: '#fbf9f4', borderRadius: '20px', width: '100%', maxWidth: '520px',
+        maxHeight: '90vh', overflowY: 'auto', padding: '20px 22px',
+        display: 'flex', flexDirection: 'column', gap: '12px',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <h2 style={{ fontFamily: "'Inter', sans-serif", fontSize: '17px', fontWeight: 700, color: '#1b1c19', margin: 0 }}>
+            {item
+              ? (lang === 'es' ? 'Editar Equipo' : 'Edit Equipment')
+              : (lang === 'es' ? 'Agregar Equipo' : 'Add Equipment')}
+          </h2>
+          <button onClick={onClose} style={{ background: '#eae8e3', border: 'none', cursor: 'pointer', padding: '6px', borderRadius: '50%' }}>
+            <X size={14} color="#454652" />
+          </button>
+        </div>
+
+        <div>
+          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+            {lang === 'es' ? 'Nombre *' : 'Name *'}
+          </label>
+          <input value={name} onChange={e => setName(e.target.value)} style={inputStyle} />
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+          <div>
+            <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+              {lang === 'es' ? 'Categoría' : 'Category'}
+            </label>
+            <select value={category} onChange={e => setCategory(e.target.value as EquipmentCategory)} style={inputStyle}>
+              {(['hvac','plumbing','electrical','appliance','structural','elevator','pool','laundry','kitchen','other'] as EquipmentCategory[]).map(c => (
+                <option key={c} value={c}>{EQUIPMENT_CATEGORY_LABEL(c, lang)}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+              {lang === 'es' ? 'Estado' : 'Status'}
+            </label>
+            <select value={status} onChange={e => setStatus(e.target.value as EquipmentStatus)} style={inputStyle}>
+              {(['operational','degraded','failed','replaced','decommissioned'] as EquipmentStatus[]).map(s => (
+                <option key={s} value={s}>{lang === 'es' ? EQUIPMENT_STATUS_STYLE[s].labelEs : EQUIPMENT_STATUS_STYLE[s].labelEn}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+            {lang === 'es' ? 'Ubicación' : 'Location'}
+          </label>
+          <input value={location} onChange={e => setLocation(e.target.value)} placeholder={lang === 'es' ? 'p.ej. Sala 204, Lavandería' : 'e.g. Room 204, Laundry Room'} style={inputStyle} />
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+          <div>
+            <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+              {lang === 'es' ? 'Fabricante' : 'Manufacturer'}
+            </label>
+            <input value={manufacturer} onChange={e => setManufacturer(e.target.value)} style={inputStyle} />
+          </div>
+          <div>
+            <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+              {lang === 'es' ? '# Modelo' : 'Model #'}
+            </label>
+            <input value={modelNumber} onChange={e => setModelNumber(e.target.value)} style={inputStyle} />
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px' }}>
+          <div>
+            <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+              {lang === 'es' ? 'Instalado' : 'Installed'}
+            </label>
+            <input type="date" value={installDate} onChange={e => setInstallDate(e.target.value)} style={inputStyle} />
+          </div>
+          <div>
+            <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+              {lang === 'es' ? 'Vida (años)' : 'Life (yrs)'}
+            </label>
+            <input type="number" step="0.5" min="0" value={expectedLifetime} onChange={e => setExpectedLifetime(e.target.value)} style={inputStyle} />
+          </div>
+          <div>
+            <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+              {lang === 'es' ? 'PM (días)' : 'PM (days)'}
+            </label>
+            <input type="number" min="0" value={pmInterval} onChange={e => setPmInterval(e.target.value)} style={inputStyle} />
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+          <div>
+            <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+              {lang === 'es' ? 'Costo de Compra' : 'Purchase Cost'}
+            </label>
+            <input type="number" step="0.01" min="0" value={purchaseCost} onChange={e => setPurchaseCost(e.target.value)} style={inputStyle} />
+          </div>
+          <div>
+            <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+              {lang === 'es' ? 'Costo de Reemplazo' : 'Replacement Cost'}
+            </label>
+            <input type="number" step="0.01" min="0" value={replacementCost} onChange={e => setReplacementCost(e.target.value)} style={inputStyle} />
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+          {item && (
+            <button
+              onClick={handleDelete}
+              disabled={saving}
+              style={{
+                padding: '12px 16px', borderRadius: '9999px',
+                background: '#fff', border: '1px solid #ffdad6', color: '#ba1a1a',
+                fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 600,
+                cursor: saving ? 'wait' : 'pointer',
+              }}
+            >
+              <Trash2 size={13} style={{ marginRight: '4px', verticalAlign: '-2px' }} />
+              {lang === 'es' ? 'Eliminar' : 'Delete'}
+            </button>
+          )}
+          <button
+            onClick={handleSave}
+            disabled={saving || !name.trim()}
+            style={{
+              flex: 1, padding: '12px', borderRadius: '9999px',
+              background: name.trim() ? '#364262' : '#eae8e3',
+              color: name.trim() ? '#fff' : '#757684',
+              border: 'none', cursor: name.trim() && !saving ? 'pointer' : 'not-allowed',
+              fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 600,
+            }}
+          >
+            {saving
+              ? (lang === 'es' ? 'Guardando...' : 'Saving...')
+              : (lang === 'es' ? 'Guardar' : 'Save')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }

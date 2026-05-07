@@ -364,9 +364,42 @@ export interface WorkOrder {
   caWorkOrderNumber?: string; // CA's stable work order number, used to dedup ca_ooo docs
   caFromDate?: string;        // CA's "fromDate" string (e.g. "4/20/2026") for context
   caToDate?: string;          // CA's "toDate" string
+  // ── Asset linkage + cost (added 2026-05-08, migration 0030) ─────────────
+  equipmentId?: string;       // optional link to the equipment asset that broke
+  repairCost?: number;        // dollars spent fixing this issue
+  partsUsed?: string[];       // free-text list of parts/supplies consumed
   createdAt: Date | null;
   updatedAt: Date | null;
   resolvedAt?: Date | null;
+}
+
+// ─── Equipment / Asset Registry ────────────────────────────────────────────
+
+export type EquipmentCategory =
+  | 'hvac' | 'plumbing' | 'electrical' | 'appliance' | 'structural'
+  | 'elevator' | 'pool' | 'laundry' | 'kitchen' | 'other';
+
+export type EquipmentStatus =
+  | 'operational' | 'degraded' | 'failed' | 'replaced' | 'decommissioned';
+
+export interface Equipment {
+  id: string;
+  propertyId: string;
+  name: string;
+  category: EquipmentCategory;
+  location?: string;
+  modelNumber?: string;
+  manufacturer?: string;
+  installDate?: Date | null;
+  expectedLifetimeYears?: number;
+  purchaseCost?: number;
+  replacementCost?: number;
+  status: EquipmentStatus;
+  pmIntervalDays?: number;
+  lastPmAt?: Date | null;
+  notes?: string;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 // ─── Preventive Maintenance ────────────────────────────────────────────────
@@ -379,6 +412,7 @@ export interface PreventiveTask {
   lastCompletedAt: Date | null; // null = never done
   lastCompletedBy?: string;     // name of who did it
   notes?: string;
+  equipmentId?: string;         // optional link to the equipment asset (added migration 0030)
   createdAt: Date | null;
 }
 
