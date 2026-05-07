@@ -8,14 +8,21 @@ import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import {
   subscribeToInventory, addInventoryItem, updateInventoryItem, deleteInventoryItem,
-  addInventoryCountBatch, addInventoryOrder, listInventoryCounts,
+  addInventoryCountBatch, addInventoryOrder, listInventoryCounts, listInventoryOrders,
 } from '@/lib/db';
 import { fetchOccupancyBundle, computeOccupancyForItem, calculateEstimatedStock, type OccupancyBundle } from '@/lib/inventory-estimate';
-import type { InventoryItem, InventoryCategory, InventoryCount } from '@/types';
+import {
+  fetchDailyAverages, predictReorders, predictionByItem,
+  type DailyAverages, type PredictionResult,
+} from '@/lib/inventory-predictions';
+import { supabase } from '@/lib/supabase';
+import type { InventoryItem, InventoryCategory, InventoryCount, InventoryOrder } from '@/types';
 import {
   Plus, Package, ClipboardCheck, AlertTriangle, Check, Info, Settings,
   TrendingDown, DollarSign, Truck, Clock, ChevronDown, ChevronRight,
+  ShoppingCart, FileText, BarChart3, Printer, Copy,
 } from 'lucide-react';
+import Link from 'next/link';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -92,10 +99,13 @@ export default function InventoryPage() {
 
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [occupancyBundle, setOccupancyBundle] = useState<OccupancyBundle | null>(null);
+  const [dailyAverages, setDailyAverages] = useState<DailyAverages | null>(null);
   const [counting, setCounting] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showBulkRates, setShowBulkRates] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showReorderList, setShowReorderList] = useState(false);
+  const [showReport, setShowReport] = useState(false);
   const [editItem, setEditItem] = useState<InventoryItem | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [reconciliation, setReconciliation] = useState<ReconciliationData | null>(null);
@@ -177,6 +187,17 @@ export default function InventoryPage() {
       .catch(err => console.error('[inventory] occupancy fetch failed:', err));
   }, [activePropertyId, items]);
 
+  // Fetch daily averages for prediction engine — last 14 days, independent of
+  // when items were counted. Used by the Concierge Insight, Smart Reorder
+  // List, and Ownership Report. Fire-and-forget; UI degrades to "unknown"
+  // urgency until the request lands.
+  useEffect(() => {
+    if (!activePropertyId) return;
+    fetchDailyAverages(activePropertyId, 14)
+      .then(setDailyAverages)
+      .catch(err => console.error('[inventory] daily averages fetch failed:', err));
+  }, [activePropertyId]);
+
   // Per-item estimates — each item's window starts at its own last_counted_at.
   const estimates = useMemo(() => {
     const map = new Map<string, ReturnType<typeof calculateEstimatedStock>>();
@@ -193,6 +214,17 @@ export default function InventoryPage() {
     const est = estimates.get(item.id);
     return est?.hasEstimate ? est.estimated : item.currentStock;
   }, [estimates]);
+
+  // Predictions — one per item, keyed by id. Pure derivation from the items
+  // array + daily averages + per-item effective stock.
+  const predictions = useMemo<PredictionResult[]>(() => {
+    if (!dailyAverages) return [];
+    const stockMap = new Map<string, number>();
+    items.forEach(i => stockMap.set(i.id, effectiveStock(i)));
+    return predictReorders(items, dailyAverages, stockMap);
+  }, [items, dailyAverages, effectiveStock]);
+
+  const predictionMap = useMemo(() => predictionByItem(predictions), [predictions]);
 
   // ─── Hero stats ─────────────────────────────────────────────────────────
   const stockHealthPct = useMemo(() => {
@@ -223,7 +255,52 @@ export default function InventoryPage() {
     return new Date(Math.max(...timestamps));
   }, [items]);
 
+  // Concierge Insight — predictive when daily averages are available, falls
+  // back to the status-based summary when there's not enough data yet.
   const aiInsight = useMemo(() => {
+    // Helper: find the item by id and look up its name.
+    const itemNameById = (id: string) => items.find(i => i.id === id)?.name ?? '';
+
+    // ── Predictive path: requires real averages with ≥7 days of data ─────
+    if (dailyAverages && dailyAverages.daysOfData >= 7 && predictions.length > 0) {
+      const nowItems = predictions
+        .filter(p => p.urgency === 'now')
+        .sort((a, b) => (a.daysUntilOut ?? 0) - (b.daysUntilOut ?? 0));
+      const soonItems = predictions
+        .filter(p => p.urgency === 'soon')
+        .sort((a, b) => (a.daysUntilOut ?? 0) - (b.daysUntilOut ?? 0));
+      const okItems = predictions
+        .filter(p => p.urgency === 'ok')
+        .sort((a, b) => (a.daysUntilOut ?? 0) - (b.daysUntilOut ?? 0));
+
+      if (nowItems.length > 0) {
+        const worst = nowItems[0];
+        const days = Math.max(0, Math.round(worst.daysUntilOut ?? 0));
+        const name = itemNameById(worst.itemId);
+        return lang === 'es'
+          ? `${name} debe reordenarse hoy. Al ritmo actual, se acabará en ${days} día${days === 1 ? '' : 's'}.`
+          : `${name} needs to be reordered today. At current usage, you'll be out in ${days} day${days === 1 ? '' : 's'}.`;
+      }
+      if (soonItems.length > 0) {
+        const worst = soonItems[0];
+        const days = Math.max(0, Math.round(worst.daysUntilOut ?? 0));
+        const name = itemNameById(worst.itemId);
+        return lang === 'es'
+          ? `${soonItems.length} artículo${soonItems.length === 1 ? '' : 's'} necesita${soonItems.length === 1 ? '' : 'n'} reorden esta semana. ${name} se acaba en ${days} día${days === 1 ? '' : 's'}.`
+          : `${soonItems.length} item${soonItems.length === 1 ? '' : 's'} need${soonItems.length === 1 ? 's' : ''} reordering this week. ${name} runs out in ${days} day${days === 1 ? '' : 's'}.`;
+      }
+      if (okItems.length > 0) {
+        const next = okItems[0];
+        const days = Math.max(0, Math.round(next.daysUntilOut ?? 0));
+        const name = itemNameById(next.itemId);
+        return lang === 'es'
+          ? `Todos los niveles saludables. Próximo reorden en ${days} día${days === 1 ? '' : 's'} (${name}).`
+          : `All inventory levels healthy. Next reorder needed in ${days} day${days === 1 ? '' : 's'} (${name}).`;
+      }
+      // Fall through to status-based when nothing has usage rates configured.
+    }
+
+    // ── Fallback: status-based (no usage rates or <7 days of data) ───────
     const criticalItems = items.filter(i => stockStatus(effectiveStock(i), i.parLevel, i.reorderAt) === 'out');
     const lowItemsList = items.filter(i => stockStatus(effectiveStock(i), i.parLevel, i.reorderAt) === 'low');
     if (criticalItems.length > 0) {
@@ -242,7 +319,7 @@ export default function InventoryPage() {
     return lang === 'es'
       ? 'Todos los niveles de inventario están saludables. No se requieren acciones inmediatas.'
       : 'All inventory levels are healthy. No immediate actions required.';
-  }, [items, lang, effectiveStock]);
+  }, [items, lang, effectiveStock, dailyAverages, predictions]);
 
   const hkItems = useMemo(() => items.filter(i => i.category === 'housekeeping').sort((a, b) => a.name.localeCompare(b.name)), [items]);
   const maintItems = useMemo(() => items.filter(i => i.category === 'maintenance').sort((a, b) => a.name.localeCompare(b.name)), [items]);
@@ -484,6 +561,43 @@ export default function InventoryPage() {
                 <Clock size={13} />
                 {lang === 'es' ? 'Historial' : 'History'}
               </button>
+              <button
+                onClick={() => setShowReorderList(true)}
+                style={{
+                  background: 'transparent', color: '#364262', border: '1px solid #c5c5d4',
+                  padding: '8px 16px', borderRadius: '9999px',
+                  fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
+                }}
+              >
+                <ShoppingCart size={13} />
+                {lang === 'es' ? 'Lista de Pedidos' : 'Reorder List'}
+              </button>
+              <button
+                onClick={() => setShowReport(true)}
+                style={{
+                  background: 'transparent', color: '#364262', border: '1px solid #c5c5d4',
+                  padding: '8px 16px', borderRadius: '9999px',
+                  fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
+                }}
+              >
+                <FileText size={13} />
+                {lang === 'es' ? 'Reporte' : 'Report'}
+              </button>
+              <Link
+                href="/inventory/analytics"
+                style={{
+                  background: 'transparent', color: '#364262', border: '1px solid #c5c5d4',
+                  padding: '8px 16px', borderRadius: '9999px',
+                  fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
+                  textDecoration: 'none',
+                }}
+              >
+                <BarChart3 size={13} />
+                {lang === 'es' ? 'Analíticas' : 'Analytics'}
+              </Link>
             </div>
           </div>
         </header>
@@ -698,6 +812,40 @@ export default function InventoryPage() {
           pid={activePropertyId}
           lang={lang}
           onClose={() => setShowHistory(false)}
+        />
+      )}
+
+      {/* Smart reorder list */}
+      {showReorderList && (
+        <ReorderListModal
+          items={items}
+          predictions={predictionMap}
+          effectiveStockOf={effectiveStock}
+          dailyAverages={dailyAverages}
+          uid={user.uid}
+          pid={activePropertyId}
+          lang={lang}
+          onClose={() => setShowReorderList(false)}
+          onLogged={(itemName) => {
+            setShowReorderList(false);
+            showToast(lang === 'es' ? `Pedido registrado: ${itemName}` : `Order logged: ${itemName}`);
+          }}
+          showToast={showToast}
+        />
+      )}
+
+      {/* Ownership report */}
+      {showReport && (
+        <OwnershipReportModal
+          items={items}
+          predictions={predictionMap}
+          effectiveStockOf={effectiveStock}
+          totalInventoryValue={totalInventoryValue}
+          uid={user.uid}
+          pid={activePropertyId}
+          lang={lang}
+          onClose={() => setShowReport(false)}
+          showToast={showToast}
         />
       )}
 
@@ -1617,6 +1765,913 @@ function formatDateTime(d: Date, lang: 'en' | 'es'): string {
   } catch {
     return d.toISOString();
   }
+}
+
+// ─── Smart Reorder List Modal ────────────────────────────────────────────────
+//
+// Auto-generated list of items that need to be ordered, derived from the
+// prediction engine. Grouped by urgency: Now (red, expanded), Soon (amber,
+// expanded), Upcoming (gray, collapsed). Each row has Mark-as-Ordered which
+// pre-fills the quantity/vendor/cost from the item, writes to inventory_orders,
+// and bumps the item's stock so the next refresh drops it from the list.
+//
+// Export List copies a clean text summary to clipboard for vendor emails.
+
+interface ReorderRow {
+  item: InventoryItem;
+  prediction: PredictionResult;
+  effectiveStock: number;
+  suggestedQty: number;     // par - effectiveStock, floored at 0
+  estimatedCost: number;    // suggestedQty * unitCost (0 when no cost)
+}
+
+function ReorderListModal({
+  items, predictions, effectiveStockOf, dailyAverages,
+  uid, pid, lang, onClose, showToast,
+}: {
+  items: InventoryItem[];
+  predictions: Map<string, PredictionResult>;
+  effectiveStockOf: (item: InventoryItem) => number;
+  dailyAverages: DailyAverages | null;
+  uid: string;
+  pid: string;
+  lang: 'en' | 'es';
+  onClose: () => void;
+  onLogged: (itemName: string) => void;
+  showToast: (msg: string) => void;
+}) {
+  const rows = useMemo<ReorderRow[]>(() => {
+    return items
+      .map(item => {
+        const prediction = predictions.get(item.id);
+        if (!prediction) return null;
+        if (prediction.urgency === 'unknown') return null;
+        const eff = effectiveStockOf(item);
+        const suggestedQty = Math.max(0, Math.ceil(item.parLevel - eff));
+        if (suggestedQty <= 0) return null;
+        const estimatedCost = item.unitCost ? suggestedQty * item.unitCost : 0;
+        return { item, prediction, effectiveStock: eff, suggestedQty, estimatedCost };
+      })
+      .filter((r): r is ReorderRow => r !== null);
+  }, [items, predictions, effectiveStockOf]);
+
+  const nowRows = rows.filter(r => r.prediction.urgency === 'now')
+    .sort((a, b) => (a.prediction.daysUntilOut ?? 0) - (b.prediction.daysUntilOut ?? 0));
+  const soonRows = rows.filter(r => r.prediction.urgency === 'soon')
+    .sort((a, b) => (a.prediction.daysUntilOut ?? 0) - (b.prediction.daysUntilOut ?? 0));
+  const okRows = rows.filter(r => r.prediction.urgency === 'ok')
+    .sort((a, b) => (a.prediction.daysUntilOut ?? 0) - (b.prediction.daysUntilOut ?? 0));
+
+  const totalCost = rows.reduce((s, r) => s + r.estimatedCost, 0);
+  const allEmpty = rows.length === 0;
+
+  const [openInline, setOpenInline] = useState<string | null>(null);
+  const [showUpcoming, setShowUpcoming] = useState(false);
+
+  const handleExport = useCallback(async () => {
+    const lines: string[] = [];
+    lines.push(lang === 'es' ? 'Lista de Pedidos' : 'Reorder List');
+    lines.push(`${new Date().toLocaleDateString()}`);
+    lines.push('');
+    const writeSection = (title: string, sectionRows: ReorderRow[]) => {
+      if (sectionRows.length === 0) return;
+      lines.push(title);
+      sectionRows.forEach(r => {
+        const cost = r.item.unitCost ? ` (~${formatCurrency(r.estimatedCost)})` : '';
+        const vendor = r.item.vendorName ? ` from ${r.item.vendorName}` : '';
+        lines.push(`  ${r.item.name}: ${r.suggestedQty} ${r.item.unit}${vendor}${cost}`);
+      });
+      lines.push('');
+    };
+    writeSection(lang === 'es' ? 'Pedir Ahora' : 'Order Now', nowRows);
+    writeSection(lang === 'es' ? 'Pedir Esta Semana' : 'Order This Week', soonRows);
+    writeSection(lang === 'es' ? 'Próximos' : 'Upcoming', okRows);
+    if (totalCost > 0) {
+      lines.push(`${lang === 'es' ? 'Total estimado' : 'Total estimated'}: ${formatCurrency(totalCost)}`);
+    }
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'));
+      showToast(lang === 'es' ? 'Copiado al portapapeles ✓' : 'Copied to clipboard ✓');
+    } catch {
+      showToast(lang === 'es' ? 'No se pudo copiar' : 'Copy failed');
+    }
+  }, [lang, nowRows, soonRows, okRows, totalCost, showToast]);
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 60,
+        background: 'rgba(27,28,25,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
+      }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{
+        background: '#fbf9f4', borderRadius: '24px',
+        width: '100%', maxWidth: '640px', maxHeight: '88vh',
+        display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+      }}>
+        {/* Header */}
+        <div style={{ padding: '20px 24px', borderBottom: '1px solid rgba(197,197,212,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <ShoppingCart size={18} color="#364262" />
+              <h2 style={{ fontFamily: "'Inter', sans-serif", fontSize: '18px', fontWeight: 700, color: '#1b1c19', margin: 0 }}>
+                {lang === 'es' ? 'Lista de Pedidos' : 'Reorder List'}
+              </h2>
+            </div>
+            <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#757684', margin: '4px 0 0 28px' }}>
+              {dailyAverages && dailyAverages.daysOfData >= 7
+                ? (lang === 'es'
+                  ? `Generado del uso de los últimos ${dailyAverages.daysOfData} días.`
+                  : `Generated from the last ${dailyAverages.daysOfData} days of usage.`)
+                : (lang === 'es'
+                  ? 'Necesita al menos 7 días de datos para predicciones.'
+                  : 'Needs at least 7 days of data for predictions.')}
+            </p>
+          </div>
+          <button onClick={onClose} style={{ background: '#eae8e3', border: 'none', cursor: 'pointer', padding: '8px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <span style={{ fontSize: '16px', color: '#454652', lineHeight: 1 }}>✕</span>
+          </button>
+        </div>
+
+        {/* Body */}
+        <div style={{ overflowY: 'auto', flex: 1 }}>
+          {allEmpty ? (
+            <div style={{ padding: '40px 24px', textAlign: 'center' }}>
+              <div style={{
+                width: '48px', height: '48px', borderRadius: '50%',
+                background: 'rgba(0,101,101,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                margin: '0 auto 12px',
+              }}>
+                <Check size={24} color="#006565" />
+              </div>
+              <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '16px', fontWeight: 700, color: '#006565' }}>
+                {lang === 'es' ? '¡Todo abastecido!' : 'All stocked up!'}
+              </div>
+              <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#757684', marginTop: '6px' }}>
+                {lang === 'es' ? 'No se necesita reorden por ahora.' : 'No reorders needed right now.'}
+              </div>
+            </div>
+          ) : (
+            <>
+              <ReorderSection
+                title={lang === 'es' ? 'Pedir Ahora' : 'Order Now'}
+                tone="urgent"
+                rows={nowRows}
+                lang={lang}
+                openInline={openInline}
+                setOpenInline={setOpenInline}
+                uid={uid}
+                pid={pid}
+                showToast={showToast}
+              />
+              <ReorderSection
+                title={lang === 'es' ? 'Pedir Esta Semana' : 'Order This Week'}
+                tone="soon"
+                rows={soonRows}
+                lang={lang}
+                openInline={openInline}
+                setOpenInline={setOpenInline}
+                uid={uid}
+                pid={pid}
+                showToast={showToast}
+              />
+              {/* Upcoming — collapsed by default */}
+              {okRows.length > 0 && (
+                <div>
+                  <button
+                    onClick={() => setShowUpcoming(s => !s)}
+                    style={{
+                      width: '100%', padding: '10px 24px', background: '#f5f3ee', border: 'none', borderTop: '1px solid rgba(197,197,212,0.2)',
+                      borderBottom: '1px solid rgba(197,197,212,0.2)', cursor: 'pointer',
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      {showUpcoming ? <ChevronDown size={14} color="#454652" /> : <ChevronRight size={14} color="#454652" />}
+                      <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 700, color: '#454652', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                        {lang === 'es' ? `Próximos (${okRows.length})` : `Upcoming (${okRows.length})`}
+                      </span>
+                    </div>
+                  </button>
+                  {showUpcoming && (
+                    <ReorderSection
+                      title=""
+                      tone="ok"
+                      rows={okRows}
+                      lang={lang}
+                      openInline={openInline}
+                      setOpenInline={setOpenInline}
+                      uid={uid}
+                      pid={pid}
+                      showToast={showToast}
+                      hideHeader
+                    />
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding: '14px 24px', borderTop: '1px solid rgba(197,197,212,0.2)', background: '#fbf9f4' }}>
+          {totalCost > 0 && (
+            <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#454652', marginBottom: '10px', textAlign: 'center' }}>
+              {lang === 'es' ? 'Costo total estimado' : 'Total estimated restock cost'}
+              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: '#1b1c19', marginLeft: '8px' }}>
+                {formatCurrency(totalCost)}
+              </span>
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <button
+              onClick={handleExport}
+              disabled={allEmpty}
+              style={{
+                padding: '12px 20px', borderRadius: '9999px', border: '1px solid #c5c5d4',
+                background: '#fff', color: '#454652', cursor: allEmpty ? 'not-allowed' : 'pointer',
+                fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 600,
+                display: 'flex', alignItems: 'center', gap: '6px', opacity: allEmpty ? 0.4 : 1,
+              }}
+            >
+              <Copy size={14} />
+              {lang === 'es' ? 'Exportar' : 'Export List'}
+            </button>
+            <button
+              onClick={onClose}
+              style={{
+                flex: 1, padding: '12px', borderRadius: '9999px', border: 'none',
+                background: '#364262', color: '#fff', cursor: 'pointer',
+                fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 600,
+              }}
+            >
+              {lang === 'es' ? 'Cerrar' : 'Done'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReorderSection({
+  title, tone, rows, lang, openInline, setOpenInline, uid, pid, showToast, hideHeader,
+}: {
+  title: string;
+  tone: 'urgent' | 'soon' | 'ok';
+  rows: ReorderRow[];
+  lang: 'en' | 'es';
+  openInline: string | null;
+  setOpenInline: (v: string | null) => void;
+  uid: string;
+  pid: string;
+  showToast: (msg: string) => void;
+  hideHeader?: boolean;
+}) {
+  if (rows.length === 0) return null;
+  const headerColor = tone === 'urgent' ? '#ba1a1a' : tone === 'soon' ? '#c98a14' : '#757684';
+  const headerBg = tone === 'urgent' ? 'rgba(186,26,26,0.06)' : tone === 'soon' ? 'rgba(201,138,20,0.06)' : '#f5f3ee';
+  return (
+    <div>
+      {!hideHeader && (
+        <div style={{
+          padding: '10px 24px', background: headerBg,
+          borderTop: '1px solid rgba(197,197,212,0.2)',
+          borderBottom: '1px solid rgba(197,197,212,0.2)',
+        }}>
+          <div style={{
+            fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 700,
+            color: headerColor, textTransform: 'uppercase', letterSpacing: '0.06em',
+          }}>
+            {title} ({rows.length})
+          </div>
+        </div>
+      )}
+      {rows.map(r => (
+        <ReorderRowView
+          key={r.item.id}
+          row={r}
+          tone={tone}
+          lang={lang}
+          isOpen={openInline === r.item.id}
+          onToggle={() => setOpenInline(openInline === r.item.id ? null : r.item.id)}
+          uid={uid}
+          pid={pid}
+          showToast={showToast}
+        />
+      ))}
+    </div>
+  );
+}
+
+function ReorderRowView({
+  row, tone, lang, isOpen, onToggle, uid, pid, showToast,
+}: {
+  row: ReorderRow;
+  tone: 'urgent' | 'soon' | 'ok';
+  lang: 'en' | 'es';
+  isOpen: boolean;
+  onToggle: () => void;
+  uid: string;
+  pid: string;
+  showToast: (msg: string) => void;
+}) {
+  const { item, prediction, effectiveStock: eff, suggestedQty, estimatedCost } = row;
+  const accent = tone === 'urgent' ? '#ba1a1a' : tone === 'soon' ? '#c98a14' : '#757684';
+
+  const [qty, setQty] = useState(String(suggestedQty));
+  const [vendor, setVendor] = useState(item.vendorName ?? '');
+  const [unitCost, setUnitCost] = useState(item.unitCost != null ? String(item.unitCost) : '');
+  const [saving, setSaving] = useState(false);
+  const [logged, setLogged] = useState(false);
+
+  const handleConfirm = async () => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      const q = parseFloat(qty) || 0;
+      const c = unitCost.trim() === '' ? undefined : parseFloat(unitCost);
+      await addInventoryOrder(uid, pid, {
+        propertyId: pid,
+        itemId: item.id,
+        itemName: item.name,
+        quantity: q,
+        unitCost: c,
+        vendorName: vendor.trim() || undefined,
+        receivedAt: new Date(),
+      });
+      // Bump current_stock so the next refresh drops it from the list.
+      await updateInventoryItem(uid, pid, item.id, { currentStock: eff + q });
+      setLogged(true);
+      showToast(lang === 'es' ? `Pedido registrado: ${item.name}` : `Order logged: ${item.name}`);
+    } catch (err) {
+      console.error('[reorder] log failed', err);
+      showToast(lang === 'es' ? 'Error al guardar' : 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const orderByLabel = prediction.orderByDate
+    ? prediction.orderByDate.toLocaleDateString(lang === 'es' ? 'es-MX' : 'en-US', { month: 'short', day: 'numeric' })
+    : '—';
+  const daysUntilOutLabel = prediction.daysUntilOut != null
+    ? `${Math.max(0, Math.round(prediction.daysUntilOut))} ${lang === 'es' ? 'días' : 'days'}`
+    : '—';
+
+  if (logged) {
+    return (
+      <div style={{ padding: '14px 24px', borderBottom: '1px solid rgba(197,197,212,0.2)', display: 'flex', alignItems: 'center', gap: '10px', opacity: 0.6 }}>
+        <Check size={14} color="#006565" />
+        <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#454652', textDecoration: 'line-through' }}>
+          {item.name} — {lang === 'es' ? 'pedido registrado' : 'order logged'}
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ borderBottom: '1px solid rgba(197,197,212,0.2)' }}>
+      <div style={{ padding: '12px 24px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '8px' }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: accent }} />
+              <span style={{ fontFamily: "'Inter', sans-serif", fontWeight: 600, fontSize: '14px', color: '#1b1c19' }}>
+                {item.name}
+              </span>
+            </div>
+            <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684', marginTop: '2px' }}>
+              {Math.round(eff)} / {item.parLevel} {item.unit} ·{' '}
+              {lang === 'es' ? `se acaba en ${daysUntilOutLabel}` : `out in ${daysUntilOutLabel}`}
+              {item.vendorName ? ` · ${item.vendorName}` : ''}
+            </div>
+          </div>
+          <div style={{ textAlign: 'right', flexShrink: 0 }}>
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: '14px', color: '#1b1c19' }}>
+              +{suggestedQty}
+            </div>
+            {estimatedCost > 0 && (
+              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', color: '#757684' }}>
+                {formatCurrency(estimatedCost)}
+              </div>
+            )}
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '10px', color: accent, fontWeight: 600 }}>
+            {lang === 'es' ? 'Pedir antes de' : 'Order by'} {orderByLabel}
+          </span>
+          <button
+            onClick={onToggle}
+            style={{
+              padding: '6px 12px', borderRadius: '9999px',
+              border: '1px solid #c5c5d4', background: isOpen ? '#f0eee9' : '#fff',
+              fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600,
+              color: '#454652', cursor: 'pointer',
+            }}
+          >
+            {isOpen
+              ? (lang === 'es' ? 'Cancelar' : 'Cancel')
+              : (lang === 'es' ? 'Marcar como Pedido' : 'Mark as Ordered')}
+          </button>
+        </div>
+      </div>
+      {isOpen && (
+        <div style={{ padding: '12px 24px 14px', background: 'rgba(0,0,0,0.02)', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1.4fr', gap: '8px' }}>
+            <input
+              type="number" min="0" value={qty} onChange={e => setQty(e.target.value)}
+              placeholder={lang === 'es' ? 'Cantidad' : 'Qty'}
+              style={{ padding: '8px 10px', borderRadius: '10px', border: '1px solid #c5c5d4', fontFamily: "'JetBrains Mono', monospace", fontSize: '13px' }}
+            />
+            <input
+              type="number" step="0.01" min="0" value={unitCost} onChange={e => setUnitCost(e.target.value)}
+              placeholder="$"
+              style={{ padding: '8px 10px', borderRadius: '10px', border: '1px solid #c5c5d4', fontFamily: "'JetBrains Mono', monospace", fontSize: '13px' }}
+            />
+            <input
+              value={vendor} onChange={e => setVendor(e.target.value)}
+              placeholder={lang === 'es' ? 'Proveedor' : 'Vendor'}
+              style={{ padding: '8px 10px', borderRadius: '10px', border: '1px solid #c5c5d4', fontFamily: "'Inter', sans-serif", fontSize: '13px' }}
+            />
+          </div>
+          <button
+            onClick={handleConfirm}
+            disabled={saving}
+            style={{
+              padding: '10px', borderRadius: '9999px', border: 'none',
+              background: '#364262', color: '#fff', cursor: 'pointer',
+              fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 600,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+            }}
+          >
+            <Check size={14} />
+            {saving
+              ? (lang === 'es' ? 'Guardando...' : 'Saving...')
+              : (lang === 'es' ? 'Confirmar Pedido' : 'Confirm Order')}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Ownership Report Modal ──────────────────────────────────────────────────
+//
+// Print-friendly snapshot for property owners/investors. NOT a daily-use
+// dashboard. Designed to convey "is everything OK or do I need to look
+// harder?" in 30 seconds. Print-friendly @media print CSS is injected
+// inline so window.print() produces a clean B&W-friendly page without
+// the dashboard chrome.
+
+function OwnershipReportModal({
+  items, predictions, effectiveStockOf, totalInventoryValue,
+  uid, pid, lang, onClose, showToast,
+}: {
+  items: InventoryItem[];
+  predictions: Map<string, PredictionResult>;
+  effectiveStockOf: (item: InventoryItem) => number;
+  totalInventoryValue: number;
+  uid: string;
+  pid: string;
+  lang: 'en' | 'es';
+  onClose: () => void;
+  showToast: (msg: string) => void;
+}) {
+  const [period, setPeriod] = useState<30 | 60 | 90>(30);
+  const [orders, setOrders] = useState<InventoryOrder[]>([]);
+  const [counts, setCounts] = useState<InventoryCount[]>([]);
+  const [occupiedNights, setOccupiedNights] = useState<{ thisMonth: number; lastMonth: number }>({ thisMonth: 0, lastMonth: 0 });
+  const [loading, setLoading] = useState(true);
+  const [propertyName, setPropertyName] = useState('Property');
+
+  // Period bookends. "This period" = last `period` days.
+  const periodStart = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - period);
+    return d;
+  }, [period]);
+
+  // Month boundaries for MoM comparison (current vs previous calendar month).
+  const monthBounds = useMemo(() => {
+    const now = new Date();
+    const thisStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const lastStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    return { thisStart, lastStart };
+  }, []);
+
+  // Fetch orders + counts + occupancy on mount and when period changes.
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    Promise.all([
+      listInventoryOrders(uid, pid, 500),
+      listInventoryCounts(uid, pid, 500),
+      // Occupied room-nights for this month and last month
+      (async () => {
+        const startStr = monthBounds.lastStart.toISOString().slice(0, 10);
+        const { data, error } = await supabase
+          .from('daily_logs')
+          .select('date, occupied')
+          .eq('property_id', pid)
+          .gte('date', startStr);
+        if (error || !data) return { thisMonth: 0, lastMonth: 0 };
+        let thisM = 0, lastM = 0;
+        const thisStartStr = monthBounds.thisStart.toISOString().slice(0, 10);
+        for (const r of data) {
+          if (r.date >= thisStartStr) thisM += Number(r.occupied ?? 0);
+          else lastM += Number(r.occupied ?? 0);
+        }
+        return { thisMonth: thisM, lastMonth: lastM };
+      })(),
+      // Property name
+      (async () => {
+        const { data } = await supabase.from('properties').select('name').eq('id', pid).maybeSingle();
+        return data?.name ?? 'Property';
+      })(),
+    ])
+      .then(([os, cs, occ, name]) => {
+        if (!alive) return;
+        setOrders(os);
+        setCounts(cs);
+        setOccupiedNights(occ);
+        setPropertyName(String(name));
+      })
+      .catch(err => console.error('[report] fetch failed:', err))
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [uid, pid, period, monthBounds]);
+
+  // ─── Derive metrics ──────────────────────────────────────────────────
+  const periodOrders = useMemo(
+    () => orders.filter(o => o.receivedAt && o.receivedAt >= periodStart),
+    [orders, periodStart],
+  );
+  const periodCounts = useMemo(
+    () => counts.filter(c => c.countedAt && c.countedAt >= periodStart),
+    [counts, periodStart],
+  );
+
+  const totalSpend = periodOrders.reduce((s, o) => s + (o.totalCost ?? 0), 0);
+  const totalShrinkage = periodCounts.reduce((s, c) => s + Math.min(0, c.varianceValue ?? 0), 0); // negative number
+  const occupiedSinceStart = useMemo(() => {
+    // Sum occupied nights since periodStart from the daily_logs we already have.
+    // Approximation: we only fetched since lastStart; if periodStart is older,
+    // we cap at occupiedNights.thisMonth + occupiedNights.lastMonth.
+    return occupiedNights.thisMonth + occupiedNights.lastMonth;
+  }, [occupiedNights]);
+  const costPerOccupiedRoom = occupiedSinceStart > 0 && totalSpend > 0
+    ? totalSpend / occupiedSinceStart
+    : 0;
+
+  // MoM comparison by category — compute "value this month" vs "value last month"
+  // by looking at received orders bucketed into each calendar month, summed by
+  // category. Items without unit_cost don't contribute (matches Total Inventory
+  // Value semantics elsewhere).
+  const monthOverMonth = useMemo(() => {
+    const byCat: Record<InventoryCategory, { thisM: number; lastM: number }> = {
+      housekeeping: { thisM: 0, lastM: 0 },
+      maintenance: { thisM: 0, lastM: 0 },
+      breakfast: { thisM: 0, lastM: 0 },
+    };
+    const itemsById = new Map(items.map(i => [i.id, i]));
+    for (const o of orders) {
+      if (!o.receivedAt || o.totalCost == null) continue;
+      const item = itemsById.get(o.itemId);
+      if (!item) continue;
+      if (o.receivedAt >= monthBounds.thisStart) byCat[item.category].thisM += o.totalCost;
+      else if (o.receivedAt >= monthBounds.lastStart) byCat[item.category].lastM += o.totalCost;
+    }
+    return byCat;
+  }, [orders, items, monthBounds]);
+
+  // Items requiring attention — under-par + stockout-soon, top 5.
+  const itemsNeedingAttention = useMemo(() => {
+    const rows = items
+      .map(item => {
+        const eff = effectiveStockOf(item);
+        const pred = predictions.get(item.id);
+        const status = stockStatus(eff, item.parLevel, item.reorderAt);
+        return { item, eff, pred, status };
+      })
+      .filter(r => r.status !== 'good' || r.pred?.urgency === 'now' || r.pred?.urgency === 'soon')
+      .sort((a, b) => {
+        // Prioritize critical first, then soonest stockout
+        const aScore = a.status === 'out' ? 0 : a.status === 'low' ? 1 : 2;
+        const bScore = b.status === 'out' ? 0 : b.status === 'low' ? 1 : 2;
+        if (aScore !== bScore) return aScore - bScore;
+        return (a.pred?.daysUntilOut ?? 999) - (b.pred?.daysUntilOut ?? 999);
+      })
+      .slice(0, 7);
+    return rows;
+  }, [items, effectiveStockOf, predictions]);
+
+  const handlePrint = () => {
+    window.print();
+  };
+
+  const handleCopySummary = async () => {
+    const lines: string[] = [];
+    lines.push(`${propertyName} — ${lang === 'es' ? 'Reporte de Inventario' : 'Inventory Report'}`);
+    lines.push(`${lang === 'es' ? 'Período' : 'Period'}: ${lang === 'es' ? 'últimos' : 'last'} ${period} ${lang === 'es' ? 'días' : 'days'}`);
+    lines.push(`${lang === 'es' ? 'Generado' : 'Generated'}: ${new Date().toLocaleDateString()}`);
+    lines.push('');
+    lines.push(`${lang === 'es' ? 'Valor de inventario' : 'Inventory value'}: ${formatCurrency(totalInventoryValue)}`);
+    lines.push(`${lang === 'es' ? 'Gasto del período' : 'Period spend'}: ${formatCurrency(totalSpend)}`);
+    lines.push(`${lang === 'es' ? 'Pérdida no contabilizada' : 'Unaccounted loss'}: ${formatCurrency(totalShrinkage)}`);
+    if (costPerOccupiedRoom > 0) {
+      lines.push(`${lang === 'es' ? 'Costo por habitación ocupada' : 'Cost per occupied room'}: ${formatCurrency(costPerOccupiedRoom)}`);
+    }
+    if (itemsNeedingAttention.length > 0) {
+      lines.push('');
+      lines.push(lang === 'es' ? 'Necesita atención:' : 'Needs attention:');
+      itemsNeedingAttention.forEach(r => {
+        const days = r.pred?.daysUntilOut != null ? ` (${Math.round(r.pred.daysUntilOut)}d)` : '';
+        lines.push(`  - ${r.item.name}: ${Math.round(r.eff)}/${r.item.parLevel}${days}`);
+      });
+    }
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'));
+      showToast(lang === 'es' ? 'Resumen copiado ✓' : 'Summary copied ✓');
+    } catch {
+      showToast(lang === 'es' ? 'No se pudo copiar' : 'Copy failed');
+    }
+  };
+
+  const fmtPctChange = (thisM: number, lastM: number) => {
+    if (lastM === 0) return thisM > 0 ? '—' : '0%';
+    const pct = ((thisM - lastM) / lastM) * 100;
+    const sign = pct > 0 ? '+' : '';
+    return `${sign}${pct.toFixed(0)}%`;
+  };
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 60,
+        background: 'rgba(27,28,25,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
+      }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <style>{`
+        @media print {
+          body * { visibility: hidden !important; }
+          .ownership-report, .ownership-report * { visibility: visible !important; }
+          .ownership-report { position: absolute !important; left: 0; top: 0; width: 100% !important; max-width: none !important; max-height: none !important; box-shadow: none !important; border-radius: 0 !important; }
+          .ownership-report .no-print { display: none !important; }
+        }
+      `}</style>
+      <div className="ownership-report" style={{
+        background: '#fff', borderRadius: '24px',
+        width: '100%', maxWidth: '760px', maxHeight: '90vh',
+        display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+      }}>
+        {/* Header (no-print: keep close + period selector) */}
+        <div className="no-print" style={{ padding: '14px 24px', borderBottom: '1px solid rgba(197,197,212,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#fbf9f4' }}>
+          <div style={{ display: 'flex', gap: '6px' }}>
+            {([30, 60, 90] as const).map(p => (
+              <button
+                key={p}
+                onClick={() => setPeriod(p)}
+                style={{
+                  padding: '6px 14px', borderRadius: '9999px', border: 'none',
+                  fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+                  cursor: 'pointer',
+                  background: period === p ? '#364262' : '#f0eee9',
+                  color: period === p ? '#fff' : '#454652',
+                }}
+              >
+                {p}d
+              </button>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button
+              onClick={handleCopySummary}
+              style={{
+                padding: '6px 14px', borderRadius: '9999px', border: '1px solid #c5c5d4',
+                background: '#fff', color: '#454652', cursor: 'pointer',
+                fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+                display: 'flex', alignItems: 'center', gap: '5px',
+              }}
+            >
+              <Copy size={12} />
+              {lang === 'es' ? 'Copiar' : 'Copy'}
+            </button>
+            <button
+              onClick={handlePrint}
+              style={{
+                padding: '6px 14px', borderRadius: '9999px', border: '1px solid #c5c5d4',
+                background: '#fff', color: '#454652', cursor: 'pointer',
+                fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+                display: 'flex', alignItems: 'center', gap: '5px',
+              }}
+            >
+              <Printer size={12} />
+              {lang === 'es' ? 'Imprimir' : 'Print'}
+            </button>
+            <button onClick={onClose} style={{ background: '#eae8e3', border: 'none', cursor: 'pointer', padding: '6px 10px', borderRadius: '9999px', fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#454652' }}>
+              ✕
+            </button>
+          </div>
+        </div>
+
+        {/* Body — printable */}
+        <div style={{ overflowY: 'auto', flex: 1, padding: '32px 36px' }}>
+          {loading ? (
+            <div style={{ textAlign: 'center', padding: '40px 0', color: '#757684', fontFamily: "'Inter', sans-serif" }}>
+              {lang === 'es' ? 'Cargando reporte...' : 'Loading report...'}
+            </div>
+          ) : (
+            <>
+              {/* Header */}
+              <div style={{ marginBottom: '28px', borderBottom: '2px solid #1b1c19', paddingBottom: '14px' }}>
+                <h1 style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: '22px', color: '#1b1c19', margin: 0 }}>
+                  {propertyName}
+                </h1>
+                <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#757684', marginTop: '4px' }}>
+                  {lang === 'es' ? 'Reporte de Inventario' : 'Inventory Report'} · {lang === 'es' ? `últimos ${period} días` : `Last ${period} days`} · {lang === 'es' ? 'Generado' : 'Generated'} {new Date().toLocaleDateString()}
+                </div>
+              </div>
+
+              {/* Section 1 — Summary cards */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '28px' }}>
+                <ReportStat label={lang === 'es' ? 'Valor Actual' : 'Inventory Value'} value={formatCurrency(totalInventoryValue)} />
+                <ReportStat label={lang === 'es' ? 'Gasto del Período' : 'Period Spend'} value={formatCurrency(totalSpend)} />
+                <ReportStat
+                  label={lang === 'es' ? 'Pérdida' : 'Shrinkage'}
+                  value={formatCurrency(totalShrinkage)}
+                  tone={totalShrinkage < 0 ? 'bad' : 'neutral'}
+                />
+                <ReportStat
+                  label={lang === 'es' ? 'Costo / Hab.' : 'Cost / Room'}
+                  value={costPerOccupiedRoom > 0 ? formatCurrency(costPerOccupiedRoom) : '—'}
+                />
+              </div>
+
+              {/* Section 2 — MoM */}
+              <div style={{ marginBottom: '28px' }}>
+                <h2 style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: '14px', color: '#1b1c19', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '10px' }}>
+                  {lang === 'es' ? 'Mes vs Mes' : 'Month over Month'}
+                </h2>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: "'Inter', sans-serif", fontSize: '13px' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid #c5c5d4' }}>
+                      <th style={{ textAlign: 'left', padding: '8px 0', color: '#454652', fontWeight: 600 }}>{lang === 'es' ? 'Categoría' : 'Category'}</th>
+                      <th style={{ textAlign: 'right', padding: '8px 0', color: '#454652', fontWeight: 600 }}>{lang === 'es' ? 'Mes Anterior' : 'Last Month'}</th>
+                      <th style={{ textAlign: 'right', padding: '8px 0', color: '#454652', fontWeight: 600 }}>{lang === 'es' ? 'Este Mes' : 'This Month'}</th>
+                      <th style={{ textAlign: 'right', padding: '8px 0', color: '#454652', fontWeight: 600 }}>{lang === 'es' ? 'Cambio' : 'Change'}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(['housekeeping', 'maintenance', 'breakfast'] as const).map(cat => {
+                      const data = monthOverMonth[cat];
+                      const change = data.thisM - data.lastM;
+                      const color = change > 0 ? '#ba1a1a' : change < 0 ? '#006565' : '#757684';
+                      const label = cat === 'housekeeping' ? (lang === 'es' ? 'Limpieza' : 'Housekeeping')
+                        : cat === 'maintenance' ? (lang === 'es' ? 'Mantenimiento' : 'Maintenance')
+                        : (lang === 'es' ? 'Desayuno' : 'Breakfast');
+                      return (
+                        <tr key={cat} style={{ borderBottom: '1px solid rgba(197,197,212,0.3)' }}>
+                          <td style={{ padding: '8px 0', color: '#1b1c19' }}>{label}</td>
+                          <td style={{ padding: '8px 0', textAlign: 'right', fontFamily: "'JetBrains Mono', monospace", color: '#454652' }}>{formatCurrency(data.lastM)}</td>
+                          <td style={{ padding: '8px 0', textAlign: 'right', fontFamily: "'JetBrains Mono', monospace", color: '#454652' }}>{formatCurrency(data.thisM)}</td>
+                          <td style={{ padding: '8px 0', textAlign: 'right', fontFamily: "'JetBrains Mono', monospace", color, fontWeight: 600 }}>
+                            {change >= 0 ? '+' : ''}{formatCurrency(change)} <span style={{ fontSize: '11px', opacity: 0.7 }}>({fmtPctChange(data.thisM, data.lastM)})</span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {(() => {
+                      const totalLast = Object.values(monthOverMonth).reduce((s, c) => s + c.lastM, 0);
+                      const totalThis = Object.values(monthOverMonth).reduce((s, c) => s + c.thisM, 0);
+                      const change = totalThis - totalLast;
+                      const color = change > 0 ? '#ba1a1a' : change < 0 ? '#006565' : '#757684';
+                      return (
+                        <tr style={{ borderTop: '2px solid #1b1c19' }}>
+                          <td style={{ padding: '8px 0', color: '#1b1c19', fontWeight: 700 }}>{lang === 'es' ? 'Total' : 'Total'}</td>
+                          <td style={{ padding: '8px 0', textAlign: 'right', fontFamily: "'JetBrains Mono', monospace", color: '#1b1c19', fontWeight: 700 }}>{formatCurrency(totalLast)}</td>
+                          <td style={{ padding: '8px 0', textAlign: 'right', fontFamily: "'JetBrains Mono', monospace", color: '#1b1c19', fontWeight: 700 }}>{formatCurrency(totalThis)}</td>
+                          <td style={{ padding: '8px 0', textAlign: 'right', fontFamily: "'JetBrains Mono', monospace", color, fontWeight: 700 }}>
+                            {change >= 0 ? '+' : ''}{formatCurrency(change)}
+                          </td>
+                        </tr>
+                      );
+                    })()}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Section 3 — Items Requiring Attention */}
+              <div style={{ marginBottom: '28px' }}>
+                <h2 style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: '14px', color: '#1b1c19', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '10px' }}>
+                  {lang === 'es' ? 'Necesita Atención' : 'Needs Attention'}
+                </h2>
+                {itemsNeedingAttention.length === 0 ? (
+                  <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#006565' }}>
+                    ✓ {lang === 'es' ? 'Todos los artículos están saludables.' : 'All items healthy.'}
+                  </div>
+                ) : (
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: "'Inter', sans-serif", fontSize: '13px' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid #c5c5d4' }}>
+                        <th style={{ textAlign: 'left', padding: '6px 0', color: '#454652', fontWeight: 600 }}>{lang === 'es' ? 'Artículo' : 'Item'}</th>
+                        <th style={{ textAlign: 'right', padding: '6px 0', color: '#454652', fontWeight: 600 }}>{lang === 'es' ? 'Stock' : 'Stock'}</th>
+                        <th style={{ textAlign: 'right', padding: '6px 0', color: '#454652', fontWeight: 600 }}>{lang === 'es' ? 'Días' : 'Days'}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {itemsNeedingAttention.map(r => (
+                        <tr key={r.item.id} style={{ borderBottom: '1px solid rgba(197,197,212,0.3)' }}>
+                          <td style={{ padding: '6px 0', color: '#1b1c19' }}>{r.item.name}</td>
+                          <td style={{ padding: '6px 0', textAlign: 'right', fontFamily: "'JetBrains Mono', monospace", color: r.status === 'out' ? '#ba1a1a' : '#454652' }}>
+                            {Math.round(r.eff)} / {r.item.parLevel}
+                          </td>
+                          <td style={{ padding: '6px 0', textAlign: 'right', fontFamily: "'JetBrains Mono', monospace", color: '#454652' }}>
+                            {r.pred?.daysUntilOut != null ? Math.round(r.pred.daysUntilOut) : '—'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+
+              {/* Section 4 — Orders this period */}
+              <div>
+                <h2 style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: '14px', color: '#1b1c19', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '10px' }}>
+                  {lang === 'es' ? 'Pedidos del Período' : 'Orders This Period'}
+                </h2>
+                {periodOrders.length === 0 ? (
+                  <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#757684' }}>
+                    {lang === 'es' ? 'Sin pedidos registrados.' : 'No orders logged.'}
+                  </div>
+                ) : (
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: "'Inter', sans-serif", fontSize: '13px' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid #c5c5d4' }}>
+                        <th style={{ textAlign: 'left', padding: '6px 0', color: '#454652', fontWeight: 600 }}>{lang === 'es' ? 'Fecha' : 'Date'}</th>
+                        <th style={{ textAlign: 'left', padding: '6px 0', color: '#454652', fontWeight: 600 }}>{lang === 'es' ? 'Artículo' : 'Item'}</th>
+                        <th style={{ textAlign: 'right', padding: '6px 0', color: '#454652', fontWeight: 600 }}>{lang === 'es' ? 'Cantidad' : 'Qty'}</th>
+                        <th style={{ textAlign: 'left', padding: '6px 0', color: '#454652', fontWeight: 600 }}>{lang === 'es' ? 'Proveedor' : 'Vendor'}</th>
+                        <th style={{ textAlign: 'right', padding: '6px 0', color: '#454652', fontWeight: 600 }}>{lang === 'es' ? 'Costo' : 'Cost'}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {periodOrders.slice(0, 20).map(o => (
+                        <tr key={o.id} style={{ borderBottom: '1px solid rgba(197,197,212,0.3)' }}>
+                          <td style={{ padding: '6px 0', fontFamily: "'JetBrains Mono', monospace", color: '#454652', fontSize: '12px' }}>
+                            {o.receivedAt?.toLocaleDateString() ?? '—'}
+                          </td>
+                          <td style={{ padding: '6px 0', color: '#1b1c19' }}>{o.itemName}</td>
+                          <td style={{ padding: '6px 0', textAlign: 'right', fontFamily: "'JetBrains Mono', monospace" }}>{Math.round(o.quantity)}</td>
+                          <td style={{ padding: '6px 0', color: '#454652', fontSize: '12px' }}>{o.vendorName ?? '—'}</td>
+                          <td style={{ padding: '6px 0', textAlign: 'right', fontFamily: "'JetBrains Mono', monospace", color: '#454652' }}>
+                            {o.totalCost != null ? formatCurrency(o.totalCost) : '—'}
+                          </td>
+                        </tr>
+                      ))}
+                      <tr style={{ borderTop: '2px solid #1b1c19' }}>
+                        <td colSpan={4} style={{ padding: '8px 0', fontWeight: 700 }}>
+                          {lang === 'es' ? 'Total' : 'Total'}
+                        </td>
+                        <td style={{ padding: '8px 0', textAlign: 'right', fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>
+                          {formatCurrency(totalSpend)}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReportStat({ label, value, tone }: { label: string; value: string; tone?: 'bad' | 'neutral' }) {
+  const valueColor = tone === 'bad' ? '#ba1a1a' : '#1b1c19';
+  return (
+    <div style={{
+      border: '1px solid rgba(78,90,122,0.12)', borderRadius: '12px', padding: '12px',
+      background: '#fff',
+    }}>
+      <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '10px', fontWeight: 600, color: '#757684', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+        {label}
+      </div>
+      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '18px', fontWeight: 700, color: valueColor, marginTop: '4px' }}>
+        {value}
+      </div>
+    </div>
+  );
 }
 
 // ─── Bulk Usage Rates Modal ──────────────────────────────────────────────────
