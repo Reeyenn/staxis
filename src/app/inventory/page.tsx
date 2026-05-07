@@ -8,13 +8,13 @@ import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import {
   subscribeToInventory, addInventoryItem, updateInventoryItem, deleteInventoryItem,
-  addInventoryCountBatch, addInventoryOrder,
+  addInventoryCountBatch, addInventoryOrder, listInventoryCounts,
 } from '@/lib/db';
 import { fetchOccupancyBundle, computeOccupancyForItem, calculateEstimatedStock, type OccupancyBundle } from '@/lib/inventory-estimate';
-import type { InventoryItem, InventoryCategory } from '@/types';
+import type { InventoryItem, InventoryCategory, InventoryCount } from '@/types';
 import {
   Plus, Package, ClipboardCheck, AlertTriangle, Check, Info, Settings,
-  TrendingDown, DollarSign, Truck,
+  TrendingDown, DollarSign, Truck, Clock, ChevronDown, ChevronRight,
 } from 'lucide-react';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -95,6 +95,7 @@ export default function InventoryPage() {
   const [counting, setCounting] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showBulkRates, setShowBulkRates] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const [editItem, setEditItem] = useState<InventoryItem | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [reconciliation, setReconciliation] = useState<ReconciliationData | null>(null);
@@ -471,6 +472,18 @@ export default function InventoryPage() {
                 <Settings size={13} />
                 {lang === 'es' ? 'Tasas de Uso' : 'Usage Rates'}
               </button>
+              <button
+                onClick={() => setShowHistory(true)}
+                style={{
+                  background: 'transparent', color: '#364262', border: '1px solid #c5c5d4',
+                  padding: '8px 16px', borderRadius: '9999px',
+                  fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
+                }}
+              >
+                <Clock size={13} />
+                {lang === 'es' ? 'Historial' : 'History'}
+              </button>
             </div>
           </div>
         </header>
@@ -675,6 +688,16 @@ export default function InventoryPage() {
           lang={lang}
           onClose={() => setShowBulkRates(false)}
           onSaved={(n) => { setShowBulkRates(false); showToast(lang === 'es' ? `${n} actualizado` : `${n} updated`); }}
+        />
+      )}
+
+      {/* Count history */}
+      {showHistory && (
+        <CountHistoryModal
+          uid={user.uid}
+          pid={activePropertyId}
+          lang={lang}
+          onClose={() => setShowHistory(false)}
         />
       )}
 
@@ -1214,6 +1237,386 @@ function OrderLoggingModal({
       </div>
     </div>
   );
+}
+
+// ─── Count History Modal ────────────────────────────────────────────────────
+//
+// Read-only audit view over the inventory_counts table. Each Count Mode save
+// writes one row per item; this view groups those rows by their shared
+// counted_at timestamp and shows aggregate variance + per-item drill-down.
+//
+// Three summary stats up top:
+//   • Total counts          — number of distinct count events
+//   • Avg monthly shrinkage — sum of negative variance_value, divided by
+//                              months covered by the data. Negative number,
+//                              floor at -inf, displayed as -$X/mo.
+//   • Worst item            — itemName with the most-negative cumulative
+//                              variance_value across all events.
+//
+// Color coding mirrors the reconciliation modal (>25% red, >10% amber, else
+// green; gray when no estimate available).
+
+function CountHistoryModal({ uid, pid, lang, onClose }: {
+  uid: string;
+  pid: string;
+  lang: 'en' | 'es';
+  onClose: () => void;
+}) {
+  const [counts, setCounts] = useState<InventoryCount[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    listInventoryCounts(uid, pid, 500)
+      .then(rows => { if (alive) setCounts(rows); })
+      .catch(err => console.error('[count history] fetch failed:', err))
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [uid, pid]);
+
+  // Group by counted_at timestamp (a Count Mode batch insert shares one
+  // transaction-time now() value across all rows, so identical timestamps
+  // identify a single count event).
+  const groups = useMemo(() => {
+    const m = new Map<string, InventoryCount[]>();
+    for (const c of counts) {
+      const key = c.countedAt ? c.countedAt.toISOString() : 'unknown';
+      const bucket = m.get(key) ?? [];
+      bucket.push(c);
+      m.set(key, bucket);
+    }
+    return Array.from(m.entries())
+      .sort(([a], [b]) => b.localeCompare(a));
+  }, [counts]);
+
+  // ─── Summary stats ──────────────────────────────────────────────────────
+
+  const totalCountEvents = groups.length;
+
+  // Average monthly shrinkage: sum of negative variance_value, divided by
+  // months from oldest count to newest. Floors months at 1 so a single
+  // recent-week dataset doesn't show wildly inflated "monthly" loss.
+  const avgMonthlyShrinkage = useMemo(() => {
+    if (counts.length === 0) return 0;
+    const negativeSum = counts.reduce(
+      (s, c) => s + (c.varianceValue != null && c.varianceValue < 0 ? c.varianceValue : 0),
+      0,
+    );
+    if (negativeSum === 0) return 0;
+    const oldest = counts[counts.length - 1].countedAt;
+    const newest = counts[0].countedAt;
+    if (!oldest || !newest) return 0;
+    const days = Math.max(1, (newest.getTime() - oldest.getTime()) / (1000 * 60 * 60 * 24));
+    const months = Math.max(1, days / 30);
+    return negativeSum / months; // negative number
+  }, [counts]);
+
+  // Worst item: cumulative variance_value across events, take the most
+  // negative. Falls back to "—" when no items have unit_cost.
+  const worstItem = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const c of counts) {
+      if (c.varianceValue == null) continue;
+      totals.set(c.itemName, (totals.get(c.itemName) ?? 0) + c.varianceValue);
+    }
+    let worstName: string | null = null;
+    let worstValue = 0;
+    for (const [name, total] of totals) {
+      if (total < worstValue) {
+        worstValue = total;
+        worstName = name;
+      }
+    }
+    return worstName ? { name: worstName, total: worstValue } : null;
+  }, [counts]);
+
+  // ─── Per-row color logic (matches ReconciliationModal) ──────────────────
+  const colorFor = (r: InventoryCount): string => {
+    if (r.variance == null || r.estimatedStock == null || r.estimatedStock === 0) return '#757684';
+    const pct = Math.abs(r.variance) / Math.max(1, r.estimatedStock);
+    if (pct > 0.25) return '#ba1a1a';
+    if (pct > 0.10) return '#c98a14';
+    return '#006565';
+  };
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 60,
+        background: 'rgba(27,28,25,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
+      }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{
+        background: '#fbf9f4', borderRadius: '24px',
+        width: '100%', maxWidth: '720px', maxHeight: '88vh',
+        display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+      }}>
+        {/* Header */}
+        <div style={{ padding: '20px 24px', borderBottom: '1px solid rgba(197,197,212,0.2)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <Clock size={18} color="#364262" />
+                <h2 style={{ fontFamily: "'Inter', sans-serif", fontSize: '18px', fontWeight: 700, color: '#1b1c19', margin: 0 }}>
+                  {lang === 'es' ? 'Historial de Conteos' : 'Count History'}
+                </h2>
+              </div>
+              <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#757684', margin: '4px 0 0 28px' }}>
+                {lang === 'es'
+                  ? 'Cada conteo guardado, agrupado por fecha. Toque para expandir.'
+                  : 'Every saved count, grouped by date. Tap to expand.'}
+              </p>
+            </div>
+            <button
+              onClick={onClose}
+              style={{
+                background: '#eae8e3', border: 'none', cursor: 'pointer',
+                padding: '8px', borderRadius: '50%',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >
+              <span style={{ fontSize: '16px', color: '#454652', lineHeight: 1 }}>✕</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Summary stats */}
+        <div style={{
+          display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px',
+          padding: '14px 24px', background: '#f5f3ee',
+          borderBottom: '1px solid rgba(197,197,212,0.2)',
+        }}>
+          <SummaryStat
+            label={lang === 'es' ? 'Conteos' : 'Total counts'}
+            value={loading ? '…' : String(totalCountEvents)}
+            tone="neutral"
+          />
+          <SummaryStat
+            label={lang === 'es' ? 'Pérdida mensual' : 'Avg monthly loss'}
+            value={loading
+              ? '…'
+              : avgMonthlyShrinkage === 0
+                ? '—'
+                : formatCurrency(avgMonthlyShrinkage)}
+            tone={avgMonthlyShrinkage < 0 ? 'bad' : 'neutral'}
+          />
+          <SummaryStat
+            label={lang === 'es' ? 'Peor artículo' : 'Worst item'}
+            value={loading ? '…' : worstItem ? worstItem.name : '—'}
+            sub={loading ? undefined : worstItem ? formatCurrency(worstItem.total) : undefined}
+            tone={worstItem ? 'bad' : 'neutral'}
+          />
+        </div>
+
+        {/* Body */}
+        <div style={{ overflowY: 'auto', flex: 1 }}>
+          {loading ? (
+            <div style={{ padding: '40px 24px', textAlign: 'center' }}>
+              <div className="animate-spin" style={{
+                width: '24px', height: '24px', margin: '0 auto 8px',
+                border: '3px solid #c5c5d4', borderTopColor: '#364262', borderRadius: '50%',
+              }} />
+              <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#757684' }}>
+                {lang === 'es' ? 'Cargando historial...' : 'Loading history...'}
+              </div>
+            </div>
+          ) : groups.length === 0 ? (
+            <div style={{ padding: '40px 24px', textAlign: 'center' }}>
+              <ClipboardCheck size={28} color="#757684" style={{ margin: '0 auto 10px' }} />
+              <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '14px', color: '#454652', fontWeight: 600 }}>
+                {lang === 'es' ? 'Aún no hay conteos guardados' : 'No counts saved yet'}
+              </div>
+              <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#757684', marginTop: '4px' }}>
+                {lang === 'es'
+                  ? 'Use Iniciar Conteo para registrar el primero.'
+                  : 'Run Start Count to record the first one.'}
+              </div>
+            </div>
+          ) : (
+            groups.map(([key, rows]) => {
+              const isOpen = expandedKey === key;
+              const date = rows[0]?.countedAt;
+              const counter = rows[0]?.countedBy;
+              const groupVariance = rows.reduce((s, r) => s + (r.variance ?? 0), 0);
+              const groupVarianceValue = rows.reduce((s, r) => s + (r.varianceValue ?? 0), 0);
+              const itemsWithVariance = rows.filter(r => r.variance != null && r.variance !== 0).length;
+
+              return (
+                <div key={key} style={{ borderBottom: '1px solid rgba(197,197,212,0.2)' }}>
+                  {/* Group header */}
+                  <button
+                    onClick={() => setExpandedKey(isOpen ? null : key)}
+                    style={{
+                      width: '100%', padding: '14px 24px', background: 'transparent',
+                      border: 'none', cursor: 'pointer', textAlign: 'left',
+                      display: 'flex', alignItems: 'center', gap: '10px',
+                    }}
+                  >
+                    {isOpen ? <ChevronDown size={16} color="#454652" /> : <ChevronRight size={16} color="#454652" />}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', flexWrap: 'wrap' }}>
+                        <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 600, color: '#1b1c19' }}>
+                          {date ? formatDateTime(date, lang) : '—'}
+                        </span>
+                        {counter && (
+                          <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#757684' }}>
+                            · {counter}
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684', marginTop: '2px' }}>
+                        {rows.length} {lang === 'es' ? 'artículos' : 'items'}
+                        {itemsWithVariance > 0 && ` · ${itemsWithVariance} ${lang === 'es' ? 'con variación' : 'with variance'}`}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                      {groupVariance !== 0 && (
+                        <div style={{
+                          fontFamily: "'JetBrains Mono', monospace", fontSize: '13px', fontWeight: 700,
+                          color: groupVariance < 0 ? '#ba1a1a' : '#454652',
+                        }}>
+                          {groupVariance > 0 ? '+' : ''}{Math.round(groupVariance)} {lang === 'es' ? 'uds' : 'units'}
+                        </div>
+                      )}
+                      {groupVarianceValue !== 0 && (
+                        <div style={{
+                          fontFamily: "'JetBrains Mono', monospace", fontSize: '11px',
+                          color: groupVarianceValue < 0 ? '#ba1a1a' : '#757684',
+                          marginTop: '2px',
+                        }}>
+                          {groupVarianceValue > 0 ? '+' : ''}{formatCurrency(groupVarianceValue)}
+                        </div>
+                      )}
+                    </div>
+                  </button>
+
+                  {/* Per-item detail */}
+                  {isOpen && (
+                    <div style={{ background: 'rgba(0,0,0,0.02)' }}>
+                      <div style={{
+                        display: 'grid', gridTemplateColumns: '1fr 56px 64px 64px 64px',
+                        gap: '8px', padding: '8px 24px 8px 50px',
+                        fontFamily: "'Inter', sans-serif", fontSize: '10px', fontWeight: 600,
+                        textTransform: 'uppercase', letterSpacing: '0.06em', color: '#757684',
+                      }}>
+                        <span>{lang === 'es' ? 'Artículo' : 'Item'}</span>
+                        <span style={{ textAlign: 'right' }}>{lang === 'es' ? 'Est.' : 'Est.'}</span>
+                        <span style={{ textAlign: 'right' }}>{lang === 'es' ? 'Contado' : 'Counted'}</span>
+                        <span style={{ textAlign: 'right' }}>{lang === 'es' ? 'Var.' : 'Var.'}</span>
+                        <span style={{ textAlign: 'right' }}>$</span>
+                      </div>
+                      {rows
+                        .slice()
+                        .sort((a, b) => a.itemName.localeCompare(b.itemName))
+                        .map(r => {
+                          const color = colorFor(r);
+                          return (
+                            <div key={r.id} style={{
+                              display: 'grid', gridTemplateColumns: '1fr 56px 64px 64px 64px',
+                              gap: '8px', padding: '6px 24px 6px 50px', alignItems: 'center',
+                            }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+                                <span style={{
+                                  width: '6px', height: '6px', borderRadius: '50%',
+                                  background: color, flexShrink: 0,
+                                }} />
+                                <span style={{
+                                  fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#1b1c19',
+                                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                                }}>
+                                  {r.itemName}
+                                </span>
+                              </div>
+                              <span style={{ textAlign: 'right', fontFamily: "'JetBrains Mono', monospace", fontSize: '12px', color: '#757684' }}>
+                                {r.estimatedStock != null ? Math.round(r.estimatedStock) : '—'}
+                              </span>
+                              <span style={{ textAlign: 'right', fontFamily: "'JetBrains Mono', monospace", fontSize: '12px', color: '#454652', fontWeight: 600 }}>
+                                {r.countedStock}
+                              </span>
+                              <span style={{ textAlign: 'right', fontFamily: "'JetBrains Mono', monospace", fontSize: '12px', color, fontWeight: r.variance ? 700 : 400 }}>
+                                {r.variance == null ? '—' : (r.variance > 0 ? '+' : '') + Math.round(r.variance)}
+                              </span>
+                              <span style={{ textAlign: 'right', fontFamily: "'JetBrains Mono', monospace", fontSize: '12px', color }}>
+                                {r.varianceValue == null ? '—' : (r.varianceValue > 0 ? '+' : '') + formatCurrency(r.varianceValue)}
+                              </span>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding: '14px 24px', borderTop: '1px solid rgba(197,197,212,0.2)' }}>
+          <button
+            onClick={onClose}
+            style={{
+              width: '100%', padding: '12px', borderRadius: '9999px',
+              background: '#364262', color: '#fff', border: 'none',
+              fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 600, cursor: 'pointer',
+            }}
+          >
+            {lang === 'es' ? 'Cerrar' : 'Done'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Compact summary stat card used at the top of the history modal.
+function SummaryStat({ label, value, sub, tone }: {
+  label: string;
+  value: string;
+  sub?: string;
+  tone: 'neutral' | 'bad';
+}) {
+  const valueColor = tone === 'bad' ? '#ba1a1a' : '#364262';
+  return (
+    <div style={{
+      background: '#fff', borderRadius: '12px', padding: '10px 12px',
+      border: '1px solid rgba(78,90,122,0.06)',
+    }}>
+      <div style={{
+        fontFamily: "'Inter', sans-serif", fontSize: '10px', fontWeight: 600,
+        textTransform: 'uppercase', letterSpacing: '0.06em', color: '#757684',
+      }}>
+        {label}
+      </div>
+      <div style={{
+        fontFamily: "'JetBrains Mono', monospace", fontSize: '17px', fontWeight: 700,
+        color: valueColor, marginTop: '2px',
+        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+      }}>
+        {value}
+      </div>
+      {sub && (
+        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', color: '#757684', marginTop: '1px' }}>
+          {sub}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Locale-aware "Mar 22, 2026 · 3:47 PM" / "22 mar 2026 · 15:47" formatter.
+function formatDateTime(d: Date, lang: 'en' | 'es'): string {
+  try {
+    const locale = lang === 'es' ? 'es-MX' : 'en-US';
+    const date = d.toLocaleDateString(locale, { month: 'short', day: 'numeric', year: 'numeric' });
+    const time = d.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' });
+    return `${date} · ${time}`;
+  } catch {
+    return d.toISOString();
+  }
 }
 
 // ─── Bulk Usage Rates Modal ──────────────────────────────────────────────────
