@@ -15,8 +15,10 @@ import {
   subscribeToLandscapingTasks, addLandscapingTask, updateLandscapingTask, deleteLandscapingTask,
   subscribeToEquipment, addEquipment, updateEquipment, deleteEquipment,
   subscribeToPreventiveTasks,
+  subscribeToInventory, updateInventoryItem,
+  addPreventiveTask,
 } from '@/lib/db';
-import type { WorkOrder, WorkOrderSeverity, WorkOrderStatus, LandscapingTask, LandscapingSeason, Equipment, EquipmentCategory, EquipmentStatus, PreventiveTask } from '@/types';
+import type { WorkOrder, WorkOrderSeverity, WorkOrderStatus, LandscapingTask, LandscapingSeason, Equipment, EquipmentCategory, EquipmentStatus, PreventiveTask, InventoryItem } from '@/types';
 import {
   generateColdStartAlerts, predictFailures, repairVsReplace,
   type MaintenanceAlert,
@@ -178,6 +180,8 @@ export default function MaintenancePage() {
   const [newDesc, setNewDesc] = useState('');
   const [newSeverity, setNewSeverity] = useState<WorkOrderSeverity>('medium');
   const [newBlockRoom, setNewBlockRoom] = useState(false);
+  const [newEquipmentId, setNewEquipmentId] = useState<string>('');
+  const [newRepairCost, setNewRepairCost] = useState<string>('');
 
   // Inline-edit state — one order at a time. Fields mirror the create form
   // so the same severity pills / block toggle logic works.
@@ -187,6 +191,10 @@ export default function MaintenancePage() {
   const [editSeverity, setEditSeverity] = useState<WorkOrderSeverity>('medium');
   const [editNotes, setEditNotes] = useState('');
   const [editBlockRoom, setEditBlockRoom] = useState(false);
+  const [editEquipmentId, setEditEquipmentId] = useState<string>('');
+  const [editRepairCost, setEditRepairCost] = useState<string>('');
+  const [editPartsUsed, setEditPartsUsed] = useState<string[]>([]);
+  const [partsInputDraft, setPartsInputDraft] = useState<string>('');
 
   // Landscaping state
   const [lsTasks, setLsTasks] = useState<LandscapingTask[]>([]);
@@ -205,6 +213,15 @@ export default function MaintenancePage() {
   const [showEquipmentModal, setShowEquipmentModal] = useState(false);
   const [editingEquipment, setEditingEquipment] = useState<Equipment | null>(null);
   const equipmentSeededRef = useRef(false);
+
+  // Maintenance-category inventory for the resolve-with-supplies modal.
+  // We subscribe to ALL inventory + filter client-side because there's no
+  // server-side filter helper for category and the list is small.
+  const [maintenanceSupplies, setMaintenanceSupplies] = useState<InventoryItem[]>([]);
+  const [resolvingOrder, setResolvingOrder] = useState<WorkOrder | null>(null);
+  const [supplyUsage, setSupplyUsage] = useState<Record<string, number>>({});
+  const [showSupplyList, setShowSupplyList] = useState(false);
+  const [resolving, setResolving] = useState(false);
 
   // ─── Auth guard ──────────────────────────────────────────────────────────
 
@@ -254,6 +271,15 @@ export default function MaintenancePage() {
   useEffect(() => {
     if (!user || !activePropertyId) return;
     return subscribeToPreventiveTasks(user.uid, activePropertyId, setPreventiveTasks);
+  }, [user, activePropertyId]);
+
+  // Maintenance-category inventory — drives the supply-deduction modal that
+  // shows when a work order is being resolved.
+  useEffect(() => {
+    if (!user || !activePropertyId) return;
+    return subscribeToInventory(user.uid, activePropertyId, (incoming) => {
+      setMaintenanceSupplies(incoming.filter(i => i.category === 'maintenance'));
+    });
   }, [user, activePropertyId]);
 
   // Material Symbols font is loaded globally via globals.css
@@ -318,31 +344,89 @@ export default function MaintenancePage() {
         submittedBy: user.uid,
         submittedByName: user.displayName ?? undefined,
         blockedRoom: newBlockRoom || undefined,
+        equipmentId: newEquipmentId || undefined,
+        repairCost: newRepairCost ? parseFloat(newRepairCost) : undefined,
       });
       setShowCreateModal(false);
       setNewRoom('');
       setNewDesc('');
       setNewSeverity('medium');
       setNewBlockRoom(false);
+      setNewEquipmentId('');
+      setNewRepairCost('');
       setToast(t('workOrderSubmitted', lang) + ' \u2713');
     } finally {
       setSubmitting(false);
     }
     // `newBlockRoom` is read inside; adding it to deps is correct.
-  }, [user, activePropertyId, newRoom, newDesc, newSeverity, submitting, lang, newBlockRoom]);
+  }, [user, activePropertyId, newRoom, newDesc, newSeverity, submitting, lang, newBlockRoom, newEquipmentId, newRepairCost]);
 
   const handleStartWork = useCallback(async (order: WorkOrder) => {
     if (!user || !activePropertyId) return;
     await updateWorkOrder(user.uid, activePropertyId, order.id, { status: 'in_progress' });
   }, [user, activePropertyId]);
 
-  const handleResolve = useCallback(async (order: WorkOrder) => {
+  // Open the supply-deduction modal. The modal's "No, Just Resolve" path
+  // calls handleResolveJustComplete, which is the original behavior.
+  const handleOpenResolve = useCallback((order: WorkOrder) => {
+    setResolvingOrder(order);
+    setSupplyUsage({});
+    setShowSupplyList(false);
+  }, []);
+
+  const handleResolveJustComplete = useCallback(async (order: WorkOrder) => {
     if (!user || !activePropertyId) return;
-    await updateWorkOrder(user.uid, activePropertyId, order.id, {
-      status: 'resolved',
-      resolvedAt: new Date(),
-    });
+    setResolving(true);
+    try {
+      await updateWorkOrder(user.uid, activePropertyId, order.id, {
+        status: 'resolved',
+        resolvedAt: new Date(),
+      });
+      setResolvingOrder(null);
+      setSupplyUsage({});
+      setShowSupplyList(false);
+    } finally {
+      setResolving(false);
+    }
   }, [user, activePropertyId]);
+
+  // Confirm-and-resolve: deduct each supply from inventory, accumulate the
+  // names into parts_used, then mark the work order resolved. Stock is
+  // floored at 0 so a typo doesn't drive current_stock negative.
+  const handleResolveWithSupplies = useCallback(async () => {
+    if (!user || !activePropertyId || !resolvingOrder) return;
+    setResolving(true);
+    try {
+      const partsUsedNames: string[] = [];
+      let deductedCount = 0;
+      for (const item of maintenanceSupplies) {
+        const qty = supplyUsage[item.id] ?? 0;
+        if (qty <= 0) continue;
+        const newStock = Math.max(0, item.currentStock - qty);
+        await updateInventoryItem(user.uid, activePropertyId, item.id, { currentStock: newStock });
+        partsUsedNames.push(`${qty} × ${item.name}`);
+        deductedCount++;
+      }
+      const merged = [...(resolvingOrder.partsUsed ?? []), ...partsUsedNames];
+      await updateWorkOrder(user.uid, activePropertyId, resolvingOrder.id, {
+        status: 'resolved',
+        resolvedAt: new Date(),
+        partsUsed: merged,
+      });
+      setToast(lang === 'es'
+        ? `Orden completada. ${deductedCount} material${deductedCount === 1 ? '' : 'es'} descontado${deductedCount === 1 ? '' : 's'}.`
+        : `Work order resolved. ${deductedCount} suppl${deductedCount === 1 ? 'y' : 'ies'} deducted.`);
+      setResolvingOrder(null);
+      setSupplyUsage({});
+      setShowSupplyList(false);
+    } finally {
+      setResolving(false);
+    }
+  }, [user, activePropertyId, resolvingOrder, maintenanceSupplies, supplyUsage, lang]);
+
+  // Back-compat alias — older code paths still reference handleResolve. Now
+  // routes through the modal.
+  const handleResolve = handleOpenResolve;
 
   // ─── Edit / delete handlers ──────────────────────────────────────────────
 
@@ -353,10 +437,15 @@ export default function MaintenancePage() {
     setEditSeverity(order.severity);
     setEditNotes(order.notes || '');
     setEditBlockRoom(!!order.blockedRoom);
+    setEditEquipmentId(order.equipmentId || '');
+    setEditRepairCost(order.repairCost != null ? String(order.repairCost) : '');
+    setEditPartsUsed(order.partsUsed || []);
+    setPartsInputDraft('');
   }, []);
 
   const handleCancelEdit = useCallback(() => {
     setEditingId(null);
+    setPartsInputDraft('');
   }, []);
 
   const handleSaveEdit = useCallback(async (order: WorkOrder) => {
@@ -371,10 +460,14 @@ export default function MaintenancePage() {
       severity:    editSeverity,
       notes:       editNotes.trim() || '',
       blockedRoom: editBlockRoom,
+      equipmentId: editEquipmentId || undefined,
+      repairCost:  editRepairCost ? parseFloat(editRepairCost) : undefined,
+      partsUsed:   editPartsUsed,
     });
     setEditingId(null);
+    setPartsInputDraft('');
     setToast((lang === 'es' ? 'Actualizado' : 'Updated') + ' \u2713');
-  }, [user, activePropertyId, editRoom, editDesc, editSeverity, editNotes, editBlockRoom, lang]);
+  }, [user, activePropertyId, editRoom, editDesc, editSeverity, editNotes, editBlockRoom, editEquipmentId, editRepairCost, editPartsUsed, lang]);
 
   const handleDeleteOrder = useCallback(async (order: WorkOrder) => {
     if (!user || !activePropertyId) return;
@@ -828,8 +921,17 @@ export default function MaintenancePage() {
             </div>
           </div>
         ) : activeTab === 'preventive' ? (
-          /* ── Preventive Maintenance Tab (Inspections) ── */
-          <div key="preventive" className="animate-in stagger-1">
+          /* ── Preventive Maintenance Tab ── */
+          <div key="preventive" className="animate-in stagger-1" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+            <PreventiveIntelligence
+              equipment={equipment}
+              preventiveTasks={preventiveTasks}
+              workOrders={orders}
+              uid={user!.uid}
+              pid={activePropertyId!}
+              lang={lang}
+              onToast={(msg) => setToast(msg)}
+            />
             <InspectionsView />
           </div>
         ) : activeTab === 'equipment' ? (
@@ -1253,6 +1355,42 @@ export default function MaintenancePage() {
               />
             </div>
 
+            {/* Equipment dropdown — auto-fills Room # when a location looks
+                like a room number (purely numeric, max 4 chars). */}
+            <div>
+              <label style={{ fontSize: '12px', fontWeight: 600, color: '#454652', marginBottom: '6px', display: 'block', fontFamily: "'Inter', sans-serif" }}>
+                {lang === 'es' ? 'Equipo' : 'Equipment'}
+              </label>
+              <select
+                value={newEquipmentId}
+                onChange={e => {
+                  const id = e.target.value;
+                  setNewEquipmentId(id);
+                  // Auto-fill Room # if equipment.location is a room-number-shaped string.
+                  if (id && !newRoom) {
+                    const eq = equipment.find(x => x.id === id);
+                    if (eq?.location && /^\d{2,4}$/.test(eq.location.trim())) {
+                      setNewRoom(eq.location.trim());
+                    }
+                  }
+                }}
+                style={{
+                  width: '100%', padding: '12px 16px', fontSize: '14px',
+                  border: '1px solid rgba(197,197,212,0.3)', borderRadius: '12px',
+                  background: '#fff', color: '#1b1c19',
+                  fontFamily: "'Inter', sans-serif",
+                  outline: 'none', transition: 'border 150ms',
+                }}
+              >
+                <option value="">{lang === 'es' ? 'Ninguno' : 'None'}</option>
+                {equipment.map(eq => (
+                  <option key={eq.id} value={eq.id}>
+                    {eq.name}{eq.location ? ` (${eq.location})` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             {/* Description */}
             <div>
               <label style={{ fontSize: '12px', fontWeight: 600, color: '#454652', marginBottom: '6px', display: 'block', fontFamily: "'Inter', sans-serif" }}>
@@ -1268,6 +1406,28 @@ export default function MaintenancePage() {
                   border: '1px solid rgba(197,197,212,0.3)', borderRadius: '12px',
                   background: '#fff', color: '#1b1c19',
                   fontFamily: "'Inter', sans-serif", resize: 'none',
+                  outline: 'none', transition: 'border 150ms',
+                }}
+              />
+            </div>
+
+            {/* Repair Cost — optional dollar amount */}
+            <div>
+              <label style={{ fontSize: '12px', fontWeight: 600, color: '#454652', marginBottom: '6px', display: 'block', fontFamily: "'Inter', sans-serif" }}>
+                {lang === 'es' ? 'Costo de Reparación ($)' : 'Repair Cost ($)'}
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={newRepairCost}
+                onChange={e => setNewRepairCost(e.target.value)}
+                placeholder="0.00"
+                style={{
+                  width: '100%', padding: '12px 16px', fontSize: '14px',
+                  border: '1px solid rgba(197,197,212,0.3)', borderRadius: '12px',
+                  background: '#fff', color: '#1b1c19',
+                  fontFamily: "'JetBrains Mono', monospace",
                   outline: 'none', transition: 'border 150ms',
                 }}
               />
@@ -1482,6 +1642,105 @@ export default function MaintenancePage() {
                     border: '1px solid rgba(197,197,212,0.3)', borderRadius: '12px',
                     background: '#fff', color: '#1b1c19',
                     fontFamily: "'Inter', sans-serif", resize: 'none',
+                    outline: 'none', transition: 'border 150ms',
+                  }}
+                />
+              </div>
+
+              {/* Equipment dropdown */}
+              <div>
+                <label style={{ fontSize: '12px', fontWeight: 600, color: '#454652', marginBottom: '6px', display: 'block', fontFamily: "'Inter', sans-serif" }}>
+                  {lang === 'es' ? 'Equipo' : 'Equipment'}
+                </label>
+                <select
+                  value={editEquipmentId}
+                  onChange={e => setEditEquipmentId(e.target.value)}
+                  style={{
+                    width: '100%', padding: '12px 16px', fontSize: '14px',
+                    border: '1px solid rgba(197,197,212,0.3)', borderRadius: '12px',
+                    background: '#fff', color: '#1b1c19',
+                    fontFamily: "'Inter', sans-serif",
+                    outline: 'none', transition: 'border 150ms',
+                  }}
+                >
+                  <option value="">{lang === 'es' ? 'Ninguno' : 'None'}</option>
+                  {equipment.map(eq => (
+                    <option key={eq.id} value={eq.id}>
+                      {eq.name}{eq.location ? ` (${eq.location})` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Repair Cost */}
+              <div>
+                <label style={{ fontSize: '12px', fontWeight: 600, color: '#454652', marginBottom: '6px', display: 'block', fontFamily: "'Inter', sans-serif" }}>
+                  {lang === 'es' ? 'Costo de Reparación ($)' : 'Repair Cost ($)'}
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={editRepairCost}
+                  onChange={e => setEditRepairCost(e.target.value)}
+                  placeholder="0.00"
+                  style={{
+                    width: '100%', padding: '12px 16px', fontSize: '14px',
+                    border: '1px solid rgba(197,197,212,0.3)', borderRadius: '12px',
+                    background: '#fff', color: '#1b1c19',
+                    fontFamily: "'JetBrains Mono', monospace",
+                    outline: 'none', transition: 'border 150ms',
+                  }}
+                />
+              </div>
+
+              {/* Parts Used — chip input. Press Enter to add a tag, click X to remove. */}
+              <div>
+                <label style={{ fontSize: '12px', fontWeight: 600, color: '#454652', marginBottom: '6px', display: 'block', fontFamily: "'Inter', sans-serif" }}>
+                  {lang === 'es' ? 'Partes Usadas' : 'Parts Used'}
+                </label>
+                {editPartsUsed.length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' }}>
+                    {editPartsUsed.map((part, idx) => (
+                      <span key={idx} style={{
+                        display: 'inline-flex', alignItems: 'center', gap: '6px',
+                        padding: '4px 10px', borderRadius: '9999px',
+                        background: '#f0eee9', color: '#454652',
+                        fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 500,
+                      }}>
+                        {part}
+                        <button
+                          type="button"
+                          onClick={() => setEditPartsUsed(prev => prev.filter((_, i) => i !== idx))}
+                          aria-label={lang === 'es' ? 'Quitar' : 'Remove'}
+                          style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 0, color: '#757684', display: 'inline-flex', alignItems: 'center' }}
+                        >
+                          <X size={12} />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <input
+                  type="text"
+                  value={partsInputDraft}
+                  onChange={e => setPartsInputDraft(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      const v = partsInputDraft.trim();
+                      if (v) {
+                        setEditPartsUsed(prev => [...prev, v]);
+                        setPartsInputDraft('');
+                      }
+                    }
+                  }}
+                  placeholder={lang === 'es' ? 'Escriba y presione Enter' : 'Type and press Enter'}
+                  style={{
+                    width: '100%', padding: '12px 16px', fontSize: '14px',
+                    border: '1px solid rgba(197,197,212,0.3)', borderRadius: '12px',
+                    background: '#fff', color: '#1b1c19',
+                    fontFamily: "'Inter', sans-serif",
                     outline: 'none', transition: 'border 150ms',
                   }}
                 />
@@ -1756,6 +2015,175 @@ export default function MaintenancePage() {
           onClose={() => { setShowEquipmentModal(false); setEditingEquipment(null); }}
           onSaved={(_msg) => { setShowEquipmentModal(false); setEditingEquipment(null); }}
         />
+      )}
+
+      {/* Resolve work order — optional supply deduction */}
+      {resolvingOrder && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, zIndex: 60,
+            background: 'rgba(27,28,25,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
+          }}
+          onClick={e => { if (e.target === e.currentTarget && !resolving) { setResolvingOrder(null); setSupplyUsage({}); setShowSupplyList(false); } }}
+        >
+          <div style={{
+            background: '#fbf9f4', borderRadius: '20px',
+            width: '100%', maxWidth: '520px', maxHeight: '85vh',
+            display: 'flex', flexDirection: 'column', overflow: 'hidden',
+            boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+          }}>
+            <div style={{ padding: '18px 22px', borderBottom: '1px solid rgba(197,197,212,0.2)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <h2 style={{ fontFamily: "'Inter', sans-serif", fontSize: '17px', fontWeight: 700, color: '#1b1c19', margin: 0 }}>
+                  {lang === 'es' ? 'Completar Orden' : 'Resolve Work Order'}
+                </h2>
+                <button
+                  onClick={() => { setResolvingOrder(null); setSupplyUsage({}); setShowSupplyList(false); }}
+                  disabled={resolving}
+                  style={{ background: '#eae8e3', border: 'none', cursor: 'pointer', padding: '6px', borderRadius: '50%' }}
+                >
+                  <X size={14} color="#454652" />
+                </button>
+              </div>
+              <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#757684', margin: '4px 0 0' }}>
+                {resolvingOrder.roomNumber ? `${resolvingOrder.roomNumber} · ` : ''}{resolvingOrder.description}
+              </p>
+            </div>
+
+            <div style={{ overflowY: 'auto', flex: 1, padding: '18px 22px' }}>
+              {!showSupplyList ? (
+                <>
+                  <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '15px', color: '#1b1c19', marginBottom: '6px', fontWeight: 600 }}>
+                    {lang === 'es' ? '¿Usaste algún material de mantenimiento?' : 'Did you use any maintenance supplies?'}
+                  </div>
+                  <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#757684', margin: 0 }}>
+                    {lang === 'es'
+                      ? 'Registrar materiales descuenta del inventario y los anexa a la orden.'
+                      : 'Logging supplies deducts from inventory and appends them to the work order.'}
+                  </p>
+                  {maintenanceSupplies.length === 0 && (
+                    <div style={{
+                      marginTop: '14px', padding: '10px 12px', borderRadius: '10px',
+                      background: 'rgba(0,0,0,0.03)',
+                      fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#757684',
+                    }}>
+                      {lang === 'es'
+                        ? 'Aún no hay materiales registrados.'
+                        : 'No maintenance supplies tracked yet.'}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div>
+                  <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#454652', marginBottom: '10px', fontWeight: 600 }}>
+                    {lang === 'es' ? 'Cantidad usada por artículo:' : 'Quantity used per item:'}
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {maintenanceSupplies
+                      .slice()
+                      .sort((a, b) => a.name.localeCompare(b.name))
+                      .map(item => (
+                        <div key={item.id} style={{
+                          display: 'grid', gridTemplateColumns: '1fr 80px',
+                          gap: '10px', alignItems: 'center',
+                          padding: '8px 10px', borderRadius: '10px',
+                          background: '#fff', border: '1px solid rgba(197,197,212,0.3)',
+                        }}>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 600, color: '#1b1c19', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {item.name}
+                            </div>
+                            <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684' }}>
+                              {lang === 'es' ? 'En stock:' : 'In stock:'} <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>{item.currentStock}</span> {item.unit}
+                            </div>
+                          </div>
+                          <input
+                            type="number" min="0" max={item.currentStock}
+                            value={supplyUsage[item.id] ?? 0}
+                            onChange={e => {
+                              const v = parseInt(e.target.value) || 0;
+                              setSupplyUsage(prev => ({ ...prev, [item.id]: Math.max(0, v) }));
+                            }}
+                            style={{
+                              width: '100%', padding: '8px 10px', borderRadius: '8px',
+                              border: '1px solid #c5c5d4', background: '#fff',
+                              fontFamily: "'JetBrains Mono', monospace", fontSize: '14px', textAlign: 'center',
+                              outline: 'none',
+                            }}
+                          />
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div style={{ padding: '14px 22px', borderTop: '1px solid rgba(197,197,212,0.2)', display: 'flex', gap: '8px' }}>
+              {!showSupplyList ? (
+                <>
+                  <button
+                    onClick={() => resolvingOrder && handleResolveJustComplete(resolvingOrder)}
+                    disabled={resolving}
+                    style={{
+                      flex: 1, padding: '12px', borderRadius: '9999px',
+                      background: '#fff', border: '1px solid #c5c5d4', color: '#454652',
+                      fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 600,
+                      cursor: resolving ? 'wait' : 'pointer',
+                    }}
+                  >
+                    {resolving
+                      ? (lang === 'es' ? 'Guardando...' : 'Saving...')
+                      : (lang === 'es' ? 'No, Solo Completar' : 'No, Just Resolve')}
+                  </button>
+                  {maintenanceSupplies.length > 0 && (
+                    <button
+                      onClick={() => setShowSupplyList(true)}
+                      disabled={resolving}
+                      style={{
+                        flex: 1, padding: '12px', borderRadius: '9999px',
+                        background: '#364262', border: 'none', color: '#fff',
+                        fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 600,
+                        cursor: resolving ? 'wait' : 'pointer',
+                      }}
+                    >
+                      {lang === 'es' ? 'Sí, Registrar Materiales' : 'Yes, Log Supplies'}
+                    </button>
+                  )}
+                </>
+              ) : (
+                <>
+                  <button
+                    onClick={() => setShowSupplyList(false)}
+                    disabled={resolving}
+                    style={{
+                      padding: '12px 16px', borderRadius: '9999px',
+                      background: '#fff', border: '1px solid #c5c5d4', color: '#454652',
+                      fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 600,
+                      cursor: resolving ? 'wait' : 'pointer',
+                    }}
+                  >
+                    {lang === 'es' ? 'Atrás' : 'Back'}
+                  </button>
+                  <button
+                    onClick={handleResolveWithSupplies}
+                    disabled={resolving}
+                    style={{
+                      flex: 1, padding: '12px', borderRadius: '9999px',
+                      background: '#364262', border: 'none', color: '#fff',
+                      fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 600,
+                      cursor: resolving ? 'wait' : 'pointer',
+                    }}
+                  >
+                    {resolving
+                      ? (lang === 'es' ? 'Guardando...' : 'Saving...')
+                      : (lang === 'es' ? 'Confirmar y Completar' : 'Confirm & Resolve')}
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </AppLayout>
   );
@@ -2035,9 +2463,12 @@ function getLsDaysUntilDue(task: LandscapingTask, now: number): number {
 }
 
 // ─── Format helper used in AI insight ───────────────────────────────────────
+// Thin wrapper around the consolidated formatCurrency in @/lib/utils so the
+// AI-insight strings still read as "$1.2k" / "$30" but the implementation
+// stays in one place.
+import { formatCurrency as formatCurrencyBase } from '@/lib/utils';
 function formatShortDollars(n: number): string {
-  if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(1)}k`;
-  return `$${n.toFixed(0)}`;
+  return formatCurrencyBase(n, true);
 }
 
 // ─── Equipment Tab ──────────────────────────────────────────────────────────
@@ -2252,6 +2683,7 @@ function EquipmentEditModal({
   const [replacementCost, setReplacementCost] = useState(item?.replacementCost != null ? String(item.replacementCost) : '');
   const [pmInterval, setPmInterval] = useState(item?.pmIntervalDays != null ? String(item.pmIntervalDays) : '');
   const [status, setStatus] = useState<EquipmentStatus>(item?.status ?? 'operational');
+  const [notes, setNotes] = useState(item?.notes ?? '');
   const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
@@ -2268,6 +2700,7 @@ function EquipmentEditModal({
         purchaseCost: purchaseCost ? parseFloat(purchaseCost) : undefined,
         replacementCost: replacementCost ? parseFloat(replacementCost) : undefined,
         pmIntervalDays: pmInterval ? parseInt(pmInterval) : undefined,
+        notes: notes.trim() || undefined,
       };
       if (item) {
         await updateEquipment(uid, pid, item.id, patch);
@@ -2414,6 +2847,20 @@ function EquipmentEditModal({
           </div>
         </div>
 
+        {/* Notes */}
+        <div>
+          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+            {lang === 'es' ? 'Notas' : 'Notes'}
+          </label>
+          <textarea
+            value={notes}
+            onChange={e => setNotes(e.target.value)}
+            rows={3}
+            placeholder={lang === 'es' ? 'Detalles, ubicación física, manual de servicio…' : 'Details, physical location, service manual…'}
+            style={{ ...inputStyle, resize: 'vertical', minHeight: '60px', fontFamily: "'Inter', sans-serif" }}
+          />
+        </div>
+
         <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
           {item && (
             <button
@@ -2447,6 +2894,270 @@ function EquipmentEditModal({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Preventive Intelligence panel ──────────────────────────────────────────
+//
+// Sits above the existing InspectionsView in the Preventive tab. Two
+// features:
+//
+//   1. Auto-Generate from Equipment — scan all equipment with pm_interval_days
+//      set, find any without a corresponding preventive_tasks row (matched by
+//      equipment_id), and offer to create them. One-shot batch insert.
+//
+//   2. AI-Recommended Interval card per existing PM task linked to equipment.
+//      Computes mean days-between-failures from the work-order history of
+//      the linked equipment (only fires when ≥3 failures so the average
+//      isn't noise) and recommends 0.7× that interval — the heuristic is
+//      "schedule PM at 70% of mean time between failures so you stay ahead
+//      of the next break". Shown as: "Your interval: 90d · AI suggests: 60d
+//      (based on 4 failures)".
+
+const DAY_MS_LOCAL = 1000 * 60 * 60 * 24;
+
+interface RecommendedInterval {
+  taskId: string;
+  taskName: string;
+  yourInterval: number;
+  aiSuggested: number;
+  failureCount: number;
+}
+
+function computeRecommendedIntervals(
+  preventiveTasks: PreventiveTask[],
+  workOrders: WorkOrder[],
+): RecommendedInterval[] {
+  const out: RecommendedInterval[] = [];
+  for (const task of preventiveTasks) {
+    if (!task.equipmentId) continue;
+    const orders = workOrders
+      .filter(o => o.equipmentId === task.equipmentId && o.createdAt)
+      .sort((a, b) => a.createdAt!.getTime() - b.createdAt!.getTime());
+    if (orders.length < 3) continue; // need ≥3 failures for a stable mean
+    const intervals: number[] = [];
+    for (let i = 1; i < orders.length; i++) {
+      intervals.push((orders[i].createdAt!.getTime() - orders[i - 1].createdAt!.getTime()) / DAY_MS_LOCAL);
+    }
+    const mean = intervals.reduce((s, v) => s + v, 0) / intervals.length;
+    const aiSuggested = Math.max(1, Math.round(mean * 0.7));
+    if (aiSuggested === task.frequencyDays) continue; // no recommendation if it matches
+    out.push({
+      taskId: task.id,
+      taskName: task.name,
+      yourInterval: task.frequencyDays,
+      aiSuggested,
+      failureCount: orders.length,
+    });
+  }
+  return out;
+}
+
+function PreventiveIntelligence({
+  equipment, preventiveTasks, workOrders, uid, pid, lang, onToast,
+}: {
+  equipment: Equipment[];
+  preventiveTasks: PreventiveTask[];
+  workOrders: WorkOrder[];
+  uid: string;
+  pid: string;
+  lang: 'en' | 'es';
+  onToast: (msg: string) => void;
+}) {
+  const [autoGenOpen, setAutoGenOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+
+  // Equipment that has pm_interval_days set but no linked preventive task.
+  const candidates = useMemo(() => {
+    const linkedEquipmentIds = new Set(preventiveTasks.map(t => t.equipmentId).filter(Boolean));
+    return equipment.filter(eq =>
+      eq.pmIntervalDays != null && eq.pmIntervalDays > 0 && !linkedEquipmentIds.has(eq.id),
+    );
+  }, [equipment, preventiveTasks]);
+
+  const recommendations = useMemo(
+    () => computeRecommendedIntervals(preventiveTasks, workOrders),
+    [preventiveTasks, workOrders],
+  );
+
+  const handleCreateAll = async () => {
+    setCreating(true);
+    try {
+      for (const eq of candidates) {
+        if (!eq.pmIntervalDays) continue;
+        await addPreventiveTask(uid, pid, {
+          propertyId: pid,
+          name: lang === 'es' ? `${eq.name} — Mantenimiento Preventivo` : `${eq.name} PM`,
+          frequencyDays: eq.pmIntervalDays,
+          equipmentId: eq.id,
+          lastCompletedAt: null,
+        });
+      }
+      onToast(lang === 'es'
+        ? `${candidates.length} tarea${candidates.length === 1 ? '' : 's'} de MP creada${candidates.length === 1 ? '' : 's'} ✓`
+        : `${candidates.length} PM task${candidates.length === 1 ? '' : 's'} created ✓`);
+      setAutoGenOpen(false);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+      {/* Auto-Generate banner */}
+      <div style={{
+        background: '#fff', borderRadius: '12px', padding: '12px 14px',
+        border: '1px solid rgba(78,90,122,0.06)',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        gap: '10px', flexWrap: 'wrap',
+      }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 700, color: '#1b1c19' }}>
+            {lang === 'es' ? 'Generar tareas desde equipos' : 'Auto-generate from equipment'}
+          </div>
+          <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684', marginTop: '2px' }}>
+            {candidates.length === 0
+              ? (lang === 'es' ? 'Todos los equipos con intervalo de MP ya tienen tarea.' : 'All equipment with a PM interval already has a task.')
+              : (lang === 'es'
+                ? `${candidates.length} equipo${candidates.length === 1 ? '' : 's'} sin tarea de MP enlazada.`
+                : `${candidates.length} equipment item${candidates.length === 1 ? '' : 's'} without a linked PM task.`)}
+          </div>
+        </div>
+        <button
+          onClick={() => candidates.length > 0
+            ? setAutoGenOpen(true)
+            : onToast(lang === 'es' ? '¡Todos los equipos tienen tareas de MP!' : 'All equipment has PM tasks!')}
+          style={{
+            padding: '8px 14px', borderRadius: '9999px', border: 'none',
+            background: candidates.length > 0 ? '#364262' : '#f0eee9',
+            color: candidates.length > 0 ? '#fff' : '#757684',
+            fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+            cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px',
+          }}
+        >
+          <Settings size={13} />
+          {lang === 'es' ? 'Auto-Generar' : 'Auto-Generate'}
+        </button>
+      </div>
+
+      {/* AI-Recommended Intervals */}
+      {recommendations.length > 0 && (
+        <div style={{
+          background: 'rgba(0,101,101,0.04)', borderRadius: '12px', padding: '12px 14px',
+          border: '1px solid rgba(0,101,101,0.12)',
+        }}>
+          <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 700, color: '#006565', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '8px' }}>
+            {lang === 'es' ? 'Intervalos sugeridos por IA' : 'AI-Recommended Intervals'}
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {recommendations.map(r => (
+              <div key={r.taskId} style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '8px 10px', borderRadius: '10px', background: '#fff',
+                gap: '10px', flexWrap: 'wrap',
+              }}>
+                <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 600, color: '#1b1c19', flex: 1, minWidth: 0 }}>
+                  {r.taskName}
+                </span>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', color: '#757684', whiteSpace: 'nowrap' }}>
+                  {lang === 'es' ? 'Tu intervalo:' : 'Your interval:'} <strong style={{ color: '#454652' }}>{r.yourInterval}d</strong>
+                  {' · '}
+                  <span style={{ color: '#006565' }}>{lang === 'es' ? 'IA sugiere:' : 'AI suggests:'} <strong>{r.aiSuggested}d</strong></span>
+                  {' · '}
+                  <span style={{ fontSize: '10px' }}>
+                    {lang === 'es'
+                      ? `basado en ${r.failureCount} fallas`
+                      : `based on ${r.failureCount} failures`}
+                  </span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Auto-generate confirmation modal */}
+      {autoGenOpen && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, zIndex: 60,
+            background: 'rgba(27,28,25,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
+          }}
+          onClick={e => { if (e.target === e.currentTarget && !creating) setAutoGenOpen(false); }}
+        >
+          <div style={{
+            background: '#fbf9f4', borderRadius: '20px',
+            width: '100%', maxWidth: '480px', maxHeight: '85vh',
+            display: 'flex', flexDirection: 'column', overflow: 'hidden',
+            boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+          }}>
+            <div style={{ padding: '18px 22px', borderBottom: '1px solid rgba(197,197,212,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <h2 style={{ fontFamily: "'Inter', sans-serif", fontSize: '17px', fontWeight: 700, color: '#1b1c19', margin: 0 }}>
+                {lang === 'es' ? `Crear ${candidates.length} Tareas de MP` : `Create ${candidates.length} PM Task${candidates.length === 1 ? '' : 's'}`}
+              </h2>
+              <button onClick={() => setAutoGenOpen(false)} disabled={creating} style={{ background: '#eae8e3', border: 'none', cursor: 'pointer', padding: '6px', borderRadius: '50%' }}>
+                <X size={14} color="#454652" />
+              </button>
+            </div>
+            <div style={{ overflowY: 'auto', flex: 1, padding: '14px 22px' }}>
+              <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#757684', margin: '0 0 12px' }}>
+                {lang === 'es'
+                  ? 'Se creará una tarea de mantenimiento preventivo para cada equipo:'
+                  : 'A preventive maintenance task will be created for each:'}
+              </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {candidates.map(eq => (
+                  <div key={eq.id} style={{
+                    padding: '8px 10px', borderRadius: '10px',
+                    background: '#fff', border: '1px solid rgba(197,197,212,0.3)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px',
+                  }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 600, color: '#1b1c19' }}>{eq.name}</div>
+                      {eq.location && (
+                        <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684' }}>{eq.location}</div>
+                      )}
+                    </div>
+                    <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', color: '#454652', whiteSpace: 'nowrap' }}>
+                      {lang === 'es' ? `cada ${eq.pmIntervalDays}d` : `every ${eq.pmIntervalDays}d`}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div style={{ padding: '14px 22px', borderTop: '1px solid rgba(197,197,212,0.2)', display: 'flex', gap: '8px' }}>
+              <button
+                onClick={() => setAutoGenOpen(false)}
+                disabled={creating}
+                style={{
+                  padding: '12px 16px', borderRadius: '9999px',
+                  background: '#fff', border: '1px solid #c5c5d4', color: '#454652',
+                  fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 600,
+                  cursor: creating ? 'wait' : 'pointer',
+                }}
+              >
+                {lang === 'es' ? 'Cancelar' : 'Cancel'}
+              </button>
+              <button
+                onClick={handleCreateAll}
+                disabled={creating}
+                style={{
+                  flex: 1, padding: '12px', borderRadius: '9999px',
+                  background: '#364262', border: 'none', color: '#fff',
+                  fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 600,
+                  cursor: creating ? 'wait' : 'pointer',
+                }}
+              >
+                {creating
+                  ? (lang === 'es' ? 'Creando...' : 'Creating...')
+                  : (lang === 'es' ? 'Crear Tareas' : 'Create Tasks')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

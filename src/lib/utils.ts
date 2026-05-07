@@ -47,7 +47,25 @@ export function generateId(): string {
   });
 }
 
-export function formatCurrency(n: number): string {
+/**
+ * Formats a number as USD. Single source of truth — every page used to
+ * carry its own copy with slightly different conventions (some showed
+ * cents, some didn't, some returned '—' for null, some returned '$0').
+ *
+ * Modes:
+ *   - default:        $1,234       (whole-dollar, with thousands separator)
+ *   - short=true:     $1.2k        (compact for chart axes / hero stats)
+ *
+ * Null-safety: returns '$0' rather than throwing or '—', so the hero
+ * stat strings stay aligned. Pages that need a literal '—' for null
+ * should test the input themselves before calling.
+ */
+export function formatCurrency(n: number | null | undefined, short = false): string {
+  if (n == null || isNaN(n)) return '$0';
+  if (short && Math.abs(n) >= 1000) {
+    const sign = n < 0 ? '-' : '';
+    return `${sign}$${(Math.abs(n) / 1000).toFixed(1)}k`;
+  }
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: 'USD',

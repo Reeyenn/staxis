@@ -35,11 +35,8 @@ import { ArrowLeft, BarChart3 } from 'lucide-react';
 
 // ─── Helpers (kept local to avoid circular imports with /inventory page) ────
 
-function formatCurrency(n: number | null | undefined): string {
-  if (n == null || isNaN(n)) return '—';
-  if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(1)}k`;
-  return `$${n.toFixed(2)}`;
-}
+import { formatCurrency as formatCurrencyBase } from '@/lib/utils';
+const formatCurrency = (n: number | null | undefined): string => formatCurrencyBase(n, true);
 
 const CATEGORY_COLORS: Record<InventoryCategory, string> = {
   housekeeping: '#006565',

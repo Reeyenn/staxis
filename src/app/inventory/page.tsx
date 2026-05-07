@@ -82,11 +82,8 @@ function stockStatus(current: number, target: number, reorderAt?: number): 'good
   return 'good';
 }
 
-function formatCurrency(n: number | null | undefined): string {
-  if (n == null || isNaN(n)) return '—';
-  if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(1)}k`;
-  return `$${n.toFixed(2)}`;
-}
+import { formatCurrency as formatCurrencyBase } from '@/lib/utils';
+const formatCurrency = (n: number | null | undefined): string => formatCurrencyBase(n, true);
 
 const STATUS_COLORS = { good: '#006565', low: '#364262', out: '#ba1a1a' };
 
