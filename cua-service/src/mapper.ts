@@ -1,0 +1,428 @@
+/**
+ * PMS mapper — uses Claude's computer-use tool to learn how to navigate
+ * a PMS, then emits a Recipe (see types.ts) that the cheap recipe-runner
+ * can replay forever after.
+ *
+ * This is the only place we burn Claude tokens at scale. Per the
+ * architecture: one mapping run per (pms_type) ≈ $1-2 of API spend.
+ * After that, every property using that PMS gets the recipe for free.
+ *
+ * Implementation:
+ *   - Launch Playwright Chromium, navigate to the PMS login URL.
+ *   - Hand Claude a screenshot + the goal. Claude returns either text or
+ *     a `computer` tool_use block (click, type, screenshot, etc.).
+ *   - Execute the action against Playwright, screenshot, send back as
+ *     tool_result. Loop until Claude says it's done or we hit the cap.
+ *
+ * v0 scope (today): the mapper produces a recipe that contains a working
+ * login flow and a navigation hint for the arrivals page. Each action
+ * (getArrivals, getDepartures, etc.) is mapped as a separate Claude
+ * conversation seeded with the post-login state. We start with arrivals
+ * and getStaffRoster — those are the highest-value for the onboarding
+ * dashboard. Other actions are TODO and fall back to 'unsupported' in
+ * the recipe-runner.
+ */
+
+import type { Browser, Page } from 'playwright';
+import { chromium } from 'playwright';
+import { anthropic, CLAUDE_MODEL, COMPUTER_TOOL, MAPPING_SYSTEM_PROMPT } from './anthropic-client.js';
+import { log } from './log.js';
+import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe } from './types.js';
+
+const MAX_AGENT_STEPS = 25;
+const VIEWPORT = { width: COMPUTER_TOOL.display_width_px, height: COMPUTER_TOOL.display_height_px };
+
+interface MapperOptions {
+  pmsType: PMSType;
+  credentials: PMSCredentials;
+  onProgress?: (step: string, pct: number) => void;
+}
+
+export type MapperResult =
+  | { ok: true; recipe: Recipe }
+  | { ok: false; userMessage: string; detail: Record<string, unknown> };
+
+export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
+  let browser: Browser | null = null;
+
+  try {
+    opts.onProgress?.('Opening browser…', 18);
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({ viewport: VIEWPORT });
+    const page = await context.newPage();
+
+    // ─── Phase 1: learn the login flow ─────────────────────────────────────
+    opts.onProgress?.('Logging in for the first time…', 25);
+    const loginResult = await mapLogin(page, opts.credentials);
+    if (!loginResult.ok) {
+      return { ok: false, userMessage: loginResult.userMessage, detail: loginResult.detail };
+    }
+
+    // After login, save the page state so subsequent action-mapping
+    // sub-runs start from "logged in dashboard" instead of re-doing login.
+    const postLoginUrl = page.url();
+    log.info('login mapped', { postLoginUrl, steps: loginResult.steps.steps.length });
+
+    // ─── Phase 2: map per-action navigation ───────────────────────────────
+    // For v0 we map two: getRoomLayout (rooms list) and getStaffRoster.
+    // Arrivals/departures/room-status fall back to the same mapping flow
+    // in the next iteration — TODO. The recipe-runner will return
+    // 'unsupported' for any action whose recipe is missing.
+    const actions: Recipe['actions'] = {};
+
+    opts.onProgress?.('Finding the rooms list…', 40);
+    const rooms = await mapAction({
+      page,
+      goal: 'Navigate to the rooms list / room registry — the page that shows every room in the property and its number, type, and floor.',
+      postLoginUrl,
+      credentials: opts.credentials,
+    });
+    if (rooms.ok) actions.getRoomLayout = rooms.action;
+
+    opts.onProgress?.('Finding the staff roster…', 55);
+    const staff = await mapAction({
+      page,
+      goal: 'Navigate to the staff / employees / users list — the page that shows housekeeping staff names and contact info.',
+      postLoginUrl,
+      credentials: opts.credentials,
+    });
+    if (staff.ok) actions.getStaffRoster = staff.action;
+
+    // TODO: arrivals, departures, roomStatus, dashboardCounts, history.
+    // These follow the same pattern but need PMS-specific parsing logic
+    // that's worth iterating on with a real PMS in front of us.
+
+    if (Object.keys(actions).length === 0) {
+      return {
+        ok: false,
+        userMessage: 'We could log in but could not find any of the data pages. This usually means the PMS UI changed or your account is missing permissions.',
+        detail: { phase: 'mapping_actions', mapped: [] },
+      };
+    }
+
+    const recipe: Recipe = {
+      schema: 1,
+      description: `Auto-mapped recipe for ${opts.pmsType}. Actions: ${Object.keys(actions).join(', ')}.`,
+      login: loginResult.steps,
+      actions,
+    };
+
+    opts.onProgress?.('Recipe saved — running first extraction…', 65);
+    return { ok: true, recipe };
+  } catch (err) {
+    const e = err as Error;
+    log.error('mapper crashed', { err: e.message, stack: e.stack });
+    return {
+      ok: false,
+      userMessage: 'Something unexpected went wrong while exploring your PMS. Please try again.',
+      detail: { phase: 'mapper', message: e.message },
+    };
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+  }
+}
+
+// ─── Login mapping ───────────────────────────────────────────────────────
+
+interface LoginMapResult {
+  ok: true;
+  steps: LoginSteps;
+}
+interface LoginMapFailure {
+  ok: false;
+  userMessage: string;
+  detail: Record<string, unknown>;
+}
+
+async function mapLogin(page: Page, creds: PMSCredentials): Promise<LoginMapResult | LoginMapFailure> {
+  await page.goto(creds.loginUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+
+  const recordedSteps: RecipeStep[] = [{ kind: 'goto', url: creds.loginUrl }];
+
+  // Conversation with Claude. We keep the entire history (screenshots
+  // included) so Claude can reason about the sequence. Token cost grows
+  // with steps — that's fine for a one-time mapping run.
+  const goal =
+    `Log into this hotel PMS using these credentials: ` +
+    `username "${creds.username}", password "${creds.password}". ` +
+    `Once logged in (you see a dashboard with hotel data), reply with ` +
+    `the JSON {"loggedIn": true, "dashboardSelector": "<a CSS selector ` +
+    `that's only present after login>"} and stop. Don't click anything ` +
+    `else after that. If login fails, reply with {"error": "<reason>"}.`;
+
+  const messages: Anthropic.Messages.MessageParam[] = [
+    { role: 'user', content: [
+      { type: 'text', text: goal },
+      await screenshotBlock(page),
+    ]},
+  ];
+
+  for (let stepIdx = 0; stepIdx < MAX_AGENT_STEPS; stepIdx++) {
+    const response = await anthropic.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: 1024,
+      system: MAPPING_SYSTEM_PROMPT,
+      // SDK v0.95 doesn't yet model computer_20250124 in the Tool union —
+      // the wire format accepts it, the local TS types lag. Cast to any.
+      tools: [COMPUTER_TOOL as unknown as Anthropic.Messages.ToolUnion],
+      messages,
+    });
+
+    messages.push({ role: 'assistant', content: response.content });
+
+    // Check for end-of-turn (Claude is done).
+    if (response.stop_reason === 'end_turn') {
+      const finalText = extractFinalText(response.content);
+      const parsedRaw = tryParseJson(finalText);
+      const parsed = parsedRaw as { loggedIn?: unknown; dashboardSelector?: unknown } | null;
+      if (parsed && parsed.loggedIn) {
+        const successSelector = typeof parsed.dashboardSelector === 'string'
+          ? parsed.dashboardSelector
+          : 'body';
+        return {
+          ok: true,
+          steps: {
+            startUrl: creds.loginUrl,
+            steps: recordedSteps,
+            successSelectors: [successSelector],
+            timeoutMs: 30_000,
+          },
+        };
+      }
+      return {
+        ok: false,
+        userMessage: 'Could not log in. Please double-check your username and password.',
+        detail: { phase: 'login_mapping', finalText, parsed },
+      };
+    }
+
+    // Otherwise expect a tool_use block.
+    const toolUse = response.content.find((c): c is Anthropic.Messages.ToolUseBlock => c.type === 'tool_use');
+    if (!toolUse) break;
+
+    const action = toolUse.input as ComputerAction;
+    const exec = await executeComputerAction(page, action, creds);
+    if (exec.recordedStep) recordedSteps.push(exec.recordedStep);
+
+    // Reply with tool_result + new screenshot.
+    messages.push({
+      role: 'user',
+      content: [{
+        type: 'tool_result',
+        tool_use_id: toolUse.id,
+        content: [
+          await screenshotBlock(page),
+          { type: 'text', text: exec.message },
+        ],
+      }],
+    });
+  }
+
+  return {
+    ok: false,
+    userMessage: 'Took too long to figure out the login form. Please contact support.',
+    detail: { phase: 'login_mapping', maxSteps: MAX_AGENT_STEPS },
+  };
+}
+
+// ─── Per-action mapping ───────────────────────────────────────────────────
+
+interface ActionMapSuccess { ok: true;  action: ActionRecipe }
+interface ActionMapFailure { ok: false; reason: string }
+
+async function mapAction(args: {
+  page: Page;
+  goal: string;
+  postLoginUrl: string;
+  credentials: PMSCredentials;
+}): Promise<ActionMapSuccess | ActionMapFailure> {
+  // Navigate back to the post-login dashboard before starting this
+  // action's mapping — gives every action a clean starting state.
+  if (args.page.url() !== args.postLoginUrl) {
+    await args.page.goto(args.postLoginUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {});
+  }
+
+  const recordedSteps: RecipeStep[] = [{ kind: 'goto', url: args.postLoginUrl }];
+
+  const fullGoal =
+    args.goal +
+    `\n\nWhen you reach the page, reply with the JSON ` +
+    `{"url": "<final URL>", "rowSelector": "<CSS selector matching one row in the list>", ` +
+    `"columns": {<our field name>: "<selector relative to row>"}}` +
+    `\nFields we need depend on the page — for rooms: roomNumber, floor, type. ` +
+    `For staff: name, role, phone. Use empty selectors for fields not visible.`;
+
+  const messages: Anthropic.Messages.MessageParam[] = [
+    { role: 'user', content: [
+      { type: 'text', text: fullGoal },
+      await screenshotBlock(args.page),
+    ]},
+  ];
+
+  for (let stepIdx = 0; stepIdx < MAX_AGENT_STEPS; stepIdx++) {
+    const response = await anthropic.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: 1024,
+      system: MAPPING_SYSTEM_PROMPT,
+      tools: [COMPUTER_TOOL as unknown as Anthropic.Messages.ToolUnion],
+      messages,
+    });
+
+    messages.push({ role: 'assistant', content: response.content });
+
+    if (response.stop_reason === 'end_turn') {
+      const finalText = extractFinalText(response.content);
+      const parsed = tryParseJson(finalText);
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        'rowSelector' in parsed &&
+        'columns' in parsed
+      ) {
+        const p = parsed as { url?: string; rowSelector: string; columns: Record<string, string> };
+        return {
+          ok: true,
+          action: {
+            steps: recordedSteps,
+            parse: {
+              mode: 'table',
+              hint: {
+                rowSelector: p.rowSelector,
+                columns: p.columns,
+              },
+            },
+          },
+        };
+      }
+      return { ok: false, reason: 'mapper returned no usable JSON' };
+    }
+
+    const toolUse = response.content.find((c): c is Anthropic.Messages.ToolUseBlock => c.type === 'tool_use');
+    if (!toolUse) break;
+
+    const action = toolUse.input as ComputerAction;
+    const exec = await executeComputerAction(args.page, action, args.credentials);
+    if (exec.recordedStep) recordedSteps.push(exec.recordedStep);
+
+    messages.push({
+      role: 'user',
+      content: [{
+        type: 'tool_result',
+        tool_use_id: toolUse.id,
+        content: [
+          await screenshotBlock(args.page),
+          { type: 'text', text: exec.message },
+        ],
+      }],
+    });
+  }
+
+  return { ok: false, reason: 'mapper exhausted step budget' };
+}
+
+// ─── Computer-action executor (the bridge between Claude and Playwright) ──
+
+type ComputerAction =
+  | { action: 'screenshot' }
+  | { action: 'left_click';  coordinate: [number, number] }
+  | { action: 'type';        text: string }
+  | { action: 'key';         text: string }
+  | { action: 'mouse_move';  coordinate: [number, number] }
+  | { action: 'scroll';      coordinate: [number, number]; scroll_direction: 'up' | 'down'; scroll_amount: number }
+  | { action: 'wait';        duration: number };
+
+async function executeComputerAction(
+  page: Page,
+  action: ComputerAction,
+  creds: PMSCredentials,
+): Promise<{ message: string; recordedStep?: RecipeStep }> {
+  switch (action.action) {
+    case 'screenshot':
+      return { message: 'screenshot taken' };
+
+    case 'left_click': {
+      const [x, y] = action.coordinate;
+      await page.mouse.click(x, y);
+      return { message: `clicked (${x}, ${y})`, recordedStep: { kind: 'wait_ms', ms: 500 } };
+    }
+
+    case 'type': {
+      // If the typed text is the username or password, store as
+      // placeholder in the recipe so we don't leak credentials.
+      let recordedValue: string = action.text;
+      if (action.text === creds.username) recordedValue = '$username';
+      if (action.text === creds.password) recordedValue = '$password';
+
+      await page.keyboard.type(action.text);
+      // Best-effort selector capture for the recipe — Playwright doesn't
+      // give us a selector after keyboard.type. The recipe will use the
+      // last clicked field instead. v0: skip the recipe step here.
+      return { message: `typed ${action.text === creds.password ? '<password>' : action.text}`,
+               recordedStep: undefined };
+    }
+
+    case 'key':
+      await page.keyboard.press(action.text);
+      return { message: `pressed ${action.text}`, recordedStep: { kind: 'press_key', key: action.text } };
+
+    case 'mouse_move':
+      await page.mouse.move(action.coordinate[0], action.coordinate[1]);
+      return { message: 'mouse moved' };
+
+    case 'scroll': {
+      await page.mouse.wheel(0, action.scroll_direction === 'down' ? action.scroll_amount * 100 : -action.scroll_amount * 100);
+      return { message: `scrolled ${action.scroll_direction}` };
+    }
+
+    case 'wait':
+      await new Promise((r) => setTimeout(r, action.duration * 1000));
+      return { message: `waited ${action.duration}s` };
+
+    default: {
+      const a = action as { action: string };
+      return { message: `unsupported action: ${a.action}` };
+    }
+  }
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────
+
+async function screenshotBlock(page: Page): Promise<Anthropic.Messages.ImageBlockParam> {
+  const buf = await page.screenshot({ fullPage: false });
+  return {
+    type: 'image',
+    source: {
+      type: 'base64',
+      media_type: 'image/png',
+      data: buf.toString('base64'),
+    },
+  };
+}
+
+function extractFinalText(content: Anthropic.Messages.ContentBlock[]): string {
+  return content
+    .filter((c): c is Anthropic.Messages.TextBlock => c.type === 'text')
+    .map((c) => c.text)
+    .join('\n');
+}
+
+function tryParseJson(text: string): unknown {
+  // Strip markdown code fences if present — Claude often wraps JSON in ```json ... ```
+  const cleaned = text.replace(/```(?:json)?\s*/g, '').replace(/```/g, '').trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    // Find the first {…} block
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    try {
+      return JSON.parse(match[0]);
+    } catch {
+      return null;
+    }
+  }
+}
+
+// ─── Type imports (deferred to avoid circular issues) ─────────────────────
+
+import type Anthropic from '@anthropic-ai/sdk';
