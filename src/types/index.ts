@@ -21,13 +21,13 @@ export interface Property {
   shiftMinutes: number;         // default 480 (8 hrs)
   totalStaffOnRoster: number;
   weeklyBudget?: number;
-  ownerId?: string | null;     // auth.users id of the property owner; drives owner-only UI gating (e.g. /admin/ml).
   morningBriefingTime?: string; // "06:30"
   eveningForecastTime?: string; // "18:00"
   pmsType?: string;
   pmsUrl?: string;
   pmsConnected?: boolean;
   lastSyncedAt?: Date | null;
+  alertPhone?: string;          // E.164 phone for inventory critical SMS alerts; falls back to MANAGER_PHONE env var
   createdAt: Date;
 }
 
@@ -158,6 +158,39 @@ export interface InventoryItem {
   reorderLeadDays?: number;     // days before empty to trigger reorder (default 3)
   vendorName?: string;          // supplier name
   lastOrderedAt?: Date | null;  // when last ordered
+  unitCost?: number;            // dollars per unit (drives Total Inventory Value + variance $)
+  lastAlertedAt?: Date | null;  // when this item last triggered a critical SMS alert (24h dedupe)
+}
+
+// One row per item per Count Mode save. Powers reconciliation history and shrinkage trends.
+export interface InventoryCount {
+  id: string;
+  propertyId: string;
+  itemId: string;
+  itemName: string;             // snapshotted (survives item deletion)
+  countedStock: number;
+  estimatedStock?: number;      // null when no usage rates were configured
+  variance?: number;            // counted - estimated
+  varianceValue?: number;       // variance * unitCost
+  unitCost?: number;
+  countedAt: Date | null;
+  countedBy?: string;
+  notes?: string;
+}
+
+// One row per restock event. Logged when stock goes up after a count, or via manual entry.
+export interface InventoryOrder {
+  id: string;
+  propertyId: string;
+  itemId: string;
+  itemName: string;
+  quantity: number;
+  unitCost?: number;
+  totalCost?: number;           // quantity * unitCost
+  vendorName?: string;
+  orderedAt?: Date | null;
+  receivedAt: Date | null;
+  notes?: string;
 }
 
 // ─── Inspections ──────────────────────────────────────────────────────────

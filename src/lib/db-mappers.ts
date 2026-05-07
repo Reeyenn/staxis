@@ -31,6 +31,8 @@ import type {
   WorkOrder,
   PreventiveTask,
   InventoryItem,
+  InventoryCount,
+  InventoryOrder,
   Inspection,
   HandoffEntry,
   GuestRequest,
@@ -86,6 +88,7 @@ export function toPropertyRow(p: Partial<Property>): Record<string, unknown> {
     pms_url: p.pmsUrl,
     pms_connected: p.pmsConnected,
     last_synced_at: toISO(p.lastSyncedAt),
+    alert_phone: p.alertPhone,
   });
 }
 
@@ -110,8 +113,8 @@ export function fromPropertyRow(r: Record<string, unknown>): Property {
     pmsUrl: (r.pms_url as string) ?? undefined,
     pmsConnected: (r.pms_connected as boolean) ?? undefined,
     lastSyncedAt: toDate(r.last_synced_at),
+    alertPhone: (r.alert_phone as string) ?? undefined,
     createdAt: toDate(r.created_at) ?? new Date(),
-    ownerId: r.owner_id == null ? null : String(r.owner_id),
   };
 }
 
@@ -460,6 +463,8 @@ export function fromInventoryRow(r: Record<string, unknown>): InventoryItem {
     reorderLeadDays: r.reorder_lead_days == null ? undefined : Number(r.reorder_lead_days),
     vendorName: (r.vendor_name as string) ?? undefined,
     lastOrderedAt: toDate(r.last_ordered_at),
+    unitCost: r.unit_cost == null ? undefined : Number(r.unit_cost),
+    lastAlertedAt: toDate(r.last_alerted_at),
   };
 }
 
@@ -478,6 +483,75 @@ export function toInventoryRow(i: Partial<InventoryItem>): Record<string, unknow
     reorder_lead_days: i.reorderLeadDays,
     vendor_name: i.vendorName,
     last_ordered_at: toISO(i.lastOrderedAt),
+    unit_cost: i.unitCost,
+    last_alerted_at: toISO(i.lastAlertedAt),
+  });
+}
+
+// ─── Inventory count (audit log of count events) ────────────────────────────
+
+export function fromInventoryCountRow(r: Record<string, unknown>): InventoryCount {
+  return {
+    id: String(r.id),
+    propertyId: String(r.property_id ?? ''),
+    itemId: String(r.item_id ?? ''),
+    itemName: String(r.item_name ?? ''),
+    countedStock: Number(r.counted_stock ?? 0),
+    estimatedStock: r.estimated_stock == null ? undefined : Number(r.estimated_stock),
+    variance: r.variance == null ? undefined : Number(r.variance),
+    varianceValue: r.variance_value == null ? undefined : Number(r.variance_value),
+    unitCost: r.unit_cost == null ? undefined : Number(r.unit_cost),
+    countedAt: toDate(r.counted_at),
+    countedBy: (r.counted_by as string) ?? undefined,
+    notes: (r.notes as string) ?? undefined,
+  };
+}
+
+export function toInventoryCountRow(c: Partial<InventoryCount>): Record<string, unknown> {
+  return dropUndefined({
+    property_id: c.propertyId,
+    item_id: c.itemId,
+    item_name: c.itemName,
+    counted_stock: c.countedStock,
+    estimated_stock: c.estimatedStock,
+    variance: c.variance,
+    variance_value: c.varianceValue,
+    unit_cost: c.unitCost,
+    counted_by: c.countedBy,
+    notes: c.notes,
+  });
+}
+
+// ─── Inventory order (audit log of restocks) ────────────────────────────────
+
+export function fromInventoryOrderRow(r: Record<string, unknown>): InventoryOrder {
+  return {
+    id: String(r.id),
+    propertyId: String(r.property_id ?? ''),
+    itemId: String(r.item_id ?? ''),
+    itemName: String(r.item_name ?? ''),
+    quantity: Number(r.quantity ?? 0),
+    unitCost: r.unit_cost == null ? undefined : Number(r.unit_cost),
+    totalCost: r.total_cost == null ? undefined : Number(r.total_cost),
+    vendorName: (r.vendor_name as string) ?? undefined,
+    orderedAt: toDate(r.ordered_at),
+    receivedAt: toDate(r.received_at),
+    notes: (r.notes as string) ?? undefined,
+  };
+}
+
+export function toInventoryOrderRow(o: Partial<InventoryOrder>): Record<string, unknown> {
+  return dropUndefined({
+    property_id: o.propertyId,
+    item_id: o.itemId,
+    item_name: o.itemName,
+    quantity: o.quantity,
+    unit_cost: o.unitCost,
+    total_cost: o.totalCost,
+    vendor_name: o.vendorName,
+    ordered_at: toISO(o.orderedAt),
+    received_at: toISO(o.receivedAt),
+    notes: o.notes,
   });
 }
 

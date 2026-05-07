@@ -5,24 +5,19 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
-import { t } from '@/lib/translations';
 import { AppLayout } from '@/components/layout/AppLayout';
 import {
   subscribeToInventory, addInventoryItem, updateInventoryItem, deleteInventoryItem,
+  addInventoryCountBatch, addInventoryOrder,
 } from '@/lib/db';
+import { fetchOccupancySinceLastCount, calculateEstimatedStock, type OccupancySinceLastCount } from '@/lib/inventory-estimate';
 import type { InventoryItem, InventoryCategory } from '@/types';
 import {
-  Plus, Package, ClipboardCheck, Clock, AlertTriangle, Check, Info,
+  Plus, Package, ClipboardCheck, AlertTriangle, Check, Info, Settings,
+  TrendingDown, DollarSign, Truck,
 } from 'lucide-react';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
-
-const CATEGORIES: { key: InventoryCategory | 'all'; label: string; labelEs: string }[] = [
-  { key: 'all', label: 'All', labelEs: 'Todo' },
-  { key: 'housekeeping', label: 'Housekeeping', labelEs: 'Limpieza' },
-  { key: 'maintenance', label: 'Maintenance', labelEs: 'Mantenimiento' },
-  { key: 'breakfast', label: 'Breakfast/F&B', labelEs: 'Desayuno/A&B' },
-];
 
 const DEFAULTS: Omit<InventoryItem, 'id' | 'updatedAt' | 'propertyId'>[] = [
   { name: 'King Sheets', category: 'housekeeping', currentStock: 0, parLevel: 80, unit: 'sets' },
@@ -69,38 +64,41 @@ function timeAgo(date: Date | null | undefined | { seconds?: number; toDate?: ()
 
 function stockStatus(current: number, target: number, reorderAt?: number): 'good' | 'low' | 'out' {
   if (current <= 0) return 'out';
-  // If user set an explicit reorder threshold, use it
   if (typeof reorderAt === 'number' && reorderAt > 0) {
     if (current <= reorderAt * 0.5) return 'out';
     if (current <= reorderAt) return 'low';
     return 'good';
   }
-  // Fallback to percentage-of-target heuristic
   if (current < target * 0.3) return 'out';
   if (current < target * 0.7) return 'low';
   return 'good';
 }
 
+function formatCurrency(n: number | null | undefined): string {
+  if (n == null || isNaN(n)) return '—';
+  if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(1)}k`;
+  return `$${n.toFixed(2)}`;
+}
+
 const STATUS_COLORS = { good: '#006565', low: '#364262', out: '#ba1a1a' };
-const STATUS_BG = { good: '#eae8e3', low: '#d3e4f8', out: '#ffdad6' };
-const STATUS_LABELS = { good: 'Good', low: 'Low', out: 'Critical' };
-const STATUS_LABELS_ES = { good: 'Bien', low: 'Bajo', out: 'Crítico' };
 
 // ─── Main Page ───────────────────────────────────────────────────────────────
 
 export default function InventoryPage() {
   const { user, loading: authLoading } = useAuth();
-  const { activeProperty, activePropertyId, loading: propLoading } = useProperty();
+  const { activePropertyId, loading: propLoading } = useProperty();
   const { lang } = useLang();
   const router = useRouter();
 
   const [items, setItems] = useState<InventoryItem[]>([]);
-  const [activeCategory, setActiveCategory] = useState<InventoryCategory | 'all'>('all');
+  const [occupancy, setOccupancy] = useState<OccupancySinceLastCount | null>(null);
   const [counting, setCounting] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showBulkRates, setShowBulkRates] = useState(false);
   const [editItem, setEditItem] = useState<InventoryItem | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [lowStockAlert, setLowStockAlert] = useState<InventoryItem[] | null>(null);
+  const [reconciliation, setReconciliation] = useState<ReconciliationData | null>(null);
+  const [orderPrompt, setOrderPrompt] = useState<OrderPromptData | null>(null);
 
   const seededRef = useRef(false);
 
@@ -115,7 +113,7 @@ export default function InventoryPage() {
     if (!authLoading && !propLoading && user && !activePropertyId) router.replace('/onboarding');
   }, [user, authLoading, propLoading, activePropertyId, router]);
 
-  // Subscribe to inventory items
+  // Subscribe to inventory items + run silent migration
   useEffect(() => {
     if (!user || !activePropertyId) return;
     let isFirst = true;
@@ -160,55 +158,74 @@ export default function InventoryPage() {
     return unsub;
   }, [user, activePropertyId]);
 
-  // Derived data
-  const sortedItems = useMemo(() => {
-    const filtered = activeCategory === 'all' ? items : items.filter(i => i.category === activeCategory);
-    return [...filtered].sort((a, b) => a.name.localeCompare(b.name));
-  }, [items, activeCategory]);
+  // Fetch occupancy data once items load (uses earliest updatedAt as window start)
+  useEffect(() => {
+    if (!activePropertyId || items.length === 0) return;
+    const earliest = items
+      .map(i => i.updatedAt ? new Date(i.updatedAt).getTime() : null)
+      .filter((t): t is number => t !== null);
+    if (earliest.length === 0) return;
+    const since = new Date(Math.min(...earliest));
+    fetchOccupancySinceLastCount(activePropertyId, since)
+      .then(setOccupancy)
+      .catch(err => console.error('[inventory] occupancy fetch failed:', err));
+  }, [activePropertyId, items]);
 
-  const categoryCounts = useMemo(() => {
-    const counts: Record<string, number> = { all: items.length };
-    items.forEach(i => { counts[i.category] = (counts[i.category] ?? 0) + 1; });
-    return counts;
+  // Per-item estimates
+  const estimates = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof calculateEstimatedStock>>();
+    if (!occupancy) return map;
+    items.forEach(item => {
+      // Pass the per-item window: occupancy since THIS item's last count.
+      // We approximate using the global occupancy here — for more precision
+      // each item would need its own occupancy fetch, but this is good
+      // enough for the common case where everything was counted recently.
+      const itemOccupancy: OccupancySinceLastCount = item.updatedAt
+        ? occupancy
+        : { ...occupancy, source: 'none' };
+      map.set(item.id, calculateEstimatedStock(item, itemOccupancy));
+    });
+    return map;
+  }, [items, occupancy]);
+
+  // Effective stock used for status decisions (estimated when available, else raw)
+  const effectiveStock = useCallback((item: InventoryItem): number => {
+    const est = estimates.get(item.id);
+    return est?.hasEstimate ? est.estimated : item.currentStock;
+  }, [estimates]);
+
+  // ─── Hero stats ─────────────────────────────────────────────────────────
+  const stockHealthPct = useMemo(() => {
+    if (items.length === 0) return 100;
+    const goodItems = items.filter(i => stockStatus(effectiveStock(i), i.parLevel, i.reorderAt) === 'good').length;
+    return Math.round((goodItems / items.length) * 100);
+  }, [items, effectiveStock]);
+
+  const totalInventoryValue = useMemo(() => {
+    return items.reduce((sum, i) => {
+      if (i.unitCost == null) return sum;
+      return sum + Number(i.unitCost) * Number(i.currentStock);
+    }, 0);
   }, [items]);
 
-  const lowCount = useMemo(() => items.filter(i => stockStatus(i.currentStock, i.parLevel, i.reorderAt) !== 'good').length, [items]);
+  const itemsWithCost = useMemo(() => items.filter(i => i.unitCost != null).length, [items]);
 
   const lastCounted = useMemo(() => {
-    const timestamps = items.map(i => {
-      const d = i.updatedAt as unknown;
-      if (!d) return 0;
-      if (typeof (d as { toDate?: () => Date }).toDate === 'function') return (d as { toDate: () => Date }).toDate().getTime();
-      if (typeof (d as { seconds?: number }).seconds === 'number') return (d as { seconds: number }).seconds * 1000;
-      const t = new Date(d as Date).getTime();
-      return isNaN(t) ? 0 : t;
-    }).filter(t => t > 0);
+    const timestamps = items.map(i => i.updatedAt ? new Date(i.updatedAt).getTime() : 0).filter(t => t > 0);
     if (timestamps.length === 0) return null;
     return new Date(Math.max(...timestamps));
   }, [items]);
 
-  // ─── Computed stats for hero (must be before loading guard — hooks can't be after early returns) ──
-  const stockHealthPct = useMemo(() => {
-    if (items.length === 0) return 100;
-    const goodItems = items.filter(i => stockStatus(i.currentStock, i.parLevel, i.reorderAt) === 'good').length;
-    return Math.round((goodItems / items.length) * 100);
-  }, [items]);
-
-  const countCompletionPct = useMemo(() => {
-    if (items.length === 0) return 0;
-    const counted = items.filter(i => i.updatedAt).length;
-    return Math.round((counted / items.length) * 100);
-  }, [items]);
-
   const aiInsight = useMemo(() => {
-    const criticalItems = items.filter(i => stockStatus(i.currentStock, i.parLevel, i.reorderAt) === 'out');
-    const lowItemsList = items.filter(i => stockStatus(i.currentStock, i.parLevel, i.reorderAt) === 'low');
+    const criticalItems = items.filter(i => stockStatus(effectiveStock(i), i.parLevel, i.reorderAt) === 'out');
+    const lowItemsList = items.filter(i => stockStatus(effectiveStock(i), i.parLevel, i.reorderAt) === 'low');
     if (criticalItems.length > 0) {
       const worst = criticalItems[0];
-      const pct = worst.parLevel > 0 ? Math.round((worst.currentStock / worst.parLevel) * 100) : 0;
+      const stk = effectiveStock(worst);
+      const pct = worst.parLevel > 0 ? Math.round((stk / worst.parLevel) * 100) : 0;
       return lang === 'es'
         ? `${worst.name} está ${pct}% por debajo del umbral. Se recomienda reorden inmediato.`
-        : `${worst.name} ${worst.currentStock === 0 ? 'is out of stock' : `is ${100 - pct}% below threshold`}. AI recommends immediate reorder.`;
+        : `${worst.name} ${stk === 0 ? 'is out of stock' : `is ${100 - pct}% below threshold`}. AI recommends immediate reorder.`;
     }
     if (lowItemsList.length > 0) {
       return lang === 'es'
@@ -218,17 +235,110 @@ export default function InventoryPage() {
     return lang === 'es'
       ? 'Todos los niveles de inventario están saludables. No se requieren acciones inmediatas.'
       : 'All inventory levels are healthy. No immediate actions required.';
-  }, [items, lang]);
+  }, [items, lang, effectiveStock]);
 
   const hkItems = useMemo(() => items.filter(i => i.category === 'housekeeping').sort((a, b) => a.name.localeCompare(b.name)), [items]);
   const maintItems = useMemo(() => items.filter(i => i.category === 'maintenance').sort((a, b) => a.name.localeCompare(b.name)), [items]);
   const fbItems = useMemo(() => items.filter(i => i.category === 'breakfast').sort((a, b) => a.name.localeCompare(b.name)), [items]);
 
   const catAlerts = useMemo(() => ({
-    housekeeping: hkItems.filter(i => stockStatus(i.currentStock, i.parLevel, i.reorderAt) !== 'good').length,
-    maintenance: maintItems.filter(i => stockStatus(i.currentStock, i.parLevel, i.reorderAt) !== 'good').length,
-    breakfast: fbItems.filter(i => stockStatus(i.currentStock, i.parLevel, i.reorderAt) !== 'good').length,
-  }), [hkItems, maintItems, fbItems]);
+    housekeeping: hkItems.filter(i => stockStatus(effectiveStock(i), i.parLevel, i.reorderAt) !== 'good').length,
+    maintenance: maintItems.filter(i => stockStatus(effectiveStock(i), i.parLevel, i.reorderAt) !== 'good').length,
+    breakfast: fbItems.filter(i => stockStatus(effectiveStock(i), i.parLevel, i.reorderAt) !== 'good').length,
+  }), [hkItems, maintItems, fbItems, effectiveStock]);
+
+  // ─── Count Mode → Reconciliation pipeline ──────────────────────────────
+  const handleCountDone = useCallback((updatedCounts: Record<string, number>) => {
+    setCounting(false);
+
+    // Build reconciliation rows: one per item that changed.
+    const rows: ReconciliationRow[] = [];
+    const orderRows: OrderPromptRow[] = [];
+
+    items.forEach(item => {
+      const counted = updatedCounts[item.id];
+      if (counted == null) return;
+      const previous = item.currentStock;
+      const est = estimates.get(item.id);
+      const hasEst = est?.hasEstimate ?? false;
+      const estimated = hasEst ? est!.estimated : null;
+      const variance = estimated != null ? counted - estimated : null;
+      const varianceValue = variance != null && item.unitCost != null ? variance * item.unitCost : null;
+
+      rows.push({
+        item,
+        counted,
+        previous,
+        estimated,
+        variance,
+        varianceValue,
+      });
+
+      // If stock went up, candidate for order logging
+      if (counted > previous) {
+        orderRows.push({
+          item,
+          delta: counted - previous,
+        });
+      }
+    });
+
+    // Save count rows to the audit log (best-effort; non-blocking)
+    if (user && activePropertyId) {
+      const countLogRows = rows.map(r => ({
+        propertyId: activePropertyId,
+        itemId: r.item.id,
+        itemName: r.item.name,
+        countedStock: r.counted,
+        estimatedStock: r.estimated ?? undefined,
+        variance: r.variance ?? undefined,
+        varianceValue: r.varianceValue ?? undefined,
+        unitCost: r.item.unitCost,
+        countedAt: new Date(),
+        countedBy: user.displayName ?? user.username ?? undefined,
+      }));
+      addInventoryCountBatch(user.uid, activePropertyId, countLogRows)
+        .catch(err => console.error('[inventory] count log failed:', err));
+    }
+
+    // Critical SMS alerts: items that are critical right now (post-count).
+    const criticalNowIds = items
+      .filter(item => {
+        const counted = updatedCounts[item.id];
+        if (counted == null) return false;
+        return stockStatus(counted, item.parLevel, item.reorderAt) === 'out';
+      })
+      .map(i => i.id);
+
+    if (criticalNowIds.length > 0 && activePropertyId) {
+      fetch('/api/inventory/check-alerts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pid: activePropertyId, criticalItemIds: criticalNowIds }),
+      })
+        .then(r => r.json())
+        .then(data => {
+          if (data?.sent > 0) {
+            showToast(lang === 'es' ? `Alerta SMS enviada (${data.sent})` : `SMS alert sent (${data.sent})`);
+          }
+        })
+        .catch(err => console.error('[inventory] alert dispatch failed:', err));
+    }
+
+    // Always show reconciliation; chain to order prompt + low stock notice from there.
+    setReconciliation({ rows, pendingOrders: orderRows });
+  }, [items, estimates, user, activePropertyId, lang, showToast]);
+
+  const handleReconciliationClose = useCallback(() => {
+    setReconciliation(prev => {
+      if (prev?.pendingOrders && prev.pendingOrders.length > 0) {
+        setOrderPrompt({ rows: prev.pendingOrders, index: 0 });
+      } else {
+        showToast(lang === 'es' ? 'Conteo guardado ✓' : 'Inventory count saved ✓');
+      }
+      return null;
+    });
+  }, [lang, showToast]);
 
   // Loading guard
   if (authLoading || propLoading || !user || !activePropertyId) {
@@ -246,7 +356,7 @@ export default function InventoryPage() {
     );
   }
 
-  // ─── MAIN VIEW — Stitch Inventory Intelligence Layout ─────────────────────
+  // ─── MAIN VIEW ─────────────────────────────────────────────────────────
   return (
     <AppLayout>
       <style>{`
@@ -266,16 +376,8 @@ export default function InventoryPage() {
             display: 'flex', alignItems: 'center',
             flexWrap: 'wrap', gap: '24px',
           }}>
-            {/* Left: key stats — side by side */}
-            <div style={{ display: 'flex', flexDirection: 'row', gap: '28px', flexShrink: 0, alignItems: 'flex-start' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
-                  {lang === 'es' ? 'Conteo' : 'Count'}
-                </span>
-                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '26px', fontWeight: 700, color: '#364262', lineHeight: 1.1 }}>
-                  {countCompletionPct}%
-                </span>
-              </div>
+            {/* Left: key stats */}
+            <div style={{ display: 'flex', flexDirection: 'row', gap: '24px', flexShrink: 0, alignItems: 'flex-start' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                 <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
                   {lang === 'es' ? 'Salud' : 'Stock'}
@@ -283,6 +385,19 @@ export default function InventoryPage() {
                 <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '26px', fontWeight: 700, color: stockHealthPct >= 70 ? '#006565' : stockHealthPct >= 40 ? '#364262' : '#ba1a1a', lineHeight: 1.1 }}>
                   {stockHealthPct}%
                 </span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+                  {lang === 'es' ? 'Valor' : 'Value'}
+                </span>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '26px', fontWeight: 700, color: '#364262', lineHeight: 1.1 }}>
+                  {itemsWithCost > 0 ? formatCurrency(totalInventoryValue) : '—'}
+                </span>
+                {itemsWithCost > 0 && itemsWithCost < items.length && (
+                  <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '10px', color: '#757684' }}>
+                    {itemsWithCost}/{items.length} {lang === 'es' ? 'con costo' : 'priced'}
+                  </span>
+                )}
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                 <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
@@ -294,8 +409,8 @@ export default function InventoryPage() {
               </div>
             </div>
 
-            {/* Center: Concierge Insight (nudged right with extra left padding) */}
-            <div style={{ flex: 1, minWidth: '200px', textAlign: 'center', paddingLeft: '24px' }}>
+            {/* Center: Concierge Insight */}
+            <div style={{ flex: 1, minWidth: '200px', textAlign: 'center', paddingLeft: '16px' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '7px', marginBottom: '6px' }}>
                 <span style={{ fontSize: '13px', color: '#006565' }}>✦</span>
                 <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#006565' }}>
@@ -307,33 +422,45 @@ export default function InventoryPage() {
               </p>
             </div>
 
-            {/* Right: Start Count */}
-            <button
-              onClick={() => setCounting(true)}
-              style={{
-                background: '#364262', color: '#fff', border: 'none',
-                padding: '10px 20px', borderRadius: '9999px',
-                fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 600,
-                cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px',
-                flexShrink: 0, transition: 'transform 150ms',
-              }}
-            >
-              <ClipboardCheck size={16} />
-              {lang === 'es' ? 'Iniciar Conteo' : 'Start Count'}
-            </button>
+            {/* Right: action buttons */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flexShrink: 0 }}>
+              <button
+                onClick={() => setCounting(true)}
+                style={{
+                  background: '#364262', color: '#fff', border: 'none',
+                  padding: '10px 20px', borderRadius: '9999px',
+                  fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 600,
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px',
+                  transition: 'transform 150ms',
+                }}
+              >
+                <ClipboardCheck size={16} />
+                {lang === 'es' ? 'Iniciar Conteo' : 'Start Count'}
+              </button>
+              <button
+                onClick={() => setShowBulkRates(true)}
+                style={{
+                  background: 'transparent', color: '#364262', border: '1px solid #c5c5d4',
+                  padding: '8px 16px', borderRadius: '9999px',
+                  fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
+                }}
+              >
+                <Settings size={13} />
+                {lang === 'es' ? 'Tasas de Uso' : 'Usage Rates'}
+              </button>
+            </div>
           </div>
         </header>
 
-        {/* ── Bento Grid: 3 Category Columns ── */}
+        {/* ── Bento Grid ── */}
         <div className="inv-cat-grid animate-in stagger-2">
-          {/* Render each category column */}
           {([
             { key: 'housekeeping' as InventoryCategory, label: lang === 'es' ? 'Limpieza' : 'Housekeeping', items: hkItems, alerts: catAlerts.housekeeping },
             { key: 'maintenance' as InventoryCategory, label: lang === 'es' ? 'Mantenimiento' : 'Maintenance', items: maintItems, alerts: catAlerts.maintenance },
             { key: 'breakfast' as InventoryCategory, label: lang === 'es' ? 'Alimentos y Bebidas' : 'Food & Beverage', items: fbItems, alerts: catAlerts.breakfast },
           ]).map(cat => (
             <section key={cat.key} style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              {/* Category header */}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 2px' }}>
                 <h2 style={{ fontFamily: "'Inter', sans-serif", fontSize: '15px', fontWeight: 600, color: '#1b1c19' }}>
                   {cat.label}
@@ -357,7 +484,6 @@ export default function InventoryPage() {
                 )}
               </div>
 
-              {/* Item cards */}
               {cat.items.length === 0 ? (
                 <div style={{
                   padding: '20px 12px', textAlign: 'center', borderRadius: '14px',
@@ -370,22 +496,25 @@ export default function InventoryPage() {
                 </div>
               ) : (
                 cat.items.map(item => {
-                  const status = stockStatus(item.currentStock, item.parLevel, item.reorderAt);
-                  const pct = item.parLevel > 0 ? Math.min(100, Math.round((item.currentStock / item.parLevel) * 100)) : 0;
+                  const est = estimates.get(item.id);
+                  const stk = est?.hasEstimate ? est.estimated : item.currentStock;
+                  const status = stockStatus(stk, item.parLevel, item.reorderAt);
+                  const pct = item.parLevel > 0 ? Math.min(100, Math.round((stk / item.parLevel) * 100)) : 0;
                   const isCritical = status === 'out';
                   const barColor = status === 'good' ? '#364262' : status === 'low' ? '#364262' : '#ba1a1a';
                   const barBg = status === 'out' ? '#ffdad6' : '#f0eee9';
+                  const itemValue = item.unitCost != null ? item.unitCost * item.currentStock : null;
 
                   return (
                     <div key={item.id} className="inv-card" onClick={() => setEditItem(item)} style={{
                       background: '#fff', borderRadius: '14px', padding: '12px 14px',
                       transition: 'all 300ms',
-                      height: '104px', boxSizing: 'border-box',
+                      minHeight: '104px', boxSizing: 'border-box',
                       display: 'flex', flexDirection: 'column',
                       cursor: 'pointer',
                     }}>
                       {/* Name + timestamp */}
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', gap: '8px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px', gap: '8px' }}>
                         <span style={{
                           fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 500, color: '#454652',
                           whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
@@ -405,12 +534,14 @@ export default function InventoryPage() {
                       </div>
 
                       {/* Stock numbers */}
-                      <div style={{ display: 'flex', alignItems: 'baseline', gap: '5px' }}>
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: '5px', flexWrap: 'wrap' }}>
                         <span style={{
                           fontFamily: "'JetBrains Mono', monospace", fontSize: '22px', fontWeight: 500,
                           color: isCritical ? '#ba1a1a' : '#364262', letterSpacing: '-0.02em', lineHeight: 1,
+                          textDecoration: est?.hasEstimate ? 'underline dotted #c5c5d4 2px' : 'none',
+                          textUnderlineOffset: '4px',
                         }}>
-                          {item.currentStock.toLocaleString()}
+                          {Math.round(stk).toLocaleString()}
                         </span>
                         <span style={{
                           fontFamily: "'JetBrains Mono', monospace", fontSize: '13px',
@@ -418,6 +549,24 @@ export default function InventoryPage() {
                         }}>
                           / {item.parLevel.toLocaleString()}
                         </span>
+                        {est?.hasEstimate && (
+                          <span title={lang === 'es' ? 'Estimado por uso' : 'Estimated from usage'} style={{
+                            fontFamily: "'Inter', sans-serif", fontSize: '9px', fontWeight: 700,
+                            color: '#006565', letterSpacing: '0.06em',
+                            background: 'rgba(0,101,101,0.08)', padding: '1px 5px', borderRadius: '4px',
+                            textTransform: 'uppercase',
+                          }}>
+                            {lang === 'es' ? 'EST.' : 'EST.'}
+                          </span>
+                        )}
+                        {itemValue != null && (
+                          <span style={{
+                            fontFamily: "'JetBrains Mono', monospace", fontSize: '10px',
+                            color: '#757684', marginLeft: 'auto',
+                          }}>
+                            {formatCurrency(itemValue)}
+                          </span>
+                        )}
                       </div>
 
                       {/* Progress bar */}
@@ -432,7 +581,6 @@ export default function InventoryPage() {
                         }} />
                       </div>
 
-                      {/* Critical warning */}
                       {isCritical && (
                         <div style={{
                           marginTop: '6px', display: 'flex', alignItems: 'center', gap: '5px',
@@ -448,7 +596,7 @@ export default function InventoryPage() {
                 })
               )}
 
-              {/* Add item for this category */}
+              {/* Add item */}
               <button
                 onClick={() => setShowAddModal(true)}
                 style={{
@@ -473,118 +621,78 @@ export default function InventoryPage() {
         </div>
       </div>
 
-      {/* Add item modal */}
+      {/* Add */}
       <AddItemModal
         isOpen={showAddModal}
         onClose={() => setShowAddModal(false)}
         uid={user.uid}
         pid={activePropertyId}
-        onAdded={() => showToast('Item added ✓')}
+        lang={lang}
+        onAdded={() => showToast(lang === 'es' ? 'Artículo agregado ✓' : 'Item added ✓')}
       />
 
-      {/* Edit item modal */}
+      {/* Edit */}
       {editItem && (
         <EditItemModal
           item={editItem}
           uid={user.uid}
           pid={activePropertyId}
+          lang={lang}
           onClose={() => setEditItem(null)}
-          onSaved={() => { setEditItem(null); showToast('Item updated ✓'); }}
-          onDeleted={() => { setEditItem(null); showToast('Item deleted ✓'); }}
+          onSaved={() => { setEditItem(null); showToast(lang === 'es' ? 'Artículo actualizado ✓' : 'Item updated ✓'); }}
+          onDeleted={() => { setEditItem(null); showToast(lang === 'es' ? 'Artículo eliminado ✓' : 'Item deleted ✓'); }}
         />
       )}
 
-      {/* Low Stock Alert */}
-      {lowStockAlert && (
-        <div style={{
-          position: 'fixed', inset: 0, zIndex: 100,
-          background: 'rgba(27,28,25,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
-        }}
-          onClick={() => { setLowStockAlert(null); showToast('Inventory count saved ✓'); }}
-        >
-          <div
-            onClick={e => e.stopPropagation()}
-            style={{
-              background: '#fbf9f4', borderRadius: '24px',
-              width: '100%', maxWidth: '440px', maxHeight: '80vh', overflow: 'hidden',
-              boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
-              display: 'flex', flexDirection: 'column',
-            }}
-          >
-            <div style={{
-              padding: '20px 24px', background: '#ba1a1a',
-              color: '#fff', display: 'flex', alignItems: 'center', gap: '12px',
-              borderRadius: '24px 24px 0 0',
-            }}>
-              <AlertTriangle size={22} />
-              <div>
-                <div style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: '17px' }}>
-                  {lang === 'es' ? 'Stock Bajo' : 'Running Low'}
-                </div>
-                <div style={{ fontSize: '13px', opacity: 0.9, fontFamily: "'Inter', sans-serif" }}>
-                  {lowStockAlert.length} {lang === 'es' ? 'artículos bajo objetivo' : `item${lowStockAlert.length !== 1 ? 's' : ''} below target`}
-                </div>
-              </div>
-            </div>
-            <div style={{ overflow: 'auto', flex: 1 }}>
-              {lowStockAlert.map(item => {
-                const status = stockStatus(item.currentStock, item.parLevel, item.reorderAt);
-                const pct = item.parLevel > 0 ? Math.round((item.currentStock / item.parLevel) * 100) : 0;
-                return (
-                  <div key={item.id} style={{
-                    display: 'flex', alignItems: 'center', gap: '12px',
-                    padding: '12px 24px', borderBottom: '1px solid rgba(197,197,212,0.2)',
-                  }}>
-                    <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: STATUS_COLORS[status], flexShrink: 0 }} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontFamily: "'Inter', sans-serif", fontWeight: 600, fontSize: '14px', color: '#1b1c19' }}>{item.name}</div>
-                      <div style={{ fontSize: '12px', color: '#757684' }}>{item.category} · {item.unit}</div>
-                    </div>
-                    <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: '15px', color: STATUS_COLORS[status] }}>
-                        {item.currentStock} <span style={{ fontWeight: 400, color: '#757684', fontSize: '12px' }}>/ {item.parLevel}</span>
-                      </div>
-                      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', color: '#757684' }}>{pct}%</div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            <div style={{ padding: '16px 24px', borderTop: '1px solid rgba(197,197,212,0.2)' }}>
-              <button
-                onClick={() => { setLowStockAlert(null); showToast('Inventory count saved ✓'); }}
-                style={{
-                  width: '100%', padding: '14px', borderRadius: '9999px',
-                  background: '#364262', color: '#fff', border: 'none',
-                  fontFamily: "'Inter', sans-serif", fontSize: '15px', fontWeight: 600, cursor: 'pointer',
-                }}
-              >
-                {lang === 'es' ? 'Entendido' : 'Got It'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Count Mode Modal */}
-      {counting && (
-        <CountMode
+      {/* Bulk usage rates */}
+      {showBulkRates && (
+        <BulkUsageRatesModal
           items={items}
           uid={user.uid}
           pid={activePropertyId}
-          onDone={(updatedCounts) => {
-            setCounting(false);
-            const lowItems = items.filter(item => {
-              const newCount = updatedCounts[item.id] ?? item.currentStock;
-              return newCount < item.parLevel && newCount >= 0;
-            }).map(item => ({ ...item, currentStock: updatedCounts[item.id] ?? item.currentStock }));
-            if (lowItems.length > 0) {
-              setLowStockAlert(lowItems);
+          lang={lang}
+          onClose={() => setShowBulkRates(false)}
+          onSaved={(n) => { setShowBulkRates(false); showToast(lang === 'es' ? `${n} actualizado` : `${n} updated`); }}
+        />
+      )}
+
+      {/* Reconciliation */}
+      {reconciliation && (
+        <ReconciliationModal
+          rows={reconciliation.rows}
+          lang={lang}
+          onClose={handleReconciliationClose}
+        />
+      )}
+
+      {/* Order logging */}
+      {orderPrompt && (
+        <OrderLoggingModal
+          rows={orderPrompt.rows}
+          index={orderPrompt.index}
+          uid={user.uid}
+          pid={activePropertyId}
+          lang={lang}
+          onAdvance={(nextIdx) => {
+            if (nextIdx >= orderPrompt.rows.length) {
+              setOrderPrompt(null);
+              showToast(lang === 'es' ? 'Conteo guardado ✓' : 'Inventory count saved ✓');
             } else {
-              showToast('Inventory count saved ✓');
+              setOrderPrompt({ ...orderPrompt, index: nextIdx });
             }
           }}
+        />
+      )}
+
+      {/* Count Mode */}
+      {counting && (
+        <CountMode
+          items={items}
+          estimates={estimates}
+          uid={user.uid}
+          pid={activePropertyId}
+          lang={lang}
+          onDone={handleCountDone}
           onCancel={() => setCounting(false)}
         />
       )}
@@ -607,14 +715,42 @@ export default function InventoryPage() {
   );
 }
 
+// ─── Reconciliation types ───────────────────────────────────────────────────
+
+interface ReconciliationRow {
+  item: InventoryItem;
+  counted: number;
+  previous: number;
+  estimated: number | null;
+  variance: number | null;       // counted - estimated
+  varianceValue: number | null;  // variance * unit_cost
+}
+
+interface ReconciliationData {
+  rows: ReconciliationRow[];
+  pendingOrders: OrderPromptRow[];
+}
+
+interface OrderPromptRow {
+  item: InventoryItem;
+  delta: number;
+}
+
+interface OrderPromptData {
+  rows: OrderPromptRow[];
+  index: number;
+}
+
 // ─── COUNT MODE ──────────────────────────────────────────────────────────────
 
 function CountMode({
-  items, uid, pid, onDone, onCancel,
+  items, estimates, uid, pid, lang, onDone, onCancel,
 }: {
   items: InventoryItem[];
+  estimates: Map<string, ReturnType<typeof calculateEstimatedStock>>;
   uid: string;
   pid: string;
+  lang: 'en' | 'es';
   onDone: (updatedCounts: Record<string, number>) => void;
   onCancel: () => void;
 }) {
@@ -653,134 +789,588 @@ function CountMode({
   }).length;
 
   return (
-    <>
-      <div style={{ position: 'fixed', inset: 0, zIndex: 50, background: 'rgba(27,28,25,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}
-        onClick={e => { if (e.target === e.currentTarget) onCancel(); }}
-      >
+    <div style={{ position: 'fixed', inset: 0, zIndex: 50, background: 'rgba(27,28,25,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}
+      onClick={e => { if (e.target === e.currentTarget) onCancel(); }}
+    >
+      <div style={{
+        background: '#fbf9f4', borderRadius: '24px', width: '100%', maxWidth: '560px',
+        maxHeight: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+      }}>
+        <div style={{ padding: '20px 24px', borderBottom: '1px solid rgba(197,197,212,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <h2 style={{ fontFamily: "'Inter', sans-serif", fontSize: '18px', fontWeight: 700, color: '#1b1c19', margin: 0 }}>
+              {lang === 'es' ? 'Conteo de Inventario' : 'Inventory Count'}
+            </h2>
+            <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#757684', margin: '4px 0 0' }}>
+              {lang === 'es' ? 'Cuente cada artículo, ingrese los números abajo.' : 'Count each item, enter the numbers below.'}
+            </p>
+          </div>
+          <button
+            onClick={onCancel}
+            style={{
+              padding: '8px 16px', borderRadius: '9999px',
+              border: '1px solid #c5c5d4', background: '#fff',
+              fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 600, cursor: 'pointer',
+              color: '#454652',
+            }}
+          >
+            {lang === 'es' ? 'Cancelar' : 'Cancel'}
+          </button>
+        </div>
+
+        <div style={{ overflowY: 'auto', flex: 1 }}>
+          <div style={{
+            display: 'grid', gridTemplateColumns: '1fr 64px 80px 50px',
+            gap: '8px', padding: '10px 24px', background: '#f5f3ee',
+            borderBottom: '1px solid rgba(197,197,212,0.2)',
+            fontFamily: "'Inter', sans-serif", fontSize: '10px', fontWeight: 600, textTransform: 'uppercase',
+            letterSpacing: '0.08em', color: '#757684',
+            position: 'sticky', top: 0, zIndex: 1,
+          }}>
+            <span>{lang === 'es' ? 'Artículo' : 'Item'}</span>
+            <span style={{ textAlign: 'right' }}>{lang === 'es' ? 'Est.' : 'Est.'}</span>
+            <span style={{ textAlign: 'center' }}>{lang === 'es' ? 'Conteo' : 'Count'}</span>
+            <span style={{ textAlign: 'right' }}>{lang === 'es' ? 'Meta' : 'Target'}</span>
+          </div>
+
+          {sorted.map((item, idx) => {
+            const val = parseInt(counts[item.id] ?? '0') || 0;
+            const status = stockStatus(val, item.parLevel, item.reorderAt);
+            const changed = val !== item.currentStock;
+            const est = estimates.get(item.id);
+            return (
+              <div
+                key={item.id}
+                style={{
+                  display: 'grid', gridTemplateColumns: '1fr 64px 80px 50px',
+                  gap: '8px', padding: '12px 24px', alignItems: 'center',
+                  borderBottom: '1px solid rgba(197,197,212,0.2)',
+                  background: changed ? 'rgba(0,101,101,0.04)' : undefined,
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontFamily: "'Inter', sans-serif", fontWeight: 600, fontSize: '14px', color: '#1b1c19', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {item.name}
+                  </div>
+                  <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684', textTransform: 'uppercase' }}>
+                    {item.category} · {item.unit}
+                  </div>
+                </div>
+                <div style={{ textAlign: 'right', fontSize: '12px', color: est?.hasEstimate ? '#006565' : '#c5c5d4', fontFamily: "'JetBrains Mono', monospace", fontWeight: 600 }}>
+                  {est?.hasEstimate ? Math.round(est.estimated) : '—'}
+                </div>
+                <input
+                  ref={el => { inputRefs.current[item.id] = el; }}
+                  type="number"
+                  min="0"
+                  value={counts[item.id] ?? '0'}
+                  onChange={e => setCounts(prev => ({ ...prev, [item.id]: e.target.value }))}
+                  onFocus={e => e.target.select()}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' || e.key === 'Tab') {
+                      e.preventDefault();
+                      const nextItem = sorted[idx + 1];
+                      if (nextItem) inputRefs.current[nextItem.id]?.focus();
+                    }
+                  }}
+                  style={{
+                    width: '100%', padding: '8px 6px', borderRadius: '12px',
+                    border: `2px solid ${changed ? '#006565' : '#c5c5d4'}`,
+                    background: '#fff', fontSize: '16px', fontWeight: 700,
+                    fontFamily: "'JetBrains Mono', monospace", textAlign: 'center',
+                    color: STATUS_COLORS[status], outline: 'none',
+                  }}
+                />
+                <div style={{ textAlign: 'right', fontSize: '13px', color: '#757684', fontFamily: "'JetBrains Mono', monospace" }}>
+                  {item.parLevel}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ padding: '16px 24px', borderTop: '1px solid rgba(197,197,212,0.2)', background: '#fbf9f4' }}>
+          <button
+            onClick={handleSave}
+            disabled={saving || changedCount === 0}
+            style={{
+              width: '100%', padding: '14px', borderRadius: '9999px',
+              background: changedCount > 0 ? '#364262' : '#eae8e3',
+              color: changedCount > 0 ? '#fff' : '#757684', border: 'none',
+              fontFamily: "'Inter', sans-serif", fontSize: '15px', fontWeight: 600,
+              cursor: changedCount > 0 ? 'pointer' : 'default',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+              opacity: saving ? 0.6 : 1,
+            }}
+          >
+            <Check size={18} />
+            {saving
+              ? (lang === 'es' ? 'Guardando...' : 'Saving...')
+              : changedCount > 0
+                ? (lang === 'es' ? `Guardar (${changedCount} cambios)` : `Save Count (${changedCount} changed)`)
+                : (lang === 'es' ? 'Sin cambios' : 'No changes')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Reconciliation Modal ────────────────────────────────────────────────────
+//
+// Shown after a Count Mode save. Lists items where the system estimate
+// differed from the user's count by more than 1 unit. Color-coded by
+// magnitude. Total dollar variance shown at the top when unit costs are set.
+
+function ReconciliationModal({
+  rows, lang, onClose,
+}: {
+  rows: ReconciliationRow[];
+  lang: 'en' | 'es';
+  onClose: () => void;
+}) {
+  // Filter: only show rows with meaningful variance (>1)
+  const significant = useMemo(
+    () => rows.filter(r => r.variance != null && Math.abs(r.variance) > 1),
+    [rows],
+  );
+
+  const totalVarianceDollars = useMemo(
+    () => significant.reduce((sum, r) => sum + (r.varianceValue ?? 0), 0),
+    [significant],
+  );
+
+  // Nothing to show → auto-close (hooks must run before any conditional return).
+  useEffect(() => {
+    if (significant.length === 0) onClose();
+  }, [significant.length, onClose]);
+
+  if (significant.length === 0) return null;
+
+  const colorFor = (r: ReconciliationRow) => {
+    if (r.variance == null || r.estimated == null || r.estimated === 0) return '#757684';
+    const pct = Math.abs(r.variance) / Math.max(1, r.estimated);
+    if (pct > 0.25) return '#ba1a1a';
+    if (pct > 0.10) return '#c98a14';
+    return '#006565';
+  };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 100,
+      background: 'rgba(27,28,25,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
+    }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{
+        background: '#fbf9f4', borderRadius: '24px',
+        width: '100%', maxWidth: '560px', maxHeight: '85vh', overflow: 'hidden',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+        display: 'flex', flexDirection: 'column',
+      }}>
         <div style={{
-          background: '#fbf9f4', borderRadius: '24px', width: '100%', maxWidth: '540px',
-          maxHeight: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden',
-          boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+          padding: '20px 24px', background: '#1b1c19',
+          color: '#fff', borderRadius: '24px 24px 0 0',
         }}>
-          <div style={{ padding: '20px 24px', borderBottom: '1px solid rgba(197,197,212,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '4px' }}>
+            <TrendingDown size={22} />
+            <div style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: '17px' }}>
+              {lang === 'es' ? 'Reconciliación' : 'Reconciliation'}
+            </div>
+          </div>
+          <div style={{ fontSize: '13px', opacity: 0.85, fontFamily: "'Inter', sans-serif" }}>
+            {lang === 'es'
+              ? `${significant.length} artículo(s) con variación. Pérdida no contabilizada: ${formatCurrency(totalVarianceDollars)}`
+              : `${significant.length} item${significant.length !== 1 ? 's' : ''} with variance. Unaccounted: ${formatCurrency(totalVarianceDollars)}`}
+          </div>
+        </div>
+
+        <div style={{ overflow: 'auto', flex: 1 }}>
+          {significant.map(r => {
+            const color = colorFor(r);
+            const variance = r.variance ?? 0;
+            return (
+              <div key={r.item.id} style={{
+                padding: '14px 24px', borderBottom: '1px solid rgba(197,197,212,0.2)',
+                display: 'flex', flexDirection: 'column', gap: '4px',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: color, flexShrink: 0 }} />
+                  <span style={{ fontFamily: "'Inter', sans-serif", fontWeight: 600, fontSize: '14px', color: '#1b1c19' }}>
+                    {r.item.name}
+                  </span>
+                  {r.varianceValue != null && (
+                    <span style={{ marginLeft: 'auto', fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: '13px', color }}>
+                      {variance > 0 ? '+' : ''}{formatCurrency(r.varianceValue)}
+                    </span>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: '14px', fontSize: '12px', fontFamily: "'JetBrains Mono', monospace", color: '#757684', paddingLeft: '16px' }}>
+                  <span>{lang === 'es' ? 'Estimado' : 'Estimated'}: <strong style={{ color: '#454652' }}>{r.estimated != null ? Math.round(r.estimated) : '—'}</strong></span>
+                  <span>{lang === 'es' ? 'Contado' : 'Counted'}: <strong style={{ color: '#454652' }}>{r.counted}</strong></span>
+                  <span>{lang === 'es' ? 'Variación' : 'Variance'}: <strong style={{ color }}>{variance > 0 ? '+' : ''}{Math.round(variance)}</strong></span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ padding: '16px 24px', borderTop: '1px solid rgba(197,197,212,0.2)' }}>
+          <button
+            onClick={onClose}
+            style={{
+              width: '100%', padding: '14px', borderRadius: '9999px',
+              background: '#364262', color: '#fff', border: 'none',
+              fontFamily: "'Inter', sans-serif", fontSize: '15px', fontWeight: 600, cursor: 'pointer',
+            }}
+          >
+            {lang === 'es' ? 'Continuar' : 'Continue'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Order Logging Modal ─────────────────────────────────────────────────────
+//
+// Shown one item at a time when stock went UP after a count. User confirms
+// they received an order; we write a row to inventory_orders.
+
+function OrderLoggingModal({
+  rows, index, uid, pid, lang, onAdvance,
+}: {
+  rows: OrderPromptRow[];
+  index: number;
+  uid: string;
+  pid: string;
+  lang: 'en' | 'es';
+  onAdvance: (nextIdx: number) => void;
+}) {
+  const current = rows[index];
+  const [quantity, setQuantity] = useState(String(current.delta));
+  const [unitCost, setUnitCost] = useState(current.item.unitCost != null ? String(current.item.unitCost) : '');
+  const [vendor, setVendor] = useState(current.item.vendorName ?? '');
+  const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  // Reset when index changes
+  useEffect(() => {
+    setQuantity(String(current.delta));
+    setUnitCost(current.item.unitCost != null ? String(current.item.unitCost) : '');
+    setVendor(current.item.vendorName ?? '');
+    setNotes('');
+  }, [current]);
+
+  const handleConfirm = async () => {
+    setSaving(true);
+    try {
+      const qty = parseFloat(quantity) || 0;
+      const cost = unitCost.trim() === '' ? undefined : parseFloat(unitCost);
+      await addInventoryOrder(uid, pid, {
+        propertyId: pid,
+        itemId: current.item.id,
+        itemName: current.item.name,
+        quantity: qty,
+        unitCost: cost,
+        vendorName: vendor.trim() || undefined,
+        receivedAt: new Date(),
+        notes: notes.trim() || undefined,
+      });
+      onAdvance(index + 1);
+    } catch (err) {
+      console.error('[order log] save failed', err);
+      onAdvance(index + 1);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSkip = () => onAdvance(index + 1);
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '12px 16px', borderRadius: '16px',
+    border: '1px solid #c5c5d4', background: '#fff',
+    fontFamily: "'Inter', sans-serif", fontSize: '14px', color: '#1b1c19',
+    outline: 'none',
+  };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 100,
+      background: 'rgba(27,28,25,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
+    }}>
+      <div style={{
+        width: '100%', maxWidth: '480px', background: '#fbf9f4', borderRadius: '24px',
+        padding: '24px', display: 'flex', flexDirection: 'column', gap: '14px',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+      }}>
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
+            <Truck size={20} color="#006565" />
+            <h2 style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: '17px', color: '#1b1c19', margin: 0 }}>
+              {lang === 'es' ? '¿Recibió un pedido?' : 'Did you receive an order?'}
+            </h2>
+          </div>
+          <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#757684', margin: 0 }}>
+            <strong>{current.item.name}</strong> — {lang === 'es'
+              ? `el stock subió de ${current.item.currentStock - current.delta} a ${current.item.currentStock} (+${current.delta}).`
+              : `stock went from ${current.item.currentStock - current.delta} to ${current.item.currentStock} (+${current.delta}).`}
+          </p>
+          <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684', margin: '6px 0 0' }}>
+            {lang === 'es' ? `Item ${index + 1} de ${rows.length}` : `Item ${index + 1} of ${rows.length}`}
+          </p>
+        </div>
+
+        <div>
+          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>
+            {lang === 'es' ? 'Cantidad recibida' : 'Quantity received'}
+          </label>
+          <input type="number" min="0" value={quantity} onChange={e => setQuantity(e.target.value)} style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+          <div>
+            <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>
+              {lang === 'es' ? 'Costo unitario ($)' : 'Unit cost ($)'}
+            </label>
+            <input type="number" step="0.01" min="0" value={unitCost} onChange={e => setUnitCost(e.target.value)} style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} placeholder="—" />
+          </div>
+          <div>
+            <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>
+              {lang === 'es' ? 'Proveedor' : 'Vendor'}
+            </label>
+            <input value={vendor} onChange={e => setVendor(e.target.value)} style={inputStyle} placeholder={lang === 'es' ? 'Opcional' : 'Optional'} />
+          </div>
+        </div>
+
+        <div>
+          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>
+            {lang === 'es' ? 'Notas' : 'Notes'}
+          </label>
+          <input value={notes} onChange={e => setNotes(e.target.value)} style={inputStyle} placeholder={lang === 'es' ? 'Opcional' : 'Optional'} />
+        </div>
+
+        <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
+          <button
+            onClick={handleSkip}
+            disabled={saving}
+            style={{
+              padding: '14px 20px', border: '1px solid #c5c5d4', borderRadius: '9999px',
+              background: '#fff', color: '#454652', cursor: 'pointer',
+              fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 600,
+            }}
+          >
+            {lang === 'es' ? 'Omitir' : 'Skip'}
+          </button>
+          <button
+            onClick={handleConfirm}
+            disabled={saving}
+            style={{
+              flex: 1, padding: '14px', border: 'none', borderRadius: '9999px',
+              background: '#364262', color: '#fff', cursor: 'pointer',
+              fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 600,
+            }}
+          >
+            {saving
+              ? (lang === 'es' ? 'Guardando...' : 'Saving...')
+              : (lang === 'es' ? 'Registrar Pedido' : 'Log Order')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Bulk Usage Rates Modal ──────────────────────────────────────────────────
+//
+// Big editable table for setting usage_per_checkout / usage_per_stayover /
+// unit_cost on every item at once. Way faster than the one-by-one edit
+// modal during onboarding.
+
+function BulkUsageRatesModal({
+  items, uid, pid, lang, onClose, onSaved,
+}: {
+  items: InventoryItem[];
+  uid: string;
+  pid: string;
+  lang: 'en' | 'es';
+  onClose: () => void;
+  onSaved: (n: number) => void;
+}) {
+  const sorted = useMemo(() => [...items].sort((a, b) => a.name.localeCompare(b.name)), [items]);
+  const [draft, setDraft] = useState<Record<string, { perCheckout: string; perStayover: string; unitCost: string }>>(() => {
+    const d: Record<string, { perCheckout: string; perStayover: string; unitCost: string }> = {};
+    sorted.forEach(item => {
+      d[item.id] = {
+        perCheckout: item.usagePerCheckout != null ? String(item.usagePerCheckout) : '',
+        perStayover: item.usagePerStayover != null ? String(item.usagePerStayover) : '',
+        unitCost: item.unitCost != null ? String(item.unitCost) : '',
+      };
+    });
+    return d;
+  });
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      let changed = 0;
+      await Promise.all(sorted.map(item => {
+        const d = draft[item.id];
+        const perCheckout = d.perCheckout.trim() === '' ? undefined : parseFloat(d.perCheckout);
+        const perStayover = d.perStayover.trim() === '' ? undefined : parseFloat(d.perStayover);
+        const unitCost = d.unitCost.trim() === '' ? undefined : parseFloat(d.unitCost);
+
+        const isChanged =
+          (perCheckout ?? null) !== (item.usagePerCheckout ?? null) ||
+          (perStayover ?? null) !== (item.usagePerStayover ?? null) ||
+          (unitCost ?? null) !== (item.unitCost ?? null);
+
+        if (!isChanged) return Promise.resolve();
+        changed++;
+        return updateInventoryItem(uid, pid, item.id, {
+          usagePerCheckout: perCheckout,
+          usagePerStayover: perStayover,
+          unitCost,
+        });
+      }));
+      onSaved(changed);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const cellStyle: React.CSSProperties = {
+    width: '100%', padding: '6px 8px', borderRadius: '8px',
+    border: '1px solid #c5c5d4', background: '#fff',
+    fontFamily: "'JetBrains Mono', monospace", fontSize: '13px',
+    textAlign: 'center', outline: 'none',
+  };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 50, background: 'rgba(27,28,25,0.5)',
+      backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
+    }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{
+        background: '#fbf9f4', borderRadius: '24px', width: '100%', maxWidth: '720px',
+        maxHeight: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+      }}>
+        <div style={{ padding: '20px 24px', borderBottom: '1px solid rgba(197,197,212,0.2)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <div>
               <h2 style={{ fontFamily: "'Inter', sans-serif", fontSize: '18px', fontWeight: 700, color: '#1b1c19', margin: 0 }}>
-                Inventory Count
+                {lang === 'es' ? 'Configurar Tasas de Uso' : 'Configure Usage Rates'}
               </h2>
               <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#757684', margin: '4px 0 0' }}>
-                Count each item, enter the numbers below.
+                {lang === 'es'
+                  ? 'Cuántas unidades usa cada artículo por habitación. Activa el cálculo automático de stock estimado.'
+                  : 'How many units each item uses per room. Powers automatic estimated-stock calculation.'}
               </p>
             </div>
             <button
-              onClick={onCancel}
+              onClick={onClose}
               style={{
-                padding: '8px 16px', borderRadius: '9999px',
-                border: '1px solid #c5c5d4', background: '#fff',
-                fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 600, cursor: 'pointer',
-                color: '#454652',
+                background: '#eae8e3', border: 'none', cursor: 'pointer',
+                padding: '8px', borderRadius: '50%',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}
             >
-              Cancel
-            </button>
-          </div>
-
-          <div style={{ overflowY: 'auto', flex: 1 }}>
-            <div style={{
-              display: 'grid', gridTemplateColumns: '1fr 80px 50px',
-              gap: '8px', padding: '10px 24px', background: '#f5f3ee',
-              borderBottom: '1px solid rgba(197,197,212,0.2)',
-              fontFamily: "'Inter', sans-serif", fontSize: '10px', fontWeight: 600, textTransform: 'uppercase',
-              letterSpacing: '0.08em', color: '#757684',
-              position: 'sticky', top: 0, zIndex: 1,
-            }}>
-              <span>Item</span>
-              <span style={{ textAlign: 'center' }}>Count</span>
-              <span style={{ textAlign: 'right' }}>Target</span>
-            </div>
-
-            {sorted.map((item, idx) => {
-              const val = parseInt(counts[item.id] ?? '0') || 0;
-              const status = stockStatus(val, item.parLevel, item.reorderAt);
-              const changed = val !== item.currentStock;
-              return (
-                <div
-                  key={item.id}
-                  style={{
-                    display: 'grid', gridTemplateColumns: '1fr 80px 50px',
-                    gap: '8px', padding: '12px 24px', alignItems: 'center',
-                    borderBottom: '1px solid rgba(197,197,212,0.2)',
-                    background: changed ? 'rgba(0,101,101,0.04)' : undefined,
-                  }}
-                >
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontFamily: "'Inter', sans-serif", fontWeight: 600, fontSize: '14px', color: '#1b1c19', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {item.name}
-                    </div>
-                    <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684', textTransform: 'uppercase' }}>
-                      {item.category} · {item.unit}
-                    </div>
-                  </div>
-                  <input
-                    ref={el => { inputRefs.current[item.id] = el; }}
-                    type="number"
-                    min="0"
-                    value={counts[item.id] ?? '0'}
-                    onChange={e => setCounts(prev => ({ ...prev, [item.id]: e.target.value }))}
-                    onFocus={e => e.target.select()}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter' || e.key === 'Tab') {
-                        e.preventDefault();
-                        const nextItem = sorted[idx + 1];
-                        if (nextItem) inputRefs.current[nextItem.id]?.focus();
-                      }
-                    }}
-                    style={{
-                      width: '100%', padding: '8px 6px', borderRadius: '12px',
-                      border: `2px solid ${changed ? '#006565' : '#c5c5d4'}`,
-                      background: '#fff', fontSize: '16px', fontWeight: 700,
-                      fontFamily: "'JetBrains Mono', monospace", textAlign: 'center',
-                      color: STATUS_COLORS[status], outline: 'none',
-                    }}
-                  />
-                  <div style={{ textAlign: 'right', fontSize: '13px', color: '#757684', fontFamily: "'JetBrains Mono', monospace" }}>
-                    {item.parLevel}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          <div style={{ padding: '16px 24px', borderTop: '1px solid rgba(197,197,212,0.2)', background: '#fbf9f4' }}>
-            <button
-              onClick={handleSave}
-              disabled={saving || changedCount === 0}
-              style={{
-                width: '100%', padding: '14px', borderRadius: '9999px',
-                background: changedCount > 0 ? '#364262' : '#eae8e3',
-                color: changedCount > 0 ? '#fff' : '#757684', border: 'none',
-                fontFamily: "'Inter', sans-serif", fontSize: '15px', fontWeight: 600,
-                cursor: changedCount > 0 ? 'pointer' : 'default',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
-                opacity: saving ? 0.6 : 1,
-              }}
-            >
-              <Check size={18} />
-              {saving ? 'Saving...' : changedCount > 0 ? `Save Count (${changedCount} changed)` : 'No changes'}
+              <span style={{ fontSize: '16px', color: '#454652', lineHeight: 1 }}>✕</span>
             </button>
           </div>
         </div>
+
+        <div style={{ overflowY: 'auto', flex: 1 }}>
+          <div style={{
+            display: 'grid', gridTemplateColumns: '1fr 90px 90px 90px',
+            gap: '8px', padding: '10px 24px', background: '#f5f3ee',
+            borderBottom: '1px solid rgba(197,197,212,0.2)',
+            fontFamily: "'Inter', sans-serif", fontSize: '10px', fontWeight: 600,
+            textTransform: 'uppercase', letterSpacing: '0.06em', color: '#757684',
+            position: 'sticky', top: 0, zIndex: 1,
+          }}>
+            <span>{lang === 'es' ? 'Artículo' : 'Item'}</span>
+            <span style={{ textAlign: 'center' }}>{lang === 'es' ? 'Por C/O' : 'Per C/O'}</span>
+            <span style={{ textAlign: 'center' }}>{lang === 'es' ? 'Por Stayover' : 'Per Stayover'}</span>
+            <span style={{ textAlign: 'center' }}>$ / unit</span>
+          </div>
+
+          {sorted.map(item => {
+            const d = draft[item.id];
+            return (
+              <div key={item.id} style={{
+                display: 'grid', gridTemplateColumns: '1fr 90px 90px 90px',
+                gap: '8px', padding: '10px 24px', alignItems: 'center',
+                borderBottom: '1px solid rgba(197,197,212,0.2)',
+              }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontFamily: "'Inter', sans-serif", fontWeight: 600, fontSize: '13px', color: '#1b1c19', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {item.name}
+                  </div>
+                  <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684' }}>
+                    {item.unit}
+                  </div>
+                </div>
+                <input
+                  type="number" step="0.01" min="0" placeholder="—"
+                  value={d.perCheckout}
+                  onChange={e => setDraft(prev => ({ ...prev, [item.id]: { ...prev[item.id], perCheckout: e.target.value } }))}
+                  style={cellStyle}
+                />
+                <input
+                  type="number" step="0.01" min="0" placeholder="—"
+                  value={d.perStayover}
+                  onChange={e => setDraft(prev => ({ ...prev, [item.id]: { ...prev[item.id], perStayover: e.target.value } }))}
+                  style={cellStyle}
+                />
+                <input
+                  type="number" step="0.01" min="0" placeholder="—"
+                  value={d.unitCost}
+                  onChange={e => setDraft(prev => ({ ...prev, [item.id]: { ...prev[item.id], unitCost: e.target.value } }))}
+                  style={cellStyle}
+                />
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ padding: '16px 24px', borderTop: '1px solid rgba(197,197,212,0.2)' }}>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            style={{
+              width: '100%', padding: '14px', borderRadius: '9999px',
+              background: '#364262', color: '#fff', border: 'none',
+              fontFamily: "'Inter', sans-serif", fontSize: '15px', fontWeight: 600,
+              cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+            }}
+          >
+            <Check size={18} />
+            {saving ? (lang === 'es' ? 'Guardando...' : 'Saving...') : (lang === 'es' ? 'Guardar Tasas' : 'Save Rates')}
+          </button>
+        </div>
       </div>
-    </>
+    </div>
   );
 }
 
 // ─── Add Item Modal ──────────────────────────────────────────────────────────
 
-function AddItemModal({ isOpen, onClose, uid, pid, onAdded }: {
+function AddItemModal({ isOpen, onClose, uid, pid, lang, onAdded }: {
   isOpen: boolean;
   onClose: () => void;
   uid: string;
   pid: string;
+  lang: 'en' | 'es';
   onAdded: () => void;
 }) {
   const [name, setName] = useState('');
@@ -788,8 +1378,14 @@ function AddItemModal({ isOpen, onClose, uid, pid, onAdded }: {
   const [stock, setStock] = useState('0');
   const [target, setTarget] = useState('100');
   const [reorderAt, setReorderAt] = useState('30');
+  const [unitCost, setUnitCost] = useState('');
+  const [perCheckout, setPerCheckout] = useState('');
+  const [perStayover, setPerStayover] = useState('');
+  const [vendor, setVendor] = useState('');
+  const [leadDays, setLeadDays] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [openInfo, setOpenInfo] = useState<null | 'stock' | 'target' | 'reorder'>(null);
+  const [openInfo, setOpenInfo] = useState<string | null>(null);
 
   const handleSubmit = async () => {
     if (!name.trim() || saving) return;
@@ -803,10 +1399,17 @@ function AddItemModal({ isOpen, onClose, uid, pid, onAdded }: {
         parLevel: parseInt(target) || 100,
         reorderAt: parseInt(reorderAt) || 0,
         unit: 'units',
+        unitCost: unitCost.trim() === '' ? undefined : parseFloat(unitCost),
+        usagePerCheckout: perCheckout.trim() === '' ? undefined : parseFloat(perCheckout),
+        usagePerStayover: perStayover.trim() === '' ? undefined : parseFloat(perStayover),
+        vendorName: vendor.trim() || undefined,
+        reorderLeadDays: leadDays.trim() === '' ? undefined : parseInt(leadDays),
       });
       onAdded();
       onClose();
       setName(''); setStock('0'); setTarget('100'); setReorderAt('30');
+      setUnitCost(''); setPerCheckout(''); setPerStayover(''); setVendor(''); setLeadDays('');
+      setShowAdvanced(false);
     } finally {
       setSaving(false);
     }
@@ -831,26 +1434,31 @@ function AddItemModal({ isOpen, onClose, uid, pid, onAdded }: {
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div style={{
-        width: '100%', maxWidth: '500px', maxHeight: '90vh', overflowY: 'auto',
-        background: '#fbf9f4', borderRadius: '24px',
-        padding: '24px',
-        display: 'flex', flexDirection: 'column', gap: '16px',
+        width: '100%', maxWidth: '520px', maxHeight: '90vh', overflowY: 'auto',
+        background: '#fbf9f4', borderRadius: '24px', padding: '24px',
+        display: 'flex', flexDirection: 'column', gap: '14px',
         boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <h2 style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: '18px', color: '#1b1c19' }}>
-            Add Item
+            {lang === 'es' ? 'Agregar Artículo' : 'Add Item'}
           </h2>
           <button onClick={onClose} style={{ background: '#eae8e3', border: 'none', cursor: 'pointer', padding: '8px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <span style={{ fontSize: '16px', color: '#454652', lineHeight: 1 }}>✕</span>
           </button>
         </div>
+
         <div>
-          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>Item Name *</label>
-          <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Bath Towels" style={inputStyle} />
+          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>
+            {lang === 'es' ? 'Nombre del Artículo *' : 'Item Name *'}
+          </label>
+          <input value={name} onChange={e => setName(e.target.value)} placeholder={lang === 'es' ? 'p.ej. Toallas de Baño' : 'e.g. Bath Towels'} style={inputStyle} />
         </div>
+
         <div>
-          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>Category</label>
+          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>
+            {lang === 'es' ? 'Categoría' : 'Category'}
+          </label>
           <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
             {(['housekeeping', 'maintenance', 'breakfast'] as InventoryCategory[]).map(c => (
               <button
@@ -864,37 +1472,63 @@ function AddItemModal({ isOpen, onClose, uid, pid, onAdded }: {
                   transition: 'all 150ms',
                 }}
               >
-                {c === 'housekeeping' ? 'Housekeeping' : c === 'maintenance' ? 'Maintenance' : 'Breakfast/F&B'}
+                {c === 'housekeeping' ? (lang === 'es' ? 'Limpieza' : 'Housekeeping') : c === 'maintenance' ? (lang === 'es' ? 'Mantenimiento' : 'Maintenance') : (lang === 'es' ? 'Desayuno/A&B' : 'Breakfast/F&B')}
               </button>
             ))}
           </div>
         </div>
+
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
           <FieldWithInfo
-            label="In Stock"
-            tooltip="How many of this item you currently have on hand."
+            label={lang === 'es' ? 'En Stock' : 'In Stock'}
+            tooltip={lang === 'es' ? 'Cuántos tiene actualmente.' : 'How many of this item you currently have on hand.'}
             isOpen={openInfo === 'stock'}
             onToggle={() => setOpenInfo(openInfo === 'stock' ? null : 'stock')}
           >
             <input type="number" min="0" value={stock} onChange={e => setStock(e.target.value)} style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
           </FieldWithInfo>
           <FieldWithInfo
-            label="Target"
-            tooltip="Your ideal stock level — the amount you want to keep fully stocked."
+            label={lang === 'es' ? 'Meta' : 'Target'}
+            tooltip={lang === 'es' ? 'Su nivel ideal de stock.' : 'Your ideal stock level — the amount you want to keep fully stocked.'}
             isOpen={openInfo === 'target'}
             onToggle={() => setOpenInfo(openInfo === 'target' ? null : 'target')}
           >
             <input type="number" min="0" value={target} onChange={e => setTarget(e.target.value)} style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
           </FieldWithInfo>
           <FieldWithInfo
-            label="Reorder At"
-            tooltip="When stock drops to this number, you'll get a notification to reorder."
+            label={lang === 'es' ? 'Reordenar A' : 'Reorder At'}
+            tooltip={lang === 'es' ? 'Cuando el stock baja a este número, recibirá una alerta.' : "When stock drops to this number, you'll get a notification to reorder."}
             isOpen={openInfo === 'reorder'}
             onToggle={() => setOpenInfo(openInfo === 'reorder' ? null : 'reorder')}
           >
             <input type="number" min="0" value={reorderAt} onChange={e => setReorderAt(e.target.value)} style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
           </FieldWithInfo>
         </div>
+
+        <button
+          type="button"
+          onClick={() => setShowAdvanced(s => !s)}
+          style={{
+            background: 'transparent', border: 'none', cursor: 'pointer',
+            color: '#006565', fontFamily: "'Inter', sans-serif",
+            fontSize: '12px', fontWeight: 600, padding: '4px 0', textAlign: 'left',
+          }}
+        >
+          {showAdvanced ? '▼' : '▶'} {lang === 'es' ? 'Opciones avanzadas' : 'Advanced options'}
+        </button>
+
+        {showAdvanced && (
+          <AdvancedFields
+            lang={lang}
+            unitCost={unitCost} setUnitCost={setUnitCost}
+            perCheckout={perCheckout} setPerCheckout={setPerCheckout}
+            perStayover={perStayover} setPerStayover={setPerStayover}
+            vendor={vendor} setVendor={setVendor}
+            leadDays={leadDays} setLeadDays={setLeadDays}
+            openInfo={openInfo} setOpenInfo={setOpenInfo}
+          />
+        )}
+
         <button
           onClick={handleSubmit}
           disabled={!name.trim() || saving}
@@ -907,7 +1541,7 @@ function AddItemModal({ isOpen, onClose, uid, pid, onAdded }: {
             transition: 'all 150ms', minHeight: '52px',
           }}
         >
-          {saving ? 'Saving...' : 'Add Item'}
+          {saving ? (lang === 'es' ? 'Guardando...' : 'Saving...') : (lang === 'es' ? 'Agregar Artículo' : 'Add Item')}
         </button>
       </div>
     </div>
@@ -916,10 +1550,11 @@ function AddItemModal({ isOpen, onClose, uid, pid, onAdded }: {
 
 // ─── Edit Item Modal ─────────────────────────────────────────────────────────
 
-function EditItemModal({ item, uid, pid, onClose, onSaved, onDeleted }: {
+function EditItemModal({ item, uid, pid, lang, onClose, onSaved, onDeleted }: {
   item: InventoryItem;
   uid: string;
   pid: string;
+  lang: 'en' | 'es';
   onClose: () => void;
   onSaved: () => void;
   onDeleted: () => void;
@@ -929,9 +1564,18 @@ function EditItemModal({ item, uid, pid, onClose, onSaved, onDeleted }: {
   const [stock, setStock] = useState(String(item.currentStock));
   const [target, setTarget] = useState(String(item.parLevel));
   const [reorderAt, setReorderAt] = useState(String(item.reorderAt ?? ''));
+  const [unitCost, setUnitCost] = useState(item.unitCost != null ? String(item.unitCost) : '');
+  const [perCheckout, setPerCheckout] = useState(item.usagePerCheckout != null ? String(item.usagePerCheckout) : '');
+  const [perStayover, setPerStayover] = useState(item.usagePerStayover != null ? String(item.usagePerStayover) : '');
+  const [vendor, setVendor] = useState(item.vendorName ?? '');
+  const [leadDays, setLeadDays] = useState(item.reorderLeadDays != null ? String(item.reorderLeadDays) : '');
+  const [showAdvanced, setShowAdvanced] = useState(
+    item.unitCost != null || item.usagePerCheckout != null || item.usagePerStayover != null ||
+    !!item.vendorName || item.reorderLeadDays != null
+  );
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [openInfo, setOpenInfo] = useState<null | 'stock' | 'target' | 'reorder'>(null);
+  const [openInfo, setOpenInfo] = useState<string | null>(null);
 
   const handleSave = async () => {
     if (!name.trim() || saving) return;
@@ -943,6 +1587,11 @@ function EditItemModal({ item, uid, pid, onClose, onSaved, onDeleted }: {
         currentStock: parseInt(stock) || 0,
         parLevel: parseInt(target) || 0,
         reorderAt: reorderAt.trim() === '' ? undefined : parseInt(reorderAt) || 0,
+        unitCost: unitCost.trim() === '' ? undefined : parseFloat(unitCost),
+        usagePerCheckout: perCheckout.trim() === '' ? undefined : parseFloat(perCheckout),
+        usagePerStayover: perStayover.trim() === '' ? undefined : parseFloat(perStayover),
+        vendorName: vendor.trim() || undefined,
+        reorderLeadDays: leadDays.trim() === '' ? undefined : parseInt(leadDays),
       });
       onSaved();
     } finally {
@@ -952,7 +1601,7 @@ function EditItemModal({ item, uid, pid, onClose, onSaved, onDeleted }: {
 
   const handleDelete = async () => {
     if (deleting) return;
-    if (!confirm(`Delete "${item.name}"? This cannot be undone.`)) return;
+    if (!confirm(lang === 'es' ? `¿Eliminar "${item.name}"? Esto no se puede deshacer.` : `Delete "${item.name}"? This cannot be undone.`)) return;
     setDeleting(true);
     try {
       await deleteInventoryItem(uid, pid, item.id);
@@ -979,26 +1628,31 @@ function EditItemModal({ item, uid, pid, onClose, onSaved, onDeleted }: {
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div style={{
-        width: '100%', maxWidth: '500px', maxHeight: '90vh', overflowY: 'auto',
-        background: '#fbf9f4', borderRadius: '24px',
-        padding: '24px',
-        display: 'flex', flexDirection: 'column', gap: '16px',
+        width: '100%', maxWidth: '520px', maxHeight: '90vh', overflowY: 'auto',
+        background: '#fbf9f4', borderRadius: '24px', padding: '24px',
+        display: 'flex', flexDirection: 'column', gap: '14px',
         boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <h2 style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: '18px', color: '#1b1c19' }}>
-            Edit Item
+            {lang === 'es' ? 'Editar Artículo' : 'Edit Item'}
           </h2>
           <button onClick={onClose} style={{ background: '#eae8e3', border: 'none', cursor: 'pointer', padding: '8px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <span style={{ fontSize: '16px', color: '#454652', lineHeight: 1 }}>✕</span>
           </button>
         </div>
+
         <div>
-          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>Item Name *</label>
-          <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Bath Towels" style={inputStyle} />
+          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>
+            {lang === 'es' ? 'Nombre del Artículo *' : 'Item Name *'}
+          </label>
+          <input value={name} onChange={e => setName(e.target.value)} style={inputStyle} />
         </div>
+
         <div>
-          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>Category</label>
+          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>
+            {lang === 'es' ? 'Categoría' : 'Category'}
+          </label>
           <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
             {(['housekeeping', 'maintenance', 'breakfast'] as InventoryCategory[]).map(c => (
               <button
@@ -1012,37 +1666,63 @@ function EditItemModal({ item, uid, pid, onClose, onSaved, onDeleted }: {
                   transition: 'all 150ms',
                 }}
               >
-                {c === 'housekeeping' ? 'Housekeeping' : c === 'maintenance' ? 'Maintenance' : 'Breakfast/F&B'}
+                {c === 'housekeeping' ? (lang === 'es' ? 'Limpieza' : 'Housekeeping') : c === 'maintenance' ? (lang === 'es' ? 'Mantenimiento' : 'Maintenance') : (lang === 'es' ? 'Desayuno/A&B' : 'Breakfast/F&B')}
               </button>
             ))}
           </div>
         </div>
+
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
           <FieldWithInfo
-            label="In Stock"
-            tooltip="How many of this item you currently have on hand."
+            label={lang === 'es' ? 'En Stock' : 'In Stock'}
+            tooltip={lang === 'es' ? 'Cuántos tiene actualmente.' : 'How many of this item you currently have on hand.'}
             isOpen={openInfo === 'stock'}
             onToggle={() => setOpenInfo(openInfo === 'stock' ? null : 'stock')}
           >
             <input type="number" min="0" value={stock} onChange={e => setStock(e.target.value)} style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
           </FieldWithInfo>
           <FieldWithInfo
-            label="Target"
-            tooltip="Your ideal stock level — the amount you want to keep fully stocked."
+            label={lang === 'es' ? 'Meta' : 'Target'}
+            tooltip={lang === 'es' ? 'Su nivel ideal de stock.' : 'Your ideal stock level.'}
             isOpen={openInfo === 'target'}
             onToggle={() => setOpenInfo(openInfo === 'target' ? null : 'target')}
           >
             <input type="number" min="0" value={target} onChange={e => setTarget(e.target.value)} style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
           </FieldWithInfo>
           <FieldWithInfo
-            label="Reorder At"
-            tooltip="When stock drops to this number, you'll get a notification to reorder."
+            label={lang === 'es' ? 'Reordenar A' : 'Reorder At'}
+            tooltip={lang === 'es' ? 'Umbral de stock para alertas.' : 'Stock threshold that triggers a reorder notification.'}
             isOpen={openInfo === 'reorder'}
             onToggle={() => setOpenInfo(openInfo === 'reorder' ? null : 'reorder')}
           >
             <input type="number" min="0" value={reorderAt} onChange={e => setReorderAt(e.target.value)} style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
           </FieldWithInfo>
         </div>
+
+        <button
+          type="button"
+          onClick={() => setShowAdvanced(s => !s)}
+          style={{
+            background: 'transparent', border: 'none', cursor: 'pointer',
+            color: '#006565', fontFamily: "'Inter', sans-serif",
+            fontSize: '12px', fontWeight: 600, padding: '4px 0', textAlign: 'left',
+          }}
+        >
+          {showAdvanced ? '▼' : '▶'} {lang === 'es' ? 'Opciones avanzadas' : 'Advanced options'}
+        </button>
+
+        {showAdvanced && (
+          <AdvancedFields
+            lang={lang}
+            unitCost={unitCost} setUnitCost={setUnitCost}
+            perCheckout={perCheckout} setPerCheckout={setPerCheckout}
+            perStayover={perStayover} setPerStayover={setPerStayover}
+            vendor={vendor} setVendor={setVendor}
+            leadDays={leadDays} setLeadDays={setLeadDays}
+            openInfo={openInfo} setOpenInfo={setOpenInfo}
+          />
+        )}
+
         <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
           <button
             onClick={handleDelete}
@@ -1055,7 +1735,7 @@ function EditItemModal({ item, uid, pid, onClose, onSaved, onDeleted }: {
               transition: 'all 150ms', minHeight: '52px',
             }}
           >
-            {deleting ? 'Deleting...' : 'Delete'}
+            {deleting ? (lang === 'es' ? 'Eliminando...' : 'Deleting...') : (lang === 'es' ? 'Eliminar' : 'Delete')}
           </button>
           <button
             onClick={handleSave}
@@ -1069,9 +1749,85 @@ function EditItemModal({ item, uid, pid, onClose, onSaved, onDeleted }: {
               transition: 'all 150ms', minHeight: '52px',
             }}
           >
-            {saving ? 'Saving...' : 'Save Changes'}
+            {saving ? (lang === 'es' ? 'Guardando...' : 'Saving...') : (lang === 'es' ? 'Guardar Cambios' : 'Save Changes')}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Shared Advanced Fields block ────────────────────────────────────────────
+
+function AdvancedFields({
+  lang, unitCost, setUnitCost, perCheckout, setPerCheckout, perStayover, setPerStayover,
+  vendor, setVendor, leadDays, setLeadDays, openInfo, setOpenInfo,
+}: {
+  lang: 'en' | 'es';
+  unitCost: string; setUnitCost: (v: string) => void;
+  perCheckout: string; setPerCheckout: (v: string) => void;
+  perStayover: string; setPerStayover: (v: string) => void;
+  vendor: string; setVendor: (v: string) => void;
+  leadDays: string; setLeadDays: (v: string) => void;
+  openInfo: string | null; setOpenInfo: (v: string | null) => void;
+}) {
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '12px 16px', borderRadius: '16px',
+    border: '1px solid #c5c5d4', background: '#fff',
+    fontFamily: "'Inter', sans-serif", fontSize: '14px', color: '#1b1c19',
+    outline: 'none',
+  };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '12px', background: 'rgba(0,101,101,0.04)', borderRadius: '14px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#006565', fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 700 }}>
+        <DollarSign size={13} />
+        {lang === 'es' ? 'Inteligencia de inventario' : 'Inventory Intelligence'}
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+        <FieldWithInfo
+          label={lang === 'es' ? 'Por Checkout' : 'Per Checkout'}
+          tooltip={lang === 'es' ? '¿Cuántos usa una habitación de checkout? Activa el cálculo automático de stock.' : 'How many of this item does a typical checkout room use? Powers automatic stock estimates.'}
+          isOpen={openInfo === 'pco'}
+          onToggle={() => setOpenInfo(openInfo === 'pco' ? null : 'pco')}
+        >
+          <input type="number" step="0.01" min="0" value={perCheckout} onChange={e => setPerCheckout(e.target.value)} placeholder="—" style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
+        </FieldWithInfo>
+        <FieldWithInfo
+          label={lang === 'es' ? 'Por Stayover' : 'Per Stayover'}
+          tooltip={lang === 'es' ? '¿Cuántos usa una habitación stayover?' : 'How many of this item does a typical stayover room use?'}
+          isOpen={openInfo === 'pso'}
+          onToggle={() => setOpenInfo(openInfo === 'pso' ? null : 'pso')}
+        >
+          <input type="number" step="0.01" min="0" value={perStayover} onChange={e => setPerStayover(e.target.value)} placeholder="—" style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
+        </FieldWithInfo>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
+        <FieldWithInfo
+          label={lang === 'es' ? 'Costo $' : 'Unit Cost $'}
+          tooltip={lang === 'es' ? 'Dólares por unidad. Activa cálculos de valor total y pérdida.' : 'Dollars per unit. Powers Total Inventory Value and dollar variance.'}
+          isOpen={openInfo === 'cost'}
+          onToggle={() => setOpenInfo(openInfo === 'cost' ? null : 'cost')}
+        >
+          <input type="number" step="0.01" min="0" value={unitCost} onChange={e => setUnitCost(e.target.value)} placeholder="—" style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
+        </FieldWithInfo>
+        <FieldWithInfo
+          label={lang === 'es' ? 'Días Pedido' : 'Lead Days'}
+          tooltip={lang === 'es' ? 'Días entre ordenar y recibir.' : 'Days between placing an order and receiving it.'}
+          isOpen={openInfo === 'lead'}
+          onToggle={() => setOpenInfo(openInfo === 'lead' ? null : 'lead')}
+        >
+          <input type="number" min="0" value={leadDays} onChange={e => setLeadDays(e.target.value)} placeholder="—" style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
+        </FieldWithInfo>
+        <FieldWithInfo
+          label={lang === 'es' ? 'Proveedor' : 'Vendor'}
+          tooltip={lang === 'es' ? 'Suministrador.' : 'Supplier name. Pre-fills the order log.'}
+          isOpen={openInfo === 'vendor'}
+          onToggle={() => setOpenInfo(openInfo === 'vendor' ? null : 'vendor')}
+        >
+          <input value={vendor} onChange={e => setVendor(e.target.value)} placeholder="—" style={inputStyle} />
+        </FieldWithInfo>
       </div>
     </div>
   );
