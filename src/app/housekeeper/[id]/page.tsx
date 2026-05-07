@@ -363,14 +363,14 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
     [],
   );
 
-  // ── Start room (dirty → in_progress) ──────────────────────────────────────
+  // ── refetchRooms — trigger a fresh /api/housekeeper/rooms pull ─────────
   // 2026-04-28 fix: ALL room mutations from this page MUST go through the
   // server-side /api/housekeeper/room-action route. Direct
   // supabase.from('rooms').update() silently no-ops in production because
   // the housekeeper opens this URL with no auth session — RLS filters the
   // UPDATE to zero rows but Postgres returns 200 OK so the supabase JS
-  // client treats it as success. We were silently losing every Start /
-  // Done / Reset tap. The API route uses service-role to bypass RLS.
+  // client treats it as success. We were silently losing every Done /
+  // Reset / DND tap. The API route uses service-role to bypass RLS.
   // Force a fresh rooms fetch after a successful action so the UI flips
   // immediately instead of waiting up to 4s for the polling tick. Anon
   // sessions don't get postgres_changes events, so without this manual
@@ -464,11 +464,10 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   // on the server route for backward compat with any older client bundle
   // that hasn't roll-deployed yet, but nothing in this page calls them.
 
-  // ── Finish room (in_progress → clean) ─────────────────────────────────────
-  // Requires hold-to-confirm on the button - accidental taps are ignored.
-  // Server-side route does both the room update AND the cleaning_events
-  // audit insert in one shot. See callRoomActionApi() above for the
-  // RLS-bypass rationale.
+  // ── Finish room (dirty → clean, single tap) ───────────────────────────────
+  // Server-side route does the room update, the cleaning_events audit
+  // insert, AND a 90-second dedupe check (network-retry guard) in one
+  // shot. See callRoomActionApi() above for the RLS-bypass rationale.
   const handleFinishRoom = async (room: RoomRow) => {
     if (!pid) return;
     await guardRoomAction(room.id, async () => {
@@ -660,9 +659,11 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   };
 
   // ── Reset room (clean/inspected → dirty, clear times) ─────────────────────
-  // The server-side route also discards any cleaning_events row created
-  // by this HK for this room in the last 60s — the "oops, wrong room —
-  // undo" path. Resets >60s after Done are treated as legitimate.
+  // The server-side route also discards the most recent non-discarded
+  // cleaning_event for this (HK, room, date) — the "oops, wrong room —
+  // undo" path. The 60-second wall-clock cutoff was removed 2026-05-07;
+  // Reset is now an explicit user action and respects whatever the user
+  // wants to undo regardless of timing.
   const handleResetRoom = async (room: RoomRow) => {
     if (!pid) return;
     setResettingRoomId(room.id);

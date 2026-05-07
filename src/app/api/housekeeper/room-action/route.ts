@@ -407,9 +407,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
 
     // ─── RESET ──────────────────────────────────────────────────────────
-    // Clear room progress AND discard any cleaning_events row for this
-    // (property, date, room, staff) created in the last 60s. The "oops,
+    // Clear room progress AND discard the most recent non-discarded
+    // cleaning_event for this (property, date, room, staff). The "oops,
     // wrong room — undo" path.
+    //
+    // 2026-05-07: Was previously gated on "created in last 60s" — if a
+    // housekeeper realized 90 seconds later that they'd marked the wrong
+    // room, the cleaning_event stayed in the audit log and the
+    // Performance tab showed a phantom clean. The Reset link is only
+    // visible while the room is in 'clean' state on the housekeeper
+    // page, so the user is consciously undoing their own action; there's
+    // no benefit to a wall-clock cutoff. Discard the latest event
+    // regardless of age. Vacant rooms have no cleaning_events row to
+    // discard, so the lookup just returns null and we're done.
     if (action === 'reset') {
       const { error: roomResetErr } = await supabaseAdmin
         .from('rooms')
@@ -420,20 +430,39 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           requestId, status: 500, code: ApiErrorCode.InternalError, headers,
         });
       }
-      const cutoff = new Date(Date.now() - 60 * 1000).toISOString();
-      const { error: discardErr } = await supabaseAdmin
+      // Defensive: room.date may be null on legacy rows. Bail early on the
+      // discard side — room update already succeeded so the user sees the
+      // tile flip back to dirty either way.
+      if (!room.date) {
+        return ok({ action: 'reset', cleaningEventDiscarded: false }, { requestId, headers });
+      }
+      const { data: latest } = await supabaseAdmin
         .from('cleaning_events')
-        .update({ status: 'discarded', flag_reason: 'reset_within_window' })
+        .select('id')
         .eq('property_id', pid)
         .eq('date', room.date as string)
         .eq('room_number', room.number as string)
         .eq('staff_id', staffId)
-        .gte('created_at', cutoff)
-        .in('status', ['recorded', 'flagged']);
-      if (discardErr) {
-        log.error('room-action: cleaning_events discard failed (non-fatal)', { requestId, route: 'housekeeper/room-action', pid, staffId, action: 'reset', err: discardErr as unknown as Error });
+        .in('status', ['recorded', 'flagged'])
+        .order('completed_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      let cleaningEventDiscarded = false;
+      if (latest?.id) {
+        const { error: discardErr } = await supabaseAdmin
+          .from('cleaning_events')
+          .update({ status: 'discarded', flag_reason: 'reset_by_user' })
+          .eq('id', latest.id as string);
+        if (discardErr) {
+          log.error('room-action: cleaning_events discard failed (non-fatal)', {
+            requestId, route: 'housekeeper/room-action', pid, staffId,
+            action: 'reset', err: discardErr as unknown as Error,
+          });
+        } else {
+          cleaningEventDiscarded = true;
+        }
       }
-      return ok({ action: 'reset' }, { requestId, headers });
+      return ok({ action: 'reset', cleaningEventDiscarded }, { requestId, headers });
     }
 
     // ─── STOP ── REMOVED 2026-05-07 ──────────────────────────────────────
