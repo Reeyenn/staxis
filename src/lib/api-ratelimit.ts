@@ -26,7 +26,8 @@ export type RateLimitEndpoint =
   | 'sms-reply-resend'
   | 'test-sms-flow'
   | 'sync-room-assignments'
-  | 'populate-rooms-from-plan';
+  | 'populate-rooms-from-plan'
+  | 'notify-housekeepers-sms';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -46,6 +47,9 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // hammer this. 200/hr is "click 3x per minute for an hour" headroom.
   'sync-room-assignments':    200,
   'populate-rooms-from-plan':  20,
+  // SMS fan-out to housekeepers — Maria might re-broadcast after schedule
+  // tweaks. 30/hr covers normal use and stops a runaway loop dead.
+  'notify-housekeepers-sms':   30,
 };
 
 /**

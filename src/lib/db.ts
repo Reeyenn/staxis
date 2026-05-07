@@ -37,6 +37,7 @@ export * from './db/landscaping';
 export * from './db/inventory';
 export * from './db/inventory-counts';
 export * from './db/inventory-orders';
+export * from './db/ml-stubs';
 export * from './db/inspections';
 export * from './db/handoff-logs';
 export * from './db/guest-requests';
