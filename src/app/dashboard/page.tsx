@@ -151,9 +151,28 @@ export default function DashboardPage() {
   const pct        = total > 0 ? Math.round((clean / total) * 100) : 0;
 
   const totalPropertyRooms = activeProperty?.totalRooms || 0;
-  const rentedRooms = checkouts + stayovers;
-  const occupancyPct = totalPropertyRooms > 0 ? Math.round((rentedRooms / totalPropertyRooms) * 100) : 0;
-  const revpar = totalPropertyRooms > 0 && adr > 0 ? Math.round((adr * rentedRooms) / totalPropertyRooms) : 0;
+  // 2026-05-07: Maria reported the dashboard showing 88% occupancy while
+  // Choice Advantage showed 84.93%. Two distinct bugs were stacked:
+  //   1. Numerator: we were summing checkouts + stayovers from the CSV
+  //      Housekeeping pull (which captures the morning state). Choice
+  //      Advantage's "% Occupancy" uses the live "In House" count from the
+  //      dashboard view — that count drops as guests check out during the
+  //      day. By 11am the two numbers drift by a few rooms.
+  //   2. Denominator: we used totalPropertyRooms (the full physical room
+  //      count). Choice Advantage uses *sellable* rooms — total minus
+  //      out-of-order rooms. With one OOO room blocked for maintenance
+  //      that shifted the % by ~1pt.
+  // Fix: numerator = scraped in-house count (CA's authoritative live
+  // figure, falls back to CSV-derived if scraper hasn't run yet),
+  // denominator = totalPropertyRooms - blockedRooms (rooms with
+  // blockedRoom=true on an open work order).
+  const inHouseRooms = typeof dashboardNums?.inHouse === 'number'
+    ? dashboardNums.inHouse
+    : (checkouts + stayovers);
+  const sellableRooms = Math.max(0, totalPropertyRooms - blockedRooms);
+  const occupancyPct = sellableRooms > 0 ? Math.round((inHouseRooms / sellableRooms) * 100) : 0;
+  const rentedRooms = inHouseRooms;
+  const revpar = sellableRooms > 0 && adr > 0 ? Math.round((adr * rentedRooms) / sellableRooms) : 0;
 
 
   const overdueRooms = dcConfig && dcRecords.length > 0

@@ -95,6 +95,51 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   const [savingHelp, setSavingHelp] = useState<string | null>(null);
   const [resettingRoomId, setResettingRoomId] = useState<string | null>(null);
 
+  // ── Shift Start anchor ─────────────────────────────────────────────────
+  // 2026-05-07: Maria asked us to remove the per-room Start button — her
+  // housekeepers were skipping it, which meant every Done tap got recorded
+  // with started_at = completed_at, duration = 0, and the cleaning_events
+  // row was auto-discarded (under_3min). The Performance tab went blank
+  // on day 2.
+  //
+  // The fix is two-part:
+  //   1. Server-side derives started_at from the previous Done tap by
+  //      this housekeeper today (see /api/housekeeper/room-action).
+  //   2. For the FIRST room of the day, the housekeeper taps a single
+  //      "Start Shift" button at the top of this page. The timestamp is
+  //      kept in localStorage (so it survives refresh) and sent along
+  //      with each Done tap as `cleaningContext.shiftStartedAt`. Server
+  //      uses it as the anchor for room #1 only — subsequent rooms
+  //      anchor to the previous Done timestamp.
+  //
+  // localStorage key: `staxis:shift_start:${pid}:${staffId}:${YYYY-MM-DD}`.
+  // Per-day key so yesterday's anchor doesn't bleed into today.
+  const shiftStorageKey = pid && housekeeperId ? `staxis:shift_start:${pid}:${housekeeperId}:${today}` : null;
+  const [shiftStartedAt, setShiftStartedAt] = useState<string | null>(null);
+  const [shiftStarting, setShiftStarting] = useState(false);
+  useEffect(() => {
+    if (!shiftStorageKey) return;
+    try {
+      const stored = window.localStorage.getItem(shiftStorageKey);
+      if (stored) setShiftStartedAt(stored);
+      else setShiftStartedAt(null);
+    } catch {
+      // private mode / quota — ignore, just won't persist across reload
+    }
+  }, [shiftStorageKey]);
+  const handleStartShift = useCallback(() => {
+    if (!shiftStorageKey || shiftStarting) return;
+    setShiftStarting(true);
+    try {
+      const stamp = new Date().toISOString();
+      try { window.localStorage.setItem(shiftStorageKey, stamp); } catch {}
+      setShiftStartedAt(stamp);
+    } finally {
+      // brief lockout to absorb double-taps
+      setTimeout(() => setShiftStarting(false), 600);
+    }
+  }, [shiftStorageKey, shiftStarting]);
+
   // ── Online/offline indicator ────────────────────────────────────────────
   // Hotels have notoriously patchy wifi — basement laundry rooms, dead
   // spots between floors, the back stairwell where the AP doesn't reach.
@@ -459,8 +504,15 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
           stayoverDayBucket: bucketStayoverDay(room.stayoverDay, room.type),
           staffName: room.assignedName || 'Housekeeper',
           date: room.date ?? today,
+          // Advisory only — server derives canonical started_at. Sent for
+          // backward compat with any older client/server versions still
+          // talking to each other mid-deploy.
           startedAt: startedAt instanceof Date ? startedAt.toISOString() : new Date(startedAt as unknown as string).toISOString(),
           completedAt: completedAt.toISOString(),
+          // Shift Start anchor for the first Done of the day. Server uses
+          // this only when there's no prior cleaning_event by this staff
+          // today — subsequent rooms anchor to the previous Done.
+          shiftStartedAt: shiftStartedAt ?? undefined,
         } : undefined;
         const res = await callRoomActionApi(room, 'finish', ctx);
         if (!res.ok) {
@@ -867,6 +919,53 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
 
       {/* ── Room list ── */}
       <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+
+        {/* ── Shift Start ──────────────────────────────────────────────────
+            One tap at the start of the day. The timestamp is the anchor for
+            the FIRST room's started_at — every subsequent room anchors to
+            the previous Done. See server's deriveStartedAt for the
+            derivation logic. localStorage-backed so it survives reload. */}
+        {total > 0 && !allDone && !shiftStartedAt && (
+          <button
+            onClick={handleStartShift}
+            disabled={shiftStarting}
+            style={{
+              width: '100%',
+              height: '64px',
+              border: 'none',
+              borderRadius: '14px',
+              background: 'var(--green, #006565)',
+              color: 'white',
+              fontSize: '18px',
+              fontWeight: 700,
+              cursor: shiftStarting ? 'not-allowed' : 'pointer',
+              opacity: shiftStarting ? 0.6 : 1,
+              letterSpacing: '0.02em',
+              WebkitTapHighlightColor: 'transparent',
+              touchAction: 'manipulation',
+              boxShadow: '0 2px 8px rgba(0,101,101,0.18)',
+              marginBottom: '4px',
+            }}
+          >
+            {shiftStarting
+              ? '...'
+              : (lang === 'es' ? 'Comenzar Turno' : 'Start Shift')}
+          </button>
+        )}
+        {shiftStartedAt && total > 0 && !allDone && (
+          <div style={{
+            padding: '10px 14px',
+            background: 'var(--green-dim, #DCFCE7)',
+            borderRadius: '10px',
+            fontSize: '13px',
+            fontWeight: 600,
+            color: 'var(--green, #006565)',
+            textAlign: 'center',
+            marginBottom: '4px',
+          }}>
+            {lang === 'es' ? 'Turno iniciado' : 'Shift started'} · {format(new Date(shiftStartedAt), 'h:mm a', lang === 'es' ? { locale: esLocale } : undefined)}
+          </div>
+        )}
 
         {allDone && (
           <div style={{
@@ -1282,31 +1381,6 @@ function RoomCard({
               : (lang === 'es' ? 'Revertir' : 'Reset')}
           </button>
         </div>
-      ) : isInProgress ? (
-        <div style={{ display: 'flex', gap: '8px' }}>
-          <button
-            onClick={onStop}
-            disabled={isSaving}
-            style={{
-              width: '68px', height: '68px', flexShrink: 0,
-              border: '2px solid var(--border-light, #E5E7EB)',
-              borderRadius: '14px',
-              background: 'white',
-              color: 'var(--text-secondary)',
-              fontSize: '13px', fontWeight: 700,
-              cursor: isSaving ? 'not-allowed' : 'pointer',
-              opacity: isSaving ? 0.4 : 1,
-              WebkitTapHighlightColor: 'transparent',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              transition: 'all 150ms ease',
-            }}
-          >
-            {lang === 'es' ? 'Parar' : 'Stop'}
-          </button>
-          <div style={{ flex: 1 }}>
-            <CompleteButton lang={lang} isSaving={isSaving} onFinish={onFinish} />
-          </div>
-        </div>
       ) : room.isDnd ? (
         <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px',
@@ -1342,11 +1416,20 @@ function RoomCard({
           </button>
         </div>
       ) : (
-        <StartButton lang={lang} isSaving={isSaving} onStart={onStart} />
+        // 2026-05-07: Maria asked us to remove per-room Start (her HKs
+        // skipped it, which silently zero-duration'd every cleaning event
+        // and emptied the Performance tab on day 2). The room's Action
+        // area now goes straight to "Done" — one tap, room marked clean,
+        // server-derived started_at anchored to the previous Done or the
+        // shift Start button at the top of the page.
+        <CompleteButton lang={lang} isSaving={isSaving} onFinish={onFinish} />
       )}
 
-      {/* ── Need Help button — visible when in progress ── */}
-      {isInProgress && (
+      {/* ── Need Help button — visible whenever room isn't done or DND ──
+          Used to be gated on isInProgress (per-room Start tapped). With
+          per-room Start removed, we expose Help for any cleanable room
+          that's still pending. Sends an SMS to the manager. */}
+      {!isDone && !room.isDnd && (
         <button
           onClick={onNeedHelp}
           // Allow re-tapping after a delivery failure — maybe Twilio recovered.

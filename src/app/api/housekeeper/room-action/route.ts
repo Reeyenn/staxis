@@ -54,14 +54,28 @@ interface RequestBody {
   // For 'finish' — context to embed in the cleaning_events row. The room
   // table itself doesn't tell us the cycle reliably (stayover_day might be
   // wiped between requests), so the housekeeper page sends what it knows.
+  //
+  // 2026-05-07: `startedAt` is now ADVISORY ONLY. The server derives the
+  // canonical started_at itself (see deriveStartedAt below). Reason: the
+  // housekeeper page used to require a per-room Start tap before Done, and
+  // housekeepers chronically skipped it — Done with no prior Start meant
+  // started_at = completed_at, duration = 0, status='discarded'. That's
+  // exactly Maria's "cleaning events show day 1, blank day 2" complaint.
+  // We now collapse the per-room flow to a single Done tap, and the server
+  // reconstructs a sensible started_at from prior cleaning events and the
+  // housekeeper's shift-start anchor.
   cleaningContext?: {
     roomNumber: string;
     roomType: 'checkout' | 'stayover';
     stayoverDayBucket: 1 | 2 | null;
     staffName: string;
     date: string; // 'YYYY-MM-DD'
-    startedAt: string; // ISO
+    startedAt: string; // ISO — advisory only; server derives canonical value
     completedAt: string; // ISO
+    shiftStartedAt?: string; // ISO — when the housekeeper tapped "Start Shift"
+                             // on their phone (kept in localStorage on their
+                             // device). Used as the started_at anchor for the
+                             // first room of the day if no prior clean exists.
   };
   // For 'dnd_on' — optional note explaining why the room is locked out.
   dndNote?: string;
@@ -84,6 +98,93 @@ interface RequestBody {
 const DISCARD_UNDER_MIN = 3;
 const FLAG_OVER_MIN = 60;
 const DISCARD_OVER_MIN = 90;
+// Default per-room "started_at" fallback (minutes before completed_at) when
+// we have no other anchor for this housekeeper today. Conservative — picked
+// to slot into the 'recorded' band, not flagged or discarded.
+const DEFAULT_DURATION_MIN: Record<'checkout' | 'stayover', number> = {
+  checkout: 30,
+  stayover: 20,
+};
+
+// Largest "previous cleaning" gap we'll trust as the start of the next room.
+// Anything beyond this looks like a break, not the start of cleaning.
+const MAX_GAP_BETWEEN_CLEANINGS_MS = 4 * 60 * 60 * 1000; // 4h
+
+/**
+ * Derive a sensible started_at for a "finish" tap, server-side.
+ *
+ * Order of preference (most reliable first):
+ *   1. The most recent cleaning_event by this staff today — its completed_at
+ *      becomes the next clean's started_at, IF the gap is < 4h. Real
+ *      observed wall-clock between Done taps. Slightly contaminated by
+ *      breaks but accurate enough for performance regression.
+ *   2. The shift-start anchor (when the housekeeper tapped "Start Shift")
+ *      if it's older than completedAt by at least DISCARD_UNDER_MIN.
+ *      Used for the first room of the day.
+ *   3. Fallback: completedAt - DEFAULT_DURATION_MIN[type]. Synthetic but
+ *      keeps the row out of the 'discarded' bucket so it stays visible
+ *      in the Performance tab.
+ *
+ * Always clamped to (completedAt - 4h, completedAt - 30s) so the row
+ * passes the cleaning_events CHECK constraint and isn't absurdly old.
+ */
+async function deriveStartedAt(args: {
+  pid: string;
+  staffId: string;
+  date: string;
+  completedAt: string;
+  roomType: 'checkout' | 'stayover';
+  shiftStartedAt: string | null;
+}): Promise<string> {
+  const completedAtMs = new Date(args.completedAt).getTime();
+
+  // 1. Most recent prior cleaning_event by this staff today
+  let priorMs: number | null = null;
+  try {
+    const { data } = await supabaseAdmin
+      .from('cleaning_events')
+      .select('completed_at')
+      .eq('property_id', args.pid)
+      .eq('staff_id', args.staffId)
+      .eq('date', args.date)
+      .neq('status', 'discarded')
+      .lt('completed_at', args.completedAt)
+      .order('completed_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (data?.completed_at) {
+      const ms = new Date(data.completed_at as string).getTime();
+      if (Number.isFinite(ms) && completedAtMs - ms <= MAX_GAP_BETWEEN_CLEANINGS_MS) {
+        priorMs = ms;
+      }
+    }
+  } catch {
+    // Silent — fall through to next anchor.
+  }
+
+  // 2. Shift-start anchor (only relevant for the first room of the day)
+  const shiftMs = args.shiftStartedAt ? new Date(args.shiftStartedAt).getTime() : NaN;
+  const shiftValid =
+    Number.isFinite(shiftMs) &&
+    shiftMs < completedAtMs &&
+    completedAtMs - shiftMs <= MAX_GAP_BETWEEN_CLEANINGS_MS;
+
+  // 3. Synthetic fallback by room type
+  const fallbackMs = completedAtMs - DEFAULT_DURATION_MIN[args.roomType] * 60_000;
+
+  let chosenMs: number;
+  if (priorMs !== null) chosenMs = priorMs;
+  else if (shiftValid) chosenMs = shiftMs;
+  else chosenMs = fallbackMs;
+
+  // Clamp to (completedAt - 4h, completedAt - 30s) so we never violate the
+  // CHECK constraint or produce a wildly stale started_at.
+  const minMs = completedAtMs - MAX_GAP_BETWEEN_CLEANINGS_MS;
+  const maxMs = completedAtMs - 30_000;
+  chosenMs = Math.max(minMs, Math.min(maxMs, chosenMs));
+  return new Date(chosenMs).toISOString();
+}
+
 function classify(durationMin: number): { status: 'recorded' | 'discarded' | 'flagged'; flag_reason: string | null } {
   if (durationMin < DISCARD_UNDER_MIN) return { status: 'discarded', flag_reason: 'under_3min' };
   if (durationMin > DISCARD_OVER_MIN) return { status: 'discarded', flag_reason: 'over_90min' };
@@ -232,7 +333,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       // Audit log + ML feature snapshot — only for checkout/stayover, never vacant.
       let cleaningEventInserted = false;
       if (cleaningContext && (cleaningContext.roomType === 'checkout' || cleaningContext.roomType === 'stayover')) {
-        const startMs = new Date(cleaningContext.startedAt).getTime();
+        // 2026-05-07: Derive started_at server-side instead of trusting the
+        // client's value. See `deriveStartedAt` for the reasoning. The
+        // client's `cleaningContext.startedAt` is now ignored.
+        const derivedStartedAt = await deriveStartedAt({
+          pid,
+          staffId,
+          date: cleaningContext.date,
+          completedAt: cleaningContext.completedAt,
+          roomType: cleaningContext.roomType,
+          shiftStartedAt: cleaningContext.shiftStartedAt ?? null,
+        });
+        const startMs = new Date(derivedStartedAt).getTime();
         const endMs = new Date(cleaningContext.completedAt).getTime();
         const durationMin = Math.max(0, (endMs - startMs) / 60_000);
         const { status, flag_reason } = classify(durationMin);
@@ -256,7 +368,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             date: cleaningContext.date,
             roomNumber: cleaningContext.roomNumber,
             staffId,
-            startedAt: new Date(cleaningContext.startedAt),
+            startedAt: new Date(derivedStartedAt),
             completedAt: new Date(cleaningContext.completedAt),
           });
         } catch (featureErr) {
@@ -280,7 +392,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           stayover_day: cleaningContext.stayoverDayBucket,
           staff_id: staffId,
           staff_name: cleaningContext.staffName || staff.name || 'Housekeeper',
-          started_at: cleaningContext.startedAt,
+          started_at: derivedStartedAt,
           completed_at: cleaningContext.completedAt,
           duration_minutes: Number(durationMin.toFixed(2)),
           status,
