@@ -113,6 +113,9 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
 
   useEffect(() => {
     if (!authLoading && user?.role === 'admin') void load();
+    // load is stable for our purposes (closure over setState only); excluding
+    // it from deps avoids a re-fire loop on every parent render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, user, id]);
 
   const handleRegenerate = async () => {
