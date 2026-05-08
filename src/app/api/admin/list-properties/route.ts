@@ -89,10 +89,16 @@ export async function GET(req: NextRequest) {
   }
 
   // ─── Staff counts per property ───────────────────────────────────────────
-  // .group() isn't available on supabase-js select — do a raw count.
+  // We need the count of active staff per property. supabase-js doesn't
+  // expose GROUP BY directly, so we select just the property_id column
+  // (one row per staff member, but tiny payload — just a UUID) and tally
+  // in JS. At 300 properties × 10 staff = 3000 small rows ≈ ~120KB —
+  // acceptable. Better than the previous version which fetched every
+  // staff column.
   const { data: staffCountsRaw } = await supabaseAdmin
     .from('staff')
-    .select('property_id', { count: 'exact', head: false })
+    .select('property_id')
+    .eq('is_active', true)
     .in('property_id', propertyIds.length > 0 ? propertyIds : ['00000000-0000-0000-0000-000000000000']);
 
   const staffCount = new Map<string, number>();

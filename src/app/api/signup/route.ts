@@ -162,26 +162,55 @@ export async function POST(req: NextRequest) {
   // ─── Create the accounts row ────────────────────────────────────────────
   // The dashboard's AuthContext expects an accounts row keyed on
   // data_user_id. Self-signup users get one with role='owner' and
-  // property_access scoped to just the property they created. We use
-  // the email as the username so they can also sign in via the
-  // legacy username-based flow if they want.
+  // property_access scoped to just the property they created.
+  //
+  // Username collisions are likely (we slice the local-part of email,
+  // and many users share prefixes like "info@<domain>"). We retry with
+  // a numeric suffix on collision, up to 5 attempts. After that we
+  // roll back the property + auth user — leaving them in a state
+  // where the AuthContext can't load them is worse than asking them
+  // to retry signup.
+  //
   // password_hash: stored for legacy schema compatibility — Supabase
   // Auth is the actual auth provider, but the column is NOT NULL.
   const passwordHash = await bcrypt.hash(pwV.value!, 10);
-  const username = email.split('@')[0].slice(0, 100);
-  const { error: acctErr } = await supabaseAdmin.from('accounts').insert({
-    username,
-    password_hash: passwordHash,
-    display_name: ownerName || username,
-    role: 'owner',
-    property_access: [property.id],
-    data_user_id: userId,
-  });
-  if (acctErr) {
-    // If the username collides with an existing account, we still
-    // own the auth user + property — let them sign in via Supabase
-    // and we'll reconcile manually. Log and proceed; don't roll back.
-    console.warn('[signup] accounts insert failed', acctErr.message);
+  const baseUsername = email.split('@')[0].slice(0, 90).replace(/[^a-zA-Z0-9_-]/g, '_');
+
+  let acctOk = false;
+  let lastAcctErr: string | null = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const username = attempt === 0 ? baseUsername : `${baseUsername}_${Date.now() % 100000 + attempt}`;
+    const { error: acctErr } = await supabaseAdmin.from('accounts').insert({
+      username,
+      password_hash: passwordHash,
+      display_name: ownerName || baseUsername,
+      role: 'owner',
+      property_access: [property.id],
+      data_user_id: userId,
+    });
+    if (!acctErr) {
+      acctOk = true;
+      break;
+    }
+    lastAcctErr = acctErr.message;
+    // 23505 = unique violation. Retry with a different username.
+    if ((acctErr as { code?: string }).code !== '23505') break;
+  }
+
+  if (!acctOk) {
+    // Rollback the property + auth user so the GM can retry without a
+    // half-state where they exist but can't sign in.
+    try {
+      await supabaseAdmin.from('properties').delete().eq('id', property.id);
+    } catch {
+      // best-effort cleanup
+    }
+    await supabaseAdmin.auth.admin.deleteUser(userId).catch(() => {});
+    console.error('[signup] accounts insert failed permanently — rolled back', { lastAcctErr });
+    return err(
+      'Could not finish signup — please try again with a different email.',
+      { requestId, status: 500, code: ApiErrorCode.InternalError },
+    );
   }
 
   // ─── Stripe customer (best-effort) ──────────────────────────────────────

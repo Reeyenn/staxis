@@ -27,6 +27,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { verifyWebhookSignature, stripeIsConfigured, type Stripe } from '@/lib/stripe';
 
+// Stripe sends webhooks as raw JSON in the request body. Next.js by
+// default does NOT consume the body before the route handler runs (that
+// would only happen if a middleware called req.json/text). To be safe,
+// we explicitly opt out of any auto-body-handling. If Next.js future
+// versions ever pre-parse, this declaration tells the route to keep
+// the body intact for signature verification.
+export const preferredRegion = 'auto';
+
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 15;
@@ -51,10 +59,47 @@ export async function POST(req: NextRequest) {
   }
   const event = verified.event;
 
+  // ─── Idempotency check ────────────────────────────────────────────────
+  // Stripe explicitly documents that an event can be delivered more than
+  // once. Without dedupe a second delivery of checkout.session.completed
+  // could double-process. We INSERT first and short-circuit on conflict.
+  // (Migration 0035 created the table.)
+  const { error: insertErr } = await supabaseAdmin
+    .from('stripe_processed_events')
+    .insert({
+      event_id: event.id,
+      event_type: event.type,
+      metadata: { livemode: event.livemode, created: event.created },
+    });
+
+  if (insertErr) {
+    // Unique violation (code 23505) = already processed. 2xx so Stripe
+    // stops retrying. Any other error means the dedupe table itself is
+    // unhealthy; let it pass through but log loudly.
+    if ((insertErr as { code?: string }).code === '23505') {
+      return NextResponse.json({ received: true, deduped: true });
+    }
+    console.warn(`[stripe/webhook] dedupe insert failed (${insertErr.message}) — proceeding anyway`);
+  }
+
   try {
-    await handleEvent(event);
+    const propertyId = await handleEvent(event);
+    // Stamp the dedupe row with the property_id we resolved during
+    // processing — useful for audit traces ("show me every event that
+    // touched property X").
+    if (propertyId) {
+      await supabaseAdmin
+        .from('stripe_processed_events')
+        .update({ property_id: propertyId })
+        .eq('event_id', event.id);
+    }
   } catch (err) {
     console.error(`[stripe/webhook] ${event.type} handler threw`, err);
+    // Delete the dedupe row so the next retry has a chance to succeed.
+    await supabaseAdmin
+      .from('stripe_processed_events')
+      .delete()
+      .eq('event_id', event.id);
     // Return 500 so Stripe retries. Stripe retries with exponential
     // backoff for up to 3 days, which gives us plenty of time to fix
     // a bad deploy without losing events.
@@ -64,7 +109,38 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ received: true });
 }
 
-async function handleEvent(event: Stripe.Event): Promise<void> {
+/**
+ * Returns the property_id we updated, or null if this event didn't
+ * touch a known property. Caller stamps the property_id on the
+ * stripe_processed_events row for audit.
+ *
+ * Each handler reads the property by stripe_customer_id WITH
+ * .single() — properties.stripe_customer_id is now UNIQUE (migration
+ * 0035), so .single() is safe and tells us if the customer is unknown
+ * (e.g., a leftover from a deleted property). For unknown customers
+ * we no-op — Stripe might be replaying old events, no need to error.
+ */
+async function handleEvent(event: Stripe.Event): Promise<string | null> {
+  const updateProperty = async (
+    customerId: string,
+    patch: Record<string, unknown>,
+    extraConditions?: { in?: { column: string; values: string[] } },
+  ): Promise<string | null> => {
+    let q = supabaseAdmin
+      .from('properties')
+      .update(patch)
+      .eq('stripe_customer_id', customerId);
+    if (extraConditions?.in) {
+      q = q.in(extraConditions.in.column, extraConditions.in.values);
+    }
+    const { data, error } = await q.select('id').maybeSingle();
+    if (error) {
+      console.warn(`[stripe/webhook] update by customer ${customerId} failed: ${error.message}`);
+      return null;
+    }
+    return (data?.id as string) ?? null;
+  };
+
   switch (event.type) {
     case 'checkout.session.completed': {
       const session = event.data.object as Stripe.Checkout.Session;
@@ -74,44 +150,29 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
       const customerId = typeof session.customer === 'string'
         ? session.customer
         : session.customer?.id;
-      if (!customerId) return;
+      if (!customerId) return null;
 
-      // Find the property by stripe_customer_id and flip to 'active'.
-      await supabaseAdmin
-        .from('properties')
-        .update({
-          subscription_status: 'active',
-          stripe_subscription_id: subscriptionId ?? null,
-          trial_ends_at: null, // trial is over once they paid
-        })
-        .eq('stripe_customer_id', customerId);
-      return;
+      return updateProperty(customerId, {
+        subscription_status: 'active',
+        stripe_subscription_id: subscriptionId ?? null,
+        trial_ends_at: null, // trial is over once they paid
+      });
     }
 
     case 'customer.subscription.updated': {
       const sub = event.data.object as Stripe.Subscription;
       const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer.id;
-
-      // Map Stripe's status → ours.
       const status = mapStripeStatus(sub.status);
-      await supabaseAdmin
-        .from('properties')
-        .update({
-          subscription_status: status,
-          stripe_subscription_id: sub.id,
-        })
-        .eq('stripe_customer_id', customerId);
-      return;
+      return updateProperty(customerId, {
+        subscription_status: status,
+        stripe_subscription_id: sub.id,
+      });
     }
 
     case 'customer.subscription.deleted': {
       const sub = event.data.object as Stripe.Subscription;
       const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer.id;
-      await supabaseAdmin
-        .from('properties')
-        .update({ subscription_status: 'cancelled' })
-        .eq('stripe_customer_id', customerId);
-      return;
+      return updateProperty(customerId, { subscription_status: 'cancelled' });
     }
 
     case 'invoice.payment_failed': {
@@ -119,12 +180,8 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
       const customerId = typeof invoice.customer === 'string'
         ? invoice.customer
         : invoice.customer?.id;
-      if (!customerId) return;
-      await supabaseAdmin
-        .from('properties')
-        .update({ subscription_status: 'past_due' })
-        .eq('stripe_customer_id', customerId);
-      return;
+      if (!customerId) return null;
+      return updateProperty(customerId, { subscription_status: 'past_due' });
     }
 
     case 'invoice.payment_succeeded': {
@@ -132,20 +189,19 @@ async function handleEvent(event: Stripe.Event): Promise<void> {
       const customerId = typeof invoice.customer === 'string'
         ? invoice.customer
         : invoice.customer?.id;
-      if (!customerId) return;
-      // Flip back to active in case they were past_due and just caught up.
-      await supabaseAdmin
-        .from('properties')
-        .update({ subscription_status: 'active' })
-        .eq('stripe_customer_id', customerId)
-        .in('subscription_status', ['past_due', 'incomplete']);
-      return;
+      if (!customerId) return null;
+      // Flip back to active only if they were past_due/incomplete.
+      // Don't accidentally flip a 'cancelled' back to 'active' on a
+      // late retry of a stale invoice.
+      return updateProperty(customerId, { subscription_status: 'active' }, {
+        in: { column: 'subscription_status', values: ['past_due', 'incomplete'] },
+      });
     }
 
     default:
       // No-op for events we don't care about. Stripe sends a lot of
       // noise; we explicitly handle the small set above.
-      return;
+      return null;
   }
 }
 

@@ -50,19 +50,41 @@ export function initSentry(): boolean {
         fly_machine: process.env.FLY_MACHINE_ID ?? 'unk',
       },
     },
-    // Don't capture player-private things by accident. The CUA worker
-    // handles credentials in mapper.ts — make sure they never get
-    // serialized into a Sentry event.
+    // Defense-in-depth: redact credential-shaped strings before sending.
+    // The mapper already substitutes creds with $username/$password
+    // placeholders in recipes, so this filter is a backstop for cases
+    // where a credential leaks into a stack trace or log message.
+    //
+    // We REDACT (replace with `<redacted>`) rather than DROP the event,
+    // because the previous "drop on match" version was too aggressive —
+    // any error involving a JWT-shaped string (every Supabase access
+    // token starts with "eyJ") would silently disappear, hiding real
+    // bugs.
     beforeSend(event) {
-      // Strip any field that looks like a credential before sending.
-      // Defensive — we already substitute creds with $username/$password
-      // in recipes, but a stack trace could surface them.
-      const stringified = JSON.stringify(event);
-      if (/sk-ant-[a-zA-Z0-9_-]{20,}/.test(stringified) ||
-          /eyJ[a-zA-Z0-9_-]{20,}/.test(stringified)) {
-        // Service-role key or Anthropic key found in payload — drop it.
-        return null;
-      }
+      const redactInPlace = (obj: unknown): void => {
+        if (!obj || typeof obj !== 'object') return;
+        for (const [k, v] of Object.entries(obj)) {
+          if (typeof v === 'string') {
+            // Anthropic API key shape: sk-ant-api03-… (95+ chars).
+            // We only redact the long-form key; shorter sk-ant- mentions
+            // (e.g., the prefix in a doc) are fine.
+            if (/sk-ant-api\d{2}-[a-zA-Z0-9_-]{80,}/.test(v)) {
+              (obj as Record<string, unknown>)[k] = '<redacted:anthropic_key>';
+            }
+            // Supabase service-role key: JWT with role:'service_role' —
+            // we can't easily check the payload, so use length as a
+            // proxy. Service role keys are 200+ chars; access tokens are
+            // ~150-200; we redact only the longest ones to err on the
+            // side of preserving real errors.
+            else if (/eyJ[a-zA-Z0-9_-]{30,}\.[a-zA-Z0-9_-]{30,}\.[a-zA-Z0-9_-]{200,}/.test(v)) {
+              (obj as Record<string, unknown>)[k] = '<redacted:long_jwt>';
+            }
+          } else if (typeof v === 'object') {
+            redactInPlace(v);
+          }
+        }
+      };
+      redactInPlace(event);
       return event;
     },
   });
@@ -88,12 +110,15 @@ export function captureMessage(msg: string, level: 'info' | 'warning' | 'error' 
  * Flush pending events before process exit. Sentry's transport is async
  * so unsent events can vanish on crash. Call this from the SIGTERM
  * handler with a short timeout so deploys don't hang on a bad network.
+ *
+ * Hard timeout via Promise.race — Sentry.flush's own timeout argument
+ * isn't always honoured (network stalls can pin the event loop), so we
+ * wrap it in our own setTimeout escape hatch. Returns either way.
  */
 export async function flushSentry(timeoutMs = 2000): Promise<void> {
   if (!initialized) return;
-  try {
-    await Sentry.flush(timeoutMs);
-  } catch {
-    // Best-effort — never block shutdown on Sentry.
-  }
+  await Promise.race([
+    Sentry.flush(timeoutMs).catch(() => {}),
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs + 100)),
+  ]);
 }

@@ -21,6 +21,7 @@ import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid, validateString } from '@/lib/api-validate';
+import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -49,6 +50,18 @@ export async function POST(req: NextRequest) {
     : { value: null as string | null };
   if ('error' in reasonV && reasonV.error) {
     return err(reasonV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  }
+
+  // Cost guard: each regeneration costs $1-3 in Claude tokens. Cap
+  // at 10/hour/property to stop a runaway script (or compromised
+  // admin) from carpet-bombing the API.
+  const rl = await checkAndIncrementRateLimit('admin-regenerate-recipe', pidV.value!);
+  if (!rl.allowed) {
+    return err(
+      `Rate limited. ${rl.current}/${rl.cap} regenerations this hour for this property. Try again in ${rl.retryAfterSec}s.`,
+      { requestId, status: 429, code: ApiErrorCode.RateLimited,
+        headers: { 'Retry-After': String(rl.retryAfterSec) } },
+    );
   }
 
   // Look up the property's PMS type via scraper_credentials.

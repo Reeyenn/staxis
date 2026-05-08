@@ -33,7 +33,11 @@ export type RateLimitEndpoint =
   // A malicious authenticated user shouldn't be able to queue 1000
   // jobs and exhaust the daily budget.
   | 'pms-save-credentials'
-  | 'pms-onboard';
+  | 'pms-onboard'
+  // Admin actions that incur Claude API cost. Even though only admins
+  // hit them, a compromised admin account or scripted retry storm
+  // could rack up real spend. Cap at 10/hr per property.
+  | 'admin-regenerate-recipe';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -43,6 +47,9 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // succeeds the first time; this leaves room for a few retries).
   'pms-save-credentials':       30,
   'pms-onboard':                 5,
+  // Admin recipe regeneration costs $1-3 each. 10/hour/property is
+  // generous for legitimate ops use; tight enough to stop a runaway.
+  'admin-regenerate-recipe':    10,
   // Maria might re-send shift confirmations 2-3 times if she tweaks the
   // schedule. 10/hour gives plenty of room without unlimited resend abuse.
   'send-shift-confirmations': 10,
