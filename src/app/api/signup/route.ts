@@ -34,6 +34,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateString, validateInt, validateEnum, validateTimezone } from '@/lib/api-validate';
 import { createStripeCustomer, trialEndsAt } from '@/lib/stripe';
+import { checkAndIncrementRateLimit, rateLimitedResponse, ipToRateLimitKey } from '@/lib/api-ratelimit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -75,6 +76,20 @@ function defaultServicesFor(kind: PropertyKind): Record<string, boolean> {
 
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
+
+  // ─── Rate limit (per source IP) ─────────────────────────────────────────
+  // Run BEFORE any expensive work (bcrypt hash, Supabase auth.admin
+  // calls, Stripe customer creation) so a scripted attacker can't burn
+  // CPU or pollute auth.users / Stripe with junk customers. 5/hour/IP
+  // is plenty for legitimate signups; anything higher is bot/abuse.
+  // (Pass-3 fix — H6.)
+  const sourceIp = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
+    ?? req.headers.get('x-real-ip')
+    ?? null;
+  const rl = await checkAndIncrementRateLimit('signup-ip', ipToRateLimitKey(sourceIp));
+  if (!rl.allowed) {
+    return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
+  }
 
   // ─── Validate ───────────────────────────────────────────────────────────
   const body = (await req.json().catch(() => null)) as Body | null;
