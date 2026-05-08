@@ -35,6 +35,14 @@ export type RecipeStep =
   | { kind: 'goto';        url: string }
   | { kind: 'fill';        selector: string; value: '$username' | '$password' | string }
   | { kind: 'click';       selector: string }
+  // Coordinate-based variants — used by the CUA mapper, which knows where
+  // Claude clicked but doesn't have a CSS selector for the target. The
+  // runner replays via page.mouse.click(x, y) / page.keyboard.type(text).
+  // Brittle to UI resizes (coordinates shift), but unblocks v0 — for
+  // PMSes whose UI is stable, this works fine. For shifty UIs we'll
+  // upgrade the mapper to extract selectors at click time.
+  | { kind: 'click_at';    x: number; y: number }
+  | { kind: 'type_text';   value: '$username' | '$password' | string }
   | { kind: 'wait_for';    selector: string; timeoutMs?: number }
   | { kind: 'wait_ms';     ms: number }
   | { kind: 'select';      selector: string; value: string }

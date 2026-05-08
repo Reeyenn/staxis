@@ -34,9 +34,17 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
   // Hard timeout — if the job is still running after JOB_TIMEOUT_MS we
   // mark it failed and let the next iteration of pollLoop pick up new
   // work. Without this a single bad PMS could brick the worker.
-  const timeout = setTimeout(() => {
+  //
+  // Note: we await markFailed inside the handler so the DB write
+  // completes before the next poll cycle picks up new work. The
+  // outstanding async work (Playwright + Claude calls) keeps running
+  // until it naturally finishes — there's no clean way to interrupt
+  // them. The `timedOut` flag is checked at every phase boundary so
+  // we don't do useless saves after the deadline.
+  const timeout = setTimeout(async () => {
     timedOut = true;
-    void markFailed(jobId, 'Job exceeded time limit', { kind: 'timeout', limitMs: JOB_TIMEOUT_MS });
+    log.warn('job exceeded time limit', { jobId, limitMs: JOB_TIMEOUT_MS });
+    await markFailed(jobId, 'Job exceeded time limit', { kind: 'timeout', limitMs: JOB_TIMEOUT_MS });
   }, JOB_TIMEOUT_MS);
 
   try {
@@ -177,6 +185,10 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
     }
 
     // ─── Done ────────────────────────────────────────────────────────────
+    // Final timedOut guard: if the timeout fired during phase 4 (recipe
+    // promotion), we don't want markComplete to overwrite the failure
+    // status the timeout handler wrote.
+    if (timedOut) return;
     await markComplete(jobId, recipeIdForJob, {
       rooms_count: saveResult.summary.roomsSaved,
       staff_count: saveResult.summary.staffSaved,
@@ -212,10 +224,14 @@ async function loadJob(jobId: string): Promise<OnboardingJob | null> {
 }
 
 async function loadCredentials(propertyId: string): Promise<ScraperCredentialsRow | null> {
+  // Filter on is_active too — a property whose credentials have been
+  // disabled shouldn't run mapping (we'd waste tokens probing a PMS
+  // the GM has explicitly opted out of).
   const { data, error } = await supabase
     .from('scraper_credentials')
     .select('*')
     .eq('property_id', propertyId)
+    .eq('is_active', true)
     .maybeSingle();
   if (error || !data) return null;
   return data as ScraperCredentialsRow;

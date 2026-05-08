@@ -57,7 +57,10 @@ export async function POST(req: NextRequest) {
   if (!property) {
     return err('Property not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
-  if ((property.owner_id as string) !== session.userId) {
+  // Explicit null check — an orphaned property (owner_id=NULL) shouldn't
+  // pass ownership. Without this the !== comparison still rejects NULL
+  // but the intent is clearer this way.
+  if (!property.owner_id || (property.owner_id as string) !== session.userId) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 

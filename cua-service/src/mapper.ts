@@ -343,22 +343,28 @@ async function executeComputerAction(
     case 'left_click': {
       const [x, y] = action.coordinate;
       await page.mouse.click(x, y);
-      return { message: `clicked (${x}, ${y})`, recordedStep: { kind: 'wait_ms', ms: 500 } };
+      // Record the actual click coordinates so the recipe-runner can
+      // replay them. Without this, the recipe was a no-op and login
+      // never worked. (Severity-CRITICAL fix from 2026-05-07 review.)
+      return {
+        message: `clicked (${x}, ${y})`,
+        recordedStep: { kind: 'click_at', x, y },
+      };
     }
 
     case 'type': {
-      // If the typed text is the username or password, store as
-      // placeholder in the recipe so we don't leak credentials.
-      let recordedValue: string = action.text;
+      // If the typed text matches a credential, store as placeholder
+      // ($username / $password) so we don't leak creds into the recipe
+      // — the runner substitutes the real values at execution time.
+      let recordedValue: '$username' | '$password' | string = action.text;
       if (action.text === creds.username) recordedValue = '$username';
       if (action.text === creds.password) recordedValue = '$password';
 
       await page.keyboard.type(action.text);
-      // Best-effort selector capture for the recipe — Playwright doesn't
-      // give us a selector after keyboard.type. The recipe will use the
-      // last clicked field instead. v0: skip the recipe step here.
-      return { message: `typed ${action.text === creds.password ? '<password>' : action.text}`,
-               recordedStep: undefined };
+      return {
+        message: `typed ${action.text === creds.password ? '<password>' : action.text}`,
+        recordedStep: { kind: 'type_text', value: recordedValue },
+      };
     }
 
     case 'key':

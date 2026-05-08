@@ -75,6 +75,10 @@ export type RecipeStep =
   | { kind: 'goto';        url: string }
   | { kind: 'fill';        selector: string; value: '$username' | '$password' | string }
   | { kind: 'click';       selector: string }
+  // Coordinate-based variants — used by the CUA mapper. Mirror in
+  // src/lib/pms/recipe.ts.
+  | { kind: 'click_at';    x: number; y: number }
+  | { kind: 'type_text';   value: '$username' | '$password' | string }
   | { kind: 'wait_for';    selector: string; timeoutMs?: number }
   | { kind: 'wait_ms';     ms: number }
   | { kind: 'select';      selector: string; value: string }

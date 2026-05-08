@@ -31,6 +31,10 @@ export async function GET(req: NextRequest) {
     return err(idV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
+  // Note: error_detail is intentionally NOT in the SELECT. The worker
+  // writes PMS-specific debug info there (URLs it tried, selectors that
+  // failed) which would leak attack surface to a curious authenticated
+  // user. Keep it to server-side logs only.
   const { data: job } = await supabaseAdmin
     .from('onboarding_jobs')
     .select(`
@@ -51,7 +55,7 @@ export async function GET(req: NextRequest) {
     .eq('id', job.property_id as string)
     .maybeSingle();
 
-  if (!property || (property.owner_id as string) !== session.userId) {
+  if (!property || !property.owner_id || (property.owner_id as string) !== session.userId) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 

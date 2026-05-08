@@ -155,6 +155,21 @@ async function runStep(page: Page, step: RecipeStep, creds: PMSCredentials): Pro
     case 'click':
       await page.click(step.selector, { timeout: 10_000 });
       return;
+    case 'click_at':
+      // Coordinate-based replay — the mapper recorded a click at (x, y)
+      // because Claude clicked at pixel coordinates rather than a CSS
+      // selector. Brittle to UI resizes but adequate for v0.
+      await page.mouse.click(step.x, step.y);
+      return;
+    case 'type_text': {
+      // The mapper substituted credentials with $username / $password
+      // placeholders. Resolve them now using the property's real creds.
+      const value = step.value === '$username' ? creds.username
+                  : step.value === '$password' ? creds.password
+                  : step.value;
+      await page.keyboard.type(value);
+      return;
+    }
     case 'wait_for':
       await page.waitForSelector(step.selector, { timeout: step.timeoutMs ?? 15_000 });
       return;
