@@ -72,7 +72,14 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
     };
 
     // ─── Phase 1: ensure we have a recipe ─────────────────────────────────
-    let recipe = await loadActiveRecipe(job.pms_type);
+    // force_remap=true (set by /api/admin/regenerate-recipe) means the
+    // operator explicitly asked us to learn a fresh recipe even if an
+    // active one exists. We still load the active one so the fleet
+    // keeps using it during this run; we just bypass the early-return
+    // and run the mapper anyway. The atomic swap at the end (via
+    // staxis_swap_active_recipe) demotes-and-promotes in one transaction.
+    const existingActive = await loadActiveRecipe(job.pms_type);
+    let recipe = job.force_remap ? null : existingActive;
     let recipeIdForJob: string | null = recipe?.id ?? null;
     let isFreshlyMapped = false;
 
@@ -163,27 +170,24 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
     }
 
     // ─── Phase 4: promote recipe if newly mapped ─────────────────────────
+    // staxis_swap_active_recipe() does the demote+promote in a single
+    // plpgsql transaction. If the promote fails the demote rolls back,
+    // so the previous active recipe stays active and the fleet never
+    // goes recipe-less even mid-regeneration. (Pass-3 fix — H7.)
     if (isFreshlyMapped && recipeIdForJob) {
-      const { error: promoteErr } = await supabase
-        .from('pms_recipes')
-        .update({ status: 'active' })
-        .eq('id', recipeIdForJob);
-      if (promoteErr) {
-        // Non-fatal: extraction worked, the next onboarding for this PMS
-        // type just won't reuse the recipe. Log and move on.
-        log.warn('failed to promote recipe to active — non-fatal', {
+      const { error: swapErr } = await supabase.rpc('staxis_swap_active_recipe', {
+        p_new_recipe_id: recipeIdForJob,
+        p_pms_type: job.pms_type,
+      });
+      if (swapErr) {
+        // Non-fatal for the current job (extraction succeeded). Other
+        // properties keep using the previous active recipe (if any).
+        // The next onboarding for this PMS will retry promotion.
+        log.warn('failed to swap active recipe — non-fatal', {
           jobId,
           recipeId: recipeIdForJob,
-          err: promoteErr.message,
+          err: swapErr.message,
         });
-      } else {
-        // Demote any older active recipes for this pms_type.
-        await supabase
-          .from('pms_recipes')
-          .update({ status: 'deprecated' })
-          .eq('pms_type', job.pms_type)
-          .eq('status', 'active')
-          .neq('id', recipeIdForJob);
       }
     }
 

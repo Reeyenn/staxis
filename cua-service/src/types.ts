@@ -154,6 +154,9 @@ export interface OnboardingJob {
   completed_at: string | null;
   created_at: string;
   updated_at: string;
+  /** Set true by /api/admin/regenerate-recipe so the worker runs the
+   *  CUA mapper even when an active recipe exists for this pms_type. */
+  force_remap: boolean;
 }
 
 export interface ScraperCredentialsRow {

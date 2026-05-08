@@ -2,15 +2,23 @@
  * POST /api/admin/regenerate-recipe
  *
  * Triggered by Reeyen from /admin/properties/[id] when a PMS UI change
- * has broken the existing recipe. Demotes the current active recipe
- * (if any) for this PMS type and queues a fresh CUA mapping job.
+ * has broken the existing recipe. Queues a fresh CUA mapping job with
+ * force_remap=true.
  *
  * Body: { propertyId, reason? }
  *
  * Effects:
- *   - Demotes pms_recipes(pms_type=X, status='active') → 'deprecated'
- *   - Inserts a fresh onboarding_jobs row with status='queued' so the
- *     next worker picks it up and runs the mapper
+ *   - Inserts an onboarding_jobs row with force_remap=true. The
+ *     cua-service worker will run the mapper even though an active
+ *     recipe exists, then atomically swap the new recipe in via
+ *     staxis_swap_active_recipe() AT SUCCESS TIME.
+ *
+ *     Critically: we do NOT eager-demote the existing active recipe.
+ *     Recipes are scoped per-pms_type (not per-property), so demoting
+ *     the cloudbeds recipe for one property would break cloudbeds for
+ *     every other cloudbeds property until the new mapping run lands.
+ *     The atomic swap at success time means the fleet is never
+ *     recipe-less, even mid-regeneration. (Pass-3 fix — H7.)
  *
  * Returns: { jobId }
  */
@@ -78,16 +86,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Demote the current active recipe for this PMS type so the next
-  // mapping run produces a fresh draft (and eventually a new active).
-  await supabaseAdmin
-    .from('pms_recipes')
-    .update({ status: 'deprecated' })
-    .eq('pms_type', creds.pms_type as string)
-    .eq('status', 'active');
-
-  // Queue a fresh onboarding job. The worker will see no active recipe
-  // and run the mapper.
+  // Queue a fresh onboarding job with force_remap=true. The worker will
+  // run the mapper regardless of existing recipe, then atomically swap
+  // (demote old + promote new) inside staxis_swap_active_recipe at
+  // success time. The current recipe stays active and the fleet keeps
+  // working until the new one is ready.
   const { data: job, error: insertErr } = await supabaseAdmin
     .from('onboarding_jobs')
     .insert({
@@ -96,6 +99,7 @@ export async function POST(req: NextRequest) {
       status: 'queued',
       step: `Admin re-mapping requested${reasonV.value ? `: ${reasonV.value}` : ''}`,
       progress_pct: 0,
+      force_remap: true,
     })
     .select('id')
     .single();
