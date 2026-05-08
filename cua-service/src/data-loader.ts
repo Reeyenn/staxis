@@ -39,6 +39,13 @@ export async function saveExtractedData(args: {
     departuresToday: args.data.departuresToday.length,
   };
 
+  // Aggregate errors across every write so the worker never marks a job
+  // 'complete' when actual data wasn't persisted. Previously each error
+  // path log.warn'd and kept going, returning ok:true with zeros — the
+  // dashboard would then show "Connected ✓" with no rooms or staff,
+  // confusing the GM about whether onboarding worked. (Pass-3 fix — H10.)
+  const errors: string[] = [];
+
   // ─── Rooms ───────────────────────────────────────────────────────────────
   // properties.room_inventory is a text[] of room numbers (migration 0025).
   // It's the master list — /api/populate-rooms-from-plan unions it with
@@ -63,6 +70,7 @@ export async function saveExtractedData(args: {
 
     if (error) {
       log.warn('failed to write room_inventory', { err: error.message });
+      errors.push(`rooms: ${error.message}`);
     } else {
       summary.roomsSaved = roomNumbers.length;
     }
@@ -74,28 +82,33 @@ export async function saveExtractedData(args: {
   // manually, and we don't want PMS naming differences to clobber her
   // edits. Only first-time inserts.
   if (args.data.staff.length > 0) {
-    const { data: existing } = await supabase
+    const { data: existing, error: existingErr } = await supabase
       .from('staff')
       .select('name')
       .eq('property_id', args.propertyId);
 
-    const existingNames = new Set((existing ?? []).map((r) => (r.name as string).toLowerCase()));
-    const toInsert = args.data.staff
-      .filter((s) => s.name && !existingNames.has(s.name.toLowerCase()))
-      .map((s) => ({
-        property_id: args.propertyId,
-        name: s.name,
-        role: s.role ?? 'housekeeper',
-        phone_number: s.phone ?? null,
-        is_active: true,
-      }));
+    if (existingErr) {
+      errors.push(`staff lookup: ${existingErr.message}`);
+    } else {
+      const existingNames = new Set((existing ?? []).map((r) => (r.name as string).toLowerCase()));
+      const toInsert = args.data.staff
+        .filter((s) => s.name && !existingNames.has(s.name.toLowerCase()))
+        .map((s) => ({
+          property_id: args.propertyId,
+          name: s.name,
+          role: s.role ?? 'housekeeper',
+          phone_number: s.phone ?? null,
+          is_active: true,
+        }));
 
-    if (toInsert.length > 0) {
-      const { error } = await supabase.from('staff').insert(toInsert);
-      if (error) {
-        log.warn('failed to insert staff', { err: error.message });
-      } else {
-        summary.staffSaved = toInsert.length;
+      if (toInsert.length > 0) {
+        const { error } = await supabase.from('staff').insert(toInsert);
+        if (error) {
+          log.warn('failed to insert staff', { err: error.message });
+          errors.push(`staff insert: ${error.message}`);
+        } else {
+          summary.staffSaved = toInsert.length;
+        }
       }
     }
   }
@@ -104,7 +117,7 @@ export async function saveExtractedData(args: {
   // After a successful onboarding extraction, mark the property's PMS
   // connection state to true so the dashboard shows "Connected". This
   // flips the badge on /settings/pms from yellow to green.
-  await supabase
+  const { error: pmsErr } = await supabase
     .from('properties')
     .update({
       pms_connected: true,
@@ -112,5 +125,12 @@ export async function saveExtractedData(args: {
     })
     .eq('id', args.propertyId);
 
+  if (pmsErr) {
+    errors.push(`pms_connected flag: ${pmsErr.message}`);
+  }
+
+  if (errors.length > 0) {
+    return { ok: false, error: errors.join(' | ') };
+  }
   return { ok: true, summary };
 }
