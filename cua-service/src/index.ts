@@ -28,6 +28,7 @@ const sentryReady = initSentry();
 import { supabase, verifyConnection } from './supabase.js';
 import { log, makeWorkerId } from './log.js';
 import { runJob } from './job-runner.js';
+import { runPullJob } from './pull-job-runner.js';
 
 const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS ?? '5000', 10);
 const WORKER_ID = makeWorkerId();
@@ -56,6 +57,24 @@ async function claimNextJob(): Promise<{ id: string } | null> {
   return row ? { id: row.id as string } : null;
 }
 
+/**
+ * Atomic claim for the steady-state pull queue (migration 0042). Same
+ * SKIP LOCKED pattern as claimNextJob, separate function so onboarding
+ * can take priority over pulls (onboarding is user-facing; a pull
+ * waiting one extra tick is fine).
+ */
+async function claimNextPullJob(): Promise<{ id: string } | null> {
+  const { data, error } = await supabase.rpc('staxis_claim_next_pull_job', {
+    p_worker_id: WORKER_ID,
+  });
+  if (error) {
+    log.warn('pull claim rpc failed', { err: error.message });
+    return null;
+  }
+  const row = Array.isArray(data) && data.length > 0 ? data[0] : null;
+  return row ? { id: row.id as string } : null;
+}
+
 async function pollLoop(): Promise<void> {
   log.info('CUA worker started', { workerId: WORKER_ID, pollIntervalMs: POLL_INTERVAL_MS });
 
@@ -80,8 +99,19 @@ async function pollLoop(): Promise<void> {
           // Reaper is best-effort — never block the poll loop.
           log.warn('reaper rpc failed (non-fatal)', { err: (err as Error).message });
         }
+        // Same cadence for the pull queue's reaper (migration 0042).
+        try {
+          const { data } = await supabase.rpc('staxis_reap_stale_pull_jobs');
+          if (typeof data === 'number' && data > 0) {
+            log.warn('reaped stale pull jobs', { count: data });
+          }
+        } catch (err) {
+          log.warn('pull reaper rpc failed (non-fatal)', { err: (err as Error).message });
+        }
       }
 
+      // Onboarding jobs take priority — they're user-facing. Only
+      // check the pull queue if there's no onboarding work pending.
       const job = await claimNextJob();
       // With FOR UPDATE SKIP LOCKED in staxis_claim_next_job (migration
       // 0039), null means "no queued jobs" — there's no race to lose,
@@ -102,6 +132,22 @@ async function pollLoop(): Promise<void> {
           });
         }
         inFlightJobId = null;
+      } else {
+        // No onboarding work — try the steady-state pull queue.
+        const pullJob = await claimNextPullJob();
+        if (pullJob) {
+          inFlightJobId = pullJob.id;
+          log.info('claimed pull job', { jobId: pullJob.id, workerId: WORKER_ID });
+          try {
+            await runPullJob(pullJob.id, WORKER_ID);
+          } catch (err) {
+            log.error('runPullJob threw — should have been caught inside', {
+              jobId: pullJob.id,
+              err: (err as Error).message,
+            });
+          }
+          inFlightJobId = null;
+        }
       }
     } catch (err) {
       log.error('poll iteration failed', { err: (err as Error).message });
