@@ -23,6 +23,7 @@ import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
+import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -78,6 +79,22 @@ export async function POST(req: NextRequest) {
     return err(
       'No active PMS credentials found for this property. Save your credentials first.',
       { requestId, status: 400, code: ApiErrorCode.ValidationFailed },
+    );
+  }
+
+  // ─── Rate limit ─────────────────────────────────────────────────────────
+  // Cap onboardings at 5/hour per property. Each kicks off a Fly worker
+  // run that may spend $1-3 in Claude tokens for a brand-new PMS;
+  // throttling protects the daily budget against a runaway script or a
+  // confused GM hitting Save in a loop. The throttle below already
+  // prevents back-to-back queueing while a job is running, but the
+  // hourly cap is the broader budget guardrail.
+  const rl = await checkAndIncrementRateLimit('pms-onboard', pidV.value!);
+  if (!rl.allowed) {
+    return err(
+      `Rate limited. ${rl.current}/${rl.cap} onboarding attempts this hour for this property. Try again in ${rl.retryAfterSec}s.`,
+      { requestId, status: 429, code: ApiErrorCode.RateLimited,
+        headers: { 'Retry-After': String(rl.retryAfterSec) } },
     );
   }
 

@@ -249,10 +249,28 @@ async function loadActiveRecipe(
     .limit(1)
     .maybeSingle();
   if (!data) return null;
+
+  // Validate the recipe shape before handing it to the runner. JSONB
+  // can drift over time (manual edits, future schema changes, partial
+  // writes from a crashed mapper) — bad data here means a runtime
+  // type error deep in Playwright. Catch it at the boundary instead.
+  const recipe = data.recipe as Recipe | null;
+  if (!recipe || typeof recipe !== 'object'
+      || (recipe as { schema?: unknown }).schema !== 1
+      || !(recipe as Recipe).login
+      || !(recipe as Recipe).actions
+      || !Array.isArray((recipe as Recipe).login.steps)
+      || !Array.isArray((recipe as Recipe).login.successSelectors)) {
+    log.error('active recipe failed shape validation', {
+      pmsType, recipeId: data.id, version: data.version,
+    });
+    return null;
+  }
+
   return {
     id: data.id as string,
     version: data.version as number,
-    recipe: data.recipe as Recipe,
+    recipe,
   };
 }
 

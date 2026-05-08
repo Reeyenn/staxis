@@ -66,9 +66,38 @@ async function claimNextJob(): Promise<{ id: string } | null> {
 async function pollLoop(): Promise<void> {
   log.info('CUA worker started', { workerId: WORKER_ID, pollIntervalMs: POLL_INTERVAL_MS });
 
+  // Cycle counter so we only invoke the stale-job reaper periodically
+  // rather than on every tick. 12 cycles × 5s = once per minute.
+  let cycle = 0;
+
   while (!shuttingDown) {
     try {
-      const job = await claimNextJob();
+      // Defense-in-depth: every minute, rescue any onboarding_jobs row
+      // whose worker died mid-flight (started_at > 5min ago). Migration
+      // 0033 also schedules this via pg_cron, but pg_cron isn't always
+      // enabled on the project; running it from the worker too means
+      // the safety net survives even if cron is disabled.
+      if (cycle % 12 === 0) {
+        try {
+          const { data } = await supabase.rpc('staxis_reap_stale_jobs');
+          if (typeof data === 'number' && data > 0) {
+            log.warn('reaped stale jobs', { count: data });
+          }
+        } catch (err) {
+          // Reaper is best-effort — never block the poll loop.
+          log.warn('reaper rpc failed (non-fatal)', { err: (err as Error).message });
+        }
+      }
+
+      let job = await claimNextJob();
+      // If we lost the claim race to another worker, retry once
+      // immediately — there might be more queued jobs to grab without
+      // waiting a full POLL_INTERVAL_MS.
+      if (!job) {
+        const second = await claimNextJob();
+        if (second) job = second;
+      }
+
       if (job) {
         inFlightJobId = job.id;
         log.info('claimed job', { jobId: job.id, workerId: WORKER_ID });
@@ -89,6 +118,7 @@ async function pollLoop(): Promise<void> {
       log.error('poll iteration failed', { err: (err as Error).message });
     }
 
+    cycle++;
     if (shuttingDown) break;
     await sleep(POLL_INTERVAL_MS);
   }

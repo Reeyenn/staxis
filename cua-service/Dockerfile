@@ -35,14 +35,18 @@ FROM mcr.microsoft.com/playwright:v1.49.0-jammy AS runtime
 WORKDIR /app
 
 # Drop privileges. Playwright image already has a `pwuser` for this.
+# All COPY commands use --chown so pwuser can read its own files at
+# runtime — without --chown, files land owned by root and pwuser hits
+# EACCES on first import. (Bug found in 2026-05-07 review.)
 ENV NODE_ENV=production
 
 # Production deps only.
-COPY package*.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+COPY --chown=pwuser:pwuser package*.json ./
+RUN npm ci --omit=dev && npm cache clean --force && \
+    chown -R pwuser:pwuser /app/node_modules
 
 # Compiled JS from the builder stage.
-COPY --from=builder /app/dist ./dist
+COPY --chown=pwuser:pwuser --from=builder /app/dist ./dist
 
 # Worker doesn't expose HTTP by default — it's a poller. If we add a
 # /healthz endpoint later, expose it here.

@@ -40,19 +40,31 @@ export async function saveExtractedData(args: {
   };
 
   // ─── Rooms ───────────────────────────────────────────────────────────────
-  // The properties table tracks total_rooms; the actual room records live
-  // in property_room_inventory (added in 0025). For now we just bump
-  // total_rooms on properties — full per-room records are an iteration
-  // away (need to look at the existing room schema before we write to it).
+  // properties.room_inventory is a text[] of room numbers (migration 0025).
+  // It's the master list — /api/populate-rooms-from-plan unions it with
+  // CSV-derived rooms so vacant-clean rooms (which Choice Advantage
+  // omits from its CSV) still render in housekeeping. Overwriting on
+  // re-onboard is correct: the PMS is the source of truth.
+  //
+  // Also bump total_rooms so the dashboard counts are right immediately
+  // (without waiting for the next CSV pull to recompute).
   if (args.data.rooms.length > 0) {
+    const roomNumbers = args.data.rooms
+      .map((r) => r.roomNumber)
+      .filter((rn): rn is string => typeof rn === 'string' && rn.trim().length > 0);
+
     const { error } = await supabase
       .from('properties')
-      .update({ total_rooms: args.data.rooms.length })
+      .update({
+        total_rooms: roomNumbers.length,
+        room_inventory: roomNumbers,
+      })
       .eq('id', args.propertyId);
+
     if (error) {
-      log.warn('failed to update total_rooms', { err: error.message });
+      log.warn('failed to write room_inventory', { err: error.message });
     } else {
-      summary.roomsSaved = args.data.rooms.length;
+      summary.roomsSaved = roomNumbers.length;
     }
   }
 

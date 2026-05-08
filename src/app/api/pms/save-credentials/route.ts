@@ -22,6 +22,7 @@ import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid, validateString, validateEnum } from '@/lib/api-validate';
+import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
 import { PMS_TYPES, isPMSType } from '@/lib/pms';
 
 export const runtime = 'nodejs';
@@ -108,6 +109,19 @@ export async function POST(req: NextRequest) {
   // true (NULL !== userId) but the semantics are murky; be explicit.
   if (!property.owner_id || (property.owner_id as string) !== session.userId) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+  }
+
+  // ─── Rate limit ─────────────────────────────────────────────────────────
+  // Cap test-cred saves at 30/hour per property — plenty for a GM
+  // typo-fixing iteratively, but stops a runaway script from carpet-
+  // bombing the table.
+  const rl = await checkAndIncrementRateLimit('pms-save-credentials', pidV.value!);
+  if (!rl.allowed) {
+    return err(
+      `Rate limited. ${rl.current}/${rl.cap} credential saves this hour for this property. Try again in ${rl.retryAfterSec}s.`,
+      { requestId, status: 429, code: ApiErrorCode.RateLimited,
+        headers: { 'Retry-After': String(rl.retryAfterSec) } },
+    );
   }
 
   // ─── Upsert scraper_credentials ─────────────────────────────────────────

@@ -48,3 +48,13 @@ next-env.d.ts
 # Claude Code
 .claude/worktrees/
 CLAUDE.md
+
+# Local-only deploy helpers — these can contain API keys / secrets at any
+# moment (we use them as throwaway one-shot deploy scripts via Finder
+# double-click, since Cowork's computer-use blocks typing into Terminal).
+# Never commit them — write a fresh one each session and let it stay
+# untracked.
+*.command
+/.staxis-push-patches/
+/.audit-fix-tmp/
+/audit-fix/

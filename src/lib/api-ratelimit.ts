@@ -27,10 +27,22 @@ export type RateLimitEndpoint =
   | 'test-sms-flow'
   | 'sync-room-assignments'
   | 'populate-rooms-from-plan'
-  | 'notify-housekeepers-sms';
+  | 'notify-housekeepers-sms'
+  // PMS onboarding endpoints — tight caps because each onboarding
+  // job spawns a Fly worker that potentially burns Claude tokens.
+  // A malicious authenticated user shouldn't be able to queue 1000
+  // jobs and exhaust the daily budget.
+  | 'pms-save-credentials'
+  | 'pms-onboard';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
+  // PMS onboarding — testing creds is cheap so 30/hr handles a GM
+  // typo-fixing iteratively. Onboard kicks off a real CUA mapping
+  // run that costs $1-3, so 5/hr is plenty (one onboarding usually
+  // succeeds the first time; this leaves room for a few retries).
+  'pms-save-credentials':       30,
+  'pms-onboard':                 5,
   // Maria might re-send shift confirmations 2-3 times if she tweaks the
   // schedule. 10/hour gives plenty of room without unlimited resend abuse.
   'send-shift-confirmations': 10,

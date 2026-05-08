@@ -32,6 +32,15 @@ import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRec
 const MAX_AGENT_STEPS = 25;
 const VIEWPORT = { width: COMPUTER_TOOL.display_width_px, height: COMPUTER_TOOL.display_height_px };
 
+// Hard token budget per mapping run. Each step accumulates context
+// (screenshot ~2-3K tokens + prior history), so a 25-step run can
+// realistically reach 100-150K input tokens. This cap halts the agent
+// before a runaway loop (CAPTCHA, weird redirect, model confusion)
+// burns through the daily budget. ~100K input tokens ≈ $0.30 on
+// Sonnet 4.5; we let it run up to that, then bail.
+const MAX_INPUT_TOKENS_PER_RUN = 120_000;
+const MAX_OUTPUT_TOKENS_PER_RUN = 4_000;
+
 interface MapperOptions {
   pmsType: PMSType;
   credentials: PMSCredentials;
@@ -138,10 +147,13 @@ async function mapLogin(page: Page, creds: PMSCredentials): Promise<LoginMapResu
   await page.goto(creds.loginUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
 
   const recordedSteps: RecipeStep[] = [{ kind: 'goto', url: creds.loginUrl }];
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
 
   // Conversation with Claude. We keep the entire history (screenshots
   // included) so Claude can reason about the sequence. Token cost grows
-  // with steps — that's fine for a one-time mapping run.
+  // with steps — that's fine for a one-time mapping run, but we cap it
+  // at MAX_INPUT_TOKENS_PER_RUN to prevent runaway spend.
   const goal =
     `Log into this hotel PMS using these credentials: ` +
     `username "${creds.username}", password "${creds.password}". ` +
@@ -158,6 +170,17 @@ async function mapLogin(page: Page, creds: PMSCredentials): Promise<LoginMapResu
   ];
 
   for (let stepIdx = 0; stepIdx < MAX_AGENT_STEPS; stepIdx++) {
+    if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
+      log.warn('mapper exceeded input token budget — bailing', {
+        totalInputTokens, totalOutputTokens, stepIdx,
+      });
+      return {
+        ok: false,
+        userMessage: 'Mapping took longer than expected — please contact support so we can investigate.',
+        detail: { phase: 'login_mapping', reason: 'token_budget_exceeded', totalInputTokens },
+      };
+    }
+
     const response = await anthropic.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: 1024,
@@ -167,6 +190,9 @@ async function mapLogin(page: Page, creds: PMSCredentials): Promise<LoginMapResu
       tools: [COMPUTER_TOOL as unknown as Anthropic.Messages.ToolUnion],
       messages,
     });
+
+    totalInputTokens += response.usage?.input_tokens ?? 0;
+    totalOutputTokens += response.usage?.output_tokens ?? 0;
 
     messages.push({ role: 'assistant', content: response.content });
 
@@ -243,6 +269,7 @@ async function mapAction(args: {
   }
 
   const recordedSteps: RecipeStep[] = [{ kind: 'goto', url: args.postLoginUrl }];
+  let totalInputTokens = 0;
 
   const fullGoal =
     args.goal +
@@ -260,6 +287,11 @@ async function mapAction(args: {
   ];
 
   for (let stepIdx = 0; stepIdx < MAX_AGENT_STEPS; stepIdx++) {
+    if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
+      log.warn('action mapper exceeded token budget — bailing', { totalInputTokens, stepIdx });
+      return { ok: false, reason: 'token budget exceeded' };
+    }
+
     const response = await anthropic.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: 1024,
@@ -267,6 +299,8 @@ async function mapAction(args: {
       tools: [COMPUTER_TOOL as unknown as Anthropic.Messages.ToolUnion],
       messages,
     });
+
+    totalInputTokens += response.usage?.input_tokens ?? 0;
 
     messages.push({ role: 'assistant', content: response.content });
 
