@@ -22,6 +22,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
+import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -47,6 +48,15 @@ export async function POST(req: NextRequest) {
   // the trigger is correct. If you ever need to disable alerts again, set
   // properties.alert_phone to NULL and unset MANAGER_PHONE/OPS_ALERT_PHONE
   // — the route will then cleanly no-op with reason='no_alert_phone_configured'.
+  //
+  // Auth: previously this route only validated pid as UUID-shaped. That
+  // meant anyone with a guessed pid + critical-item UUIDs could trigger an
+  // SMS to the property's alert phone (mitigated by 24h dedupe but the
+  // first hit costs Twilio credits and pages a real human). Now requires
+  // a logged-in session that owns the property.
+  const session = await requireSession(req);
+  if (!session.ok) return session.response;
+
   let body: RequestBody;
   try {
     body = await req.json();
@@ -57,6 +67,9 @@ export async function POST(req: NextRequest) {
   const { pid, criticalItemIds } = body;
   if (!isUuid(pid)) {
     return NextResponse.json({ ok: false, error: 'invalid_pid' }, { status: 400 });
+  }
+  if (!(await userHasPropertyAccess(session.userId, pid))) {
+    return NextResponse.json({ ok: false, error: 'forbidden' }, { status: 403 });
   }
   if (!Array.isArray(criticalItemIds) || criticalItemIds.length === 0) {
     return NextResponse.json({ ok: true, sent: 0, skipped: 0, reason: 'no_items' });

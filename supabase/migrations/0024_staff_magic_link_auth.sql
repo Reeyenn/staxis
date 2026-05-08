@@ -51,6 +51,12 @@ comment on column staff.auth_user_id is
 -- writes still go through /api/housekeeper/room-action with service role.
 -- That keeps the audit / cleaning_events insert / capability check logic
 -- in one server-side place.
+--
+-- `drop policy if exists` makes the migration safe to re-apply on a DB that
+-- already ran an earlier copy of this migration (the bad multi-PMS commit
+-- deleted this file from the repo, but production already had it applied —
+-- restoring it should not error if Maria's prod DB still has the policy).
+drop policy if exists "housekeeper read own rooms" on rooms;
 create policy "housekeeper read own rooms"
   on rooms for select
   to authenticated
@@ -64,7 +70,15 @@ create policy "housekeeper read own rooms"
 
 -- Housekeepers also need to read their own staff row (for the language
 -- preference + name on the page). Same join, same scoping.
+drop policy if exists "housekeeper read own staff row" on staff;
 create policy "housekeeper read own staff row"
   on staff for select
   to authenticated
   using (auth_user_id = auth.uid());
+
+-- Mark this migration as applied so the doctor's EXPECTED_MIGRATIONS check
+-- doesn't permanently report 0024 as missing. on conflict do nothing covers
+-- the re-apply case.
+insert into applied_migrations (version, description)
+values ('0024', 'staff_magic_link_auth: auth_user_id column + housekeeper RLS policies')
+on conflict (version) do nothing;

@@ -16,6 +16,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { visionExtractJSON } from '@/lib/vision-extract';
 import { errToString } from '@/lib/utils';
+import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -42,6 +43,8 @@ interface ExtractedInvoice {
 const isUuid = (s: unknown): s is string =>
   typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
 
+// Anthropic Vision only accepts these four. iPhone HEIC/HEIF must be
+// converted (or rejected at the picker) before reaching here.
 const SUPPORTED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'] as const;
 
 const PROMPT = `Extract all line items from this invoice or receipt.
@@ -70,6 +73,12 @@ Return ONLY a JSON object with this exact shape, no prose, no code fences:
 If the image is not an invoice or receipt, return { "items": [] } and null vendor/date/number.`;
 
 export async function POST(req: NextRequest) {
+  // Auth gate: this route hits the Anthropic Vision API on each request.
+  // Without a session check, anyone with a guessed property UUID could
+  // submit unlimited images and burn through ANTHROPIC_API_KEY budget.
+  const session = await requireSession(req);
+  if (!session.ok) return session.response;
+
   let body: RequestBody;
   try {
     body = await req.json();
@@ -80,6 +89,9 @@ export async function POST(req: NextRequest) {
   const { pid, imageBase64, mediaType } = body;
   if (!isUuid(pid)) {
     return NextResponse.json({ ok: false, error: 'invalid_pid' }, { status: 400 });
+  }
+  if (!(await userHasPropertyAccess(session.userId, pid))) {
+    return NextResponse.json({ ok: false, error: 'forbidden' }, { status: 403 });
   }
   if (typeof imageBase64 !== 'string' || imageBase64.length < 100) {
     return NextResponse.json({ ok: false, error: 'invalid_image' }, { status: 400 });

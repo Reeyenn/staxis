@@ -31,7 +31,9 @@ function getClient(): Anthropic {
 export interface VisionImage {
   /** Base64-encoded image data (no data: prefix). */
   data: string;
-  /** MIME type, e.g. 'image/jpeg'. */
+  /** MIME type. Anthropic Vision only accepts these four — HEIC/HEIF from
+   *  iPhone Safari are NOT in the list and must be rejected at the picker
+   *  with a friendly "convert to JPEG" message before reaching this layer. */
   mediaType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
 }
 

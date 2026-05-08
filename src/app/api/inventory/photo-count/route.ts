@@ -15,6 +15,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { visionExtractJSON } from '@/lib/vision-extract';
 import { errToString } from '@/lib/utils';
+import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -70,6 +71,11 @@ If the image contains no recognizable inventory, return { "counts": [] }.`;
 }
 
 export async function POST(req: NextRequest) {
+  // Auth gate — same story as scan-invoice. Vision API has real $$ cost
+  // and we don't want random callers spending the budget.
+  const session = await requireSession(req);
+  if (!session.ok) return session.response;
+
   let body: RequestBody;
   try {
     body = await req.json();
@@ -80,6 +86,9 @@ export async function POST(req: NextRequest) {
   const { pid, imageBase64, mediaType, itemNames } = body;
   if (!isUuid(pid)) {
     return NextResponse.json({ ok: false, error: 'invalid_pid' }, { status: 400 });
+  }
+  if (!(await userHasPropertyAccess(session.userId, pid))) {
+    return NextResponse.json({ ok: false, error: 'forbidden' }, { status: 403 });
   }
   if (typeof imageBase64 !== 'string' || imageBase64.length < 100) {
     return NextResponse.json({ ok: false, error: 'invalid_image' }, { status: 400 });

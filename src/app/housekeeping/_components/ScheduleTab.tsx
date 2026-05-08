@@ -367,7 +367,20 @@ function ScheduleTab() {
     const today = schedTodayStr();
     if (shiftDate !== today) return;
 
-    seedAttemptedForDate.current = shiftDate;
+    // Race-prevention: lock the auto-assign effect SYNCHRONOUSLY before we
+    // dispatch the async fetch. Otherwise auto-assign (which fires
+    // synchronously the moment hydration finishes with no saved doc) wins
+    // the race, sets hasInitialAssign.current=true, and the 400ms autosave
+    // persists the algorithm's choices to Firestore. The realtime sub then
+    // emits a non-null doc, our deps change, our cleanup runs, and the
+    // seed result gets dropped via the `cancelled` flag. Net: yesterday's
+    // pairings never appear, banner never shows. Setting the locks first
+    // makes auto-assign bail at its own guard. If the seed turns out to
+    // have nothing to apply, we release the lock at the end and let
+    // auto-assign run on the next render.
+    hasInitialAssign.current = true;
+    userEditedCrew.current = true;
+
     const yesterday = format(subDays(new Date(), 1), 'yyyy-MM-dd');
 
     let cancelled = false;
@@ -379,8 +392,27 @@ function ScheduleTab() {
           getRoomsForDate(uid, pid, today),
         ]);
         if (cancelled) return;
+
+        // Bug #9 fix: if today's CSV scrape hasn't run yet, today's rooms
+        // come back empty. Don't burn the seed-attempt flag — we want to
+        // retry once rooms land. Release the auto-assign lock since we're
+        // bailing without applying.
+        if (todayRooms.length === 0) {
+          hasInitialAssign.current = false;
+          userEditedCrew.current = false;
+          return;
+        }
+
+        // From here on we've committed to one seed attempt for this date.
+        // Subsequent renders won't re-fetch even if we end up with nothing
+        // to apply (Maria can manually edit if she wants different pairings).
+        seedAttemptedForDate.current = shiftDate;
+
         if (!yestAssignments || Object.keys(yestAssignments.roomAssignments ?? {}).length === 0) {
-          return; // nothing to carry forward
+          // Nothing to carry forward — release the lock so auto-assign runs.
+          hasInitialAssign.current = false;
+          userEditedCrew.current = false;
+          return;
         }
 
         // Build yesterday roomId → number, today number → id.
@@ -405,17 +437,25 @@ function ScheduleTab() {
           seededAssignments[todayRoomId] = staffId;
         }
 
-        if (Object.keys(seededAssignments).length === 0) return;
+        if (Object.keys(seededAssignments).length === 0) {
+          // Yesterday had pairings but none survived the filter (all rooms
+          // gone, or all HKs deactivated). Release the lock.
+          hasInitialAssign.current = false;
+          userEditedCrew.current = false;
+          return;
+        }
 
         const seededCrew = (yestAssignments.crew ?? []).filter(id => activeStaffIds.has(id));
 
+        // Locks already set above; just publish the assignments.
         setAssignments(seededAssignments);
         setCrewOverride(seededCrew);
-        userEditedCrew.current = true;     // treat as user-saved so auto-assign doesn't clobber
-        hasInitialAssign.current = true;
         setSeededFromYesterday(true);
       } catch (err) {
         // Non-fatal — Maria can still build today's schedule from scratch.
+        // Release the lock so auto-assign can run instead.
+        hasInitialAssign.current = false;
+        userEditedCrew.current = false;
         console.error('[ScheduleTab] carry-forward seed failed:', err);
       }
     })();
@@ -1746,7 +1786,7 @@ function ScheduleTab() {
             <Sparkles size={14} style={{ color: '#364262' }} />
             {lang === 'es'
               ? 'Reusé las asignaciones de ayer — edita si lo necesitas.'
-              : 'Reused yesterday’s pairings — edit if needed.'}
+              : "Reused yesterday's pairings — edit if needed."}
           </span>
           <button
             onClick={() => setSeededFromYesterday(false)}

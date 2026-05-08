@@ -16,6 +16,7 @@ import {
   type DailyAverages, type PredictionResult,
 } from '@/lib/inventory-predictions';
 import { supabase } from '@/lib/supabase';
+import { fetchWithAuth } from '@/lib/api-fetch';
 import type { InventoryItem, InventoryCategory, InventoryCount, InventoryOrder } from '@/types';
 import {
   Plus, Package, ClipboardCheck, AlertTriangle, Check, Info, Settings,
@@ -410,7 +411,7 @@ export default function InventoryPage() {
       .map(i => i.id);
 
     if (transitionedIds.length > 0 && activePropertyId) {
-      fetch('/api/inventory/check-alerts', {
+      fetchWithAuth('/api/inventory/check-alerts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pid: activePropertyId, criticalItemIds: transitionedIds }),
@@ -1017,7 +1018,7 @@ function CountMode({
     setPhotoBusy(true);
     setPhotoError(null);
     try {
-      const res = await fetch('/api/inventory/photo-count', {
+      const res = await fetchWithAuth('/api/inventory/photo-count', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1177,7 +1178,22 @@ function CountMode({
         )}
         {showPhotoPicker && (
           <div style={{ borderBottom: '1px solid rgba(197,197,212,0.2)' }}>
-            <ImagePickerStage lang={lang} onPicked={handlePhotoPicked} />
+            <ImagePickerStage
+              lang={lang}
+              onPicked={handlePhotoPicked}
+              onUnsupported={(mt) => {
+                const isHeic = mt === 'image/heic' || mt === 'image/heif';
+                setPhotoError(
+                  lang === 'es'
+                    ? isHeic
+                      ? 'Las fotos HEIC del iPhone no son compatibles. Por favor, toma la foto en formato JPEG o usa una captura de pantalla.'
+                      : `Tipo de archivo no admitido (${mt}).`
+                    : isHeic
+                      ? 'iPhone HEIC photos are not supported. Please take the photo in JPEG or use a screenshot.'
+                      : `Unsupported file type (${mt}).`
+                );
+              }}
+            />
             <button
               onClick={() => setShowPhotoPicker(false)}
               style={{
@@ -2881,16 +2897,33 @@ function ReportStat({ label, value, tone }: { label: string; value: string; tone
 // { base64, mediaType, file } so the caller can decide whether to ALSO upload
 // to Supabase Storage for record-keeping.
 
+// Must mirror SUPPORTED_MEDIA_TYPES in /api/inventory/scan-invoice and
+// /api/inventory/photo-count. Adding a type here without matching the route
+// (or vice versa) means the API will 400 the upload after the user already
+// committed to the picker — rude.
+//
+// HEIC/HEIF are deliberately NOT here. Anthropic Vision rejects them, so
+// we surface a "convert to JPEG" message at the picker (via the
+// onUnsupported callback) instead of letting the upload fail server-side.
+type PickedMediaType = 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
+const PICKED_MEDIA_TYPES: ReadonlySet<string> = new Set<PickedMediaType>([
+  'image/jpeg', 'image/png', 'image/webp', 'image/gif',
+]);
+
 interface PickedImage {
   base64: string;        // raw base64, no data: prefix
-  mediaType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
+  mediaType: PickedMediaType;
   file: File;
   previewUrl: string;    // data: URL for <img src=>
 }
 
-function ImagePickerStage({ lang, onPicked, accept = 'image/*' }: {
+function ImagePickerStage({ lang, onPicked, onUnsupported, accept = 'image/*' }: {
   lang: 'en' | 'es';
   onPicked: (img: PickedImage) => void;
+  /** Called when the user picks a file we can't actually send to Vision (PDFs,
+   *  exotic image types). Defaults to no-op so existing call sites don't break.
+   *  scan-invoice's picker passes a handler that surfaces a toast. */
+  onUnsupported?: (mediaType: string) => void;
   accept?: string;
 }) {
   const cameraInputRef = useRef<HTMLInputElement>(null);
@@ -2904,7 +2937,14 @@ function ImagePickerStage({ lang, onPicked, accept = 'image/*' }: {
       // result is "data:image/jpeg;base64,...."
       const m = result.match(/^data:([^;]+);base64,(.+)$/);
       if (!m) return;
-      const mediaType = m[1] as PickedImage['mediaType'];
+      const rawMediaType = m[1];
+      if (!PICKED_MEDIA_TYPES.has(rawMediaType)) {
+        // PDF, HEVC video, anything exotic. Refuse at the picker — Vision
+        // would reject it server-side anyway.
+        onUnsupported?.(rawMediaType);
+        return;
+      }
+      const mediaType = rawMediaType as PickedMediaType;
       const base64 = m[2];
       onPicked({ base64, mediaType, file, previewUrl: result });
     };
@@ -3038,7 +3078,7 @@ function ScanInvoiceModal({ items, uid, pid, lang, onClose, showToast }: {
     }
 
     try {
-      const res = await fetch('/api/inventory/scan-invoice', {
+      const res = await fetchWithAuth('/api/inventory/scan-invoice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pid, imageBase64: img.base64, mediaType: img.mediaType }),
@@ -3184,7 +3224,27 @@ function ScanInvoiceModal({ items, uid, pid, lang, onClose, showToast }: {
             </div>
           )}
 
-          {stage === 'pick' && <ImagePickerStage lang={lang} onPicked={handlePicked} accept="image/*,application/pdf" />}
+          {stage === 'pick' && (
+            <ImagePickerStage
+              lang={lang}
+              onPicked={handlePicked}
+              // PDFs aren't wired through to Vision yet — accept image/* only
+              // and tell the user when they try a PDF/heif-but-renamed file.
+              accept="image/*"
+              onUnsupported={(mt) => {
+                const isHeic = mt === 'image/heic' || mt === 'image/heif';
+                setError(
+                  lang === 'es'
+                    ? isHeic
+                      ? 'Las fotos HEIC del iPhone no son compatibles. Toma la foto en JPEG o usa una captura de pantalla.'
+                      : `Tipo de archivo no admitido (${mt}). Usa una foto del recibo.`
+                    : isHeic
+                      ? 'iPhone HEIC photos are not supported. Take the photo in JPEG or use a screenshot.'
+                      : `Unsupported file type (${mt}). Please upload a photo of the receipt.`
+                );
+              }}
+            />
+          )}
 
           {stage === 'uploading' && (
             <div style={{ padding: '60px 24px', textAlign: 'center' }}>

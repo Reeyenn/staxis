@@ -42,6 +42,7 @@ create table if not exists equipment (
 create index if not exists equipment_property_idx on equipment (property_id, category);
 create index if not exists equipment_status_idx   on equipment (property_id, status);
 
+drop trigger if exists equipment_touch on equipment;
 create trigger equipment_touch before update on equipment
   for each row execute function touch_updated_at();
 
