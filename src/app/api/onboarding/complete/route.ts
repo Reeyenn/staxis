@@ -100,11 +100,25 @@ export async function POST(req: NextRequest) {
   const staffToInsert: Array<{
     property_id: string;
     name: string;
-    phone_number: string | null;
+    phone: string | null;
     language: 'en' | 'es';
-    role: string;
+    department: 'housekeeping' | 'front_desk' | 'maintenance' | 'other';
     is_active: boolean;
   }> = [];
+
+  // Map raw role strings to the staff.department CHECK enum.
+  // /onboarding form just sends free-text role; this collapses common
+  // values and defaults to 'housekeeping' (most onboarding entries are HK).
+  const VALID_DEPTS = ['housekeeping','front_desk','maintenance','other'] as const;
+  type Dept = typeof VALID_DEPTS[number];
+  const normalizeDept = (r?: string): Dept => {
+    const v = (r ?? '').toLowerCase();
+    if (v.includes('front') || v.includes('desk'))    return 'front_desk';
+    if (v.includes('maint') || v.includes('engineer'))return 'maintenance';
+    if (v.includes('house') || v.includes('hk'))      return 'housekeeping';
+    if ((VALID_DEPTS as readonly string[]).includes(v)) return v as Dept;
+    return 'housekeeping';
+  };
 
   for (const [idx, raw] of staffRaw.entries()) {
     if (!raw || typeof raw !== 'object') continue;
@@ -132,14 +146,12 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const role = typeof s.role === 'string' && s.role.trim() ? s.role.trim() : 'housekeeper';
-
     staffToInsert.push({
       property_id: pidV.value!,
       name: nameV.value!.trim(),
-      phone_number: phone,
+      phone,
       language: langV.value,
-      role,
+      department: normalizeDept(typeof s.role === 'string' ? s.role : undefined),
       is_active: true,
     });
   }
