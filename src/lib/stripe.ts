@@ -24,7 +24,14 @@ const SECRET_KEY = process.env.STRIPE_SECRET_KEY;
 const WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const DEFAULT_PRICE_ID = process.env.STRIPE_PRICE_ID;
 
-export const stripeIsConfigured = Boolean(SECRET_KEY);
+// Stripe is "configured" only when BOTH the secret key AND the webhook
+// secret are present. The dangerous half-state is SECRET_KEY set without
+// WEBHOOK_SECRET: customers can pay (checkout works) but every webhook
+// delivery silently 400s for 3 days while their property stays 'trial'.
+// Treating that as 'not configured' (so checkout refuses) is safer than
+// taking payment we can't reconcile. (Doctor's stripe_billing_configured
+// check surfaces this so you know to fix it before opening signups.)
+export const stripeIsConfigured = Boolean(SECRET_KEY) && Boolean(WEBHOOK_SECRET);
 
 // Stripe SDK is null when not configured. Every helper checks first.
 const stripe: Stripe | null = SECRET_KEY
@@ -70,6 +77,13 @@ export async function createStripeCustomer(args: CreateCustomerArgs): Promise<
 > {
   if (!stripe) return { ok: false, disabled: true };
   try {
+    // Idempotency key keyed on propertyId — Stripe deduplicates on the
+    // server side. If a request crashes between customers.create and
+    // the DB write that records cus_…, the next attempt for the same
+    // property returns the SAME customer instead of creating a duplicate.
+    // Without this, a flaky signup leaves orphan Stripe customer rows
+    // in the dashboard forever (Stripe never deletes customers). 24h
+    // idempotency window is the Stripe default. (Pass-3 fix — H5.)
     const customer = await stripe.customers.create({
       email: args.email,
       name: args.name,
@@ -78,6 +92,8 @@ export async function createStripeCustomer(args: CreateCustomerArgs): Promise<
         property_id: args.propertyId,
         source: 'staxis-self-signup',
       },
+    }, {
+      idempotencyKey: `staxis:prop:${args.propertyId}:customer`,
     });
     return { ok: true, customerId: customer.id };
   } catch (err) {
@@ -109,6 +125,12 @@ export async function createCheckoutSession(args: CreateCheckoutArgs): Promise<
     return { ok: false, error: 'STRIPE_PRICE_ID env var is required for checkout' };
   }
   try {
+    // Idempotency key includes the UTC day so the same property can
+    // start a fresh checkout flow tomorrow (after cancelling, or after
+    // a forgotten browser tab), but rapid double-clicks within the same
+    // day return the same session URL — no duplicate checkouts in the
+    // Stripe dashboard. (Pass-3 fix — H5.)
+    const todayUtc = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
     const session = await stripe.checkout.sessions.create({
       customer: args.customerId,
       mode: 'subscription',
@@ -122,6 +144,8 @@ export async function createCheckoutSession(args: CreateCheckoutArgs): Promise<
       },
       allow_promotion_codes: true,
       billing_address_collection: 'required',
+    }, {
+      idempotencyKey: `staxis:prop:${args.propertyId}:checkout:${todayUtc}`,
     });
     if (!session.url) {
       return { ok: false, error: 'Stripe returned no checkout URL' };

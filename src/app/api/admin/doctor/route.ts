@@ -129,6 +129,13 @@ const checks: Array<[string, CheckFn]> = [
   // we know they fired is by reading these counters.
   ['ml_occupancy_capture_failures',  checkOccupancyCaptureFailures],
   ['ml_feature_derivation_failures', checkFeatureDerivationFailures],
+  // Billing config — fails LOUD on the half-configured state where some
+  // Stripe vars are set and others aren't. Warns when none are set
+  // (pre-launch trial-only mode). Fails when keys are clearly malformed.
+  ['stripe_billing_configured',      checkStripeBillingConfigured],
+  // Error tracking — Sentry no-ops gracefully when DSN missing, but a
+  // malformed DSN means errors silently disappear. Fail on bad shape.
+  ['sentry_dsn_shape',               checkSentryDsnShape],
 ];
 
 // ─── Individual checks ───────────────────────────────────────────────────
@@ -162,6 +169,15 @@ const REQUIRED_ENV_VARS: Array<{ name: string; altNames?: string[]; group: strin
   { name: 'MANAGER_PHONE',      altNames: ['OPS_ALERT_PHONE'],      group: 'alerts' },
   // Shared secret for cron auth
   { name: 'CRON_SECRET',                       group: 'cron' },
+  // Billing — these are checked for SHAPE in checkStripeBillingConfigured.
+  // Listing here so the env_vars check reports a clean "missing" message
+  // when none are set, but the billing-configured check is the source of
+  // truth on whether the bundle is fully wired up.
+  // NOTE: These are intentionally NOT marked required — see
+  // checkStripeBillingConfigured for the all-or-nothing logic that
+  // distinguishes "not yet set up" (warn) from "half configured" (fail).
+  // Keep them out of REQUIRED_ENV_VARS so the env_vars check doesn't
+  // fail before Stripe is set up.
 ];
 
 /**
@@ -1370,6 +1386,142 @@ async function runAllChecks(): Promise<DoctorReport> {
     vercelEnv:    process.env.VERCEL_ENV,
     summary,
     checks: results,
+  };
+}
+
+/**
+ * stripe_billing_configured — Stripe readiness, all-or-nothing.
+ *
+ * Pre-launch state has Stripe vars unset and the app falls back to "trial
+ * mode" via lib/stripe.ts. That's a valid configuration. What's NOT valid
+ * is the partial state — e.g., STRIPE_SECRET_KEY set but STRIPE_WEBHOOK_SECRET
+ * missing, where customers can pay (checkout works) but the webhook silently
+ * 400s every event for 3 days. Three days of silent payment-processing
+ * failure is the exact failure mode this whole doctor exists to prevent.
+ *
+ * Logic:
+ *   - All three Stripe vars set with valid prefixes  → 'ok'
+ *   - None set                                       → 'warn' (trial-only)
+ *   - Some set, others missing or malformed          → 'fail'
+ *   - sk_test_ in production                         → 'fail'
+ */
+async function checkStripeBillingConfigured(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const sk = process.env.STRIPE_SECRET_KEY ?? '';
+  const wh = process.env.STRIPE_WEBHOOK_SECRET ?? '';
+  const pr = process.env.STRIPE_PRICE_ID ?? '';
+
+  const setCount = [sk, wh, pr].filter((v) => v.trim() !== '').length;
+
+  if (setCount === 0) {
+    return {
+      status: 'warn',
+      detail: 'Stripe not configured — app running in trial-only mode. Self-signups complete without billing.',
+      fix: 'When ready to charge: set STRIPE_SECRET_KEY (sk_live_…), STRIPE_WEBHOOK_SECRET (whsec_…), STRIPE_PRICE_ID (price_…) in Vercel → Project Settings → Environment Variables. Add the webhook endpoint at https://hotelops-ai.vercel.app/api/stripe/webhook in Stripe Dashboard.',
+    };
+  }
+
+  if (setCount < 3) {
+    const missing: string[] = [];
+    if (!sk.trim()) missing.push('STRIPE_SECRET_KEY');
+    if (!wh.trim()) missing.push('STRIPE_WEBHOOK_SECRET');
+    if (!pr.trim()) missing.push('STRIPE_PRICE_ID');
+    const fixSteps = [`Set ${missing.join(', ')} in Vercel → Project Settings → Environment Variables and redeploy.`];
+    if (!wh.trim()) {
+      fixSteps.push('STRIPE_WEBHOOK_SECRET also requires creating the webhook endpoint at https://hotelops-ai.vercel.app/api/stripe/webhook in Stripe Dashboard → Developers → Webhooks (the secret is shown after creation).');
+    }
+    fixSteps.push('Or unset all three to fall back to trial-only mode.');
+    return {
+      status: 'fail',
+      detail: `Stripe partially configured — ${setCount}/3 vars set. Missing: ${missing.join(', ')}. Dangerous half-state: checkout may work but the webhook silently rejects every payment event.`,
+      fix: fixSteps.join(' '),
+    };
+  }
+
+  // All three set — verify shape so a typo doesn't slip through.
+  // Slice exactly the prefix length so we never leak any of the secret
+  // body in error messages, even on malformed-but-near-miss inputs.
+  const issues: string[] = [];
+  if (!sk.startsWith('sk_live_') && !sk.startsWith('sk_test_')) {
+    issues.push(`STRIPE_SECRET_KEY doesn't start with sk_live_ / sk_test_ — got "${sk.slice(0, 8)}…"`);
+  }
+  if (!wh.startsWith('whsec_')) {
+    issues.push(`STRIPE_WEBHOOK_SECRET doesn't start with whsec_ — got "${wh.slice(0, 6)}…"`);
+  }
+  if (!pr.startsWith('price_')) {
+    issues.push(`STRIPE_PRICE_ID doesn't start with price_ — got "${pr.slice(0, 6)}…"`);
+  }
+  if (sk.startsWith('sk_test_') && process.env.VERCEL_ENV === 'production') {
+    issues.push('STRIPE_SECRET_KEY is a TEST key but VERCEL_ENV=production — customer payments will fail in production.');
+  }
+  if (issues.length > 0) {
+    return {
+      status: 'fail',
+      detail: issues.join(' | '),
+      fix: 'Fix the malformed Stripe key(s) in Vercel. Re-copy from Stripe Dashboard → Developers → API keys / Webhooks / Products.',
+    };
+  }
+
+  return {
+    status: 'ok',
+    detail: `Stripe fully configured (${sk.startsWith('sk_test_') ? 'TEST mode' : 'LIVE mode'})`,
+  };
+}
+
+/**
+ * sentry_dsn_shape — error tracking config check.
+ *
+ * Same all-or-nothing pattern as Stripe: missing is OK (Sentry no-ops
+ * gracefully via the sentry.*.config.ts initializers), present-but-malformed
+ * is a fail because errors then silently disappear into the void.
+ */
+async function checkSentryDsnShape(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const dsnServer = process.env.SENTRY_DSN ?? '';
+  const dsnClient = process.env.NEXT_PUBLIC_SENTRY_DSN ?? '';
+  const serverSet = dsnServer.trim() !== '';
+  const clientSet = dsnClient.trim() !== '';
+
+  // Both unset → graceful no-op mode.
+  if (!serverSet && !clientSet) {
+    return {
+      status: 'warn',
+      detail: 'Sentry DSN not set on Vercel — error tracking disabled. Errors logged to Vercel function logs only. Note: cua-service (Fly) reads SENTRY_DSN from its own Fly secrets, not Vercel env.',
+      fix: 'Set NEXT_PUBLIC_SENTRY_DSN (client+server runtime) AND SENTRY_DSN (server.config + edge.config) in Vercel. Get DSN from sentry.io → Project Settings → Client Keys. For cua-service, also `flyctl secrets set SENTRY_DSN=… -a staxis-cua`.',
+    };
+  }
+
+  // Half-configured — server runtime reads SENTRY_DSN, client reads
+  // NEXT_PUBLIC_SENTRY_DSN. Either side missing means errors silently
+  // disappear from that side. (sentry.server.config.ts and sentry.edge
+  // .config.ts read SENTRY_DSN; sentry.client.config.ts reads
+  // NEXT_PUBLIC_SENTRY_DSN.)
+  if (!serverSet || !clientSet) {
+    const missing = !serverSet ? 'SENTRY_DSN' : 'NEXT_PUBLIC_SENTRY_DSN';
+    const blind = !serverSet ? 'server-side and edge errors' : 'client-side (browser) errors';
+    return {
+      status: 'fail',
+      detail: `Sentry partially configured — ${missing} is missing, so ${blind} disappear silently while the other side reports.`,
+      fix: `Set ${missing} in Vercel → Project Settings → Environment Variables (use the same DSN value as the other one) and redeploy.`,
+    };
+  }
+
+  // Both set — validate shape on both. Sentry DSN format:
+  //   https://<key>@<org>.ingest.sentry.io/<project>
+  //   https://<key>@<org>.ingest.<region>.sentry.io/<project>
+  const dsnRx = /^https:\/\/[a-z0-9]+@[a-z0-9.-]+\.ingest(?:\.[a-z]{2})?\.sentry\.io\/\d+$/;
+  const issues: string[] = [];
+  if (!dsnRx.test(dsnServer)) issues.push(`SENTRY_DSN malformed (got "${dsnServer.slice(0, 40)}…")`);
+  if (!dsnRx.test(dsnClient)) issues.push(`NEXT_PUBLIC_SENTRY_DSN malformed (got "${dsnClient.slice(0, 40)}…")`);
+  if (issues.length > 0) {
+    return {
+      status: 'fail',
+      detail: issues.join(' | '),
+      fix: 'Re-copy the DSN from sentry.io → Project Settings → Client Keys → DSN. Watch for accidentally pasting the project URL instead.',
+    };
+  }
+
+  return {
+    status: 'ok',
+    detail: 'Sentry fully configured (server + client DSNs valid)',
   };
 }
 

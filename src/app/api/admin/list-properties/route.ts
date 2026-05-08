@@ -6,7 +6,7 @@
  * across the fleet — what's live, what's broken, what's past trial.
  *
  * Health signals returned per property:
- *   - subscription_status (trial / active / past_due / cancelled)
+ *   - subscription_status (trial / active / past_due / canceled)
  *   - trial_ends_at (when the 14-day clock runs out)
  *   - pms_connected (boolean — credentials saved + recipe ready)
  *   - last_synced_at (latest successful PMS pull)
@@ -174,7 +174,7 @@ export async function GET(req: NextRequest) {
     trial: enriched.filter((p) => p.subscriptionStatus === 'trial').length,
     active: enriched.filter((p) => p.subscriptionStatus === 'active').length,
     pastDue: enriched.filter((p) => p.subscriptionStatus === 'past_due').length,
-    cancelled: enriched.filter((p) => p.subscriptionStatus === 'cancelled').length,
+    canceled: enriched.filter((p) => p.subscriptionStatus === 'canceled').length,
     stale: enriched.filter((p) => p.isStale).length,
     trialExpired: enriched.filter((p) => p.trialExpired).length,
     pmsConnected: enriched.filter((p) => p.pmsConnected).length,

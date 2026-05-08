@@ -40,11 +40,14 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
   // outstanding async work (Playwright + Claude calls) keeps running
   // until it naturally finishes — there's no clean way to interrupt
   // them. The `timedOut` flag is checked at every phase boundary so
-  // we don't do useless saves after the deadline.
+  // we don't do useless saves after the deadline. The DB-level
+  // .in('status', RUNNING_STATUSES) guard on every write below means
+  // a late-arriving markComplete cannot overwrite this markFailed —
+  // first writer to a terminal state wins.
   const timeout = setTimeout(async () => {
     timedOut = true;
     log.warn('job exceeded time limit', { jobId, limitMs: JOB_TIMEOUT_MS });
-    await markFailed(jobId, 'Job exceeded time limit', { kind: 'timeout', limitMs: JOB_TIMEOUT_MS });
+    await markFailed(jobId, workerId, 'Job exceeded time limit', { kind: 'timeout', limitMs: JOB_TIMEOUT_MS });
   }, JOB_TIMEOUT_MS);
 
   try {
@@ -56,7 +59,7 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
 
     const creds = await loadCredentials(job.property_id);
     if (!creds) {
-      await markFailed(jobId, 'No PMS credentials found for this property', {
+      await markFailed(jobId, workerId, 'No PMS credentials found for this property', {
         kind: 'missing_credentials',
       });
       return;
@@ -69,27 +72,48 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
     };
 
     // ─── Phase 1: ensure we have a recipe ─────────────────────────────────
-    let recipe = await loadActiveRecipe(job.pms_type);
+    // force_remap=true (set by /api/admin/regenerate-recipe) means the
+    // operator explicitly asked us to learn a fresh recipe even if an
+    // active one exists. We still load the active one so the fleet
+    // keeps using it during this run; we just bypass the early-return
+    // and run the mapper anyway. The atomic swap at the end (via
+    // staxis_swap_active_recipe) demotes-and-promotes in one transaction.
+    const existingActive = await loadActiveRecipe(job.pms_type);
+    let recipe = job.force_remap ? null : existingActive;
     let recipeIdForJob: string | null = recipe?.id ?? null;
     let isFreshlyMapped = false;
 
     if (!recipe) {
-      await updateProgress(jobId, 'mapping', 'Learning your PMS for the first time…', 15);
-      log.info('no active recipe — running CUA mapper', {
+      // Distinguish the three reasons we're running the mapper so admin
+      // logs and the GM-facing step text are accurate. Order matters —
+      // force_remap is checked first because existingActive may be set.
+      const mapperReason: 'force_remap' | 'first_time' | 'shape_invalid' =
+        job.force_remap && existingActive
+          ? 'force_remap'
+          : !existingActive
+            ? 'first_time'
+            : 'shape_invalid';
+      const stepText =
+        mapperReason === 'force_remap'    ? 'Re-mapping (admin-requested refresh)…'
+        : mapperReason === 'shape_invalid' ? 'Existing recipe corrupt — re-mapping…'
+        :                                    'Learning your PMS for the first time…';
+      await updateProgress(jobId, workerId, 'mapping', stepText, 15);
+      log.info('running CUA mapper', {
         jobId,
         pmsType: job.pms_type,
         propertyId: job.property_id,
+        reason: mapperReason,
       });
 
       const mapResult = await mapPMS({
         pmsType: job.pms_type,
         credentials,
-        onProgress: (step, pct) => updateProgress(jobId, 'mapping', step, pct).catch(() => {}),
+        onProgress: (step, pct) => updateProgress(jobId, workerId, 'mapping', step, pct).catch(() => {}),
       });
 
       if (timedOut) return;
       if (!mapResult.ok) {
-        await markFailed(jobId, mapResult.userMessage, {
+        await markFailed(jobId, workerId, mapResult.userMessage, {
           kind: 'mapping_failed',
           ...mapResult.detail,
         });
@@ -103,7 +127,7 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
         notes: `Mapped during job ${jobId}`,
       });
       if ('error' in saved) {
-        await markFailed(jobId, 'Could not save the learned recipe — please retry.', {
+        await markFailed(jobId, workerId, 'Could not save the learned recipe — please retry.', {
           kind: 'save_recipe_failed',
           dbError: saved.error,
         });
@@ -127,18 +151,18 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
     }
 
     // ─── Phase 2: extract data ────────────────────────────────────────────
-    await updateProgress(jobId, 'extracting', 'Pulling rooms, staff, and 90 days of history…', 60);
+    await updateProgress(jobId, workerId, 'extracting', 'Pulling rooms, staff, and 90 days of history…', 60);
     if (timedOut) return;
 
     const extracted = await runRecipeExtraction({
       recipe: recipe.recipe,
       credentials,
-      onProgress: (step, pct) => updateProgress(jobId, 'extracting', step, pct).catch(() => {}),
+      onProgress: (step, pct) => updateProgress(jobId, workerId, 'extracting', step, pct).catch(() => {}),
     });
 
     if (timedOut) return;
     if (!extracted.ok) {
-      await markFailed(jobId, extracted.userMessage, {
+      await markFailed(jobId, workerId, extracted.userMessage, {
         kind: 'extraction_failed',
         ...extracted.detail,
       });
@@ -146,13 +170,13 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
     }
 
     // ─── Phase 3: persist to Supabase ─────────────────────────────────────
-    await updateProgress(jobId, 'extracting', 'Setting up your dashboard…', 90);
+    await updateProgress(jobId, workerId, 'extracting', 'Setting up your dashboard…', 90);
     const saveResult = await saveExtractedData({
       propertyId: job.property_id,
       data: extracted.data,
     });
     if (!saveResult.ok) {
-      await markFailed(jobId, 'Could not save the data we pulled. Please contact support.', {
+      await markFailed(jobId, workerId, 'Could not save the data we pulled. Please contact support.', {
         kind: 'save_data_failed',
         dbError: saveResult.error,
       });
@@ -160,27 +184,24 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
     }
 
     // ─── Phase 4: promote recipe if newly mapped ─────────────────────────
+    // staxis_swap_active_recipe() does the demote+promote in a single
+    // plpgsql transaction. If the promote fails the demote rolls back,
+    // so the previous active recipe stays active and the fleet never
+    // goes recipe-less even mid-regeneration. (Pass-3 fix — H7.)
     if (isFreshlyMapped && recipeIdForJob) {
-      const { error: promoteErr } = await supabase
-        .from('pms_recipes')
-        .update({ status: 'active' })
-        .eq('id', recipeIdForJob);
-      if (promoteErr) {
-        // Non-fatal: extraction worked, the next onboarding for this PMS
-        // type just won't reuse the recipe. Log and move on.
-        log.warn('failed to promote recipe to active — non-fatal', {
+      const { error: swapErr } = await supabase.rpc('staxis_swap_active_recipe', {
+        p_new_recipe_id: recipeIdForJob,
+        p_pms_type: job.pms_type,
+      });
+      if (swapErr) {
+        // Non-fatal for the current job (extraction succeeded). Other
+        // properties keep using the previous active recipe (if any).
+        // The next onboarding for this PMS will retry promotion.
+        log.warn('failed to swap active recipe — non-fatal', {
           jobId,
           recipeId: recipeIdForJob,
-          err: promoteErr.message,
+          err: swapErr.message,
         });
-      } else {
-        // Demote any older active recipes for this pms_type.
-        await supabase
-          .from('pms_recipes')
-          .update({ status: 'deprecated' })
-          .eq('pms_type', job.pms_type)
-          .eq('status', 'active')
-          .neq('id', recipeIdForJob);
       }
     }
 
@@ -189,7 +210,7 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
     // promotion), we don't want markComplete to overwrite the failure
     // status the timeout handler wrote.
     if (timedOut) return;
-    await markComplete(jobId, recipeIdForJob, {
+    await markComplete(jobId, workerId, recipeIdForJob, {
       rooms_count: saveResult.summary.roomsSaved,
       staff_count: saveResult.summary.staffSaved,
       history_days_pulled: saveResult.summary.historyDaysSaved,
@@ -202,7 +223,7 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
   } catch (err) {
     const e = err as Error;
     log.error('job-runner unhandled error', { jobId, workerId, err: e.message, stack: e.stack });
-    await markFailed(jobId, 'Unexpected error. Please try again — if it persists, contact support.', {
+    await markFailed(jobId, workerId, 'Unexpected error. Please try again — if it persists, contact support.', {
       kind: 'unhandled',
       message: e.message,
     });
@@ -210,6 +231,11 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
     clearTimeout(timeout);
   }
 }
+
+// Statuses where a worker still "owns" a job and may write to it.
+// Once a job is in 'complete' or 'failed', no further writes should
+// land — first-writer-wins enforced via .in() guards on every helper.
+const RUNNING_STATUSES = ['running', 'mapping', 'extracting'] as const;
 
 // ─── Supabase helpers ──────────────────────────────────────────────────────
 
@@ -306,8 +332,17 @@ async function saveDraftRecipe(args: {
   return { id: data.id as string, version: data.version as number };
 }
 
+// Every job-row write below is guarded by:
+//   .eq('worker_id', workerId)           // we still own this job
+//   .in('status', RUNNING_STATUSES)      // it hasn't already terminated
+// If either fails (the reaper re-queued us, another worker re-claimed,
+// or a parallel call already wrote 'complete'/'failed'), the UPDATE
+// matches 0 rows and silently no-ops. That's the desired behavior:
+// first writer to a terminal state wins, late writes are dropped.
+
 async function updateProgress(
   jobId: string,
+  workerId: string,
   status: 'running' | 'mapping' | 'extracting',
   step: string,
   progress_pct: number,
@@ -315,11 +350,14 @@ async function updateProgress(
   await supabase
     .from('onboarding_jobs')
     .update({ status, step, progress_pct })
-    .eq('id', jobId);
+    .eq('id', jobId)
+    .eq('worker_id', workerId)
+    .in('status', RUNNING_STATUSES);
 }
 
 async function markComplete(
   jobId: string,
+  workerId: string,
   recipeId: string | null,
   result: Record<string, unknown>,
 ): Promise<void> {
@@ -333,11 +371,14 @@ async function markComplete(
       recipe_id: recipeId,
       completed_at: new Date().toISOString(),
     })
-    .eq('id', jobId);
+    .eq('id', jobId)
+    .eq('worker_id', workerId)
+    .in('status', RUNNING_STATUSES);
 }
 
 async function markFailed(
   jobId: string,
+  workerId: string,
   userMessage: string,
   detail: Record<string, unknown>,
 ): Promise<void> {
@@ -350,5 +391,7 @@ async function markFailed(
       error_detail: detail,
       completed_at: new Date().toISOString(),
     })
-    .eq('id', jobId);
+    .eq('id', jobId)
+    .eq('worker_id', workerId)
+    .in('status', RUNNING_STATUSES);
 }

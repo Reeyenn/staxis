@@ -55,7 +55,7 @@ interface Summary {
   trial: number;
   active: number;
   pastDue: number;
-  cancelled: number;
+  canceled: number;
   stale: number;
   trialExpired: number;
   pmsConnected: number;

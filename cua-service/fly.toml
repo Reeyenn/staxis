@@ -21,6 +21,14 @@
 app = "staxis-cua"
 primary_region = "iad"
 
+# Grace period for in-flight onboarding jobs to finish on deploy/SIGTERM.
+# Default Fly kill_timeout is 5 SECONDS, which would SIGKILL a worker
+# before its 4-min job timeout fires. Index.ts SIGTERM handler waits up
+# to 5 minutes for an in-flight job to finish; this setting lets Fly
+# honor that window. (Pass-3 fix — H9.)
+kill_signal = "SIGTERM"
+kill_timeout = "300s"
+
 [build]
   dockerfile = "Dockerfile"
 

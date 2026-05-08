@@ -37,7 +37,12 @@ export type RateLimitEndpoint =
   // Admin actions that incur Claude API cost. Even though only admins
   // hit them, a compromised admin account or scripted retry storm
   // could rack up real spend. Cap at 10/hr per property.
-  | 'admin-regenerate-recipe';
+  | 'admin-regenerate-recipe'
+  // Public signup — keyed on a per-IP UUID (sha256(ip) → UUID shape).
+  // No auth gate, creates auth.users + properties + Stripe customer +
+  // bcrypt CPU work, so trivially abusable without a rate cap. (Pass-3
+  // fix — H6.)
+  | 'signup-ip';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -69,7 +74,44 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // SMS fan-out to housekeepers — Maria might re-broadcast after schedule
   // tweaks. 30/hr covers normal use and stops a runaway loop dead.
   'notify-housekeepers-sms':   30,
+  // Public signup — 5/hour per source IP. Real signups are rare; a
+  // legitimate person filling out the form 5 times in an hour is
+  // already a customer-support situation, not a happy path. Anything
+  // higher is bot/abuse and should 429.
+  'signup-ip':                  5,
 };
+
+/**
+ * Hash a request's source IP into a deterministic UUID-shaped string,
+ * suitable as the `pid` argument to checkAndIncrementRateLimit. Used
+ * by routes (like /api/signup) that have no property_id at the time
+ * they want to rate-limit. The same IP always maps to the same key,
+ * so the bucket counts every request from that IP within an hour.
+ *
+ * IPv4 and IPv6 inputs are normalized lowercase; the hash is stable
+ * across processes/regions. Fail-soft on missing IP — returns the
+ * NO_PROPERTY_RATE_LIMIT_KEY so all "unknown IP" callers share one
+ * bucket (which is itself a defense against header-spoofing attacks).
+ */
+export function ipToRateLimitKey(ip: string | null | undefined): string {
+  // We avoid `import` to keep this file synchronous and tree-shake-friendly.
+  // Node's crypto is always available on the server runtime.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { createHash } = require('crypto') as typeof import('crypto');
+  const trimmed = (ip ?? '').trim().toLowerCase();
+  if (!trimmed) return NO_PROPERTY_RATE_LIMIT_KEY;
+  const h = createHash('sha256').update(trimmed).digest();
+  // Format the first 16 bytes as a UUID (8-4-4-4-12 hex). Not a real
+  // RFC4122 UUID — we don't set the version/variant bits — but it
+  // satisfies the api_limits.property_id UUID column shape.
+  return [
+    h.slice(0, 4).toString('hex'),
+    h.slice(4, 6).toString('hex'),
+    h.slice(6, 8).toString('hex'),
+    h.slice(8, 10).toString('hex'),
+    h.slice(10, 16).toString('hex'),
+  ].join('-');
+}
 
 /**
  * Sentinel UUID used as the property_id when an SMS-fan-out endpoint accepts

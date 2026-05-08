@@ -39,34 +39,21 @@ let shuttingDown = false;
 let inFlightJobId: string | null = null;
 
 async function claimNextJob(): Promise<{ id: string } | null> {
-  // Atomic claim: find any 'queued' row, update to 'running' with our
-  // worker_id, return the row only if the update succeeded. If two
-  // workers race here, only one's UPDATE will affect the row.
-  const { data: candidate } = await supabase
-    .from('onboarding_jobs')
-    .select('id')
-    .eq('status', 'queued')
-    .order('created_at', { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (!candidate) return null;
-
-  const { data: claimed } = await supabase
-    .from('onboarding_jobs')
-    .update({
-      status: 'running',
-      worker_id: WORKER_ID,
-      started_at: new Date().toISOString(),
-      step: 'starting',
-      progress_pct: 5,
-    })
-    .eq('id', candidate.id)
-    .eq('status', 'queued') // double-check: only claim if still queued
-    .select('id')
-    .maybeSingle();
-
-  return claimed ? { id: claimed.id as string } : null;
+  // Atomic claim via Postgres function — uses FOR UPDATE SKIP LOCKED
+  // so multiple concurrent workers can claim distinct jobs without
+  // ever picking the same row. Migration 0039 created the function.
+  // (Pass-3 fix — H8.)
+  const { data, error } = await supabase.rpc('staxis_claim_next_job', {
+    p_worker_id: WORKER_ID,
+  });
+  if (error) {
+    log.warn('claim rpc failed', { err: error.message });
+    return null;
+  }
+  // The function returns a SETOF row; PostgREST gives us an array.
+  // Empty array = no queued jobs.
+  const row = Array.isArray(data) && data.length > 0 ? data[0] : null;
+  return row ? { id: row.id as string } : null;
 }
 
 async function pollLoop(): Promise<void> {
@@ -95,14 +82,10 @@ async function pollLoop(): Promise<void> {
         }
       }
 
-      let job = await claimNextJob();
-      // If we lost the claim race to another worker, retry once
-      // immediately — there might be more queued jobs to grab without
-      // waiting a full POLL_INTERVAL_MS.
-      if (!job) {
-        const second = await claimNextJob();
-        if (second) job = second;
-      }
+      const job = await claimNextJob();
+      // With FOR UPDATE SKIP LOCKED in staxis_claim_next_job (migration
+      // 0039), null means "no queued jobs" — there's no race to lose,
+      // so we just wait POLL_INTERVAL_MS before checking again.
 
       if (job) {
         inFlightJobId = job.id;

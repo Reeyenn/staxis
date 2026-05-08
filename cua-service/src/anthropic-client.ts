@@ -21,7 +21,23 @@ if (!API_KEY) {
   );
 }
 
-export const anthropic = new Anthropic({ apiKey: API_KEY });
+// Explicit timeout + retry config. SDK defaults are 10-min per-request
+// and 2 retries — way too generous. A single 529 (overloaded) on a CUA
+// call could lock the worker for 30+ minutes (10min × 2 retries × stage).
+// Job-level timeout (JOB_TIMEOUT_MS=4min) sets a flag but doesn't actually
+// abort the in-flight HTTP request, so a hung Anthropic call would
+// survive past the job timeout.
+//
+// 120s per attempt × 3 attempts (1 initial + 2 retries) = up to 360s,
+// just over the 240s job budget — but the per-attempt cap is what
+// matters for liveness. CUA round-trips with a screenshot + thinking
+// can reach 60-90s on slow PMS pages; 120s gives that headroom while
+// still aborting truly hung requests. (Pass-3 fix — H11.)
+export const anthropic = new Anthropic({
+  apiKey: API_KEY,
+  timeout: 120_000,
+  maxRetries: 2,
+});
 
 /**
  * Model + computer-use tool version we standardize on. Bump these together

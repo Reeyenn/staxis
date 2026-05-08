@@ -1,7 +1,8 @@
 /**
  * GET /api/cron/expire-trials
  *
- * Run daily by GitHub Actions. Flips properties whose trial_ends_at is
+ * Run daily at 09:00 UTC by Vercel cron (vercel.json → crons[]).
+ * Flips properties whose trial_ends_at is
  * in the past from subscription_status='trial' to 'past_due'. The
  * dashboard nudges past_due properties to add a card; the cua-service
  * worker can optionally skip their onboarding jobs (we don't enforce

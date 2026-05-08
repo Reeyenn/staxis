@@ -39,6 +39,13 @@ export async function saveExtractedData(args: {
     departuresToday: args.data.departuresToday.length,
   };
 
+  // Aggregate errors across every write so the worker never marks a job
+  // 'complete' when actual data wasn't persisted. Previously each error
+  // path log.warn'd and kept going, returning ok:true with zeros — the
+  // dashboard would then show "Connected ✓" with no rooms or staff,
+  // confusing the GM about whether onboarding worked. (Pass-3 fix — H10.)
+  const errors: string[] = [];
+
   // ─── Rooms ───────────────────────────────────────────────────────────────
   // properties.room_inventory is a text[] of room numbers (migration 0025).
   // It's the master list — /api/populate-rooms-from-plan unions it with
@@ -63,6 +70,7 @@ export async function saveExtractedData(args: {
 
     if (error) {
       log.warn('failed to write room_inventory', { err: error.message });
+      errors.push(`rooms: ${error.message}`);
     } else {
       summary.roomsSaved = roomNumbers.length;
     }
@@ -74,10 +82,22 @@ export async function saveExtractedData(args: {
   // manually, and we don't want PMS naming differences to clobber her
   // edits. Only first-time inserts.
   if (args.data.staff.length > 0) {
-    const { data: existing } = await supabase
+    // Lookup error is non-fatal. If we can't read the existing list we
+    // fall through to "treat as empty" which may produce a duplicate
+    // staff row — benign (Maria can clean up) and far better than
+    // failing the whole onboarding for a transient Supabase blip. The
+    // existingNames check is itself defense-in-depth; the real source
+    // of truth is the absence of a unique constraint, which means a
+    // duplicate row is recoverable, not a corruption.
+    const { data: existing, error: existingErr } = await supabase
       .from('staff')
       .select('name')
       .eq('property_id', args.propertyId);
+    if (existingErr) {
+      log.warn('staff lookup failed — treating as empty (will dedup by exact name)', {
+        err: existingErr.message,
+      });
+    }
 
     const existingNames = new Set((existing ?? []).map((r) => (r.name as string).toLowerCase()));
     const toInsert = args.data.staff
@@ -91,9 +111,12 @@ export async function saveExtractedData(args: {
       }));
 
     if (toInsert.length > 0) {
+      // Insert errors ARE fatal — the user explicitly asked for these
+      // rows to land and the failure means they didn't.
       const { error } = await supabase.from('staff').insert(toInsert);
       if (error) {
         log.warn('failed to insert staff', { err: error.message });
+        errors.push(`staff insert: ${error.message}`);
       } else {
         summary.staffSaved = toInsert.length;
       }
@@ -104,7 +127,7 @@ export async function saveExtractedData(args: {
   // After a successful onboarding extraction, mark the property's PMS
   // connection state to true so the dashboard shows "Connected". This
   // flips the badge on /settings/pms from yellow to green.
-  await supabase
+  const { error: pmsErr } = await supabase
     .from('properties')
     .update({
       pms_connected: true,
@@ -112,5 +135,12 @@ export async function saveExtractedData(args: {
     })
     .eq('id', args.propertyId);
 
+  if (pmsErr) {
+    errors.push(`pms_connected flag: ${pmsErr.message}`);
+  }
+
+  if (errors.length > 0) {
+    return { ok: false, error: errors.join(' | ') };
+  }
   return { ok: true, summary };
 }
