@@ -15,6 +15,7 @@
  * Migration `0008_api_limits.sql` creates the table.
  */
 
+import { createHash } from 'crypto';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 
 /** Endpoint identifier — keep these short and stable. */
@@ -94,10 +95,6 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
  * bucket (which is itself a defense against header-spoofing attacks).
  */
 export function ipToRateLimitKey(ip: string | null | undefined): string {
-  // We avoid `import` to keep this file synchronous and tree-shake-friendly.
-  // Node's crypto is always available on the server runtime.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { createHash } = require('crypto') as typeof import('crypto');
   const trimmed = (ip ?? '').trim().toLowerCase();
   if (!trimmed) return NO_PROPERTY_RATE_LIMIT_KEY;
   const h = createHash('sha256').update(trimmed).digest();
