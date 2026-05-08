@@ -24,7 +24,14 @@ const SECRET_KEY = process.env.STRIPE_SECRET_KEY;
 const WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const DEFAULT_PRICE_ID = process.env.STRIPE_PRICE_ID;
 
-export const stripeIsConfigured = Boolean(SECRET_KEY);
+// Stripe is "configured" only when BOTH the secret key AND the webhook
+// secret are present. The dangerous half-state is SECRET_KEY set without
+// WEBHOOK_SECRET: customers can pay (checkout works) but every webhook
+// delivery silently 400s for 3 days while their property stays 'trial'.
+// Treating that as 'not configured' (so checkout refuses) is safer than
+// taking payment we can't reconcile. (Doctor's stripe_billing_configured
+// check surfaces this so you know to fix it before opening signups.)
+export const stripeIsConfigured = Boolean(SECRET_KEY) && Boolean(WEBHOOK_SECRET);
 
 // Stripe SDK is null when not configured. Every helper checks first.
 const stripe: Stripe | null = SECRET_KEY

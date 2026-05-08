@@ -82,12 +82,18 @@ export async function POST(req: NextRequest) {
 
   if (insertErr) {
     // Unique violation (code 23505) = already processed. 2xx so Stripe
-    // stops retrying. Any other error means the dedupe table itself is
-    // unhealthy; let it pass through but log loudly.
+    // stops retrying.
     if ((insertErr as { code?: string }).code === '23505') {
       return NextResponse.json({ received: true, deduped: true });
     }
-    console.warn(`[stripe/webhook] dedupe insert failed (${insertErr.message}) — proceeding anyway`);
+    // Any OTHER error means the dedupe table is unhealthy — could be
+    // a network blip, RLS misconfig, table renamed, etc. We MUST refuse
+    // to process: without working dedupe, Stripe's automatic retries
+    // would double-process every event. 500 → Stripe retries with
+    // exponential backoff for up to 3 days, by which point the dedupe
+    // table is presumably healthy again. (Pass-3 fix.)
+    console.error('[stripe/webhook] dedupe insert failed — refusing to process', insertErr);
+    return NextResponse.json({ error: 'Dedupe table unhealthy — try again' }, { status: 500 });
   } else if (!dedupeRow) {
     // No error AND no row means something weird happened — refuse to
     // process (Stripe will retry; we'll see the error in logs).
@@ -176,16 +182,30 @@ async function handleEvent(event: Stripe.Event): Promise<string | null> {
       const sub = event.data.object as Stripe.Subscription;
       const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer.id;
       const status = mapStripeStatus(sub.status);
+      // Status guard prevents an out-of-order Stripe replay (e.g., a
+      // stale 'updated' event arriving after 'deleted') from
+      // resurrecting a canceled or terminal-state subscription. Only
+      // states that can legitimately transition forward are eligible
+      // for update. (Pass-3 fix — H2.)
       return updateProperty(customerId, {
         subscription_status: status,
         stripe_subscription_id: sub.id,
+      }, {
+        in: { column: 'subscription_status', values: ['trial', 'active', 'past_due', 'incomplete', 'unpaid', 'paused'] },
       });
     }
 
     case 'customer.subscription.deleted': {
       const sub = event.data.object as Stripe.Subscription;
       const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer.id;
-      return updateProperty(customerId, { subscription_status: 'cancelled' });
+      // Clear stripe_subscription_id along with the status flip — the
+      // ID is now a stale reference (Stripe deleted the subscription)
+      // and leaving it on the row confuses future portal/billing
+      // lookups. (Pass-3 fix — covers M5 too.)
+      return updateProperty(customerId, {
+        subscription_status: 'canceled',
+        stripe_subscription_id: null,
+      });
     }
 
     case 'invoice.payment_failed': {
@@ -218,16 +238,23 @@ async function handleEvent(event: Stripe.Event): Promise<string | null> {
   }
 }
 
-function mapStripeStatus(s: Stripe.Subscription.Status): 'trial' | 'active' | 'past_due' | 'cancelled' | 'incomplete' {
+// Map Stripe's Subscription.Status vocabulary to our local enum. The
+// local enum (CHECK constraint, migration 0038) accepts every Stripe
+// value verbatim EXCEPT 'trialing' which we localize to 'trial' for
+// historical reasons (the column was named 'trial' before Stripe was
+// integrated). Returning Stripe values directly for everything else
+// avoids losing dunning-flow detail.
+function mapStripeStatus(s: Stripe.Subscription.Status):
+  'trial' | 'active' | 'past_due' | 'canceled' | 'incomplete' | 'incomplete_expired' | 'unpaid' | 'paused' {
   switch (s) {
     case 'active':              return 'active';
     case 'trialing':            return 'trial';
     case 'past_due':            return 'past_due';
-    case 'canceled':            return 'cancelled';
-    case 'unpaid':              return 'past_due';
+    case 'canceled':            return 'canceled';
+    case 'unpaid':              return 'unpaid';
     case 'incomplete':          return 'incomplete';
-    case 'incomplete_expired':  return 'cancelled';
-    case 'paused':              return 'past_due';
+    case 'incomplete_expired':  return 'incomplete_expired';
+    case 'paused':              return 'paused';
     default:                    return 'incomplete';
   }
 }
