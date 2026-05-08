@@ -18,7 +18,7 @@
  * signup; gating onboarding on having them stops the conversion.
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
@@ -45,7 +45,26 @@ function localId(): string {
   return Math.random().toString(36).slice(2);
 }
 
+/**
+ * Default export wraps the actual form in Suspense — Next.js 16's static
+ * renderer rejects pages that call useSearchParams() at the top level
+ * because they can't be pre-rendered without query params. Wrapping in
+ * Suspense tells Next.js this part is dynamic; static generation skips
+ * past it cleanly.
+ */
 export default function OnboardingPage() {
+  return (
+    <Suspense fallback={
+      <div style={{ minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)' }}>
+        <div className="spinner" style={{ width: '32px', height: '32px' }} />
+      </div>
+    }>
+      <OnboardingForm />
+    </Suspense>
+  );
+}
+
+function OnboardingForm() {
   const router = useRouter();
   const params = useSearchParams();
   const { user, loading } = useAuth();
