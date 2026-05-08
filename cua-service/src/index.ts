@@ -19,6 +19,12 @@
  */
 
 import 'dotenv/config';
+// IMPORTANT: initSentry must be called before any other module loads
+// so the global error handler is in place when imports/initialization
+// throw. ./sentry.js is the only file that can be imported before this.
+import { initSentry, flushSentry } from './sentry.js';
+const sentryReady = initSentry();
+
 import { supabase, verifyConnection } from './supabase.js';
 import { log, makeWorkerId } from './log.js';
 import { runJob } from './job-runner.js';
@@ -131,9 +137,12 @@ function sleep(ms: number): Promise<void> {
 }
 
 function setupSignalHandlers(): void {
-  const handle = (sig: string) => () => {
+  const handle = (sig: string) => async () => {
     log.info(`received ${sig} — finishing in-flight job before exit`, { inFlightJobId });
     shuttingDown = true;
+    // Flush any pending Sentry events before exit. Best-effort with a
+    // short timeout — never block shutdown on a bad network.
+    await flushSentry(2000);
     // If no job in flight, exit immediately. Otherwise the loop will
     // exit naturally after the current job finishes.
     if (!inFlightJobId) {
@@ -149,13 +158,26 @@ function setupSignalHandlers(): void {
   };
   process.on('SIGTERM', handle('SIGTERM'));
   process.on('SIGINT',  handle('SIGINT'));
+
+  // Catch unhandled promise rejections — without this they're silently
+  // swallowed in Node 20+. Sentry already does this via its global
+  // handlers, but logging makes them visible in Fly logs too.
+  process.on('unhandledRejection', (reason) => {
+    log.error('unhandledRejection', { err: reason instanceof Error ? reason : new Error(String(reason)) });
+  });
+  process.on('uncaughtException', (err) => {
+    log.error('uncaughtException', { err });
+    // Don't continue running — node won't have cleaned up state.
+    void flushSentry(2000).then(() => process.exit(1));
+  });
 }
 
 async function main(): Promise<void> {
   setupSignalHandlers();
+  log.info('worker startup', { sentryReady, workerId: WORKER_ID });
   const conn = await verifyConnection();
   if (!conn.ok) {
-    log.error('supabase connection failed at startup', { err: conn.error });
+    log.error('supabase connection failed at startup', { err: new Error(conn.error) });
     process.exit(1);
   }
   await pollLoop();
