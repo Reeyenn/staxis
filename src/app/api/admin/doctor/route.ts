@@ -1425,23 +1425,30 @@ async function checkStripeBillingConfigured(): Promise<Omit<Check, 'name' | 'dur
     if (!sk.trim()) missing.push('STRIPE_SECRET_KEY');
     if (!wh.trim()) missing.push('STRIPE_WEBHOOK_SECRET');
     if (!pr.trim()) missing.push('STRIPE_PRICE_ID');
+    const fixSteps = [`Set ${missing.join(', ')} in Vercel → Project Settings → Environment Variables and redeploy.`];
+    if (!wh.trim()) {
+      fixSteps.push('STRIPE_WEBHOOK_SECRET also requires creating the webhook endpoint at https://hotelops-ai.vercel.app/api/stripe/webhook in Stripe Dashboard → Developers → Webhooks (the secret is shown after creation).');
+    }
+    fixSteps.push('Or unset all three to fall back to trial-only mode.');
     return {
       status: 'fail',
       detail: `Stripe partially configured — ${setCount}/3 vars set. Missing: ${missing.join(', ')}. Dangerous half-state: checkout may work but the webhook silently rejects every payment event.`,
-      fix: `Set ${missing.join(', ')} in Vercel → Project Settings → Environment Variables and redeploy. Or unset all three to fall back to trial-only mode.`,
+      fix: fixSteps.join(' '),
     };
   }
 
   // All three set — verify shape so a typo doesn't slip through.
+  // Slice exactly the prefix length so we never leak any of the secret
+  // body in error messages, even on malformed-but-near-miss inputs.
   const issues: string[] = [];
   if (!sk.startsWith('sk_live_') && !sk.startsWith('sk_test_')) {
     issues.push(`STRIPE_SECRET_KEY doesn't start with sk_live_ / sk_test_ — got "${sk.slice(0, 8)}…"`);
   }
   if (!wh.startsWith('whsec_')) {
-    issues.push(`STRIPE_WEBHOOK_SECRET doesn't start with whsec_ — got "${wh.slice(0, 8)}…"`);
+    issues.push(`STRIPE_WEBHOOK_SECRET doesn't start with whsec_ — got "${wh.slice(0, 6)}…"`);
   }
   if (!pr.startsWith('price_')) {
-    issues.push(`STRIPE_PRICE_ID doesn't start with price_ — got "${pr.slice(0, 8)}…"`);
+    issues.push(`STRIPE_PRICE_ID doesn't start with price_ — got "${pr.slice(0, 6)}…"`);
   }
   if (sk.startsWith('sk_test_') && process.env.VERCEL_ENV === 'production') {
     issues.push('STRIPE_SECRET_KEY is a TEST key but VERCEL_ENV=production — customer payments will fail in production.');
@@ -1468,27 +1475,53 @@ async function checkStripeBillingConfigured(): Promise<Omit<Check, 'name' | 'dur
  * is a fail because errors then silently disappear into the void.
  */
 async function checkSentryDsnShape(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  const dsn = process.env.NEXT_PUBLIC_SENTRY_DSN ?? process.env.SENTRY_DSN ?? '';
-  if (dsn.trim() === '') {
+  const dsnServer = process.env.SENTRY_DSN ?? '';
+  const dsnClient = process.env.NEXT_PUBLIC_SENTRY_DSN ?? '';
+  const serverSet = dsnServer.trim() !== '';
+  const clientSet = dsnClient.trim() !== '';
+
+  // Both unset → graceful no-op mode.
+  if (!serverSet && !clientSet) {
     return {
       status: 'warn',
-      detail: 'SENTRY_DSN not set — error tracking disabled. Errors logged to Vercel function logs only.',
-      fix: 'Set NEXT_PUBLIC_SENTRY_DSN (client+server) and SENTRY_DSN (server-only routes) in Vercel. Get the DSN from sentry.io → Project Settings → Client Keys.',
+      detail: 'Sentry DSN not set on Vercel — error tracking disabled. Errors logged to Vercel function logs only. Note: cua-service (Fly) reads SENTRY_DSN from its own Fly secrets, not Vercel env.',
+      fix: 'Set NEXT_PUBLIC_SENTRY_DSN (client+server runtime) AND SENTRY_DSN (server.config + edge.config) in Vercel. Get DSN from sentry.io → Project Settings → Client Keys. For cua-service, also `flyctl secrets set SENTRY_DSN=… -a staxis-cua`.',
     };
   }
-  // Sentry DSNs are URLs of the form https://<key>@<org>.ingest.sentry.io/<project>
-  // or https://<key>@<org>.ingest.<region>.sentry.io/<project> for region-specific instances.
-  const dsnRx = /^https:\/\/[a-z0-9]+@[a-z0-9.-]+\.ingest(?:\.[a-z]{2})?\.sentry\.io\/\d+$/;
-  if (!dsnRx.test(dsn)) {
+
+  // Half-configured — server runtime reads SENTRY_DSN, client reads
+  // NEXT_PUBLIC_SENTRY_DSN. Either side missing means errors silently
+  // disappear from that side. (sentry.server.config.ts and sentry.edge
+  // .config.ts read SENTRY_DSN; sentry.client.config.ts reads
+  // NEXT_PUBLIC_SENTRY_DSN.)
+  if (!serverSet || !clientSet) {
+    const missing = !serverSet ? 'SENTRY_DSN' : 'NEXT_PUBLIC_SENTRY_DSN';
+    const blind = !serverSet ? 'server-side and edge errors' : 'client-side (browser) errors';
     return {
       status: 'fail',
-      detail: `SENTRY_DSN doesn't match expected shape (https://<key>@<org>.ingest.sentry.io/<project>). Got: ${dsn.slice(0, 40)}…`,
+      detail: `Sentry partially configured — ${missing} is missing, so ${blind} disappear silently while the other side reports.`,
+      fix: `Set ${missing} in Vercel → Project Settings → Environment Variables (use the same DSN value as the other one) and redeploy.`,
+    };
+  }
+
+  // Both set — validate shape on both. Sentry DSN format:
+  //   https://<key>@<org>.ingest.sentry.io/<project>
+  //   https://<key>@<org>.ingest.<region>.sentry.io/<project>
+  const dsnRx = /^https:\/\/[a-z0-9]+@[a-z0-9.-]+\.ingest(?:\.[a-z]{2})?\.sentry\.io\/\d+$/;
+  const issues: string[] = [];
+  if (!dsnRx.test(dsnServer)) issues.push(`SENTRY_DSN malformed (got "${dsnServer.slice(0, 40)}…")`);
+  if (!dsnRx.test(dsnClient)) issues.push(`NEXT_PUBLIC_SENTRY_DSN malformed (got "${dsnClient.slice(0, 40)}…")`);
+  if (issues.length > 0) {
+    return {
+      status: 'fail',
+      detail: issues.join(' | '),
       fix: 'Re-copy the DSN from sentry.io → Project Settings → Client Keys → DSN. Watch for accidentally pasting the project URL instead.',
     };
   }
+
   return {
     status: 'ok',
-    detail: 'SENTRY_DSN looks valid',
+    detail: 'Sentry fully configured (server + client DSNs valid)',
   };
 }
 
