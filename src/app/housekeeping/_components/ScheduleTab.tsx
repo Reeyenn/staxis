@@ -304,11 +304,12 @@ function ScheduleTab() {
     // don't flash stale live numbers while the fetch is in flight.
     setDashboardNums(null);
     let cancelled = false;
-    getDashboardForDate(shiftDate).then(nums => {
+    if (!pid) return;
+    getDashboardForDate(shiftDate, pid).then(nums => {
       if (!cancelled) setDashboardNums(nums);
     });
     return () => { cancelled = true; };
-  }, [shiftDate]);
+  }, [shiftDate, pid]);
 
   // Subscribe to work orders so we can exclude blocked rooms from the
   // cleaning workflow. Sourced from either manual toggles in Maintenance or

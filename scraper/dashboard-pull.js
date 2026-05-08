@@ -254,7 +254,7 @@ function sanitizeForJsonb(obj) {
  * the dashboard row's error fields AND re-throws a typed ScraperError so
  * the caller (scraper.js) can decide whether to retry with re-login.
  */
-async function pullDashboardNumbers(page, supabase, log) {
+async function pullDashboardNumbers(page, supabase, log, propertyId) {
   let result;
   try {
     result = await fetchAllViewPages(page, log);
@@ -333,6 +333,7 @@ async function pullDashboardNumbers(page, supabase, log) {
     .from('dashboard_by_date')
     .upsert({
       date:              localDate,
+      property_id:       propertyId,
       in_house:          payload.inHouse,
       arrivals:          payload.arrivals,
       departures:        payload.departures,
@@ -344,7 +345,7 @@ async function pullDashboardNumbers(page, supabase, log) {
       error_message:     null,
       error_page:        null,
       errored_at:        null,
-    }, { onConflict: 'date' });
+    }, { onConflict: 'date,property_id' });
   if (dbdErr) {
     // Non-fatal — live dashboard already succeeded. Log and keep going.
     log(`Failed to write per-date snapshot for ${localDate}: ${dbdErr.message}`);

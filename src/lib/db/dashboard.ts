@@ -92,10 +92,17 @@ export function subscribeToDashboardNumbers(
   );
 }
 
-export async function getDashboardForDate(dateStr: string): Promise<DashboardNumbers | null> {
+export async function getDashboardForDate(
+  dateStr: string,
+  propertyId: string,
+): Promise<DashboardNumbers | null> {
   try {
     const { data, error } = await supabase
-      .from('dashboard_by_date').select('*').eq('date', dateStr).maybeSingle();
+      .from('dashboard_by_date')
+      .select('*')
+      .eq('date', dateStr)
+      .eq('property_id', propertyId)
+      .maybeSingle();
     if (error) throw error;
     if (!data) return null;
     const r = data as Record<string, unknown>;

@@ -556,7 +556,7 @@ const DASHBOARD_INTERVAL_MS = 15 * 60 * 1000;
  */
 async function runDashboardPullFresh(page, relogin) {
   try {
-    return await pullDashboardNumbers(page, supabase, log);
+    return await pullDashboardNumbers(page, supabase, log, CONFIG.PROPERTY_ID);
   } catch (err) {
     const code = err instanceof ScraperError ? err.code : ERROR_CODES.UNKNOWN;
 
@@ -581,7 +581,7 @@ async function runDashboardPullFresh(page, relogin) {
       // first and we don't retry again. (Don't want infinite loops on a
       // persistently sad CA.)
       try {
-        return await pullDashboardNumbers(page, supabase, log);
+        return await pullDashboardNumbers(page, supabase, log, CONFIG.PROPERTY_ID);
       } catch (retryErr) {
         log(`Dashboard pull retry FAILED: [${retryErr.code || 'unknown'}] ${retryErr.message}`);
         return null;
