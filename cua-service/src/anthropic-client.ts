@@ -61,7 +61,11 @@ export const CLAUDE_MODEL = 'claude-sonnet-4-5';
  * SDK's local types don't.
  */
 export const COMPUTER_TOOL = {
-  type: 'computer_20251124' as const,
+  // The beta endpoint accepts computer_20250124. The SDK types include
+  // computer_20251124 too, but the live API hasn't shipped it yet —
+  // sending it returns 400 with "tag not in allowed list". Keep on
+  // 20250124 until the API enumerates 20251124.
+  type: 'computer_20250124' as const,
   name: 'computer' as const,
   display_width_px: 1280,
   display_height_px: 800,
