@@ -30,7 +30,7 @@ RUN npm run build
 # Playwright's Node 20 image has Chromium + Firefox + WebKit + all system
 # deps. We only use Chromium so that's wasted bytes, but keeping the
 # official image means we don't have to chase glibc / fontconfig issues.
-FROM mcr.microsoft.com/playwright:v1.49.0-jammy AS runtime
+FROM mcr.microsoft.com/playwright:v1.59.1-jammy AS runtime
 
 WORKDIR /app
 
