@@ -25,7 +25,7 @@
 
 import type { Browser, Page } from 'playwright';
 import { chromium } from 'playwright';
-import { anthropic, CLAUDE_MODEL, COMPUTER_TOOL, MAPPING_SYSTEM_PROMPT } from './anthropic-client.js';
+import { anthropic, CLAUDE_MODEL, COMPUTER_TOOL, COMPUTER_USE_BETA, MAPPING_SYSTEM_PROMPT } from './anthropic-client.js';
 import { log } from './log.js';
 import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe } from './types.js';
 
@@ -181,24 +181,27 @@ async function mapLogin(page: Page, creds: PMSCredentials): Promise<LoginMapResu
       };
     }
 
-    const response = await anthropic.messages.create({
+    const response = await anthropic.beta.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: 1024,
       system: MAPPING_SYSTEM_PROMPT,
-      // SDK v0.95 doesn't yet model computer_20250124 in the Tool union —
-      // the wire format accepts it, the local TS types lag. Cast to any.
-      tools: [COMPUTER_TOOL as unknown as Anthropic.Messages.ToolUnion],
+      // Computer-use is beta-gated on the Messages API. We pass the beta
+      // header via `betas` so the API accepts the computer_20251124 tool
+      // type. Cast through unknown because the SDK's BetaToolUnion type
+      // narrows differently between SDK minor versions.
+      tools: [COMPUTER_TOOL as unknown as Anthropic.Beta.Messages.BetaToolUnion],
       messages,
+      betas: [COMPUTER_USE_BETA],
     });
 
     totalInputTokens += response.usage?.input_tokens ?? 0;
     totalOutputTokens += response.usage?.output_tokens ?? 0;
 
-    messages.push({ role: 'assistant', content: response.content });
+    messages.push({ role: 'assistant', content: response.content as unknown as Anthropic.Messages.ContentBlock[] });
 
     // Check for end-of-turn (Claude is done).
     if (response.stop_reason === 'end_turn') {
-      const finalText = extractFinalText(response.content);
+      const finalText = extractFinalText(response.content as unknown as Anthropic.Messages.ContentBlock[]);
       const parsedRaw = tryParseJson(finalText);
       const parsed = parsedRaw as { loggedIn?: unknown; dashboardSelector?: unknown } | null;
       if (parsed && parsed.loggedIn) {
@@ -292,20 +295,21 @@ async function mapAction(args: {
       return { ok: false, reason: 'token budget exceeded' };
     }
 
-    const response = await anthropic.messages.create({
+    const response = await anthropic.beta.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: 1024,
       system: MAPPING_SYSTEM_PROMPT,
-      tools: [COMPUTER_TOOL as unknown as Anthropic.Messages.ToolUnion],
+      tools: [COMPUTER_TOOL as unknown as Anthropic.Beta.Messages.BetaToolUnion],
       messages,
+      betas: [COMPUTER_USE_BETA],
     });
 
     totalInputTokens += response.usage?.input_tokens ?? 0;
 
-    messages.push({ role: 'assistant', content: response.content });
+    messages.push({ role: 'assistant', content: response.content as unknown as Anthropic.Messages.ContentBlock[] });
 
     if (response.stop_reason === 'end_turn') {
-      const finalText = extractFinalText(response.content);
+      const finalText = extractFinalText(response.content as unknown as Anthropic.Messages.ContentBlock[]);
       const parsed = tryParseJson(finalText);
       if (
         parsed &&

@@ -61,12 +61,20 @@ export const CLAUDE_MODEL = 'claude-sonnet-4-5';
  * SDK's local types don't.
  */
 export const COMPUTER_TOOL = {
-  type: 'computer_20250124' as const,
+  type: 'computer_20251124' as const,
   name: 'computer' as const,
   display_width_px: 1280,
   display_height_px: 800,
   display_number: 1,
 };
+
+/**
+ * Beta header required for computer-use tool calls. Pass via the
+ * `betas` field on anthropic.beta.messages.create. Anthropic gates
+ * computer-use behind this beta even though the tool itself is GA-stable
+ * for our use case.
+ */
+export const COMPUTER_USE_BETA = 'computer-use-2025-01-24' as const;
 
 /**
  * Generic system message we prepend to all CUA mapping runs. The
