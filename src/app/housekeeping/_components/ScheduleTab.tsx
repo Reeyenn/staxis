@@ -27,6 +27,7 @@ import {
   csvFreshness,
   subscribeToShiftConfirmations,
   subscribeToScheduleAssignments,
+  getScheduleAssignments,
   saveScheduleAssignments,
   subscribeToDashboardNumbers,
   getDashboardForDate,
@@ -152,6 +153,17 @@ function ScheduleTab() {
   // __unassigned__ clears the flag (she's un-pinning it).
   const manuallyAssignedRooms = useRef<Set<string>>(new Set());
   const hasInitialAssign = useRef(false);
+
+  // ── Carry-forward from yesterday ──────────────────────────────────────────
+  // When Maria opens the Schedule tab on a new morning and there's no saved
+  // doc for today yet, we attempt to seed it from yesterday's pairings: same
+  // HK on the same room number, restricted to rooms that still appear in
+  // today's CA scrape. Banner stays until she edits or dismisses.
+  // `seedAttemptedForDate` is a per-mount guard — we only try once per date,
+  // even if the user navigates away and comes back. (Subsequent visits will
+  // see the autosaved doc and hydrate normally.)
+  const seedAttemptedForDate = useRef<string | null>(null);
+  const [seededFromYesterday, setSeededFromYesterday] = useState(false);
 
   // Swap dropdown
   const [swapOpenFor, setSwapOpenFor] = useState<string | null>(null);
@@ -328,6 +340,91 @@ function ScheduleTab() {
       hasInitialAssign.current = false;
     }
   }, [shiftDate, scheduleAssignmentsLoaded, scheduleAssignmentsDoc]);
+
+  // Reset the seeded banner whenever the user navigates to a different date
+  // — yesterday's banner shouldn't follow her into tomorrow's view.
+  useEffect(() => { setSeededFromYesterday(false); }, [shiftDate]);
+
+  // Carry-forward from yesterday: when there's no saved doc for today, seed
+  // assignments from yesterday's pairings, restricted to rooms that still
+  // appear in today's room list and to housekeepers who are still active on
+  // staff. This is a one-time attempt per (mount × shiftDate) — if Maria
+  // edits anything, the autosave persists and subsequent loads hydrate from
+  // the saved doc instead of re-seeding.
+  useEffect(() => {
+    if (!uid || !pid) return;
+    if (!scheduleAssignmentsLoaded) return;
+    // Wait for staff context — without it the active-staff filter inside
+    // the seed would treat every yesterday-pairing as inactive and drop them.
+    if (!staffLoaded) return;
+    // Already hydrated; skip if a saved doc exists or if we already tried
+    // for this date.
+    if (scheduleAssignmentsDoc) return;
+    if (hydratedForDate.current !== shiftDate) return; // wait for hydration
+    if (seedAttemptedForDate.current === shiftDate) return;
+    // Only seed for "today" — never for past dates (read-only history) or
+    // arbitrary future dates (Maria explicitly chose those, don't pre-fill).
+    const today = schedTodayStr();
+    if (shiftDate !== today) return;
+
+    seedAttemptedForDate.current = shiftDate;
+    const yesterday = format(subDays(new Date(), 1), 'yyyy-MM-dd');
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const [yestAssignments, yestRooms, todayRooms] = await Promise.all([
+          getScheduleAssignments(uid, pid, yesterday),
+          getRoomsForDate(uid, pid, yesterday),
+          getRoomsForDate(uid, pid, today),
+        ]);
+        if (cancelled) return;
+        if (!yestAssignments || Object.keys(yestAssignments.roomAssignments ?? {}).length === 0) {
+          return; // nothing to carry forward
+        }
+
+        // Build yesterday roomId → number, today number → id.
+        const yestIdToNumber = new Map<string, string>();
+        for (const r of yestRooms) yestIdToNumber.set(r.id, r.number);
+        const todayNumberToId = new Map<string, string>();
+        for (const r of todayRooms) todayNumberToId.set(r.number, r.id);
+
+        // Active staff filter: drop anyone no longer on the roster or marked
+        // inactive. `staff` is from useProperty(); read latest via the closure.
+        const activeStaffIds = new Set(
+          staff.filter(s => s.isActive !== false).map(s => s.id),
+        );
+
+        const seededAssignments: Record<string, string> = {};
+        for (const [yestRoomId, staffId] of Object.entries(yestAssignments.roomAssignments)) {
+          if (!activeStaffIds.has(staffId)) continue;
+          const roomNumber = yestIdToNumber.get(yestRoomId);
+          if (!roomNumber) continue;
+          const todayRoomId = todayNumberToId.get(roomNumber);
+          if (!todayRoomId) continue; // room not in today's list
+          seededAssignments[todayRoomId] = staffId;
+        }
+
+        if (Object.keys(seededAssignments).length === 0) return;
+
+        const seededCrew = (yestAssignments.crew ?? []).filter(id => activeStaffIds.has(id));
+
+        setAssignments(seededAssignments);
+        setCrewOverride(seededCrew);
+        userEditedCrew.current = true;     // treat as user-saved so auto-assign doesn't clobber
+        hasInitialAssign.current = true;
+        setSeededFromYesterday(true);
+      } catch (err) {
+        // Non-fatal — Maria can still build today's schedule from scratch.
+        console.error('[ScheduleTab] carry-forward seed failed:', err);
+      }
+    })();
+
+    return () => { cancelled = true; };
+    // staff intentionally NOT a dep — we read once at seed time. Re-running
+    // when staff changes would re-seed and clobber Maria's edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uid, pid, shiftDate, scheduleAssignmentsLoaded, staffLoaded, scheduleAssignmentsDoc]);
 
   const predictionLoading = !planSnapshotLoaded;
 
@@ -1634,6 +1731,35 @@ function ScheduleTab() {
           </div>
         );
       })()}
+
+      {/* ── Carry-forward banner ── */}
+      {seededFromYesterday && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px',
+          padding: '10px 14px',
+          background: 'rgba(54, 66, 98, 0.06)',
+          border: '1px solid rgba(54, 66, 98, 0.18)',
+          borderRadius: '10px',
+          fontSize: '13px', color: '#364262',
+        }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Sparkles size={14} style={{ color: '#364262' }} />
+            {lang === 'es'
+              ? 'Reusé las asignaciones de ayer — edita si lo necesitas.'
+              : 'Reused yesterday’s pairings — edit if needed.'}
+          </span>
+          <button
+            onClick={() => setSeededFromYesterday(false)}
+            style={{
+              background: 'transparent', border: 'none', color: '#364262',
+              cursor: 'pointer', fontSize: '12px', fontWeight: 600, padding: '4px 8px',
+              borderRadius: '6px',
+            }}
+          >
+            {lang === 'es' ? 'Ocultar' : 'Dismiss'}
+          </button>
+        </div>
+      )}
 
       {/* ── Prediction Hero Card (glass) ── */}
       <section className="glass-hero" style={{
