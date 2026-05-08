@@ -100,13 +100,27 @@ export async function saveExtractedData(args: {
     }
 
     const existingNames = new Set((existing ?? []).map((r) => (r.name as string).toLowerCase()));
+
+    // Map raw role strings to the staff.department CHECK enum
+    // (housekeeping/front_desk/maintenance/other). PMS extraction yields
+    // free-text role values; collapse common variants and default to
+    // 'housekeeping' since most extracted staff are HK.
+    const normalizeDept = (r?: string): string => {
+      const v = (r ?? '').toLowerCase();
+      if (v.includes('front')   || v.includes('desk'))     return 'front_desk';
+      if (v.includes('maint')   || v.includes('engineer')) return 'maintenance';
+      if (v.includes('house')   || v.includes('hk'))       return 'housekeeping';
+      if (v && !['housekeeping','front_desk','maintenance','other'].includes(v)) return 'other';
+      return 'housekeeping';
+    };
+
     const toInsert = args.data.staff
       .filter((s) => s.name && !existingNames.has(s.name.toLowerCase()))
       .map((s) => ({
         property_id: args.propertyId,
         name: s.name,
-        role: s.role ?? 'housekeeper',
-        phone_number: s.phone ?? null,
+        department: normalizeDept(s.role),
+        phone: s.phone ?? null,
         is_active: true,
       }));
 

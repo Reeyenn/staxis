@@ -80,7 +80,7 @@ export async function GET(req: NextRequest) {
 
   const { data: staffSample } = await supabaseAdmin
     .from('staff')
-    .select('id, name, phone_number, language, role, is_active')
+    .select('id, name, phone, language, department, is_active')
     .eq('property_id', pid)
     .order('name')
     .limit(5);
