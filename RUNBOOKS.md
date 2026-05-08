@@ -728,6 +728,193 @@ When adding a new env var:
 
 ---
 
+## Fleet-CUA migration: canary + cutover procedure
+
+Migrating Mario's per-hotel data pulls from the legacy Railway scraper to the
+Fly.io CUA worker fleet. The branch `fleet-cua-everything` holds the code;
+production main still runs the Railway scraper for Mario.
+
+### Phase 1 status (what's already shipped and dormant)
+
+- Migration `0042_pull_jobs_queue.sql` — applied to production. Adds the
+  `pull_jobs` table + `staxis_claim_next_pull_job()`, `staxis_reap_stale_pull_jobs()`,
+  `staxis_enqueue_property_pull()`, `staxis_purge_old_pull_jobs()` functions.
+  Nothing reads or writes this table yet — adding it was safe.
+- `/api/cron/enqueue-property-pulls` route — committed on `fleet-cua-everything`.
+  Lists every connected property and idempotently enqueues a pull_job per one.
+  Vercel deploys this when the branch is merged. Until then, the route doesn't
+  exist on prod.
+- `cua-service/src/pull-job-runner.ts` + `pull-data-saver.ts` — committed on
+  the branch. The Fly.io CUA worker will poll pull_jobs and run them after
+  the branch is deployed to Fly.
+- `.github/workflows/pull-jobs-cron.yml` — `workflow_dispatch` only; no
+  schedule. So merging to main does NOT start producing pulls.
+
+### Step 1: deploy the branch's CUA service to Fly (canary mode)
+
+`fly deploy` from `cua-service/` on the branch:
+
+```bash
+cd cua-service
+fly deploy --remote-only
+```
+
+This deploys whatever the local working tree is. After deploy, the worker is
+running the new code with both `claimNextJob()` (onboarding) and
+`claimNextPullJob()` (pulls) — but no pull_jobs are enqueued yet, so behavior
+is unchanged from operations' perspective.
+
+### Step 2: insert a synthetic canary property
+
+```sql
+-- Run in Supabase SQL Editor (service-role).
+
+with new_prop as (
+  insert into public.properties (
+    name,
+    owner_id,
+    pms_type,
+    pms_url,
+    pms_connected,
+    total_rooms,
+    room_inventory
+  )
+  values (
+    'CANARY — fleet-cua test',
+    (select owner_id from public.properties where name='Comfort Suites Beaumont' limit 1),
+    'choice_advantage',
+    'https://www.choiceadvantage.com/',
+    true,
+    0,
+    '{}'::text[]
+  )
+  returning id
+),
+new_creds as (
+  insert into public.scraper_credentials (
+    property_id,
+    pms_type,
+    ca_login_url,
+    ca_username,
+    ca_password,
+    is_active
+  )
+  select
+    np.id,
+    'choice_advantage',
+    -- Same credentials as Mario's property — the canary just exercises
+    -- the pull → save path against the real PMS without writing into
+    -- Mario's rooms/staff (those tables are empty for this canary).
+    (select ca_login_url from public.scraper_credentials sc
+       join public.properties p on p.id = sc.property_id
+      where p.name = 'Comfort Suites Beaumont' limit 1),
+    (select ca_username   from public.scraper_credentials sc
+       join public.properties p on p.id = sc.property_id
+      where p.name = 'Comfort Suites Beaumont' limit 1),
+    (select ca_password   from public.scraper_credentials sc
+       join public.properties p on p.id = sc.property_id
+      where p.name = 'Comfort Suites Beaumont' limit 1),
+    true
+  from new_prop np
+  returning property_id
+)
+select id from new_prop;
+-- Note the returned UUID for the next step.
+```
+
+### Step 3: enqueue a single pull_job for the canary
+
+```sql
+select public.staxis_enqueue_property_pull(
+  '<CANARY_PROPERTY_ID>'::uuid,
+  'choice_advantage'
+);
+```
+
+Within ~5 seconds the Fly CUA worker should claim it (`status='running'`).
+Within ~90 seconds it should reach `status='complete'` with a `result` jsonb.
+
+### Step 4: verify the data landed
+
+```sql
+-- The pull_job result.
+select id, status, result, error, error_detail, completed_at
+  from public.pull_jobs
+ where property_id = '<CANARY_PROPERTY_ID>'
+ order by created_at desc limit 1;
+
+-- The dashboard_by_date row that should have been written.
+select * from public.dashboard_by_date
+ where property_id = '<CANARY_PROPERTY_ID>'
+ order by date desc limit 1;
+
+-- The pull_metrics row.
+select * from public.pull_metrics
+ where property_id = '<CANARY_PROPERTY_ID>'
+ order by created_at desc limit 1;
+```
+
+Expected: `result` has `in_house`, `arrivals`, `departures`, `room_status_updates`
+matching Mario's actual hotel right now (since the canary uses Mario's
+credentials). dashboard_by_date row exists with sensible numbers.
+
+### Step 5: enable the cron
+
+Once the canary passes 24 hours of every-15-min pulls without errors, edit
+`.github/workflows/pull-jobs-cron.yml` and add a `schedule:` block:
+
+```yaml
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+```
+
+Push to `main`. Pulls now run for every connected property, including Mario.
+
+### Step 6: cutover Mario from Railway to CUA
+
+Both pipelines now write data. To verify they agree, query:
+
+```sql
+select
+  (select pulled_at from public.scraper_status where key='dashboard') as railway_pulled_at,
+  (select pulled_at from public.dashboard_by_date
+    where property_id = (select id from public.properties where name='Comfort Suites Beaumont')
+    order by date desc limit 1) as cua_pulled_at;
+```
+
+Both timestamps should be within ~15 min of each other. The numbers should
+match within ±1 for clock drift.
+
+When confident, retire the Railway scraper:
+1. Stop the `hotelops-scraper` service on Railway (don't delete — keep for
+   rollback).
+2. Update `src/lib/db/dashboard.ts:subscribeToDashboardNumbers` to read from
+   `dashboard_by_date` (today's row) instead of `scraper_status['dashboard']`.
+   Push, deploy, verify the live dashboard updates.
+3. Delete the canary property + scraper_credentials row.
+4. Merge `fleet-cua-everything` to `main` if it isn't already.
+
+### Rollback if canary fails
+
+```sql
+-- Pause the cron — edit pull-jobs-cron.yml to remove the schedule, push.
+-- Or just disable the workflow in GitHub Actions UI.
+
+-- Drain the pull_jobs queue so workers stop trying.
+update public.pull_jobs set status='failed', error='manual rollback'
+ where status in ('queued','running');
+
+-- Delete the canary property to remove the test setup.
+delete from public.properties where name = 'CANARY — fleet-cua test';
+```
+
+Mario is unaffected throughout — the Railway scraper keeps running until
+Step 6 retires it.
+
+---
+
 ## Meta: how to add a new failure mode to this doc
 
 Every time something breaks and takes more than 30 min to fix, come back and add a section here with Symptom / Diagnosis / Fix / Verify / Prevention. This file only pays for itself if we update it.

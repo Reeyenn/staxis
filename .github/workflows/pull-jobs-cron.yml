@@ -1,0 +1,68 @@
+# Pull Jobs Enqueuer — GitHub Actions cron
+#
+# Hits /api/cron/enqueue-property-pulls every 15 minutes. The route walks
+# every connected property and idempotently enqueues a pull_job per one.
+# Fly.io CUA workers then claim those jobs (via staxis_claim_next_pull_job,
+# migration 0042) and run recipe-replay extractions.
+#
+# DISABLED BY DEFAULT (manual trigger only).
+#
+# This workflow ships with `workflow_dispatch` only — no `schedule:` block —
+# so adding the file to `main` does NOT start producing pulls. We turn it
+# on AFTER:
+#   1. The cua-service Fly deploy is on a build that contains
+#      pull-job-runner.ts + pull-data-saver.ts (this branch's code merged).
+#   2. A canary property has been pulled successfully end-to-end (see
+#      docs/fleet-cua-canary.md).
+#   3. We've decided to retire the legacy Railway scraper for steady-state
+#      pulls.
+#
+# To enable: add a `schedule:` block with `cron: "*/15 * * * *"`.
+#
+# Why GitHub Actions instead of vercel.json:
+#   Same reason as sms-jobs-cron — Vercel Hobby caps cron schedules at
+#   once-per-day. GitHub's 5-min floor is fine for a 15-min cadence.
+#
+# Required GitHub Secrets:
+#   CRON_SECRET — same value as the CRON_SECRET env var in Vercel.
+
+name: Pull Jobs Enqueuer
+
+on:
+  # Manual trigger only until the canary phase passes. Once enabled, add
+  # back a schedule: block with cron: "*/15 * * * *".
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  enqueue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Enqueue per-property pulls
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+
+          URL="https://hotelops-ai.vercel.app/api/cron/enqueue-property-pulls"
+
+          RESPONSE=$(curl \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --max-time 60 \
+            --retry 2 \
+            --retry-delay 5 \
+            --retry-connrefused \
+            -H "Authorization: Bearer ${CRON_SECRET:-}" \
+            "$URL")
+
+          echo "Response: $RESPONSE"
+
+          echo "$RESPONSE" | grep -q '"ok":true' || {
+            echo "::error::enqueue-property-pulls returned ok:false or malformed JSON"
+            exit 1
+          }
