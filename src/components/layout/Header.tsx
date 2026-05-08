@@ -35,9 +35,16 @@ export function Header() {
   // expose that column. Cockpit data is currently stubbed; restoring the link
   // so the page is reachable for development + future wiring.
   const isOwner = user?.role === 'owner' || user?.role === 'admin';
-  const navLinks = isOwner
-    ? [...baseNavLinks, { href: '/admin/ml', label: 'ML' }]
-    : baseNavLinks;
+  // Admin-only Admin tab — fleet view across all properties for support
+  // triage. Reeyen sees this; the J-login (owner role only) does not.
+  // The page is gated server-side too via requireAdmin(), so even if the
+  // link leaks through a UI bug a non-admin can't load the data.
+  const isAdmin = user?.role === 'admin';
+  const navLinks = [
+    ...baseNavLinks,
+    ...(isOwner ? [{ href: '/admin/ml', label: 'ML' }] : []),
+    ...(isAdmin ? [{ href: '/admin/properties', label: 'Admin' }] : []),
+  ];
 
   const handleSwitchProperty = (id: string) => {
     setActivePropertyId(id);
