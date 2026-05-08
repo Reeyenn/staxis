@@ -108,7 +108,13 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
       const mapResult = await mapPMS({
         pmsType: job.pms_type,
         credentials,
-        onProgress: (step, pct) => updateProgress(jobId, workerId, 'mapping', step, pct).catch(() => {}),
+        onProgress: (step, pct) => updateProgress(jobId, workerId, 'mapping', step, pct).catch((err) =>
+          log.warn('progress update failed', {
+            jobId,
+            phase: 'mapping',
+            err: err instanceof Error ? err.message : String(err),
+          }),
+        ),
       });
 
       if (timedOut) return;
@@ -157,7 +163,13 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
     const extracted = await runRecipeExtraction({
       recipe: recipe.recipe,
       credentials,
-      onProgress: (step, pct) => updateProgress(jobId, workerId, 'extracting', step, pct).catch(() => {}),
+      onProgress: (step, pct) => updateProgress(jobId, workerId, 'extracting', step, pct).catch((err) =>
+        log.warn('progress update failed', {
+          jobId,
+          phase: 'extracting',
+          err: err instanceof Error ? err.message : String(err),
+        }),
+      ),
     });
 
     if (timedOut) return;

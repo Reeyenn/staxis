@@ -97,16 +97,28 @@ export async function ensureStaffAuthUser(
     if (!msg.toLowerCase().includes('already')) {
       throw new Error(`[staff-auth] createUser failed: ${msg}`);
     }
-    // List + filter by email. The admin listUsers paginates by default;
-    // we only need the first match.
-    const { data: list, error: listErr } = await supabaseAdmin.auth.admin.listUsers({
-      page: 1,
-      perPage: 200,
-    });
-    if (listErr) {
-      throw new Error(`[staff-auth] listUsers fallback failed: ${errToString(listErr)}`);
+    // List + filter by email. Supabase admin listUsers does not support
+    // an email filter, so we paginate. Loop with a hard cap of 50 pages
+    // (10k users at perPage=200) so a malformed response can't infinite-
+    // loop. For Staxis-scale tenants the match is virtually always on
+    // page 1; the loop exists for the rare large-tenant case where a
+    // synthetic .invalid email lands deep in the list.
+    const PER_PAGE = 200;
+    const PAGE_CAP = 50;
+    let match: { id: string; email?: string } | undefined;
+    for (let page = 1; page <= PAGE_CAP; page++) {
+      const { data: list, error: listErr } = await supabaseAdmin.auth.admin.listUsers({
+        page,
+        perPage: PER_PAGE,
+      });
+      if (listErr) {
+        throw new Error(`[staff-auth] listUsers fallback failed: ${errToString(listErr)}`);
+      }
+      const users = list?.users ?? [];
+      match = users.find(u => u.email === email);
+      if (match) break;
+      if (users.length < PER_PAGE) break; // last page
     }
-    const match = (list?.users ?? []).find(u => u.email === email);
     if (!match) {
       throw new Error(`[staff-auth] race recovery: no user with email ${email}`);
     }
