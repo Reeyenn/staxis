@@ -55,7 +55,8 @@ Full playbook lives in `Second Brain/05 Personal/[C] Recovery Codes & Credential
 2. Copy the new key.
 3. **Update Railway** → `hotelops-scraper` → Variables → `SUPABASE_SERVICE_ROLE_KEY`. Auto-redeploys.
 4. **Update Vercel** → `staxis` → Settings → Environment Variables → `SUPABASE_SERVICE_ROLE_KEY`. Click Redeploy.
-5. Verify BOTH platforms work (see Verify below).
+5. **Update Fly** → `flyctl secrets set SUPABASE_SERVICE_ROLE_KEY="<new key>" --app staxis-cua`. Triggers a rolling restart.
+6. Verify ALL THREE platforms work (see Verify below).
 
 ### Verify
 ```bash
@@ -181,10 +182,14 @@ curl -i -H "Authorization: Bearer $CRON_SECRET" \
 ```
 
 ### Fix
+`CRON_SECRET` must match across **four** places: Vercel, GitHub Actions, Railway, Fly. Any drift = 401s.
+
 1. Generate a fresh secret: `openssl rand -hex 32`
-2. Vercel → Environment Variables → update `CRON_SECRET` → Redeploy
-3. GitHub → repo → Settings → Secrets and variables → Actions → update `CRON_SECRET` with the SAME value
-4. Re-run the latest failed workflow to confirm
+2. **Vercel** → Environment Variables → update `CRON_SECRET` → Redeploy
+3. **GitHub** → repo → Settings → Secrets and variables → Actions → update `CRON_SECRET` with the SAME value
+4. **Railway** → `hotelops-scraper` → Variables → update `CRON_SECRET` (used by the Vercel watchdog). Auto-redeploys.
+5. **Fly** → `flyctl secrets set CRON_SECRET="<value>" --app staxis-cua`. Rolling restart.
+6. Re-run the latest failed workflow to confirm.
 
 ### Verify
 - Post-deploy smoke test runs green
