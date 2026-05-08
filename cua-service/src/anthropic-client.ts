@@ -26,11 +26,16 @@ if (!API_KEY) {
 // call could lock the worker for 30+ minutes (10min × 2 retries × stage).
 // Job-level timeout (JOB_TIMEOUT_MS=4min) sets a flag but doesn't actually
 // abort the in-flight HTTP request, so a hung Anthropic call would
-// survive past the job timeout. 60s per attempt is enough for a real
-// CUA round-trip; 2 retries handles transient overload. (Pass-3 fix — H11.)
+// survive past the job timeout.
+//
+// 120s per attempt × 3 attempts (1 initial + 2 retries) = up to 360s,
+// just over the 240s job budget — but the per-attempt cap is what
+// matters for liveness. CUA round-trips with a screenshot + thinking
+// can reach 60-90s on slow PMS pages; 120s gives that headroom while
+// still aborting truly hung requests. (Pass-3 fix — H11.)
 export const anthropic = new Anthropic({
   apiKey: API_KEY,
-  timeout: 60_000,
+  timeout: 120_000,
   maxRetries: 2,
 });
 

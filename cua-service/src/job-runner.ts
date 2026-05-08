@@ -84,11 +84,25 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
     let isFreshlyMapped = false;
 
     if (!recipe) {
-      await updateProgress(jobId, workerId, 'mapping', 'Learning your PMS for the first time…', 15);
-      log.info('no active recipe — running CUA mapper', {
+      // Distinguish the three reasons we're running the mapper so admin
+      // logs and the GM-facing step text are accurate. Order matters —
+      // force_remap is checked first because existingActive may be set.
+      const mapperReason: 'force_remap' | 'first_time' | 'shape_invalid' =
+        job.force_remap && existingActive
+          ? 'force_remap'
+          : !existingActive
+            ? 'first_time'
+            : 'shape_invalid';
+      const stepText =
+        mapperReason === 'force_remap'    ? 'Re-mapping (admin-requested refresh)…'
+        : mapperReason === 'shape_invalid' ? 'Existing recipe corrupt — re-mapping…'
+        :                                    'Learning your PMS for the first time…';
+      await updateProgress(jobId, workerId, 'mapping', stepText, 15);
+      log.info('running CUA mapper', {
         jobId,
         pmsType: job.pms_type,
         propertyId: job.property_id,
+        reason: mapperReason,
       });
 
       const mapResult = await mapPMS({

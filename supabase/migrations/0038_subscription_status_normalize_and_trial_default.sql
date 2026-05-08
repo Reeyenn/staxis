@@ -25,7 +25,17 @@
 --   - Step 5 adds a partial CHECK that all of 1-4 satisfy.
 -- ═══════════════════════════════════════════════════════════════════════════
 
--- ─── 1. Normalize 'cancelled' → 'canceled' (Stripe's spelling) ─────────
+-- ─── 1. Drop OLD constraint FIRST so the rename in step 2 doesn't trip it ──
+
+-- Important: the rename UPDATE in step 2 sets subscription_status to
+-- 'canceled' (American). The 0034 CHECK constraint accepts only 'cancelled'
+-- (British) — running the UPDATE before the constraint drop raises 23514
+-- check_violation and aborts the migration. Drop first, then rename, then
+-- add the new constraint.
+alter table public.properties
+  drop constraint if exists properties_subscription_status_check;
+
+-- ─── 2. Normalize 'cancelled' → 'canceled' (Stripe's spelling) ─────────
 
 -- Pre-migration there's exactly one possible value for cancelled rows:
 -- 'cancelled' (set by the webhook's customer.subscription.deleted handler
@@ -35,13 +45,7 @@ update public.properties
 set subscription_status = 'canceled'
 where subscription_status = 'cancelled';
 
--- ─── 2. Swap CHECK constraint to the full Stripe + Staxis vocabulary ──
-
--- Drop the 0034 constraint (whose name follows the Postgres default
--- naming convention). If the project ever generated a different name,
--- this will fail loudly — that's fine, manual cleanup is appropriate.
-alter table public.properties
-  drop constraint if exists properties_subscription_status_check;
+-- ─── 3. Add the new CHECK constraint with the full Stripe vocabulary ──
 
 -- New constraint: Stripe's full Subscription.Status set + our local
 -- 'trial' (mapped from Stripe 'trialing' via mapStripeStatus). 'canceled'
@@ -59,7 +63,7 @@ alter table public.properties
     'paused'                 -- temporarily paused (rare)
   ));
 
--- ─── 3. Backfill NULL trial_ends_at for any existing trial properties ──
+-- ─── 4. Backfill NULL trial_ends_at for any existing trial properties ──
 
 -- The trial countdown for these rows starts NOW (not from created_at),
 -- because some may have been created weeks ago and would have already
@@ -70,7 +74,7 @@ set trial_ends_at = now() + interval '14 days'
 where subscription_status = 'trial'
   and trial_ends_at is null;
 
--- ─── 4. Set DEFAULT so future inserts that omit the column get 14 days ─
+-- ─── 5. Set DEFAULT so future inserts that omit the column get 14 days ─
 
 -- This is the primary fix: any row inserted with status='trial' now has
 -- trial_ends_at automatically populated. Application code that does
@@ -78,7 +82,7 @@ where subscription_status = 'trial'
 alter table public.properties
   alter column trial_ends_at set default (now() + interval '14 days');
 
--- ─── 5. Hard invariant: trial rows must have an end date ───────────────
+-- ─── 6. Hard invariant: trial rows must have an end date ───────────────
 
 -- Belt-and-suspenders against future regressions. If app code ever tries
 -- to write subscription_status='trial' with NULL trial_ends_at, the

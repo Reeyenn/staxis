@@ -369,6 +369,6 @@ function JobIconStatus({ status }: { status: string }) {
 function subscriptionColor(s: string | null): string {
   if (s === 'active') return 'var(--green)';
   if (s === 'trial') return 'var(--amber)';
-  if (s === 'past_due' || s === 'cancelled') return 'var(--red)';
+  if (s === 'past_due' || s === 'canceled') return 'var(--red)';
   return 'var(--text-secondary)';
 }

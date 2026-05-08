@@ -82,14 +82,10 @@ async function pollLoop(): Promise<void> {
         }
       }
 
-      let job = await claimNextJob();
-      // If we lost the claim race to another worker, retry once
-      // immediately — there might be more queued jobs to grab without
-      // waiting a full POLL_INTERVAL_MS.
-      if (!job) {
-        const second = await claimNextJob();
-        if (second) job = second;
-      }
+      const job = await claimNextJob();
+      // With FOR UPDATE SKIP LOCKED in staxis_claim_next_job (migration
+      // 0039), null means "no queued jobs" — there's no race to lose,
+      // so we just wait POLL_INTERVAL_MS before checking again.
 
       if (job) {
         inFlightJobId = job.id;

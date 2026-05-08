@@ -10,7 +10,7 @@
  *
  *   checkout.session.completed       → property.subscription_status='active'
  *   customer.subscription.updated    → mirror Stripe state to DB
- *   customer.subscription.deleted    → property.subscription_status='cancelled'
+ *   customer.subscription.deleted    → property.subscription_status='canceled'
  *   invoice.payment_failed           → property.subscription_status='past_due'
  *   invoice.payment_succeeded        → property.subscription_status='active'
  *
@@ -154,6 +154,19 @@ async function handleEvent(event: Stripe.Event): Promise<string | null> {
     }
     const { data, error } = await q.select('id').maybeSingle();
     if (error) {
+      // CHECK constraint violation (23514) means Vercel is running webhook
+      // code that produces statuses the DB schema doesn't yet accept —
+      // i.e., migration 0038 hasn't been applied. Re-throw so the outer
+      // try/catch deletes the dedupe row and 500s — Stripe will retry,
+      // and once the migration lands the next attempt succeeds. Without
+      // this, mapStripeStatus values like 'unpaid'/'paused' would be
+      // silently dropped and Stripe would never retry. (Pass-3 review fix.)
+      const code = (error as { code?: string }).code;
+      if (code === '23514') {
+        throw new Error(
+          `subscription_status CHECK constraint violation — migration 0038 may not be applied yet. Original: ${error.message}`,
+        );
+      }
       console.warn(`[stripe/webhook] update by customer ${customerId} failed: ${error.message}`);
       return null;
     }
@@ -224,7 +237,7 @@ async function handleEvent(event: Stripe.Event): Promise<string | null> {
         : invoice.customer?.id;
       if (!customerId) return null;
       // Flip back to active only if they were past_due/incomplete.
-      // Don't accidentally flip a 'cancelled' back to 'active' on a
+      // Don't accidentally flip a 'canceled' back to 'active' on a
       // late retry of a stale invoice.
       return updateProperty(customerId, { subscription_status: 'active' }, {
         in: { column: 'subscription_status', values: ['past_due', 'incomplete'] },

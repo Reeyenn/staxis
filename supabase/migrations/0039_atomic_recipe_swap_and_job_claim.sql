@@ -61,12 +61,17 @@ begin
     and status = 'active'
     and id <> p_new_recipe_id;
 
-  -- Now promote. If this update fails (e.g. recipe was deleted), the
-  -- whole function rolls back — including the demote — so the previous
-  -- active recipe stays active and the fleet doesn't lose its mapping.
+  -- Now promote. If this update affects 0 rows (recipe was deleted, wrong
+  -- UUID, etc.), RAISE so the implicit transaction rolls back — including
+  -- the demote — so the previous active recipe stays active and the fleet
+  -- doesn't lose its mapping. (A 0-row UPDATE in plpgsql does NOT raise on
+  -- its own; we have to check ROW_COUNT explicitly.)
   update public.pms_recipes
   set status = 'active'
   where id = p_new_recipe_id;
+  if not found then
+    raise exception 'staxis_swap_active_recipe: recipe % not found (was it deleted?)', p_new_recipe_id;
+  end if;
 end;
 $$;
 

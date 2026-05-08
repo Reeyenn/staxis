@@ -82,33 +82,43 @@ export async function saveExtractedData(args: {
   // manually, and we don't want PMS naming differences to clobber her
   // edits. Only first-time inserts.
   if (args.data.staff.length > 0) {
+    // Lookup error is non-fatal. If we can't read the existing list we
+    // fall through to "treat as empty" which may produce a duplicate
+    // staff row — benign (Maria can clean up) and far better than
+    // failing the whole onboarding for a transient Supabase blip. The
+    // existingNames check is itself defense-in-depth; the real source
+    // of truth is the absence of a unique constraint, which means a
+    // duplicate row is recoverable, not a corruption.
     const { data: existing, error: existingErr } = await supabase
       .from('staff')
       .select('name')
       .eq('property_id', args.propertyId);
-
     if (existingErr) {
-      errors.push(`staff lookup: ${existingErr.message}`);
-    } else {
-      const existingNames = new Set((existing ?? []).map((r) => (r.name as string).toLowerCase()));
-      const toInsert = args.data.staff
-        .filter((s) => s.name && !existingNames.has(s.name.toLowerCase()))
-        .map((s) => ({
-          property_id: args.propertyId,
-          name: s.name,
-          role: s.role ?? 'housekeeper',
-          phone_number: s.phone ?? null,
-          is_active: true,
-        }));
+      log.warn('staff lookup failed — treating as empty (will dedup by exact name)', {
+        err: existingErr.message,
+      });
+    }
 
-      if (toInsert.length > 0) {
-        const { error } = await supabase.from('staff').insert(toInsert);
-        if (error) {
-          log.warn('failed to insert staff', { err: error.message });
-          errors.push(`staff insert: ${error.message}`);
-        } else {
-          summary.staffSaved = toInsert.length;
-        }
+    const existingNames = new Set((existing ?? []).map((r) => (r.name as string).toLowerCase()));
+    const toInsert = args.data.staff
+      .filter((s) => s.name && !existingNames.has(s.name.toLowerCase()))
+      .map((s) => ({
+        property_id: args.propertyId,
+        name: s.name,
+        role: s.role ?? 'housekeeper',
+        phone_number: s.phone ?? null,
+        is_active: true,
+      }));
+
+    if (toInsert.length > 0) {
+      // Insert errors ARE fatal — the user explicitly asked for these
+      // rows to land and the failure means they didn't.
+      const { error } = await supabase.from('staff').insert(toInsert);
+      if (error) {
+        log.warn('failed to insert staff', { err: error.message });
+        errors.push(`staff insert: ${error.message}`);
+      } else {
+        summary.staffSaved = toInsert.length;
       }
     }
   }
