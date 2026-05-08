@@ -1493,12 +1493,14 @@ async function checkSentryDsnShape(): Promise<Omit<Check, 'name' | 'durationMs'>
   // NEXT_PUBLIC_SENTRY_DSN. Either side missing means errors silently
   // disappear from that side. (sentry.server.config.ts and sentry.edge
   // .config.ts read SENTRY_DSN; sentry.client.config.ts reads
-  // NEXT_PUBLIC_SENTRY_DSN.)
+  // NEXT_PUBLIC_SENTRY_DSN.) WARN (not fail) because the configured
+  // side still works — this surfaces the gap without blocking deploys
+  // on a non-billing-blocking config issue.
   if (!serverSet || !clientSet) {
     const missing = !serverSet ? 'SENTRY_DSN' : 'NEXT_PUBLIC_SENTRY_DSN';
     const blind = !serverSet ? 'server-side and edge errors' : 'client-side (browser) errors';
     return {
-      status: 'fail',
+      status: 'warn',
       detail: `Sentry partially configured — ${missing} is missing, so ${blind} disappear silently while the other side reports.`,
       fix: `Set ${missing} in Vercel → Project Settings → Environment Variables (use the same DSN value as the other one) and redeploy.`,
     };
