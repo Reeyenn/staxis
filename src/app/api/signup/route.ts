@@ -32,7 +32,7 @@ import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
-import { validateString, validateInt, validateEnum } from '@/lib/api-validate';
+import { validateString, validateInt, validateEnum, validateTimezone } from '@/lib/api-validate';
 import { createStripeCustomer, trialEndsAt } from '@/lib/stripe';
 
 export const runtime = 'nodejs';
@@ -104,7 +104,9 @@ export async function POST(req: NextRequest) {
   const roomsV = validateInt(body.totalRooms, { min: 1, max: 5000, label: 'totalRooms' });
   if (roomsV.error) return err(roomsV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
 
-  const tzV = validateString(body.timezone ?? 'America/Chicago', { max: 100, label: 'timezone' });
+  // Validate timezone against IANA — typos like "Pacific/Wrong" silently
+  // break Date formatting downstream, so reject them at the boundary.
+  const tzV = validateTimezone(body.timezone ?? 'America/Chicago');
   if (tzV.error) return err(tzV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
 
   const ownerName = typeof body.ownerName === 'string' ? body.ownerName.slice(0, 200).trim() : '';

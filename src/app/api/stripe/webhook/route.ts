@@ -64,13 +64,21 @@ export async function POST(req: NextRequest) {
   // once. Without dedupe a second delivery of checkout.session.completed
   // could double-process. We INSERT first and short-circuit on conflict.
   // (Migration 0035 created the table.)
-  const { error: insertErr } = await supabaseAdmin
+  //
+  // We .select() the inserted row so we can verify it really landed.
+  // .insert().select() returns data only on the row that was actually
+  // inserted; on conflict supabase-js returns the unique-violation
+  // error and `data` is null. That gives us a strict "did this insert
+  // a fresh row" check rather than relying on insertErr being falsy.
+  const { data: dedupeRow, error: insertErr } = await supabaseAdmin
     .from('stripe_processed_events')
     .insert({
       event_id: event.id,
       event_type: event.type,
       metadata: { livemode: event.livemode, created: event.created },
-    });
+    })
+    .select('event_id')
+    .maybeSingle();
 
   if (insertErr) {
     // Unique violation (code 23505) = already processed. 2xx so Stripe
@@ -80,6 +88,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ received: true, deduped: true });
     }
     console.warn(`[stripe/webhook] dedupe insert failed (${insertErr.message}) — proceeding anyway`);
+  } else if (!dedupeRow) {
+    // No error AND no row means something weird happened — refuse to
+    // process (Stripe will retry; we'll see the error in logs).
+    console.error('[stripe/webhook] dedupe insert returned no row and no error — bailing');
+    return NextResponse.json({ error: 'Dedupe check failed' }, { status: 500 });
   }
 
   try {

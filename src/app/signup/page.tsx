@@ -105,6 +105,16 @@ export default function SignupPage() {
           setSubmitting(false);
           return;
         }
+        // Wait for getSession() to actually reflect the new session
+        // before redirecting. setSession() is async but the in-memory
+        // cache is updated synchronously; even so, give it a tick to
+        // make sure other supabase clients in this tab (AuthContext's
+        // onAuthStateChange, fetchWithAuth's getSession) see it.
+        for (let i = 0; i < 20; i++) {
+          const { data: { session: s } } = await supabase.auth.getSession();
+          if (s?.access_token) break;
+          await new Promise((r) => setTimeout(r, 50));
+        }
       }
 
       router.replace(`/onboarding?propertyId=${json.data.propertyId}&fresh=1`);

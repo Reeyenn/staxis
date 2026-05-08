@@ -168,7 +168,13 @@ function setupSignalHandlers(): void {
   process.on('uncaughtException', (err) => {
     log.error('uncaughtException', { err });
     // Don't continue running — node won't have cleaned up state.
-    void flushSentry(2000).then(() => process.exit(1));
+    // Set exitCode immediately so even if the flush hangs, the
+    // process eventually quits with the right status. The setTimeout
+    // is a hard escape hatch (process.exit(1) within 3s no matter
+    // what flushSentry does).
+    process.exitCode = 1;
+    void flushSentry(2000).finally(() => process.exit(1));
+    setTimeout(() => process.exit(1), 3000).unref();
   });
 }
 

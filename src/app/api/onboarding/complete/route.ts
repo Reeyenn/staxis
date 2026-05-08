@@ -145,20 +145,30 @@ export async function POST(req: NextRequest) {
   }
 
   // ─── Apply ──────────────────────────────────────────────────────────────
-  // services_enabled: only update if the body actually included entries.
+  // services_enabled: atomic merge via the staxis_merge_services Postgres
+  // function (migration 0036). Avoids the read-modify-write race that
+  // could otherwise lose a concurrent toggle.
   if (Object.keys(services).length > 0) {
-    // Merge with existing values so we don't accidentally clear keys
-    // the GM didn't toggle. Read current, merge, write back.
-    const { data: cur } = await supabaseAdmin
-      .from('properties')
-      .select('services_enabled')
-      .eq('id', pidV.value!)
-      .maybeSingle();
-    const merged = { ...(cur?.services_enabled as Record<string, boolean> ?? {}), ...services };
-    await supabaseAdmin
-      .from('properties')
-      .update({ services_enabled: merged })
-      .eq('id', pidV.value!);
+    const { error: mergeErr } = await supabaseAdmin.rpc('staxis_merge_services', {
+      p_property_id: pidV.value!,
+      p_patch: services,
+    });
+    if (mergeErr) {
+      // Fall back to read-modify-write if the RPC isn't available
+      // (older deploys, migration not applied). Log loudly so we
+      // notice and fix the migration drift.
+      console.warn('[onboarding/complete] staxis_merge_services rpc failed — falling back', mergeErr.message);
+      const { data: cur } = await supabaseAdmin
+        .from('properties')
+        .select('services_enabled')
+        .eq('id', pidV.value!)
+        .maybeSingle();
+      const merged = { ...(cur?.services_enabled as Record<string, boolean> ?? {}), ...services };
+      await supabaseAdmin
+        .from('properties')
+        .update({ services_enabled: merged })
+        .eq('id', pidV.value!);
+    }
   }
 
   // staff: insert in bulk. Skip duplicates by (property_id, name).

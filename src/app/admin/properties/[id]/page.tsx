@@ -95,7 +95,16 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
         setLoading(false);
         return;
       }
-      setData(json.data);
+      // Defensive shape validation — if the server returns a
+      // malformed payload, render a "data missing" error instead
+      // of crashing on .map() of undefined.
+      const d = json.data as HealthData | undefined;
+      if (!d || !d.property || !Array.isArray(d.jobs) || !d.staff) {
+        setError('Server returned an unexpected response shape — please refresh.');
+        setLoading(false);
+        return;
+      }
+      setData(d);
     } catch (e) {
       setError(`Network error: ${(e as Error).message}`);
     }

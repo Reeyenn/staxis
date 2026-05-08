@@ -74,6 +74,23 @@ export function validateEnum<T extends string>(
   return { value: v as T };
 }
 
+/**
+ * Validate that a string is a real IANA timezone identifier.
+ * Uses the runtime's Intl.DateTimeFormat which throws RangeError on
+ * unknown zones. Catches typos like "Pacific/Wrong" before they land
+ * in the DB and silently break date formatting downstream.
+ */
+export function validateTimezone(v: unknown, label = 'timezone'): { error?: string; value?: string } {
+  if (typeof v !== 'string') return { error: `${label} must be a string` };
+  if (v.length === 0 || v.length > 100) return { error: `${label} length must be 1-100 chars` };
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: v });
+    return { value: v };
+  } catch {
+    return { error: `${label} is not a valid IANA timezone (e.g. America/Chicago)` };
+  }
+}
+
 export function validateDateStr(
   v: unknown,
   opts: { label: string; allowFutureDays?: number; allowPastDays?: number } = { label: 'date' },
