@@ -11,7 +11,7 @@
  *   4. Admin audit log (read-only)
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import {
@@ -39,6 +39,11 @@ interface MergedBranch {
   branchName: string; mergeCommitSha: string; mergedAt: string;
   title: string; url: string; commitCount: number;
 }
+
+// Poll interval for the System tab. Short enough that "I just committed
+// → I see it on the timeline" feels real-time, long enough that we don't
+// hammer the GitHub API rate limit (60 req/hr unauthenticated).
+const REFRESH_MS = 30_000;
 interface ScheduledRow {
   propertyId: string; propertyName: string | null;
   lastSuccessAt: string | null; lastFailedAt: string | null;
@@ -56,7 +61,11 @@ interface AuditEntry {
 }
 
 export function SystemTab() {
-  const [build, setBuild] = useState<{ commits: Commit[]; deploys: Deploy[]; worktrees: Worktree[]; branches?: Branch[]; merged?: MergedBranch[] } | null>(null);
+  const [build, setBuild] = useState<{
+    commits: Commit[]; deploys: Deploy[]; worktrees: Worktree[];
+    branches?: Branch[]; merged?: MergedBranch[];
+    mainLatestTs?: string | null;
+  } | null>(null);
   const [scheduled, setScheduled] = useState<ScheduledRow[] | null>(null);
   const [roadmap, setRoadmap] = useState<RoadmapItem[] | null>(null);
   const [audit, setAudit] = useState<AuditEntry[] | null>(null);
@@ -83,7 +92,23 @@ export function SystemTab() {
     }
   };
 
-  useEffect(() => { void load(); }, []);
+  // Initial load + recurring refresh so the timeline updates "live".
+  // Recursive setTimeout (not setInterval) so each refresh waits for the
+  // previous one to land — avoids stacking requests on slow networks.
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    void load();
+    const tick = () => {
+      refreshTimer.current = setTimeout(async () => {
+        await load();
+        tick();
+      }, REFRESH_MS);
+    };
+    tick();
+    return () => {
+      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    };
+  }, []);
 
   if (error) {
     return (
@@ -111,8 +136,15 @@ export function SystemTab() {
       {/* 1. Marvel timeline */}
       <section>
         <h2 style={sectionTitle}>The sacred timeline</h2>
-        <p style={sectionHint}>Main flows left → right. Tendrils branching off are work-in-progress; arcs that loop back are branches that came home.</p>
-        <MarvelTimeline commits={build.commits} deploys={build.deploys} worktrees={build.worktrees} branches={build.branches ?? []} merged={build.merged ?? []} />
+        <p style={sectionHint}>Main flows left → right. Tendrils branching off are work-in-progress; arcs that loop back are branches that came home. Anything with activity in the last 5 minutes pulses live. Auto-refreshes every 30s.</p>
+        <MarvelTimeline
+          commits={build.commits}
+          deploys={build.deploys}
+          worktrees={build.worktrees}
+          branches={build.branches ?? []}
+          merged={build.merged ?? []}
+          mainLatestTs={build.mainLatestTs ?? null}
+        />
       </section>
 
       {/* 2. Scheduled jobs */}

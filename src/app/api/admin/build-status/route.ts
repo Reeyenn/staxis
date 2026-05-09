@@ -83,7 +83,15 @@ export async function GET(req: NextRequest) {
     fetchMergedBranches().catch(() => []),
   ]);
 
-  return ok({ commits, deploys, worktrees, branches, merged }, { requestId });
+  // Newest activity timestamp across the repo. The UI uses this to flag
+  // "main is alive right now" when a commit just landed.
+  const mainLatestTs = commits[0]?.ts ?? null;
+
+  return ok({
+    commits, deploys, worktrees, branches, merged,
+    mainLatestTs,
+    serverNow: new Date().toISOString(),
+  }, { requestId });
 }
 
 async function fetchMergedBranches(): Promise<MergedBranch[]> {

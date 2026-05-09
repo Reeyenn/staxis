@@ -67,17 +67,30 @@ interface MergedBranch {
 const ACTIVE_PALETTE = ['#fb7185', '#a78bfa', '#34d399', '#60a5fa', '#facc15', '#f472b6'];
 const MERGED_PALETTE = ['#7dd3fc', '#fcd34d', '#86efac', '#f9a8d4', '#c4b5fd', '#fdba74'];
 
+// "Live" = activity in the last 5 min. Anything more recent than this
+// gets the active-pulse treatment (faster pulse, bonus glow, "LIVE" tag).
+const LIVE_WINDOW_MS = 5 * 60 * 1000;
+
 export function MarvelTimeline({
-  commits, deploys, worktrees, branches, merged,
+  commits, deploys, worktrees, branches, merged, mainLatestTs,
 }: {
   commits: Commit[];
   deploys: Deploy[];
   worktrees: Worktree[];
   branches?: Branch[];
   merged?: MergedBranch[];
+  mainLatestTs?: string | null;
 }) {
   const [hoverBranch, setHoverBranch] = useState<Branch | null>(null);
   const [hoverMerged, setHoverMerged] = useState<MergedBranch | null>(null);
+
+  // Live-state derivation. Recomputed every render — combined with the
+  // 30s refetch in SystemTab, this gives near-realtime "is X being
+  // worked on right now" without us needing websockets.
+  const now = Date.now();
+  const isLiveTs = (ts: string | null | undefined): boolean =>
+    !!ts && (now - new Date(ts).getTime()) < LIVE_WINDOW_MS;
+  const mainIsLive = isLiveTs(mainLatestTs ?? commits[0]?.ts ?? null);
 
   if (commits.length === 0) {
     return (
@@ -107,6 +120,10 @@ export function MarvelTimeline({
 
   const branchList = branches ?? [];
   const mergedList = merged ?? [];
+
+  // Branches with recent activity get the live-pulse treatment.
+  const liveBranchCount = branchList.filter((b) => isLiveTs(b.latestTs)).length;
+  const anythingLive = mainIsLive || liveBranchCount > 0;
 
   // Resolve the X position of any commit-sha-anchored marker.
   const xForSha = (sha: string | null): number | null => {
@@ -151,6 +168,37 @@ export function MarvelTimeline({
         pointerEvents: 'none',
         background: 'radial-gradient(ellipse at right center, rgba(255,170,80,0.18), transparent 60%)',
       }} />
+
+      {/* Live-activity badge (only shows when something is happening). */}
+      {anythingLive && (
+        <div style={{
+          position: 'absolute',
+          top: '14px',
+          left: '16px',
+          padding: '4px 10px',
+          fontSize: '10.5px',
+          fontWeight: 700,
+          letterSpacing: '0.1em',
+          color: '#fff',
+          background: 'rgba(239, 68, 68, 0.85)',
+          borderRadius: '999px',
+          textTransform: 'uppercase',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px',
+          backdropFilter: 'blur(4px)',
+          zIndex: 1,
+        }}>
+          <span style={{
+            width: '6px', height: '6px', borderRadius: '50%', background: '#fff',
+            animation: 'mtBlink 1s ease-in-out infinite',
+          }} />
+          {mainIsLive && liveBranchCount === 0 && 'main is alive'}
+          {!mainIsLive && liveBranchCount > 0 && `${liveBranchCount} ${liveBranchCount === 1 ? 'branch' : 'branches'} active`}
+          {mainIsLive && liveBranchCount > 0 && `main + ${liveBranchCount} ${liveBranchCount === 1 ? 'branch' : 'branches'} active`}
+        </div>
+      )}
+      <style>{`@keyframes mtBlink { 0%,100% { opacity: 1 } 50% { opacity: 0.3 } }`}</style>
 
       <svg viewBox={`0 0 ${width} ${svgHeight}`} style={{ width: '100%', height: 'auto', display: 'block', position: 'relative' }}>
         <defs>
@@ -225,12 +273,41 @@ export function MarvelTimeline({
           stroke="#fff8e1" strokeWidth="1.5" strokeLinecap="round"
           opacity="0.9"
         />
-        {/* Bright pulse at "now" */}
+        {/* Bright pulse at "now" — pulses faster + brighter when main is live */}
         <circle cx={latestX} cy={trunkY} r="9" fill="#fff5d6" filter="url(#softGlow)">
-          <animate attributeName="r" values="9;14;9" dur="2.6s" repeatCount="indefinite" />
-          <animate attributeName="opacity" values="1;0.6;1" dur="2.6s" repeatCount="indefinite" />
+          <animate attributeName="r"
+            values={mainIsLive ? '10;18;10' : '9;14;9'}
+            dur={mainIsLive ? '1.2s' : '2.6s'}
+            repeatCount="indefinite" />
+          <animate attributeName="opacity"
+            values={mainIsLive ? '1;0.7;1' : '1;0.6;1'}
+            dur={mainIsLive ? '1.2s' : '2.6s'}
+            repeatCount="indefinite" />
         </circle>
         <circle cx={latestX} cy={trunkY} r="4" fill="#fff" />
+
+        {/* Energy particles travelling along the main line — left → right.
+            Always animating (the timeline is "alive" even at idle) but
+            faster + brighter when main has a recent commit. */}
+        {[0, 1, 2].map((i) => (
+          <circle key={`particle-${i}`} cy={trunkY} r={mainIsLive ? 3 : 2} fill="#fff8e1" opacity="0.85" filter="url(#softGlow)">
+            <animate
+              attributeName="cx"
+              values={`${padding};${width - padding}`}
+              dur={mainIsLive ? '4.5s' : '8s'}
+              begin={`${i * (mainIsLive ? 1.5 : 2.7)}s`}
+              repeatCount="indefinite"
+            />
+            <animate
+              attributeName="opacity"
+              values="0;0.95;0.95;0"
+              keyTimes="0;0.15;0.85;1"
+              dur={mainIsLive ? '4.5s' : '8s'}
+              begin={`${i * (mainIsLive ? 1.5 : 2.7)}s`}
+              repeatCount="indefinite"
+            />
+          </circle>
+        ))}
 
         {/* === DEPLOY MARKERS (subtle glow dots ON the line) =================== */}
         {deployMarkers.map((d, i) => {
@@ -274,6 +351,7 @@ export function MarvelTimeline({
           const cy1 = trunkY + side * 30;
           const cx2 = tipX - 60;
           const cy2 = yOffset;
+          const isLive = isLiveTs(b.latestTs);
           return (
             <g
               key={b.name}
@@ -282,23 +360,48 @@ export function MarvelTimeline({
               style={{ cursor: 'pointer' }}
               onClick={() => window.open(b.url, '_blank', 'noopener')}
             >
-              {/* Wide soft glow under the tendril */}
+              {/* Wide soft glow under the tendril — brighter on live */}
               <path
                 d={`M ${startX} ${trunkY} C ${cx1} ${cy1} ${cx2} ${cy2} ${tipX} ${yOffset}`}
-                stroke={c} strokeWidth="6" fill="none"
-                opacity={isHover ? 0.4 : 0.18} filter="url(#bigGlow)"
+                stroke={c} strokeWidth={isLive ? 8 : 6} fill="none"
+                opacity={isHover ? 0.5 : isLive ? 0.32 : 0.18} filter="url(#bigGlow)"
               />
-              {/* Sharp tendril */}
+              {/* Sharp tendril — thicker + brighter on live */}
               <path
                 d={`M ${startX} ${trunkY} C ${cx1} ${cy1} ${cx2} ${cy2} ${tipX} ${yOffset}`}
-                stroke={c} strokeWidth={isHover ? 2.6 : 1.8}
-                fill="none" opacity={isHover ? 1 : 0.85}
+                stroke={c} strokeWidth={isHover ? 2.8 : isLive ? 2.4 : 1.8}
+                fill="none" opacity={isHover ? 1 : isLive ? 1 : 0.85}
                 filter="url(#softGlow)"
               />
-              {/* Pulsing tip dot */}
-              <circle cx={tipX} cy={yOffset} r="7" fill={c} opacity="0.35" filter="url(#bigGlow)" />
+              {/* When live: an energy particle racing along the tendril */}
+              {isLive && (
+                <circle r="2.5" fill="#fff" opacity="0.9" filter="url(#softGlow)">
+                  <animateMotion
+                    dur="1.8s"
+                    repeatCount="indefinite"
+                    path={`M ${startX} ${trunkY} C ${cx1} ${cy1} ${cx2} ${cy2} ${tipX} ${yOffset}`}
+                  />
+                </circle>
+              )}
+              {/* Outer pulse ring — bigger + faster when live */}
+              <circle cx={tipX} cy={yOffset} r="7" fill={c} opacity="0.35" filter="url(#bigGlow)">
+                {isLive && (
+                  <animate attributeName="r" values="7;14;7" dur="1.1s" repeatCount="indefinite" />
+                )}
+              </circle>
+              {/* When live: extra outward shockwave ring */}
+              {isLive && (
+                <circle cx={tipX} cy={yOffset} r="4" fill="none" stroke={c} strokeWidth="1.5" opacity="0">
+                  <animate attributeName="r" values="4;22;4" dur="1.6s" repeatCount="indefinite" />
+                  <animate attributeName="opacity" values="0.9;0;0" keyTimes="0;0.7;1" dur="1.6s" repeatCount="indefinite" />
+                </circle>
+              )}
+              {/* Tip dot — pulses faster when live */}
               <circle cx={tipX} cy={yOffset} r="4" fill={c} stroke="rgba(255,255,255,0.7)" strokeWidth="1">
-                <animate attributeName="opacity" values="0.6;1;0.6" dur="2s" repeatCount="indefinite" />
+                <animate attributeName="opacity"
+                  values={isLive ? '0.7;1;0.7' : '0.6;1;0.6'}
+                  dur={isLive ? '0.9s' : '2s'}
+                  repeatCount="indefinite" />
               </circle>
               {/* Branch label — anchored to the RIGHT of the dot so it
                   stays inside the viewBox regardless of side. */}
@@ -313,6 +416,9 @@ export function MarvelTimeline({
               >
                 <tspan>{b.name}</tspan>
                 <tspan fill={c} dx="6">+{b.aheadOfMain}</tspan>
+                {isLive && (
+                  <tspan fill="#fff" dx="8" fontSize="9" fontWeight="700" style={{ letterSpacing: '0.1em' }}>● LIVE</tspan>
+                )}
               </text>
             </g>
           );
