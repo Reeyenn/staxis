@@ -24,12 +24,22 @@ import { useAuth } from '@/contexts/AuthContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { Plus, Trash2, ChevronRight, AlertCircle, CheckCircle2 } from 'lucide-react';
 
+type StaffRole = 'housekeeping' | 'front_desk' | 'maintenance' | 'other';
+
 interface StaffRow {
   id: string;     // local UUID, not persisted
   name: string;
   phone: string;
   language: 'en' | 'es';
+  role: StaffRole;
 }
+
+const ROLE_OPTIONS: Array<{ value: StaffRole; label: string }> = [
+  { value: 'housekeeping', label: 'Housekeeper' },
+  { value: 'front_desk',   label: 'Front desk' },
+  { value: 'maintenance',  label: 'Maintenance' },
+  { value: 'other',        label: 'Other' },
+];
 
 const SERVICE_DEFS: Array<{ key: string; label: string; hint: string }> = [
   { key: 'housekeeping',  label: 'Housekeeping',     hint: 'Daily room cleaning + assignments to housekeepers' },
@@ -76,7 +86,7 @@ function OnboardingForm() {
     deep_cleaning: true, public_areas: true, inventory: true, equipment: true,
   });
   const [staff, setStaff] = useState<StaffRow[]>([
-    { id: localId(), name: '', phone: '', language: 'en' },
+    { id: localId(), name: '', phone: '', language: 'en', role: 'housekeeping' },
   ]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -90,7 +100,7 @@ function OnboardingForm() {
   }, [user, loading, propertyId, router]);
 
   const addStaff = () =>
-    setStaff((s) => [...s, { id: localId(), name: '', phone: '', language: 'en' }]);
+    setStaff((s) => [...s, { id: localId(), name: '', phone: '', language: 'en', role: 'housekeeping' }]);
 
   const removeStaff = (id: string) =>
     setStaff((s) => (s.length === 1 ? s : s.filter((r) => r.id !== id)));
@@ -115,8 +125,8 @@ function OnboardingForm() {
         body: JSON.stringify({
           propertyId,
           servicesEnabled: services,
-          staff: cleanStaff.map(({ name, phone, language }) => ({
-            name, phone: phone || undefined, language,
+          staff: cleanStaff.map(({ name, phone, language, role }) => ({
+            name, phone: phone || undefined, language, role,
           })),
         }),
       });
@@ -200,20 +210,30 @@ function OnboardingForm() {
           {/* Staff */}
           <div className="card" style={{ padding: '20px' }}>
             <p style={{ fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '6px' }}>
-              Step 2 — Add your housekeepers
+              Step 2 — Add your staff
             </p>
             <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '16px', lineHeight: 1.5 }}>
-              Just names work for now — phone + language are optional but unlock SMS assignments. You can always edit later.
+              Add everyone who works at the property — housekeepers, front desk, maintenance.
+              Just names work for now; phone + language unlock SMS assignments. You can always edit later.
             </p>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               {staff.map((row, idx) => (
-                <div key={row.id} style={{ display: 'grid', gridTemplateColumns: '2fr 2fr 1fr auto', gap: '8px', alignItems: 'center' }}>
+                <div key={row.id} style={{ display: 'grid', gridTemplateColumns: '2fr 1.5fr 2fr 1fr auto', gap: '8px', alignItems: 'center' }}>
                   <input
                     type="text" value={row.name} required={idx === 0}
                     onChange={(e) => updateStaff(row.id, { name: e.target.value })}
                     placeholder="Name" className="input"
                   />
+                  <select
+                    value={row.role}
+                    onChange={(e) => updateStaff(row.id, { role: e.target.value as StaffRole })}
+                    className="input"
+                  >
+                    {ROLE_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
                   <input
                     type="tel" value={row.phone}
                     onChange={(e) => updateStaff(row.id, { phone: e.target.value })}
@@ -250,7 +270,7 @@ function OnboardingForm() {
               className="btn btn-secondary"
               style={{ marginTop: '14px', justifyContent: 'center', fontSize: '13px' }}
             >
-              <Plus size={14}/> Add another housekeeper
+              <Plus size={14}/> Add another person
             </button>
           </div>
 

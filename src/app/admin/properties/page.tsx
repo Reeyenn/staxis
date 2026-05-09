@@ -21,7 +21,7 @@ import { fetchWithAuth } from '@/lib/api-fetch';
 import { AppLayout } from '@/components/layout/AppLayout';
 import {
   AlertTriangle, CheckCircle2, Clock, Building2, ChevronRight,
-  WifiOff, Wifi, RefreshCw, ShieldAlert,
+  WifiOff, Wifi, RefreshCw, ShieldAlert, Layers, Activity,
 } from 'lucide-react';
 
 interface PropertyRow {
@@ -114,15 +114,55 @@ export default function AdminPropertiesPage() {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
           <div>
             <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '22px', letterSpacing: '-0.01em' }}>
-              All properties
+              Admin
             </h1>
             <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginTop: '4px' }}>
-              Fleet view — broken ones rise to the top.
+              Fleet + PMS + onboarding-job views.
             </p>
           </div>
           <button onClick={load} disabled={loading} className="btn btn-secondary" style={{ fontSize: '13px' }}>
             <RefreshCw size={14} style={{ animation: loading ? 'spin 1s linear infinite' : undefined }} /> Refresh
           </button>
+        </div>
+
+        {/* Sub-page cards — quick access to the other admin views. */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '10px', marginBottom: '20px' }}>
+          <Link href="/admin/pms" style={{ textDecoration: 'none', color: 'inherit' }}>
+            <div className="card" style={{ padding: '16px', cursor: 'pointer', transition: 'background 0.15s' }}
+              onMouseOver={(e) => { (e.currentTarget as HTMLElement).style.background = 'var(--surface-secondary)'; }}
+              onMouseOut={(e) => { (e.currentTarget as HTMLElement).style.background = ''; }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                <Layers size={16} color="var(--amber)" />
+                <h3 style={{ fontSize: '14px', fontWeight: 600 }}>PMS coverage</h3>
+                <ChevronRight size={14} color="var(--text-muted)" style={{ marginLeft: 'auto' }} />
+              </div>
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                Which PMSes the agent has learned. Mapped = future hotels onboard for free.
+              </p>
+            </div>
+          </Link>
+          <Link href="/admin/jobs" style={{ textDecoration: 'none', color: 'inherit' }}>
+            <div className="card" style={{ padding: '16px', cursor: 'pointer', transition: 'background 0.15s' }}
+              onMouseOver={(e) => { (e.currentTarget as HTMLElement).style.background = 'var(--surface-secondary)'; }}
+              onMouseOut={(e) => { (e.currentTarget as HTMLElement).style.background = ''; }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                <Activity size={16} color="var(--amber)" />
+                <h3 style={{ fontSize: '14px', fontWeight: 600 }}>Onboarding jobs</h3>
+                <ChevronRight size={14} color="var(--text-muted)" style={{ marginLeft: 'auto' }} />
+              </div>
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                Watch live onboardings + post-mortem failures. Bottleneck visibility.
+              </p>
+            </div>
+          </Link>
+        </div>
+
+        {/* Header for the property list itself. */}
+        <div style={{ marginBottom: '12px' }}>
+          <h2 style={{ fontSize: '15px', fontWeight: 600 }}>All properties</h2>
+          <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>
+            Fleet view — broken ones rise to the top.
+          </p>
         </div>
 
         {/* Summary chips */}

@@ -21,7 +21,7 @@ import { fetchWithAuth } from '@/lib/api-fetch';
 import { AppLayout } from '@/components/layout/AppLayout';
 import {
   CheckCircle2, AlertCircle, Clock, Loader2, ShieldAlert, RefreshCw,
-  ChevronRight,
+  ChevronRight, ChevronLeft,
 } from 'lucide-react';
 
 interface JobRow {
@@ -119,6 +119,12 @@ export default function AdminJobsPage() {
   return (
     <AppLayout>
       <div style={{ padding: '24px', maxWidth: '1200px', margin: '0 auto' }}>
+        <Link href="/admin/properties" style={{
+          display: 'inline-flex', alignItems: 'center', gap: '4px',
+          fontSize: '12px', color: 'var(--text-muted)', textDecoration: 'none', marginBottom: '12px',
+        }}>
+          <ChevronLeft size={14} /> Back to admin
+        </Link>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', marginBottom: '20px', flexWrap: 'wrap' }}>
           <div>
             <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '22px', letterSpacing: '-0.01em' }}>
