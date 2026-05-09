@@ -591,19 +591,80 @@ function truncateOldHistory(
   return reversed.reverse();
 }
 
+/**
+ * Find a parseable JSON object anywhere in the text.
+ *
+ * The agent doesn't always follow the "JSON only, no preamble" rule —
+ * we routinely see responses like:
+ *   "I have full clarity on the Departures page. The columns are
+ *    `{name: 'guest', selector: '.foo'}`. The full result is:
+ *    {\"url\":\"...\",\"rowSelector\":\"...\",\"columns\":{...}}"
+ *
+ * The naive `/\{[\s\S]*\}/` regex matches GREEDILY from the first `{`
+ * to the last `}`, which on the example above grabs both the markdown
+ * code-snippet braces AND the real JSON, producing an unparseable blob.
+ *
+ * Strategy: walk every `{` position; for each, scan forward counting
+ * brace depth (respecting strings + escapes) until balanced; try
+ * JSON.parse on that span; return the FIRST object that parses to
+ * something with the shape we want. This is robust to embedded brace
+ * pairs, partial truncation, code fences, etc.
+ */
 function tryParseJson(text: string): unknown {
   const cleaned = text.replace(/```(?:json)?\s*/g, '').replace(/```/g, '').trim();
+
+  // 1. Whole-string parse (cheapest path — works when agent obeyed the
+  //    JSON-only instruction).
   try {
     return JSON.parse(cleaned);
-  } catch {
-    const match = cleaned.match(/\{[\s\S]*\}/);
-    if (!match) return null;
+  } catch { /* fall through */ }
+
+  // 2. Walk every '{' and try parsing the balanced span starting there.
+  //    Prefer the LARGEST successful parse (more likely the real result,
+  //    not a code-snippet brace pair).
+  let best: unknown = null;
+  let bestSize = 0;
+
+  for (let start = 0; start < cleaned.length; start++) {
+    if (cleaned[start] !== '{') continue;
+    const end = scanBalancedBrace(cleaned, start);
+    if (end < 0) continue;
+    const span = cleaned.slice(start, end + 1);
     try {
-      return JSON.parse(match[0]);
-    } catch {
-      return null;
+      const parsed = JSON.parse(span);
+      if (parsed && typeof parsed === 'object' && span.length > bestSize) {
+        best = parsed;
+        bestSize = span.length;
+      }
+    } catch { /* try next */ }
+  }
+  return best;
+}
+
+/**
+ * From `start` (a position of '{'), find the matching '}'. Respects
+ * string literals (with backslash escapes). Returns -1 if unbalanced.
+ */
+function scanBalancedBrace(s: string, start: number): number {
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < s.length; i++) {
+    const c = s[i];
+    if (escape) { escape = false; continue; }
+    if (inString) {
+      if (c === '\\') { escape = true; continue; }
+      if (c === '"') { inString = false; continue; }
+      continue;
+    }
+    if (c === '"') { inString = true; continue; }
+    if (c === '{') depth++;
+    else if (c === '}') {
+      depth--;
+      if (depth === 0) return i;
     }
   }
+  return -1;
 }
 
 // ─── Per-action goal prompts ─────────────────────────────────────────────
