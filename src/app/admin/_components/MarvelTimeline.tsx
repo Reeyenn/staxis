@@ -401,7 +401,6 @@ export function MarvelTimeline({
       {(() => {
         const mainSessionCount = sessionCountByBranch.get('main') ?? 0;
         const offMainSessionCount = totalActiveSessions - mainSessionCount;
-        const offMainBranchCount = sessionCountByBranch.size - (mainSessionCount > 0 ? 1 : 0);
         const badges: Array<{ key: string; label: string; bg: string }> = [];
 
         if (mainHasSession) {
@@ -421,11 +420,27 @@ export function MarvelTimeline({
           });
         }
         if (!mainHasSession && offMainSessionCount > 0) {
+          // Mirror the "WORKING ON MAIN" / "N SESSIONS ON MAIN" wording
+          // so the badge reads consistently across branches. When all
+          // sessions are on ONE side branch, name it ("WORKING ON
+          // tranquil-chasing-flurry") so Reeyen can tell tabs apart;
+          // when sessions span multiple branches, fall back to the
+          // generic "ON BRANCHES" plural.
+          const offMainBranches = Array.from(sessionCountByBranch.keys())
+            .filter((b) => b !== 'main' && b !== 'master');
+          let branchSuffix: string;
+          if (offMainBranches.length === 1) {
+            const name = offMainBranches[0] ?? '';
+            const truncated = name.length > 24 ? `${name.slice(0, 22)}…` : name;
+            branchSuffix = `ON ${truncated.toUpperCase()}`;
+          } else {
+            branchSuffix = 'ON BRANCHES';
+          }
           badges.push({
             key: 'side-sessions',
-            label: offMainBranchCount === 1
-              ? `🤖 ${offMainSessionCount} ${offMainSessionCount === 1 ? 'SESSION' : 'SESSIONS'} ON BRANCH`
-              : `🤖 ${offMainSessionCount} SESSIONS · ${offMainBranchCount} BRANCHES`,
+            label: offMainSessionCount === 1
+              ? `🤖 WORKING ${branchSuffix}`
+              : `🤖 ${offMainSessionCount} SESSIONS ${branchSuffix}`,
             bg: 'rgba(34, 197, 94, 0.85)',
           });
         }
