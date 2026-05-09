@@ -14,7 +14,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import { Bell } from 'lucide-react';
+import { AlertsBell } from './AlertsBell';
 
 export type AdminTab = 'onboarding' | 'live' | 'system' | 'money';
 
@@ -105,22 +105,9 @@ export function StickyHeader({ activeTab, onTabChange }: Props) {
           </strong>
         </span>
 
-        <button
-          aria-label="Alerts"
-          title="Red flags (wired up in Phase 3)"
-          style={{
-            marginLeft: 'auto',
-            padding: '6px',
-            borderRadius: '8px',
-            border: 'none',
-            background: 'transparent',
-            cursor: 'pointer',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            position: 'relative',
-          }}
-        >
-          <Bell size={18} color="var(--text-muted)" />
-        </button>
+        <div style={{ marginLeft: 'auto' }}>
+          <AlertsBell />
+        </div>
       </div>
 
       {/* Tab buttons */}
