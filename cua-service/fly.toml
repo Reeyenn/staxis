@@ -36,9 +36,11 @@ kill_timeout = "300s"
   NODE_ENV = "production"
   POLL_INTERVAL_MS = "5000"
   WORKER_ID_PREFIX = "fly-cua"
-  # Cap each Playwright session to 4 minutes to prevent runaway agents
-  # from holding a machine indefinitely. The job runner respects this.
-  JOB_TIMEOUT_MS = "240000"
+  # Hard cap per mapping run. Login + 4 action phases (housekeeping,
+  # arrivals, departures, staff) at ~2-3 min each = up to 15 min worst
+  # case. Code default (job-runner.ts) is also 900000; this just makes
+  # the env explicit.
+  JOB_TIMEOUT_MS = "900000"
 
 # No [[services]] block — this is a worker, not an HTTP service. Fly
 # still keeps it alive via the `auto_stop_machines = false` flag below.
