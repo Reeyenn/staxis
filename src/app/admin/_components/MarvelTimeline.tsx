@@ -78,14 +78,6 @@ const MERGED_PALETTE = ['#7dd3fc', '#fcd34d', '#86efac', '#f9a8d4', '#c4b5fd', '
 // pushed!", then quiets down.
 const LIVE_WINDOW_MS = 60 * 1000;
 
-// "Building" = sustained activity. If the repo has racked up 3+ commits
-// on main in the last 15 minutes, we're clearly mid-build (not a one-off
-// push from an hour ago). The badge stays lit the whole time work is
-// happening and only fades when commits stop landing — captures the
-// "we've been building for 45 minutes" case correctly.
-const BUILDING_WINDOW_MS = 15 * 60 * 1000;
-const BUILDING_THRESHOLD = 3;
-
 export function MarvelTimeline({
   commits, deploys, worktrees, branches, merged, mainLatestTs, activeSessions,
 }: {
@@ -108,12 +100,18 @@ export function MarvelTimeline({
     !!ts && (now - new Date(ts).getTime()) < LIVE_WINDOW_MS;
   const mainIsLive = isLiveTs(mainLatestTs ?? commits[0]?.ts ?? null);
 
-  // "Building" mode: 3+ commits on main in the last 15 minutes. Lit the
-  // whole time activity is sustained, fades when commits stop landing.
-  const recentMainCommitsCount = commits.filter(
-    (c) => now - new Date(c.ts).getTime() < BUILDING_WINDOW_MS
+  // Commit count for "today" — local-time start-of-day. The commits[]
+  // array is capped at 12 by the API; if the user blew past that today
+  // we display "12+" so it's clear the count is truncated.
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const startOfTodayMs = startOfToday.getTime();
+  const commitsTodayCount = commits.filter(
+    (c) => new Date(c.ts).getTime() >= startOfTodayMs,
   ).length;
-  const isBuilding = recentMainCommitsCount >= BUILDING_THRESHOLD;
+  const commitsTodayLabel = commitsTodayCount >= commits.length && commits.length >= 12
+    ? `${commits.length}+ commits today`
+    : `${commitsTodayCount} commit${commitsTodayCount === 1 ? '' : 's'} today`;
 
   // Geometry — wide & airy so the line breathes.
   const width = 1100;
@@ -250,7 +248,6 @@ export function MarvelTimeline({
     (b) => isLiveTs(b.latestTs) || isBranchAlive(b.name)
   ).length;
   const totalActiveSessions = (activeSessions ?? []).length;
-  const anythingLive = mainIsLive || mainHasSession || liveBranchCount > 0 || isBuilding || totalActiveSessions > 0;
 
   // Resolve the X position of any commit-sha-anchored marker.
   const xForSha = (sha: string | null): number | null => {
@@ -347,14 +344,31 @@ export function MarvelTimeline({
       )}
       <style>{`@keyframes mergeFlash { 0% { opacity: 0; transform: translate(-50%, -10px); } 10%,80% { opacity: 1; transform: translate(-50%, 0); } 100% { opacity: 0; transform: translate(-50%, -10px); } }`}</style>
 
+      {/* Today's commit count, top-right corner. Plain white text, no
+          background — just an unobtrusive indicator of how much work
+          has landed today. */}
+      {commits.length > 0 && (
+        <div style={{
+          position: 'absolute',
+          top: '18px',
+          right: '20px',
+          fontSize: '11px',
+          color: 'rgba(255,255,255,0.75)',
+          letterSpacing: '0.05em',
+          fontVariantNumeric: 'tabular-nums',
+          zIndex: 1,
+        }}>
+          {commitsTodayLabel}
+        </div>
+      )}
+
       {/* Live-activity badges. Each signal renders its OWN badge so they
           can stack — e.g. you can see "MAIN: JUST PUSHED" and "WORKING
           ON MAIN" simultaneously when a Claude session lands a commit
           and keeps working. Order is most-actionable on top:
             1. WORKING ON MAIN  (green, session heartbeating now)
             2. MAIN: JUST PUSHED  (red, last 60s)
-            3. BUILDING · N commits  (amber, sustained activity)
-            4. N branches updated  (red, branch-level signal)
+            3. N branches updated  (red, branch-level signal)
           A non-main session alone (no main signal) still renders a
           summary badge so you don't lose visibility on side work. */}
       {(() => {
@@ -377,13 +391,6 @@ export function MarvelTimeline({
             key: 'just-pushed',
             label: 'MAIN: JUST PUSHED',
             bg: 'rgba(239, 68, 68, 0.85)', // red
-          });
-        }
-        if (isBuilding && !mainHasSession) {
-          badges.push({
-            key: 'building',
-            label: `BUILDING · ${recentMainCommitsCount} commits in 15 min`,
-            bg: 'rgba(212, 144, 64, 0.92)', // amber
           });
         }
         if (!mainHasSession && offMainSessionCount > 0) {
@@ -515,12 +522,12 @@ export function MarvelTimeline({
         )}
 
         {/* Energy particles travelling along the main line — left → right.
-            ONLY rendered when main is energized (active session, recent
-            commit, or building burst). At idle the trunk is a calm,
-            steady line so any movement = real activity worth attention.
-            When a session is heartbeating the particles glow brightest
-            (matches the "NOW" pulse on the right edge). */}
-        {(mainHasSession || mainIsLive || isBuilding) && [0, 1, 2].map((i) => {
+            ONLY rendered when main is energized (active session or recent
+            commit). At idle the trunk is a calm, steady line so any
+            movement = real activity worth attention. When a session is
+            heartbeating the particles glow brightest (matches the "NOW"
+            pulse on the right edge). */}
+        {(mainHasSession || mainIsLive) && [0, 1, 2].map((i) => {
           const dur = mainHasSession ? '3.5s' : '4.8s';
           const stagger = mainHasSession ? 1.15 : 1.6;
           const radius = mainHasSession ? 3.5 : 3;
