@@ -5,9 +5,11 @@
  * parse them, plus a human-readable mode for local development. Never
  * log credentials or recipe contents — only metadata.
  *
- * log.error and log.warn additionally capture to Sentry (if SENTRY_DSN
- * is set). Mirrors the pattern in src/lib/log.ts in the Next.js app —
- * every error goes to one inbox regardless of which service produced it.
+ * Only log.error captures to Sentry. log.warn stays in Fly logs only —
+ * mapper iteration generates a steady stream of "action X didn't map"
+ * and "token budget exceeded" warnings that aren't bugs and would
+ * otherwise spam the alert inbox. Matches the Next.js src/lib/log.ts
+ * convention.
  */
 
 import { captureException, captureMessage } from './sentry.js';
@@ -42,12 +44,11 @@ function emit(level: 'info' | 'warn' | 'error', msg: string, ctx?: LogContext) {
 export const log = {
   info:  (msg: string, ctx?: LogContext) => emit('info',  msg, ctx),
   warn:  (msg: string, ctx?: LogContext) => {
+    // Stays in Fly logs only — Sentry would spam the email alert inbox
+    // during mapper iteration (per-action mapping failures, token-budget
+    // bails, time-limit warnings are all expected operational events).
+    // Real crashes still flow through log.error → Sentry.
     emit('warn',  msg, ctx);
-    // Warnings often signal real bugs we want to know about — capture as
-    // 'warning' level so they show up in Sentry but don't trigger the
-    // 'errors only' alert. (If a warning is too noisy, add a filter
-    // here.)
-    captureMessage(msg, 'warning', ctx);
   },
   error: (msg: string, ctx?: LogContext) => {
     emit('error', msg, ctx);
