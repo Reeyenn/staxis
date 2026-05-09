@@ -170,6 +170,11 @@ export function MarvelTimeline({
   };
   const prevBranchListRef = useRef<Branch[]>([]);
   const [mergingTendrils, setMergingTendrils] = useState<MergingTendril[]>([]);
+  // Per-frame animation state, keyed by tendril name. progress 0 → 1 over
+  // MERGE_DURATION_MS. Driven by requestAnimationFrame, NOT SVG SMIL —
+  // SMIL animations on path d are unreliable in some Chrome versions
+  // and silently no-op'd the previous two attempts.
+  const [mergeProgress, setMergeProgress] = useState<Map<string, number>>(new Map());
 
   // Helper: same lane / curve math used in the live render loop, factored
   // out so the merge animation can reproduce the exact path the tendril
@@ -194,6 +199,10 @@ export function MarvelTimeline({
     return { color, startX, cx1, cy1, cx2, cy2, tipX, yOffset };
   };
 
+  // Total merge animation duration. ~3 seconds is long enough for the
+  // human eye to register a path travelling across the screen.
+  const MERGE_DURATION_MS = 3000;
+
   useEffect(() => {
     const currNames = new Set(branchList.map((b) => b.name));
     const prev = prevBranchListRef.current;
@@ -207,15 +216,38 @@ export function MarvelTimeline({
           return { name: b.name, ...geo, triggeredAt };
         });
         setMergingTendrils((cur) => [...cur, ...newMerging]);
-        // Auto-cleanup after the 3s merge animation + 0.5s buffer.
+        // Auto-cleanup after the animation finishes.
         setTimeout(() => {
-          setMergingTendrils((cur) => cur.filter((m) => Date.now() - m.triggeredAt < 3400));
-        }, 3500);
+          setMergingTendrils((cur) => cur.filter((m) => Date.now() - m.triggeredAt < MERGE_DURATION_MS + 200));
+        }, MERGE_DURATION_MS + 300);
       }
     }
     prevBranchListRef.current = branchList;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [branchList]);
+
+  // RAF loop: drives the per-frame `mergeProgress` for each in-flight
+  // tendril. Runs only while there's at least one tendril to animate.
+  useEffect(() => {
+    if (mergingTendrils.length === 0) return;
+    let frameId = 0;
+    const tick = () => {
+      const now = Date.now();
+      const next = new Map<string, number>();
+      let anyActive = false;
+      for (const m of mergingTendrils) {
+        const p = Math.min(1, (now - m.triggeredAt) / MERGE_DURATION_MS);
+        next.set(m.name, p);
+        if (p < 1) anyActive = true;
+      }
+      setMergeProgress(next);
+      if (anyActive) {
+        frameId = requestAnimationFrame(tick);
+      }
+    };
+    frameId = requestAnimationFrame(tick);
+    return () => { if (frameId) cancelAnimationFrame(frameId); };
+  }, [mergingTendrils]);
 
   // Active Claude sessions per branch — heartbeat data wins over any
   // commit-timestamp heuristic. If a session is currently working on a
@@ -281,6 +313,37 @@ export function MarvelTimeline({
         pointerEvents: 'none',
         background: 'radial-gradient(ellipse at right center, rgba(255,170,80,0.18), transparent 60%)',
       }} />
+
+      {/* "MERGED" toast — unambiguous text signal that a merge was detected,
+          shown for 3s alongside the SVG animation. So even on a quirky
+          browser where the SVG renders weird, you still get a clear visual
+          confirmation that the branch came home. */}
+      {mergingTendrils.length > 0 && (
+        <div style={{
+          position: 'absolute',
+          top: '14px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          padding: '6px 14px',
+          fontSize: '11.5px',
+          fontWeight: 700,
+          letterSpacing: '0.12em',
+          textTransform: 'uppercase',
+          color: '#fff',
+          background: 'rgba(34,197,94,0.92)',
+          borderRadius: '999px',
+          backdropFilter: 'blur(4px)',
+          zIndex: 2,
+          display: 'flex', alignItems: 'center', gap: '8px',
+          animation: 'mergeFlash 3s ease-out forwards',
+        }}>
+          <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#fff', animation: 'mtBlink 1s infinite' }} />
+          {mergingTendrils.length === 1
+            ? `${mergingTendrils[0].name} → main`
+            : `${mergingTendrils.length} branches → main`}
+        </div>
+      )}
+      <style>{`@keyframes mergeFlash { 0% { opacity: 0; transform: translate(-50%, -10px); } 10%,80% { opacity: 1; transform: translate(-50%, 0); } 100% { opacity: 0; transform: translate(-50%, -10px); } }`}</style>
 
       {/* Live-activity badge (only shows when something is happening).
           Priority: BUILDING (sustained, amber) > just-pushed (brief, red)
@@ -564,77 +627,45 @@ export function MarvelTimeline({
           );
         })}
 
-        {/* === MERGE-IN ANIMATION ============================================
-            When a branch disappears (got merged), the tendril shouldn't
-            just pop out. It should physically slide toward the main
-            timeline and DISSOLVE into the beam. 3 seconds end-to-end so
-            it's actually visible:
-
-              Phase 1 (0 → 2.0s): the path morphs from its arc toward
-                the trunk. The tip dot rides along the curve. As it
-                approaches the trunk it BRIGHTENS — the line getting
-                pulled into the main timeline's energy.
-              Phase 2 (2.0 → 3.0s): once the tendril is hugging the
-                trunk, opacity fades out softly so it dissolves rather
-                than snaps. */}
+        {/* === MERGE-IN ANIMATION (rAF-driven) ===============================
+            React state is updated every frame via requestAnimationFrame
+            (see useEffect above). At each frame we re-render this group
+            with interpolated positions. NO SVG SMIL — that turned out
+            to be unreliable in production Chrome. */}
         {mergingTendrils.map((m) => {
-          const fromPath = `M ${m.startX} ${trunkY} C ${m.cx1} ${m.cy1} ${m.cx2} ${m.cy2} ${m.tipX} ${m.yOffset}`;
-          // End state: the curve flattens onto the trunk between divergence and NOW.
-          const toPath = `M ${m.startX} ${trunkY} C ${m.startX + 30} ${trunkY} ${latestX - 30} ${trunkY} ${latestX} ${trunkY}`;
+          const p = mergeProgress.get(m.name) ?? 0;
+          // Motion eases out — fast at start, slows as it nears the trunk.
+          const easeOut = (t: number) => 1 - Math.pow(1 - t, 3);
+          // Path/tip motion happens in the first 70% of the duration.
+          // The last 30% is just the "dissolve" fade.
+          const motionT = easeOut(Math.min(1, p / 0.7));
+          const fadeT = Math.max(0, (p - 0.7) / 0.3);
+          const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+          // Current tip position: rides from its original tip toward NOW.
+          const tipXNow = lerp(m.tipX, latestX, motionT);
+          const tipYNow = lerp(m.yOffset, trunkY, motionT);
+          // Control points morph from the original arc into the trunk.
+          const cy1Now = lerp(m.cy1, trunkY, motionT);
+          const cy2Now = lerp(m.cy2, trunkY, motionT);
+          const cx2Now = lerp(m.cx2, latestX - 30, motionT);
+          const cx1Now = lerp(m.cx1, m.startX + 30, motionT);
+          const dPath = `M ${m.startX} ${trunkY} C ${cx1Now} ${cy1Now} ${cx2Now} ${cy2Now} ${tipXNow} ${tipYNow}`;
+          // Brightens at the moment of "homecoming" then dissolves.
+          const opacity = 1 - fadeT;
           return (
             <g key={`merging-${m.name}-${m.triggeredAt}`}>
-              {/* Wide soft glow under the tendril — INTENSIFIES as the
-                  tendril approaches the trunk (the "energy reunion"). */}
-              <path
-                d={fromPath}
-                stroke={m.color} strokeWidth="10" fill="none"
-                opacity="0.18" filter="url(#bigGlow)"
-              >
-                <animate attributeName="d" from={fromPath} to={toPath}
-                  dur="2.0s" fill="freeze" calcMode="spline"
-                  keySplines="0.4 0 0.2 1" />
-                <animate attributeName="opacity"
-                  values="0.18;0.55;0.55;0"
-                  keyTimes="0;0.65;0.85;1"
-                  dur="3.0s" fill="freeze" />
-              </path>
-              {/* Sharp tendril — same morph, brightens slightly mid-merge. */}
-              <path
-                d={fromPath}
-                stroke={m.color} strokeWidth="2.4" fill="none"
-                opacity="0.95" filter="url(#softGlow)"
-              >
-                <animate attributeName="d" from={fromPath} to={toPath}
-                  dur="2.0s" fill="freeze" calcMode="spline"
-                  keySplines="0.4 0 0.2 1" />
-                <animate attributeName="stroke-width"
-                  values="2.4;3.2;3.2;1.5"
-                  keyTimes="0;0.65;0.85;1"
-                  dur="3.0s" fill="freeze" />
-                <animate attributeName="opacity"
-                  values="0.95;1;1;0"
-                  keyTimes="0;0.65;0.85;1"
-                  dur="3.0s" fill="freeze" />
-              </path>
-              {/* Tip dot rides along the curve, slows as it approaches NOW,
-                  brightens momentarily, then dissolves. */}
-              <circle cx={m.tipX} cy={m.yOffset} r="4"
-                fill={m.color} stroke="rgba(255,255,255,0.85)" strokeWidth="1">
-                <animate attributeName="cx" from={String(m.tipX)} to={String(latestX)}
-                  dur="2.0s" fill="freeze" calcMode="spline"
-                  keySplines="0.3 0 0.1 1" />
-                <animate attributeName="cy" from={String(m.yOffset)} to={String(trunkY)}
-                  dur="2.0s" fill="freeze" calcMode="spline"
-                  keySplines="0.3 0 0.1 1" />
-                <animate attributeName="r"
-                  values="4;6;7;0"
-                  keyTimes="0;0.65;0.85;1"
-                  dur="3.0s" fill="freeze" />
-                <animate attributeName="opacity"
-                  values="1;1;1;0"
-                  keyTimes="0;0.85;0.95;1"
-                  dur="3.0s" fill="freeze" />
-              </circle>
+              {/* Wide glow under the tendril */}
+              <path d={dPath} stroke={m.color} strokeWidth="10" fill="none"
+                opacity={0.18 + 0.4 * motionT * (1 - fadeT)} filter="url(#bigGlow)" />
+              {/* Sharp tendril */}
+              <path d={dPath} stroke={m.color}
+                strokeWidth={2.4 + 1.2 * motionT * (1 - fadeT)}
+                fill="none" opacity={opacity} filter="url(#softGlow)" />
+              {/* Tip dot rides along the curve */}
+              <circle cx={tipXNow} cy={tipYNow}
+                r={4 + 3 * motionT * (1 - fadeT)}
+                fill={m.color} stroke="rgba(255,255,255,0.85)" strokeWidth="1"
+                opacity={opacity} />
             </g>
           );
         })}
