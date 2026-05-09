@@ -114,6 +114,8 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
       const mapResult = await mapPMS({
         pmsType: job.pms_type,
         credentials,
+        propertyId: job.property_id,
+        jobId,
         onProgress: (step, pct) => updateProgress(jobId, workerId, 'mapping', step, pct).catch((err) =>
           log.warn('progress update failed', {
             jobId,

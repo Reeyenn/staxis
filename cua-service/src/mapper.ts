@@ -24,6 +24,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { anthropic, BROWSER_TOOL, CLAUDE_MODEL, MAPPING_SYSTEM_PROMPT } from './anthropic-client.js';
 import { executeBrowserAction, type BrowserAction } from './browser-tool.js';
 import { log } from './log.js';
+import { logClaudeUsage } from './usage-log.js';
 import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe } from './types.js';
 
 const MAX_AGENT_STEPS_LOGIN = 60;
@@ -66,6 +67,9 @@ interface MapperOptions {
   pmsType: PMSType;
   credentials: PMSCredentials;
   onProgress?: (step: string, pct: number) => void;
+  // For Claude API spend attribution. Both nullable so dev/test runs work.
+  propertyId?: string | null;
+  jobId?: string | null;
 }
 
 export type MapperResult =
@@ -83,7 +87,10 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
 
     // ─── Phase 1: learn the login flow ─────────────────────────────────────
     opts.onProgress?.('Logging in for the first time…', 25);
-    const loginResult = await mapLogin(page, opts.credentials);
+    const loginResult = await mapLogin(page, opts.credentials, {
+      propertyId: opts.propertyId ?? null,
+      jobId: opts.jobId ?? null,
+    });
     if (!loginResult.ok) {
       return { ok: false, userMessage: loginResult.userMessage, detail: loginResult.detail };
     }
@@ -102,6 +109,8 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
       requiredFields: ['roomNumber', 'roomType', 'status', 'condition'],
       postLoginUrl,
       credentials: opts.credentials,
+      propertyId: opts.propertyId ?? null,
+      jobId: opts.jobId ?? null,
     });
     if (housekeepingReport.ok) actions.getRoomStatus = housekeepingReport.action;
     else log.warn('action mapping failed', { actionName: 'getRoomStatus', reason: housekeepingReport.reason, finalUrl: housekeepingReport.finalUrl });
@@ -114,6 +123,8 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
       requiredFields: ['guestName', 'roomNumber', 'arrivalDate', 'departureDate'],
       postLoginUrl,
       credentials: opts.credentials,
+      propertyId: opts.propertyId ?? null,
+      jobId: opts.jobId ?? null,
     });
     if (arrivals.ok) actions.getArrivals = arrivals.action;
     else log.warn('action mapping failed', { actionName: 'getArrivals', reason: arrivals.reason, finalUrl: arrivals.finalUrl });
@@ -126,6 +137,8 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
       requiredFields: ['guestName', 'roomNumber', 'arrivalDate', 'departureDate'],
       postLoginUrl,
       credentials: opts.credentials,
+      propertyId: opts.propertyId ?? null,
+      jobId: opts.jobId ?? null,
     });
     if (departures.ok) actions.getDepartures = departures.action;
     else log.warn('action mapping failed', { actionName: 'getDepartures', reason: departures.reason, finalUrl: departures.finalUrl });
@@ -138,6 +151,8 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
       requiredFields: ['name'],
       postLoginUrl,
       credentials: opts.credentials,
+      propertyId: opts.propertyId ?? null,
+      jobId: opts.jobId ?? null,
     });
     if (staff.ok) actions.getStaffRoster = staff.action;
     else log.warn('action mapping failed', { actionName: 'getStaffRoster', reason: staff.reason, finalUrl: staff.finalUrl });
@@ -186,7 +201,11 @@ interface LoginMapFailure {
   detail: Record<string, unknown>;
 }
 
-async function mapLogin(page: Page, creds: PMSCredentials): Promise<LoginMapResult | LoginMapFailure> {
+async function mapLogin(
+  page: Page,
+  creds: PMSCredentials,
+  ctx: { propertyId: string | null; jobId: string | null },
+): Promise<LoginMapResult | LoginMapFailure> {
   await page.goto(creds.loginUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
   await page.waitForTimeout(1500);
 
@@ -268,6 +287,16 @@ async function mapLogin(page: Page, creds: PMSCredentials): Promise<LoginMapResu
 
     totalInputTokens += response.usage?.input_tokens ?? 0;
     totalOutputTokens += response.usage?.output_tokens ?? 0;
+
+    // Spend attribution for the admin Money tab. Fire-and-forget;
+    // logClaudeUsage swallows its own failures.
+    void logClaudeUsage(response.usage ?? {}, {
+      workload: 'cua_mapping_login',
+      model: CLAUDE_MODEL,
+      propertyId: ctx.propertyId,
+      jobId: ctx.jobId,
+      metadata: { stepIdx },
+    });
 
     // Beta and non-beta content shapes are structurally identical at the
     // wire layer; only the SDK's TypeScript types differ. Cast to keep
@@ -353,6 +382,8 @@ async function mapAction(args: {
   requiredFields: string[];
   postLoginUrl: string;
   credentials: PMSCredentials;
+  propertyId: string | null;
+  jobId: string | null;
 }): Promise<ActionMapSuccess | ActionMapFailure> {
   if (args.page.url() !== args.postLoginUrl) {
     await args.page.goto(args.postLoginUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {});
@@ -440,6 +471,14 @@ async function mapAction(args: {
     });
 
     totalInputTokens += response.usage?.input_tokens ?? 0;
+
+    void logClaudeUsage(response.usage ?? {}, {
+      workload: 'cua_mapping_action',
+      model: CLAUDE_MODEL,
+      propertyId: args.propertyId,
+      jobId: args.jobId,
+      metadata: { actionName: args.actionName, stepIdx },
+    });
 
     const responseContent = response.content as unknown as Anthropic.Messages.ContentBlock[];
     messages.push({ role: 'assistant', content: responseContent });
