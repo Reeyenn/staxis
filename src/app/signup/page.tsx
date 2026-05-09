@@ -272,7 +272,7 @@ export default function SignupPage() {
             style={{ justifyContent: 'center', padding: '14px 0' }}
           >
             {submitting ? 'Creating your account…' : (
-              <>Start trial <ChevronRight size={16} /></>
+              <>Create account <ChevronRight size={16} /></>
             )}
           </button>
 
