@@ -19,7 +19,7 @@
  * — that's "now."
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ExternalLink } from 'lucide-react';
 
 interface Commit {
@@ -153,6 +153,69 @@ export function MarvelTimeline({
   const baseLaneOffset = lanesPerSide <= 3 ? 60 : lanesPerSide <= 6 ? 50 : 40;
   const laneStep = lanesPerSide <= 3 ? 30 : lanesPerSide <= 6 ? 22 : 16;
   const maxLaneY = baseLaneOffset + Math.max(0, lanesPerSide - 1) * laneStep;
+
+  // ── Merge animation: when a branch disappears between data refreshes,
+  // play it as a tendril sliding inward into the main timeline at NOW
+  // instead of just popping out. Tracks the LAST observed geometry of
+  // each branch so we can replay it during the exit animation. ──────
+  type MergingTendril = {
+    name: string;
+    color: string;
+    startX: number;
+    cx1: number; cy1: number;
+    cx2: number; cy2: number;
+    tipX: number;
+    yOffset: number;
+    triggeredAt: number;
+  };
+  const prevBranchListRef = useRef<Branch[]>([]);
+  const [mergingTendrils, setMergingTendrils] = useState<MergingTendril[]>([]);
+
+  // Helper: same lane / curve math used in the live render loop, factored
+  // out so the merge animation can reproduce the exact path the tendril
+  // had on its last frame before disappearing.
+  const computeBranchGeo = (b: Branch, i: number, total: number) => {
+    const lanesPerSideLocal = Math.ceil(total / 2);
+    const baseLaneOffsetLocal = lanesPerSideLocal <= 3 ? 60 : lanesPerSideLocal <= 6 ? 50 : 40;
+    const laneStepLocal = lanesPerSideLocal <= 3 ? 30 : lanesPerSideLocal <= 6 ? 22 : 16;
+    const color = ACTIVE_PALETTE[i % ACTIVE_PALETTE.length];
+    const divergeIdx = Math.max(0, ordered.length - 1 - b.behindMain);
+    const startX = positionFor(divergeIdx);
+    const side = i % 2 === 0 ? -1 : 1;
+    const lane = Math.floor(i / 2);
+    const yOffset = trunkY + side * (baseLaneOffsetLocal + lane * laneStepLocal);
+    const extra = Math.min(30 + b.aheadOfMain * 12, 130);
+    const tipMax = width - padding - 200;
+    const tipX = Math.min(tipMax, latestX + extra);
+    const cx1 = startX + 40;
+    const cy1 = trunkY + side * 30;
+    const cx2 = tipX - 60;
+    const cy2 = yOffset;
+    return { color, startX, cx1, cy1, cx2, cy2, tipX, yOffset };
+  };
+
+  useEffect(() => {
+    const currNames = new Set(branchList.map((b) => b.name));
+    const prev = prevBranchListRef.current;
+    if (prev.length > 0) {
+      const justGone = prev.filter((b) => !currNames.has(b.name));
+      if (justGone.length > 0) {
+        const triggeredAt = Date.now();
+        const newMerging: MergingTendril[] = justGone.map((b) => {
+          const i = prev.findIndex((x) => x.name === b.name);
+          const geo = computeBranchGeo(b, i, prev.length);
+          return { name: b.name, ...geo, triggeredAt };
+        });
+        setMergingTendrils((cur) => [...cur, ...newMerging]);
+        // Auto-cleanup after the animation finishes (1.6s + 0.5s buffer).
+        setTimeout(() => {
+          setMergingTendrils((cur) => cur.filter((m) => Date.now() - m.triggeredAt < 2100));
+        }, 2200);
+      }
+    }
+    prevBranchListRef.current = branchList;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [branchList]);
 
   // Active Claude sessions per branch — heartbeat data wins over any
   // commit-timestamp heuristic. If a session is currently working on a
@@ -521,6 +584,57 @@ export function MarvelTimeline({
                   <tspan fill="#fff" dx="8" fontSize="9" fontWeight="700" style={{ letterSpacing: '0.1em' }}>● LIVE</tspan>
                 )}
               </text>
+            </g>
+          );
+        })}
+
+        {/* === MERGE-IN ANIMATIONS ============================================ */}
+        {/* When a branch disappears (because it just got merged into main),
+            we don't want it to pop out — we want it to slide visibly INTO
+            the main timeline. The tendril path collapses toward NOW, the
+            tip dot races down the line, and a soft shockwave blooms at
+            the impact point. ~1.6s end-to-end, then it cleans itself up. */}
+        {mergingTendrils.map((m) => {
+          const fromPath = `M ${m.startX} ${trunkY} C ${m.cx1} ${m.cy1} ${m.cx2} ${m.cy2} ${m.tipX} ${m.yOffset}`;
+          // End state: the curve collapses INTO the trunk at NOW.
+          const toPath = `M ${m.startX} ${trunkY} C ${m.startX + 30} ${trunkY} ${latestX - 30} ${trunkY} ${latestX} ${trunkY}`;
+          return (
+            <g key={`merging-${m.name}-${m.triggeredAt}`}>
+              {/* The tendril path morphs toward the trunk */}
+              <path
+                d={fromPath}
+                stroke={m.color} strokeWidth="2.4" fill="none"
+                opacity="0.95" filter="url(#softGlow)"
+              >
+                <animate attributeName="d" from={fromPath} to={toPath}
+                  dur="1.4s" fill="freeze" calcMode="spline"
+                  keySplines="0.4 0 0.2 1" />
+                <animate attributeName="opacity" from="0.95" to="0"
+                  begin="1.0s" dur="0.4s" fill="freeze" />
+              </path>
+              {/* Tip dot races inward to NOW */}
+              <circle cx={m.tipX} cy={m.yOffset} r="4"
+                fill={m.color} stroke="rgba(255,255,255,0.7)" strokeWidth="1">
+                <animate attributeName="cx" from={String(m.tipX)} to={String(latestX)}
+                  dur="1.4s" fill="freeze" calcMode="spline"
+                  keySplines="0.4 0 0.2 1" />
+                <animate attributeName="cy" from={String(m.yOffset)} to={String(trunkY)}
+                  dur="1.4s" fill="freeze" calcMode="spline"
+                  keySplines="0.4 0 0.2 1" />
+                <animate attributeName="r" from="4" to="6"
+                  dur="1.4s" fill="freeze" />
+                <animate attributeName="opacity" from="1" to="0"
+                  begin="1.3s" dur="0.2s" fill="freeze" />
+              </circle>
+              {/* Bloom at the impact point — visible spark when the
+                  branch "comes home" to NOW */}
+              <circle cx={latestX} cy={trunkY} r="6"
+                fill="none" stroke={m.color} strokeWidth="2" opacity="0">
+                <animate attributeName="r" from="6" to="34"
+                  begin="1.2s" dur="0.6s" fill="freeze" />
+                <animate attributeName="opacity" from="0.9" to="0"
+                  begin="1.2s" dur="0.6s" fill="freeze" />
+              </circle>
             </g>
           );
         })}
