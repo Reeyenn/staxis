@@ -35,6 +35,10 @@ interface Branch {
   name: string; shortSha: string; latestMessage: string;
   latestTs: string | null; aheadOfMain: number; behindMain: number; url: string;
 }
+interface MergedBranch {
+  branchName: string; mergeCommitSha: string; mergedAt: string;
+  title: string; url: string; commitCount: number;
+}
 interface ScheduledRow {
   propertyId: string; propertyName: string | null;
   lastSuccessAt: string | null; lastFailedAt: string | null;
@@ -52,7 +56,7 @@ interface AuditEntry {
 }
 
 export function SystemTab() {
-  const [build, setBuild] = useState<{ commits: Commit[]; deploys: Deploy[]; worktrees: Worktree[]; branches?: Branch[] } | null>(null);
+  const [build, setBuild] = useState<{ commits: Commit[]; deploys: Deploy[]; worktrees: Worktree[]; branches?: Branch[]; merged?: MergedBranch[] } | null>(null);
   const [scheduled, setScheduled] = useState<ScheduledRow[] | null>(null);
   const [roadmap, setRoadmap] = useState<RoadmapItem[] | null>(null);
   const [audit, setAudit] = useState<AuditEntry[] | null>(null);
@@ -106,9 +110,9 @@ export function SystemTab() {
 
       {/* 1. Marvel timeline */}
       <section>
-        <h2 style={sectionTitle}>The build timeline</h2>
-        <p style={sectionHint}>Main branch commits, what's deployed where, and any local worktrees you've got Claude running in parallel.</p>
-        <MarvelTimeline commits={build.commits} deploys={build.deploys} worktrees={build.worktrees} branches={build.branches ?? []} />
+        <h2 style={sectionTitle}>The sacred timeline</h2>
+        <p style={sectionHint}>Main flows left → right. Tendrils branching off are work-in-progress; arcs that loop back are branches that came home.</p>
+        <MarvelTimeline commits={build.commits} deploys={build.deploys} worktrees={build.worktrees} branches={build.branches ?? []} merged={build.merged ?? []} />
       </section>
 
       {/* 2. Scheduled jobs */}

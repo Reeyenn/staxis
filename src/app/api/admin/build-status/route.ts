@@ -61,19 +61,64 @@ interface Branch {
   url: string;               // GitHub branch URL
 }
 
+interface MergedBranch {
+  branchName: string;
+  mergeCommitSha: string;    // commit on main where this branch came home
+  mergedAt: string;          // ISO timestamp
+  title: string;             // PR title
+  url: string;               // PR URL
+  commitCount: number;       // commits in the PR (used to size the arc)
+}
+
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const auth = await requireAdmin(req);
   if (!auth.ok) return auth.response;
 
-  const [commits, deploys, worktrees, branches] = await Promise.all([
+  const [commits, deploys, worktrees, branches, merged] = await Promise.all([
     fetchRecentCommits().catch(() => []),
     collectDeploys().catch(() => []),
     listWorktrees().catch(() => []),
     fetchActiveBranches().catch(() => []),
+    fetchMergedBranches().catch(() => []),
   ]);
 
-  return ok({ commits, deploys, worktrees, branches }, { requestId });
+  return ok({ commits, deploys, worktrees, branches, merged }, { requestId });
+}
+
+async function fetchMergedBranches(): Promise<MergedBranch[]> {
+  // Recently-merged PRs (Loki: "branches that came home"). We pull the
+  // last 25 closed PRs and keep only the ones that actually merged
+  // (closed-without-merge gets dropped).
+  const headers: Record<string, string> = { 'User-Agent': 'staxis-admin' };
+  if (process.env.GITHUB_TOKEN) {
+    headers['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;
+  }
+
+  const res = await fetch(
+    `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=25`,
+    { headers, next: { revalidate: 120 } },
+  );
+  if (!res.ok) return [];
+  const json = await res.json() as Array<{
+    title: string;
+    head: { ref: string };
+    merge_commit_sha: string | null;
+    merged_at: string | null;
+    commits: number;
+    html_url: string;
+  }>;
+
+  return json
+    .filter((pr) => pr.merged_at !== null && pr.merge_commit_sha)
+    .map((pr) => ({
+      branchName: pr.head.ref,
+      mergeCommitSha: pr.merge_commit_sha as string,
+      mergedAt: pr.merged_at as string,
+      title: pr.title,
+      url: pr.html_url,
+      commitCount: pr.commits ?? 1,
+    }));
 }
 
 async function fetchActiveBranches(): Promise<Branch[]> {
