@@ -315,7 +315,7 @@ async function mapLogin(page: Page, creds: PMSCredentials): Promise<LoginMapResu
 
     const response = await anthropic.beta.messages.create({
       model: CLAUDE_MODEL,
-      max_tokens: 1024,
+      max_tokens: 4096,
       system: MAPPING_SYSTEM_PROMPT,
       // Computer-use is beta-gated on the Messages API. We pass the beta
       // header via `betas`. Cast through unknown because the SDK's
@@ -436,7 +436,7 @@ async function mapAction(args: {
 
     const response = await anthropic.beta.messages.create({
       model: CLAUDE_MODEL,
-      max_tokens: 1024,
+      max_tokens: 4096,
       system: MAPPING_SYSTEM_PROMPT,
       tools: [COMPUTER_TOOL as unknown as Anthropic.Beta.Messages.BetaToolUnion],
       // Truncate old screenshots — same fix as in mapLogin.
