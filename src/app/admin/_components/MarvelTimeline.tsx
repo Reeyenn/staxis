@@ -573,15 +573,20 @@ export function MarvelTimeline({
           });
         }
       }
-      // New push events.
+      // New push events. Strip the "claude/" prefix from branch
+      // labels so toasts read "PUSHED FOO" instead of the verbose
+      // "PUSHED CLAUDE/FOO" — same approach as the WORKING badges.
+      const trimBranch = (b: string): string => {
+        const stripped = b.startsWith('claude/') ? b.slice('claude/'.length) : b;
+        return stripped.length > 18 ? `${stripped.slice(0, 16)}…` : stripped;
+      };
       for (const key of pushKeys) {
         if (!prev.pushKeys.has(key)) {
           const [branch] = key.split('@');
-          const truncated = branch.length > 24 ? `${branch.slice(0, 22)}…` : branch;
           newToasts.push({
             id: `t-${Date.now()}-push-${branch}`,
             kind: 'success',
-            message: `PUSHED ${truncated.toUpperCase()}`,
+            message: `PUSHED ${trimBranch(branch).toUpperCase()}`,
             branch,
             expiresAt: Date.now() + 10000,
           });
@@ -590,13 +595,10 @@ export function MarvelTimeline({
       // Sessions that ended.
       for (const [sid, branch] of prev.sessionIdToBranch.entries()) {
         if (!sessionIdToBranch.has(sid)) {
-          const truncated = (branch ?? '').length > 24
-            ? `${(branch ?? '').slice(0, 22)}…`
-            : (branch ?? '');
           newToasts.push({
             id: `t-${Date.now()}-stop-${sid}`,
             kind: 'success',
-            message: branch ? `SESSION DONE ON ${truncated.toUpperCase()}` : 'SESSION DONE',
+            message: branch ? `SESSION DONE: ${trimBranch(branch).toUpperCase()}` : 'SESSION DONE',
             branch: branch ?? null,
             expiresAt: Date.now() + 10000,
           });
@@ -896,9 +898,11 @@ export function MarvelTimeline({
           const truncated = stripped.length > 16 ? `${stripped.slice(0, 14)}…` : stripped;
           const tool = s.current_tool ? fmtTool(s.current_tool).toUpperCase() : '';
           const tag = isMain ? 'MAIN' : (truncated.toUpperCase() || 'BRANCH');
-          const label = tool
-            ? `🤖 WORKING ON ${tag} · ${tool}`
-            : `🤖 WORKING ON ${tag}`;
+          // Drop the "WORKING ON" prefix — the 🤖 emoji + green
+          // background already say "Claude is working." The
+          // shorter label fits each quadrant's 30%/40% width without
+          // CSS-ellipsis truncating the tool name.
+          const label = tool ? `🤖 ${tag} · ${tool}` : `🤖 ${tag}`;
           specs.push({
             key: `working-${s.session_id}`,
             label,
