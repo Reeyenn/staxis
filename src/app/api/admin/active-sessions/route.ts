@@ -2,7 +2,7 @@
  * GET /api/admin/active-sessions
  *
  * Returns Claude Code sessions whose last heartbeat landed within the
- * "alive" window (default 2 minutes). Used by the System tab to show
+ * "alive" window (45 seconds). Used by the System tab to show
  * what's being worked on across multiple Claude Code instances in
  * real time.
  *
@@ -21,7 +21,11 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 10;
 
-const ALIVE_WINDOW_MS = 2 * 60 * 1000;
+// 45s is a sweet spot: longer than the gap between tool calls during
+// active Claude work (typically a few seconds, but Claude can think
+// silently for 20-30s between tool calls), short enough that the badge
+// disappears within a minute of work stopping.
+const ALIVE_WINDOW_MS = 45 * 1000;
 
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
