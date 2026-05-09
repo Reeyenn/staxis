@@ -190,7 +190,10 @@ async function fetchActiveBranches(): Promise<Branch[]> {
 }
 
 async function fetchRecentCommits(): Promise<Commit[]> {
-  const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/commits?sha=main&per_page=12`;
+  // per_page=100 (GitHub's max) so the System tab's "X commits today"
+  // counter is accurate even on heavy days. With auth we have 5000
+  // calls/hr, so the larger payload is free.
+  const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/commits?sha=main&per_page=100`;
   const headers: Record<string, string> = { 'User-Agent': 'staxis-admin' };
   if (process.env.GITHUB_TOKEN) {
     headers['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;

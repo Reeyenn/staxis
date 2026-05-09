@@ -100,16 +100,18 @@ export function MarvelTimeline({
     !!ts && (now - new Date(ts).getTime()) < LIVE_WINDOW_MS;
   const mainIsLive = isLiveTs(mainLatestTs ?? commits[0]?.ts ?? null);
 
-  // Commit count for "today" — local-time start-of-day. The commits[]
-  // array is capped at 12 by the API; if the user blew past that today
-  // we display "12+" so it's clear the count is truncated.
+  // Commit count for "today" — local-time start-of-day. The build-status
+  // API fetches the last 100 commits, so this is exact for any normal
+  // day. On the rare day we exceed 100, we surface "100+" so the cap
+  // is visible rather than silently wrong.
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
   const startOfTodayMs = startOfToday.getTime();
   const commitsTodayCount = commits.filter(
     (c) => new Date(c.ts).getTime() >= startOfTodayMs,
   ).length;
-  const commitsTodayLabel = commitsTodayCount >= commits.length && commits.length >= 12
+  const commitsTodayCapped = commitsTodayCount >= commits.length && commits.length >= 100;
+  const commitsTodayLabel = commitsTodayCapped
     ? `${commits.length}+ commits today`
     : `${commitsTodayCount} commit${commitsTodayCount === 1 ? '' : 's'} today`;
 
