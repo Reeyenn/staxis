@@ -20,7 +20,7 @@
  * the Live hotels tab.
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { ShieldAlert } from 'lucide-react';
@@ -31,9 +31,38 @@ import { LiveHotelsTab } from '@/app/admin/_components/tabs/LiveHotelsTab';
 import { SystemTab } from '@/app/admin/_components/tabs/SystemTab';
 import { MoneyTab } from '@/app/admin/_components/tabs/MoneyTab';
 
+const VALID_TABS: AdminTab[] = ['onboarding', 'live', 'system', 'money'];
+
+function readHashTab(): AdminTab {
+  if (typeof window === 'undefined') return 'onboarding';
+  const h = window.location.hash.replace('#', '');
+  return (VALID_TABS as string[]).includes(h) ? (h as AdminTab) : 'onboarding';
+}
+
 export default function AdminPropertiesPage() {
   const { user, loading: authLoading } = useAuth();
+  // Initialize to 'onboarding' so SSR markup matches; the useEffect below
+  // syncs to the URL hash on mount. This means a refresh on /admin/properties#system
+  // lands you back on the System tab instead of bouncing to Onboarding.
   const [activeTab, setActiveTab] = useState<AdminTab>('onboarding');
+
+  useEffect(() => {
+    setActiveTab(readHashTab());
+    const onHashChange = () => setActiveTab(readHashTab());
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  const handleTabChange = (t: AdminTab) => {
+    setActiveTab(t);
+    if (typeof window !== 'undefined') {
+      // Use replaceState (not assignment) so we don't push a history entry
+      // for every tab click — Reeyen flips between tabs constantly and
+      // doesn't want to hit Back 12 times to leave the admin page.
+      const url = `${window.location.pathname}${window.location.search}#${t}`;
+      window.history.replaceState(null, '', url);
+    }
+  };
 
   if (authLoading || (user && user.role !== 'admin')) {
     return (
@@ -55,7 +84,7 @@ export default function AdminPropertiesPage() {
   return (
     <AppLayout>
       <div style={{ padding: '24px', maxWidth: '1200px', margin: '0 auto' }}>
-        <StickyHeader activeTab={activeTab} onTabChange={setActiveTab} />
+        <StickyHeader activeTab={activeTab} onTabChange={handleTabChange} />
 
         {activeTab === 'onboarding' && <OnboardingTab />}
         {activeTab === 'live' && <LiveHotelsTab />}
