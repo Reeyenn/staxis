@@ -154,17 +154,33 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // ── Failed onboarding jobs ───────────────────────────────────────────
+  // ── Failed onboarding jobs (deduped: one alert per property) ─────────
+  // failedJobs is already ordered newest-first by the query above. We
+  // keep the most recent failure per property_id and tally how many
+  // total failures hit that property in the window so the alert reads
+  // like "3 failed onboardings for X — latest: …" instead of spamming
+  // the dropdown with one row per attempt.
+  const failuresByProperty = new Map<string, { latest: typeof failedJobs[number]; count: number }>();
   for (const j of failedJobs) {
-    const propName = nameById.get(j.property_id) ?? '(deleted property)';
+    const existing = failuresByProperty.get(j.property_id);
+    if (existing) existing.count += 1;
+    else failuresByProperty.set(j.property_id, { latest: j, count: 1 });
+  }
+  for (const { latest, count } of failuresByProperty.values()) {
+    const propName = nameById.get(latest.property_id) ?? '(deleted property)';
+    const title = count > 1
+      ? `${count} failed onboardings for ${propName}`
+      : `Onboarding failed for ${propName}`;
     alerts.push({
       kind: 'JOB_FAILED',
       severity: 'red',
-      title: `Onboarding failed for ${propName}`,
-      detail: j.error ? `${j.pms_type}: ${j.error.slice(0, 120)}` : `${j.pms_type} (no error message recorded)`,
-      propertyId: j.property_id,
-      href: `/admin/properties/${j.property_id}`,
-      ts: j.created_at,
+      title,
+      detail: latest.error
+        ? `${latest.pms_type}: ${latest.error.slice(0, 120)}`
+        : `${latest.pms_type} (no error message recorded)`,
+      propertyId: latest.property_id,
+      href: `/admin/properties/${latest.property_id}`,
+      ts: latest.created_at,
     });
   }
 

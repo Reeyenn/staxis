@@ -48,10 +48,12 @@ export async function GET(req: NextRequest) {
   const monthAgoIso = monthAgo.toISOString();
 
   // Pull everything in parallel.
+  // monthly_amount_cents doesn't exist on properties yet — once billing
+  // flips on we'll add it via migration. For now MRR is always 0.
   const [propsRes, claudeRes, smsRes, fleetExpRes] = await Promise.all([
     supabaseAdmin
       .from('properties')
-      .select('id, name, subscription_status, monthly_amount_cents'),
+      .select('id, name, subscription_status'),
     supabaseAdmin
       .from('claude_usage_log')
       .select('property_id, cost_micros')
@@ -70,15 +72,11 @@ export async function GET(req: NextRequest) {
 
   for (const r of [propsRes, claudeRes, smsRes, fleetExpRes]) {
     if (r.error) {
-      // monthly_amount_cents may not exist on properties yet — gracefully
-      // continue with mrr=0 if so.
-      if (!r.error.message.includes('monthly_amount_cents')) {
-        return err(`per-hotel-economics query failed: ${r.error.message}`, { requestId, status: 500 });
-      }
+      return err(`per-hotel-economics query failed: ${r.error.message}`, { requestId, status: 500 });
     }
   }
 
-  const properties = (propsRes.data ?? []) as Array<{ id: string; name: string | null; subscription_status: string | null; monthly_amount_cents?: number | null }>;
+  const properties = (propsRes.data ?? []) as Array<{ id: string; name: string | null; subscription_status: string | null }>;
   const claudeRows = (claudeRes.data ?? []) as Array<{ property_id: string | null; cost_micros: number }>;
   const smsRows = (smsRes.data ?? []) as Array<{ property_id: string }>;
   const fleetRows = (fleetExpRes.data ?? []) as Array<{ amount_cents: number; category: string }>;
@@ -102,7 +100,7 @@ export async function GET(req: NextRequest) {
   const fleetPerHotelCents = fleetTotalCents / activeHotels;
 
   const hotels: HotelEcon[] = properties.map((p) => {
-    const mrr = p.monthly_amount_cents ?? 0;
+    const mrr = 0; // pilot mode — no monthly_amount_cents column yet
     const claudeCents = claudeCentsBy.get(p.id) ?? 0;
     const smsCents = (smsCountBy.get(p.id) ?? 0) * SMS_UNIT_COST_CENTS;
     const allocated = p.subscription_status === 'active' ? fleetPerHotelCents : 0;
