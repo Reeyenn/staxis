@@ -55,7 +55,12 @@ kill_timeout = "300s"
   # don't pile up while we deploy.
   strategy = "rolling"
 
-# Don't auto-stop. The worker needs to keep polling.
+# Worker pattern — must stay running. After deploys (which send SIGTERM
+# and exit cleanly with code 0), Fly's "on-failure" policy would NOT
+# restart, leaving the machine stopped indefinitely. "always" restarts
+# on any exit, including clean ones — which is what we want for a poller.
+# (Fix found 2026-05-09 — first browser-tool deploy left the primary
+# machine stopped for ~6 minutes until a manual flyctl machine start.)
 [[restart]]
-  policy = "on-failure"
+  policy = "always"
   max_retries = 5
