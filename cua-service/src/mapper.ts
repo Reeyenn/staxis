@@ -29,7 +29,12 @@ import { anthropic, CLAUDE_MODEL, COMPUTER_TOOL, COMPUTER_USE_BETA, MAPPING_SYST
 import { log } from './log.js';
 import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe } from './types.js';
 
-const MAX_AGENT_STEPS = 30;
+// 60 steps gives the agent room for multi-page logins (e.g., Choice
+// Advantage has a property-picker step after credentials), retries
+// of dialog-dismissals, and recovery from one or two misclicks. Token
+// budget + wallclock budget are the real safety stops; agent_steps is
+// just a "are we making progress?" sanity cap.
+const MAX_AGENT_STEPS = 60;
 const VIEWPORT = { width: COMPUTER_TOOL.display_width_px, height: COMPUTER_TOOL.display_height_px };
 
 // Token budget per mapping run. Without screenshot-history truncation
@@ -50,11 +55,11 @@ const MAX_OUTPUT_TOKENS_PER_RUN = 4_000;
 const MAPPING_WALLCLOCK_BUDGET_MS = 5 * 60_000;
 
 // How many recent screenshots to keep in the message history. Older
-// screenshots get replaced with a small text marker — the agent only
-// needs the CURRENT view to decide its next action; prior screenshots
-// are mostly clutter once the agent has reacted to them. The action
-// log (text in tool_result blocks) preserves "where did I come from".
-const SCREENSHOT_HISTORY_KEEP = 2;
+// screenshots get replaced with a small text marker. 3 is the
+// sweet spot we tuned for Choice Advantage: enough visual memory
+// for "the click I just made changed THIS region" reasoning, but
+// few enough that 60-step runs stay under the token cap.
+const SCREENSHOT_HISTORY_KEEP = 3;
 
 interface MapperOptions {
   pmsType: PMSType;
