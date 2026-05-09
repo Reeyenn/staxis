@@ -29,6 +29,10 @@ interface Commit {
   authorName: string;
   ts: string;
   url: string;
+  // Aggregated CI check-runs status. 'failed' surfaces a red ring at NOW
+  // and a top-left badge; 'pending' shows an amber dotted ring; 'passed'
+  // is silent (no chrome). null/undefined = no signal available.
+  checkStatus?: 'passed' | 'failed' | 'pending' | 'neutral' | null;
 }
 
 interface Deploy {
@@ -37,6 +41,29 @@ interface Deploy {
   shortSha: string | null;
   deployedAt: string | null;
   url: string;
+  // Phase 3 live state from provider APIs.
+  status?: 'BUILDING' | 'READY' | 'ERROR' | 'CANCELED' | 'QUEUED' | null;
+  inProgress?: boolean;
+  failed?: boolean;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+}
+
+interface Push {
+  branch: string;
+  ts: string;
+  sha: string | null;
+  commitMessage: string | null;
+}
+
+interface OpenPR {
+  number: number;
+  title: string;
+  branch: string;
+  url: string;
+  draft: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 interface Worktree {
@@ -83,13 +110,16 @@ const MERGED_PALETTE = ['#7dd3fc', '#fcd34d', '#86efac', '#f9a8d4', '#c4b5fd', '
 const LIVE_WINDOW_MS = 60 * 1000;
 
 export function MarvelTimeline({
-  commits, deploys, worktrees, branches, merged, mainLatestTs, activeSessions,
+  commits, deploys, worktrees, branches, merged, pushes, openPRs,
+  mainLatestTs, activeSessions,
 }: {
   commits: Commit[];
   deploys: Deploy[];
   worktrees: Worktree[];
   branches?: Branch[];
   merged?: MergedBranch[];
+  pushes?: Push[];
+  openPRs?: OpenPR[];
   mainLatestTs?: string | null;
   activeSessions?: ActiveSession[];
 }) {
@@ -336,14 +366,16 @@ export function MarvelTimeline({
   const isBranchAlive = (name: string): boolean => (sessionCountByBranch.get(name) ?? 0) > 0;
   const mainHasSession = isBranchAlive('main');
 
-  // Worktree lookup by branch — lets us surface uncommitted-file counts on
-  // tendrils (and on a dedicated main badge) without re-shaping the
-  // synthesized Branch objects. Reeyen explicitly wants dirty work to be
-  // visible at a glance; today it only shows in hover tooltips.
+  // Worktree lookup keyed by EITHER branch name or worktree dir name.
+  // Synthesized Branch entries from worktrees use wt.name as their
+  // display label (line ~188), but PR matching needs the actual git
+  // branch (e.g., 'claude/unruffled-tharp'). Indexing under both lets
+  // tendril rendering find the worktree regardless of which key is
+  // active for that particular branch.
   const worktreeByBranch = new Map<string, Worktree>();
   for (const wt of worktrees ?? []) {
-    const key = wt.branch ?? wt.name;
-    if (key && !worktreeByBranch.has(key)) worktreeByBranch.set(key, wt);
+    if (wt.branch && !worktreeByBranch.has(wt.branch)) worktreeByBranch.set(wt.branch, wt);
+    if (wt.name && !worktreeByBranch.has(wt.name)) worktreeByBranch.set(wt.name, wt);
   }
   const mainWorktree = worktreeByBranch.get('main') ?? worktreeByBranch.get('master');
   const mainDirtyFiles = mainWorktree?.dirtyFiles ?? 0;
@@ -386,6 +418,44 @@ export function MarvelTimeline({
     return [head, ...lines].join('\n');
   };
 
+  // Push events: latest push per branch within the live window. The
+  // webhook writes these the moment GitHub fires, which is more precise
+  // than the commit author/committer timestamp (especially for batched
+  // pushes). UI uses this to show "PUSHED <branch> Xs ago" badges and
+  // a one-shot tip flash when new pushes arrive.
+  const latestPushByBranch = new Map<string, Push>();
+  for (const p of pushes ?? []) {
+    const existing = latestPushByBranch.get(p.branch);
+    if (!existing || new Date(p.ts).getTime() > new Date(existing.ts).getTime()) {
+      latestPushByBranch.set(p.branch, p);
+    }
+  }
+  const isPushFresh = (ts: string): boolean =>
+    Date.now() - new Date(ts).getTime() < LIVE_WINDOW_MS;
+  const recentSidePushes = Array.from(latestPushByBranch.values())
+    .filter((p) => p.branch !== 'main' && p.branch !== 'master' && isPushFresh(p.ts))
+    .sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
+
+  // Open-PR enrichment: index by branch so tendrils can render their
+  // PR# chip and a different-colored ring without an O(N×M) lookup.
+  const prByBranch = new Map<string, OpenPR>();
+  for (const pr of openPRs ?? []) {
+    if (!prByBranch.has(pr.branch)) prByBranch.set(pr.branch, pr);
+  }
+
+  // CI check status on the latest commit. The badge logic at the top
+  // surfaces failed/pending; the ring at NOW visually mirrors it. Older
+  // commits are not currently surfaced — Reeyen mostly cares "did the
+  // last thing pass?".
+  const latestCheckStatus = commits[0]?.checkStatus ?? null;
+
+  // Live-deploy enrichment: pull the in-progress / failed flags so the
+  // top-of-canvas badges and per-marker visuals can react. Failure has
+  // priority over in-progress (a freshly-failed deploy beats "and now
+  // we're rebuilding…" in terms of what Reeyen needs to know).
+  const deployVercel = deploys.find((d) => d.target === 'vercel-website');
+  const deployFly = deploys.find((d) => d.target === 'fly-cua');
+
   // A branch counts as "live" if it has a recent commit OR an active
   // Claude session pinging it.
   const liveBranchCount = branchList.filter(
@@ -401,10 +471,15 @@ export function MarvelTimeline({
   };
 
   // Deploy positions on the line (no vertical pins anymore — just glowing dots).
+  // In-progress and failed deploys without a sha-on-screen still render —
+  // we anchor them at NOW so the status is visible even before the deploy
+  // lands a commit visible in the window.
   const deployMarkers = deploys
     .map((d) => {
       const x = xForSha(d.commitSha);
-      return x !== null ? { ...d, x } : null;
+      if (x !== null) return { ...d, x };
+      if (d.inProgress || d.failed) return { ...d, x: latestX };
+      return null;
     })
     .filter((v): v is Deploy & { x: number } => v !== null);
 
@@ -588,6 +663,63 @@ export function MarvelTimeline({
             bg: 'rgba(239, 68, 68, 0.85)',
           });
         }
+        // Recent side-branch pushes — highest impact when not duplicating
+        // an existing main badge. We surface each branch's latest push
+        // within the 60s window so Reeyen sees "thing X just pushed"
+        // even when no Claude is currently on that branch (e.g., after
+        // Stop hook fired but commits already landed).
+        for (const p of recentSidePushes.slice(0, 3)) {
+          const truncated = p.branch.length > 24 ? `${p.branch.slice(0, 22)}…` : p.branch;
+          badges.push({
+            key: `push-${p.branch}`,
+            label: `PUSHED ${truncated.toUpperCase()}`,
+            bg: 'rgba(239, 68, 68, 0.78)',
+          });
+        }
+        // CI check status. Only surface when actionable — a passing
+        // build is silent so the canvas stays calm.
+        if (latestCheckStatus === 'failed') {
+          badges.push({
+            key: 'ci-failed',
+            label: 'CI FAILED ON LATEST',
+            bg: 'rgba(220, 38, 38, 0.92)',
+          });
+        } else if (latestCheckStatus === 'pending') {
+          badges.push({
+            key: 'ci-pending',
+            label: 'CI RUNNING',
+            bg: 'rgba(217, 119, 6, 0.78)',
+          });
+        }
+        // Live deploy status (Vercel website + Fly CUA). Failed > in-
+        // progress > silent — a freshly-failed deploy is the most
+        // load-bearing signal Reeyen could want when his app is broken.
+        if (deployVercel?.failed) {
+          badges.push({
+            key: 'vercel-failed',
+            label: `VERCEL DEPLOY FAILED${deployVercel.startedAt ? ` · ${timeAgo(deployVercel.startedAt)}` : ''}`,
+            bg: 'rgba(220, 38, 38, 0.92)',
+          });
+        } else if (deployVercel?.inProgress) {
+          badges.push({
+            key: 'vercel-deploying',
+            label: 'VERCEL DEPLOYING',
+            bg: 'rgba(34, 211, 238, 0.78)',
+          });
+        }
+        if (deployFly?.failed) {
+          badges.push({
+            key: 'fly-failed',
+            label: `CUA DEPLOY FAILED${deployFly.startedAt ? ` · ${timeAgo(deployFly.startedAt)}` : ''}`,
+            bg: 'rgba(220, 38, 38, 0.92)',
+          });
+        } else if (deployFly?.inProgress) {
+          badges.push({
+            key: 'fly-deploying',
+            label: 'CUA DEPLOYING',
+            bg: 'rgba(196, 181, 253, 0.78)',
+          });
+        }
 
         if (badges.length === 0) return null;
         return (
@@ -700,6 +832,24 @@ export function MarvelTimeline({
           </circle>
         )}
 
+        {/* Just-pushed-to-main flash. Distinct from the existing
+            mainIsLive 60s halo (which is commit-author-ts based) — this
+            one fires off the webhook timestamp, so it lands precisely
+            when GitHub registered the push. */}
+        {(() => {
+          const mainPush = latestPushByBranch.get('main') ?? latestPushByBranch.get('master');
+          if (!mainPush || !isPushFresh(mainPush.ts)) return null;
+          return (
+            <g>
+              <title>Pushed to main {timeAgo(mainPush.ts)}</title>
+              <circle cx={latestX} cy={trunkY} r="9" fill="#fff7ce" opacity="0">
+                <animate attributeName="r" values="9;26;9" dur="1.1s" repeatCount="indefinite" />
+                <animate attributeName="opacity" values="0.95;0;0" keyTimes="0;0.7;1" dur="1.1s" repeatCount="indefinite" />
+              </circle>
+            </g>
+          );
+        })()}
+
         {/* Multi-session indicator on main: when >1 Claude is on main,
             render one tiny color-coded dot per session above the NOW
             pulse. The badge says "3 SESSIONS ON MAIN" (count); these
@@ -804,28 +954,90 @@ export function MarvelTimeline({
             When a deploy lands on the very latest commit (same X as NOW), we
             skip the text label — it would just stack on top of the "NOW" tag
             and create visual noise. The colored ring still tells you it's a
-            deploy point; clicking the legend reveals what color = what. */}
+            deploy point; clicking the legend reveals what color = what.
+
+            Three live states (Phase 3):
+              READY      — existing dot.
+              BUILDING   — pulsing outer ring + spinning arc-segment.
+              ERROR/CXL  — red dot, faint X overlay, fast-blink.
+            */}
         {deployMarkers.map((d, i) => {
-          const c = d.target === 'vercel-website' ? '#7dd3fc' : '#c4b5fd';
+          const baseColor = d.target === 'vercel-website' ? '#7dd3fc' : '#c4b5fd';
+          const c = d.failed ? '#f87171' : baseColor;
           const overlapsNow = Math.abs(d.x - latestX) < 60;
+          const labelText = d.failed
+            ? `${d.target === 'vercel-website' ? 'web' : 'cua'} failed`
+            : d.inProgress
+              ? `${d.target === 'vercel-website' ? 'web' : 'cua'} deploying`
+              : `${d.target === 'vercel-website' ? 'web' : 'cua'} deployed`;
           return (
             <g key={d.target}>
-              <circle cx={d.x} cy={trunkY} r="11" fill={c} opacity="0.18" filter="url(#bigGlow)" />
-              <circle cx={d.x} cy={trunkY} r="5" fill={c} stroke="#fff" strokeWidth="1.5" opacity="0.9" />
+              <circle cx={d.x} cy={trunkY} r="11" fill={c} opacity={d.failed ? 0.35 : 0.18} filter="url(#bigGlow)" />
+              {/* In-progress: rotating dashed ring acts like a spinner +
+                  outward shockwave so the deploy "feels active" not
+                  parked. */}
+              {d.inProgress && (
+                <>
+                  <circle cx={d.x} cy={trunkY} r="11" fill="none" stroke={c} strokeWidth="2" opacity="0">
+                    <animate attributeName="r" values="11;22;11" dur="1.5s" repeatCount="indefinite" />
+                    <animate attributeName="opacity" values="0.9;0;0" keyTimes="0;0.7;1" dur="1.5s" repeatCount="indefinite" />
+                  </circle>
+                  <circle cx={d.x} cy={trunkY} r="9" fill="none" stroke={c}
+                    strokeWidth="2" strokeDasharray="14 30" strokeLinecap="round" opacity="0.85">
+                    <animateTransform attributeName="transform" type="rotate"
+                      from={`0 ${d.x} ${trunkY}`} to={`360 ${d.x} ${trunkY}`}
+                      dur="1.4s" repeatCount="indefinite" />
+                  </circle>
+                </>
+              )}
+              {/* Center dot — red w/ X overlay if failed. */}
+              <circle cx={d.x} cy={trunkY} r="5" fill={c}
+                stroke={d.failed ? '#fca5a5' : '#fff'} strokeWidth="1.5" opacity="0.9">
+                {d.failed && (
+                  <animate attributeName="opacity" values="1;0.4;1" dur="0.8s" repeatCount="indefinite" />
+                )}
+              </circle>
+              {d.failed && (
+                <g pointerEvents="none" stroke="#fff" strokeWidth="1.5" strokeLinecap="round">
+                  <line x1={d.x - 2.5} y1={trunkY - 2.5} x2={d.x + 2.5} y2={trunkY + 2.5} />
+                  <line x1={d.x + 2.5} y1={trunkY - 2.5} x2={d.x - 2.5} y2={trunkY + 2.5} />
+                </g>
+              )}
               {!overlapsNow && (
                 <text
                   x={d.x} y={trunkY - 18 - i * 12}
                   textAnchor="middle" fontSize="9.5"
-                  fill="rgba(255,255,255,0.85)"
+                  fill={d.failed ? '#fca5a5' : 'rgba(255,255,255,0.85)'}
                   fontFamily="-apple-system, system-ui, sans-serif"
                   style={{ userSelect: 'none' }}
                 >
-                  {d.target === 'vercel-website' ? 'web deployed' : 'cua deployed'}
+                  {labelText}
                 </text>
               )}
             </g>
           );
         })}
+
+        {/* CI check-status ring around NOW. Failed = red, pending = amber
+            dotted. We render it on top of the existing NOW pulse so it's
+            unambiguously paired with "the latest commit". Passed shows
+            nothing (silent good news). */}
+        {latestCheckStatus === 'failed' && (
+          <g>
+            <circle cx={latestX} cy={trunkY} r="14" fill="none" stroke="#f87171" strokeWidth="2.5" opacity="0.9">
+              <animate attributeName="r" values="14;18;14" dur="1.6s" repeatCount="indefinite" />
+            </circle>
+            <circle cx={latestX} cy={trunkY} r="14" fill="none" stroke="#f87171" strokeWidth="1.5" opacity="0.4" />
+          </g>
+        )}
+        {latestCheckStatus === 'pending' && (
+          <circle cx={latestX} cy={trunkY} r="14" fill="none" stroke="#fbbf24"
+            strokeWidth="2" strokeDasharray="3 4" opacity="0.85">
+            <animateTransform attributeName="transform" type="rotate"
+              from={`0 ${latestX} ${trunkY}`} to={`360 ${latestX} ${trunkY}`}
+              dur="3s" repeatCount="indefinite" />
+          </circle>
+        )}
 
         {/* === ACTIVE BRANCH TENDRILS ========================================== */}
         {/* Arc out from divergence, end at a pulsing dot. Alternate above/below.
@@ -861,6 +1073,17 @@ export function MarvelTimeline({
           const tool = currentToolByBranch.get(b.name);
           const wt = worktreeByBranch.get(b.name);
           const wtDirty = wt?.dirtyFiles ?? 0;
+          // Open-PR matching: prefer the actual git branch name (from
+          // the worktree row) over the display name, since worktree-
+          // backed branches use the dir name for display.
+          const actualBranch = wt?.branch ?? b.name;
+          const openPR = prByBranch.get(b.name) ?? prByBranch.get(actualBranch);
+          // Recent push detection — fires within LIVE_WINDOW_MS of the
+          // webhook. Used to add a one-shot bright pulse at the tip
+          // (in addition to whatever "live" rendering the tendril is
+          // already doing).
+          const recentPush = latestPushByBranch.get(b.name) ?? latestPushByBranch.get(actualBranch);
+          const justPushed = !!recentPush && isPushFresh(recentPush.ts);
           // "Empty" worktree shells: no commits ahead, no session,
           // no recent activity. The user wants to see these on the
           // timeline but they shouldn't compete visually with active
@@ -919,6 +1142,27 @@ export function MarvelTimeline({
                   {isLive && (
                     <animate attributeName="r" values="7;14;7" dur="1.1s" repeatCount="indefinite" />
                   )}
+                </circle>
+              )}
+              {/* Open-PR ring — branches with an open PR get a doubled
+                  cyan halo around the tip so PR'd work stands out from
+                  raw commits. Drafts render dashed and dimmer to signal
+                  "WIP, not yet ready for review". */}
+              {openPR && !isEmpty && (
+                <circle cx={tipX} cy={yOffset} r="9.5" fill="none"
+                  stroke="#22d3ee"
+                  strokeWidth={openPR.draft ? 1.2 : 1.6}
+                  strokeDasharray={openPR.draft ? '3 3' : undefined}
+                  opacity={openPR.draft ? 0.55 : 0.85} />
+              )}
+              {/* Just-pushed flash — short bright burst at the tip when
+                  a webhook for this branch fired within the live
+                  window. Repeats a couple of times then quiets down
+                  with the LIVE_WINDOW_MS expiry. */}
+              {justPushed && !isEmpty && (
+                <circle cx={tipX} cy={yOffset} r="3" fill="#fffae0" opacity="0">
+                  <animate attributeName="r" values="3;15;3" dur="1s" repeatCount="indefinite" />
+                  <animate attributeName="opacity" values="0.95;0;0" keyTimes="0;0.7;1" dur="1s" repeatCount="indefinite" />
                 </circle>
               )}
               {/* When live: extra outward shockwave ring */}
@@ -992,6 +1236,11 @@ export function MarvelTimeline({
                   )}
                   {wtDirty > 0 && (
                     <tspan fill="#fbbf24" dx="6" fontSize="9.5">·{wtDirty} dirty</tspan>
+                  )}
+                  {openPR && (
+                    <tspan fill="#22d3ee" dx="8" fontSize="9.5" fontWeight="700">
+                      PR #{openPR.number}{openPR.draft ? ' (draft)' : ''}
+                    </tspan>
                   )}
                   {sessionCount > 0 && (
                     <tspan fill="#fff" dx="8" fontSize="9" fontWeight="700" style={{ letterSpacing: '0.1em' }}>

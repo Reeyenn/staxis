@@ -23,10 +23,16 @@ type RoadmapStatus = 'idea' | 'planned' | 'in_progress' | 'done' | 'dropped';
 
 interface Commit {
   sha: string; shortSha: string; message: string; authorName: string; authorEmail: string; ts: string; url: string;
+  checkStatus?: 'passed' | 'failed' | 'pending' | 'neutral' | null;
 }
 interface Deploy {
   target: 'vercel-website' | 'fly-cua';
   commitSha: string | null; shortSha: string | null; deployedAt: string | null; url: string;
+  status?: 'BUILDING' | 'READY' | 'ERROR' | 'CANCELED' | 'QUEUED' | null;
+  inProgress?: boolean;
+  failed?: boolean;
+  startedAt?: string | null;
+  finishedAt?: string | null;
 }
 interface Worktree {
   name: string; branch: string | null; lastActivity: string | null;
@@ -38,6 +44,13 @@ interface Branch {
 interface MergedBranch {
   branchName: string; mergeCommitSha: string; mergedAt: string;
   title: string; url: string; commitCount: number;
+}
+interface Push {
+  branch: string; ts: string; sha: string | null; commitMessage: string | null;
+}
+interface OpenPR {
+  number: number; title: string; branch: string; url: string; draft: boolean;
+  createdAt: string; updatedAt: string;
 }
 
 interface ActiveSession {
@@ -85,6 +98,7 @@ export function SystemTab() {
   const [build, setBuild] = useState<{
     commits: Commit[]; deploys: Deploy[]; worktrees: Worktree[];
     branches?: Branch[]; merged?: MergedBranch[];
+    pushes?: Push[]; openPRs?: OpenPR[];
     mainLatestTs?: string | null;
   } | null>(null);
   const [scheduled, setScheduled] = useState<ScheduledRow[] | null>(null);
@@ -207,6 +221,8 @@ export function SystemTab() {
           worktrees={build.worktrees}
           branches={build.branches ?? []}
           merged={build.merged ?? []}
+          pushes={build.pushes ?? []}
+          openPRs={build.openPRs ?? []}
           mainLatestTs={build.mainLatestTs ?? null}
           activeSessions={activeSessions?.sessions ?? []}
         />

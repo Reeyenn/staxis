@@ -36,6 +36,10 @@ interface Commit {
   authorEmail: string;
   ts: string;
   url: string;           // GitHub commit URL
+  // Aggregated state of all GitHub check-runs on this commit. null when
+  // we couldn't fetch (no token, API failure) — UI treats null as "no
+  // signal" and renders nothing rather than a misleading green tick.
+  checkStatus?: 'passed' | 'failed' | 'pending' | 'neutral' | null;
 }
 
 interface Deploy {
@@ -44,6 +48,14 @@ interface Deploy {
   shortSha: string | null;
   deployedAt: string | null;
   url: string;
+  // Phase 3 live state from provider APIs. Optional so the UI gracefully
+  // handles the case where tokens aren't set (fall back to env-var
+  // snapshot only).
+  status?: 'BUILDING' | 'READY' | 'ERROR' | 'CANCELED' | 'QUEUED' | null;
+  inProgress?: boolean;
+  failed?: boolean;
+  startedAt?: string | null;
+  finishedAt?: string | null;
 }
 
 interface Worktree {
@@ -77,25 +89,55 @@ interface MergedBranch {
   commitCount: number;       // commits in the PR (used to size the arc)
 }
 
+interface Push {
+  branch: string;            // ref the push went to
+  ts: string;                // when github_events row was written ≈ when GitHub fired the webhook
+  sha: string | null;        // head_commit sha if available
+  commitMessage: string | null; // first line of head commit
+}
+
+interface OpenPR {
+  number: number;
+  title: string;
+  branch: string;            // head ref
+  url: string;
+  draft: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const auth = await requireAdmin(req);
   if (!auth.ok) return auth.response;
 
-  const [commits, deploys, worktrees, branches, merged] = await Promise.all([
+  const [commits, deploys, worktrees, branches, merged, pushes, openPRs] = await Promise.all([
     fetchRecentCommits().catch(() => []),
     collectDeploys().catch(() => []),
     listWorktrees().catch(() => []),
     fetchActiveBranches().catch(() => []),
     fetchMergedBranches().catch(() => []),
+    fetchRecentPushes().catch(() => []),
+    fetchOpenPRs().catch(() => []),
+  ]);
+
+  // Phase 3 enrichment: live deploy status (Vercel/Fly APIs) + CI check
+  // status on the latest commits. Both depend on commits[]/deploys[]
+  // already being resolved, so they run in a second wave. Each enricher
+  // is best-effort — failures fall back to the snapshot data.
+  const [enrichedDeploys, commitsWithChecks] = await Promise.all([
+    enrichDeploysWithLiveStatus(deploys).catch(() => deploys),
+    enrichCommitsWithCheckStatus(commits).catch(() => commits),
   ]);
 
   // Newest activity timestamp across the repo. The UI uses this to flag
   // "main is alive right now" when a commit just landed.
-  const mainLatestTs = commits[0]?.ts ?? null;
+  const mainLatestTs = commitsWithChecks[0]?.ts ?? null;
 
   return ok({
-    commits, deploys, worktrees, branches, merged,
+    commits: commitsWithChecks,
+    deploys: enrichedDeploys,
+    worktrees, branches, merged, pushes, openPRs,
     mainLatestTs,
     serverNow: new Date().toISOString(),
   }, { requestId });
@@ -268,6 +310,224 @@ async function readWorktreesFromDb(): Promise<Worktree[]> {
     commitsBehind: (r.commits_behind as number | null) ?? 0,
     headMessage: (r.head_message as string | null) ?? null,
   }));
+}
+
+async function fetchRecentPushes(): Promise<Push[]> {
+  // Pull push events from the last 5 minutes. The github-webhook route
+  // writes a row per push (within ~250ms of the push happening on
+  // GitHub) so this query gives us a precise "I just pushed" signal
+  // distinct from commit-author-timestamp.
+  const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  const { data, error } = await supabaseAdmin
+    .from('github_events')
+    .select('event_type, branch, metadata, created_at')
+    .eq('event_type', 'push')
+    .gte('created_at', cutoff)
+    .order('created_at', { ascending: false })
+    .limit(50);
+  if (error || !data) return [];
+
+  return data.map((row) => {
+    const meta = (row.metadata ?? {}) as { head_commit?: string | null; commit_message?: string | null };
+    // The webhook stores the GitHub `ref` in `branch` — that's
+    // `refs/heads/<name>` for pushes. Strip the prefix so the UI can
+    // match against branch names directly.
+    const rawBranch = (row.branch as string | null) ?? '';
+    const branch = rawBranch.startsWith('refs/heads/')
+      ? rawBranch.slice('refs/heads/'.length)
+      : rawBranch;
+    return {
+      branch,
+      ts: row.created_at as string,
+      sha: meta.head_commit ?? null,
+      commitMessage: meta.commit_message ?? null,
+    };
+  }).filter((p) => p.branch.length > 0);
+}
+
+async function fetchOpenPRs(): Promise<OpenPR[]> {
+  const headers: Record<string, string> = { 'User-Agent': 'staxis-admin' };
+  if (process.env.GITHUB_TOKEN) {
+    headers['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;
+  }
+  const res = await fetch(
+    `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/pulls?state=open&base=main&sort=updated&direction=desc&per_page=20`,
+    { headers, next: { revalidate: 30, tags: ['github-data'] } },
+  );
+  if (!res.ok) return [];
+  const json = await res.json() as Array<{
+    number: number;
+    title: string;
+    head: { ref: string };
+    html_url: string;
+    draft: boolean;
+    created_at: string;
+    updated_at: string;
+  }>;
+  return json.map((pr) => ({
+    number: pr.number,
+    title: pr.title,
+    branch: pr.head.ref,
+    url: pr.html_url,
+    draft: pr.draft,
+    createdAt: pr.created_at,
+    updatedAt: pr.updated_at,
+  }));
+}
+
+async function enrichCommitsWithCheckStatus(commits: Commit[]): Promise<Commit[]> {
+  // GitHub /check-runs endpoint is per-commit, so we limit to the latest
+  // 3 to keep the request count bounded. The latest commit is the one
+  // that matters most — Reeyen wants to see "did the last thing I
+  // pushed pass CI?" at a glance. Older commits' status would be
+  // pure trivia.
+  if (commits.length === 0) return commits;
+  if (!process.env.GITHUB_TOKEN) return commits;
+  const headers: Record<string, string> = {
+    'User-Agent': 'staxis-admin',
+    'Authorization': `Bearer ${process.env.GITHUB_TOKEN}`,
+    'Accept': 'application/vnd.github+json',
+  };
+
+  const targets = commits.slice(0, 3);
+  const enriched = await Promise.all(targets.map(async (c) => {
+    try {
+      const res = await fetch(
+        `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/commits/${c.sha}/check-runs?per_page=30`,
+        { headers, next: { revalidate: 20, tags: ['github-data'] } },
+      );
+      if (!res.ok) return { ...c, checkStatus: null };
+      const json = await res.json() as {
+        check_runs: Array<{ status: string; conclusion: string | null }>;
+      };
+      const runs = json.check_runs ?? [];
+      if (runs.length === 0) return { ...c, checkStatus: null };
+
+      // Collapse N runs into a single status:
+      //   - any failure / timeout / action_required → 'failed'
+      //   - any still-running (queued/in_progress) → 'pending'
+      //   - all conclusion === 'success' → 'passed'
+      //   - else → 'neutral'
+      const failed = runs.some((r) => r.conclusion === 'failure' || r.conclusion === 'timed_out' || r.conclusion === 'action_required' || r.conclusion === 'cancelled');
+      if (failed) return { ...c, checkStatus: 'failed' as const };
+      const pending = runs.some((r) => r.status !== 'completed');
+      if (pending) return { ...c, checkStatus: 'pending' as const };
+      const allPass = runs.every((r) => r.conclusion === 'success' || r.conclusion === 'skipped' || r.conclusion === 'neutral');
+      return { ...c, checkStatus: allPass ? 'passed' as const : 'neutral' as const };
+    } catch {
+      return { ...c, checkStatus: null };
+    }
+  }));
+
+  // Stitch enriched results back over the originals. Anything past the
+  // first 3 keeps its (undefined) checkStatus.
+  return commits.map((c, i) => i < enriched.length ? enriched[i] : c);
+}
+
+async function fetchVercelDeployStatus(): Promise<Partial<Deploy> | null> {
+  const token = process.env.VERCEL_API_TOKEN;
+  const projectId = process.env.VERCEL_PROJECT_ID;
+  if (!token || !projectId) return null;
+  try {
+    const teamParam = process.env.VERCEL_TEAM_ID ? `&teamId=${process.env.VERCEL_TEAM_ID}` : '';
+    const res = await fetch(
+      `https://api.vercel.com/v6/deployments?projectId=${projectId}&limit=5${teamParam}`,
+      {
+        headers: { 'Authorization': `Bearer ${token}` },
+        next: { revalidate: 15, tags: ['deploy-status'] },
+      },
+    );
+    if (!res.ok) return null;
+    const json = await res.json() as {
+      deployments: Array<{
+        uid: string;
+        url: string;
+        state: string;
+        meta?: { githubCommitSha?: string };
+        createdAt: number;
+        ready?: number;
+        buildingAt?: number;
+      }>;
+    };
+    const latest = json.deployments?.[0];
+    if (!latest) return null;
+    // Vercel's "state" maps cleanly to our Deploy.status enum.
+    const state = latest.state as Deploy['status'];
+    const sha = latest.meta?.githubCommitSha ?? null;
+    return {
+      commitSha: sha,
+      shortSha: sha?.slice(0, 7) ?? null,
+      deployedAt: latest.ready ? new Date(latest.ready).toISOString() : null,
+      startedAt: latest.buildingAt ? new Date(latest.buildingAt).toISOString() : new Date(latest.createdAt).toISOString(),
+      finishedAt: latest.ready ? new Date(latest.ready).toISOString() : null,
+      url: `https://${latest.url}`,
+      status: state,
+      inProgress: state === 'BUILDING' || state === 'QUEUED',
+      failed: state === 'ERROR' || state === 'CANCELED',
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchFlyDeployStatus(): Promise<Partial<Deploy> | null> {
+  const token = process.env.FLY_API_TOKEN;
+  const app = process.env.FLY_APP_NAME ?? 'staxis-cua';
+  if (!token) return null;
+  try {
+    // Fly's REST machines API exposes /apps/{app}/releases for deploy
+    // history. The latest release tells us the most recent deploy and
+    // its status (succeeded/failed/running).
+    const res = await fetch(
+      `https://api.machines.dev/v1/apps/${app}/releases`,
+      {
+        headers: { 'Authorization': `Bearer ${token}` },
+        next: { revalidate: 15, tags: ['deploy-status'] },
+      },
+    );
+    if (!res.ok) return null;
+    const json = await res.json() as Array<{
+      id: string;
+      version: number;
+      status: string;
+      created_at: string;
+      image_ref?: { tag?: string };
+    }>;
+    const latest = json[0];
+    if (!latest) return null;
+    // Fly statuses we map: 'running'|'queued' → BUILDING; 'failed'|'cancelled' → ERROR;
+    // 'succeeded'|'complete' → READY.
+    let mapped: Deploy['status'] = null;
+    const status = latest.status?.toLowerCase() ?? '';
+    if (status === 'running' || status === 'pending' || status === 'queued') mapped = 'BUILDING';
+    else if (status === 'failed' || status === 'cancelled') mapped = 'ERROR';
+    else if (status === 'succeeded' || status === 'complete' || status === 'completed') mapped = 'READY';
+    return {
+      deployedAt: latest.created_at,
+      startedAt: latest.created_at,
+      finishedAt: mapped === 'READY' ? latest.created_at : null,
+      status: mapped,
+      inProgress: mapped === 'BUILDING',
+      failed: mapped === 'ERROR',
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function enrichDeploysWithLiveStatus(deploys: Deploy[]): Promise<Deploy[]> {
+  // Fetch both providers in parallel; merge into the snapshot deploys
+  // returned by collectDeploys(). Failure of either falls through silently
+  // — the timeline will just show the env-var snapshot for that target.
+  const [vercel, fly] = await Promise.all([
+    fetchVercelDeployStatus(),
+    fetchFlyDeployStatus(),
+  ]);
+  return deploys.map((d) => {
+    if (d.target === 'vercel-website' && vercel) return { ...d, ...vercel };
+    if (d.target === 'fly-cua' && fly) return { ...d, ...fly };
+    return d;
+  });
 }
 
 async function listWorktrees(): Promise<Worktree[]> {
