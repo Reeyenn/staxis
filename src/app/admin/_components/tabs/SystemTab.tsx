@@ -40,10 +40,10 @@ interface MergedBranch {
   title: string; url: string; commitCount: number;
 }
 
-// Poll interval for the System tab. Short enough that "I just committed
-// → I see it on the timeline" feels real-time, long enough that we don't
-// hammer the GitHub API rate limit (60 req/hr unauthenticated).
-const REFRESH_MS = 30_000;
+// Poll interval for the System tab. With GITHUB_TOKEN set on Vercel
+// the auth quota is 5000 calls/hr — at 10s polling against 10s server
+// cache we use ~3960/hr, well under the cap.
+const REFRESH_MS = 10_000;
 interface ScheduledRow {
   propertyId: string; propertyName: string | null;
   lastSuccessAt: string | null; lastFailedAt: string | null;
@@ -136,7 +136,7 @@ export function SystemTab() {
       {/* 1. Marvel timeline */}
       <section>
         <h2 style={sectionTitle}>The sacred timeline</h2>
-        <p style={sectionHint}>Main flows left → right. Tendrils branching off are work-in-progress; arcs that loop back are branches that came home. Anything with activity in the last 5 minutes pulses live. Auto-refreshes every 30s.</p>
+        <p style={sectionHint}>Main flows left → right. Tendrils branching off are work-in-progress; arcs that loop back are branches that came home. Anything with activity in the last 5 minutes pulses live. Auto-refreshes every 10s.</p>
         <MarvelTimeline
           commits={build.commits}
           deploys={build.deploys}
