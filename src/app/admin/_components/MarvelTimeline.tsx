@@ -39,10 +39,21 @@ interface Worktree {
   lastActivity: string | null;
 }
 
+interface Branch {
+  name: string;
+  shortSha: string;
+  latestMessage: string;
+  latestTs: string | null;
+  aheadOfMain: number;
+  behindMain: number;
+  url: string;
+}
+
 export function MarvelTimeline({
-  commits, deploys, worktrees,
-}: { commits: Commit[]; deploys: Deploy[]; worktrees: Worktree[] }) {
+  commits, deploys, worktrees, branches,
+}: { commits: Commit[]; deploys: Deploy[]; worktrees: Worktree[]; branches?: Branch[] }) {
   const [hover, setHover] = useState<Commit | null>(null);
+  const [hoverBranch, setHoverBranch] = useState<Branch | null>(null);
 
   if (commits.length === 0) {
     return (
@@ -63,9 +74,13 @@ export function MarvelTimeline({
   // Geometry
   const padding = 40;
   const width = 1100;                                 // viewBox width (responsive via SVG scaling)
-  const trunkY = 100;                                 // y of the main branch trunk
+  const trunkY = 110;                                 // y of the main branch trunk
   const innerW = width - padding * 2;
   const step = commits.length > 1 ? innerW / (commits.length - 1) : 0;
+
+  // Dynamic SVG height: base 220, plus extra room if we have branches
+  const branchList = branches ?? [];
+  const svgHeight = branchList.length > 0 ? 260 : 220;
 
   // Newest commit on the left visually is too "modern app"-feeling. We
   // place oldest on the LEFT, newest on the RIGHT, so time flows left
@@ -90,7 +105,7 @@ export function MarvelTimeline({
         background: 'radial-gradient(ellipse at top, rgba(255,165,68,0.12), transparent 60%)',
       }} />
 
-      <svg viewBox={`0 0 ${width} 220`} style={{ width: '100%', height: 'auto', display: 'block', position: 'relative' }}>
+      <svg viewBox={`0 0 ${width} ${svgHeight}`} style={{ width: '100%', height: 'auto', display: 'block', position: 'relative' }}>
         <defs>
           <linearGradient id="trunkGradient" x1="0" y1="0" x2="1" y2="0">
             <stop offset="0%" stopColor="#7d4a13" />
@@ -155,7 +170,54 @@ export function MarvelTimeline({
           </g>
         ))}
 
-        {/* Worktree side-streams (drawn below the trunk) */}
+        {/* Branch side-streams (drawn ABOVE the trunk — server-visible
+            "multiverse" view, branches that haven't merged into main).
+            Each splits off from its divergence point on main and curves
+            up to a pulsing dot labeled with the branch name. */}
+        {branchList.slice(0, 6).map((b, i) => {
+          const colors = ['#fb7185', '#a78bfa', '#34d399', '#60a5fa', '#facc15', '#f472b6'];
+          const c = colors[i % colors.length];
+          // Divergence point on main: behindMain commits BEHIND the tip.
+          // ordered[] is oldest-first, so tip index = ordered.length - 1.
+          // If behindMain >= ordered.length, anchor at the leftmost commit.
+          const divergeIdx = Math.max(0, ordered.length - 1 - b.behindMain);
+          const startX = positionFor(divergeIdx);
+          const yOffset = trunkY - 35 - i * 18;
+          // End at the right edge so the branch "fans out" past the tip,
+          // visualizing forward-progress beyond main.
+          const endX = Math.min(width - padding - 10, latestX + 30 + i * 14);
+          const isHover = hoverBranch?.name === b.name;
+          return (
+            <g
+              key={b.name}
+              onMouseEnter={() => setHoverBranch(b)}
+              onMouseLeave={() => setHoverBranch(null)}
+              style={{ cursor: 'pointer' }}
+              onClick={() => window.open(b.url, '_blank', 'noopener')}
+            >
+              {/* Curved split-off from main */}
+              <path
+                d={`M ${startX} ${trunkY} Q ${startX + 20} ${yOffset + 10} ${startX + 60} ${yOffset}`}
+                stroke={c} strokeWidth={isHover ? 3 : 2} fill="none" opacity={isHover ? 1 : 0.75}
+              />
+              {/* Horizontal stretch to the tip */}
+              <line x1={startX + 60} y1={yOffset} x2={endX} y2={yOffset}
+                stroke={c} strokeWidth={isHover ? 3 : 2} strokeDasharray="3,3" opacity={isHover ? 1 : 0.75} />
+              {/* Pulsing tip dot */}
+              <circle cx={endX} cy={yOffset} r="5" fill={c} filter="url(#glow)">
+                <animate attributeName="opacity" values="0.5;1;0.5" dur="1.8s" repeatCount="indefinite" />
+              </circle>
+              {/* Branch label */}
+              <text x={endX - 8} y={yOffset - 8} textAnchor="end" fontSize="10"
+                fill="rgba(255,255,255,0.85)" fontFamily="monospace" style={{ userSelect: 'none' }}>
+                {b.name} <tspan fill={c}>+{b.aheadOfMain}</tspan>
+              </text>
+            </g>
+          );
+        })}
+
+        {/* Worktree side-streams — drawn BELOW the trunk. These are
+            local-only (Reeyen's dev machine) and only render in dev. */}
         {worktrees.slice(0, 4).map((w, i) => {
           const yOffset = trunkY + 50 + i * 20;
           const colors = ['#fb7185', '#a78bfa', '#34d399', '#60a5fa'];
@@ -180,7 +242,7 @@ export function MarvelTimeline({
       </svg>
 
       {/* Floating tooltip */}
-      {hover && (
+      {(hover || hoverBranch) && (
         <div style={{
           position: 'absolute',
           top: '12px',
@@ -191,14 +253,26 @@ export function MarvelTimeline({
           color: 'white',
           borderRadius: '8px',
           fontSize: '12px',
-          maxWidth: '480px',
+          maxWidth: '520px',
           pointerEvents: 'none',
           backdropFilter: 'blur(8px)',
         }}>
-          <div style={{ fontFamily: 'monospace', opacity: 0.6, fontSize: '10px', marginBottom: '2px' }}>
-            {hover.shortSha} · {hover.authorName} · {timeAgo(hover.ts)}
-          </div>
-          <div>{hover.message}</div>
+          {hover && (
+            <>
+              <div style={{ fontFamily: 'monospace', opacity: 0.6, fontSize: '10px', marginBottom: '2px' }}>
+                {hover.shortSha} · {hover.authorName} · {timeAgo(hover.ts)}
+              </div>
+              <div>{hover.message}</div>
+            </>
+          )}
+          {hoverBranch && !hover && (
+            <>
+              <div style={{ fontFamily: 'monospace', opacity: 0.6, fontSize: '10px', marginBottom: '2px' }}>
+                {hoverBranch.name} · +{hoverBranch.aheadOfMain} ahead{hoverBranch.behindMain > 0 ? ` · -${hoverBranch.behindMain} behind` : ''}{hoverBranch.latestTs ? ` · ${timeAgo(hoverBranch.latestTs)}` : ''}
+              </div>
+              <div>{hoverBranch.latestMessage}</div>
+            </>
+          )}
         </div>
       )}
 
@@ -223,10 +297,16 @@ export function MarvelTimeline({
           <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#c4b5fd' }} />
           cua deploy
         </span>
-        {worktrees.length > 0 && (
+        {branchList.length > 0 && (
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
             <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#fb7185' }} />
-            active worktrees ({worktrees.length})
+            active branches ({branchList.length})
+          </span>
+        )}
+        {worktrees.length > 0 && (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+            <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#34d399' }} />
+            local worktrees ({worktrees.length})
           </span>
         )}
         <a

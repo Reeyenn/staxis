@@ -51,18 +51,82 @@ interface Worktree {
   lastActivity: string | null;
 }
 
+interface Branch {
+  name: string;
+  shortSha: string;          // tip commit (7 chars)
+  latestMessage: string;     // first line of tip commit message
+  latestTs: string | null;   // ISO timestamp of tip commit
+  aheadOfMain: number;       // commits unique to this branch
+  behindMain: number;
+  url: string;               // GitHub branch URL
+}
+
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const auth = await requireAdmin(req);
   if (!auth.ok) return auth.response;
 
-  const [commits, deploys, worktrees] = await Promise.all([
+  const [commits, deploys, worktrees, branches] = await Promise.all([
     fetchRecentCommits().catch(() => []),
     collectDeploys().catch(() => []),
     listWorktrees().catch(() => []),
+    fetchActiveBranches().catch(() => []),
   ]);
 
-  return ok({ commits, deploys, worktrees }, { requestId });
+  return ok({ commits, deploys, worktrees, branches }, { requestId });
+}
+
+async function fetchActiveBranches(): Promise<Branch[]> {
+  // List all branches (1 call) → compare each non-main against main in
+  // parallel → keep the ones still ahead of main. That gives us the
+  // "Loki branching off the sacred timeline" effect for any work that
+  // hasn't merged yet.
+  const headers: Record<string, string> = { 'User-Agent': 'staxis-admin' };
+  if (process.env.GITHUB_TOKEN) {
+    headers['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;
+  }
+
+  const listRes = await fetch(
+    `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/branches?per_page=30`,
+    { headers, next: { revalidate: 120 } },
+  );
+  if (!listRes.ok) return [];
+  const branches = await listRes.json() as Array<{ name: string; commit: { sha: string } }>;
+
+  const nonMain = branches.filter((b) => b.name !== 'main' && b.name !== 'master');
+  if (nonMain.length === 0) return [];
+
+  const compares = await Promise.all(nonMain.map(async (b) => {
+    try {
+      const res = await fetch(
+        `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/compare/main...${encodeURIComponent(b.name)}`,
+        { headers, next: { revalidate: 120 } },
+      );
+      if (!res.ok) return null;
+      const data = await res.json() as {
+        ahead_by: number;
+        behind_by: number;
+        commits: Array<{ sha: string; commit: { message: string; author: { date: string } } }>;
+      };
+      const tip = data.commits[data.commits.length - 1];
+      return {
+        name: b.name,
+        shortSha: b.commit.sha.slice(0, 7),
+        latestMessage: tip ? tip.commit.message.split('\n')[0] : '',
+        latestTs: tip ? tip.commit.author.date : null,
+        aheadOfMain: data.ahead_by,
+        behindMain: data.behind_by,
+        url: `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/tree/${encodeURIComponent(b.name)}`,
+      } satisfies Branch;
+    } catch {
+      return null;
+    }
+  }));
+
+  return compares
+    .filter((b): b is Branch => b !== null && b.aheadOfMain > 0)
+    .sort((a, b) => (b.latestTs ?? '').localeCompare(a.latestTs ?? ''))
+    .slice(0, 8);
 }
 
 async function fetchRecentCommits(): Promise<Commit[]> {
