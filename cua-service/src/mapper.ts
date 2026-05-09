@@ -33,12 +33,26 @@ const MAX_AGENT_STEPS_PER_ACTION = 80;
 const VIEWPORT = { width: 1280, height: 800 };
 
 // Token + wallclock guards. Browser-tool's read_page is the heaviest call
-// — DOM trees can be 5-30K tokens each. truncateOldHistory() keeps the
-// last N results so a 60-step run stays under the input cap.
-const MAX_INPUT_TOKENS_PER_RUN = 400_000;
+// — DOM trees can be 5-30K tokens each. We aggressively truncate to keep
+// per-turn context bounded:
+//   - Only the LATEST read_page output is kept verbatim; older ones
+//     become a 1-line marker. The agent only acts on the current state.
+//   - Same for screenshots — only the latest is kept.
+//   - We also TRUNCATE huge tool_result text (> READ_PAGE_TRUNCATE_CHARS)
+//     before sending. CA's DOM trees can be 100K+ chars; sending those
+//     once burns the budget on its own.
+//
+// Combined with prompt caching on the system prompt, a 60-step run on
+// CA fits well under MAX_INPUT_TOKENS_PER_RUN.
+const MAX_INPUT_TOKENS_PER_RUN = 800_000;
 const MAX_OUTPUT_TOKENS_PER_TURN = 2048;
 const PHASE_WALLCLOCK_BUDGET_MS = 5 * 60_000;
-const HISTORY_KEEP_RECENT = 3;
+const HISTORY_KEEP_RECENT = 1;
+// Truncate any single read_page or get_page_text result over this size.
+// 20K chars ≈ 5-6K tokens. Most pages have a few hundred interactive
+// elements; this is more than enough for navigation, less than enough
+// to drown the agent in noise.
+const READ_PAGE_TRUNCATE_CHARS = 20_000;
 
 interface MapperOptions {
   pmsType: PMSType;
@@ -223,21 +237,38 @@ async function mapLogin(page: Page, creds: PMSCredentials): Promise<LoginMapResu
       };
     }
 
-    const response = await anthropic.messages.create({
+    // Beta-API call so we can attach `cache_control` to the system block.
+    // The system prompt + tool definitions are stable across the entire
+    // mapping run; caching them means each turn after the first only pays
+    // ~10% of their input-token cost. This was the dominant fix for the
+    // 400K-token-budget exhaustion on CA's deep menus. (Pattern from
+    // anthropic-quickstarts/browser-use-demo loop.py.)
+    const response = await anthropic.beta.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: MAX_OUTPUT_TOKENS_PER_TURN,
-      system: MAPPING_SYSTEM_PROMPT,
-      tools: [BROWSER_TOOL as unknown as Anthropic.Messages.Tool],
-      messages: truncateOldHistory(messages, HISTORY_KEEP_RECENT),
+      system: [
+        {
+          type: 'text',
+          text: MAPPING_SYSTEM_PROMPT,
+          cache_control: { type: 'ephemeral' },
+        },
+      ],
+      tools: [BROWSER_TOOL as unknown as Anthropic.Beta.Messages.BetaToolUnion],
+      messages: truncateOldHistory(messages, HISTORY_KEEP_RECENT) as Anthropic.Beta.Messages.BetaMessageParam[],
+      betas: ['prompt-caching-2024-07-31'],
     });
 
     totalInputTokens += response.usage?.input_tokens ?? 0;
     totalOutputTokens += response.usage?.output_tokens ?? 0;
 
-    messages.push({ role: 'assistant', content: response.content });
+    // Beta and non-beta content shapes are structurally identical at the
+    // wire layer; only the SDK's TypeScript types differ. Cast to keep
+    // the rest of the code working with the regular Messages types.
+    const responseContent = response.content as unknown as Anthropic.Messages.ContentBlock[];
+    messages.push({ role: 'assistant', content: responseContent });
 
     if (response.stop_reason === 'end_turn') {
-      const finalText = extractFinalText(response.content);
+      const finalText = extractFinalText(responseContent);
       const parsed = tryParseJson(finalText) as { loggedIn?: unknown; dashboardSelector?: unknown; error?: unknown } | null;
       if (parsed && parsed.loggedIn) {
         const successSelector = typeof parsed.dashboardSelector === 'string' ? parsed.dashboardSelector : 'body';
@@ -264,7 +295,7 @@ async function mapLogin(page: Page, creds: PMSCredentials): Promise<LoginMapResu
     // missing one trips a 400. So iterate all tool_uses, execute each,
     // and bundle all tool_results into a single user message. (Bug fix
     // 2026-05-09 — first browser-tool deploy hit this within seconds.)
-    const toolUses = response.content.filter((c): c is Anthropic.Messages.ToolUseBlock => c.type === 'tool_use');
+    const toolUses = responseContent.filter((c): c is Anthropic.Messages.ToolUseBlock => c.type === 'tool_use');
     if (toolUses.length === 0) break;
 
     const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
@@ -357,20 +388,34 @@ async function mapAction(args: {
       return { ok: false, reason: 'wallclock budget exceeded', finalUrl: args.page.url() };
     }
 
-    const response = await anthropic.messages.create({
+    // Beta-API call so we can attach `cache_control` to the system block.
+    // The system prompt + tool definitions are stable across the entire
+    // mapping run; caching them means each turn after the first only pays
+    // ~10% of their input-token cost. This was the dominant fix for the
+    // 400K-token-budget exhaustion on CA's deep menus. (Pattern from
+    // anthropic-quickstarts/browser-use-demo loop.py.)
+    const response = await anthropic.beta.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: MAX_OUTPUT_TOKENS_PER_TURN,
-      system: MAPPING_SYSTEM_PROMPT,
-      tools: [BROWSER_TOOL as unknown as Anthropic.Messages.Tool],
-      messages: truncateOldHistory(messages, HISTORY_KEEP_RECENT),
+      system: [
+        {
+          type: 'text',
+          text: MAPPING_SYSTEM_PROMPT,
+          cache_control: { type: 'ephemeral' },
+        },
+      ],
+      tools: [BROWSER_TOOL as unknown as Anthropic.Beta.Messages.BetaToolUnion],
+      messages: truncateOldHistory(messages, HISTORY_KEEP_RECENT) as Anthropic.Beta.Messages.BetaMessageParam[],
+      betas: ['prompt-caching-2024-07-31'],
     });
 
     totalInputTokens += response.usage?.input_tokens ?? 0;
 
-    messages.push({ role: 'assistant', content: response.content });
+    const responseContent = response.content as unknown as Anthropic.Messages.ContentBlock[];
+    messages.push({ role: 'assistant', content: responseContent });
 
     if (response.stop_reason === 'end_turn') {
-      const finalText = extractFinalText(response.content);
+      const finalText = extractFinalText(responseContent);
       const parsed = tryParseJson(finalText) as
         | { rowSelector?: unknown; columns?: unknown; url?: unknown; unavailable?: unknown; reason?: unknown }
         | null;
@@ -408,7 +453,7 @@ async function mapAction(args: {
     }
 
     // Same multi-tool_use handling as in mapLogin — see comment there.
-    const toolUses = response.content.filter((c): c is Anthropic.Messages.ToolUseBlock => c.type === 'tool_use');
+    const toolUses = responseContent.filter((c): c is Anthropic.Messages.ToolUseBlock => c.type === 'tool_use');
     if (toolUses.length === 0) break;
 
     const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
@@ -457,13 +502,19 @@ function extractFinalText(content: Anthropic.Messages.ContentBlock[]): string {
 }
 
 /**
- * Walk the message history and elide older heavy content — both screenshots
- * (image blocks inside tool_result) and large read_page text blocks. Keeps
- * the most recent `keepLast` instances of each in full; older ones become
- * a tiny placeholder.
+ * Walk the message history and elide older heavy content. Two passes:
+ *   1. ELIDE — older instances (past `keepLast`) of screenshots and
+ *      large text blocks (read_page output, get_page_text) become a
+ *      one-line marker.
+ *   2. TRUNCATE — even kept text blocks are capped at
+ *      READ_PAGE_TRUNCATE_CHARS, with a clear note so the agent knows
+ *      output was clipped. CA's DOM trees are 100K+ chars — sending
+ *      one whole one burns the budget on its own.
  *
- * Without this, a 30-step mapping run quadratically blows up because every
- * turn re-sends ALL prior screenshots + DOM trees.
+ * Without this, a 60-step run on a deep menu structure exhausts the
+ * 400K input-token cap before reaching the data page. (Diagnosed
+ * 2026-05-09 from CA canary v4 — 3/4 actions all failed at "token
+ * budget exceeded" despite reaching the right URL.)
  */
 function truncateOldHistory(
   messages: Anthropic.Messages.MessageParam[],
@@ -472,6 +523,12 @@ function truncateOldHistory(
   let imagesSeen = 0;
   let bigTextSeen = 0;
   const BIG_TEXT_THRESHOLD = 1500;
+
+  const trimText = (text: string) => {
+    if (text.length <= READ_PAGE_TRUNCATE_CHARS) return text;
+    const head = text.slice(0, READ_PAGE_TRUNCATE_CHARS);
+    return `${head}\n\n[…truncated ${text.length - READ_PAGE_TRUNCATE_CHARS} chars — page is large; use \`find\` or \`execute_js\` for narrower searches]`;
+  };
 
   const reversed = [...messages].reverse().map((msg) => {
     if (msg.role !== 'user' || !Array.isArray(msg.content)) return msg;
@@ -483,12 +540,15 @@ function truncateOldHistory(
             if (imagesSeen > keepLast) {
               return { type: 'text' as const, text: '[older screenshot elided]' };
             }
+            return b;
           }
           if (b.type === 'text' && b.text.length > BIG_TEXT_THRESHOLD) {
             bigTextSeen++;
             if (bigTextSeen > keepLast) {
               return { type: 'text' as const, text: `[older read_page output elided — was ${b.text.length} chars]` };
             }
+            // Kept — but still truncate if very large.
+            return { ...b, text: trimText(b.text) };
           }
           return b;
         });
