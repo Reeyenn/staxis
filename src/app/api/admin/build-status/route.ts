@@ -475,37 +475,40 @@ async function fetchFlyDeployStatus(): Promise<Partial<Deploy> | null> {
   const app = process.env.FLY_APP_NAME ?? 'staxis-cua';
   if (!token) return null;
   try {
-    // Fly's REST machines API exposes /apps/{app}/releases for deploy
-    // history. The latest release tells us the most recent deploy and
-    // its status (succeeded/failed/running).
+    // The Machines REST API doesn't expose a /releases endpoint, so we
+    // use Fly's GraphQL gateway. Returns the last 3 releases ordered
+    // newest-first; we take [0] for the current state.
     const res = await fetch(
-      `https://api.machines.dev/v1/apps/${app}/releases`,
+      `https://api.fly.io/graphql`,
       {
-        headers: { 'Authorization': `Bearer ${token}` },
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          query: `{ app(name:"${app}") { releases(first:3) { nodes { version status createdAt } } } }`,
+        }),
         next: { revalidate: 15, tags: ['deploy-status'] },
       },
     );
     if (!res.ok) return null;
-    const json = await res.json() as Array<{
-      id: string;
-      version: number;
-      status: string;
-      created_at: string;
-      image_ref?: { tag?: string };
-    }>;
-    const latest = json[0];
+    const json = await res.json() as {
+      data?: { app?: { releases?: { nodes?: Array<{ version: number; status: string; createdAt: string }> } } };
+    };
+    const latest = json.data?.app?.releases?.nodes?.[0];
     if (!latest) return null;
-    // Fly statuses we map: 'running'|'queued' → BUILDING; 'failed'|'cancelled' → ERROR;
-    // 'succeeded'|'complete' → READY.
+    // Fly statuses map: 'running'|'queued'|'pending' → BUILDING;
+    // 'failed'|'cancelled'|'dead' → ERROR; 'complete'|'succeeded' → READY.
     let mapped: Deploy['status'] = null;
     const status = latest.status?.toLowerCase() ?? '';
     if (status === 'running' || status === 'pending' || status === 'queued') mapped = 'BUILDING';
-    else if (status === 'failed' || status === 'cancelled') mapped = 'ERROR';
-    else if (status === 'succeeded' || status === 'complete' || status === 'completed') mapped = 'READY';
+    else if (status === 'failed' || status === 'cancelled' || status === 'dead') mapped = 'ERROR';
+    else if (status === 'complete' || status === 'completed' || status === 'succeeded') mapped = 'READY';
     return {
-      deployedAt: latest.created_at,
-      startedAt: latest.created_at,
-      finishedAt: mapped === 'READY' ? latest.created_at : null,
+      deployedAt: latest.createdAt,
+      startedAt: latest.createdAt,
+      finishedAt: mapped === 'READY' ? latest.createdAt : null,
       status: mapped,
       inProgress: mapped === 'BUILDING',
       failed: mapped === 'ERROR',
