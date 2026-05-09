@@ -440,9 +440,26 @@ async function executeComputerAction(
       };
     }
 
-    case 'key':
-      await page.keyboard.press(action.text);
-      return { message: `pressed ${action.text}`, recordedStep: { kind: 'press_key', key: action.text } };
+    case 'key': {
+      // Claude's computer-use tool emits keys like "ctrl", "alt", "shift",
+      // "ctrl+a", "Return", etc. Playwright's keyboard.press() accepts
+      // a different set: single keys (Enter, Tab, Escape) or chords
+      // joined with "+" using PascalCase modifier names (Control+A).
+      // Normalize before pressing; if the key still isn't accepted,
+      // catch the error and report it back to the agent as text so the
+      // mapping run continues instead of crashing.
+      const normalized = normalizeKey(action.text);
+      try {
+        await page.keyboard.press(normalized);
+        return { message: `pressed ${normalized}`, recordedStep: { kind: 'press_key', key: normalized } };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.warn('key press unsupported by Playwright — surfacing to agent', {
+          requested: action.text, normalized, err: msg,
+        });
+        return { message: `key "${action.text}" was not accepted by the browser (${msg}). Try a different key or a click instead.` };
+      }
+    }
 
     case 'mouse_move':
       await page.mouse.move(action.coordinate[0], action.coordinate[1]);
@@ -483,6 +500,56 @@ function extractFinalText(content: Anthropic.Messages.ContentBlock[]): string {
     .filter((c): c is Anthropic.Messages.TextBlock => c.type === 'text')
     .map((c) => c.text)
     .join('\n');
+}
+
+/**
+ * Normalize a key string from Claude's computer-use tool format into
+ * Playwright's keyboard.press() format.
+ *
+ * Claude emits:  "ctrl", "alt", "shift", "ctrl+a", "Return", "tab", ...
+ * Playwright wants: "Control", "Alt", "Shift", "Control+A", "Enter",
+ *                   "Tab" — PascalCase, modifiers spelled out, "+" join.
+ *
+ * If a single bare modifier ("ctrl") arrives — which Playwright's
+ * press() rejects — we map it to its PascalCase form. The downstream
+ * try/catch handles any keys we miss here by returning the error to
+ * the agent as text instead of crashing the run.
+ */
+function normalizeKey(raw: string): string {
+  const modifierMap: Record<string, string> = {
+    ctrl:    'Control',
+    control: 'Control',
+    alt:     'Alt',
+    shift:   'Shift',
+    cmd:     'Meta',
+    command: 'Meta',
+    win:     'Meta',
+    windows: 'Meta',
+    meta:    'Meta',
+    super:   'Meta',
+    return:  'Enter',
+    enter:   'Enter',
+    esc:     'Escape',
+    escape:  'Escape',
+    tab:     'Tab',
+    space:   'Space',
+    backspace: 'Backspace',
+    delete:  'Delete',
+    up:      'ArrowUp',
+    down:    'ArrowDown',
+    left:    'ArrowLeft',
+    right:   'ArrowRight',
+  };
+  const parts = raw.split('+').map((p) => p.trim()).filter(Boolean);
+  const mapped = parts.map((p) => {
+    const lower = p.toLowerCase();
+    if (modifierMap[lower]) return modifierMap[lower];
+    // Single character: uppercase it (Playwright wants "A" not "a" for chords).
+    if (p.length === 1) return p.toUpperCase();
+    // Multi-char unknown — capitalize first letter as a best guess.
+    return p.charAt(0).toUpperCase() + p.slice(1);
+  });
+  return mapped.join('+');
 }
 
 /**
