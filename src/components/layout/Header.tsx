@@ -44,6 +44,7 @@ export function Header() {
     ...baseNavLinks,
     ...(isOwner ? [{ href: '/admin/ml', label: 'ML' }] : []),
     ...(isAdmin ? [{ href: '/admin/properties', label: 'Admin' }] : []),
+    ...(isAdmin ? [{ href: '/admin/pms', label: 'PMS' }] : []),
   ];
 
   const handleSwitchProperty = (id: string) => {
