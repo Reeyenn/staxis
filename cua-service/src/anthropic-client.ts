@@ -43,11 +43,23 @@ export const anthropic = new Anthropic({
  * Model + computer-use tool version we standardize on. Bump these together
  * when Anthropic ships a new computer-use spec — they evolve in lockstep.
  *
- * Sonnet is the right fit: capable enough for novel UI navigation, much
- * cheaper than Opus at our expected volume (300 hotels × 1 mapping each
- * + occasional fallbacks).
+ * Why Opus and not Sonnet:
+ *   We initially shipped on Sonnet for cost reasons. In canary testing
+ *   2026-05-08, Sonnet repeatedly couldn't complete Choice Advantage
+ *   mapping within 60 agent steps — it lost track of where it was on
+ *   complex multi-page logins. Opus is significantly better at the
+ *   long-horizon reasoning that PMS exploration requires (Anthropic's
+ *   own docs explicitly recommend Opus for non-trivial computer-use).
+ *
+ * Cost trade:
+ *   Opus is ~5x more expensive per token than Sonnet, but mapping is a
+ *   ONE-TIME cost per PMS family — once OPERA's recipe is saved, every
+ *   future OPERA hotel onboards for free. Top 10 PMSes cover ~95% of
+ *   the industry, so total spend on mapping across the entire
+ *   addressable market is on the order of $50-100, not per-hotel.
+ *   Recipe replay (steady-state pulls) uses zero Anthropic.
  */
-export const CLAUDE_MODEL = 'claude-sonnet-4-5';
+export const CLAUDE_MODEL = 'claude-opus-4-7';
 
 /**
  * Computer-use tool definition. Display dimensions match the Playwright
@@ -81,22 +93,49 @@ export const COMPUTER_TOOL = {
 export const COMPUTER_USE_BETA = 'computer-use-2025-01-24' as const;
 
 /**
- * Generic system message we prepend to all CUA mapping runs. The
- * per-task prompt (find arrivals page, find departures page, etc.)
- * goes in the user message.
+ * System message we prepend to all CUA mapping runs. The per-task prompt
+ * (log in / find arrivals page / find staff list / etc.) goes in the
+ * first user message.
+ *
+ * The PMS-specific guidance below is what separates a mapper that
+ * gets stuck after 60 actions from one that completes in 30. Most
+ * hotel PMSes share the same structural patterns; baking those into
+ * the prompt gives Claude the right priors instead of asking it to
+ * rediscover them per-hotel.
  */
 export const MAPPING_SYSTEM_PROMPT =
   `You are a careful, methodical operator exploring a hotel property ` +
   `management system (PMS). Your job is to navigate the PMS UI and report ` +
   `back, in structured JSON, the URLs and selectors needed to extract data ` +
-  `for arrivals, departures, room status, and staff lists. ` +
-  `\n\n` +
-  `Rules:\n` +
+  `for arrivals, departures, room status, and staff lists.\n\n` +
+
+  `STRATEGY (apply in this order):\n` +
+  `1. After login, take ONE screenshot to orient yourself. Identify the ` +
+  `top-level navigation menu (header tabs, sidebar links, or a hamburger). ` +
+  `Most PMSes group reports under a "Reports", "Reservations", or "Front Desk" ` +
+  `menu. Staff/users live under "Staff", "Users", "Setup", or "Admin".\n` +
+  `2. If you see a multi-step login flow (credentials page → property picker ` +
+  `→ dashboard), expect ~5-15 clicks to reach the dashboard. Don't get stuck ` +
+  `re-clicking the login button — if a page loads slowly, wait 2 seconds ` +
+  `and re-screenshot rather than clicking again.\n` +
+  `3. To find a specific page (e.g., "rooms list"), click the most likely ` +
+  `menu item, screenshot, and check. Don't explore breadth-first — go ` +
+  `directly to the most likely candidate, and only back-track if wrong.\n` +
+  `4. Once on the right page, take ONE screenshot and emit the requested ` +
+  `JSON immediately. Do not explore further.\n\n` +
+
+  `RULES:\n` +
   `1. Never enter or modify guest data. You are read-only.\n` +
-  `2. If you encounter a 2FA prompt, popup, cookie banner, or "what's new" ` +
-  `dialog, dismiss it and continue.\n` +
+  `2. If you encounter a 2FA prompt, popup, cookie banner, "what's new" ` +
+  `dialog, "session active" warning, or any modal, dismiss it (Close / X / ` +
+  `Continue / OK) and continue. Don't read its content — just dismiss.\n` +
   `3. If you reach the requested page, take a final screenshot and reply ` +
   `with the JSON report only — no commentary.\n` +
-  `4. If you cannot find the page after 20 actions, reply with ` +
-  `{"error": "<short reason>"} and stop.\n` +
-  `5. Never click links that look like they leave the PMS domain.`;
+  `4. If after 20 actions you still don't see the page, reply with ` +
+  `{"error": "<short reason>"} and stop. Don't keep trying past 20.\n` +
+  `5. Never click links that leave the PMS domain (e.g., "Help", "Documentation", ` +
+  `external integrations).\n` +
+  `6. Avoid keyboard shortcuts. Click instead — keystrokes like Ctrl+F often ` +
+  `don't work in Playwright the same way they do in a real browser.\n` +
+  `7. Coordinate clicks should aim at the visible CENTER of the target, not ` +
+  `the edge — Playwright's click is precise so off-edge clicks miss.`;

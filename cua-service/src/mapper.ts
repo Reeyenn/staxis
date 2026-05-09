@@ -29,12 +29,11 @@ import { anthropic, CLAUDE_MODEL, COMPUTER_TOOL, COMPUTER_USE_BETA, MAPPING_SYST
 import { log } from './log.js';
 import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe } from './types.js';
 
-// 60 steps gives the agent room for multi-page logins (e.g., Choice
-// Advantage has a property-picker step after credentials), retries
-// of dialog-dismissals, and recovery from one or two misclicks. Token
-// budget + wallclock budget are the real safety stops; agent_steps is
-// just a "are we making progress?" sanity cap.
-const MAX_AGENT_STEPS = 60;
+// 100 steps. Opus is more deliberate than Sonnet — it takes more
+// per-step thinking but reaches the goal more reliably. This covers
+// even pathological PMS UIs while the token + wallclock budgets are
+// the real safety stops if the agent gets stuck.
+const MAX_AGENT_STEPS = 100;
 const VIEWPORT = { width: COMPUTER_TOOL.display_width_px, height: COMPUTER_TOOL.display_height_px };
 
 // Token budget per mapping run. Without screenshot-history truncation
