@@ -21,11 +21,13 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 10;
 
-// 45s is a sweet spot: longer than the gap between tool calls during
-// active Claude work (typically a few seconds, but Claude can think
-// silently for 20-30s between tool calls), short enough that the badge
-// disappears within a minute of work stopping.
-const ALIVE_WINDOW_MS = 45 * 1000;
+// Safety-net window only — the primary signal that a session has
+// stopped is the Stop hook (.claude/hooks/stop.sh), which backdates
+// last_heartbeat the moment Claude finishes responding. This window
+// just catches sessions that crash or lose network before Stop can
+// fire. 20s is short enough to make a crashed-out badge fade quickly,
+// long enough to bridge silent thinking between tool calls.
+const ALIVE_WINDOW_MS = 20 * 1000;
 
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
