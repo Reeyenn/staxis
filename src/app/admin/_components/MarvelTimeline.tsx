@@ -347,57 +347,95 @@ export function MarvelTimeline({
       )}
       <style>{`@keyframes mergeFlash { 0% { opacity: 0; transform: translate(-50%, -10px); } 10%,80% { opacity: 1; transform: translate(-50%, 0); } 100% { opacity: 0; transform: translate(-50%, -10px); } }`}</style>
 
-      {/* Live-activity badge (only shows when something is happening).
-          Priority: BUILDING (sustained, amber) > just-pushed (brief, red)
-                    > branch activity (red). */}
-      {anythingLive && (() => {
-        // Pick the most informative label given the state. Heartbeats
-        // (active Claude sessions) outrank commit-based signals because
-        // they tell us "someone is working RIGHT NOW" with sub-3s lag.
-        let label: string;
-        let bg: string;
-        if (totalActiveSessions > 0) {
-          const branchCount = sessionCountByBranch.size;
-          label = branchCount === 1
-            ? `🤖 ${totalActiveSessions} CLAUDE ${totalActiveSessions === 1 ? 'SESSION' : 'SESSIONS'} BUILDING`
-            : `🤖 ${totalActiveSessions} SESSIONS · ${branchCount} BRANCHES`;
-          bg = 'rgba(34, 197, 94, 0.92)'; // green — Claude actively working
-        } else if (isBuilding) {
-          label = `BUILDING · ${recentMainCommitsCount} commits in 15 min`;
-          bg = 'rgba(212, 144, 64, 0.92)'; // amber — sustained activity
-        } else if (mainIsLive && liveBranchCount === 0) {
-          label = 'MAIN: JUST PUSHED';
-          bg = 'rgba(239, 68, 68, 0.85)'; // red — momentary
-        } else if (!mainIsLive && liveBranchCount > 0) {
-          label = `${liveBranchCount} ${liveBranchCount === 1 ? 'BRANCH' : 'BRANCHES'} JUST UPDATED`;
-          bg = 'rgba(239, 68, 68, 0.85)';
-        } else {
-          label = `MAIN + ${liveBranchCount} ${liveBranchCount === 1 ? 'BRANCH' : 'BRANCHES'} UPDATED`;
-          bg = 'rgba(239, 68, 68, 0.85)';
+      {/* Live-activity badges. Each signal renders its OWN badge so they
+          can stack — e.g. you can see "MAIN: JUST PUSHED" and "WORKING
+          ON MAIN" simultaneously when a Claude session lands a commit
+          and keeps working. Order is most-actionable on top:
+            1. WORKING ON MAIN  (green, session heartbeating now)
+            2. MAIN: JUST PUSHED  (red, last 60s)
+            3. BUILDING · N commits  (amber, sustained activity)
+            4. N branches updated  (red, branch-level signal)
+          A non-main session alone (no main signal) still renders a
+          summary badge so you don't lose visibility on side work. */}
+      {(() => {
+        const mainSessionCount = sessionCountByBranch.get('main') ?? 0;
+        const offMainSessionCount = totalActiveSessions - mainSessionCount;
+        const offMainBranchCount = sessionCountByBranch.size - (mainSessionCount > 0 ? 1 : 0);
+        const badges: Array<{ key: string; label: string; bg: string }> = [];
+
+        if (mainHasSession) {
+          badges.push({
+            key: 'working-main',
+            label: mainSessionCount === 1
+              ? '🤖 WORKING ON MAIN'
+              : `🤖 ${mainSessionCount} SESSIONS ON MAIN`,
+            bg: 'rgba(34, 197, 94, 0.92)', // green
+          });
         }
+        if (mainIsLive) {
+          badges.push({
+            key: 'just-pushed',
+            label: 'MAIN: JUST PUSHED',
+            bg: 'rgba(239, 68, 68, 0.85)', // red
+          });
+        }
+        if (isBuilding && !mainHasSession) {
+          badges.push({
+            key: 'building',
+            label: `BUILDING · ${recentMainCommitsCount} commits in 15 min`,
+            bg: 'rgba(212, 144, 64, 0.92)', // amber
+          });
+        }
+        if (!mainHasSession && offMainSessionCount > 0) {
+          badges.push({
+            key: 'side-sessions',
+            label: offMainBranchCount === 1
+              ? `🤖 ${offMainSessionCount} ${offMainSessionCount === 1 ? 'SESSION' : 'SESSIONS'} ON BRANCH`
+              : `🤖 ${offMainSessionCount} SESSIONS · ${offMainBranchCount} BRANCHES`,
+            bg: 'rgba(34, 197, 94, 0.85)',
+          });
+        }
+        if (!mainHasSession && offMainSessionCount === 0 && liveBranchCount > 0 && !mainIsLive) {
+          badges.push({
+            key: 'branches-updated',
+            label: `${liveBranchCount} ${liveBranchCount === 1 ? 'BRANCH' : 'BRANCHES'} JUST UPDATED`,
+            bg: 'rgba(239, 68, 68, 0.85)',
+          });
+        }
+
+        if (badges.length === 0) return null;
         return (
           <div style={{
             position: 'absolute',
             top: '14px',
             left: '16px',
-            padding: '4px 10px',
-            fontSize: '10.5px',
-            fontWeight: 700,
-            letterSpacing: '0.1em',
-            color: '#fff',
-            background: bg,
-            borderRadius: '999px',
             display: 'flex',
-            alignItems: 'center',
+            flexDirection: 'column',
             gap: '6px',
-            backdropFilter: 'blur(4px)',
             zIndex: 1,
           }}>
-            <span style={{
-              width: '6px', height: '6px', borderRadius: '50%', background: '#fff',
-              animation: 'mtBlink 1s ease-in-out infinite',
-            }} />
-            {label}
+            {badges.map((b) => (
+              <div key={b.key} style={{
+                padding: '4px 10px',
+                fontSize: '10.5px',
+                fontWeight: 700,
+                letterSpacing: '0.1em',
+                color: '#fff',
+                background: b.bg,
+                borderRadius: '999px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                backdropFilter: 'blur(4px)',
+                width: 'fit-content',
+              }}>
+                <span style={{
+                  width: '6px', height: '6px', borderRadius: '50%', background: '#fff',
+                  animation: 'mtBlink 1s ease-in-out infinite',
+                }} />
+                {b.label}
+              </div>
+            ))}
           </div>
         );
       })()}
@@ -477,27 +515,42 @@ export function MarvelTimeline({
         )}
 
         {/* Energy particles travelling along the main line — left → right.
-            Always animating (the timeline is "alive" even at idle) but
-            faster + brighter when main has a recent commit. */}
-        {[0, 1, 2].map((i) => (
-          <circle key={`particle-${i}`} cy={trunkY} r={(mainIsLive || mainHasSession) ? 3 : 2} fill="#fff8e1" opacity="0.85" filter="url(#softGlow)">
-            <animate
-              attributeName="cx"
-              values={`${padding};${width - padding}`}
-              dur={(mainIsLive || mainHasSession) ? '4.5s' : '8s'}
-              begin={`${i * ((mainIsLive || mainHasSession) ? 1.5 : 2.7)}s`}
-              repeatCount="indefinite"
-            />
-            <animate
-              attributeName="opacity"
-              values="0;0.95;0.95;0"
-              keyTimes="0;0.15;0.85;1"
-              dur={(mainIsLive || mainHasSession) ? '4.5s' : '8s'}
-              begin={`${i * ((mainIsLive || mainHasSession) ? 1.5 : 2.7)}s`}
-              repeatCount="indefinite"
-            />
-          </circle>
-        ))}
+            ONLY rendered when main is energized (active session, recent
+            commit, or building burst). At idle the trunk is a calm,
+            steady line so any movement = real activity worth attention.
+            When a session is heartbeating the particles glow brightest
+            (matches the "NOW" pulse on the right edge). */}
+        {(mainHasSession || mainIsLive || isBuilding) && [0, 1, 2].map((i) => {
+          const dur = mainHasSession ? '3.5s' : '4.8s';
+          const stagger = mainHasSession ? 1.15 : 1.6;
+          const radius = mainHasSession ? 3.5 : 3;
+          return (
+            <circle
+              key={`particle-${i}`}
+              cy={trunkY}
+              r={radius}
+              fill="#fff8e1"
+              opacity="0.95"
+              filter="url(#softGlow)"
+            >
+              <animate
+                attributeName="cx"
+                values={`${padding};${width - padding}`}
+                dur={dur}
+                begin={`${i * stagger}s`}
+                repeatCount="indefinite"
+              />
+              <animate
+                attributeName="opacity"
+                values="0;1;1;0"
+                keyTimes="0;0.15;0.85;1"
+                dur={dur}
+                begin={`${i * stagger}s`}
+                repeatCount="indefinite"
+              />
+            </circle>
+          );
+        })}
 
         {/* === DEPLOY MARKERS (subtle glow dots ON the line) ===================
             When a deploy lands on the very latest commit (same X as NOW), we
