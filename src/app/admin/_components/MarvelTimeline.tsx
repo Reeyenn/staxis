@@ -309,22 +309,29 @@ export function MarvelTimeline({
           </circle>
         ))}
 
-        {/* === DEPLOY MARKERS (subtle glow dots ON the line) =================== */}
+        {/* === DEPLOY MARKERS (subtle glow dots ON the line) ===================
+            When a deploy lands on the very latest commit (same X as NOW), we
+            skip the text label — it would just stack on top of the "NOW" tag
+            and create visual noise. The colored ring still tells you it's a
+            deploy point; clicking the legend reveals what color = what. */}
         {deployMarkers.map((d, i) => {
           const c = d.target === 'vercel-website' ? '#7dd3fc' : '#c4b5fd';
+          const overlapsNow = Math.abs(d.x - latestX) < 60;
           return (
             <g key={d.target}>
               <circle cx={d.x} cy={trunkY} r="11" fill={c} opacity="0.18" filter="url(#bigGlow)" />
               <circle cx={d.x} cy={trunkY} r="5" fill={c} stroke="#fff" strokeWidth="1.5" opacity="0.9" />
-              <text
-                x={d.x} y={trunkY - 18 - i * 12}
-                textAnchor="middle" fontSize="9.5"
-                fill="rgba(255,255,255,0.85)"
-                fontFamily="-apple-system, system-ui, sans-serif"
-                style={{ userSelect: 'none' }}
-              >
-                {d.target === 'vercel-website' ? 'web deployed' : 'cua deployed'}
-              </text>
+              {!overlapsNow && (
+                <text
+                  x={d.x} y={trunkY - 18 - i * 12}
+                  textAnchor="middle" fontSize="9.5"
+                  fill="rgba(255,255,255,0.85)"
+                  fontFamily="-apple-system, system-ui, sans-serif"
+                  style={{ userSelect: 'none' }}
+                >
+                  {d.target === 'vercel-website' ? 'web deployed' : 'cua deployed'}
+                </text>
+              )}
             </g>
           );
         })}
@@ -424,9 +431,10 @@ export function MarvelTimeline({
           );
         })}
 
-        {/* "PAST" / "NOW" labels at line ends (ultra-subtle) */}
-        <text x={padding} y={trunkY + 4} textAnchor="start" fontSize="9"
-          fill="rgba(255,255,255,0.3)" fontFamily="-apple-system, system-ui, sans-serif"
+        {/* "PAST" / "NOW" labels at line ends (ultra-subtle).
+            Both above the line so neither overlaps the beam itself. */}
+        <text x={padding} y={trunkY - 22} textAnchor="start" fontSize="9"
+          fill="rgba(255,255,255,0.35)" fontFamily="-apple-system, system-ui, sans-serif"
           style={{ letterSpacing: '0.2em' }}>
           ← past
         </text>
