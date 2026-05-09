@@ -18,7 +18,7 @@ import Link from 'next/link';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import {
   Building2, ChevronRight, WifiOff, Wifi, AlertCircle,
-  MessageSquare, ChevronDown,
+  MessageSquare, ChevronDown, Activity,
 } from 'lucide-react';
 
 const STALE_THRESHOLD_MIN = 12 * 60; // 12 hours
@@ -56,26 +56,56 @@ interface SmsHealthRow {
   topErrors: { message: string; count: number }[];
 }
 
+interface ActivityRow {
+  propertyId: string;
+  propertyName: string | null;
+  lastActiveTs: string;
+  viewsToday: number;
+  viewsWeek: number;
+  distinctUsersToday: number;
+  topFeatures: { path: string; count: number }[];
+}
+
+interface FeedbackItem {
+  id: string;
+  property_id: string | null;
+  property_name: string | null;
+  user_email: string | null;
+  user_display_name: string | null;
+  message: string;
+  category: string;
+  status: string;
+  admin_note: string | null;
+  resolved_at: string | null;
+  created_at: string;
+}
+
 export function LiveHotelsTab() {
   const [props, setProps] = useState<PropertyRow[] | null>(null);
   const [errors, setErrors] = useState<ErrorGroup[] | null>(null);
   const [sms, setSms] = useState<SmsHealthRow[] | null>(null);
+  const [activity, setActivity] = useState<ActivityRow[] | null>(null);
+  const [feedback, setFeedback] = useState<FeedbackItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = async () => {
     setError(null);
     try {
-      const [propsRes, errorsRes, smsRes] = await Promise.all([
+      const [propsRes, errorsRes, smsRes, activityRes, feedbackRes] = await Promise.all([
         fetchWithAuth('/api/admin/list-properties'),
         fetchWithAuth('/api/admin/recent-errors'),
         fetchWithAuth('/api/admin/sms-health'),
+        fetchWithAuth('/api/admin/activity'),
+        fetchWithAuth('/api/admin/feedback'),
       ]);
-      const [propsJson, errorsJson, smsJson] = await Promise.all([
-        propsRes.json(), errorsRes.json(), smsRes.json(),
+      const [propsJson, errorsJson, smsJson, activityJson, feedbackJson] = await Promise.all([
+        propsRes.json(), errorsRes.json(), smsRes.json(), activityRes.json(), feedbackRes.json(),
       ]);
       if (propsJson.ok) setProps(propsJson.data.properties);
       if (errorsJson.ok) setErrors(errorsJson.data.groups);
       if (smsJson.ok) setSms(smsJson.data.perHotel);
+      if (activityJson.ok) setActivity(activityJson.data.rows);
+      if (feedbackJson.ok) setFeedback(feedbackJson.data.feedback);
     } catch (err) {
       setError(`Network error: ${(err as Error).message}`);
     }
@@ -95,7 +125,7 @@ export function LiveHotelsTab() {
     );
   }
 
-  if (!props || !errors || !sms) {
+  if (!props || !errors || !sms || !activity || !feedback) {
     return (
       <div style={{ padding: '60px 0', textAlign: 'center' }}>
         <div className="spinner" style={{ width: '24px', height: '24px', margin: '0 auto' }} />
@@ -215,24 +245,36 @@ export function LiveHotelsTab() {
           <EmptyState text="No SMS activity in the last 24 hours." />
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
-            {sms.map((h) => <SmsHealthRow key={h.propertyId} row={h} />)}
+            {sms.map((h) => <SmsHealthRowCard key={h.propertyId} row={h} />)}
           </div>
         )}
       </section>
 
-      {/* Phase 5 + 6 placeholder */}
-      <div style={{
-        padding: '14px',
-        background: 'var(--surface-secondary)',
-        border: '1px dashed var(--border)',
-        borderRadius: '10px',
-        textAlign: 'center',
-        fontSize: '12px',
-        color: 'var(--text-muted)',
-        lineHeight: 1.5,
-      }}>
-        Coming next on this tab: per-hotel GM activity & engagement (Phase 5) • in-app feedback inbox (Phase 6).
-      </div>
+      {/* 5. Activity / engagement per hotel */}
+      <section>
+        <h2 style={sectionTitle}>GM activity & engagement</h2>
+        <p style={sectionHint}>Last 24h activity per hotel. Admin clicks (yours) are filtered out.</p>
+        {activity.length === 0 ? (
+          <EmptyState text="No GM activity in the last 7 days yet — check back after staff use the app." />
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+            {activity.map((a) => <ActivityRowCard key={a.propertyId} row={a} />)}
+          </div>
+        )}
+      </section>
+
+      {/* 6. Feedback inbox */}
+      <section>
+        <h2 style={sectionTitle}>Feedback inbox</h2>
+        <p style={sectionHint}>Submitted from inside the app. New first.</p>
+        {feedback.length === 0 ? (
+          <EmptyState text="No feedback yet. Once GMs send anything via the floating button, it shows up here." />
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+            {feedback.map((f) => <FeedbackRowCard key={f.id} row={f} onChange={load} />)}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
@@ -308,7 +350,7 @@ function ErrorGroupRow({ group }: { group: ErrorGroup }) {
   );
 }
 
-function SmsHealthRow({ row }: { row: SmsHealthRow }) {
+function SmsHealthRowCard({ row }: { row: SmsHealthRow }) {
   const hasFailures = row.failed > 0;
   return (
     <Link href={`/admin/properties/${row.propertyId}`} style={{ textDecoration: 'none', color: 'inherit' }}>
@@ -343,6 +385,146 @@ function SmsHealthRow({ row }: { row: SmsHealthRow }) {
         <ChevronRight size={14} color="var(--text-muted)" />
       </div>
     </Link>
+  );
+}
+
+function ActivityRowCard({ row }: { row: ActivityRow }) {
+  const lastAge = formatAge(row.lastActiveTs);
+  const isStale = Date.now() - new Date(row.lastActiveTs).getTime() > 7 * 24 * 60 * 60 * 1000;
+  return (
+    <Link href={`/admin/properties/${row.propertyId}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+      <div style={{
+        padding: '12px 14px',
+        background: 'var(--surface-primary)',
+        border: '1px solid var(--border)',
+        borderRadius: '10px',
+        display: 'flex', alignItems: 'flex-start', gap: '12px',
+      }}>
+        <Activity size={14} color={isStale ? 'var(--red)' : 'var(--green)'} style={{ marginTop: '2px', flexShrink: 0 }} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '8px' }}>
+            <div style={{ fontSize: '13px', fontWeight: 600 }}>
+              {row.propertyName ?? '(deleted property)'}
+            </div>
+            <div style={{ fontSize: '11px', color: isStale ? 'var(--red)' : 'var(--text-muted)' }}>
+              Last active {lastAge}
+            </div>
+          </div>
+          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px', display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
+            <span><strong style={{ color: 'var(--text-primary)' }}>{row.viewsToday}</strong> views today</span>
+            <span><strong style={{ color: 'var(--text-primary)' }}>{row.viewsWeek}</strong> views this week</span>
+            <span><strong style={{ color: 'var(--text-primary)' }}>{row.distinctUsersToday}</strong> {row.distinctUsersToday === 1 ? 'user' : 'users'} today</span>
+          </div>
+          {row.topFeatures.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '8px' }}>
+              {row.topFeatures.map((f) => (
+                <span key={f.path} style={{
+                  fontSize: '11px',
+                  padding: '2px 8px',
+                  background: 'var(--surface-secondary)',
+                  borderRadius: '999px',
+                  color: 'var(--text-muted)',
+                  fontFamily: 'var(--font-mono)',
+                }}>
+                  {prettifyPath(f.path)} · {f.count}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+        <ChevronRight size={14} color="var(--text-muted)" />
+      </div>
+    </Link>
+  );
+}
+
+function prettifyPath(path: string): string {
+  if (path === '/') return 'home';
+  return path.split('/').filter(Boolean).slice(0, 2).join('/');
+}
+
+function FeedbackRowCard({ row, onChange }: { row: FeedbackItem; onChange: () => Promise<void> }) {
+  const [updating, setUpdating] = useState(false);
+
+  const setStatus = async (status: string) => {
+    setUpdating(true);
+    try {
+      await fetchWithAuth('/api/admin/feedback', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: row.id, status }),
+      });
+      await onChange();
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  const categoryEmoji: Record<string, string> = {
+    bug: '🐛', feature_request: '✨', general: '💬', complaint: '😠', love: '❤️',
+  };
+  const statusColor: Record<string, string> = {
+    new: 'var(--amber)', in_progress: 'var(--text-secondary)', resolved: 'var(--green)', wontfix: 'var(--text-muted)',
+  };
+
+  return (
+    <div style={{
+      padding: '12px 14px',
+      background: 'var(--surface-primary)',
+      border: `1px solid ${row.status === 'new' ? 'rgba(245,158,11,0.25)' : 'var(--border)'}`,
+      borderRadius: '10px',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', marginBottom: '6px' }}>
+        <span style={{ fontSize: '16px' }}>{categoryEmoji[row.category] ?? '💬'}</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: '13px', fontWeight: 600 }}>
+            {row.user_display_name ?? row.user_email ?? 'Anonymous'}
+            {row.property_name && (
+              <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: '12px', marginLeft: '6px' }}>
+                · {row.property_name}
+              </span>
+            )}
+          </div>
+          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+            {formatAge(row.created_at)} · {row.category.replace('_', ' ')}
+          </div>
+        </div>
+        <span style={{
+          padding: '3px 8px',
+          fontSize: '11px',
+          fontWeight: 600,
+          color: statusColor[row.status] ?? 'var(--text-muted)',
+          border: `1px solid ${statusColor[row.status] ?? 'var(--text-muted)'}`,
+          borderRadius: '999px',
+          fontFamily: 'var(--font-mono)',
+        }}>{row.status.toUpperCase()}</span>
+      </div>
+      <div style={{
+        padding: '10px',
+        background: 'var(--surface-secondary)',
+        borderRadius: '8px',
+        fontSize: '13px',
+        color: 'var(--text-primary)',
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        marginBottom: '8px',
+      }}>{row.message}</div>
+      {row.status !== 'resolved' && row.status !== 'wontfix' && (
+        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+          {row.status === 'new' && (
+            <button onClick={() => setStatus('in_progress')} disabled={updating} className="btn btn-secondary" style={{ fontSize: '11px' }}>
+              Mark in progress
+            </button>
+          )}
+          <button onClick={() => setStatus('resolved')} disabled={updating} className="btn btn-secondary" style={{ fontSize: '11px', color: 'var(--green)' }}>
+            Resolve
+          </button>
+          <button onClick={() => setStatus('wontfix')} disabled={updating} className="btn btn-secondary" style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+            Won't fix
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 

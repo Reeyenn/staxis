@@ -23,6 +23,7 @@ import {
   CheckCircle2, AlertCircle, Clock, Loader2, ChevronRight,
   Layers, ArrowRight, AlertTriangle,
 } from 'lucide-react';
+import { ProspectsSection } from '@/app/admin/_components/ProspectsSection';
 
 const RUNNING = new Set(['queued', 'running', 'mapping', 'extracting']);
 
@@ -129,6 +130,9 @@ export function OnboardingTab() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+
+      {/* 0. Sales pipeline (Phase 4) */}
+      <ProspectsSection />
 
       {/* 1. Live mapping */}
       <section>

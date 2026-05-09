@@ -2,6 +2,8 @@
 
 import React, { useEffect } from 'react';
 import { Header } from './Header';
+import { ActivityTracker } from './ActivityTracker';
+import { FeedbackButton } from './FeedbackButton';
 import { useLang } from '@/contexts/LanguageContext';
 import { useSyncContext } from '@/contexts/SyncContext';
 import { t } from '@/lib/translations';
@@ -39,6 +41,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg)' }}>
       <Header />
+      <ActivityTracker />
 
       {/* ── Status banner ── */}
       {showBanner && (
@@ -74,6 +77,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       }}>
         {children}
       </main>
+      <FeedbackButton />
     </div>
   );
 }
