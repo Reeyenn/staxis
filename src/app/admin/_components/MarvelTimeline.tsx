@@ -64,6 +64,13 @@ interface MergedBranch {
   commitCount: number;
 }
 
+interface ActiveSession {
+  session_id: string;
+  branch: string | null;
+  current_tool: string | null;
+  last_heartbeat: string;
+}
+
 const ACTIVE_PALETTE = ['#fb7185', '#a78bfa', '#34d399', '#60a5fa', '#facc15', '#f472b6'];
 const MERGED_PALETTE = ['#7dd3fc', '#fcd34d', '#86efac', '#f9a8d4', '#c4b5fd', '#fdba74'];
 
@@ -80,7 +87,7 @@ const BUILDING_WINDOW_MS = 15 * 60 * 1000;
 const BUILDING_THRESHOLD = 3;
 
 export function MarvelTimeline({
-  commits, deploys, worktrees, branches, merged, mainLatestTs,
+  commits, deploys, worktrees, branches, merged, mainLatestTs, activeSessions,
 }: {
   commits: Commit[];
   deploys: Deploy[];
@@ -88,6 +95,7 @@ export function MarvelTimeline({
   branches?: Branch[];
   merged?: MergedBranch[];
   mainLatestTs?: string | null;
+  activeSessions?: ActiveSession[];
 }) {
   const [hoverBranch, setHoverBranch] = useState<Branch | null>(null);
   const [hoverMerged, setHoverMerged] = useState<MergedBranch | null>(null);
@@ -136,9 +144,24 @@ export function MarvelTimeline({
   const branchList = branches ?? [];
   const mergedList = merged ?? [];
 
-  // Branches with recent activity get the live-pulse treatment.
-  const liveBranchCount = branchList.filter((b) => isLiveTs(b.latestTs)).length;
-  const anythingLive = mainIsLive || liveBranchCount > 0 || isBuilding;
+  // Active Claude sessions per branch — heartbeat data wins over any
+  // commit-timestamp heuristic. If a session is currently working on a
+  // branch, that branch is "live" no matter when the last commit was.
+  const sessionCountByBranch = new Map<string, number>();
+  for (const s of activeSessions ?? []) {
+    if (!s.branch) continue;
+    sessionCountByBranch.set(s.branch, (sessionCountByBranch.get(s.branch) ?? 0) + 1);
+  }
+  const isBranchAlive = (name: string): boolean => (sessionCountByBranch.get(name) ?? 0) > 0;
+  const mainHasSession = isBranchAlive('main');
+
+  // A branch counts as "live" if it has a recent commit OR an active
+  // Claude session pinging it.
+  const liveBranchCount = branchList.filter(
+    (b) => isLiveTs(b.latestTs) || isBranchAlive(b.name)
+  ).length;
+  const totalActiveSessions = (activeSessions ?? []).length;
+  const anythingLive = mainIsLive || mainHasSession || liveBranchCount > 0 || isBuilding || totalActiveSessions > 0;
 
   // Resolve the X position of any commit-sha-anchored marker.
   const xForSha = (sha: string | null): number | null => {
@@ -188,10 +211,18 @@ export function MarvelTimeline({
           Priority: BUILDING (sustained, amber) > just-pushed (brief, red)
                     > branch activity (red). */}
       {anythingLive && (() => {
-        // Pick the most informative label given the state.
+        // Pick the most informative label given the state. Heartbeats
+        // (active Claude sessions) outrank commit-based signals because
+        // they tell us "someone is working RIGHT NOW" with sub-3s lag.
         let label: string;
         let bg: string;
-        if (isBuilding) {
+        if (totalActiveSessions > 0) {
+          const branchCount = sessionCountByBranch.size;
+          label = branchCount === 1
+            ? `🤖 ${totalActiveSessions} CLAUDE ${totalActiveSessions === 1 ? 'SESSION' : 'SESSIONS'} BUILDING`
+            : `🤖 ${totalActiveSessions} SESSIONS · ${branchCount} BRANCHES`;
+          bg = 'rgba(34, 197, 94, 0.92)'; // green — Claude actively working
+        } else if (isBuilding) {
           label = `BUILDING · ${recentMainCommitsCount} commits in 15 min`;
           bg = 'rgba(212, 144, 64, 0.92)'; // amber — sustained activity
         } else if (mainIsLive && liveBranchCount === 0) {
@@ -390,7 +421,10 @@ export function MarvelTimeline({
           const cy1 = trunkY + side * 30;
           const cx2 = tipX - 60;
           const cy2 = yOffset;
-          const isLive = isLiveTs(b.latestTs);
+          // A tendril is "live" if its tip commit is recent OR an active
+          // Claude session is heart-beating on this branch right now.
+          const isLive = isLiveTs(b.latestTs) || isBranchAlive(b.name);
+          const sessionCount = sessionCountByBranch.get(b.name) ?? 0;
           return (
             <g
               key={b.name}
@@ -455,7 +489,12 @@ export function MarvelTimeline({
               >
                 <tspan>{b.name}</tspan>
                 <tspan fill={c} dx="6">+{b.aheadOfMain}</tspan>
-                {isLive && (
+                {sessionCount > 0 && (
+                  <tspan fill="#fff" dx="8" fontSize="9" fontWeight="700" style={{ letterSpacing: '0.1em' }}>
+                    🤖 {sessionCount > 1 ? `×${sessionCount}` : 'WORKING'}
+                  </tspan>
+                )}
+                {sessionCount === 0 && isLive && (
                   <tspan fill="#fff" dx="8" fontSize="9" fontWeight="700" style={{ letterSpacing: '0.1em' }}>● LIVE</tspan>
                 )}
               </text>

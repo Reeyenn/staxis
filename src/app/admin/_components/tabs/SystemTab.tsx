@@ -40,6 +40,21 @@ interface MergedBranch {
   title: string; url: string; commitCount: number;
 }
 
+interface ActiveSession {
+  session_id: string;
+  branch: string | null;
+  current_tool: string | null;
+  started_at: string;
+  last_heartbeat: string;
+  cwd: string | null;
+}
+
+interface ActiveSessionsResp {
+  sessions: ActiveSession[];
+  grouped: { branch: string; sessionCount: number; sessions: ActiveSession[] }[];
+  totalActive: number;
+}
+
 // Two-tier polling:
 //   - CURSOR_MS (2s): hits the tiny /api/admin/last-github-event endpoint
 //     that just returns the newest webhook ts. When it ticks, we refetch
@@ -75,24 +90,27 @@ export function SystemTab() {
   const [scheduled, setScheduled] = useState<ScheduledRow[] | null>(null);
   const [roadmap, setRoadmap] = useState<RoadmapItem[] | null>(null);
   const [audit, setAudit] = useState<AuditEntry[] | null>(null);
+  const [activeSessions, setActiveSessions] = useState<ActiveSessionsResp | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = async () => {
     setError(null);
     try {
-      const [buildRes, schedRes, roadmapRes, auditRes] = await Promise.all([
+      const [buildRes, schedRes, roadmapRes, auditRes, sessionsRes] = await Promise.all([
         fetchWithAuth('/api/admin/build-status'),
         fetchWithAuth('/api/admin/scheduled-jobs'),
         fetchWithAuth('/api/admin/roadmap'),
         fetchWithAuth('/api/admin/audit-log?limit=30'),
+        fetchWithAuth('/api/admin/active-sessions'),
       ]);
-      const [buildJson, schedJson, roadmapJson, auditJson] = await Promise.all([
-        buildRes.json(), schedRes.json(), roadmapRes.json(), auditRes.json(),
+      const [buildJson, schedJson, roadmapJson, auditJson, sessionsJson] = await Promise.all([
+        buildRes.json(), schedRes.json(), roadmapRes.json(), auditRes.json(), sessionsRes.json(),
       ]);
       if (buildJson.ok) setBuild(buildJson.data);
       if (schedJson.ok) setScheduled(schedJson.data.rows);
       if (roadmapJson.ok) setRoadmap(roadmapJson.data.items);
       if (auditJson.ok) setAudit(auditJson.data.entries);
+      if (sessionsJson.ok) setActiveSessions(sessionsJson.data);
     } catch (err) {
       setError(`Network error: ${(err as Error).message}`);
     }
@@ -106,15 +124,27 @@ export function SystemTab() {
   useEffect(() => {
     void load();
 
-    // Cursor poll: cheap query for the latest webhook event ts. When it
-    // changes, refetch immediately. This is what gives sub-3s reaction
-    // time to a fresh commit.
+    // Cursor poll: cheap query for the latest webhook event ts AND a
+    // fresh active-sessions snapshot. Two cheap calls every 2s give us
+    // sub-3s reaction time both for "commit just landed" (via the
+    // github_events cursor) and "Claude session is currently running"
+    // (via the active-sessions endpoint). The expensive full build-
+    // status fetch only fires when the cursor actually changes.
     const cursorTick = async () => {
       try {
-        const res = await fetchWithAuth('/api/admin/last-github-event');
-        const json = await res.json();
-        if (json.ok) {
-          const ts: string | null = json.data.latestTs ?? null;
+        const [cursorRes, sessionsRes] = await Promise.all([
+          fetchWithAuth('/api/admin/last-github-event'),
+          fetchWithAuth('/api/admin/active-sessions'),
+        ]);
+        const cursorJson = await cursorRes.json();
+        const sessionsJson = await sessionsRes.json();
+
+        if (sessionsJson.ok) {
+          setActiveSessions(sessionsJson.data);
+        }
+
+        if (cursorJson.ok) {
+          const ts: string | null = cursorJson.data.latestTs ?? null;
           if (ts && ts !== lastSeenCursorTs.current) {
             const isFirstSeen = lastSeenCursorTs.current === null;
             lastSeenCursorTs.current = ts;
@@ -172,7 +202,7 @@ export function SystemTab() {
       {/* 1. Marvel timeline */}
       <section>
         <h2 style={sectionTitle}>The sacred timeline</h2>
-        <p style={sectionHint}>Main flows left → right. Tendrils branching off are work-in-progress; arcs that loop back are branches that came home. Anything with activity in the last 5 minutes pulses live. Updates within ~3 seconds of any commit (GitHub webhook).</p>
+        <p style={sectionHint}>Main flows left → right. Tendrils branching off are work-in-progress; arcs that loop back are branches that came home. Active Claude sessions glow on whichever branch they're on. Updates within ~3 seconds of any commit or tool call.</p>
         <MarvelTimeline
           commits={build.commits}
           deploys={build.deploys}
@@ -180,7 +210,11 @@ export function SystemTab() {
           branches={build.branches ?? []}
           merged={build.merged ?? []}
           mainLatestTs={build.mainLatestTs ?? null}
+          activeSessions={activeSessions?.sessions ?? []}
         />
+        {activeSessions && activeSessions.totalActive > 0 && (
+          <ActiveSessionsPanel resp={activeSessions} />
+        )}
       </section>
 
       {/* 2. Scheduled jobs */}
@@ -211,6 +245,54 @@ export function SystemTab() {
           </div>
         )}
       </section>
+    </div>
+  );
+}
+
+function ActiveSessionsPanel({ resp }: { resp: ActiveSessionsResp }) {
+  return (
+    <div style={{
+      marginTop: '10px',
+      padding: '10px 12px',
+      background: 'linear-gradient(180deg, rgba(212,144,64,0.08), rgba(212,144,64,0.02))',
+      border: '1px solid rgba(212,144,64,0.25)',
+      borderRadius: '10px',
+      fontSize: '12px',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+        <span style={{
+          width: '8px', height: '8px', borderRadius: '50%',
+          background: 'var(--green)',
+          animation: 'pulseDot 1.4s ease-in-out infinite',
+        }} />
+        <strong style={{ fontSize: '13px' }}>
+          {resp.totalActive} Claude {resp.totalActive === 1 ? 'session' : 'sessions'} active
+        </strong>
+        <span style={{ color: 'var(--text-muted)', fontSize: '11px' }}>
+          (last heartbeat &lt; 2 min ago)
+        </span>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+        {resp.grouped.map((g) => (
+          <div key={g.branch} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' }}>
+            <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: '#364262' }}>
+              {g.branch}
+            </span>
+            <span style={{ color: 'var(--text-muted)' }}>·</span>
+            <span style={{ color: 'var(--text-muted)' }}>
+              {g.sessionCount} {g.sessionCount === 1 ? 'session' : 'sessions'}
+            </span>
+            <span style={{ color: 'var(--text-muted)' }}>·</span>
+            <span style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', fontSize: '11px' }}>
+              {g.sessions.map((s) => s.current_tool ?? '?').slice(0, 3).join(', ')}
+            </span>
+            <span style={{ color: 'var(--text-muted)', marginLeft: 'auto', fontSize: '11px' }}>
+              {timeAgo(g.sessions[0].last_heartbeat)}
+            </span>
+          </div>
+        ))}
+      </div>
+      <style>{`@keyframes pulseDot { 0%,100% { opacity: 1; transform: scale(1) } 50% { opacity: 0.4; transform: scale(1.3) } }`}</style>
     </div>
   );
 }
