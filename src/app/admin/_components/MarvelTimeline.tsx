@@ -67,9 +67,12 @@ interface MergedBranch {
 const ACTIVE_PALETTE = ['#fb7185', '#a78bfa', '#34d399', '#60a5fa', '#facc15', '#f472b6'];
 const MERGED_PALETTE = ['#7dd3fc', '#fcd34d', '#86efac', '#f9a8d4', '#c4b5fd', '#fdba74'];
 
-// "Live" = activity in the last 5 min. Anything more recent than this
-// gets the active-pulse treatment (faster pulse, bonus glow, "LIVE" tag).
-const LIVE_WINDOW_MS = 5 * 60 * 1000;
+// "Live" = activity in the last 60 seconds. Tight on purpose: with the
+// 3-second webhook reaction time, a 60s window captures "something is
+// actively happening" and quiets down right after. The previous 5-minute
+// window kept the badge lit long after the work was done, which made it
+// feel like the dashboard was lying.
+const LIVE_WINDOW_MS = 60 * 1000;
 
 export function MarvelTimeline({
   commits, deploys, worktrees, branches, merged, mainLatestTs,
@@ -193,9 +196,9 @@ export function MarvelTimeline({
             width: '6px', height: '6px', borderRadius: '50%', background: '#fff',
             animation: 'mtBlink 1s ease-in-out infinite',
           }} />
-          {mainIsLive && liveBranchCount === 0 && 'main is alive'}
-          {!mainIsLive && liveBranchCount > 0 && `${liveBranchCount} ${liveBranchCount === 1 ? 'branch' : 'branches'} active`}
-          {mainIsLive && liveBranchCount > 0 && `main + ${liveBranchCount} ${liveBranchCount === 1 ? 'branch' : 'branches'} active`}
+          {mainIsLive && liveBranchCount === 0 && 'main: just pushed'}
+          {!mainIsLive && liveBranchCount > 0 && `${liveBranchCount} ${liveBranchCount === 1 ? 'branch' : 'branches'} just updated`}
+          {mainIsLive && liveBranchCount > 0 && `main + ${liveBranchCount} ${liveBranchCount === 1 ? 'branch' : 'branches'} just updated`}
         </div>
       )}
       <style>{`@keyframes mtBlink { 0%,100% { opacity: 1 } 50% { opacity: 0.3 } }`}</style>
