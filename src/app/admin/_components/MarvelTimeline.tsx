@@ -156,8 +156,8 @@ export function MarvelTimeline({
         <defs>
           {/* Dim → bright gradient on the main line: left = past (faded), right = now (glowing) */}
           <linearGradient id="trunk" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stopColor="#5a3915" stopOpacity="0.6" />
-            <stop offset="60%" stopColor="#ffb347" stopOpacity="0.95" />
+            <stop offset="0%" stopColor="#c4781f" stopOpacity="0.95" />
+            <stop offset="50%" stopColor="#ffb347" stopOpacity="1" />
             <stop offset="100%" stopColor="#fff1c5" stopOpacity="1" />
           </linearGradient>
           <filter id="softGlow" x="-50%" y="-50%" width="200%" height="200%">
@@ -201,17 +201,22 @@ export function MarvelTimeline({
         })}
 
         {/* === MAIN SACRED TIMELINE ============================================ */}
-        {/* Halo (huge soft blur underneath for the bloom feel) */}
+        {/* Outer halo (huge soft blur underneath for the bloom feel) */}
         <line
           x1={padding} y1={trunkY} x2={width - padding} y2={trunkY}
-          stroke="#ffb347" strokeWidth="14" strokeLinecap="round"
-          opacity="0.25" filter="url(#bigGlow)"
+          stroke="#ffb347" strokeWidth="22" strokeLinecap="round"
+          opacity="0.35" filter="url(#bigGlow)"
+        />
+        {/* Inner halo */}
+        <line
+          x1={padding} y1={trunkY} x2={width - padding} y2={trunkY}
+          stroke="#ffd687" strokeWidth="9" strokeLinecap="round"
+          opacity="0.55" filter="url(#softGlow)"
         />
         {/* Sharp bright core */}
         <line
           x1={padding} y1={trunkY} x2={width - padding} y2={trunkY}
-          stroke="url(#trunk)" strokeWidth="3.5" strokeLinecap="round"
-          filter="url(#softGlow)"
+          stroke="url(#trunk)" strokeWidth="4.5" strokeLinecap="round"
         />
         {/* Bright pulse at "now" */}
         <circle cx={latestX} cy={trunkY} r="9" fill="#fff5d6" filter="url(#softGlow)">
@@ -250,9 +255,12 @@ export function MarvelTimeline({
           const side = i % 2 === 0 ? -1 : 1;            // alternate up/down
           const lane = Math.floor(i / 2);                // 0, 0, 1, 1, 2, 2…
           const yOffset = trunkY + side * (60 + lane * 30);
-          // Tip extends to the right of "now" by an amount proportional to ahead
-          const extra = Math.min(30 + b.aheadOfMain * 14, 180);
-          const tipX = Math.min(width - padding - 8, latestX + extra);
+          // Tip extends to the right of "now" by an amount proportional to ahead.
+          // Cap so labels stay inside the viewBox (need room for the longest
+          // branch name + the "+N" suffix on the right side of the dot).
+          const extra = Math.min(30 + b.aheadOfMain * 12, 130);
+          const tipMax = width - padding - 200;     // 200px label headroom
+          const tipX = Math.min(tipMax, latestX + extra);
           const isHover = hoverBranch?.name === b.name;
           // Cubic for an organic curve: control points pull off the line
           const cx1 = startX + 40;
@@ -285,11 +293,12 @@ export function MarvelTimeline({
               <circle cx={tipX} cy={yOffset} r="4" fill={c} stroke="rgba(255,255,255,0.7)" strokeWidth="1">
                 <animate attributeName="opacity" values="0.6;1;0.6" dur="2s" repeatCount="indefinite" />
               </circle>
-              {/* Branch label */}
+              {/* Branch label — anchored to the RIGHT of the dot so it
+                  stays inside the viewBox regardless of side. */}
               <text
-                x={tipX + (side === -1 ? -10 : 10)}
-                y={yOffset + (side === -1 ? -10 : 16)}
-                textAnchor={side === -1 ? 'end' : 'start'}
+                x={tipX + 12}
+                y={yOffset + 4}
+                textAnchor="start"
                 fontSize="10.5"
                 fill="rgba(255,255,255,0.92)"
                 fontFamily="-apple-system, system-ui, sans-serif"
