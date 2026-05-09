@@ -271,6 +271,23 @@ async function mapLogin(page: Page, creds: PMSCredentials): Promise<LoginMapResu
       const finalText = extractFinalText(responseContent);
       const parsed = tryParseJson(finalText) as { loggedIn?: unknown; dashboardSelector?: unknown; error?: unknown } | null;
       if (parsed && parsed.loggedIn) {
+        // Sanity check the URL we landed on. We've seen the agent declare
+        // "loggedIn: true" while sitting on chrome-error://chromewebdata
+        // after a navigation timed out; downstream actions then can't
+        // navigate back to anywhere useful. Reject and let the agent
+        // recover (or surface a real failure to the user).
+        const currentUrl = page.url();
+        const loginHost = (() => { try { return new URL(creds.loginUrl).host; } catch { return null; } })();
+        const currentHost = (() => { try { return new URL(currentUrl).host; } catch { return null; } })();
+        const onPmsDomain = loginHost && currentHost && currentHost.split('.').slice(-2).join('.') === loginHost.split('.').slice(-2).join('.');
+        if (!onPmsDomain) {
+          log.warn('login claimed success but URL is off-domain', { currentUrl, loginUrl: creds.loginUrl });
+          return {
+            ok: false,
+            userMessage: 'Login appeared to fail — the page navigated unexpectedly. Please double-check your credentials and login URL.',
+            detail: { phase: 'login_mapping', currentUrl, loginUrl: creds.loginUrl, reason: 'post_login_off_domain' },
+          };
+        }
         const successSelector = typeof parsed.dashboardSelector === 'string' ? parsed.dashboardSelector : 'body';
         return {
           ok: true,

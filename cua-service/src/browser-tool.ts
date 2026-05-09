@@ -189,6 +189,30 @@ export async function executeBrowserAction(
     switch (action.action) {
       case 'navigate': {
         const url = normalizeUrl(action.text);
+        // Domain guard — agent must stay on the PMS we're mapping. We
+        // observed an agent navigating to a different PMS provider's
+        // login page (beds24.com) when the in-domain navigation got
+        // confusing. Hard-block off-domain navigates so the agent has
+        // to recover with click/back/reload instead. (Bug fix
+        // 2026-05-09 — CA canary v5.)
+        const allowedHost = creds.loginUrl ? new URL(creds.loginUrl).host : null;
+        if (allowedHost) {
+          let targetHost: string;
+          try {
+            targetHost = new URL(url).host;
+          } catch {
+            return { output: `Refused to navigate to non-URL "${url}". Use a full URL or click a link instead.`, isError: true };
+          }
+          if (!hostsAreSameSite(targetHost, allowedHost)) {
+            return {
+              output:
+                `Refused to navigate to ${targetHost}. You must stay on the ${allowedHost} domain ` +
+                `(the PMS we're mapping). If you're stuck, use \`navigate\` with "back" or \`navigate\` ` +
+                `to ${creds.loginUrl} to start fresh.`,
+              isError: true,
+            };
+          }
+        }
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
         await page.waitForTimeout(1500);
         const screenshot = await captureScreenshot(page);
@@ -534,6 +558,19 @@ function describeElement(info: ResolvedRefSuccess): string {
 function normalizeUrl(u: string): string {
   if (/^https?:\/\//i.test(u) || u.startsWith('about:') || u.startsWith('file://')) return u;
   return `https://${u}`;
+}
+
+/**
+ * Same-site check for the navigate domain guard. We treat any host that
+ * shares the registrable domain (last two labels for ccTLDs / single TLDs)
+ * as same-site — so app.example.com / login.example.com / example.com
+ * all match. We don't need PSL-perfect parsing here; a coarse check is
+ * fine because the *only* thing this guards against is wandering to a
+ * completely different vendor (beds24.com vs choiceadvantage.com).
+ */
+function hostsAreSameSite(a: string, b: string): boolean {
+  const tail = (h: string) => h.toLowerCase().split('.').slice(-2).join('.');
+  return tail(a) === tail(b);
 }
 
 function normalizeKey(raw: string): string {
