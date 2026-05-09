@@ -105,7 +105,7 @@ async function fetchMergedBranches(): Promise<MergedBranch[]> {
 
   const res = await fetch(
     `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=25`,
-    { headers, next: { revalidate: 10 } },
+    { headers, next: { revalidate: 10, tags: ['github-data'] } },
   );
   if (!res.ok) return [];
   const json = await res.json() as Array<{
@@ -145,7 +145,7 @@ async function fetchActiveBranches(): Promise<Branch[]> {
   // authenticated quota.
   const listRes = await fetch(
     `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/branches?per_page=8`,
-    { headers, next: { revalidate: 10 } },
+    { headers, next: { revalidate: 10, tags: ['github-data'] } },
   );
   if (!listRes.ok) return [];
   const branches = await listRes.json() as Array<{ name: string; commit: { sha: string } }>;
@@ -157,7 +157,7 @@ async function fetchActiveBranches(): Promise<Branch[]> {
     try {
       const res = await fetch(
         `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/compare/main...${encodeURIComponent(b.name)}`,
-        { headers, next: { revalidate: 10 } },
+        { headers, next: { revalidate: 10, tags: ['github-data'] } },
       );
       if (!res.ok) return null;
       const data = await res.json() as {
@@ -193,7 +193,7 @@ async function fetchRecentCommits(): Promise<Commit[]> {
     headers['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;
   }
 
-  const res = await fetch(url, { headers, next: { revalidate: 10 } });
+  const res = await fetch(url, { headers, next: { revalidate: 10, tags: ['github-data'] } });
   if (!res.ok) return [];
   const json = await res.json() as Array<{
     sha: string;

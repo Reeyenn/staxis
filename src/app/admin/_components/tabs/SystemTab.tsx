@@ -40,10 +40,16 @@ interface MergedBranch {
   title: string; url: string; commitCount: number;
 }
 
-// Poll interval for the System tab. With GITHUB_TOKEN set on Vercel
-// the auth quota is 5000 calls/hr — at 10s polling against 10s server
-// cache we use ~3960/hr, well under the cap.
-const REFRESH_MS = 10_000;
+// Two-tier polling:
+//   - CURSOR_MS (2s): hits the tiny /api/admin/last-github-event endpoint
+//     that just returns the newest webhook ts. When it ticks, we refetch
+//     the full timeline immediately. This is what gives the "feels live"
+//     reaction time when commits land.
+//   - REFRESH_MS (60s): background safety net so even if a webhook is
+//     missed (GitHub down, secret rotated, etc.) the timeline still
+//     refreshes on its own.
+const CURSOR_MS = 2_000;
+const REFRESH_MS = 60_000;
 interface ScheduledRow {
   propertyId: string; propertyName: string | null;
   lastSuccessAt: string | null; lastFailedAt: string | null;
@@ -92,20 +98,50 @@ export function SystemTab() {
     }
   };
 
-  // Initial load + recurring refresh so the timeline updates "live".
-  // Recursive setTimeout (not setInterval) so each refresh waits for the
-  // previous one to land — avoids stacking requests on slow networks.
+  // Two timers — cursor (fast, cheap) + background (slow, full refetch).
+  const cursorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSeenCursorTs = useRef<string | null>(null);
+
   useEffect(() => {
     void load();
-    const tick = () => {
+
+    // Cursor poll: cheap query for the latest webhook event ts. When it
+    // changes, refetch immediately. This is what gives sub-3s reaction
+    // time to a fresh commit.
+    const cursorTick = async () => {
+      try {
+        const res = await fetchWithAuth('/api/admin/last-github-event');
+        const json = await res.json();
+        if (json.ok) {
+          const ts: string | null = json.data.latestTs ?? null;
+          if (ts && ts !== lastSeenCursorTs.current) {
+            const isFirstSeen = lastSeenCursorTs.current === null;
+            lastSeenCursorTs.current = ts;
+            // Don't refetch on the very first observation — that's just us
+            // discovering the existing latest event, not a new one.
+            if (!isFirstSeen) await load();
+          }
+        }
+      } catch {
+        /* swallow — background refresh will catch up */
+      }
+      cursorTimer.current = setTimeout(cursorTick, CURSOR_MS);
+    };
+    cursorTimer.current = setTimeout(cursorTick, CURSOR_MS);
+
+    // Background refresh: in case the webhook misses an event, refetch
+    // everything once a minute regardless.
+    const refreshTick = () => {
       refreshTimer.current = setTimeout(async () => {
         await load();
-        tick();
+        refreshTick();
       }, REFRESH_MS);
     };
-    tick();
+    refreshTick();
+
     return () => {
+      if (cursorTimer.current) clearTimeout(cursorTimer.current);
       if (refreshTimer.current) clearTimeout(refreshTimer.current);
     };
   }, []);
@@ -136,7 +172,7 @@ export function SystemTab() {
       {/* 1. Marvel timeline */}
       <section>
         <h2 style={sectionTitle}>The sacred timeline</h2>
-        <p style={sectionHint}>Main flows left → right. Tendrils branching off are work-in-progress; arcs that loop back are branches that came home. Anything with activity in the last 5 minutes pulses live. Auto-refreshes every 10s.</p>
+        <p style={sectionHint}>Main flows left → right. Tendrils branching off are work-in-progress; arcs that loop back are branches that came home. Anything with activity in the last 5 minutes pulses live. Updates within ~3 seconds of any commit (GitHub webhook).</p>
         <MarvelTimeline
           commits={build.commits}
           deploys={build.deploys}
