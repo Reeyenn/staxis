@@ -339,34 +339,45 @@ export function MarvelTimeline({
         {/* Bright pulse at "now" — pulses faster + brighter when main is live */}
         <circle cx={latestX} cy={trunkY} r="9" fill="#fff5d6" filter="url(#softGlow)">
           <animate attributeName="r"
-            values={mainIsLive ? '10;18;10' : '9;14;9'}
-            dur={mainIsLive ? '1.2s' : '2.6s'}
+            values={(mainIsLive || mainHasSession) ? '10;18;10' : '9;14;9'}
+            dur={(mainIsLive || mainHasSession) ? '1.2s' : '2.6s'}
             repeatCount="indefinite" />
           <animate attributeName="opacity"
-            values={mainIsLive ? '1;0.7;1' : '1;0.6;1'}
-            dur={mainIsLive ? '1.2s' : '2.6s'}
+            values={(mainIsLive || mainHasSession) ? '1;0.7;1' : '1;0.6;1'}
+            dur={(mainIsLive || mainHasSession) ? '1.2s' : '2.6s'}
             repeatCount="indefinite" />
         </circle>
         <circle cx={latestX} cy={trunkY} r="4" fill="#fff" />
+
+        {/* When a Claude session is actively heart-beating on main:
+            outward shockwave ring at NOW so the trunk visibly says
+            "someone is working RIGHT HERE, RIGHT NOW" even if they
+            haven't committed yet. */}
+        {mainHasSession && (
+          <circle cx={latestX} cy={trunkY} r="9" fill="none" stroke="#34d399" strokeWidth="2" opacity="0">
+            <animate attributeName="r" values="9;28;9" dur="1.6s" repeatCount="indefinite" />
+            <animate attributeName="opacity" values="0.95;0;0" keyTimes="0;0.7;1" dur="1.6s" repeatCount="indefinite" />
+          </circle>
+        )}
 
         {/* Energy particles travelling along the main line — left → right.
             Always animating (the timeline is "alive" even at idle) but
             faster + brighter when main has a recent commit. */}
         {[0, 1, 2].map((i) => (
-          <circle key={`particle-${i}`} cy={trunkY} r={mainIsLive ? 3 : 2} fill="#fff8e1" opacity="0.85" filter="url(#softGlow)">
+          <circle key={`particle-${i}`} cy={trunkY} r={(mainIsLive || mainHasSession) ? 3 : 2} fill="#fff8e1" opacity="0.85" filter="url(#softGlow)">
             <animate
               attributeName="cx"
               values={`${padding};${width - padding}`}
-              dur={mainIsLive ? '4.5s' : '8s'}
-              begin={`${i * (mainIsLive ? 1.5 : 2.7)}s`}
+              dur={(mainIsLive || mainHasSession) ? '4.5s' : '8s'}
+              begin={`${i * ((mainIsLive || mainHasSession) ? 1.5 : 2.7)}s`}
               repeatCount="indefinite"
             />
             <animate
               attributeName="opacity"
               values="0;0.95;0.95;0"
               keyTimes="0;0.15;0.85;1"
-              dur={mainIsLive ? '4.5s' : '8s'}
-              begin={`${i * (mainIsLive ? 1.5 : 2.7)}s`}
+              dur={(mainIsLive || mainHasSession) ? '4.5s' : '8s'}
+              begin={`${i * ((mainIsLive || mainHasSession) ? 1.5 : 2.7)}s`}
               repeatCount="indefinite"
             />
           </circle>
