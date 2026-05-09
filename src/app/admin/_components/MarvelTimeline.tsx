@@ -67,12 +67,17 @@ interface MergedBranch {
 const ACTIVE_PALETTE = ['#fb7185', '#a78bfa', '#34d399', '#60a5fa', '#facc15', '#f472b6'];
 const MERGED_PALETTE = ['#7dd3fc', '#fcd34d', '#86efac', '#f9a8d4', '#c4b5fd', '#fdba74'];
 
-// "Live" = activity in the last 60 seconds. Tight on purpose: with the
-// 3-second webhook reaction time, a 60s window captures "something is
-// actively happening" and quiets down right after. The previous 5-minute
-// window kept the badge lit long after the work was done, which made it
-// feel like the dashboard was lying.
+// "Live" = a single commit in the last 60s. Brief flash, like "just
+// pushed!", then quiets down.
 const LIVE_WINDOW_MS = 60 * 1000;
+
+// "Building" = sustained activity. If the repo has racked up 3+ commits
+// on main in the last 15 minutes, we're clearly mid-build (not a one-off
+// push from an hour ago). The badge stays lit the whole time work is
+// happening and only fades when commits stop landing — captures the
+// "we've been building for 45 minutes" case correctly.
+const BUILDING_WINDOW_MS = 15 * 60 * 1000;
+const BUILDING_THRESHOLD = 3;
 
 export function MarvelTimeline({
   commits, deploys, worktrees, branches, merged, mainLatestTs,
@@ -88,12 +93,19 @@ export function MarvelTimeline({
   const [hoverMerged, setHoverMerged] = useState<MergedBranch | null>(null);
 
   // Live-state derivation. Recomputed every render — combined with the
-  // 30s refetch in SystemTab, this gives near-realtime "is X being
-  // worked on right now" without us needing websockets.
+  // 2s cursor + 60s background refresh in SystemTab, this gives sub-3s
+  // "is X being worked on right now" detection.
   const now = Date.now();
   const isLiveTs = (ts: string | null | undefined): boolean =>
     !!ts && (now - new Date(ts).getTime()) < LIVE_WINDOW_MS;
   const mainIsLive = isLiveTs(mainLatestTs ?? commits[0]?.ts ?? null);
+
+  // "Building" mode: 3+ commits on main in the last 15 minutes. Lit the
+  // whole time activity is sustained, fades when commits stop landing.
+  const recentMainCommitsCount = commits.filter(
+    (c) => now - new Date(c.ts).getTime() < BUILDING_WINDOW_MS
+  ).length;
+  const isBuilding = recentMainCommitsCount >= BUILDING_THRESHOLD;
 
   if (commits.length === 0) {
     return (
@@ -126,7 +138,7 @@ export function MarvelTimeline({
 
   // Branches with recent activity get the live-pulse treatment.
   const liveBranchCount = branchList.filter((b) => isLiveTs(b.latestTs)).length;
-  const anythingLive = mainIsLive || liveBranchCount > 0;
+  const anythingLive = mainIsLive || liveBranchCount > 0 || isBuilding;
 
   // Resolve the X position of any commit-sha-anchored marker.
   const xForSha = (sha: string | null): number | null => {
@@ -172,35 +184,52 @@ export function MarvelTimeline({
         background: 'radial-gradient(ellipse at right center, rgba(255,170,80,0.18), transparent 60%)',
       }} />
 
-      {/* Live-activity badge (only shows when something is happening). */}
-      {anythingLive && (
-        <div style={{
-          position: 'absolute',
-          top: '14px',
-          left: '16px',
-          padding: '4px 10px',
-          fontSize: '10.5px',
-          fontWeight: 700,
-          letterSpacing: '0.1em',
-          color: '#fff',
-          background: 'rgba(239, 68, 68, 0.85)',
-          borderRadius: '999px',
-          textTransform: 'uppercase',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '6px',
-          backdropFilter: 'blur(4px)',
-          zIndex: 1,
-        }}>
-          <span style={{
-            width: '6px', height: '6px', borderRadius: '50%', background: '#fff',
-            animation: 'mtBlink 1s ease-in-out infinite',
-          }} />
-          {mainIsLive && liveBranchCount === 0 && 'main: just pushed'}
-          {!mainIsLive && liveBranchCount > 0 && `${liveBranchCount} ${liveBranchCount === 1 ? 'branch' : 'branches'} just updated`}
-          {mainIsLive && liveBranchCount > 0 && `main + ${liveBranchCount} ${liveBranchCount === 1 ? 'branch' : 'branches'} just updated`}
-        </div>
-      )}
+      {/* Live-activity badge (only shows when something is happening).
+          Priority: BUILDING (sustained, amber) > just-pushed (brief, red)
+                    > branch activity (red). */}
+      {anythingLive && (() => {
+        // Pick the most informative label given the state.
+        let label: string;
+        let bg: string;
+        if (isBuilding) {
+          label = `BUILDING · ${recentMainCommitsCount} commits in 15 min`;
+          bg = 'rgba(212, 144, 64, 0.92)'; // amber — sustained activity
+        } else if (mainIsLive && liveBranchCount === 0) {
+          label = 'MAIN: JUST PUSHED';
+          bg = 'rgba(239, 68, 68, 0.85)'; // red — momentary
+        } else if (!mainIsLive && liveBranchCount > 0) {
+          label = `${liveBranchCount} ${liveBranchCount === 1 ? 'BRANCH' : 'BRANCHES'} JUST UPDATED`;
+          bg = 'rgba(239, 68, 68, 0.85)';
+        } else {
+          label = `MAIN + ${liveBranchCount} ${liveBranchCount === 1 ? 'BRANCH' : 'BRANCHES'} UPDATED`;
+          bg = 'rgba(239, 68, 68, 0.85)';
+        }
+        return (
+          <div style={{
+            position: 'absolute',
+            top: '14px',
+            left: '16px',
+            padding: '4px 10px',
+            fontSize: '10.5px',
+            fontWeight: 700,
+            letterSpacing: '0.1em',
+            color: '#fff',
+            background: bg,
+            borderRadius: '999px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            backdropFilter: 'blur(4px)',
+            zIndex: 1,
+          }}>
+            <span style={{
+              width: '6px', height: '6px', borderRadius: '50%', background: '#fff',
+              animation: 'mtBlink 1s ease-in-out infinite',
+            }} />
+            {label}
+          </div>
+        );
+      })()}
       <style>{`@keyframes mtBlink { 0%,100% { opacity: 1 } 50% { opacity: 0.3 } }`}</style>
 
       <svg viewBox={`0 0 ${width} ${svgHeight}`} style={{ width: '100%', height: 'auto', display: 'block', position: 'relative' }}>
