@@ -17,6 +17,7 @@ import { NextRequest } from 'next/server';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 
@@ -49,6 +50,12 @@ interface Worktree {
   name: string;
   branch: string | null;
   lastActivity: string | null;
+  // Populated when the worktree comes from local_worktrees (Reeyen's
+  // machine sync). undefined when sourced from local fs scan in dev.
+  dirtyFiles?: number;
+  commitsAhead?: number;
+  commitsBehind?: number;
+  headMessage?: string | null;
 }
 
 interface Branch {
@@ -245,12 +252,33 @@ async function collectDeploys(): Promise<Deploy[]> {
   ];
 }
 
+async function readWorktreesFromDb(): Promise<Worktree[]> {
+  const { data, error } = await supabaseAdmin
+    .from('local_worktrees')
+    .select('name, branch, dirty_files, commits_ahead, commits_behind, head_committed_at, head_message, last_seen')
+    .order('last_seen', { ascending: false })
+    .limit(200);
+  if (error || !data) return [];
+  return data.map((r) => ({
+    name: r.name as string,
+    branch: (r.branch as string | null) ?? null,
+    lastActivity: (r.head_committed_at as string | null) ?? (r.last_seen as string | null),
+    dirtyFiles: (r.dirty_files as number | null) ?? 0,
+    commitsAhead: (r.commits_ahead as number | null) ?? 0,
+    commitsBehind: (r.commits_behind as number | null) ?? 0,
+    headMessage: (r.head_message as string | null) ?? null,
+  }));
+}
+
 async function listWorktrees(): Promise<Worktree[]> {
-  // .claude/worktrees/ only exists on Reeyen's dev machine. On Vercel we
-  // skip outright — both because the dir doesn't exist and because letting
-  // Turbopack walk into it during `next build` bundles thousands of files
-  // by mistake.
-  if (process.env.VERCEL || process.env.VERCEL_ENV) return [];
+  // On Vercel: read Reeyen's worktree state from the local_worktrees
+  // table (synced from his machine via /api/local-worktrees/sync).
+  // The timeline becomes the single source of truth without needing
+  // local filesystem access.
+  if (process.env.VERCEL || process.env.VERCEL_ENV) {
+    return readWorktreesFromDb();
+  }
+  // Local dev: scan the filesystem directly.
   try {
     // Build path dynamically — avoids Turbopack's static analyzer bundling
     // every file under .claude/worktrees/ into the production output.
