@@ -128,7 +128,32 @@ export function MarvelTimeline({
   // Render EVERY active branch — Reeyen's rule is "I need to see
   // everything on the timeline, nothing hidden." We don't slice the
   // list; instead we adapt the lane spacing + SVG height to fit.
-  const branchList = branches ?? [];
+  //
+  // Two sources, deduped by name:
+  //   1. branches[] from GitHub — pushed branches with diverged commits.
+  //   2. activeSessions[] — branches where a Claude session is heart-
+  //      beating right now. Includes brand-new branches that haven't
+  //      been pushed yet (so the visual shows the work immediately,
+  //      not after the first commit lands on GitHub).
+  const githubBranches = branches ?? [];
+  const githubBranchNames = new Set(githubBranches.map((b) => b.name));
+  const sessionOnlyBranches: Branch[] = [];
+  for (const s of activeSessions ?? []) {
+    const name = s.branch;
+    if (!name || name === 'main' || name === 'master') continue;
+    if (githubBranchNames.has(name)) continue;
+    if (sessionOnlyBranches.some((b) => b.name === name)) continue;
+    sessionOnlyBranches.push({
+      name,
+      shortSha: '',
+      latestMessage: '(active session — no commits yet)',
+      latestTs: s.last_heartbeat ?? null,
+      aheadOfMain: 0,
+      behindMain: 0,
+      url: `https://github.com/Reeyenn/staxis/tree/${encodeURIComponent(name)}`,
+    });
+  }
+  const branchList: Branch[] = [...githubBranches, ...sessionOnlyBranches];
   const mergedList = merged ?? [];
 
   // Per-side lane geometry. With few branches we use roomy spacing;
@@ -711,7 +736,9 @@ export function MarvelTimeline({
                 style={{ userSelect: 'none' }}
               >
                 <tspan>{b.name}</tspan>
-                <tspan fill={c} dx="6">+{b.aheadOfMain}</tspan>
+                {b.aheadOfMain > 0 && (
+                  <tspan fill={c} dx="6">+{b.aheadOfMain}</tspan>
+                )}
                 {sessionCount > 0 && (
                   <tspan fill="#fff" dx="8" fontSize="9" fontWeight="700" style={{ letterSpacing: '0.1em' }}>
                     🤖 {sessionCount > 1 ? `×${sessionCount}` : 'WORKING'}
