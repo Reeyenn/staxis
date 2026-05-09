@@ -201,8 +201,6 @@ export function SystemTab() {
 
       {/* 1. Marvel timeline */}
       <section>
-        <h2 style={sectionTitle}>The sacred timeline</h2>
-        <p style={sectionHint}>Main flows left → right. Tendrils branching off are work-in-progress; arcs that loop back are branches that came home. Active Claude sessions glow on whichever branch they're on. Updates within ~3 seconds of any commit or tool call.</p>
         <MarvelTimeline
           commits={build.commits}
           deploys={build.deploys}
