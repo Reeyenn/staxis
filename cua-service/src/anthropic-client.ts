@@ -43,20 +43,22 @@ export const anthropic = new Anthropic({
  * Model + computer-use tool version we standardize on. Bump these together
  * when Anthropic ships a new computer-use spec — they evolve in lockstep.
  *
- * Why Sonnet 4.6 (and not Opus):
- *   Computer-use is only available on Sonnet-line models — Opus 4.7
- *   does not support the computer_20250124 tool type (verified by
- *   API 400 response on 2026-05-08). Sonnet 4.6 is the newest
- *   Sonnet that supports computer use.
+ * Sonnet 4.5 is currently the ONLY model that supports the
+ * computer_20250124 tool type. Verified by API 400 on 2026-05-08:
+ *   - claude-opus-4-7   → tool not supported
+ *   - claude-sonnet-4-6 → tool not supported
+ *   - claude-sonnet-4-5 → works
  *
- * Why we bumped from 4-5 to 4-6:
- *   Sonnet 4.5 kept losing track of multi-page navigation in canary
- *   testing on Choice Advantage. 4.6 is the next-gen Sonnet — better
- *   instruction-following, better long-horizon reasoning. The improved
- *   system prompt (below) gives it the right priors to actually
- *   complete PMS mapping in one go.
+ * When Anthropic releases a newer Sonnet that supports computer-use,
+ * test it here and bump if it can complete CA mapping reliably with
+ * the system prompt below. Until then, 4.5 is locked in.
+ *
+ * The improvement that ACTUALLY moved the needle for mapping
+ * reliability isn't the model — it's the strategic system prompt
+ * with PMS-specific priors (below) and 100 agent steps. The model
+ * just needs to be capable enough; 4.5 is that.
  */
-export const CLAUDE_MODEL = 'claude-sonnet-4-6';
+export const CLAUDE_MODEL = 'claude-sonnet-4-5';
 
 /**
  * Computer-use tool definition. Display dimensions match the Playwright
