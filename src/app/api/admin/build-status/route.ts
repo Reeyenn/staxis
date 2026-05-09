@@ -181,10 +181,12 @@ async function fetchActiveBranches(): Promise<Branch[]> {
     }
   }));
 
+  // Return ALL unmerged branches, newest-first. Reeyen's rule: he wants
+  // to see everything on the timeline so nothing rots invisibly. The UI
+  // adapts its lane-spacing to fit whatever count we send.
   return compares
     .filter((b): b is Branch => b !== null && b.aheadOfMain > 0)
-    .sort((a, b) => (b.latestTs ?? '').localeCompare(a.latestTs ?? ''))
-    .slice(0, 8);
+    .sort((a, b) => (b.latestTs ?? '').localeCompare(a.latestTs ?? ''));
 }
 
 async function fetchRecentCommits(): Promise<Commit[]> {

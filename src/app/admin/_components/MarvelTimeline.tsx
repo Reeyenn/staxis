@@ -141,8 +141,18 @@ export function MarvelTimeline({
   const positionFor = (i: number) => padding + i * step;
   const latestX = positionFor(ordered.length - 1);
 
+  // Render EVERY active branch — Reeyen's rule is "I need to see
+  // everything on the timeline, nothing hidden." We don't slice the
+  // list; instead we adapt the lane spacing + SVG height to fit.
   const branchList = branches ?? [];
   const mergedList = merged ?? [];
+
+  // Per-side lane geometry. With few branches we use roomy spacing;
+  // with many we tighten so they all fit without making the SVG huge.
+  const lanesPerSide = Math.ceil(branchList.length / 2);
+  const baseLaneOffset = lanesPerSide <= 3 ? 60 : lanesPerSide <= 6 ? 50 : 40;
+  const laneStep = lanesPerSide <= 3 ? 30 : lanesPerSide <= 6 ? 22 : 16;
+  const maxLaneY = baseLaneOffset + Math.max(0, lanesPerSide - 1) * laneStep;
 
   // Active Claude sessions per branch — heartbeat data wins over any
   // commit-timestamp heuristic. If a session is currently working on a
@@ -190,7 +200,9 @@ export function MarvelTimeline({
     })
     .filter((v): v is NonNullable<typeof v> => v !== null);
 
-  const svgHeight = 320;
+  // Make the canvas tall enough that the highest tendril label doesn't
+  // get clipped above and the lowest doesn't crash into the legend below.
+  const svgHeight = Math.max(320, trunkY + maxLaneY + 70);
 
   return (
     <div style={{
@@ -413,13 +425,13 @@ export function MarvelTimeline({
         {/* === ACTIVE BRANCH TENDRILS ========================================== */}
         {/* Arc out from divergence, end at a pulsing dot. Alternate above/below.
             The further the branch is ahead of main, the further the tip extends. */}
-        {branchList.slice(0, 6).map((b, i) => {
+        {branchList.map((b, i) => {
           const c = ACTIVE_PALETTE[i % ACTIVE_PALETTE.length];
           const divergeIdx = Math.max(0, ordered.length - 1 - b.behindMain);
           const startX = positionFor(divergeIdx);
           const side = i % 2 === 0 ? -1 : 1;            // alternate up/down
           const lane = Math.floor(i / 2);                // 0, 0, 1, 1, 2, 2…
-          const yOffset = trunkY + side * (60 + lane * 30);
+          const yOffset = trunkY + side * (baseLaneOffset + lane * laneStep);
           // Tip extends to the right of "now" by an amount proportional to ahead.
           // Cap so labels stay inside the viewBox (need room for the longest
           // branch name + the "+N" suffix on the right side of the dot).
