@@ -43,6 +43,10 @@ interface Worktree {
   name: string;
   branch: string | null;
   lastActivity: string | null;
+  dirtyFiles?: number;
+  commitsAhead?: number;
+  commitsBehind?: number;
+  headMessage?: string | null;
 }
 
 interface Branch {
@@ -125,25 +129,29 @@ export function MarvelTimeline({
   const positionFor = (i: number) => padding + i * step;
   const latestX = positionFor(ordered.length - 1);
 
-  // Render EVERY active branch — Reeyen's rule is "I need to see
-  // everything on the timeline, nothing hidden." We don't slice the
-  // list; instead we adapt the lane spacing + SVG height to fit.
+  // Render EVERY active branch + every local worktree — Reeyen's rule
+  // is "the timeline is the single pane of glass, nothing hidden." We
+  // don't slice; the lane geometry adapts to fit any count.
   //
-  // Two sources, deduped by name:
+  // Three sources merged in priority order (later sources only fill
+  // gaps, deduped by branch name):
   //   1. branches[] from GitHub — pushed branches with diverged commits.
+  //      Has the richest data (compare-to-main, etc).
   //   2. activeSessions[] — branches where a Claude session is heart-
-  //      beating right now. Includes brand-new branches that haven't
-  //      been pushed yet (so the visual shows the work immediately,
-  //      not after the first commit lands on GitHub).
+  //      beating right now. Used for fresh local branches that haven't
+  //      been pushed yet.
+  //   3. worktrees[] — every git worktree on Reeyen's local machine,
+  //      synced via /api/local-worktrees/sync. Captures the long tail
+  //      of "old worktrees that may or may not have unpushed work".
   const githubBranches = branches ?? [];
-  const githubBranchNames = new Set(githubBranches.map((b) => b.name));
-  const sessionOnlyBranches: Branch[] = [];
+  const branchNamesSeen = new Set(githubBranches.map((b) => b.name));
+  const extraBranches: Branch[] = [];
+
   for (const s of activeSessions ?? []) {
     const name = s.branch;
     if (!name || name === 'main' || name === 'master') continue;
-    if (githubBranchNames.has(name)) continue;
-    if (sessionOnlyBranches.some((b) => b.name === name)) continue;
-    sessionOnlyBranches.push({
+    if (branchNamesSeen.has(name)) continue;
+    extraBranches.push({
       name,
       shortSha: '',
       latestMessage: '(active session — no commits yet)',
@@ -152,15 +160,62 @@ export function MarvelTimeline({
       behindMain: 0,
       url: `https://github.com/Reeyenn/staxis/tree/${encodeURIComponent(name)}`,
     });
+    branchNamesSeen.add(name);
   }
-  const branchList: Branch[] = [...githubBranches, ...sessionOnlyBranches];
+
+  // Worktrees: synthesize one Branch per worktree whose branch isn't
+  // already represented. Use the worktree NAME (not branch name) as
+  // the display label when the branch is just `claude/<name>` — the
+  // worktree name is shorter and reads better.
+  for (const wt of worktrees ?? []) {
+    const branchName = wt.branch ?? wt.name;
+    if (branchName === 'main' || branchName === 'master') continue;
+    if (branchNamesSeen.has(branchName)) continue;
+    const ahead = wt.commitsAhead ?? 0;
+    const behind = wt.commitsBehind ?? 0;
+    const dirty = wt.dirtyFiles ?? 0;
+    let msg: string;
+    if (dirty > 0 && ahead > 0) {
+      msg = `${ahead} commit${ahead === 1 ? '' : 's'} ahead, ${dirty} uncommitted file${dirty === 1 ? '' : 's'}`;
+    } else if (dirty > 0) {
+      msg = `${dirty} uncommitted file${dirty === 1 ? '' : 's'}`;
+    } else if (ahead > 0) {
+      msg = `${ahead} unpushed commit${ahead === 1 ? '' : 's'}`;
+    } else {
+      msg = '(empty worktree)';
+    }
+    extraBranches.push({
+      name: wt.name, // use worktree dir name for display compactness
+      shortSha: '',
+      latestMessage: wt.headMessage ?? msg,
+      latestTs: wt.lastActivity ?? null,
+      aheadOfMain: ahead,
+      behindMain: behind,
+      url: `https://github.com/Reeyenn/staxis/tree/${encodeURIComponent(branchName)}`,
+    });
+    branchNamesSeen.add(branchName);
+  }
+
+  const branchList: Branch[] = [...githubBranches, ...extraBranches];
   const mergedList = merged ?? [];
 
-  // Per-side lane geometry. With few branches we use roomy spacing;
-  // with many we tighten so they all fit without making the SVG huge.
+  // Per-side lane geometry. With few branches we use roomy spacing; as
+  // the count climbs we tighten so 50+ tendrils still fit without the
+  // SVG becoming a 2000px wall. The thresholds below are empirical —
+  // they keep tendril density readable up to ~50 per side (100 total).
   const lanesPerSide = Math.ceil(branchList.length / 2);
-  const baseLaneOffset = lanesPerSide <= 3 ? 60 : lanesPerSide <= 6 ? 50 : 40;
-  const laneStep = lanesPerSide <= 3 ? 30 : lanesPerSide <= 6 ? 22 : 16;
+  const baseLaneOffset =
+    lanesPerSide <= 3 ? 60 :
+    lanesPerSide <= 6 ? 50 :
+    lanesPerSide <= 12 ? 40 :
+    lanesPerSide <= 20 ? 32 :
+    26;
+  const laneStep =
+    lanesPerSide <= 3 ? 30 :
+    lanesPerSide <= 6 ? 22 :
+    lanesPerSide <= 12 ? 16 :
+    lanesPerSide <= 20 ? 11 :
+    8;
   const maxLaneY = baseLaneOffset + Math.max(0, lanesPerSide - 1) * laneStep;
 
   // ── Merge animation: when a branch disappears between data refreshes,
@@ -688,6 +743,12 @@ export function MarvelTimeline({
           // Claude session is heart-beating on this branch right now.
           const isLive = isLiveTs(b.latestTs) || isBranchAlive(b.name);
           const sessionCount = sessionCountByBranch.get(b.name) ?? 0;
+          // "Empty" worktree shells: no commits ahead, no session,
+          // no recent activity. The user wants to see these on the
+          // timeline but they shouldn't compete visually with active
+          // work — render them as faint stubs without labels or
+          // animations. Hover still works to reveal the name.
+          const isEmpty = !isLive && b.aheadOfMain === 0 && sessionCount === 0;
           return (
             <g
               key={b.name}
@@ -696,18 +757,24 @@ export function MarvelTimeline({
               style={{ cursor: 'pointer' }}
               onClick={() => window.open(b.url, '_blank', 'noopener')}
             >
-              {/* Wide soft glow under the tendril — brighter on live */}
+              {/* Wide soft glow under the tendril — brighter on live,
+                  skipped entirely on empty stubs to keep the canvas
+                  calm when many worktrees pile up. */}
+              {!isEmpty && (
+                <path
+                  d={`M ${startX} ${trunkY} C ${cx1} ${cy1} ${cx2} ${cy2} ${tipX} ${yOffset}`}
+                  stroke={c} strokeWidth={isLive ? 8 : 6} fill="none"
+                  opacity={isHover ? 0.5 : isLive ? 0.32 : 0.18} filter="url(#bigGlow)"
+                />
+              )}
+              {/* Sharp tendril — thicker + brighter on live, much
+                  fainter when empty so dead worktrees fade into the
+                  background. */}
               <path
                 d={`M ${startX} ${trunkY} C ${cx1} ${cy1} ${cx2} ${cy2} ${tipX} ${yOffset}`}
-                stroke={c} strokeWidth={isLive ? 8 : 6} fill="none"
-                opacity={isHover ? 0.5 : isLive ? 0.32 : 0.18} filter="url(#bigGlow)"
-              />
-              {/* Sharp tendril — thicker + brighter on live */}
-              <path
-                d={`M ${startX} ${trunkY} C ${cx1} ${cy1} ${cx2} ${cy2} ${tipX} ${yOffset}`}
-                stroke={c} strokeWidth={isHover ? 2.8 : isLive ? 2.4 : 1.8}
-                fill="none" opacity={isHover ? 1 : isLive ? 1 : 0.85}
-                filter="url(#softGlow)"
+                stroke={c} strokeWidth={isHover ? 2.8 : isLive ? 2.4 : isEmpty ? 1 : 1.8}
+                fill="none" opacity={isHover ? 1 : isLive ? 1 : isEmpty ? 0.28 : 0.85}
+                filter={isEmpty ? undefined : 'url(#softGlow)'}
               />
               {/* When live: an energy particle racing along the tendril */}
               {isLive && (
@@ -719,12 +786,15 @@ export function MarvelTimeline({
                   />
                 </circle>
               )}
-              {/* Outer pulse ring — bigger + faster when live */}
-              <circle cx={tipX} cy={yOffset} r="7" fill={c} opacity="0.35" filter="url(#bigGlow)">
-                {isLive && (
-                  <animate attributeName="r" values="7;14;7" dur="1.1s" repeatCount="indefinite" />
-                )}
-              </circle>
+              {/* Outer pulse ring — bigger + faster when live; hidden
+                  on empty stubs so they don't crowd the canvas. */}
+              {!isEmpty && (
+                <circle cx={tipX} cy={yOffset} r="7" fill={c} opacity="0.35" filter="url(#bigGlow)">
+                  {isLive && (
+                    <animate attributeName="r" values="7;14;7" dur="1.1s" repeatCount="indefinite" />
+                  )}
+                </circle>
+              )}
               {/* When live: extra outward shockwave ring */}
               {isLive && (
                 <circle cx={tipX} cy={yOffset} r="4" fill="none" stroke={c} strokeWidth="1.5" opacity="0">
@@ -732,37 +802,52 @@ export function MarvelTimeline({
                   <animate attributeName="opacity" values="0.9;0;0" keyTimes="0;0.7;1" dur="1.6s" repeatCount="indefinite" />
                 </circle>
               )}
-              {/* Tip dot — pulses faster when live */}
-              <circle cx={tipX} cy={yOffset} r="4" fill={c} stroke="rgba(255,255,255,0.7)" strokeWidth="1">
-                <animate attributeName="opacity"
-                  values={isLive ? '0.7;1;0.7' : '0.6;1;0.6'}
-                  dur={isLive ? '0.9s' : '2s'}
-                  repeatCount="indefinite" />
+              {/* Tip dot — pulses faster when live, smaller and static
+                  on empty stubs. */}
+              <circle
+                cx={tipX} cy={yOffset}
+                r={isEmpty ? 2 : 4}
+                fill={c}
+                stroke={isEmpty ? undefined : 'rgba(255,255,255,0.7)'}
+                strokeWidth={isEmpty ? 0 : 1}
+                opacity={isEmpty ? 0.45 : 1}
+              >
+                {!isEmpty && (
+                  <animate attributeName="opacity"
+                    values={isLive ? '0.7;1;0.7' : '0.6;1;0.6'}
+                    dur={isLive ? '0.9s' : '2s'}
+                    repeatCount="indefinite" />
+                )}
               </circle>
               {/* Branch label — anchored to the RIGHT of the dot so it
-                  stays inside the viewBox regardless of side. */}
-              <text
-                x={tipX + 12}
-                y={yOffset + 4}
-                textAnchor="start"
-                fontSize="10.5"
-                fill="rgba(255,255,255,0.92)"
-                fontFamily="-apple-system, system-ui, sans-serif"
-                style={{ userSelect: 'none' }}
-              >
-                <tspan>{b.name}</tspan>
-                {b.aheadOfMain > 0 && (
-                  <tspan fill={c} dx="6">+{b.aheadOfMain}</tspan>
-                )}
-                {sessionCount > 0 && (
-                  <tspan fill="#fff" dx="8" fontSize="9" fontWeight="700" style={{ letterSpacing: '0.1em' }}>
-                    🤖 {sessionCount > 1 ? `×${sessionCount}` : 'WORKING'}
-                  </tspan>
-                )}
-                {sessionCount === 0 && isLive && (
-                  <tspan fill="#fff" dx="8" fontSize="9" fontWeight="700" style={{ letterSpacing: '0.1em' }}>● LIVE</tspan>
-                )}
-              </text>
+                  stays inside the viewBox regardless of side. Skipped
+                  on empty stubs (hover still reveals the name via the
+                  React state) so 40+ idle worktrees don't fight for
+                  label space with the active ones. */}
+              {!isEmpty && (
+                <text
+                  x={tipX + 12}
+                  y={yOffset + 4}
+                  textAnchor="start"
+                  fontSize="10.5"
+                  fill="rgba(255,255,255,0.92)"
+                  fontFamily="-apple-system, system-ui, sans-serif"
+                  style={{ userSelect: 'none' }}
+                >
+                  <tspan>{b.name}</tspan>
+                  {b.aheadOfMain > 0 && (
+                    <tspan fill={c} dx="6">+{b.aheadOfMain}</tspan>
+                  )}
+                  {sessionCount > 0 && (
+                    <tspan fill="#fff" dx="8" fontSize="9" fontWeight="700" style={{ letterSpacing: '0.1em' }}>
+                      🤖 {sessionCount > 1 ? `×${sessionCount}` : 'WORKING'}
+                    </tspan>
+                  )}
+                  {sessionCount === 0 && isLive && (
+                    <tspan fill="#fff" dx="8" fontSize="9" fontWeight="700" style={{ letterSpacing: '0.1em' }}>● LIVE</tspan>
+                  )}
+                </text>
+              )}
             </g>
           );
         })}
