@@ -105,7 +105,7 @@ async function fetchMergedBranches(): Promise<MergedBranch[]> {
 
   const res = await fetch(
     `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=25`,
-    { headers, next: { revalidate: 120 } },
+    { headers, next: { revalidate: 300 } },
   );
   if (!res.ok) return [];
   const json = await res.json() as Array<{
@@ -139,9 +139,12 @@ async function fetchActiveBranches(): Promise<Branch[]> {
     headers['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;
   }
 
+  // per_page=15 caps the compare loop below; branches list is alphabetical
+  // so this isn't ideal but it keeps the per-refresh API call count bounded
+  // even when GITHUB_TOKEN is unset (60/hr unauthenticated).
   const listRes = await fetch(
-    `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/branches?per_page=30`,
-    { headers, next: { revalidate: 120 } },
+    `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/branches?per_page=15`,
+    { headers, next: { revalidate: 300 } },
   );
   if (!listRes.ok) return [];
   const branches = await listRes.json() as Array<{ name: string; commit: { sha: string } }>;
@@ -153,7 +156,7 @@ async function fetchActiveBranches(): Promise<Branch[]> {
     try {
       const res = await fetch(
         `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/compare/main...${encodeURIComponent(b.name)}`,
-        { headers, next: { revalidate: 120 } },
+        { headers, next: { revalidate: 300 } },
       );
       if (!res.ok) return null;
       const data = await res.json() as {
@@ -189,7 +192,7 @@ async function fetchRecentCommits(): Promise<Commit[]> {
     headers['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;
   }
 
-  const res = await fetch(url, { headers, next: { revalidate: 60 } });
+  const res = await fetch(url, { headers, next: { revalidate: 300 } });
   if (!res.ok) return [];
   const json = await res.json() as Array<{
     sha: string;
