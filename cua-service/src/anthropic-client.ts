@@ -43,23 +43,20 @@ export const anthropic = new Anthropic({
  * Model + computer-use tool version we standardize on. Bump these together
  * when Anthropic ships a new computer-use spec — they evolve in lockstep.
  *
- * Why Opus and not Sonnet:
- *   We initially shipped on Sonnet for cost reasons. In canary testing
- *   2026-05-08, Sonnet repeatedly couldn't complete Choice Advantage
- *   mapping within 60 agent steps — it lost track of where it was on
- *   complex multi-page logins. Opus is significantly better at the
- *   long-horizon reasoning that PMS exploration requires (Anthropic's
- *   own docs explicitly recommend Opus for non-trivial computer-use).
+ * Why Sonnet 4.6 (and not Opus):
+ *   Computer-use is only available on Sonnet-line models — Opus 4.7
+ *   does not support the computer_20250124 tool type (verified by
+ *   API 400 response on 2026-05-08). Sonnet 4.6 is the newest
+ *   Sonnet that supports computer use.
  *
- * Cost trade:
- *   Opus is ~5x more expensive per token than Sonnet, but mapping is a
- *   ONE-TIME cost per PMS family — once OPERA's recipe is saved, every
- *   future OPERA hotel onboards for free. Top 10 PMSes cover ~95% of
- *   the industry, so total spend on mapping across the entire
- *   addressable market is on the order of $50-100, not per-hotel.
- *   Recipe replay (steady-state pulls) uses zero Anthropic.
+ * Why we bumped from 4-5 to 4-6:
+ *   Sonnet 4.5 kept losing track of multi-page navigation in canary
+ *   testing on Choice Advantage. 4.6 is the next-gen Sonnet — better
+ *   instruction-following, better long-horizon reasoning. The improved
+ *   system prompt (below) gives it the right priors to actually
+ *   complete PMS mapping in one go.
  */
-export const CLAUDE_MODEL = 'claude-opus-4-7';
+export const CLAUDE_MODEL = 'claude-sonnet-4-6';
 
 /**
  * Computer-use tool definition. Display dimensions match the Playwright
