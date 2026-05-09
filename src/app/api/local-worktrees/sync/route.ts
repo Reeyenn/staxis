@@ -22,9 +22,9 @@
  *
  * Atomic semantics:
  *   - Every worktree in the payload is upserted with last_seen=now().
- *   - Any row whose last_seen is older than 10 minutes for this host is
- *     deleted (catch-up for worktrees the user removed locally — the
- *     next sync after a deletion will sweep them).
+ *   - Any row for this host whose name isn't in the payload is deleted
+ *     immediately. So `git worktree remove foo` → next sync → the row
+ *     for foo is gone. No 10-minute stale window.
  *
  * No auth: same rationale as /api/claude-heartbeat — the hook fires
  * from Reeyen's machine without env-var plumbing, and the data isn't
@@ -48,8 +48,6 @@ interface IncomingWorktree {
   headCommittedAt?: unknown;
   headMessage?: unknown;
 }
-
-const STALE_AFTER_MS = 10 * 60 * 1000; // 10 minutes
 
 function asInt(v: unknown): number {
   const n = typeof v === 'number' ? v : Number(v);
@@ -103,14 +101,20 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Sweep stale rows for this host. Anything not seen in the last
-  // STALE_AFTER_MS window must have been removed from disk locally.
-  const staleCutoff = new Date(Date.now() - STALE_AFTER_MS).toISOString();
-  const { error: pruneErr } = await supabaseAdmin
+  // Delete any row for this host whose name isn't in the current
+  // payload — those worktrees were removed from disk locally and the
+  // timeline should reflect that immediately. Empty payload means
+  // "this host has no worktrees", so all rows for the host go.
+  const liveNames = cleanRows.map((r) => r.name);
+  let pruneQuery = supabaseAdmin
     .from('local_worktrees')
     .delete()
-    .eq('host', host)
-    .lt('last_seen', staleCutoff);
+    .eq('host', host);
+  if (liveNames.length > 0) {
+    // PostgREST filter: column not in (a,b,c). The list is parenthesized.
+    pruneQuery = pruneQuery.not('name', 'in', `(${liveNames.map((n) => `"${n.replace(/"/g, '\\"')}"`).join(',')})`);
+  }
+  const { error: pruneErr } = await pruneQuery;
   if (pruneErr) {
     console.error('[local-worktrees/sync] prune failed', { msg: pruneErr.message });
     // Not fatal — the sweep can retry next sync.
