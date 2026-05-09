@@ -122,5 +122,25 @@ export async function POST(req: NextRequest) {
 
   try { revalidateTag('github-data', 'max'); } catch { /* swallow */ }
 
-  return NextResponse.json({ ok: true, count: cleanRows.length });
+  // Tell the caller which branches have had a Claude session
+  // heartbeat within the last hour. The local sync hook uses this to
+  // decide which worktrees are SAFE to auto-delete: a worktree whose
+  // branch is in this list is "in use" and must not be removed. Anything
+  // beyond 1 hour of silence is assumed idle.
+  const cutoff = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const { data: activeRows } = await supabaseAdmin
+    .from('claude_sessions')
+    .select('branch')
+    .gte('last_heartbeat', cutoff);
+  const recentlyActiveBranches = Array.from(new Set(
+    (activeRows ?? [])
+      .map((r) => r.branch as string | null)
+      .filter((b): b is string => !!b),
+  ));
+
+  return NextResponse.json({
+    ok: true,
+    count: cleanRows.length,
+    recentlyActiveBranches,
+  });
 }
