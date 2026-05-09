@@ -316,13 +316,75 @@ export function MarvelTimeline({
   // Active Claude sessions per branch — heartbeat data wins over any
   // commit-timestamp heuristic. If a session is currently working on a
   // branch, that branch is "live" no matter when the last commit was.
+  // The active-sessions endpoint returns rows ordered by last_heartbeat
+  // DESC, so the first session we see for a branch is the most recent —
+  // that's the one whose `current_tool` represents "what's happening
+  // RIGHT NOW".
   const sessionCountByBranch = new Map<string, number>();
+  const sessionsByBranch = new Map<string, ActiveSession[]>();
+  const currentToolByBranch = new Map<string, string>();
   for (const s of activeSessions ?? []) {
     if (!s.branch) continue;
     sessionCountByBranch.set(s.branch, (sessionCountByBranch.get(s.branch) ?? 0) + 1);
+    const list = sessionsByBranch.get(s.branch) ?? [];
+    list.push(s);
+    sessionsByBranch.set(s.branch, list);
+    if (s.current_tool && !currentToolByBranch.has(s.branch)) {
+      currentToolByBranch.set(s.branch, s.current_tool);
+    }
   }
   const isBranchAlive = (name: string): boolean => (sessionCountByBranch.get(name) ?? 0) > 0;
   const mainHasSession = isBranchAlive('main');
+
+  // Worktree lookup by branch — lets us surface uncommitted-file counts on
+  // tendrils (and on a dedicated main badge) without re-shaping the
+  // synthesized Branch objects. Reeyen explicitly wants dirty work to be
+  // visible at a glance; today it only shows in hover tooltips.
+  const worktreeByBranch = new Map<string, Worktree>();
+  for (const wt of worktrees ?? []) {
+    const key = wt.branch ?? wt.name;
+    if (key && !worktreeByBranch.has(key)) worktreeByBranch.set(key, wt);
+  }
+  const mainWorktree = worktreeByBranch.get('main') ?? worktreeByBranch.get('master');
+  const mainDirtyFiles = mainWorktree?.dirtyFiles ?? 0;
+
+  // Compact tool-name renderer: most Claude tool names are short ("Edit",
+  // "Bash", "Read"), but a few are long ("NotebookEdit", "WebSearch").
+  // Truncate to keep badges/labels from overflowing while still being
+  // recognizable at a glance.
+  const fmtTool = (tool: string | null | undefined): string => {
+    if (!tool) return '';
+    if (tool.length <= 14) return tool;
+    return `${tool.slice(0, 12)}…`;
+  };
+
+  // Stable color per session_id so two Claudes on the same branch get
+  // different-colored indicator dots. djb2-style hash → palette index.
+  const sessionColor = (id: string): string => {
+    let h = 5381;
+    for (let i = 0; i < id.length; i++) h = ((h << 5) + h + id.charCodeAt(i)) | 0;
+    return ACTIVE_PALETTE[Math.abs(h) % ACTIVE_PALETTE.length];
+  };
+
+  // Tooltip-friendly multi-line summary of the sessions on a branch.
+  // Goes into an SVG <title> so the browser shows it on hover. Format:
+  //   2 sessions on main:
+  //   • abcd1234 · Edit · 3m ago
+  //   • efgh5678 · Bash · just now
+  const sessionsTitle = (branchName: string): string | null => {
+    const list = sessionsByBranch.get(branchName);
+    if (!list || list.length === 0) return null;
+    const lines = list.map((s) => {
+      const id = (s.session_id ?? '').slice(0, 8);
+      const tool = s.current_tool ?? 'idle';
+      const age = s.last_heartbeat ? timeAgo(s.last_heartbeat) : '';
+      return `• ${id} · ${tool}${age ? ` · ${age}` : ''}`;
+    });
+    const head = list.length === 1
+      ? `1 session on ${branchName}:`
+      : `${list.length} sessions on ${branchName}:`;
+    return [head, ...lines].join('\n');
+  };
 
   // A branch counts as "live" if it has a recent commit OR an active
   // Claude session pinging it.
@@ -459,11 +521,17 @@ export function MarvelTimeline({
         const badges: Array<{ key: string; label: string; bg: string }> = [];
 
         if (mainHasSession) {
+          // Tool suffix: surfaces "what is the agent doing right now?"
+          // (Edit / Bash / Read / Write …). When >1 session, we show
+          // the most recently heart-beating session's tool — gives a
+          // pulse of activity without naming every session in the badge.
+          const tool = currentToolByBranch.get('main');
+          const toolSuffix = tool ? ` · ${fmtTool(tool)}` : '';
           badges.push({
             key: 'working-main',
             label: mainSessionCount === 1
-              ? '🤖 WORKING ON MAIN'
-              : `🤖 ${mainSessionCount} SESSIONS ON MAIN`,
+              ? `🤖 WORKING ON MAIN${toolSuffix}`
+              : `🤖 ${mainSessionCount} SESSIONS ON MAIN${toolSuffix}`,
             bg: 'rgba(34, 197, 94, 0.92)', // green
           });
         }
@@ -472,6 +540,17 @@ export function MarvelTimeline({
             key: 'just-pushed',
             label: 'MAIN: JUST PUSHED',
             bg: 'rgba(239, 68, 68, 0.85)', // red
+          });
+        }
+        if (mainDirtyFiles > 0) {
+          // Uncommitted work on main is invisible today unless you hover
+          // a tendril. Reeyen wants this surfaced — if there are 12
+          // uncommitted files sitting on main, that's load-bearing
+          // information for "what's happening with my app".
+          badges.push({
+            key: 'main-dirty',
+            label: `MAIN: ${mainDirtyFiles} UNCOMMITTED FILE${mainDirtyFiles === 1 ? '' : 'S'}`,
+            bg: 'rgba(245, 158, 11, 0.85)', // amber
           });
         }
         if (!mainHasSession && offMainSessionCount > 0) {
@@ -484,18 +563,21 @@ export function MarvelTimeline({
           const offMainBranches = Array.from(sessionCountByBranch.keys())
             .filter((b) => b !== 'main' && b !== 'master');
           let branchSuffix: string;
+          let toolSuffix = '';
           if (offMainBranches.length === 1) {
             const name = offMainBranches[0] ?? '';
             const truncated = name.length > 24 ? `${name.slice(0, 22)}…` : name;
             branchSuffix = `ON ${truncated.toUpperCase()}`;
+            const tool = currentToolByBranch.get(name);
+            if (tool) toolSuffix = ` · ${fmtTool(tool)}`;
           } else {
             branchSuffix = 'ON BRANCHES';
           }
           badges.push({
             key: 'side-sessions',
             label: offMainSessionCount === 1
-              ? `🤖 WORKING ${branchSuffix}`
-              : `🤖 ${offMainSessionCount} SESSIONS ${branchSuffix}`,
+              ? `🤖 WORKING ${branchSuffix}${toolSuffix}`
+              : `🤖 ${offMainSessionCount} SESSIONS ${branchSuffix}${toolSuffix}`,
             bg: 'rgba(34, 197, 94, 0.85)',
           });
         }
@@ -616,6 +698,34 @@ export function MarvelTimeline({
             <animate attributeName="r" values="9;28;9" dur="1.6s" repeatCount="indefinite" />
             <animate attributeName="opacity" values="0.95;0;0" keyTimes="0;0.7;1" dur="1.6s" repeatCount="indefinite" />
           </circle>
+        )}
+
+        {/* Multi-session indicator on main: when >1 Claude is on main,
+            render one tiny color-coded dot per session above the NOW
+            pulse. The badge says "3 SESSIONS ON MAIN" (count); these
+            dots make it visually obvious WITHOUT reading the badge,
+            and the per-session colors make each session trackable. */}
+        {(sessionCountByBranch.get('main') ?? 0) > 1 && (
+          <g>
+            <title>{sessionsTitle('main') ?? ''}</title>
+            {(sessionsByBranch.get('main') ?? []).map((s, k, arr) => (
+              <circle
+                key={`main-sd-${k}-${s.session_id}`}
+                cx={latestX - (arr.length - 1) * 3 + k * 6}
+                cy={trunkY - 18}
+                r="2.5"
+                fill={sessionColor(s.session_id ?? `main-${k}`)}
+                stroke="rgba(255,255,255,0.7)"
+                strokeWidth="0.6"
+                opacity="0.95"
+              >
+                <animate attributeName="opacity"
+                  values="0.6;1;0.6"
+                  dur={`${1.2 + k * 0.2}s`}
+                  repeatCount="indefinite" />
+              </circle>
+            ))}
+          </g>
         )}
 
         {/* Energy particles travelling along the main line — left → right.
@@ -743,12 +853,22 @@ export function MarvelTimeline({
           // Claude session is heart-beating on this branch right now.
           const isLive = isLiveTs(b.latestTs) || isBranchAlive(b.name);
           const sessionCount = sessionCountByBranch.get(b.name) ?? 0;
+          // Tool + dirty enrichment for the label. Looks up data we
+          // already have on the client; no new payload fields. The
+          // worktree lookup falls through both branch-name keys (for
+          // GitHub branches) and worktree-name keys (for synthesized
+          // entries that use the worktree dir name as `b.name`).
+          const tool = currentToolByBranch.get(b.name);
+          const wt = worktreeByBranch.get(b.name);
+          const wtDirty = wt?.dirtyFiles ?? 0;
           // "Empty" worktree shells: no commits ahead, no session,
           // no recent activity. The user wants to see these on the
           // timeline but they shouldn't compete visually with active
           // work — render them as faint stubs without labels or
           // animations. Hover still works to reveal the name.
           const isEmpty = !isLive && b.aheadOfMain === 0 && sessionCount === 0;
+          const sessionList = sessionsByBranch.get(b.name) ?? [];
+          const titleText = sessionsTitle(b.name);
           return (
             <g
               key={b.name}
@@ -757,6 +877,12 @@ export function MarvelTimeline({
               style={{ cursor: 'pointer' }}
               onClick={() => window.open(b.url, '_blank', 'noopener')}
             >
+              {/* Native browser tooltip — listed sessions with their
+                  tools and ages. The React tooltip above shows branch
+                  context (commit msg, behind-by); this one shows the
+                  per-session detail Reeyen needs to tell parallel
+                  Claudes apart. */}
+              {titleText && <title>{titleText}</title>}
               {/* Wide soft glow under the tendril — brighter on live,
                   skipped entirely on empty stubs to keep the canvas
                   calm when many worktrees pile up. */}
@@ -819,6 +945,32 @@ export function MarvelTimeline({
                     repeatCount="indefinite" />
                 )}
               </circle>
+              {/* Multi-session indicator: when >1 Claude is on this
+                  branch, render one tiny color-coded dot per session
+                  in a horizontal row beside the tip. Each dot's color
+                  is keyed off session_id so the same session keeps
+                  the same color across renders — Reeyen can match a
+                  dot to its session in the panel below. Side-aware
+                  vertical offset so the row sits ABOVE upward
+                  tendrils and BELOW downward ones (away from the
+                  trunk and away from the label on the right). */}
+              {sessionCount > 1 && sessionList.map((s, k) => (
+                <circle
+                  key={`sd-${b.name}-${k}-${s.session_id}`}
+                  cx={tipX - (sessionCount - 1) * 3 + k * 6}
+                  cy={yOffset + side * 11}
+                  r="2.5"
+                  fill={sessionColor(s.session_id ?? `${b.name}-${k}`)}
+                  stroke="rgba(255,255,255,0.65)"
+                  strokeWidth="0.6"
+                  opacity="0.95"
+                >
+                  <animate attributeName="opacity"
+                    values="0.6;1;0.6"
+                    dur={`${1.2 + k * 0.2}s`}
+                    repeatCount="indefinite" />
+                </circle>
+              ))}
               {/* Branch label — anchored to the RIGHT of the dot so it
                   stays inside the viewBox regardless of side. Skipped
                   on empty stubs (hover still reveals the name via the
@@ -838,9 +990,12 @@ export function MarvelTimeline({
                   {b.aheadOfMain > 0 && (
                     <tspan fill={c} dx="6">+{b.aheadOfMain}</tspan>
                   )}
+                  {wtDirty > 0 && (
+                    <tspan fill="#fbbf24" dx="6" fontSize="9.5">·{wtDirty} dirty</tspan>
+                  )}
                   {sessionCount > 0 && (
                     <tspan fill="#fff" dx="8" fontSize="9" fontWeight="700" style={{ letterSpacing: '0.1em' }}>
-                      🤖 {sessionCount > 1 ? `×${sessionCount}` : 'WORKING'}
+                      🤖 {sessionCount > 1 ? `×${sessionCount} ` : ''}{tool ? fmtTool(tool) : 'WORKING'}
                     </tspan>
                   )}
                   {sessionCount === 0 && isLive && (
@@ -907,6 +1062,33 @@ export function MarvelTimeline({
           fontWeight="600" style={{ letterSpacing: '0.2em' }}>
           NOW
         </text>
+
+        {/* Latest commit subject line — sits below the trunk near NOW
+            so Reeyen can read what just landed without clicking
+            through to GitHub. First line only, truncated to ~60 chars
+            to keep one-line on the canvas. Clickable to the commit
+            URL. */}
+        {commits[0] && (() => {
+          const fullMsg = (commits[0].message ?? '').split('\n')[0] ?? '';
+          const msg = fullMsg.length > 60 ? `${fullMsg.slice(0, 58)}…` : fullMsg;
+          if (!msg) return null;
+          return (
+            <a href={commits[0].url} target="_blank" rel="noopener noreferrer">
+              <text
+                x={width - padding}
+                y={trunkY + 22}
+                textAnchor="end"
+                fontSize="10"
+                fill="rgba(255,245,214,0.55)"
+                fontFamily="-apple-system, system-ui, sans-serif"
+                style={{ cursor: 'pointer' }}
+              >
+                <title>{fullMsg}</title>
+                {msg}
+              </text>
+            </a>
+          );
+        })()}
       </svg>
 
       {/* Floating tooltip */}
