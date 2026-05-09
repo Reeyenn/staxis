@@ -33,7 +33,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateString, validateInt, validateEnum, validateTimezone } from '@/lib/api-validate';
-import { createStripeCustomer, trialEndsAt } from '@/lib/stripe';
+import { createStripeCustomer } from '@/lib/stripe';
 import { checkAndIncrementRateLimit, rateLimitedResponse, ipToRateLimitKey } from '@/lib/api-ratelimit';
 
 export const runtime = 'nodejs';
@@ -160,8 +160,10 @@ export async function POST(req: NextRequest) {
       property_kind: kindV.value,
       services_enabled: defaultServicesFor(kindV.value),
       onboarding_source: 'self_signup',
-      subscription_status: 'trial',
-      trial_ends_at: trialEndsAt().toISOString(),
+      // Pilot mode (2026-05-09): no trial expiry, no payment required.
+      // Every new property is `active` from day one until we flip on
+      // billing. Revert to `trial` + trialEndsAt() when payment goes live.
+      subscription_status: 'active',
     })
     .select('id')
     .single();

@@ -157,10 +157,10 @@ export default function SignupPage() {
             fontSize: '26px', letterSpacing: '-0.02em',
             color: 'var(--text-primary)', marginBottom: '6px',
           }}>
-            Start your free trial
+            Start your account
           </h1>
           <p style={{ color: 'var(--text-muted)', fontSize: '14px', lineHeight: 1.5 }}>
-            14 days free. No credit card required.<br />
+            Free during pilot. No credit card required.<br />
             Connect your PMS and Maria gets her dashboard tomorrow.
           </p>
         </div>
@@ -282,7 +282,7 @@ export default function SignupPage() {
 
           <p style={{ fontSize: '12px', color: 'var(--text-muted)', textAlign: 'center', lineHeight: 1.5, marginTop: '12px' }}>
             By continuing you agree to our terms of service. We don't share your data.
-            14-day free trial. No charge until you add a card.
+            Free during pilot. We'll let you know before billing turns on.
           </p>
         </form>
       </div>
