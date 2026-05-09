@@ -207,10 +207,10 @@ export function MarvelTimeline({
           return { name: b.name, ...geo, triggeredAt };
         });
         setMergingTendrils((cur) => [...cur, ...newMerging]);
-        // Auto-cleanup after the animation finishes (1.6s + 0.5s buffer).
+        // Auto-cleanup after the 3s merge animation + 0.5s buffer.
         setTimeout(() => {
-          setMergingTendrils((cur) => cur.filter((m) => Date.now() - m.triggeredAt < 2100));
-        }, 2200);
+          setMergingTendrils((cur) => cur.filter((m) => Date.now() - m.triggeredAt < 3400));
+        }, 3500);
       }
     }
     prevBranchListRef.current = branchList;
@@ -358,33 +358,9 @@ export function MarvelTimeline({
           </filter>
         </defs>
 
-        {/* === MERGED BRANCH ARCS (drawn first, behind everything) ============= */}
-        {/* Each one arcs out and back into the line — "branch came home". Drawn
-            with low-opacity stroke so they fade into the cosmic background. */}
-        {visibleMerged.slice(0, 8).map((m) => {
-          // Alternate above/below so consecutive merges don't overlap visually.
-          const side = m.idx % 2 === 0 ? -1 : 1;
-          const arcHeight = 32 + (m.idx % 3) * 8;
-          const cy = trunkY + side * arcHeight;
-          const isHover = hoverMerged?.branchName === m.branchName;
-          return (
-            <g
-              key={`m-${m.idx}`}
-              onMouseEnter={() => setHoverMerged(m)}
-              onMouseLeave={() => setHoverMerged(null)}
-              style={{ cursor: 'pointer' }}
-              onClick={() => window.open(m.url, '_blank', 'noopener')}
-            >
-              <path
-                d={`M ${m.startX} ${trunkY} C ${m.startX + 30} ${cy} ${m.mergeX - 30} ${cy} ${m.mergeX} ${trunkY}`}
-                stroke={m.color}
-                strokeWidth={isHover ? 2.4 : 1.6}
-                fill="none"
-                opacity={isHover ? 0.95 : 0.55}
-              />
-            </g>
-          );
-        })}
+        {/* Merged-branch arcs intentionally removed — Reeyen called them
+            visual clutter. Recent merges still show as commit dots on
+            the trunk; the click-through is via "full history" → GitHub. */}
 
         {/* === MAIN SACRED TIMELINE ============================================ */}
         {/* Outer atmospheric halo */}
@@ -588,52 +564,76 @@ export function MarvelTimeline({
           );
         })}
 
-        {/* === MERGE-IN ANIMATIONS ============================================ */}
-        {/* When a branch disappears (because it just got merged into main),
-            we don't want it to pop out — we want it to slide visibly INTO
-            the main timeline. The tendril path collapses toward NOW, the
-            tip dot races down the line, and a soft shockwave blooms at
-            the impact point. ~1.6s end-to-end, then it cleans itself up. */}
+        {/* === MERGE-IN ANIMATION ============================================
+            When a branch disappears (got merged), the tendril shouldn't
+            just pop out. It should physically slide toward the main
+            timeline and DISSOLVE into the beam. 3 seconds end-to-end so
+            it's actually visible:
+
+              Phase 1 (0 → 2.0s): the path morphs from its arc toward
+                the trunk. The tip dot rides along the curve. As it
+                approaches the trunk it BRIGHTENS — the line getting
+                pulled into the main timeline's energy.
+              Phase 2 (2.0 → 3.0s): once the tendril is hugging the
+                trunk, opacity fades out softly so it dissolves rather
+                than snaps. */}
         {mergingTendrils.map((m) => {
           const fromPath = `M ${m.startX} ${trunkY} C ${m.cx1} ${m.cy1} ${m.cx2} ${m.cy2} ${m.tipX} ${m.yOffset}`;
-          // End state: the curve collapses INTO the trunk at NOW.
+          // End state: the curve flattens onto the trunk between divergence and NOW.
           const toPath = `M ${m.startX} ${trunkY} C ${m.startX + 30} ${trunkY} ${latestX - 30} ${trunkY} ${latestX} ${trunkY}`;
           return (
             <g key={`merging-${m.name}-${m.triggeredAt}`}>
-              {/* The tendril path morphs toward the trunk */}
+              {/* Wide soft glow under the tendril — INTENSIFIES as the
+                  tendril approaches the trunk (the "energy reunion"). */}
+              <path
+                d={fromPath}
+                stroke={m.color} strokeWidth="10" fill="none"
+                opacity="0.18" filter="url(#bigGlow)"
+              >
+                <animate attributeName="d" from={fromPath} to={toPath}
+                  dur="2.0s" fill="freeze" calcMode="spline"
+                  keySplines="0.4 0 0.2 1" />
+                <animate attributeName="opacity"
+                  values="0.18;0.55;0.55;0"
+                  keyTimes="0;0.65;0.85;1"
+                  dur="3.0s" fill="freeze" />
+              </path>
+              {/* Sharp tendril — same morph, brightens slightly mid-merge. */}
               <path
                 d={fromPath}
                 stroke={m.color} strokeWidth="2.4" fill="none"
                 opacity="0.95" filter="url(#softGlow)"
               >
                 <animate attributeName="d" from={fromPath} to={toPath}
-                  dur="1.4s" fill="freeze" calcMode="spline"
+                  dur="2.0s" fill="freeze" calcMode="spline"
                   keySplines="0.4 0 0.2 1" />
-                <animate attributeName="opacity" from="0.95" to="0"
-                  begin="1.0s" dur="0.4s" fill="freeze" />
+                <animate attributeName="stroke-width"
+                  values="2.4;3.2;3.2;1.5"
+                  keyTimes="0;0.65;0.85;1"
+                  dur="3.0s" fill="freeze" />
+                <animate attributeName="opacity"
+                  values="0.95;1;1;0"
+                  keyTimes="0;0.65;0.85;1"
+                  dur="3.0s" fill="freeze" />
               </path>
-              {/* Tip dot races inward to NOW */}
+              {/* Tip dot rides along the curve, slows as it approaches NOW,
+                  brightens momentarily, then dissolves. */}
               <circle cx={m.tipX} cy={m.yOffset} r="4"
-                fill={m.color} stroke="rgba(255,255,255,0.7)" strokeWidth="1">
+                fill={m.color} stroke="rgba(255,255,255,0.85)" strokeWidth="1">
                 <animate attributeName="cx" from={String(m.tipX)} to={String(latestX)}
-                  dur="1.4s" fill="freeze" calcMode="spline"
-                  keySplines="0.4 0 0.2 1" />
+                  dur="2.0s" fill="freeze" calcMode="spline"
+                  keySplines="0.3 0 0.1 1" />
                 <animate attributeName="cy" from={String(m.yOffset)} to={String(trunkY)}
-                  dur="1.4s" fill="freeze" calcMode="spline"
-                  keySplines="0.4 0 0.2 1" />
-                <animate attributeName="r" from="4" to="6"
-                  dur="1.4s" fill="freeze" />
-                <animate attributeName="opacity" from="1" to="0"
-                  begin="1.3s" dur="0.2s" fill="freeze" />
-              </circle>
-              {/* Bloom at the impact point — visible spark when the
-                  branch "comes home" to NOW */}
-              <circle cx={latestX} cy={trunkY} r="6"
-                fill="none" stroke={m.color} strokeWidth="2" opacity="0">
-                <animate attributeName="r" from="6" to="34"
-                  begin="1.2s" dur="0.6s" fill="freeze" />
-                <animate attributeName="opacity" from="0.9" to="0"
-                  begin="1.2s" dur="0.6s" fill="freeze" />
+                  dur="2.0s" fill="freeze" calcMode="spline"
+                  keySplines="0.3 0 0.1 1" />
+                <animate attributeName="r"
+                  values="4;6;7;0"
+                  keyTimes="0;0.65;0.85;1"
+                  dur="3.0s" fill="freeze" />
+                <animate attributeName="opacity"
+                  values="1;1;1;0"
+                  keyTimes="0;0.85;0.95;1"
+                  dur="3.0s" fill="freeze" />
               </circle>
             </g>
           );
@@ -708,12 +708,7 @@ export function MarvelTimeline({
             active branches ({branchList.length})
           </span>
         )}
-        {visibleMerged.length > 0 && (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-            <span style={{ width: '14px', height: '8px', border: '1.5px solid #7dd3fc', borderRadius: '50%', borderBottom: 'none', borderLeft: 'none', borderRight: 'none' }} />
-            merged ({visibleMerged.length})
-          </span>
-        )}
+        {/* "merged" arc legend removed alongside the arcs themselves. */}
         {deployMarkers.length > 0 && (
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
             <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#7dd3fc', border: '1px solid white' }} />
