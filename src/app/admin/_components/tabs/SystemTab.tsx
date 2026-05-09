@@ -298,7 +298,7 @@ function ActiveSessionsPanel({ resp }: { resp: ActiveSessionsResp }) {
             </span>
             <span style={{ color: 'var(--text-muted)' }}>·</span>
             <span style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', fontSize: '11px' }}>
-              {g.sessions.map((s) => s.current_tool ?? '?').slice(0, 3).join(', ')}
+              {g.sessions.map((s) => fmtToolName(s.current_tool ?? '?')).slice(0, 3).join(', ')}
             </span>
             <span style={{ color: 'var(--text-muted)', marginLeft: 'auto', fontSize: '11px' }}>
               {timeAgo(g.sessions[0].last_heartbeat)}
@@ -546,6 +546,20 @@ function timeAgo(iso: string): string {
   const hr = Math.floor(min / 60);
   if (hr < 24) return `${hr}h ago`;
   return `${Math.floor(hr / 24)}d ago`;
+}
+
+// MCP tool names come through as `mcp__<server>__<action>` (e.g.
+// `mcp__Claude_in_Chrome__browser_batch`). The `mcp__server__` prefix
+// is repetitive — strip it so the action ("browser_batch") is what
+// shows. Mirrors fmtTool inside MarvelTimeline; kept local so this
+// component stays self-contained.
+function fmtToolName(tool: string): string {
+  if (!tool) return tool;
+  if (tool.startsWith('mcp__')) {
+    const parts = tool.split('__');
+    return parts[parts.length - 1] || tool;
+  }
+  return tool;
 }
 
 const sectionTitle: React.CSSProperties = {

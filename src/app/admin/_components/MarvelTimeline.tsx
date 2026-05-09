@@ -380,15 +380,26 @@ export function MarvelTimeline({
   const mainWorktree = worktreeByBranch.get('main') ?? worktreeByBranch.get('master');
   const mainDirtyFiles = mainWorktree?.dirtyFiles ?? 0;
 
-  // Compact tool-name renderer: most Claude tool names are short ("Edit",
-  // "Bash", "Read"), but a few are long ("NotebookEdit", "WebSearch").
-  // Truncate to keep badges/labels from overflowing while still being
-  // recognizable at a glance.
+  // Compact tool-name renderer. Two transformations:
+  //   1. MCP tools come through as `mcp__<server>__<action>` (e.g.
+  //      `mcp__Claude_in_Chrome__browser_batch`). The server prefix is
+  //      repetitive and uninformative — strip it so Reeyen sees the
+  //      actual ACTION ("browser_batch"), not "mcp__Claude_…".
+  //   2. Truncate anything still too long for an SVG label.
   const fmtTool = (tool: string | null | undefined): string => {
     if (!tool) return '';
-    if (tool.length <= 14) return tool;
-    return `${tool.slice(0, 12)}…`;
+    const stripped = tool.startsWith('mcp__')
+      ? (tool.split('__').slice(-1)[0] || tool)
+      : tool;
+    if (stripped.length <= 14) return stripped;
+    return `${stripped.slice(0, 12)}…`;
   };
+
+  // Branch-name truncator for tendril labels: very long names like
+  // `claude/unruffled-tharp-82a6be` chew up label space and push the
+  // tool indicator off-canvas. Cap at 22 chars + ellipsis.
+  const fmtBranch = (name: string): string =>
+    name.length > 22 ? `${name.slice(0, 20)}…` : name;
 
   // Stable color per session_id so two Claudes on the same branch get
   // different-colored indicator dots. djb2-style hash → palette index.
@@ -600,8 +611,9 @@ export function MarvelTimeline({
           // (Edit / Bash / Read / Write …). When >1 session, we show
           // the most recently heart-beating session's tool — gives a
           // pulse of activity without naming every session in the badge.
+          // Uppercased to match the rest of the badge typography.
           const tool = currentToolByBranch.get('main');
-          const toolSuffix = tool ? ` · ${fmtTool(tool)}` : '';
+          const toolSuffix = tool ? ` · ${fmtTool(tool).toUpperCase()}` : '';
           badges.push({
             key: 'working-main',
             label: mainSessionCount === 1
@@ -644,7 +656,7 @@ export function MarvelTimeline({
             const truncated = name.length > 24 ? `${name.slice(0, 22)}…` : name;
             branchSuffix = `ON ${truncated.toUpperCase()}`;
             const tool = currentToolByBranch.get(name);
-            if (tool) toolSuffix = ` · ${fmtTool(tool)}`;
+            if (tool) toolSuffix = ` · ${fmtTool(tool).toUpperCase()}`;
           } else {
             branchSuffix = 'ON BRANCHES';
           }
@@ -1230,7 +1242,7 @@ export function MarvelTimeline({
                   fontFamily="-apple-system, system-ui, sans-serif"
                   style={{ userSelect: 'none' }}
                 >
-                  <tspan>{b.name}</tspan>
+                  <tspan>{fmtBranch(b.name)}</tspan>
                   {b.aheadOfMain > 0 && (
                     <tspan fill={c} dx="6">+{b.aheadOfMain}</tspan>
                   )}
