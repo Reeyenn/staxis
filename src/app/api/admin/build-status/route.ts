@@ -139,12 +139,13 @@ async function fetchActiveBranches(): Promise<Branch[]> {
     headers['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;
   }
 
-  // per_page=8 caps the compare loop below at 8 GitHub round-trips per
-  // refresh. Combined with the 10s server cache and 10s client poll
-  // (REFRESH_MS in SystemTab), we use ~3960 calls/hr against the 5000/hr
-  // authenticated quota.
+  // per_page=50 covers most reasonable repo branch counts. The GitHub
+  // /branches endpoint returns ALPHABETICAL — there's no sort=updated
+  // option — so a small cap silently drops branches whose names sort
+  // late (e.g., "hotfix-*" was being missed when capped at 8). With
+  // the GITHUB_TOKEN giving 5000/hr we can afford the broader fetch.
   const listRes = await fetch(
-    `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/branches?per_page=8`,
+    `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/branches?per_page=50`,
     { headers, next: { revalidate: 10, tags: ['github-data'] } },
   );
   if (!listRes.ok) return [];
