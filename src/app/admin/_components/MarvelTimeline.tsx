@@ -201,22 +201,29 @@ export function MarvelTimeline({
         })}
 
         {/* === MAIN SACRED TIMELINE ============================================ */}
-        {/* Outer halo (huge soft blur underneath for the bloom feel) */}
+        {/* Outer atmospheric halo */}
         <line
           x1={padding} y1={trunkY} x2={width - padding} y2={trunkY}
-          stroke="#ffb347" strokeWidth="22" strokeLinecap="round"
-          opacity="0.35" filter="url(#bigGlow)"
+          stroke="#ffb347" strokeWidth="28" strokeLinecap="round"
+          opacity="0.18" filter="url(#bigGlow)"
         />
-        {/* Inner halo */}
+        {/* Mid halo — gives the line its bloom */}
         <line
           x1={padding} y1={trunkY} x2={width - padding} y2={trunkY}
-          stroke="#ffd687" strokeWidth="9" strokeLinecap="round"
+          stroke="#ffc870" strokeWidth="14" strokeLinecap="round"
           opacity="0.55" filter="url(#softGlow)"
         />
-        {/* Sharp bright core */}
+        {/* Bright body */}
         <line
           x1={padding} y1={trunkY} x2={width - padding} y2={trunkY}
-          stroke="url(#trunk)" strokeWidth="4.5" strokeLinecap="round"
+          stroke="url(#trunk)" strokeWidth="7" strokeLinecap="round"
+          opacity="1"
+        />
+        {/* Sharp white center thread for that "energy beam" feel */}
+        <line
+          x1={padding} y1={trunkY} x2={width - padding} y2={trunkY}
+          stroke="#fff8e1" strokeWidth="1.5" strokeLinecap="round"
+          opacity="0.9"
         />
         {/* Bright pulse at "now" */}
         <circle cx={latestX} cy={trunkY} r="9" fill="#fff5d6" filter="url(#softGlow)">
