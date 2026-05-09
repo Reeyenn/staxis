@@ -45,7 +45,15 @@ const VIEWPORT = { width: 1280, height: 800 };
 // Combined with prompt caching on the system prompt, a 60-step run on
 // CA fits well under MAX_INPUT_TOKENS_PER_RUN.
 const MAX_INPUT_TOKENS_PER_RUN = 800_000;
-const MAX_OUTPUT_TOKENS_PER_TURN = 2048;
+// Output cap matters most on the agent's FINAL turn, when it emits the
+// parse-hint JSON. Verbose preambles ("I have all the info needed,
+// now I'll construct the JSON…") + actual JSON can exceed 2048 tokens
+// and we get a truncated response with no parseable JSON. 4096 gives
+// plenty of headroom; per-turn tool_use blocks are tiny so we never
+// approach this on intermediate turns. (Diagnosed 2026-05-09 from CA
+// canary v6 — getArrivals failed with the agent mid-sentence right
+// before the JSON.)
+const MAX_OUTPUT_TOKENS_PER_TURN = 4096;
 const PHASE_WALLCLOCK_BUDGET_MS = 5 * 60_000;
 const HISTORY_KEEP_RECENT = 1;
 // Truncate any single read_page or get_page_text result over this size.
@@ -378,9 +386,14 @@ async function mapAction(args: {
     `{"unavailable": true, "reason": "<why>"} so we can mark this action ` +
     `as unsupported and continue.\n\n` +
 
-    `WHEN DONE WITH A REAL PAGE, reply with JSON ONLY:\n` +
-    `  {"url": "<final URL>", "rowSelector": "<CSS selector matching one row>", ` +
-    `"columns": {<our field name>: "<selector relative to row>"}}\n\n` +
+    `WHEN DONE WITH A REAL PAGE — your reply MUST start with the JSON ` +
+    `object on the first line. No preamble like "I found the page" or ` +
+    `"Here's the result". Just the JSON, then optional brief notes ` +
+    `after. Output is capped, so a long preamble can truncate the JSON.\n\n` +
+
+    `EXACT FORMAT (first line of your reply):\n` +
+    `  {"url":"<final URL>","rowSelector":"<CSS selector matching one row>",` +
+    `"columns":{<our field name>:"<selector relative to row>"}}\n\n` +
 
     `Required fields for this page: ${args.requiredFields.join(', ')}\n` +
     `Use empty string for fields not visible on the page.\n\n` +
@@ -388,8 +401,8 @@ async function mapAction(args: {
     `Step budget: you have up to ${MAX_AGENT_STEPS_PER_ACTION} actions. ` +
     `Spend the first ~5 on exploration (read_page + nav clicks); ` +
     `if you've used 50+ without finding the page, emit ` +
-    `{"unavailable": true, "reason": "<what you tried>"} and stop. ` +
-    `It's better to skip an action than to burn the whole budget.`;
+    `{"unavailable":true,"reason":"<what you tried>"} on the first line ` +
+    `and stop. Skipping an action is better than burning the whole budget.`;
 
   const messages: Anthropic.Messages.MessageParam[] = [
     { role: 'user', content: [{ type: 'text', text: fullGoal }] },
