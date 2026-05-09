@@ -100,7 +100,49 @@ interface ActiveSession {
   branch: string | null;
   current_tool: string | null;
   last_heartbeat: string;
+  // Optional — the active-sessions endpoint returns it but older
+  // wire shapes may not include it. Falls back to last_heartbeat for
+  // arrival-order sorting in that case.
+  started_at?: string | null;
 }
+
+// Per-session quadrant slots. Sessions are routed here in arrival
+// order: 1st → TL, 2nd → TM, 3rd → BL, 4th → BM. The 5th+ overflow
+// into TL with a "+N MORE" indicator. Global / main-anchored badges
+// always live in TL.
+type Quadrant = 'TL' | 'TM' | 'BL' | 'BM';
+const ALL_QUADRANTS: Quadrant[] = ['TL', 'TM', 'BL', 'BM'];
+
+// A normalized badge spec — each in-progress signal becomes one of
+// these so a single grouping pass can route them to the right
+// quadrant. `scope` decides routing: 'session' goes to that session's
+// quadrant; 'main' / 'global' always go to TL.
+interface BadgeSpec {
+  key: string;
+  label: string;
+  bg: string;
+  scope: 'session' | 'main' | 'global';
+  branch?: string;       // present for scope='session'
+  sessionId?: string;    // for stable routing if branch shifts
+}
+
+// Completion toast — emitted on state-transitions (deploy finishes,
+// CI completes, push lands, session stops). Shown for ~10s in the
+// quadrant of whichever session it belongs to (or TL for globals).
+interface Toast {
+  id: string;
+  kind: 'success' | 'failure';
+  message: string;
+  url?: string | null;
+  branch?: string | null;
+  expiresAt: number;     // ms epoch
+}
+
+// Rolled-up state of the whole system. Drives the top-center banner.
+type ConsensusState =
+  | { kind: 'clean' }
+  | { kind: 'working'; what: string }
+  | { kind: 'failed'; what: string; url?: string };
 
 const ACTIVE_PALETTE = ['#fb7185', '#a78bfa', '#34d399', '#60a5fa', '#facc15', '#f472b6'];
 const MERGED_PALETTE = ['#7dd3fc', '#fcd34d', '#86efac', '#f9a8d4', '#c4b5fd', '#fdba74'];
@@ -125,6 +167,54 @@ export function MarvelTimeline({
 }) {
   const [hoverBranch, setHoverBranch] = useState<Branch | null>(null);
   const [hoverMerged, setHoverMerged] = useState<MergedBranch | null>(null);
+
+  // Per-session quadrant assignment. Keyed on session_id so that
+  // mid-session branch renames don't reshuffle slots. Persists across
+  // re-renders within this tab (page reload resets — fine).
+  const sessionQuadrantRef = useRef<Map<string, Quadrant>>(new Map());
+  const freeQuadrantsRef = useRef<Set<Quadrant>>(new Set(ALL_QUADRANTS));
+  // Number of "extra" sessions beyond the 4 quadrants — surfaced as a
+  // "+N MORE" overflow chip in TL.
+  const [overflowCount, setOverflowCount] = useState(0);
+  // Tick state to trigger re-renders when ref maps mutate. The maps
+  // themselves are kept in refs (so we don't recreate them every render),
+  // but we still need React to re-render the JSX that reads them.
+  const [, setQuadrantTick] = useState(0);
+
+  // Toast subsystem state. Toasts are appended on state transitions and
+  // self-remove via setTimeout after 10s. Timer IDs live in a ref so
+  // unmount cleanup can clear them.
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const toastTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  // Snapshot of the previous payload's terminal-state fields. We diff
+  // against this each render to decide which toasts to emit. Only the
+  // fields we actually compare against live here — keeps the diff
+  // cheap.
+  const prevPayloadRef = useRef<{
+    deployVercelInProgress: boolean;
+    deployVercelFailed: boolean;
+    deployFlyInProgress: boolean;
+    deployFlyFailed: boolean;
+    latestCheckStatus: string | null;
+    pushKeys: Set<string>;
+    sessionIdToBranch: Map<string, string | null>;
+    initialized: boolean;
+  }>({
+    deployVercelInProgress: false,
+    deployVercelFailed: false,
+    deployFlyInProgress: false,
+    deployFlyFailed: false,
+    latestCheckStatus: null,
+    pushKeys: new Set(),
+    sessionIdToBranch: new Map(),
+    initialized: false,
+  });
+
+  // Quadrant of last-known position for each session. Used to route a
+  // "Session done" toast for a session that's already been removed
+  // from sessionQuadrantRef.
+  const lastKnownQuadrantBySessionRef = useRef<Map<string, Quadrant>>(new Map());
 
   // Live-state derivation. Recomputed every render — combined with the
   // 2s cursor + 60s background refresh in SystemTab, this gives sub-3s
@@ -152,7 +242,11 @@ export function MarvelTimeline({
   // Geometry — wide & airy so the line breathes.
   const width = 1100;
   const padding = 50;
-  const trunkY = 170;
+  // Bumped from 170 → 230 to give the per-session quadrants vertical
+  // breathing room. TL/TM live above the trunk, BL/BM below. Tendrils,
+  // deploy markers, NOW pulse, and the latest-commit subject all
+  // position relative to trunkY, so they slide down with it.
+  const trunkY = 230;
   const innerW = width - padding * 2;
   const ordered = [...commits].reverse();          // oldest left → newest right
   const step = ordered.length > 1 ? innerW / (ordered.length - 1) : 0;
@@ -343,6 +437,203 @@ export function MarvelTimeline({
     return () => { if (frameId) cancelAnimationFrame(frameId); };
   }, [mergingTendrils]);
 
+  // ── Quadrant assignment ──────────────────────────────────────────
+  // Walk current sessions in started_at ASC order. For each unseen
+  // session_id, claim the first free slot from the priority list
+  // [TL,TM,BL,BM]. When sessions disappear, free their slots so the
+  // next-arriving session can reclaim them. Past the 4-slot capacity,
+  // overflow is reported as a count for a "+N MORE" chip in TL.
+  useEffect(() => {
+    const sessions = (activeSessions ?? []).slice().sort((a, b) => {
+      // Prefer started_at (true arrival order). Fall back to
+      // last_heartbeat for older payload shapes.
+      const ka = a.started_at ?? a.last_heartbeat ?? '';
+      const kb = b.started_at ?? b.last_heartbeat ?? '';
+      return ka.localeCompare(kb);
+    });
+    const currentIds = new Set(sessions.map((s) => s.session_id));
+
+    // Free slots for sessions that are gone, AND remember last-known
+    // quadrant for the "Session done" toast routing path.
+    let mutated = false;
+    for (const [sid, q] of Array.from(sessionQuadrantRef.current.entries())) {
+      if (!currentIds.has(sid)) {
+        lastKnownQuadrantBySessionRef.current.set(sid, q);
+        sessionQuadrantRef.current.delete(sid);
+        freeQuadrantsRef.current.add(q);
+        mutated = true;
+      }
+    }
+
+    // Assign newcomers in order. Take the first free slot from the
+    // priority list each time.
+    let overflow = 0;
+    for (const s of sessions) {
+      if (sessionQuadrantRef.current.has(s.session_id)) continue;
+      const free = ALL_QUADRANTS.find((q) => freeQuadrantsRef.current.has(q));
+      if (free) {
+        sessionQuadrantRef.current.set(s.session_id, free);
+        freeQuadrantsRef.current.delete(free);
+        mutated = true;
+      } else {
+        overflow++;
+      }
+    }
+    setOverflowCount(overflow);
+    if (mutated) setQuadrantTick((t) => t + 1);
+    // Trim the last-known map so it doesn't grow unbounded across
+    // many session restarts. 50 entries is plenty.
+    if (lastKnownQuadrantBySessionRef.current.size > 50) {
+      const oldest = Array.from(lastKnownQuadrantBySessionRef.current.keys()).slice(0, -50);
+      for (const k of oldest) lastKnownQuadrantBySessionRef.current.delete(k);
+    }
+  }, [activeSessions]);
+
+  // ── Toast emission on state transitions ──────────────────────────
+  // Compares current payload to prevPayloadRef. Each transition is
+  // detected ONCE (idempotent on stable input). On first render the
+  // ref is initialized but no toasts fire — we don't surface the
+  // pre-existing state as a "just happened" event.
+  useEffect(() => {
+    const prev = prevPayloadRef.current;
+    const newToasts: Toast[] = [];
+
+    const vercel = deploys.find((d) => d.target === 'vercel-website');
+    const fly = deploys.find((d) => d.target === 'fly-cua');
+    const vercelInProgress = !!vercel?.inProgress;
+    const vercelFailed = !!vercel?.failed;
+    const flyInProgress = !!fly?.inProgress;
+    const flyFailed = !!fly?.failed;
+    const latestCheck = commits[0]?.checkStatus ?? null;
+
+    const pushKeys = new Set<string>();
+    for (const p of pushes ?? []) pushKeys.add(`${p.branch}@${p.ts}`);
+
+    const sessionIdToBranch = new Map<string, string | null>();
+    for (const s of activeSessions ?? []) sessionIdToBranch.set(s.session_id, s.branch);
+
+    if (prev.initialized) {
+      // Vercel deploy completed.
+      if (prev.deployVercelInProgress && !vercelInProgress) {
+        if (vercelFailed) {
+          newToasts.push({
+            id: `t-${Date.now()}-vercel-fail`,
+            kind: 'failure',
+            message: 'VERCEL DEPLOY FAILED',
+            url: vercel?.url ?? null,
+            expiresAt: Date.now() + 10000,
+          });
+        } else {
+          newToasts.push({
+            id: `t-${Date.now()}-vercel-ok`,
+            kind: 'success',
+            message: 'VERCEL DEPLOYED',
+            url: vercel?.url ?? null,
+            expiresAt: Date.now() + 10000,
+          });
+        }
+      }
+      // Fly deploy completed.
+      if (prev.deployFlyInProgress && !flyInProgress) {
+        if (flyFailed) {
+          newToasts.push({
+            id: `t-${Date.now()}-fly-fail`,
+            kind: 'failure',
+            message: 'CUA DEPLOY FAILED',
+            url: fly?.url ?? null,
+            expiresAt: Date.now() + 10000,
+          });
+        } else {
+          newToasts.push({
+            id: `t-${Date.now()}-fly-ok`,
+            kind: 'success',
+            message: 'CUA DEPLOYED',
+            url: fly?.url ?? null,
+            expiresAt: Date.now() + 10000,
+          });
+        }
+      }
+      // CI transitioned out of pending.
+      if (prev.latestCheckStatus === 'pending' && latestCheck && latestCheck !== 'pending') {
+        if (latestCheck === 'failed') {
+          newToasts.push({
+            id: `t-${Date.now()}-ci-fail`,
+            kind: 'failure',
+            message: 'CI FAILED',
+            url: commits[0]?.url ?? null,
+            expiresAt: Date.now() + 10000,
+          });
+        } else if (latestCheck === 'passed') {
+          newToasts.push({
+            id: `t-${Date.now()}-ci-ok`,
+            kind: 'success',
+            message: 'CI PASSED',
+            url: commits[0]?.url ?? null,
+            expiresAt: Date.now() + 10000,
+          });
+        }
+      }
+      // New push events.
+      for (const key of pushKeys) {
+        if (!prev.pushKeys.has(key)) {
+          const [branch] = key.split('@');
+          const truncated = branch.length > 24 ? `${branch.slice(0, 22)}…` : branch;
+          newToasts.push({
+            id: `t-${Date.now()}-push-${branch}`,
+            kind: 'success',
+            message: `PUSHED ${truncated.toUpperCase()}`,
+            branch,
+            expiresAt: Date.now() + 10000,
+          });
+        }
+      }
+      // Sessions that ended.
+      for (const [sid, branch] of prev.sessionIdToBranch.entries()) {
+        if (!sessionIdToBranch.has(sid)) {
+          const truncated = (branch ?? '').length > 24
+            ? `${(branch ?? '').slice(0, 22)}…`
+            : (branch ?? '');
+          newToasts.push({
+            id: `t-${Date.now()}-stop-${sid}`,
+            kind: 'success',
+            message: branch ? `SESSION DONE ON ${truncated.toUpperCase()}` : 'SESSION DONE',
+            branch: branch ?? null,
+            expiresAt: Date.now() + 10000,
+          });
+        }
+      }
+    }
+
+    if (newToasts.length > 0) {
+      setToasts((curr) => [...curr, ...newToasts]);
+      for (const t of newToasts) {
+        const timer = setTimeout(() => {
+          setToasts((curr) => curr.filter((x) => x.id !== t.id));
+          toastTimersRef.current.delete(t.id);
+        }, 10000);
+        toastTimersRef.current.set(t.id, timer);
+      }
+    }
+
+    prevPayloadRef.current = {
+      deployVercelInProgress: vercelInProgress,
+      deployVercelFailed: vercelFailed,
+      deployFlyInProgress: flyInProgress,
+      deployFlyFailed: flyFailed,
+      latestCheckStatus: latestCheck,
+      pushKeys,
+      sessionIdToBranch,
+      initialized: true,
+    };
+  }, [deploys, commits, pushes, activeSessions]);
+
+  // Cleanup pending toast timers on unmount so we don't setState into
+  // a stale tree.
+  useEffect(() => () => {
+    for (const t of toastTimersRef.current.values()) clearTimeout(t);
+    toastTimersRef.current.clear();
+  }, []);
+
   // Active Claude sessions per branch — heartbeat data wins over any
   // commit-timestamp heuristic. If a session is currently working on a
   // branch, that branch is "live" no matter when the last commit was.
@@ -508,7 +799,9 @@ export function MarvelTimeline({
 
   // Make the canvas tall enough that the highest tendril label doesn't
   // get clipped above and the lowest doesn't crash into the legend below.
-  const svgHeight = Math.max(320, trunkY + maxLaneY + 70);
+  // 430 floor (was 320) accommodates the taller trunkY plus bottom
+  // quadrant rows.
+  const svgHeight = Math.max(430, trunkY + maxLaneY + 70);
 
   // Early bail-out for empty data. Must come AFTER all hooks (rules-of-hooks):
   // the merge-animation effects above run unconditionally each render.
@@ -543,36 +836,10 @@ export function MarvelTimeline({
         background: 'radial-gradient(ellipse at right center, rgba(255,170,80,0.18), transparent 60%)',
       }} />
 
-      {/* "MERGED" toast — unambiguous text signal that a merge was detected,
-          shown for 3s alongside the SVG animation. So even on a quirky
-          browser where the SVG renders weird, you still get a clear visual
-          confirmation that the branch came home. */}
-      {mergingTendrils.length > 0 && (
-        <div style={{
-          position: 'absolute',
-          top: '14px',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          padding: '6px 14px',
-          fontSize: '11.5px',
-          fontWeight: 700,
-          letterSpacing: '0.12em',
-          textTransform: 'uppercase',
-          color: '#fff',
-          background: 'rgba(34,197,94,0.92)',
-          borderRadius: '999px',
-          backdropFilter: 'blur(4px)',
-          zIndex: 2,
-          display: 'flex', alignItems: 'center', gap: '8px',
-          animation: 'mergeFlash 3s ease-out forwards',
-        }}>
-          <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#fff', animation: 'mtBlink 1s infinite' }} />
-          {mergingTendrils.length === 1
-            ? `${mergingTendrils[0].name} → main`
-            : `${mergingTendrils.length} branches → main`}
-        </div>
-      )}
-      <style>{`@keyframes mergeFlash { 0% { opacity: 0; transform: translate(-50%, -10px); } 10%,80% { opacity: 1; transform: translate(-50%, 0); } 100% { opacity: 0; transform: translate(-50%, -10px); } }`}</style>
+      {/* The merge-flash badge that used to live here is now folded
+          into the <ConsensusBanner> — when mergingTendrils.length > 0
+          the banner shows a "MERGING <branch>" working state. Same
+          visual semantics, fewer banner dialects. */}
 
       {/* Today's commit count, top-right corner. Plain white text, no
           background — just an unobtrusive indicator of how much work
@@ -592,184 +859,282 @@ export function MarvelTimeline({
         </div>
       )}
 
-      {/* Live-activity badges. Each signal renders its OWN badge so they
-          can stack — e.g. you can see "MAIN: JUST PUSHED" and "WORKING
-          ON MAIN" simultaneously when a Claude session lands a commit
-          and keeps working. Order is most-actionable on top:
-            1. WORKING ON MAIN  (green, session heartbeating now)
-            2. MAIN: JUST PUSHED  (red, last 60s)
-            3. N branches updated  (red, branch-level signal)
-          A non-main session alone (no main signal) still renders a
-          summary badge so you don't lose visibility on side work. */}
+      {/* === BADGES + TOASTS + CONSENSUS — quadrant-routed ============
+          Each Claude session occupies one of 4 quadrants in arrival
+          order (TL → TM → BL → BM). Global / main-anchored badges
+          (CI, deploys, JUST PUSHED, UNCOMMITTED) always live in TL so
+          they don't fight for attention with side-session work. A
+          single consensus banner sits top-center summarizing overall
+          state. Completion toasts (10s self-fade) appear above the
+          in-progress badges in the relevant session's quadrant. */}
       {(() => {
         const mainSessionCount = sessionCountByBranch.get('main') ?? 0;
         const offMainSessionCount = totalActiveSessions - mainSessionCount;
-        const badges: Array<{ key: string; label: string; bg: string }> = [];
 
-        if (mainHasSession) {
-          // Tool suffix: surfaces "what is the agent doing right now?"
-          // (Edit / Bash / Read / Write …). When >1 session, we show
-          // the most recently heart-beating session's tool — gives a
-          // pulse of activity without naming every session in the badge.
-          // Uppercased to match the rest of the badge typography.
-          const tool = currentToolByBranch.get('main');
-          const toolSuffix = tool ? ` · ${fmtTool(tool).toUpperCase()}` : '';
-          badges.push({
-            key: 'working-main',
-            label: mainSessionCount === 1
-              ? `🤖 WORKING ON MAIN${toolSuffix}`
-              : `🤖 ${mainSessionCount} SESSIONS ON MAIN${toolSuffix}`,
-            bg: 'rgba(34, 197, 94, 0.92)', // green
+        // Build a flat list of in-progress badge specs. Same conditional
+        // logic as before, but each entry now carries `scope` (and
+        // optionally branch / sessionId) so the grouping pass can route
+        // them correctly. Per-session WORKING badges are emitted ONE
+        // PER SESSION (instead of one collapsed "N sessions on X") so
+        // each quadrant gets its own pill.
+        const specs: BadgeSpec[] = [];
+
+        // One WORKING badge per session — keyed on session_id so each
+        // lands in its own quadrant. Branch + tool surfaced inline.
+        for (const s of (activeSessions ?? [])) {
+          if (!s.session_id) continue;
+          const branch = s.branch ?? '';
+          const isMain = branch === 'main' || branch === 'master';
+          const truncated = branch.length > 24 ? `${branch.slice(0, 22)}…` : branch;
+          const tool = s.current_tool ? fmtTool(s.current_tool).toUpperCase() : '';
+          const tag = isMain ? 'MAIN' : (truncated.toUpperCase() || 'BRANCH');
+          const label = tool
+            ? `🤖 WORKING ON ${tag} · ${tool}`
+            : `🤖 WORKING ON ${tag}`;
+          specs.push({
+            key: `working-${s.session_id}`,
+            label,
+            bg: 'rgba(34, 197, 94, 0.92)',
+            scope: 'session',
+            branch: branch || undefined,
+            sessionId: s.session_id,
           });
         }
         if (mainIsLive) {
-          badges.push({
+          specs.push({
             key: 'just-pushed',
             label: 'MAIN: JUST PUSHED',
-            bg: 'rgba(239, 68, 68, 0.85)', // red
+            bg: 'rgba(239, 68, 68, 0.85)',
+            scope: 'main',
           });
         }
         if (mainDirtyFiles > 0) {
-          // Uncommitted work on main is invisible today unless you hover
-          // a tendril. Reeyen wants this surfaced — if there are 12
-          // uncommitted files sitting on main, that's load-bearing
-          // information for "what's happening with my app".
-          badges.push({
+          specs.push({
             key: 'main-dirty',
             label: `MAIN: ${mainDirtyFiles} UNCOMMITTED FILE${mainDirtyFiles === 1 ? '' : 'S'}`,
-            bg: 'rgba(245, 158, 11, 0.85)', // amber
+            bg: 'rgba(245, 158, 11, 0.85)',
+            scope: 'main',
           });
         }
-        if (!mainHasSession && offMainSessionCount > 0) {
-          // Mirror the "WORKING ON MAIN" / "N SESSIONS ON MAIN" wording
-          // so the badge reads consistently across branches. When all
-          // sessions are on ONE side branch, name it ("WORKING ON
-          // tranquil-chasing-flurry") so Reeyen can tell tabs apart;
-          // when sessions span multiple branches, fall back to the
-          // generic "ON BRANCHES" plural.
-          const offMainBranches = Array.from(sessionCountByBranch.keys())
-            .filter((b) => b !== 'main' && b !== 'master');
-          let branchSuffix: string;
-          let toolSuffix = '';
-          if (offMainBranches.length === 1) {
-            const name = offMainBranches[0] ?? '';
-            const truncated = name.length > 24 ? `${name.slice(0, 22)}…` : name;
-            branchSuffix = `ON ${truncated.toUpperCase()}`;
-            const tool = currentToolByBranch.get(name);
-            if (tool) toolSuffix = ` · ${fmtTool(tool).toUpperCase()}`;
-          } else {
-            branchSuffix = 'ON BRANCHES';
-          }
-          badges.push({
-            key: 'side-sessions',
-            label: offMainSessionCount === 1
-              ? `🤖 WORKING ${branchSuffix}${toolSuffix}`
-              : `🤖 ${offMainSessionCount} SESSIONS ${branchSuffix}${toolSuffix}`,
-            bg: 'rgba(34, 197, 94, 0.85)',
-          });
-        }
+        // "N branches updated" only fires when no session is anywhere
+        // — a quiet-but-not-empty fallback so the canvas isn't blank.
         if (!mainHasSession && offMainSessionCount === 0 && liveBranchCount > 0 && !mainIsLive) {
-          badges.push({
+          specs.push({
             key: 'branches-updated',
             label: `${liveBranchCount} ${liveBranchCount === 1 ? 'BRANCH' : 'BRANCHES'} JUST UPDATED`,
             bg: 'rgba(239, 68, 68, 0.85)',
+            scope: 'global',
           });
         }
-        // Recent side-branch pushes — highest impact when not duplicating
-        // an existing main badge. We surface each branch's latest push
-        // within the 60s window so Reeyen sees "thing X just pushed"
-        // even when no Claude is currently on that branch (e.g., after
-        // Stop hook fired but commits already landed).
+        // Side-branch pushes — route each to its branch's session
+        // quadrant so it lands next to that session's work.
         for (const p of recentSidePushes.slice(0, 3)) {
           const truncated = p.branch.length > 24 ? `${p.branch.slice(0, 22)}…` : p.branch;
-          badges.push({
+          specs.push({
             key: `push-${p.branch}`,
             label: `PUSHED ${truncated.toUpperCase()}`,
             bg: 'rgba(239, 68, 68, 0.78)',
+            scope: 'session',
+            branch: p.branch,
           });
         }
-        // CI check status. Only surface when actionable — a passing
-        // build is silent so the canvas stays calm.
         if (latestCheckStatus === 'failed') {
-          badges.push({
-            key: 'ci-failed',
-            label: 'CI FAILED ON LATEST',
-            bg: 'rgba(220, 38, 38, 0.92)',
-          });
+          specs.push({ key: 'ci-failed', label: 'CI FAILED ON LATEST', bg: 'rgba(220, 38, 38, 0.92)', scope: 'main' });
         } else if (latestCheckStatus === 'pending') {
-          badges.push({
-            key: 'ci-pending',
-            label: 'CI RUNNING',
-            bg: 'rgba(217, 119, 6, 0.78)',
-          });
+          specs.push({ key: 'ci-pending', label: 'CI RUNNING', bg: 'rgba(217, 119, 6, 0.78)', scope: 'main' });
         }
-        // Live deploy status (Vercel website + Fly CUA). Failed > in-
-        // progress > silent — a freshly-failed deploy is the most
-        // load-bearing signal Reeyen could want when his app is broken.
         if (deployVercel?.failed) {
-          badges.push({
+          specs.push({
             key: 'vercel-failed',
             label: `VERCEL DEPLOY FAILED${deployVercel.startedAt ? ` · ${timeAgo(deployVercel.startedAt)}` : ''}`,
             bg: 'rgba(220, 38, 38, 0.92)',
+            scope: 'global',
           });
         } else if (deployVercel?.inProgress) {
-          badges.push({
-            key: 'vercel-deploying',
-            label: 'VERCEL DEPLOYING',
-            bg: 'rgba(34, 211, 238, 0.78)',
-          });
+          specs.push({ key: 'vercel-deploying', label: 'VERCEL DEPLOYING', bg: 'rgba(34, 211, 238, 0.78)', scope: 'global' });
         }
         if (deployFly?.failed) {
-          badges.push({
+          specs.push({
             key: 'fly-failed',
             label: `CUA DEPLOY FAILED${deployFly.startedAt ? ` · ${timeAgo(deployFly.startedAt)}` : ''}`,
             bg: 'rgba(220, 38, 38, 0.92)',
+            scope: 'global',
           });
         } else if (deployFly?.inProgress) {
-          badges.push({
-            key: 'fly-deploying',
-            label: 'CUA DEPLOYING',
-            bg: 'rgba(196, 181, 253, 0.78)',
+          specs.push({ key: 'fly-deploying', label: 'CUA DEPLOYING', bg: 'rgba(196, 181, 253, 0.78)', scope: 'global' });
+        }
+
+        // Quadrant lookup helpers. Branch → first session on that
+        // branch → quadrant. Falls back to last-known on disappearance.
+        const branchToQuadrant = (branch: string): Quadrant | null => {
+          const sess = (activeSessions ?? []).find((s) => s.branch === branch);
+          if (sess) {
+            const q = sessionQuadrantRef.current.get(sess.session_id);
+            if (q) return q;
+          }
+          return null;
+        };
+        const sessionIdToQuadrant = (sid: string | undefined | null): Quadrant | null => {
+          if (!sid) return null;
+          return sessionQuadrantRef.current.get(sid)
+            ?? lastKnownQuadrantBySessionRef.current.get(sid)
+            ?? null;
+        };
+
+        // Group in-progress specs into quadrants.
+        const grouped: Record<Quadrant, BadgeSpec[]> = { TL: [], TM: [], BL: [], BM: [] };
+        for (const spec of specs) {
+          if (spec.scope === 'main' || spec.scope === 'global') {
+            grouped.TL.push(spec);
+            continue;
+          }
+          // session-scoped: route by sessionId first, then by branch.
+          let q = sessionIdToQuadrant(spec.sessionId);
+          if (!q && spec.branch) q = branchToQuadrant(spec.branch);
+          (grouped[q ?? 'TL']).push(spec);
+        }
+
+        // Group toasts the same way.
+        const groupedToasts: Record<Quadrant, Toast[]> = { TL: [], TM: [], BL: [], BM: [] };
+        for (const t of toasts) {
+          let q: Quadrant | null = null;
+          if (t.branch) q = branchToQuadrant(t.branch);
+          // For session-stop toasts the branch is set but the session
+          // is gone; the lookup above returns null. Fall back to
+          // last-known via any prev-session match.
+          if (!q && t.branch) {
+            for (const [sid, b] of prevPayloadRef.current.sessionIdToBranch.entries()) {
+              if (b === t.branch) {
+                q = lastKnownQuadrantBySessionRef.current.get(sid) ?? null;
+                if (q) break;
+              }
+            }
+          }
+          (groupedToasts[q ?? 'TL']).push(t);
+        }
+
+        // Overflow indicator — sessions beyond capacity 4 fold into TL.
+        if (overflowCount > 0) {
+          grouped.TL.push({
+            key: 'overflow',
+            label: `+${overflowCount} MORE SESSION${overflowCount === 1 ? '' : 'S'}`,
+            bg: 'rgba(100, 116, 139, 0.78)',
+            scope: 'global',
           });
         }
 
-        if (badges.length === 0) return null;
+        // ── Consensus state derivation ─────────────────────────────
+        // Working > Failed > Clean priority. "Working" means SOMETHING
+        // active. "Failed" means the most recent terminal event was a
+        // failure (within ~10 minutes). Else clean.
+        const anyInProgress = !!deployVercel?.inProgress || !!deployFly?.inProgress
+          || latestCheckStatus === 'pending'
+          || (activeSessions?.length ?? 0) > 0
+          || mergingTendrils.length > 0;
+        const recentFailedToast = [...toasts].reverse().find((t) => t.kind === 'failure');
+        let consensus: ConsensusState;
+        if (anyInProgress) {
+          let what = 'WORKING';
+          if (mergingTendrils.length > 0) what = `MERGING ${mergingTendrils.length === 1 ? mergingTendrils[0].name : `${mergingTendrils.length} BRANCHES`}`;
+          else if (deployVercel?.inProgress) what = 'VERCEL DEPLOYING';
+          else if (deployFly?.inProgress) what = 'CUA DEPLOYING';
+          else if (latestCheckStatus === 'pending') what = 'CI RUNNING';
+          else if ((activeSessions?.length ?? 0) > 0) what = `${activeSessions?.length} ${activeSessions?.length === 1 ? 'SESSION' : 'SESSIONS'} WORKING`;
+          consensus = { kind: 'working', what };
+        } else if (deployVercel?.failed) {
+          consensus = { kind: 'failed', what: 'VERCEL DEPLOY FAILED', url: deployVercel.url };
+        } else if (deployFly?.failed) {
+          consensus = { kind: 'failed', what: 'CUA DEPLOY FAILED', url: deployFly.url };
+        } else if (latestCheckStatus === 'failed') {
+          consensus = { kind: 'failed', what: 'CI FAILED', url: commits[0]?.url };
+        } else if (recentFailedToast && recentFailedToast.expiresAt > Date.now()) {
+          consensus = { kind: 'failed', what: recentFailedToast.message, url: recentFailedToast.url ?? undefined };
+        } else {
+          consensus = { kind: 'clean' };
+        }
+
+        // ── Render ────────────────────────────────────────────────
+        // Per-quadrant container. Each renders toasts FIRST (at the
+        // edge of the canvas) so the user reads "outcome" before
+        // "still in progress." Top quadrants stack downward; bottom
+        // quadrants stack upward.
+        const renderQuadrant = (q: Quadrant) => {
+          const qSpecs = grouped[q];
+          const qToasts = groupedToasts[q];
+          if (qSpecs.length === 0 && qToasts.length === 0) return null;
+          const isTop = q === 'TL' || q === 'TM';
+          const isLeft = q === 'TL' || q === 'BL';
+          const positionStyle: React.CSSProperties = isTop
+            ? (isLeft ? { top: '14px', left: '16px' } : { top: '14px', left: '50%', transform: 'translateX(-50%)' })
+            : (isLeft ? { bottom: '14px', left: '16px' } : { bottom: '14px', left: '50%', transform: 'translateX(-50%)' });
+          return (
+            <div key={q} style={{
+              position: 'absolute',
+              ...positionStyle,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '6px',
+              zIndex: 1,
+              maxWidth: '46%',
+              alignItems: isLeft ? 'flex-start' : 'center',
+            }}>
+              {/* For TOP quadrants: toasts on top, then in-progress.
+                  For BOTTOM quadrants: in-progress first, toasts below
+                  so the most-recent-event reads at the canvas edge. */}
+              {isTop && qToasts.map((t) => <ToastPill key={t.id} toast={t} />)}
+              {qSpecs.map((b) => <BadgePill key={b.key} spec={b} />)}
+              {!isTop && qToasts.map((t) => <ToastPill key={t.id} toast={t} />)}
+            </div>
+          );
+        };
+
+        // Consensus banner — top-center pill. Hidden when fully clean
+        // AND no recent activity, to keep the canvas calm.
+        const showConsensus = consensus.kind !== 'clean' || (activeSessions?.length ?? 0) === 0;
+        const consensusBg = consensus.kind === 'clean'
+          ? 'rgba(34, 197, 94, 0.6)'
+          : consensus.kind === 'working'
+            ? 'rgba(255, 179, 71, 0.85)' // amber/gold matches the trunk
+            : 'rgba(220, 38, 38, 0.92)';
+        const consensusLabel = consensus.kind === 'clean'
+          ? '✅ ALL CLEAN'
+          : consensus.kind === 'working'
+            ? `🟡 ${consensus.what}`
+            : `❌ LAST ISSUE: ${consensus.what}`;
+        const consensusUrl = consensus.kind === 'failed' ? consensus.url : undefined;
+
         return (
-          <div style={{
-            position: 'absolute',
-            top: '14px',
-            left: '16px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '6px',
-            zIndex: 1,
-          }}>
-            {badges.map((b) => (
-              <div key={b.key} style={{
-                padding: '4px 10px',
-                fontSize: '10.5px',
-                fontWeight: 700,
-                letterSpacing: '0.1em',
-                color: '#fff',
-                background: b.bg,
-                borderRadius: '999px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                backdropFilter: 'blur(4px)',
-                width: 'fit-content',
+          <>
+            {/* Consensus banner — top-center, single-line summary. */}
+            {showConsensus && (
+              <div style={{
+                position: 'absolute',
+                top: '14px',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                zIndex: 3,
+                pointerEvents: consensusUrl ? 'auto' : 'none',
               }}>
-                <span style={{
-                  width: '6px', height: '6px', borderRadius: '50%', background: '#fff',
-                  animation: 'mtBlink 1s ease-in-out infinite',
-                }} />
-                {b.label}
+                {consensusUrl ? (
+                  <a
+                    href={consensusUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ textDecoration: 'none' }}
+                  >
+                    <ConsensusPill bg={consensusBg} label={consensusLabel} />
+                  </a>
+                ) : (
+                  <ConsensusPill bg={consensusBg} label={consensusLabel} />
+                )}
               </div>
-            ))}
-          </div>
+            )}
+            {ALL_QUADRANTS.map(renderQuadrant)}
+          </>
         );
       })()}
       <style>{`@keyframes mtBlink { 0%,100% { opacity: 1 } 50% { opacity: 0.3 } }`}</style>
+      <style>{`@keyframes mtToastIn { 0% { opacity: 0; transform: translateY(-4px) } 100% { opacity: 1; transform: translateY(0) } }`}</style>
 
       <svg viewBox={`0 0 ${width} ${svgHeight}`} style={{ width: '100%', height: 'auto', display: 'block', position: 'relative' }}>
         <defs>
@@ -1441,4 +1806,98 @@ function timeAgo(iso: string): string {
   const hr = Math.floor(min / 60);
   if (hr < 24) return `${hr}h ago`;
   return `${Math.floor(hr / 24)}d ago`;
+}
+
+// ── Pill components ─────────────────────────────────────────────────
+// Three flavors share the same rounded-pill geometry and styling so
+// the four quadrants + the consensus banner read as one visual family.
+//   BadgePill    — current/in-progress signal (with blinking dot)
+//   ToastPill    — one-shot completion message (10s lifecycle, fade-in)
+//   ConsensusPill — top-center summary banner
+
+function BadgePill({ spec }: { spec: BadgeSpec }) {
+  return (
+    <div style={{
+      padding: '4px 10px',
+      fontSize: '10.5px',
+      fontWeight: 700,
+      letterSpacing: '0.1em',
+      color: '#fff',
+      background: spec.bg,
+      borderRadius: '999px',
+      display: 'flex',
+      alignItems: 'center',
+      gap: '6px',
+      backdropFilter: 'blur(4px)',
+      width: 'fit-content',
+    }}>
+      <span style={{
+        width: '6px', height: '6px', borderRadius: '50%', background: '#fff',
+        animation: 'mtBlink 1s ease-in-out infinite',
+      }} />
+      {spec.label}
+    </div>
+  );
+}
+
+function ToastPill({ toast }: { toast: Toast }) {
+  const bg = toast.kind === 'success'
+    ? 'rgba(59, 130, 246, 0.92)'  // blue: a calm "completed" signal
+    : 'rgba(220, 38, 38, 0.92)';  // red: failure
+  const prefix = toast.kind === 'success' ? '✅' : '❌';
+  const inner = (
+    <div style={{
+      padding: '4px 10px',
+      fontSize: '10.5px',
+      fontWeight: 700,
+      letterSpacing: '0.1em',
+      color: '#fff',
+      background: bg,
+      borderRadius: '999px',
+      display: 'flex',
+      alignItems: 'center',
+      gap: '6px',
+      backdropFilter: 'blur(4px)',
+      width: 'fit-content',
+      animation: 'mtToastIn 220ms ease-out',
+    }}>
+      <span>{prefix}</span>
+      {toast.message}
+    </div>
+  );
+  if (toast.url) {
+    return (
+      <a href={toast.url} target="_blank" rel="noopener noreferrer"
+        style={{ textDecoration: 'none', pointerEvents: 'auto' }}>
+        {inner}
+      </a>
+    );
+  }
+  return inner;
+}
+
+function ConsensusPill({ bg, label }: { bg: string; label: string }) {
+  return (
+    <div style={{
+      padding: '6px 14px',
+      fontSize: '11.5px',
+      fontWeight: 700,
+      letterSpacing: '0.12em',
+      textTransform: 'uppercase',
+      color: '#fff',
+      background: bg,
+      borderRadius: '999px',
+      backdropFilter: 'blur(4px)',
+      display: 'flex',
+      alignItems: 'center',
+      gap: '8px',
+      cursor: 'inherit',
+    }}>
+      <span style={{
+        width: '6px', height: '6px', borderRadius: '50%', background: '#fff',
+        animation: 'mtBlink 1s ease-in-out infinite',
+      }} />
+      {label}
+    </div>
+  );
 }
