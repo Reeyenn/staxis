@@ -29,17 +29,32 @@ import { anthropic, CLAUDE_MODEL, COMPUTER_TOOL, COMPUTER_USE_BETA, MAPPING_SYST
 import { log } from './log.js';
 import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe } from './types.js';
 
-const MAX_AGENT_STEPS = 25;
+const MAX_AGENT_STEPS = 30;
 const VIEWPORT = { width: COMPUTER_TOOL.display_width_px, height: COMPUTER_TOOL.display_height_px };
 
-// Hard token budget per mapping run. Each step accumulates context
-// (screenshot ~2-3K tokens + prior history), so a 25-step run can
-// realistically reach 100-150K input tokens. This cap halts the agent
-// before a runaway loop (CAPTCHA, weird redirect, model confusion)
-// burns through the daily budget. ~100K input tokens ≈ $0.30 on
-// Sonnet 4.5; we let it run up to that, then bail.
-const MAX_INPUT_TOKENS_PER_RUN = 120_000;
+// Token budget per mapping run. Without screenshot-history truncation
+// each turn was re-sending ALL prior screenshots — quadratic blowup —
+// and we'd hit 120K well before logging in to a complex PMS.
+// truncateOldScreenshots() (below) keeps only the most recent N
+// screenshots in the message history, which makes per-turn context
+// stable instead of growing. With that, a 30-step run is comfortably
+// under 200K. We cap at 400K as a safety stop for runaway loops
+// (CAPTCHAs, model confusion). ~400K input tokens ≈ $1.20 on Sonnet 4.5.
+const MAX_INPUT_TOKENS_PER_RUN = 400_000;
 const MAX_OUTPUT_TOKENS_PER_RUN = 4_000;
+
+// Wall-clock cap. Even with the token budget healthy, a stuck agent
+// that's slow-rolling an Anthropic call shouldn't tie up a worker
+// indefinitely. 5 minutes is generous for a real PMS exploration;
+// past that the run is failing and we should give up.
+const MAPPING_WALLCLOCK_BUDGET_MS = 5 * 60_000;
+
+// How many recent screenshots to keep in the message history. Older
+// screenshots get replaced with a small text marker — the agent only
+// needs the CURRENT view to decide its next action; prior screenshots
+// are mostly clutter once the agent has reacted to them. The action
+// log (text in tool_result blocks) preserves "where did I come from".
+const SCREENSHOT_HISTORY_KEEP = 2;
 
 interface MapperOptions {
   pmsType: PMSType;
@@ -169,6 +184,8 @@ async function mapLogin(page: Page, creds: PMSCredentials): Promise<LoginMapResu
     ]},
   ];
 
+  const phaseStartedAt = Date.now();
+
   for (let stepIdx = 0; stepIdx < MAX_AGENT_STEPS; stepIdx++) {
     if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
       log.warn('mapper exceeded input token budget — bailing', {
@@ -180,17 +197,28 @@ async function mapLogin(page: Page, creds: PMSCredentials): Promise<LoginMapResu
         detail: { phase: 'login_mapping', reason: 'token_budget_exceeded', totalInputTokens },
       };
     }
+    if (Date.now() - phaseStartedAt > MAPPING_WALLCLOCK_BUDGET_MS) {
+      log.warn('mapper exceeded wall-clock budget — bailing', {
+        elapsedMs: Date.now() - phaseStartedAt, stepIdx,
+      });
+      return {
+        ok: false,
+        userMessage: 'Mapping took longer than expected — please contact support so we can investigate.',
+        detail: { phase: 'login_mapping', reason: 'wallclock_budget_exceeded', elapsedMs: Date.now() - phaseStartedAt },
+      };
+    }
 
     const response = await anthropic.beta.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: 1024,
       system: MAPPING_SYSTEM_PROMPT,
       // Computer-use is beta-gated on the Messages API. We pass the beta
-      // header via `betas` so the API accepts the computer_20251124 tool
-      // type. Cast through unknown because the SDK's BetaToolUnion type
-      // narrows differently between SDK minor versions.
+      // header via `betas`. Cast through unknown because the SDK's
+      // BetaToolUnion type narrows differently between SDK minor versions.
       tools: [COMPUTER_TOOL as unknown as Anthropic.Beta.Messages.BetaToolUnion],
-      messages,
+      // Truncate old screenshots before sending — keeps per-turn context
+      // small enough that long mapping runs don't quadratically blow up.
+      messages: truncateOldScreenshots(messages, SCREENSHOT_HISTORY_KEEP),
       betas: [COMPUTER_USE_BETA],
     });
 
@@ -289,10 +317,16 @@ async function mapAction(args: {
     ]},
   ];
 
+  const phaseStartedAt = Date.now();
+
   for (let stepIdx = 0; stepIdx < MAX_AGENT_STEPS; stepIdx++) {
     if (totalInputTokens > MAX_INPUT_TOKENS_PER_RUN) {
       log.warn('action mapper exceeded token budget — bailing', { totalInputTokens, stepIdx });
       return { ok: false, reason: 'token budget exceeded' };
+    }
+    if (Date.now() - phaseStartedAt > MAPPING_WALLCLOCK_BUDGET_MS) {
+      log.warn('action mapper exceeded wall-clock budget — bailing', { elapsedMs: Date.now() - phaseStartedAt, stepIdx });
+      return { ok: false, reason: 'wallclock budget exceeded' };
     }
 
     const response = await anthropic.beta.messages.create({
@@ -300,7 +334,8 @@ async function mapAction(args: {
       max_tokens: 1024,
       system: MAPPING_SYSTEM_PROMPT,
       tools: [COMPUTER_TOOL as unknown as Anthropic.Beta.Messages.BetaToolUnion],
-      messages,
+      // Truncate old screenshots — same fix as in mapLogin.
+      messages: truncateOldScreenshots(messages, SCREENSHOT_HISTORY_KEEP),
       betas: [COMPUTER_USE_BETA],
     });
 
@@ -448,6 +483,54 @@ function extractFinalText(content: Anthropic.Messages.ContentBlock[]): string {
     .filter((c): c is Anthropic.Messages.TextBlock => c.type === 'text')
     .map((c) => c.text)
     .join('\n');
+}
+
+/**
+ * Walk the message history and replace all but the most-recent `keepLast`
+ * screenshots with a short text marker. This is the fix for the quadratic
+ * context blowup that was making 10+ -step mapping runs hit the input
+ * token cap before reaching the dashboard. The agent only needs the
+ * CURRENT screenshot to decide its next action; older ones are clutter
+ * after the agent has already reacted to them. Text in tool_result
+ * blocks preserves the "what I did" trail.
+ *
+ * Returns a NEW array — does not mutate the input.
+ */
+function truncateOldScreenshots(
+  messages: Anthropic.Messages.MessageParam[],
+  keepLast: number,
+): Anthropic.Messages.MessageParam[] {
+  // Walk newest-first, count screenshots, keep first `keepLast`.
+  let screenshotsSeen = 0;
+  const reversed = [...messages].reverse().map((msg) => {
+    if (msg.role !== 'user' || !Array.isArray(msg.content)) return msg;
+    const newContent = msg.content.map((block) => {
+      // Top-level image (the initial user message form).
+      if (block.type === 'image') {
+        screenshotsSeen++;
+        if (screenshotsSeen > keepLast) {
+          return { type: 'text' as const, text: '[Older screenshot elided to save tokens]' };
+        }
+        return block;
+      }
+      // Image inside a tool_result (the per-turn form).
+      if (block.type === 'tool_result' && Array.isArray(block.content)) {
+        const innerContent = block.content.map((b) => {
+          if (b.type === 'image') {
+            screenshotsSeen++;
+            if (screenshotsSeen > keepLast) {
+              return { type: 'text' as const, text: '[Older screenshot elided to save tokens]' };
+            }
+          }
+          return b;
+        });
+        return { ...block, content: innerContent };
+      }
+      return block;
+    });
+    return { ...msg, content: newContent };
+  });
+  return reversed.reverse();
 }
 
 function tryParseJson(text: string): unknown {
