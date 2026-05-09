@@ -522,40 +522,74 @@ export function MarvelTimeline({
         )}
 
         {/* Energy particles travelling along the main line — left → right.
-            ONLY rendered when main is energized (active session or recent
-            commit). At idle the trunk is a calm, steady line so any
-            movement = real activity worth attention. When a session is
-            heartbeating the particles glow brightest (matches the "NOW"
-            pulse on the right edge). */}
-        {(mainHasSession || mainIsLive) && [0, 1, 2].map((i) => {
-          const dur = mainHasSession ? '3.5s' : '4.8s';
-          const stagger = mainHasSession ? 1.15 : 1.6;
-          const radius = mainHasSession ? 3.5 : 3;
+            Three visual states the user can read at a glance:
+
+              IDLE      — no particles, calm trunk.
+              BUILDING  — bare bright dots flowing. Fires whenever ANY
+                          Claude session is heartbeating (main OR side
+                          branch), because Reeyen wants to see "stuff is
+                          happening in the system" without parsing which
+                          branch.
+              PUSHING   — dots flowing PLUS a glowing halo ("globe")
+                          travelling alongside each. Fires within 60s of
+                          a fresh main commit. The halo is the obvious
+                          differentiator vs building.
+        */}
+        {(totalActiveSessions > 0 || mainIsLive) && [0, 1, 2].map((i) => {
+          const dur = '3.8s';
+          const stagger = 1.27;
+          const showHalo = mainIsLive;
           return (
-            <circle
-              key={`particle-${i}`}
-              cy={trunkY}
-              r={radius}
-              fill="#fff8e1"
-              opacity="0.95"
-              filter="url(#softGlow)"
-            >
-              <animate
-                attributeName="cx"
-                values={`${padding};${width - padding}`}
-                dur={dur}
-                begin={`${i * stagger}s`}
-                repeatCount="indefinite"
-              />
-              <animate
-                attributeName="opacity"
-                values="0;1;1;0"
-                keyTimes="0;0.15;0.85;1"
-                dur={dur}
-                begin={`${i * stagger}s`}
-                repeatCount="indefinite"
-              />
-            </circle>
+            <g key={`particle-${i}`}>
+              {showHalo && (
+                <circle
+                  cy={trunkY}
+                  r="11"
+                  fill="#ffd180"
+                  opacity="0"
+                  filter="url(#bigGlow)"
+                >
+                  <animate
+                    attributeName="cx"
+                    values={`${padding};${width - padding}`}
+                    dur={dur}
+                    begin={`${i * stagger}s`}
+                    repeatCount="indefinite"
+                  />
+                  <animate
+                    attributeName="opacity"
+                    values="0;0.65;0.65;0"
+                    keyTimes="0;0.15;0.85;1"
+                    dur={dur}
+                    begin={`${i * stagger}s`}
+                    repeatCount="indefinite"
+                  />
+                </circle>
+              )}
+              <circle
+                cy={trunkY}
+                r="3.5"
+                fill="#fff8e1"
+                opacity="0"
+                filter="url(#softGlow)"
+              >
+                <animate
+                  attributeName="cx"
+                  values={`${padding};${width - padding}`}
+                  dur={dur}
+                  begin={`${i * stagger}s`}
+                  repeatCount="indefinite"
+                />
+                <animate
+                  attributeName="opacity"
+                  values="0;1;1;0"
+                  keyTimes="0;0.15;0.85;1"
+                  dur={dur}
+                  begin={`${i * stagger}s`}
+                  repeatCount="indefinite"
+                />
+              </circle>
+            </g>
           );
         })}
 
