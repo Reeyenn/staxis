@@ -115,22 +115,6 @@ export function MarvelTimeline({
   ).length;
   const isBuilding = recentMainCommitsCount >= BUILDING_THRESHOLD;
 
-  if (commits.length === 0) {
-    return (
-      <div style={{
-        padding: '40px 20px',
-        textAlign: 'center',
-        background: 'var(--surface-secondary)',
-        border: '1px dashed var(--border)',
-        borderRadius: '12px',
-        color: 'var(--text-muted)',
-        fontSize: '13px',
-      }}>
-        Couldn't load commits from GitHub. The timeline will show up when the API responds.
-      </div>
-    );
-  }
-
   // Geometry — wide & airy so the line breathes.
   const width = 1100;
   const padding = 50;
@@ -298,6 +282,24 @@ export function MarvelTimeline({
   // Make the canvas tall enough that the highest tendril label doesn't
   // get clipped above and the lowest doesn't crash into the legend below.
   const svgHeight = Math.max(320, trunkY + maxLaneY + 70);
+
+  // Early bail-out for empty data. Must come AFTER all hooks (rules-of-hooks):
+  // the merge-animation effects above run unconditionally each render.
+  if (commits.length === 0) {
+    return (
+      <div style={{
+        padding: '40px 20px',
+        textAlign: 'center',
+        background: 'var(--surface-secondary)',
+        border: '1px dashed var(--border)',
+        borderRadius: '12px',
+        color: 'var(--text-muted)',
+        fontSize: '13px',
+      }}>
+        Couldn't load commits from GitHub. The timeline will show up when the API responds.
+      </div>
+    );
+  }
 
   return (
     <div style={{
