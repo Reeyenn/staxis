@@ -13,6 +13,9 @@
 # next.js
 /.next/
 /out/
+# Local-only Next.js build snapshot some script writes when restoring
+# state. Pure cache; never want it tracked.
+/.next-backup/
 # Stray Next.js build output. An earlier build (or a colleague's machine)
 # committed ~1k files under tmp/next-build/ — including a generated
 # validator.ts that referenced every API route in the repo. When we
@@ -40,6 +43,10 @@ yarn-error.log*
 
 # vercel
 .vercel
+
+# supabase CLI temp marker — written every time `supabase` runs to
+# track the latest CLI version. Pure cache; never want it tracked.
+supabase/.temp/
 
 # typescript
 *.tsbuildinfo
