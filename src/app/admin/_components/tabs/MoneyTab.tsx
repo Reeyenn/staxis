@@ -20,11 +20,9 @@ import Link from 'next/link';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { ExternalLink, Plus, Save, Trash2 } from 'lucide-react';
 
-type Category = 'claude_api' | 'hosting' | 'twilio' | 'supabase' | 'vercel' | 'fly' | 'other';
-
 interface Expense {
   id: string;
-  category: Category;
+  category: string;
   amount_cents: number;
   description: string | null;
   vendor: string | null;
@@ -47,17 +45,23 @@ interface HotelEcon {
   marginCents: number;
 }
 
-const CATEGORY_LABEL: Record<Category, string> = {
-  claude_api: 'Claude API',
-  hosting: 'Hosting (other)',
-  twilio: 'Twilio (SMS)',
-  supabase: 'Supabase',
-  vercel: 'Vercel',
-  fly: 'Fly.io',
-  other: 'Other',
-};
+// Defaults shown in the dropdown out of the box. Anything else the user
+// has previously entered gets folded in dynamically (see categoryOptions).
+const DEFAULT_CATEGORIES: { key: string; label: string }[] = [
+  { key: 'claude_api', label: 'Claude API' },
+  { key: 'hosting',    label: 'Hosting (other)' },
+  { key: 'twilio',     label: 'Twilio (SMS)' },
+  { key: 'supabase',   label: 'Supabase' },
+  { key: 'vercel',     label: 'Vercel' },
+  { key: 'fly',        label: 'Fly.io' },
+  { key: 'other',      label: 'Other' },
+];
 
-const CATEGORY_COLOR: Record<Category, string> = {
+const CATEGORY_LABEL: Record<string, string> = Object.fromEntries(
+  DEFAULT_CATEGORIES.map((c) => [c.key, c.label]),
+);
+
+const CATEGORY_COLOR: Record<string, string> = {
   claude_api: '#a78bfa',
   hosting: '#60a5fa',
   twilio: '#fb923c',
@@ -66,6 +70,22 @@ const CATEGORY_COLOR: Record<Category, string> = {
   fly: '#facc15',
   other: '#9ca3af',
 };
+
+// Custom categories get a deterministic color so the same name always
+// shows up the same color across reloads.
+const CUSTOM_PALETTE = ['#f87171', '#fbbf24', '#4ade80', '#22d3ee', '#818cf8', '#e879f9', '#2dd4bf'];
+function colorFor(category: string): string {
+  if (CATEGORY_COLOR[category]) return CATEGORY_COLOR[category];
+  let h = 0;
+  for (let i = 0; i < category.length; i++) h = (h * 31 + category.charCodeAt(i)) | 0;
+  return CUSTOM_PALETTE[Math.abs(h) % CUSTOM_PALETTE.length];
+}
+
+function labelFor(category: string): string {
+  return CATEGORY_LABEL[category] ?? category;
+}
+
+const NEW_CATEGORY_SENTINEL = '__new__';
 
 export function MoneyTab() {
   const [expenses, setExpenses] = useState<Expense[] | null>(null);
@@ -198,22 +218,40 @@ function SummaryChip({ label, value, color }: { label: string; value: string; co
 
 function ExpensesSection({ expenses, reload }: { expenses: Expense[]; reload: () => Promise<void> }) {
   const [adding, setAdding] = useState(false);
-  const [draft, setDraft] = useState<{ category: Category; amountDollars: string; description: string; vendor: string; incurredOn: string }>({
+  const [draft, setDraft] = useState<{ category: string; customCategory: string; amountDollars: string; description: string; vendor: string; incurredOn: string }>({
     category: 'hosting',
+    customCategory: '',
     amountDollars: '',
     description: '',
     vendor: '',
     incurredOn: new Date().toISOString().slice(0, 10),
   });
 
+  // Dropdown options = defaults + any custom categories already saved.
+  const categoryOptions = React.useMemo(() => {
+    const seen = new Set(DEFAULT_CATEGORIES.map((c) => c.key));
+    const opts = DEFAULT_CATEGORIES.map((c) => ({ key: c.key, label: c.label }));
+    for (const e of expenses) {
+      if (!seen.has(e.category)) {
+        seen.add(e.category);
+        opts.push({ key: e.category, label: labelFor(e.category) });
+      }
+    }
+    return opts;
+  }, [expenses]);
+
+  const isNewCategory = draft.category === NEW_CATEGORY_SENTINEL;
+  const resolvedCategory = isNewCategory ? draft.customCategory.trim() : draft.category;
+
   const create = async () => {
     const dollars = parseFloat(draft.amountDollars);
     if (!Number.isFinite(dollars) || dollars <= 0) return;
+    if (!resolvedCategory) return;
     await fetchWithAuth('/api/admin/expenses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        category: draft.category,
+        category: resolvedCategory,
         amountCents: Math.round(dollars * 100),
         description: draft.description || null,
         vendor: draft.vendor || null,
@@ -221,7 +259,7 @@ function ExpensesSection({ expenses, reload }: { expenses: Expense[]; reload: ()
       }),
     });
     setAdding(false);
-    setDraft({ category: 'hosting', amountDollars: '', description: '', vendor: '', incurredOn: new Date().toISOString().slice(0, 10) });
+    setDraft({ category: 'hosting', customCategory: '', amountDollars: '', description: '', vendor: '', incurredOn: new Date().toISOString().slice(0, 10) });
     await reload();
   };
 
@@ -262,9 +300,31 @@ function ExpensesSection({ expenses, reload }: { expenses: Expense[]; reload: ()
           alignItems: 'end',
         }}>
           <FieldLabel text="Category">
-            <select className="input" value={draft.category} onChange={(e) => setDraft({ ...draft, category: e.target.value as Category })} style={{ fontSize: '12px' }}>
-              {Object.entries(CATEGORY_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-            </select>
+            {isNewCategory ? (
+              <input
+                className="input"
+                type="text"
+                autoFocus
+                placeholder="New category name"
+                value={draft.customCategory}
+                onChange={(e) => setDraft({ ...draft, customCategory: e.target.value })}
+                onBlur={() => { if (!draft.customCategory.trim()) setDraft({ ...draft, category: 'hosting', customCategory: '' }); }}
+                onKeyDown={(e) => { if (e.key === 'Escape') setDraft({ ...draft, category: 'hosting', customCategory: '' }); }}
+                maxLength={60}
+                style={{ fontSize: '12px' }}
+              />
+            ) : (
+              <select
+                className="input"
+                value={draft.category}
+                onChange={(e) => setDraft({ ...draft, category: e.target.value })}
+                style={{ fontSize: '12px' }}
+              >
+                {categoryOptions.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+                <option disabled>──────────</option>
+                <option value={NEW_CATEGORY_SENTINEL}>+ New category…</option>
+              </select>
+            )}
           </FieldLabel>
           <FieldLabel text="Amount (USD)">
             <input className="input" type="number" step="0.01" placeholder="0.00" value={draft.amountDollars} onChange={(e) => setDraft({ ...draft, amountDollars: e.target.value })} style={{ fontSize: '12px' }} />
@@ -276,7 +336,12 @@ function ExpensesSection({ expenses, reload }: { expenses: Expense[]; reload: ()
             <input className="input" type="date" value={draft.incurredOn} onChange={(e) => setDraft({ ...draft, incurredOn: e.target.value })} style={{ fontSize: '12px' }} />
           </FieldLabel>
           <div style={{ display: 'flex', gap: '4px' }}>
-            <button onClick={create} className="btn btn-primary" style={{ fontSize: '12px' }}>
+            <button
+              onClick={create}
+              className="btn btn-primary"
+              disabled={!resolvedCategory || !(parseFloat(draft.amountDollars) > 0)}
+              style={{ fontSize: '12px' }}
+            >
               <Save size={12} /> Save
             </button>
             <button onClick={() => setAdding(false)} className="btn btn-secondary" style={{ fontSize: '12px' }}>
@@ -307,11 +372,11 @@ function ExpensesSection({ expenses, reload }: { expenses: Expense[]; reload: ()
             }}>
               <span style={{
                 width: '8px', height: '8px', borderRadius: '50%',
-                background: CATEGORY_COLOR[e.category as Category] ?? '#9ca3af',
+                background: colorFor(e.category),
               }} />
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontWeight: 600 }}>
-                  {CATEGORY_LABEL[e.category as Category] ?? e.category}
+                  {labelFor(e.category)}
                   {e.source === 'auto' && (
                     <span style={{ fontSize: '10px', marginLeft: '6px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>auto</span>
                   )}

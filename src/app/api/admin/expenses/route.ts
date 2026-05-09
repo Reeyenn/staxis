@@ -21,9 +21,15 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 15;
 
-const VALID_CATEGORIES = new Set([
-  'claude_api', 'hosting', 'twilio', 'supabase', 'vercel', 'fly', 'other',
-]);
+// Categories are free-form strings now — Reeyen can type "GitHub Pro",
+// "Postmark", whatever. We just sanity-check shape (non-empty, not silly long).
+const MAX_CATEGORY_LEN = 60;
+function normalizeCategory(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0 || trimmed.length > MAX_CATEGORY_LEN) return null;
+  return trimmed;
+}
 
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
@@ -52,9 +58,9 @@ export async function POST(req: NextRequest) {
   if (!auth.ok) return auth.response;
 
   const body = await req.json().catch(() => ({}));
-  const category = body.category as string | undefined;
-  if (!category || !VALID_CATEGORIES.has(category)) {
-    return err(`invalid category: ${category}`, { requestId, status: 400 });
+  const category = normalizeCategory(body.category);
+  if (!category) {
+    return err(`invalid category: ${body.category}`, { requestId, status: 400 });
   }
 
   const amountCents = body.amountCents as number | undefined;
@@ -103,9 +109,10 @@ export async function PATCH(req: NextRequest) {
   if (!id) return err('id is required', { requestId, status: 400 });
 
   const update: Record<string, unknown> = {};
-  if (typeof body.category === 'string') {
-    if (!VALID_CATEGORIES.has(body.category)) return err(`invalid category`, { requestId, status: 400 });
-    update.category = body.category;
+  if ('category' in body) {
+    const cat = normalizeCategory(body.category);
+    if (!cat) return err(`invalid category`, { requestId, status: 400 });
+    update.category = cat;
   }
   if (typeof body.amountCents === 'number') update.amount_cents = Math.round(body.amountCents);
   if ('description' in body) update.description = body.description;
