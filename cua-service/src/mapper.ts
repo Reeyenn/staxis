@@ -92,25 +92,101 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
     log.info('login mapped', { postLoginUrl, steps: loginResult.steps.steps.length });
 
     // ─── Phase 2: map per-action navigation ───────────────────────────────
-    // For v0 we map two: getRoomLayout (rooms list) and getStaffRoster.
-    // Arrivals/departures/room-status fall back to the same mapping flow
-    // in the next iteration — TODO. The recipe-runner will return
-    // 'unsupported' for any action whose recipe is missing.
+    // The goals below are intentionally specific about WHAT KIND OF REPORT
+    // we need, not abstract "rooms list". This matches how PMS UIs are
+    // actually structured: data lives under "Reports" / "Front Desk"
+    // menus, named by what they show ("Housekeeping Check-off List",
+    // "Daily Arrivals Report", etc.) — not in a top-level "Rooms" tab.
+    //
+    // Each goal also tells Claude the COLUMNS we need extracted, so it
+    // can verify it's on the right page (not just the first list it sees)
+    // and emit the column→selector mapping for the recipe-runner.
     const actions: Recipe['actions'] = {};
 
-    opts.onProgress?.('Finding the rooms list…', 40);
-    const rooms = await mapAction({
+    opts.onProgress?.('Finding the daily housekeeping report…', 40);
+    const housekeepingReport = await mapAction({
       page,
-      goal: 'Navigate to the rooms list / room registry — the page that shows every room in the property and its number, type, and floor.',
+      goal:
+        `Find the DAILY HOUSEKEEPING report — sometimes called "Housekeeping ` +
+        `Check-off List", "Room Status Report", "Housekeeping Report", or ` +
+        `"Daily Maid Sheet". This is a per-room snapshot showing every ` +
+        `occupied + vacant room in the property and its current status.\n\n` +
+        `It usually lives under "Reports", "Front Desk → Reports", or ` +
+        `"Housekeeping" in the top-level menu. You may need to set filters ` +
+        `(date = today, all rooms, all statuses) before the report renders.\n\n` +
+        `The right page will show a table with one row per room. Look for ` +
+        `these columns (names vary by PMS — match what's closest):\n` +
+        `  - Room number (required)\n` +
+        `  - Room type / category\n` +
+        `  - Status (Occupied / Vacant)\n` +
+        `  - Condition (Clean / Dirty / Inspected / Out of Order)\n` +
+        `  - Stay/CO indicator (Stayover or Checkout)\n` +
+        `  - Arrival date (for current/incoming guest)\n` +
+        `  - Departure date\n` +
+        `  - Assigned housekeeper (if shown)\n\n` +
+        `If a CSV export option is present (button labeled "Export", "CSV", ` +
+        `"Download"), include it in the recipe steps — CSV is more reliable ` +
+        `than HTML scraping. Otherwise, capture the HTML row selector.`,
       postLoginUrl,
       credentials: opts.credentials,
     });
-    if (rooms.ok) actions.getRoomLayout = rooms.action;
+    if (housekeepingReport.ok) actions.getRoomStatus = housekeepingReport.action;
 
-    opts.onProgress?.('Finding the staff roster…', 55);
+    opts.onProgress?.('Finding today\'s arrivals…', 50);
+    const arrivals = await mapAction({
+      page,
+      goal:
+        `Find today's ARRIVALS list — sometimes called "Arrivals", "Today's ` +
+        `Arrivals", "Check-Ins", or "Expected Arrivals". This shows ` +
+        `reservations whose arrival date is today.\n\n` +
+        `Usually under "Front Desk", "Reservations", or "View" menu. ` +
+        `The right page is a list/table where each row is one reservation.\n\n` +
+        `Columns we need:\n` +
+        `  - Guest name\n` +
+        `  - Room number\n` +
+        `  - Arrival date\n` +
+        `  - Departure date\n` +
+        `  - Number of nights\n` +
+        `  - Number of adults / children\n` +
+        `  - Confirmation number (if shown)`,
+      postLoginUrl,
+      credentials: opts.credentials,
+    });
+    if (arrivals.ok) actions.getArrivals = arrivals.action;
+
+    opts.onProgress?.('Finding today\'s departures…', 55);
+    const departures = await mapAction({
+      page,
+      goal:
+        `Find today's DEPARTURES list — sometimes called "Departures", ` +
+        `"Check-Outs", or "Today's Departures". Shows reservations whose ` +
+        `departure date is today.\n\n` +
+        `Usually right next to Arrivals in the menu.\n\n` +
+        `Columns we need:\n` +
+        `  - Guest name\n` +
+        `  - Room number\n` +
+        `  - Arrival date\n` +
+        `  - Departure date\n` +
+        `  - Confirmation number (if shown)\n` +
+        `  - Checked-out flag (if shown)`,
+      postLoginUrl,
+      credentials: opts.credentials,
+    });
+    if (departures.ok) actions.getDepartures = departures.action;
+
+    opts.onProgress?.('Finding the staff list…', 60);
     const staff = await mapAction({
       page,
-      goal: 'Navigate to the staff / employees / users list — the page that shows housekeeping staff names and contact info.',
+      goal:
+        `Find the STAFF / EMPLOYEES / USERS list — the page that shows ` +
+        `who works at this property. Usually under "Staff", "Users", ` +
+        `"Setup → Users", "Admin → Employees", or similar.\n\n` +
+        `The right page is a list where each row is one staff member.\n\n` +
+        `Columns we need:\n` +
+        `  - Name (required)\n` +
+        `  - Role / department / title (housekeeper, front desk, maintenance, etc.)\n` +
+        `  - Phone number (if shown)\n` +
+        `  - Email (if shown)`,
       postLoginUrl,
       credentials: opts.credentials,
     });
@@ -174,12 +250,37 @@ async function mapLogin(page: Page, creds: PMSCredentials): Promise<LoginMapResu
   // with steps — that's fine for a one-time mapping run, but we cap it
   // at MAX_INPUT_TOKENS_PER_RUN to prevent runaway spend.
   const goal =
-    `Log into this hotel PMS using these credentials: ` +
-    `username "${creds.username}", password "${creds.password}". ` +
-    `Once logged in (you see a dashboard with hotel data), reply with ` +
-    `the JSON {"loggedIn": true, "dashboardSelector": "<a CSS selector ` +
-    `that's only present after login>"} and stop. Don't click anything ` +
-    `else after that. If login fails, reply with {"error": "<reason>"}.`;
+    `Log into this hotel PMS using:\n` +
+    `  username: "${creds.username}"\n` +
+    `  password: "${creds.password}"\n\n` +
+
+    `LOGIN FLOW PATTERNS to expect (most PMSes follow one of these):\n` +
+    `  • Single-page: form on landing → enter creds → submit → dashboard\n` +
+    `  • Two-step: enter username → click "Next" → enter password → submit → dashboard\n` +
+    `  • Property picker: after creds, you land on a "Select Property" page ` +
+    `with a list of hotels. Click the FIRST one (any will do for mapping). ` +
+    `Some PMSes call this "Site", "Hotel", or "Location".\n` +
+    `  • Choice Advantage specifically: lands on a "Welcome" splash page ` +
+    `after login. Click "Continue", "Enter PMS", or the property name to ` +
+    `reach the actual dashboard.\n\n` +
+
+    `EFFICIENCY:\n` +
+    `  • You should reach the dashboard in 5-10 actions for a normal PMS, ` +
+    `up to 15 for one with a property picker. If you've taken 20+ actions ` +
+    `and still aren't at the dashboard, you're stuck — emit ` +
+    `{"error": "<what went wrong>"} so we can debug.\n` +
+    `  • DO NOT re-enter the password if you see a "wrong credentials" ` +
+    `or "session expired" message. Emit {"error": "..."} immediately.\n\n` +
+
+    `WHEN YOU'RE LOGGED IN (you see a dashboard with hotel-specific data — ` +
+    `room counts, today's date, guest names, navigation menu with reports/ ` +
+    `front-desk/etc.), reply with JSON ONLY (no commentary):\n` +
+    `  {"loggedIn": true, "dashboardSelector": "<a CSS selector that's only ` +
+    `present after login, like '.dashboard' or '#mainNav' or 'a[href*=\\"reports\\"]'>"} \n` +
+    `Then stop — don't click anything else.\n\n` +
+
+    `If login fails permanently (wrong creds, account locked, PMS down), ` +
+    `reply with {"error": "<short reason>"} and stop.`;
 
   const messages: Anthropic.Messages.MessageParam[] = [
     { role: 'user', content: [
