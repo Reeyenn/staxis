@@ -6,7 +6,7 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc -p .",
+    "build": "tsc -p . && cp -R src/browser-utils dist/",
     "start": "node dist/index.js",
     "lint": "tsc --noEmit -p ."
   },

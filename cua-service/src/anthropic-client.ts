@@ -1,16 +1,21 @@
 /**
  * Anthropic SDK wrapper for the CUA worker.
  *
- * One reason this is a wrapper and not a direct import everywhere:
- *   - We want to centralize the model + tool versioning so updating
- *     Claude version is a one-line change.
- *   - Fail loudly if ANTHROPIC_API_KEY is missing.
- *   - Add structured logging on every Claude call so we can see token
- *     burn per job.
+ * Centralizes the Claude model + tool versioning so updates are a one-line
+ * change. We standardize on a single model for both mapping and any future
+ * Claude calls — bumping is a single export update.
+ *
+ * IMPORTANT: this worker no longer uses Anthropic's `computer` (pixel-click)
+ * beta tool. We migrated to the DOM-aware `browser` custom tool defined in
+ * src/browser-tool.ts (modeled on anthropic-quickstarts/browser-use-demo).
+ * Because `browser` is a custom tool — not an Anthropic-defined beta tool —
+ * any model with tool-use support works. We pick Sonnet 4.6: cheaper than
+ * Opus, faster, and previously blocked because it doesn't support
+ * computer-use beta. With browser tool, that limitation is gone.
  */
 
 import Anthropic from '@anthropic-ai/sdk';
-import { log } from './log.js';
+import { BROWSER_TOOL_PARAM } from './browser-tool.js';
 
 const API_KEY = process.env.ANTHROPIC_API_KEY;
 
@@ -21,18 +26,9 @@ if (!API_KEY) {
   );
 }
 
-// Explicit timeout + retry config. SDK defaults are 10-min per-request
-// and 2 retries — way too generous. A single 529 (overloaded) on a CUA
-// call could lock the worker for 30+ minutes (10min × 2 retries × stage).
-// Job-level timeout (JOB_TIMEOUT_MS=4min) sets a flag but doesn't actually
-// abort the in-flight HTTP request, so a hung Anthropic call would
-// survive past the job timeout.
-//
-// 120s per attempt × 3 attempts (1 initial + 2 retries) = up to 360s,
-// just over the 240s job budget — but the per-attempt cap is what
-// matters for liveness. CUA round-trips with a screenshot + thinking
-// can reach 60-90s on slow PMS pages; 120s gives that headroom while
-// still aborting truly hung requests. (Pass-3 fix — H11.)
+// Per-attempt timeout. CUA round-trips with screenshots can reach 60-90s
+// on slow PMS pages; 120s gives that headroom while still aborting hung
+// requests. Combined with maxRetries=2 = up to ~360s of retry budget.
 export const anthropic = new Anthropic({
   apiKey: API_KEY,
   timeout: 120_000,
@@ -40,67 +36,39 @@ export const anthropic = new Anthropic({
 });
 
 /**
- * Model + computer-use tool version we standardize on. Bump these together
- * when Anthropic ships a new computer-use spec — they evolve in lockstep.
+ * Sonnet 4.6 — the default for the browser-tool mapper.
  *
- * Sonnet 4.5 is currently the ONLY model that supports the
- * computer_20250124 tool type. Verified by API 400 on 2026-05-08:
- *   - claude-opus-4-7   → tool not supported
- *   - claude-sonnet-4-6 → tool not supported
- *   - claude-sonnet-4-5 → works
+ * Why Sonnet 4.6 (not Opus 4.7 / not Sonnet 4.5):
+ *   - Browser tool is a CUSTOM tool, not Anthropic-defined. There is no
+ *     model gating like there was for computer-use beta.
+ *   - Sonnet 4.6 is materially cheaper than Opus 4.7 (~3-5x), and
+ *     navigating a PMS doesn't require Opus-level reasoning — the agent
+ *     mostly does "read DOM tree → find link → click → repeat" loops.
+ *   - Sonnet 4.5 was a workaround when computer-use beta only worked on
+ *     that model. We're past that constraint now.
  *
- * When Anthropic releases a newer Sonnet that supports computer-use,
- * test it here and bump if it can complete CA mapping reliably with
- * the system prompt below. Until then, 4.5 is locked in.
- *
- * The improvement that ACTUALLY moved the needle for mapping
- * reliability isn't the model — it's the strategic system prompt
- * with PMS-specific priors (below) and 100 agent steps. The model
- * just needs to be capable enough; 4.5 is that.
+ * If a future PMS turns out to need stronger reasoning, swap this to
+ * `claude-opus-4-7` and re-test.
  */
-export const CLAUDE_MODEL = 'claude-sonnet-4-5';
+export const CLAUDE_MODEL = 'claude-sonnet-4-6';
 
 /**
- * Computer-use tool definition. Display dimensions match the Playwright
- * viewport we configure in recipe-runner.ts — same numbers in both places
- * or click coordinates won't line up.
- *
- * Type note: at SDK v0.95 the computer-use tool shape isn't fully
- * incorporated into the public ToolUnion type, so we cast at the call
- * site (in mapper.ts). Keep the literal shape Anthropic documents — the
- * Messages API at the wire level accepts this just fine even if the
- * SDK's local types don't.
+ * Browser tool definition that the mapper passes to messages.create.
+ * Re-exported here so callers don't import from two places.
  */
-export const COMPUTER_TOOL = {
-  // The beta endpoint accepts computer_20250124. The SDK types include
-  // computer_20251124 too, but the live API hasn't shipped it yet —
-  // sending it returns 400 with "tag not in allowed list". Keep on
-  // 20250124 until the API enumerates 20251124.
-  type: 'computer_20250124' as const,
-  name: 'computer' as const,
-  display_width_px: 1280,
-  display_height_px: 800,
-  display_number: 1,
-};
+export const BROWSER_TOOL = BROWSER_TOOL_PARAM;
 
 /**
- * Beta header required for computer-use tool calls. Pass via the
- * `betas` field on anthropic.beta.messages.create. Anthropic gates
- * computer-use behind this beta even though the tool itself is GA-stable
- * for our use case.
- */
-export const COMPUTER_USE_BETA = 'computer-use-2025-01-24' as const;
-
-/**
- * System message we prepend to all CUA mapping runs. The per-task prompt
- * (log in / find arrivals page / find staff list / etc.) goes in the
- * first user message.
+ * System prompt for browser-tool mapping runs. Replaces the older pixel-
+ * click MAPPING_SYSTEM_PROMPT.
  *
- * The PMS-specific guidance below is what separates a mapper that
- * gets stuck after 60 actions from one that completes in 30. Most
- * hotel PMSes share the same structural patterns; baking those into
- * the prompt gives Claude the right priors instead of asking it to
- * rediscover them per-hotel.
+ * The shift in guidance vs. the old prompt:
+ *   - We tell the agent to call `read_page` after every navigation so it
+ *     gets ref_N for each interactive element.
+ *   - We tell it to PREFER refs over coordinates.
+ *   - We tell it to use `get_page_text` instead of OCR'ing screenshots.
+ *   - We keep the PMS-specific structural priors (Reports menu, property
+ *     pickers, etc.) since those still hold regardless of click mechanism.
  */
 export const MAPPING_SYSTEM_PROMPT =
   `You are a careful, methodical operator exploring a hotel property ` +
@@ -108,33 +76,37 @@ export const MAPPING_SYSTEM_PROMPT =
   `back, in structured JSON, the URLs and selectors needed to extract data ` +
   `for arrivals, departures, room status, and staff lists.\n\n` +
 
-  `STRATEGY (apply in this order):\n` +
-  `1. After login, take ONE screenshot to orient yourself. Identify the ` +
-  `top-level navigation menu (header tabs, sidebar links, or a hamburger). ` +
-  `Most PMSes group reports under a "Reports", "Reservations", or "Front Desk" ` +
-  `menu. Staff/users live under "Staff", "Users", "Setup", or "Admin".\n` +
-  `2. If you see a multi-step login flow (credentials page → property picker ` +
-  `→ dashboard), expect ~5-15 clicks to reach the dashboard. Don't get stuck ` +
-  `re-clicking the login button — if a page loads slowly, wait 2 seconds ` +
-  `and re-screenshot rather than clicking again.\n` +
-  `3. To find a specific page (e.g., "rooms list"), click the most likely ` +
-  `menu item, screenshot, and check. Don't explore breadth-first — go ` +
-  `directly to the most likely candidate, and only back-track if wrong.\n` +
-  `4. Once on the right page, take ONE screenshot and emit the requested ` +
-  `JSON immediately. Do not explore further.\n\n` +
+  `TOOL USAGE — IMPORTANT:\n` +
+  `1. After EVERY navigation or click that changes the page, call ` +
+  `\`read_page\` (with text="interactive" filter) to get fresh element refs ` +
+  `(ref_1, ref_2, …). Don't try to click coordinates from a screenshot — ` +
+  `use refs.\n` +
+  `2. Use \`form_input\` with a ref to set input values directly. This is ` +
+  `more reliable than click + type.\n` +
+  `3. Use \`get_page_text\` to read article-style content. Don't try to ` +
+  `read text from screenshots.\n` +
+  `4. Only fall back to coordinate-based clicks when no ref works.\n` +
+  `5. After login: take ONE screenshot to orient yourself, then read_page ` +
+  `to find the navigation menu.\n\n` +
+
+  `PMS STRUCTURAL PRIORS:\n` +
+  `1. Reports — most data lives under "Reports", "Reservations", or "Front ` +
+  `Desk" menus. Staff/users live under "Staff", "Users", "Setup", or ` +
+  `"Admin".\n` +
+  `2. Login flows — single-page form, two-step (username → password), or ` +
+  `with a property picker. Expect 5-15 actions to reach the dashboard. ` +
+  `Choice Advantage specifically lands on a "Welcome" splash; click ` +
+  `"Continue" / "Enter PMS" / the property name to reach the dashboard.\n` +
+  `3. Modals — dismiss any cookie banner, "what's new" dialog, "session ` +
+  `active" warning, or 2FA prompt by clicking Close / X / Continue / OK. ` +
+  `Don't read modal content; just dismiss.\n` +
+  `4. To find a specific page (e.g. "arrivals"), click the most likely menu ` +
+  `item, read_page, check. Don't explore breadth-first.\n\n` +
 
   `RULES:\n` +
-  `1. Never enter or modify guest data. You are read-only.\n` +
-  `2. If you encounter a 2FA prompt, popup, cookie banner, "what's new" ` +
-  `dialog, "session active" warning, or any modal, dismiss it (Close / X / ` +
-  `Continue / OK) and continue. Don't read its content — just dismiss.\n` +
-  `3. If you reach the requested page, take a final screenshot and reply ` +
-  `with the JSON report only — no commentary.\n` +
-  `4. If after 20 actions you still don't see the page, reply with ` +
-  `{"error": "<short reason>"} and stop. Don't keep trying past 20.\n` +
-  `5. Never click links that leave the PMS domain (e.g., "Help", "Documentation", ` +
-  `external integrations).\n` +
-  `6. Avoid keyboard shortcuts. Click instead — keystrokes like Ctrl+F often ` +
-  `don't work in Playwright the same way they do in a real browser.\n` +
-  `7. Coordinate clicks should aim at the visible CENTER of the target, not ` +
-  `the edge — Playwright's click is precise so off-edge clicks miss.`;
+  `1. Read-only. Never enter, edit, or delete guest data.\n` +
+  `2. Never click links that leave the PMS domain (Help, external integrations).\n` +
+  `3. If after 25 actions you still haven't reached the requested page, ` +
+  `reply with {"error": "<short reason>"} and stop. Don't keep trying.\n` +
+  `4. When you reach a target page, take ONE screenshot, then emit the ` +
+  `requested JSON immediately. Don't keep exploring.`;
