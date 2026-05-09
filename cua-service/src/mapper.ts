@@ -247,17 +247,24 @@ async function mapLogin(page: Page, creds: PMSCredentials): Promise<LoginMapResu
       };
     }
 
-    const toolUse = response.content.find((c): c is Anthropic.Messages.ToolUseBlock => c.type === 'tool_use');
-    if (!toolUse) break;
+    // Claude can emit MULTIPLE tool_use blocks in a single assistant
+    // turn (parallel tool calls). The Anthropic API requires that EVERY
+    // tool_use has a matching tool_result in the next user message —
+    // missing one trips a 400. So iterate all tool_uses, execute each,
+    // and bundle all tool_results into a single user message. (Bug fix
+    // 2026-05-09 — first browser-tool deploy hit this within seconds.)
+    const toolUses = response.content.filter((c): c is Anthropic.Messages.ToolUseBlock => c.type === 'tool_use');
+    if (toolUses.length === 0) break;
 
-    const action = toolUse.input as BrowserAction;
-    const exec = await executeBrowserAction(page, action, creds);
-    if (exec.recordedStep) recordedSteps.push(exec.recordedStep);
+    const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
+    for (const toolUse of toolUses) {
+      const action = toolUse.input as BrowserAction;
+      const exec = await executeBrowserAction(page, action, creds);
+      if (exec.recordedStep) recordedSteps.push(exec.recordedStep);
+      toolResults.push(makeToolResult(toolUse.id, exec));
+    }
 
-    messages.push({
-      role: 'user',
-      content: [makeToolResult(toolUse.id, exec)],
-    });
+    messages.push({ role: 'user', content: toolResults });
   }
 
   return {
@@ -346,17 +353,19 @@ async function mapAction(args: {
       return { ok: false, reason: 'mapper returned no usable JSON' };
     }
 
-    const toolUse = response.content.find((c): c is Anthropic.Messages.ToolUseBlock => c.type === 'tool_use');
-    if (!toolUse) break;
+    // Same multi-tool_use handling as in mapLogin — see comment there.
+    const toolUses = response.content.filter((c): c is Anthropic.Messages.ToolUseBlock => c.type === 'tool_use');
+    if (toolUses.length === 0) break;
 
-    const action = toolUse.input as BrowserAction;
-    const exec = await executeBrowserAction(args.page, action, args.credentials);
-    if (exec.recordedStep) recordedSteps.push(exec.recordedStep);
+    const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
+    for (const toolUse of toolUses) {
+      const action = toolUse.input as BrowserAction;
+      const exec = await executeBrowserAction(args.page, action, args.credentials);
+      if (exec.recordedStep) recordedSteps.push(exec.recordedStep);
+      toolResults.push(makeToolResult(toolUse.id, exec));
+    }
 
-    messages.push({
-      role: 'user',
-      content: [makeToolResult(toolUse.id, exec)],
-    });
+    messages.push({ role: 'user', content: toolResults });
   }
 
   return { ok: false, reason: 'mapper exhausted step budget' };
