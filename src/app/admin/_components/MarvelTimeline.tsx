@@ -881,11 +881,19 @@ export function MarvelTimeline({
 
         // One WORKING badge per session — keyed on session_id so each
         // lands in its own quadrant. Branch + tool surfaced inline.
+        // The displayed branch strips the "claude/" prefix (it's
+        // repetitive — every claude worktree starts with it) and hard-
+        // truncates to keep the pill from overflowing its quadrant
+        // when 4 sessions share the canvas width.
         for (const s of (activeSessions ?? [])) {
           if (!s.session_id) continue;
           const branch = s.branch ?? '';
           const isMain = branch === 'main' || branch === 'master';
-          const truncated = branch.length > 24 ? `${branch.slice(0, 22)}…` : branch;
+          // Strip 'claude/' prefix; cap at 16 chars + ellipsis. With
+          // 4 sessions the canvas budgets ~340px per quadrant, which
+          // fits "WORKING ON XXXXXXXXXXXXX… · TOOL" comfortably.
+          const stripped = branch.startsWith('claude/') ? branch.slice('claude/'.length) : branch;
+          const truncated = stripped.length > 16 ? `${stripped.slice(0, 14)}…` : stripped;
           const tool = s.current_tool ? fmtTool(s.current_tool).toUpperCase() : '';
           const tag = isMain ? 'MAIN' : (truncated.toUpperCase() || 'BRANCH');
           const label = tool
@@ -1064,9 +1072,21 @@ export function MarvelTimeline({
           if (qSpecs.length === 0 && qToasts.length === 0) return null;
           const isTop = q === 'TL' || q === 'TM';
           const isLeft = q === 'TL' || q === 'BL';
+          // Top-left starts ~70px lower than the very top so the
+          // consensus banner gets a clean strip across the top center.
+          // Bottom containers anchor 60px up from the bottom so they
+          // clear the legend row that sits below the SVG.
           const positionStyle: React.CSSProperties = isTop
-            ? (isLeft ? { top: '14px', left: '16px' } : { top: '14px', left: '50%', transform: 'translateX(-50%)' })
-            : (isLeft ? { bottom: '14px', left: '16px' } : { bottom: '14px', left: '50%', transform: 'translateX(-50%)' });
+            ? (isLeft
+                ? { top: '60px', left: '16px' }
+                : { top: '60px', left: '50%', transform: 'translateX(-50%)' })
+            : (isLeft
+                ? { bottom: '60px', left: '16px' }
+                : { bottom: '60px', left: '50%', transform: 'translateX(-50%)' });
+          // Left columns stop at 30% width so they can't bleed into
+          // the centered TM/BM column. TM/BM cap at 40% so they don't
+          // bleed into the "X commits today" text in the top-right.
+          const widthCap = isLeft ? '30%' : '40%';
           return (
             <div key={q} style={{
               position: 'absolute',
@@ -1075,7 +1095,7 @@ export function MarvelTimeline({
               flexDirection: 'column',
               gap: '6px',
               zIndex: 1,
-              maxWidth: '46%',
+              maxWidth: widthCap,
               alignItems: isLeft ? 'flex-start' : 'center',
             }}>
               {/* For TOP quadrants: toasts on top, then in-progress.
@@ -1829,13 +1849,19 @@ function BadgePill({ spec }: { spec: BadgeSpec }) {
       alignItems: 'center',
       gap: '6px',
       backdropFilter: 'blur(4px)',
+      maxWidth: '100%',
       width: 'fit-content',
     }}>
       <span style={{
         width: '6px', height: '6px', borderRadius: '50%', background: '#fff',
         animation: 'mtBlink 1s ease-in-out infinite',
+        flexShrink: 0,
       }} />
-      {spec.label}
+      <span style={{
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+      }}>{spec.label}</span>
     </div>
   );
 }
@@ -1858,11 +1884,16 @@ function ToastPill({ toast }: { toast: Toast }) {
       alignItems: 'center',
       gap: '6px',
       backdropFilter: 'blur(4px)',
+      maxWidth: '100%',
       width: 'fit-content',
       animation: 'mtToastIn 220ms ease-out',
     }}>
-      <span>{prefix}</span>
-      {toast.message}
+      <span style={{ flexShrink: 0 }}>{prefix}</span>
+      <span style={{
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+      }}>{toast.message}</span>
     </div>
   );
   if (toast.url) {
