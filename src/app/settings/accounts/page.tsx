@@ -635,7 +635,6 @@ export default function AccountsPage() {
                     </div>
                   </div>
                   <CopyButton value={c.code} label={lang === 'es' ? 'Copiar código' : 'Copy code'} small />
-                  <CopyButton value={signupLinkFor(c.code)} label={lang === 'es' ? 'Copiar enlace' : 'Copy link'} small linkIcon />
                   <button onClick={() => handleRevokeCode(c.id)} style={revokeBtnStyle} aria-label="Revoke">
                     <Trash2 size={13} />
                   </button>
