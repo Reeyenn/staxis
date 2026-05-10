@@ -1,34 +1,18 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import { useAuth } from '@/contexts/AuthContext';
-import { useProperty } from '@/contexts/PropertyContext';
-import { getInventoryAdoption } from '@/lib/db';
-import type { InventoryAdoptionRow } from '@/lib/db/ml-inventory-cockpit';
+import React from 'react';
+import type { CockpitAdoptionRow } from '@/app/api/admin/ml/inventory/cockpit-data/route';
+
+interface Props {
+  mode: 'single' | 'fleet';
+  rows: CockpitAdoptionRow[];
+}
 
 /**
- * Counts per staff member over the last 30 days. Tells Reeyen "are people
- * actually using this?" without a bunch of derived metrics.
+ * Counts per staff (last 30 days). Fleet mode adds a "Hotel" column so
+ * Reeyen can see who's counting where across the network.
  */
-export function InventoryAdoptionPanel() {
-  const { user } = useAuth();
-  const { activePropertyId } = useProperty();
-  const [rows, setRows] = useState<InventoryAdoptionRow[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    if (!user || !activePropertyId) return;
-    (async () => {
-      try {
-        setRows(await getInventoryAdoption(activePropertyId, 30));
-      } catch (err) {
-        console.error('InventoryAdoptionPanel: fetch error', err);
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, [user, activePropertyId]);
-
+export function InventoryAdoptionPanel({ mode, rows }: Props) {
   const totalCounts = rows.reduce((s, r) => s + r.countCount, 0);
 
   return (
@@ -40,16 +24,16 @@ export function InventoryAdoptionPanel() {
     }}>
       <div style={{ marginBottom: '16px' }}>
         <h2 style={{ fontSize: '16px', fontWeight: 600, color: '#1b1c19', margin: 0 }}>
-          Who&rsquo;s counting (last 30 days)
+          {mode === 'single'
+            ? 'Who’s counting (last 30 days)'
+            : 'Top counters across the network (last 30 days)'}
         </h2>
         <p style={{ fontSize: '12px', color: '#7a8a9e', marginTop: '4px' }}>
-          {totalCounts.toLocaleString()} total count events across {rows.length} staff
+          {totalCounts.toLocaleString()} count events across {rows.length} {rows.length === 1 ? 'person' : 'people'}
         </p>
       </div>
 
-      {loading ? (
-        <div style={{ color: '#7a8a9e', fontSize: '13px' }}>Loading…</div>
-      ) : rows.length === 0 ? (
+      {rows.length === 0 ? (
         <div style={{
           padding: '24px', textAlign: 'center', color: '#7a8a9e', fontSize: '13px',
           background: '#f7fafb', borderRadius: '8px',
@@ -61,6 +45,7 @@ export function InventoryAdoptionPanel() {
           <thead>
             <tr style={{ borderBottom: '1px solid rgba(78,90,122,0.12)' }}>
               <Th>Counted by</Th>
+              {mode === 'fleet' && <Th>Hotel</Th>}
               <Th align="right">Count events</Th>
               <Th align="right">Items touched</Th>
               <Th>Last counted</Th>
@@ -68,8 +53,9 @@ export function InventoryAdoptionPanel() {
           </thead>
           <tbody>
             {rows.map((r) => (
-              <tr key={r.countedBy} style={{ borderBottom: '1px solid rgba(78,90,122,0.06)' }}>
+              <tr key={`${r.propertyId}|${r.countedBy}`} style={{ borderBottom: '1px solid rgba(78,90,122,0.06)' }}>
                 <Td>{r.countedBy}</Td>
+                {mode === 'fleet' && <Td>{r.propertyName}</Td>}
                 <Td align="right">{r.countCount}</Td>
                 <Td align="right">{r.itemsTouched}</Td>
                 <Td>{r.lastCountedAt ? new Date(r.lastCountedAt).toLocaleString() : '—'}</Td>

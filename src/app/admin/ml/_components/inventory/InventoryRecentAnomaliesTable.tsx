@@ -1,31 +1,19 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import { useAuth } from '@/contexts/AuthContext';
-import { useProperty } from '@/contexts/PropertyContext';
-import { getInventoryAnomalies } from '@/lib/db';
-import type { InventoryAnomalyRow } from '@/lib/db/ml-inventory-cockpit';
+import React from 'react';
 import { AlertTriangle } from 'lucide-react';
+import type { CockpitAnomalyRow } from '@/app/api/admin/ml/inventory/cockpit-data/route';
 
-export function InventoryRecentAnomaliesTable() {
-  const { user } = useAuth();
-  const { activePropertyId } = useProperty();
-  const [rows, setRows] = useState<InventoryAnomalyRow[]>([]);
-  const [loading, setLoading] = useState(true);
+interface Props {
+  mode: 'single' | 'fleet';
+  rows: CockpitAnomalyRow[];
+}
 
-  useEffect(() => {
-    if (!user || !activePropertyId) return;
-    (async () => {
-      try {
-        setRows(await getInventoryAnomalies(activePropertyId, 30));
-      } catch (err) {
-        console.error('InventoryRecentAnomaliesTable: fetch error', err);
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, [user, activePropertyId]);
-
+/**
+ * Recent inventory anomalies. Fleet mode shows a "Hotel" column so the
+ * user can see which property each anomaly belongs to.
+ */
+export function InventoryRecentAnomaliesTable({ mode, rows }: Props) {
   return (
     <div style={{
       background: '#ffffff',
@@ -35,21 +23,19 @@ export function InventoryRecentAnomaliesTable() {
     }}>
       <div style={{ marginBottom: '16px' }}>
         <h2 style={{ fontSize: '16px', fontWeight: 600, color: '#1b1c19', margin: 0 }}>
-          Recent anomalies
+          {mode === 'single' ? 'Recent anomalies' : 'Recent anomalies — network'}
         </h2>
         <p style={{ fontSize: '12px', color: '#7a8a9e', marginTop: '4px' }}>
           Items where observed usage diverged from prediction by more than 50%.
         </p>
       </div>
 
-      {loading ? (
-        <div style={{ color: '#7a8a9e', fontSize: '13px' }}>Loading…</div>
-      ) : rows.length === 0 ? (
+      {rows.length === 0 ? (
         <div style={{
           padding: '24px', textAlign: 'center', color: '#7a8a9e', fontSize: '13px',
           background: '#f7fafb', borderRadius: '8px',
         }}>
-          No anomalies fired. (Anomaly detection arrives in session 2 — until then this stays empty.)
+          No anomalies fired. (None to flag yet — anomaly checks need a count after a prediction has been generated for the same item.)
         </div>
       ) : (
         <div style={{ overflowX: 'auto' }}>
@@ -58,6 +44,7 @@ export function InventoryRecentAnomaliesTable() {
               <tr style={{ borderBottom: '1px solid rgba(78,90,122,0.12)' }}>
                 <Th>Severity</Th>
                 <Th>Item</Th>
+                {mode === 'fleet' && <Th>Hotel</Th>}
                 <Th>Reason</Th>
                 <Th>When</Th>
               </tr>
@@ -77,6 +64,7 @@ export function InventoryRecentAnomaliesTable() {
                       </span>
                     </Td>
                     <Td>{r.itemName}</Td>
+                    {mode === 'fleet' && <Td>{r.propertyName}</Td>}
                     <Td>{r.reason}</Td>
                     <Td>{new Date(r.ts).toLocaleString()}</Td>
                   </tr>
