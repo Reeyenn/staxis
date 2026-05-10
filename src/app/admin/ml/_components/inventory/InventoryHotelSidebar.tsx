@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import type { PropertySidebarEntry } from '@/app/api/admin/ml/inventory/cockpit-data/route';
 import { Building2, CheckCircle2, AlertTriangle, Circle } from 'lucide-react';
 
@@ -28,14 +28,20 @@ export function InventoryHotelSidebar({
   totalNetworkCount: number;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
 
+  // We use router.push (not replace) — replace silently no-ops in some
+  // turbopack/RSC interactions even when the resulting URL differs. push
+  // always emits a history entry, which is also better UX (back button
+  // returns to the previous hotel).
   const setProperty = (id: string | null) => {
     const params = new URLSearchParams(searchParams.toString());
     if (id) params.set('propertyId', id);
     else params.delete('propertyId');
     if (params.get('tab') !== 'inventory') params.set('tab', 'inventory');
-    router.replace(`/admin/ml${params.toString() ? `?${params.toString()}` : ''}`, { scroll: false });
+    const target = `${pathname}${params.toString() ? `?${params.toString()}` : ''}`;
+    router.push(target, { scroll: false });
   };
 
   return (
