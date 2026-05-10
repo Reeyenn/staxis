@@ -388,16 +388,30 @@ function PeopleWithAccessSection({ propertyId }: { propertyId: string }) {
   const withAccess = allAccounts.filter(a => a.role === 'admin' || a.propertyAccess.includes(propertyId));
   const eligibleToAttach = allAccounts.filter(a => a.role !== 'admin' && !a.propertyAccess.includes(propertyId));
 
-  const detach = async (acct: AccountRow) => {
+  // Row-level trash = full delete (account removed from every hotel,
+  // auth user gone, can never sign in again). For "just remove from
+  // THIS hotel" while keeping the account alive on other hotels,
+  // use Edit → "Remove from this hotel".
+  const deleteAccount = async (acct: AccountRow) => {
     if (!user) return;
     if (acct.role === 'admin') return;
-    if (!confirm(`Remove ${acct.displayName} from this hotel?`)) return;
-    const newAccess = acct.propertyAccess.filter(p => p !== propertyId);
-    await fetchWithAuth('/api/auth/accounts', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'x-account-id': user.accountId },
-      body: JSON.stringify({ accountId: acct.accountId, propertyAccess: newAccess }),
-    });
+    const hotelCount = acct.propertyAccess.length;
+    const scopeNote = hotelCount > 1
+      ? `\n\nThis account currently has access to ${hotelCount} hotels — all of that access will be removed.`
+      : '';
+    if (!confirm(
+      `Delete ${acct.displayName} entirely?${scopeNote}\n\n`
+      + `This deletes the account from the system. They will not be able to sign in again. This cannot be undone.`,
+    )) return;
+    const res = await fetchWithAuth(
+      `/api/auth/accounts?accountId=${encodeURIComponent(acct.accountId)}`,
+      { method: 'DELETE', headers: { 'x-account-id': user.accountId } },
+    );
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({})) as { error?: string };
+      alert(body.error ?? 'Failed to delete account');
+      return;
+    }
     void load();
   };
 
@@ -434,7 +448,7 @@ function PeopleWithAccessSection({ propertyId }: { propertyId: string }) {
                 <Pencil size={13} />
               </button>
               {a.role !== 'admin' && a.accountId !== user?.accountId && (
-                <button onClick={() => detach(a)} aria-label={`Remove ${a.displayName}`} style={iconBtnRedStyle}>
+                <button onClick={() => deleteAccount(a)} aria-label={`Delete ${a.displayName}`} title={`Delete ${a.displayName} entirely`} style={iconBtnRedStyle}>
                   <Trash2 size={13} />
                 </button>
               )}
