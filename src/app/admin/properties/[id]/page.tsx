@@ -19,8 +19,9 @@ import { fetchWithAuth } from '@/lib/api-fetch';
 import { AppLayout } from '@/components/layout/AppLayout';
 import {
   ArrowLeft, RefreshCw, AlertTriangle, CheckCircle2, Clock,
-  ShieldAlert, ExternalLink, Loader2,
+  ShieldAlert, ExternalLink, Loader2, Activity, Users, Plus, Trash2,
 } from 'lucide-react';
+import { roleLabel, type AppRole } from '@/lib/roles';
 
 interface HealthData {
   property: {
@@ -336,11 +337,214 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
               )}
             </div>
 
+            {/* People with access — Phase 4 */}
+            <PeopleWithAccessSection propertyId={id} />
+
+            {/* GM activity & engagement — moved here from fleet view */}
+            <GmActivitySection propertyId={id} />
+
           </>
         )}
         <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
       </div>
     </AppLayout>
+  );
+}
+
+// ─── People with access ─────────────────────────────────────────────────
+interface AccountRow {
+  accountId: string;
+  username: string;
+  displayName: string;
+  email: string;
+  role: AppRole;
+  propertyAccess: string[];
+}
+
+function PeopleWithAccessSection({ propertyId }: { propertyId: string }) {
+  const { user } = useAuth();
+  const [allAccounts, setAllAccounts] = useState<AccountRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showAdd, setShowAdd] = useState(false);
+  const [pickAccountId, setPickAccountId] = useState('');
+
+  const load = React.useCallback(async () => {
+    if (!user) return;
+    setLoading(true);
+    try {
+      const res = await fetchWithAuth('/api/auth/accounts', { headers: { 'x-account-id': user.accountId } });
+      const body = await res.json() as { ok?: boolean; data?: { accounts?: AccountRow[] } };
+      if (body.ok) setAllAccounts(body.data?.accounts ?? []);
+    } finally {
+      setLoading(false);
+    }
+  }, [user]);
+  useEffect(() => { void load(); }, [load, propertyId]);
+
+  // "Has access" = role admin (sees everything) or propertyAccess includes this property.
+  const withAccess = allAccounts.filter(a => a.role === 'admin' || a.propertyAccess.includes(propertyId));
+  const eligibleToAdd = allAccounts.filter(a => a.role !== 'admin' && !a.propertyAccess.includes(propertyId));
+
+  const detach = async (acct: AccountRow) => {
+    if (!user) return;
+    if (acct.role === 'admin') return; // admins always have access
+    if (!confirm(`Remove ${acct.displayName} from this hotel?`)) return;
+    const newAccess = acct.propertyAccess.filter(p => p !== propertyId);
+    await fetchWithAuth('/api/auth/accounts', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-account-id': user.accountId },
+      body: JSON.stringify({ accountId: acct.accountId, propertyAccess: newAccess }),
+    });
+    void load();
+  };
+
+  const attach = async () => {
+    if (!user || !pickAccountId) return;
+    const acct = allAccounts.find(a => a.accountId === pickAccountId);
+    if (!acct) return;
+    const newAccess = Array.from(new Set([...acct.propertyAccess, propertyId]));
+    await fetchWithAuth('/api/auth/accounts', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-account-id': user.accountId },
+      body: JSON.stringify({ accountId: pickAccountId, propertyAccess: newAccess }),
+    });
+    setShowAdd(false);
+    setPickAccountId('');
+    void load();
+  };
+
+  return (
+    <div style={{ marginTop: '20px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+        <h2 style={{ fontSize: '15px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <Users size={16} /> People with access
+        </h2>
+        <button onClick={() => setShowAdd(v => !v)} style={{
+          display: 'inline-flex', alignItems: 'center', gap: '6px',
+          background: 'var(--surface-secondary)', color: 'var(--text-primary)',
+          border: '1px solid var(--border)', borderRadius: '8px',
+          padding: '6px 12px', fontSize: '12px', fontWeight: 600,
+          cursor: 'pointer',
+        }}>
+          <Plus size={13} /> Attach person
+        </button>
+      </div>
+
+      {showAdd && (
+        <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
+          <select value={pickAccountId} onChange={e => setPickAccountId(e.target.value)} style={{
+            flex: 1, height: '38px', borderRadius: '8px',
+            background: 'var(--surface-primary)', border: '1px solid var(--border)',
+            padding: '0 12px', color: 'var(--text-primary)', fontSize: '13px',
+          }}>
+            <option value="">Pick an account…</option>
+            {eligibleToAdd.map(a => (
+              <option key={a.accountId} value={a.accountId}>{a.displayName} — {roleLabel(a.role)} ({a.email})</option>
+            ))}
+          </select>
+          <button disabled={!pickAccountId} onClick={attach} style={{
+            background: pickAccountId ? 'var(--navy-light)' : 'rgba(37,99,235,0.4)',
+            color: '#FFFFFF', border: 'none', borderRadius: '8px',
+            padding: '0 16px', fontSize: '13px', fontWeight: 600,
+            cursor: pickAccountId ? 'pointer' : 'not-allowed',
+          }}>Attach</button>
+        </div>
+      )}
+
+      {loading ? (
+        <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Loading…</p>
+      ) : withAccess.length === 0 ? (
+        <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>No accounts have access to this hotel yet.</p>
+      ) : (
+        <div style={{ border: '1px solid var(--border)', borderRadius: '10px', overflow: 'hidden' }}>
+          {withAccess.map((a, idx) => (
+            <div key={a.accountId} style={{
+              padding: '12px 14px',
+              borderBottom: idx < withAccess.length - 1 ? '1px solid var(--border)' : 'none',
+              display: 'flex', alignItems: 'center', gap: '12px',
+            }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: '13px', fontWeight: 600 }}>{a.displayName}</div>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  {roleLabel(a.role)} · {a.email}
+                </div>
+              </div>
+              {a.role !== 'admin' && a.accountId !== user?.accountId && (
+                <button onClick={() => detach(a)} aria-label={`Remove ${a.displayName}`} style={{
+                  width: '32px', height: '32px', borderRadius: '6px',
+                  background: 'transparent', border: '1px solid rgba(239,68,68,0.3)',
+                  color: 'var(--red)', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  <Trash2 size={13} />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── GM activity (this hotel only) ──────────────────────────────────────
+interface ActivityRow {
+  propertyId: string;
+  propertyName: string | null;
+  lastActiveTs: string;
+  viewsToday: number;
+  viewsWeek: number;
+  distinctUsersToday: number;
+  topFeatures: { path: string; count: number }[];
+}
+
+function GmActivitySection({ propertyId }: { propertyId: string }) {
+  const [row, setRow] = useState<ActivityRow | null | undefined>(undefined);
+
+  useEffect(() => {
+    fetchWithAuth('/api/admin/activity').then(r => r.json()).then((body: { ok?: boolean; data?: { rows?: ActivityRow[] } }) => {
+      if (body.ok) {
+        const found = (body.data?.rows ?? []).find(r => r.propertyId === propertyId);
+        setRow(found ?? null);
+      } else {
+        setRow(null);
+      }
+    }).catch(() => setRow(null));
+  }, [propertyId]);
+
+  return (
+    <div style={{ marginTop: '20px' }}>
+      <h2 style={{ fontSize: '15px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+        <Activity size={16} /> GM activity & engagement
+      </h2>
+      {row === undefined ? (
+        <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Loading…</p>
+      ) : !row ? (
+        <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>No activity in the last 7 days.</p>
+      ) : (
+        <div style={{ padding: '14px', border: '1px solid var(--border)', borderRadius: '10px' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', fontSize: '12px' }}>
+            <span><strong style={{ color: 'var(--text-primary)' }}>{row.viewsToday}</strong> <span style={{ color: 'var(--text-muted)' }}>views today</span></span>
+            <span><strong style={{ color: 'var(--text-primary)' }}>{row.viewsWeek}</strong> <span style={{ color: 'var(--text-muted)' }}>this week</span></span>
+            <span><strong style={{ color: 'var(--text-primary)' }}>{row.distinctUsersToday}</strong> <span style={{ color: 'var(--text-muted)' }}>{row.distinctUsersToday === 1 ? 'user' : 'users'} today</span></span>
+            <span style={{ color: 'var(--text-muted)' }}>last active {new Date(row.lastActiveTs).toLocaleString()}</span>
+          </div>
+          {row.topFeatures.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '12px' }}>
+              {row.topFeatures.map(f => (
+                <span key={f.path} style={{
+                  fontSize: '11px', padding: '2px 8px',
+                  background: 'var(--surface-secondary)', borderRadius: '999px',
+                  color: 'var(--text-muted)', fontFamily: 'var(--font-mono)',
+                }}>
+                  {f.path === '/' ? 'home' : f.path.split('/').filter(Boolean).slice(0, 2).join('/')} · {f.count}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

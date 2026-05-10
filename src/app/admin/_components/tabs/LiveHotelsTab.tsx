@@ -18,7 +18,7 @@ import Link from 'next/link';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import {
   Building2, ChevronRight, WifiOff, Wifi, AlertCircle,
-  MessageSquare, ChevronDown, Activity,
+  MessageSquare, ChevronDown,
 } from 'lucide-react';
 
 const STALE_THRESHOLD_MIN = 12 * 60; // 12 hours
@@ -56,16 +56,6 @@ interface SmsHealthRow {
   topErrors: { message: string; count: number }[];
 }
 
-interface ActivityRow {
-  propertyId: string;
-  propertyName: string | null;
-  lastActiveTs: string;
-  viewsToday: number;
-  viewsWeek: number;
-  distinctUsersToday: number;
-  topFeatures: { path: string; count: number }[];
-}
-
 interface FeedbackItem {
   id: string;
   property_id: string | null;
@@ -84,27 +74,24 @@ export function LiveHotelsTab() {
   const [props, setProps] = useState<PropertyRow[] | null>(null);
   const [errors, setErrors] = useState<ErrorGroup[] | null>(null);
   const [sms, setSms] = useState<SmsHealthRow[] | null>(null);
-  const [activity, setActivity] = useState<ActivityRow[] | null>(null);
   const [feedback, setFeedback] = useState<FeedbackItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = async () => {
     setError(null);
     try {
-      const [propsRes, errorsRes, smsRes, activityRes, feedbackRes] = await Promise.all([
+      const [propsRes, errorsRes, smsRes, feedbackRes] = await Promise.all([
         fetchWithAuth('/api/admin/list-properties'),
         fetchWithAuth('/api/admin/recent-errors'),
         fetchWithAuth('/api/admin/sms-health'),
-        fetchWithAuth('/api/admin/activity'),
         fetchWithAuth('/api/admin/feedback'),
       ]);
-      const [propsJson, errorsJson, smsJson, activityJson, feedbackJson] = await Promise.all([
-        propsRes.json(), errorsRes.json(), smsRes.json(), activityRes.json(), feedbackRes.json(),
+      const [propsJson, errorsJson, smsJson, feedbackJson] = await Promise.all([
+        propsRes.json(), errorsRes.json(), smsRes.json(), feedbackRes.json(),
       ]);
       if (propsJson.ok) setProps(propsJson.data.properties);
       if (errorsJson.ok) setErrors(errorsJson.data.groups);
       if (smsJson.ok) setSms(smsJson.data.perHotel);
-      if (activityJson.ok) setActivity(activityJson.data.rows);
       if (feedbackJson.ok) setFeedback(feedbackJson.data.feedback);
     } catch (err) {
       setError(`Network error: ${(err as Error).message}`);
@@ -125,7 +112,7 @@ export function LiveHotelsTab() {
     );
   }
 
-  if (!props || !errors || !sms || !activity || !feedback) {
+  if (!props || !errors || !sms || !feedback) {
     return (
       <div style={{ padding: '60px 0', textAlign: 'center' }}>
         <div className="spinner" style={{ width: '24px', height: '24px', margin: '0 auto' }} />
@@ -250,20 +237,9 @@ export function LiveHotelsTab() {
         )}
       </section>
 
-      {/* 5. Activity / engagement per hotel */}
-      <section>
-        <h2 style={sectionTitle}>GM activity & engagement</h2>
-        <p style={sectionHint}>Last 24h activity per hotel. Admin clicks (yours) are filtered out.</p>
-        {activity.length === 0 ? (
-          <EmptyState text="No GM activity in the last 7 days yet — check back after staff use the app." />
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
-            {activity.map((a) => <ActivityRowCard key={a.propertyId} row={a} />)}
-          </div>
-        )}
-      </section>
+      {/* GM activity moved to /admin/properties/[id] (per-hotel deep dive) */}
 
-      {/* 6. Feedback inbox */}
+      {/* Feedback inbox */}
       <section>
         <h2 style={sectionTitle}>Feedback inbox</h2>
         <p style={sectionHint}>Submitted from inside the app. New first.</p>
@@ -386,61 +362,6 @@ function SmsHealthRowCard({ row }: { row: SmsHealthRow }) {
       </div>
     </Link>
   );
-}
-
-function ActivityRowCard({ row }: { row: ActivityRow }) {
-  const lastAge = formatAge(row.lastActiveTs);
-  const isStale = Date.now() - new Date(row.lastActiveTs).getTime() > 7 * 24 * 60 * 60 * 1000;
-  return (
-    <Link href={`/admin/properties/${row.propertyId}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-      <div style={{
-        padding: '12px 14px',
-        background: 'var(--surface-primary)',
-        border: '1px solid var(--border)',
-        borderRadius: '10px',
-        display: 'flex', alignItems: 'flex-start', gap: '12px',
-      }}>
-        <Activity size={14} color={isStale ? 'var(--red)' : 'var(--green)'} style={{ marginTop: '2px', flexShrink: 0 }} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '8px' }}>
-            <div style={{ fontSize: '13px', fontWeight: 600 }}>
-              {row.propertyName ?? '(deleted property)'}
-            </div>
-            <div style={{ fontSize: '11px', color: isStale ? 'var(--red)' : 'var(--text-muted)' }}>
-              Last active {lastAge}
-            </div>
-          </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px', display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
-            <span><strong style={{ color: 'var(--text-primary)' }}>{row.viewsToday}</strong> views today</span>
-            <span><strong style={{ color: 'var(--text-primary)' }}>{row.viewsWeek}</strong> views this week</span>
-            <span><strong style={{ color: 'var(--text-primary)' }}>{row.distinctUsersToday}</strong> {row.distinctUsersToday === 1 ? 'user' : 'users'} today</span>
-          </div>
-          {row.topFeatures.length > 0 && (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '8px' }}>
-              {row.topFeatures.map((f) => (
-                <span key={f.path} style={{
-                  fontSize: '11px',
-                  padding: '2px 8px',
-                  background: 'var(--surface-secondary)',
-                  borderRadius: '999px',
-                  color: 'var(--text-muted)',
-                  fontFamily: 'var(--font-mono)',
-                }}>
-                  {prettifyPath(f.path)} · {f.count}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-        <ChevronRight size={14} color="var(--text-muted)" />
-      </div>
-    </Link>
-  );
-}
-
-function prettifyPath(path: string): string {
-  if (path === '/') return 'home';
-  return path.split('/').filter(Boolean).slice(0, 2).join('/');
 }
 
 function FeedbackRowCard({ row, onChange }: { row: FeedbackItem; onChange: () => Promise<void> }) {
