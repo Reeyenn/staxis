@@ -90,12 +90,24 @@ jobs:
             # 200 = all green.
             # 503 = doctor ran but one or more checks failed — we STILL want
             #       to see the body so we know which check broke.
-            # Anything else (000/502/504) = Vercel itself isn't ready yet.
             if [ "$http_code" = "200" ] || [ "$http_code" = "503" ]; then
               response=$(cat /tmp/doctor-body.json)
               break
             fi
 
+            # 401 = CRON_SECRET drift between this workflow's secret and
+            #       Vercel's env var. This will never resolve on its own,
+            #       so bail loudly with a clear pointer instead of looping
+            #       silently for 5 minutes. Echo the GitHub-secret length
+            #       (not the value) so we can tell missing vs set-but-wrong.
+            if [ "$http_code" = "401" ]; then
+              len=${#CRON_SECRET}
+              echo "::error::Vercel /api/admin/doctor returned 401 — CRON_SECRET in this workflow does not match Vercel's. GitHub-secret length=${len}. Fix: GitHub → repo Settings → Secrets and variables → Actions → update CRON_SECRET to match Vercel's value (Vercel project → Settings → Environment Variables → CRON_SECRET)."
+              cat /tmp/doctor-body.json 2>/dev/null || true
+              exit 1
+            fi
+
+            # Anything else (000/502/504) = Vercel itself isn't ready yet.
             echo "Vercel deploy not ready yet (or unavailable). Waiting ${SLEEP_BETWEEN}s..."
             sleep $SLEEP_BETWEEN
           done
