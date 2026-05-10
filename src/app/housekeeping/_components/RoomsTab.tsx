@@ -16,7 +16,7 @@ import { Modal } from '@/components/ui/Modal';
 import { useSyncContext } from '@/contexts/SyncContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import {
-  subscribeToRooms, subscribeToAllRooms, updateRoom, addRoom,
+  subscribeToRooms, updateRoom, addRoom,
   addStaffMember, updateStaffMember, deleteStaffMember,
   getRoomsForDate, getPublicAreas, setPublicArea, deletePublicArea,
   updateProperty,
@@ -35,7 +35,7 @@ import { dashboardFreshness, DASHBOARD_STALE_MINUTES } from '@/lib/db';
 import { getPublicAreasDueToday, calcPublicAreaMinutes, autoAssignRooms, getOverdueRooms, calcDndFreedMinutes, suggestDeepCleans } from '@/lib/calculations';
 import { getDefaultPublicAreas } from '@/lib/defaults';
 import type { PublicArea } from '@/types';
-import { todayStr, errToString } from '@/lib/utils';
+import { errToString } from '@/lib/utils';
 import { useTodayStr } from '@/lib/use-today-str';
 import type { Room, RoomStatus, RoomType, RoomPriority, StaffMember, DeepCleanRecord, DeepCleanConfig, ShiftConfirmation, ConfirmationStatus, WorkOrder } from '@/types';
 import { format, subDays } from 'date-fns';
@@ -67,8 +67,13 @@ function RoomsTab() {
   const { lang }                                           = useLang();
   const { recordOfflineAction }                            = useSyncContext();
 
+  // The Rooms tab is a single live view of "right now" — no per-date snapshot,
+  // no smart date-picker, no fallback to yesterday. We always subscribe to
+  // today's rows and merge with the property's master room inventory so all
+  // 74 (or however many) rooms render every time, regardless of what's
+  // happened in PMS today. See the useEffect below for the subscription.
+  const today = useTodayStr();
   const [rooms,   setRooms]   = useState<Room[]>([]);
-  const [activeDate, setActiveDate] = useState<string>(todayStr());
   const [loading, setLoading] = useState(true);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   // Toast severity drives color: 'success' = green, 'error' = red.
@@ -104,7 +109,11 @@ function RoomsTab() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           pid:  activePropertyId,
-          date: activeDate,
+          // Always pulls into today's slice. The Rooms tab no longer offers
+          // per-date browsing — the board is "right now" and this button
+          // refreshes "right now" from PMS. Historical days aren't pulled
+          // because Mario has no UI to view them anyway.
+          date: today,
         }),
       });
       // /api/refresh-from-pms now returns the standard ApiResponse envelope:
@@ -155,57 +164,81 @@ function RoomsTab() {
     }
   };
 
-  // Subscribe to ALL rooms in the property, then pick the active date to show.
+  // Subscribe to TODAY's rooms only.
   //
-  // Two data sources write to this collection:
-  //   1. The 15-min PMS scraper writes today's LIVE occupancy with today's date
-  //      but WITHOUT assignedTo (it doesn't know who's cleaning what).
-  //   2. `send-shift-confirmations` seeds the SHIFT date's rooms with
-  //      assignedTo populated — that's Maria's active plan.
+  // Architectural intent (set 2026-05-10): Staxis's Rooms tab is the
+  // canonical source of truth for room state. It's not a per-date
+  // historical view, not a "last shift" snapshot — it's the live picture
+  // of every room right now. Status only changes from human action:
+  //   • housekeeper tap (Done/Skip via SMS link)
+  //   • Mario click on the tab (handleToggle below)
+  //   • Maria's schedule send-confirmations (seeds today's row with assignedTo)
+  //   • the manual "Load Rooms from CSV" button (one-time bootstrap)
   //
-  // We want the Rooms tab to track Maria's active PLAN, not scraper noise.
-  // So prefer dates that have at least one assigned room (the "assigned
-  // shift"), and use scraper-only dates as a last-resort fallback.
+  // The previous implementation subscribed to ALL rooms across all dates
+  // and picked one with smart fallback (assigned-shift dates first, then
+  // today, then nearest future, then most recent past). That made the
+  // board silently show yesterday whenever today had no assignments yet,
+  // which surfaced as the "LAST SHIFT · Saturday May 9" badge confusion.
   //
-  // Within assigned dates: today → nearest future → most recent past.
+  // Choice Advantage continues to be the source for occupancy / checkout
+  // / DND signals via the "Load Rooms from CSV" button, but no longer
+  // continuously feeds the Rooms tab in the background — Staxis owns the
+  // state. Eventually we'll write status BACK to CA on housekeeper-Done.
   useEffect(() => {
     if (!user || !activePropertyId) return;
-    const unsub = subscribeToAllRooms(user.uid, activePropertyId, (all) => {
-      const today = todayStr();
-      const byDate = new Map<string, Room[]>();
-      for (const r of all) {
-        if (!r.date) continue;
-        const list = byDate.get(r.date) ?? [];
-        list.push(r);
-        byDate.set(r.date, list);
-      }
-
-      const pickFrom = (dates: string[]) => {
-        if (dates.includes(today)) return today;
-        const future = dates.filter(d => d > today).sort();
-        if (future.length > 0) return future[0];
-        const past = dates.filter(d => d < today).sort().reverse();
-        if (past.length > 0) return past[0];
-        return null;
-      };
-
-      // Prefer dates where Maria has actually assigned rooms — that's her
-      // active plan. Scraper-only dates (no assignedTo) are fallback only.
-      const assignedDates = [...byDate.entries()]
-        .filter(([, list]) => list.some(r => r.assignedTo))
-        .map(([date]) => date);
-
-      let chosenDate = pickFrom(assignedDates);
-      if (!chosenDate) {
-        chosenDate = pickFrom([...byDate.keys()]) ?? today;
-      }
-
-      setActiveDate(chosenDate);
-      setRooms(byDate.get(chosenDate) ?? []);
+    setLoading(true);
+    const unsub = subscribeToRooms(user.uid, activePropertyId, today, (todayRooms) => {
+      setRooms(todayRooms);
       setLoading(false);
     });
     return unsub;
-  }, [user, activePropertyId]);
+  }, [user, activePropertyId, today]);
+
+  // Merge today's actual rooms with the property's master room inventory.
+  // Anything in inventory that isn't in today's table renders as a phantom
+  // CLEAN row — the safe assumption (a clean room stays clean until someone
+  // makes it dirty). This is what makes all 74 rooms always show, even
+  // before "Load Rooms from CSV" has been clicked for the day.
+  //
+  // Phantom rows have id: "phantom-<number>" so handleToggle can detect
+  // them and lazily materialize a real row when Mario clicks one.
+  //
+  // Backward-compat: if room_inventory is empty (a property that hasn't
+  // been onboarded by the CUA worker yet), fall back to whatever's in
+  // today's rooms table — same as the old behavior.
+  const displayRooms = useMemo<Room[]>(() => {
+    if (!activePropertyId) return [];
+    const inventory = activeProperty?.roomInventory ?? [];
+    if (inventory.length === 0) return rooms;
+
+    const byNumber = new Map<string, Room>();
+    for (const r of rooms) byNumber.set(r.number, r);
+
+    const out: Room[] = [];
+    for (const num of inventory) {
+      const existing = byNumber.get(num);
+      if (existing) {
+        out.push(existing);
+      } else {
+        out.push({
+          id: `phantom-${num}`,
+          number: num,
+          type: 'vacant',
+          priority: 'standard',
+          status: 'clean',
+          date: today,
+          propertyId: activePropertyId,
+        });
+      }
+    }
+    // Defensive: include any rooms in today's table that aren't in the
+    // inventory list (e.g. inventory was updated after a manual addRoom).
+    for (const r of rooms) {
+      if (!inventory.includes(r.number)) out.push(r);
+    }
+    return out;
+  }, [rooms, activeProperty?.roomInventory, activePropertyId, today]);
 
   // Live timer refresh every 15 seconds
   useEffect(() => {
@@ -213,15 +246,15 @@ function RoomsTab() {
     return () => clearInterval(id);
   }, []);
 
-  const floors = [...new Set(rooms.map(r => getFloor(r.number)))].sort((a, b) => {
+  const floors = [...new Set(displayRooms.map(r => getFloor(r.number)))].sort((a, b) => {
     if (a === 'G') return -1; if (b === 'G') return 1;
     return parseInt(a) - parseInt(b);
   });
 
-  const sorted = [...rooms].sort((a, b) => (parseInt(a.number.replace(/\D/g, '')) || 0) - (parseInt(b.number.replace(/\D/g, '')) || 0));
+  const sorted = [...displayRooms].sort((a, b) => (parseInt(a.number.replace(/\D/g, '')) || 0) - (parseInt(b.number.replace(/\D/g, '')) || 0));
 
-  const doneCount  = rooms.filter(r => r.status === 'clean' || r.status === 'inspected').length;
-  const totalCount = rooms.length;
+  const doneCount  = displayRooms.filter(r => r.status === 'clean' || r.status === 'inspected').length;
+  const totalCount = displayRooms.length;
   const pct        = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
 
   const STATUS_INFO: Record<RoomStatus, { label: string; color: string; bgColor: string; borderColor: string }> = {
@@ -241,10 +274,32 @@ function RoomsTab() {
     if (room.status === 'dirty') newStatus = 'in_progress';
     else if (room.status === 'in_progress') newStatus = 'clean';
     else newStatus = 'dirty';
+    if (!navigator.onLine) recordOfflineAction();
+
+    // Phantom rooms (id starts with "phantom-") are inventory members that
+    // don't have a real DB row yet. Materialize a real row on first click —
+    // the realtime subscription will then replace the phantom with the
+    // real row in displayRooms. Without this, updateRoom(phantom-205, …)
+    // would 404 on the rooms table.
+    if (room.id.startsWith('phantom-')) {
+      const startedAt = newStatus === 'in_progress' ? new Date() : undefined;
+      const completedAt = newStatus === 'clean' ? new Date() : undefined;
+      await addRoom(user.uid, activePropertyId, {
+        number: room.number,
+        type: 'vacant',
+        priority: 'standard',
+        status: newStatus,
+        date: today,
+        propertyId: activePropertyId,
+        ...(startedAt ? { startedAt } : {}),
+        ...(completedAt ? { completedAt } : {}),
+      });
+      return;
+    }
+
     const updates: Partial<Room> = { status: newStatus };
     if (newStatus === 'in_progress') updates.startedAt  = new Date();
     if (newStatus === 'clean')       updates.completedAt = new Date();
-    if (!navigator.onLine) recordOfflineAction();
     await updateRoom(user.uid, activePropertyId, room.id, updates);
   };
 
@@ -306,8 +361,8 @@ function RoomsTab() {
   };
 
   // Compute metrics for the footer
-  const dirtyCount = rooms.filter(r => r.status === 'dirty').length;
-  const inProgressCount = rooms.filter(r => r.status === 'in_progress').length;
+  const dirtyCount = displayRooms.filter(r => r.status === 'dirty').length;
+  const inProgressCount = displayRooms.filter(r => r.status === 'in_progress').length;
   const queueCount = dirtyCount + inProgressCount;
 
   // Status → glow class mapping
@@ -435,36 +490,24 @@ function RoomsTab() {
         </div>
       ) : (
         <>
-          {/* ── Active Shift Date Banner ── */}
-          {(() => {
-            const today = todayStr();
-            const isToday = activeDate === today;
-            const isFuture = activeDate > today;
-            const parsed = new Date(activeDate + 'T00:00:00');
-            const dateLabel = format(parsed, 'EEEE, MMMM d');
-            const prefix = isToday
-              ? (lang === 'es' ? 'Turno de hoy' : "Today's shift")
-              : isFuture
-                ? (lang === 'es' ? 'Próximo turno' : 'Next shift')
-                : (lang === 'es' ? 'Último turno' : 'Last shift');
-            const bg = isToday ? 'rgba(16,185,129,0.08)' : isFuture ? 'rgba(59,130,246,0.08)' : 'rgba(148,163,184,0.12)';
-            const border = isToday ? 'rgba(16,185,129,0.25)' : isFuture ? 'rgba(59,130,246,0.25)' : 'rgba(148,163,184,0.35)';
-            const fg = isToday ? '#047857' : isFuture ? '#1d4ed8' : '#475569';
-            return (
-              <div style={{
-                display: 'inline-flex', alignItems: 'center', gap: '10px',
-                padding: '8px 14px', marginBottom: '20px',
-                background: bg, border: `1px solid ${border}`,
-                borderRadius: '999px', color: fg,
-                fontSize: '13px', fontWeight: 600,
-              }}>
-                <Calendar size={14} />
-                <span style={{ textTransform: 'uppercase', letterSpacing: '0.08em', fontSize: '11px', fontWeight: 700, opacity: 0.8 }}>{prefix}</span>
-                <span style={{ opacity: 0.45 }}>·</span>
-                <span>{dateLabel}</span>
-              </div>
-            );
-          })()}
+          {/* ── Today's Shift Banner ──
+              Always today, no fallback to past/future. The Rooms tab is
+              a live view of "right now", not a per-date snapshot. */}
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', gap: '10px',
+            padding: '8px 14px', marginBottom: '20px',
+            background: 'rgba(16,185,129,0.08)',
+            border: '1px solid rgba(16,185,129,0.25)',
+            borderRadius: '999px', color: '#047857',
+            fontSize: '13px', fontWeight: 600,
+          }}>
+            <Calendar size={14} />
+            <span style={{ textTransform: 'uppercase', letterSpacing: '0.08em', fontSize: '11px', fontWeight: 700, opacity: 0.8 }}>
+              {lang === 'es' ? 'Turno de hoy' : "Today's shift"}
+            </span>
+            <span style={{ opacity: 0.45 }}>·</span>
+            <span>{format(new Date(today + 'T00:00:00'), 'EEEE, MMMM d')}</span>
+          </div>
 
           {/* ── Status Legend ── */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '32px', marginBottom: '40px', padding: '0 4px', flexWrap: 'wrap' }}>

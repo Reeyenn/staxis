@@ -28,6 +28,16 @@ export interface Property {
   pmsConnected?: boolean;
   lastSyncedAt?: Date | null;
   alertPhone?: string;          // E.164 phone for inventory critical SMS alerts; falls back to MANAGER_PHONE env var
+  /**
+   * Master list of every room number in the hotel ("101", "102", "205", …).
+   * Populated once at onboarding by the CUA worker (migration 0025), maintained
+   * by the property settings UI. The Housekeeping Rooms tab uses this as the
+   * canonical "what rooms exist" source so the board always renders all N
+   * rooms regardless of what Choice Advantage's daily CSV happens to include.
+   * Empty / undefined for properties that haven't been onboarded yet — callers
+   * should treat that as "fall back to whatever the rooms table contains."
+   */
+  roomInventory?: string[];
   createdAt: Date;
 }
 

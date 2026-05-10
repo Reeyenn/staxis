@@ -120,6 +120,14 @@ export function fromPropertyRow(r: Record<string, unknown>): Property {
     pmsConnected: (r.pms_connected as boolean) ?? undefined,
     lastSyncedAt: toDate(r.last_synced_at),
     alertPhone: (r.alert_phone as string) ?? undefined,
+    // room_inventory is a Postgres text[] of every room number in the hotel.
+    // Used by the Housekeeping Rooms tab to render all rooms even when the
+    // daily CA pull only mentions the dirty/occupied subset. Empty or null
+    // for un-onboarded properties — caller falls back to whatever's in the
+    // rooms table for that case.
+    roomInventory: Array.isArray(r.room_inventory)
+      ? (r.room_inventory as unknown[]).map((n) => String(n))
+      : undefined,
     createdAt: toDate(r.created_at) ?? new Date(),
   };
 }
