@@ -161,6 +161,9 @@ export interface InventoryItem {
   unitCost?: number;            // dollars per unit (drives Total Inventory Value + variance $)
   lastAlertedAt?: Date | null;  // when this item last triggered a critical SMS alert (24h dedupe)
   lastCountedAt?: Date | null;  // when current_stock was last manually changed (only bumps on count, NOT on metadata edits)
+  // Pack-size (cases ↔ units): null = sold individually
+  packSize?: number;            // units per case/box
+  caseUnit?: string;            // display label ("case", "box", "dozen") — purely cosmetic
 }
 
 // One row per item per Count Mode save. Powers reconciliation history and shrinkage trends.
@@ -185,13 +188,63 @@ export interface InventoryOrder {
   propertyId: string;
   itemId: string;
   itemName: string;
-  quantity: number;
+  quantity: number;             // resolved units (cases * pack_size when received in case form)
+  quantityCases?: number;       // case count when received in case form (null = received as units)
   unitCost?: number;
   totalCost?: number;           // quantity * unitCost
   vendorName?: string;
   orderedAt?: Date | null;
   receivedAt: Date | null;
   notes?: string;
+}
+
+// One row per discard event (stained linen, damaged goods, theft, lost). Tracked
+// separately from normal consumption so shrinkage shows up in $-terms and we can
+// flag anomalies (e.g. "you replaced 152 last month, only 18 this month").
+export type InventoryDiscardReason = 'stained' | 'damaged' | 'lost' | 'theft' | 'other';
+
+export interface InventoryDiscard {
+  id: string;
+  propertyId: string;
+  itemId: string;
+  itemName: string;             // snapshotted
+  quantity: number;
+  reason: InventoryDiscardReason;
+  costValue?: number;           // quantity * unitCost at discard time
+  unitCost?: number;            // snapshotted
+  discardedAt: Date | null;
+  discardedBy?: string;
+  notes?: string;
+}
+
+// One row per reconciliation event. The user enters a physical count, the system
+// snapshots its estimate, and we compute unaccounted variance in $-terms. This
+// is the trust layer the regional director asked for.
+export interface InventoryReconciliation {
+  id: string;
+  propertyId: string;
+  itemId: string;
+  itemName: string;
+  reconciledAt: Date | null;
+  physicalCount: number;
+  systemEstimate: number;
+  discardsSinceLast: number;
+  unaccountedVariance: number;          // physical - (estimate - discardsSinceLast); negative = unexplained loss
+  unaccountedVarianceValue?: number;    // variance * unitCost
+  unitCost?: number;
+  reconciledBy?: string;
+  notes?: string;
+}
+
+// One row per (property, category, month). Drives the budget headroom badge
+// on the Smart Reorder List and the Budget vs Actual block in the accounting view.
+export interface InventoryBudget {
+  propertyId: string;
+  category: InventoryCategory;
+  monthStart: Date | null;       // first day of the budget month (always normalised to UTC midnight)
+  budgetCents: number;
+  notes?: string;
+  updatedAt: Date | null;
 }
 
 // ─── Inspections ──────────────────────────────────────────────────────────

@@ -34,6 +34,9 @@ import type {
   InventoryItem,
   InventoryCount,
   InventoryOrder,
+  InventoryDiscard,
+  InventoryReconciliation,
+  InventoryBudget,
   Inspection,
   HandoffEntry,
   GuestRequest,
@@ -528,6 +531,8 @@ export function fromInventoryRow(r: Record<string, unknown>): InventoryItem {
     unitCost: r.unit_cost == null ? undefined : Number(r.unit_cost),
     lastAlertedAt: toDate(r.last_alerted_at),
     lastCountedAt: toDate(r.last_counted_at),
+    packSize: r.pack_size == null ? undefined : Number(r.pack_size),
+    caseUnit: (r.case_unit as string) ?? undefined,
   };
 }
 
@@ -549,6 +554,8 @@ export function toInventoryRow(i: Partial<InventoryItem>): Record<string, unknow
     unit_cost: i.unitCost,
     last_alerted_at: toISO(i.lastAlertedAt),
     last_counted_at: toISO(i.lastCountedAt),
+    pack_size: i.packSize,
+    case_unit: i.caseUnit,
   });
 }
 
@@ -595,6 +602,7 @@ export function fromInventoryOrderRow(r: Record<string, unknown>): InventoryOrde
     itemId: String(r.item_id ?? ''),
     itemName: String(r.item_name ?? ''),
     quantity: Number(r.quantity ?? 0),
+    quantityCases: r.quantity_cases == null ? undefined : Number(r.quantity_cases),
     unitCost: r.unit_cost == null ? undefined : Number(r.unit_cost),
     totalCost: r.total_cost == null ? undefined : Number(r.total_cost),
     vendorName: (r.vendor_name as string) ?? undefined,
@@ -610,12 +618,110 @@ export function toInventoryOrderRow(o: Partial<InventoryOrder>): Record<string, 
     item_id: o.itemId,
     item_name: o.itemName,
     quantity: o.quantity,
+    quantity_cases: o.quantityCases,
     unit_cost: o.unitCost,
     total_cost: o.totalCost,
     vendor_name: o.vendorName,
     ordered_at: toISO(o.orderedAt),
     received_at: toISO(o.receivedAt),
     notes: o.notes,
+  });
+}
+
+// ─── Inventory discard (stained linen / damaged / lost / theft) ─────────────
+
+export function fromInventoryDiscardRow(r: Record<string, unknown>): InventoryDiscard {
+  return {
+    id: String(r.id),
+    propertyId: String(r.property_id ?? ''),
+    itemId: String(r.item_id ?? ''),
+    itemName: String(r.item_name ?? ''),
+    quantity: Number(r.quantity ?? 0),
+    reason: (r.reason as InventoryDiscard['reason']) ?? 'other',
+    costValue: r.cost_value == null ? undefined : Number(r.cost_value),
+    unitCost: r.unit_cost == null ? undefined : Number(r.unit_cost),
+    discardedAt: toDate(r.discarded_at),
+    discardedBy: (r.discarded_by as string) ?? undefined,
+    notes: (r.notes as string) ?? undefined,
+  };
+}
+
+export function toInventoryDiscardRow(d: Partial<InventoryDiscard>): Record<string, unknown> {
+  return dropUndefined({
+    property_id: d.propertyId,
+    item_id: d.itemId,
+    item_name: d.itemName,
+    quantity: d.quantity,
+    reason: d.reason,
+    cost_value: d.costValue,
+    unit_cost: d.unitCost,
+    discarded_at: toISO(d.discardedAt),
+    discarded_by: d.discardedBy,
+    notes: d.notes,
+  });
+}
+
+// ─── Inventory reconciliation (physical recount with $-variance) ────────────
+
+export function fromInventoryReconciliationRow(r: Record<string, unknown>): InventoryReconciliation {
+  return {
+    id: String(r.id),
+    propertyId: String(r.property_id ?? ''),
+    itemId: String(r.item_id ?? ''),
+    itemName: String(r.item_name ?? ''),
+    reconciledAt: toDate(r.reconciled_at),
+    physicalCount: Number(r.physical_count ?? 0),
+    systemEstimate: Number(r.system_estimate ?? 0),
+    discardsSinceLast: Number(r.discards_since_last ?? 0),
+    unaccountedVariance: Number(r.unaccounted_variance ?? 0),
+    unaccountedVarianceValue: r.unaccounted_variance_value == null ? undefined : Number(r.unaccounted_variance_value),
+    unitCost: r.unit_cost == null ? undefined : Number(r.unit_cost),
+    reconciledBy: (r.reconciled_by as string) ?? undefined,
+    notes: (r.notes as string) ?? undefined,
+  };
+}
+
+export function toInventoryReconciliationRow(r: Partial<InventoryReconciliation>): Record<string, unknown> {
+  return dropUndefined({
+    property_id: r.propertyId,
+    item_id: r.itemId,
+    item_name: r.itemName,
+    reconciled_at: toISO(r.reconciledAt),
+    physical_count: r.physicalCount,
+    system_estimate: r.systemEstimate,
+    discards_since_last: r.discardsSinceLast,
+    unaccounted_variance: r.unaccountedVariance,
+    unaccounted_variance_value: r.unaccountedVarianceValue,
+    unit_cost: r.unitCost,
+    reconciled_by: r.reconciledBy,
+    notes: r.notes,
+  });
+}
+
+// ─── Inventory budget (per-property × category × month) ─────────────────────
+
+export function fromInventoryBudgetRow(r: Record<string, unknown>): InventoryBudget {
+  return {
+    propertyId: String(r.property_id ?? ''),
+    category: (r.category as InventoryBudget['category']) ?? 'housekeeping',
+    monthStart: toDate(r.month_start),
+    budgetCents: Number(r.budget_cents ?? 0),
+    notes: (r.notes as string) ?? undefined,
+    updatedAt: toDate(r.updated_at),
+  };
+}
+
+export function toInventoryBudgetRow(b: Partial<InventoryBudget>): Record<string, unknown> {
+  return dropUndefined({
+    property_id: b.propertyId,
+    category: b.category,
+    // month_start is a DATE column — serialise as YYYY-MM-DD (UTC) so we don't
+    // accidentally drift to the previous day in negative-offset timezones.
+    month_start: b.monthStart instanceof Date
+      ? b.monthStart.toISOString().slice(0, 10)
+      : (b.monthStart === null ? null : undefined),
+    budget_cents: b.budgetCents,
+    notes: b.notes,
   });
 }
 

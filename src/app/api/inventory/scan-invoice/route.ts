@@ -34,7 +34,9 @@ interface ExtractedInvoice {
   invoice_number: string | null;
   items: Array<{
     item_name: string;
-    quantity: number;
+    quantity: number;          // resolved units (cases × pack_size when applicable)
+    quantity_cases: number | null;
+    pack_size: number | null;  // hint for the user when they wire a new item
     unit_cost: number | null;
     total_cost: number | null;
   }>;
@@ -51,9 +53,17 @@ const PROMPT = `Extract all line items from this invoice or receipt.
 
 For each item return:
 - item_name (string)
-- quantity (number)
-- unit_cost (number, per unit price; use null if not visible)
+- quantity (number, total individual units received — see case logic below)
+- quantity_cases (number, count of cases/boxes on this line; null if line is in individual units)
+- pack_size (number, units per case if visible on the line — e.g. "Case of 36"; null if not specified)
+- unit_cost (number, per-unit price; use null if not visible)
 - total_cost (number, line total; use null if not visible)
+
+CASE LOGIC (this is critical for hotel inventory):
+- Hotel invoices often list items in cases, boxes, or dozens with a pack size (e.g. "3 cases @ 36/case", "Box of 24", "1 dozen").
+- When the line is in case form: set quantity_cases = N, pack_size = units-per-case, quantity = N × pack_size.
+- When the line is in individual units: set quantity = N, quantity_cases = null, pack_size = null.
+- If pack size is implied by phrasing ("dozen" = 12, "gross" = 144) infer it.
 
 Also extract:
 - vendor_name (string, or null)
@@ -66,7 +76,7 @@ Return ONLY a JSON object with this exact shape, no prose, no code fences:
   "invoice_date": "YYYY-MM-DD",
   "invoice_number": "...",
   "items": [
-    { "item_name": "...", "quantity": 0, "unit_cost": 0, "total_cost": 0 }
+    { "item_name": "...", "quantity": 108, "quantity_cases": 3, "pack_size": 36, "unit_cost": 0, "total_cost": 0 }
   ]
 }
 
@@ -114,12 +124,26 @@ export async function POST(req: NextRequest) {
       const n = Number(v);
       return Number.isFinite(n) ? n : null;
     };
+    const safeIntOrNull = (v: unknown): number | null => {
+      const n = safeNumOrNull(v);
+      return n == null ? null : Math.max(0, Math.trunc(n));
+    };
     const items = (Array.isArray(result.items) ? result.items : [])
       .map(it => {
-        const qtyRaw = Number(it.quantity ?? 0);
+        const qtyCases = safeIntOrNull(it.quantity_cases);
+        const packSize = safeIntOrNull(it.pack_size);
+        // If the model gave us cases + pack size but a stale quantity (or
+        // forgot to multiply), prefer the resolved math.
+        const declaredQty = Number(it.quantity ?? 0);
+        const computedQty = qtyCases != null && packSize != null && packSize > 0
+          ? qtyCases * packSize
+          : null;
+        const qtyRaw = computedQty ?? declaredQty;
         return {
           item_name: String(it.item_name ?? '').trim(),
           quantity: Number.isFinite(qtyRaw) ? Math.max(0, qtyRaw) : 0,
+          quantity_cases: qtyCases,
+          pack_size: packSize,
           unit_cost: safeNumOrNull(it.unit_cost),
           total_cost: safeNumOrNull(it.total_cost),
         };

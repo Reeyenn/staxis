@@ -9,10 +9,14 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import {
   subscribeToInventory, addInventoryItem, updateInventoryItem, deleteInventoryItem,
   addInventoryCountBatch, addInventoryOrder, listInventoryCounts, listInventoryOrders,
+  addInventoryDiscard, sumDiscardsSince,
+  addInventoryReconciliation, lastReconciliationByItem,
+  listInventoryBudgets, upsertInventoryBudget, monthToDateSpendByCategory,
 } from '@/lib/db';
+import type { InventoryDiscardReason, InventoryReconciliation } from '@/types';
 import { fetchOccupancyBundle, computeOccupancyForItem, calculateEstimatedStock, type OccupancyBundle } from '@/lib/inventory-estimate';
 import {
-  fetchDailyAverages, predictReorders, predictionByItem,
+  fetchDailyAverages, predictReorders, predictionByItem, computeBudgetStatuses,
   type DailyAverages, type PredictionResult,
 } from '@/lib/inventory-predictions';
 import { supabase } from '@/lib/supabase';
@@ -110,6 +114,9 @@ export default function InventoryPage() {
   const [toast, setToast] = useState<string | null>(null);
   const [reconciliation, setReconciliation] = useState<ReconciliationData | null>(null);
   const [orderPrompt, setOrderPrompt] = useState<OrderPromptData | null>(null);
+  const [discardItem, setDiscardItem] = useState<InventoryItem | null>(null);
+  const [reconcileItem, setReconcileItem] = useState<InventoryItem | null>(null);
+  const [showBudgetSettings, setShowBudgetSettings] = useState(false);
 
   const seededRef = useRef(false);
 
@@ -598,6 +605,31 @@ export default function InventoryPage() {
                 <BarChart3 size={13} />
                 {lang === 'es' ? 'Analíticas' : 'Analytics'}
               </Link>
+              <Link
+                href="/inventory/accounting"
+                style={{
+                  background: 'transparent', color: '#364262', border: '1px solid #c5c5d4',
+                  padding: '8px 16px', borderRadius: '9999px',
+                  fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
+                  textDecoration: 'none',
+                }}
+              >
+                <DollarSign size={13} />
+                {lang === 'es' ? 'Contabilidad' : 'Accounting'}
+              </Link>
+              <button
+                onClick={() => setShowBudgetSettings(true)}
+                style={{
+                  background: 'transparent', color: '#364262', border: '1px solid #c5c5d4',
+                  padding: '8px 16px', borderRadius: '9999px',
+                  fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
+                }}
+              >
+                <Settings size={13} />
+                {lang === 'es' ? 'Presupuestos' : 'Budgets'}
+              </button>
               <button
                 onClick={() => setShowScanInvoice(true)}
                 style={{
@@ -817,6 +849,50 @@ export default function InventoryPage() {
           onClose={() => setEditItem(null)}
           onSaved={() => { setEditItem(null); showToast(lang === 'es' ? 'Artículo actualizado ✓' : 'Item updated ✓'); }}
           onDeleted={() => { setEditItem(null); showToast(lang === 'es' ? 'Artículo eliminado ✓' : 'Item deleted ✓'); }}
+          onDiscard={() => { const it = editItem; setEditItem(null); setDiscardItem(it); }}
+          onReconcile={() => { const it = editItem; setEditItem(null); setReconcileItem(it); }}
+        />
+      )}
+
+      {/* Discard */}
+      {discardItem && (
+        <DiscardModal
+          item={discardItem}
+          uid={user.uid}
+          pid={activePropertyId}
+          lang={lang}
+          onClose={() => setDiscardItem(null)}
+          onSaved={(qty) => {
+            setDiscardItem(null);
+            showToast(lang === 'es' ? `${qty} descartado(s) registrado(s) ✓` : `${qty} discard(s) logged ✓`);
+          }}
+        />
+      )}
+
+      {/* Reconcile */}
+      {reconcileItem && (
+        <ReconcileModal
+          item={reconcileItem}
+          uid={user.uid}
+          pid={activePropertyId}
+          lang={lang}
+          estimatedStockNow={effectiveStock(reconcileItem)}
+          onClose={() => setReconcileItem(null)}
+          onSaved={() => {
+            setReconcileItem(null);
+            showToast(lang === 'es' ? 'Reconciliación guardada ✓' : 'Reconciliation saved ✓');
+          }}
+        />
+      )}
+
+      {/* Budget Settings */}
+      {showBudgetSettings && (
+        <BudgetSettingsModal
+          uid={user.uid}
+          pid={activePropertyId}
+          lang={lang}
+          onClose={() => setShowBudgetSettings(false)}
+          onSaved={() => { setShowBudgetSettings(false); showToast(lang === 'es' ? 'Presupuestos actualizados ✓' : 'Budgets updated ✓'); }}
         />
       )}
 
@@ -858,6 +934,7 @@ export default function InventoryPage() {
             showToast(lang === 'es' ? `Pedido registrado: ${itemName}` : `Order logged: ${itemName}`);
           }}
           showToast={showToast}
+          onOpenBudgets={() => { setShowReorderList(false); setShowBudgetSettings(true); }}
         />
       )}
 
@@ -1467,7 +1544,10 @@ function OrderLoggingModal({
   onAdvance: (nextIdx: number) => void;
 }) {
   const current = rows[index];
+  const packSize = current.item.packSize ?? null;
+  const caseLabel = current.item.caseUnit?.trim() || 'case';
   const [quantity, setQuantity] = useState(String(current.delta));
+  const [cases, setCases] = useState('');                 // case-form input; resolves into quantity
   const [unitCost, setUnitCost] = useState(current.item.unitCost != null ? String(current.item.unitCost) : '');
   const [vendor, setVendor] = useState(current.item.vendorName ?? '');
   const [notes, setNotes] = useState('');
@@ -1476,21 +1556,33 @@ function OrderLoggingModal({
   // Reset when index changes
   useEffect(() => {
     setQuantity(String(current.delta));
+    setCases('');
     setUnitCost(current.item.unitCost != null ? String(current.item.unitCost) : '');
     setVendor(current.item.vendorName ?? '');
     setNotes('');
   }, [current]);
 
+  // When the user types into the case field, recompute the resolved unit qty.
+  const handleCasesChange = (v: string) => {
+    setCases(v);
+    if (v.trim() === '' || packSize == null) return;
+    const n = parseInt(v);
+    if (!Number.isFinite(n) || n < 0) return;
+    setQuantity(String(n * packSize));
+  };
+
   const handleConfirm = async () => {
     setSaving(true);
     try {
       const qty = parseFloat(quantity) || 0;
+      const casesNum = cases.trim() === '' ? undefined : parseInt(cases);
       const cost = unitCost.trim() === '' ? undefined : parseFloat(unitCost);
       await addInventoryOrder(uid, pid, {
         propertyId: pid,
         itemId: current.item.id,
         itemName: current.item.name,
         quantity: qty,
+        quantityCases: Number.isFinite(casesNum) && (casesNum ?? 0) > 0 ? casesNum : undefined,
         unitCost: cost,
         vendorName: vendor.trim() || undefined,
         receivedAt: new Date(),
@@ -1542,12 +1634,34 @@ function OrderLoggingModal({
           </p>
         </div>
 
-        <div>
-          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>
-            {lang === 'es' ? 'Cantidad recibida' : 'Quantity received'}
-          </label>
-          <input type="number" min="0" value={quantity} onChange={e => setQuantity(e.target.value)} style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
-        </div>
+        {packSize != null && packSize > 0 ? (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+            <div>
+              <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>
+                {lang === 'es' ? `${caseLabel === 'case' ? 'Cajas' : caseLabel} recibidas` : `${caseLabel.charAt(0).toUpperCase() + caseLabel.slice(1)}s received`}
+              </label>
+              <input
+                type="number" min="0" value={cases}
+                onChange={e => handleCasesChange(e.target.value)}
+                style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }}
+                placeholder={lang === 'es' ? `1 ${caseLabel === 'case' ? 'caja' : caseLabel} = ${packSize} unidades` : `1 ${caseLabel} = ${packSize} ${current.item.unit || 'units'}`}
+              />
+            </div>
+            <div>
+              <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>
+                {lang === 'es' ? 'Total unidades' : 'Total units'}
+              </label>
+              <input type="number" min="0" value={quantity} onChange={e => { setQuantity(e.target.value); setCases(''); }} style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
+            </div>
+          </div>
+        ) : (
+          <div>
+            <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>
+              {lang === 'es' ? 'Cantidad recibida' : 'Quantity received'}
+            </label>
+            <input type="number" min="0" value={quantity} onChange={e => setQuantity(e.target.value)} style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
+          </div>
+        )}
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
           <div>
@@ -2002,7 +2116,7 @@ interface ReorderRow {
 
 function ReorderListModal({
   items, predictions, effectiveStockOf, dailyAverages,
-  uid, pid, lang, onClose, showToast,
+  uid, pid, lang, onClose, showToast, onOpenBudgets,
 }: {
   items: InventoryItem[];
   predictions: Map<string, PredictionResult>;
@@ -2014,6 +2128,7 @@ function ReorderListModal({
   onClose: () => void;
   onLogged: (itemName: string) => void;
   showToast: (msg: string) => void;
+  onOpenBudgets: () => void;
 }) {
   const rows = useMemo<ReorderRow[]>(() => {
     return items
@@ -2042,6 +2157,31 @@ function ReorderListModal({
 
   const [openInline, setOpenInline] = useState<string | null>(null);
   const [showUpcoming, setShowUpcoming] = useState(false);
+
+  // Budget headroom strip — fetched on mount.
+  const [budgetStrip, setBudgetStrip] = useState<Array<{ category: InventoryCategory; budgetCents: number | null; spentCents: number; remainingCents: number | null }>>([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const now = new Date();
+        const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+        const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+        const [budgets, spend] = await Promise.all([
+          listInventoryBudgets(uid, pid, start),
+          monthToDateSpendByCategory(uid, pid, start, next),
+        ]);
+        if (cancelled) return;
+        const budgetMap: Partial<Record<InventoryCategory, number>> = {};
+        for (const b of budgets) budgetMap[b.category] = b.budgetCents;
+        const statuses = computeBudgetStatuses(spend, budgetMap);
+        setBudgetStrip([statuses.housekeeping, statuses.maintenance, statuses.breakfast]);
+      } catch (err) {
+        console.error('[reorder] budget load failed', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [uid, pid]);
 
   const handleExport = useCallback(async () => {
     const lines: string[] = [];
@@ -2108,6 +2248,62 @@ function ReorderListModal({
           </div>
           <button onClick={onClose} style={{ background: '#eae8e3', border: 'none', cursor: 'pointer', padding: '8px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <span style={{ fontSize: '16px', color: '#454652', lineHeight: 1 }}>✕</span>
+          </button>
+        </div>
+
+        {/* Budget headroom strip */}
+        <div style={{
+          padding: '10px 24px', borderBottom: '1px solid rgba(197,197,212,0.2)',
+          background: '#f5f3ee',
+          display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap',
+        }}>
+          <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 700, color: '#454652', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+            {lang === 'es' ? 'Presupuesto' : 'Budget'}
+          </span>
+          {budgetStrip.map(b => {
+            const label = b.category === 'housekeeping'
+              ? (lang === 'es' ? 'Limpieza' : 'Housekeeping')
+              : b.category === 'maintenance'
+                ? (lang === 'es' ? 'Mant.' : 'Maint.')
+                : (lang === 'es' ? 'Desayuno' : 'Breakfast');
+            if (b.budgetCents == null) {
+              return (
+                <span key={b.category} style={{
+                  fontFamily: "'Inter', sans-serif", fontSize: '11px',
+                  padding: '4px 10px', borderRadius: '9999px',
+                  background: '#eae8e3', color: '#757684',
+                }}>
+                  {label}: {lang === 'es' ? 'sin definir' : 'not set'}
+                </span>
+              );
+            }
+            const remaining = b.remainingCents ?? 0;
+            const overrun = remaining < 0;
+            const tone = overrun
+              ? { bg: 'rgba(186,26,26,0.1)', fg: '#ba1a1a' }
+              : remaining < (b.budgetCents * 0.2)
+                ? { bg: 'rgba(201,138,20,0.12)', fg: '#7a5400' }
+                : { bg: 'rgba(0,101,101,0.08)', fg: '#006565' };
+            return (
+              <span key={b.category} style={{
+                fontFamily: "'Inter', sans-serif", fontSize: '11px',
+                padding: '4px 10px', borderRadius: '9999px',
+                background: tone.bg, color: tone.fg, fontWeight: 600,
+              }}>
+                {label}: ${(remaining / 100).toFixed(0)} / ${(b.budgetCents / 100).toFixed(0)}
+              </span>
+            );
+          })}
+          <button
+            onClick={onOpenBudgets}
+            style={{
+              marginLeft: 'auto', background: 'transparent', border: 'none', cursor: 'pointer',
+              color: '#006565', fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600,
+              display: 'flex', alignItems: 'center', gap: '4px',
+            }}
+          >
+            <Settings size={11} />
+            {lang === 'es' ? 'Editar' : 'Edit'}
           </button>
         </div>
 
@@ -3009,7 +3205,9 @@ function ImagePickerStage({ lang, onPicked, onUnsupported, accept = 'image/*' }:
 
 interface ExtractedLine {
   item_name: string;
-  quantity: number;
+  quantity: number;                    // resolved units
+  quantity_cases: number | null;       // case count (null when received as units)
+  pack_size: number | null;            // units per case (null when not specified)
   unit_cost: number | null;
   total_cost: number | null;
 }
@@ -3019,8 +3217,10 @@ interface ConfirmRow {
   enabled: boolean;
   matchedItemId: string | 'new' | '';  // '' = unmatched, 'new' = create-new
   matchedNewName: string;              // used when 'new'
-  qty: string;                          // string for input
+  qty: string;                          // string for input — resolved units
   unitCost: string;
+  quantityCases: number | null;         // carried through to inventory_orders so we can show "received 3 cases"
+  packSizeHint: number | null;          // hint for "create new" path so the new item gets pack_size populated
 }
 
 function ScanInvoiceModal({ items, uid, pid, lang, onClose, showToast }: {
@@ -3099,6 +3299,8 @@ function ScanInvoiceModal({ items, uid, pid, lang, onClose, showToast }: {
           matchedNewName: line.item_name,
           qty: String(line.quantity),
           unitCost: line.unit_cost != null ? String(line.unit_cost) : '',
+          quantityCases: line.quantity_cases ?? null,
+          packSizeHint: line.pack_size ?? null,
         };
       }));
       setStage('confirm');
@@ -3135,6 +3337,8 @@ function ScanInvoiceModal({ items, uid, pid, lang, onClose, showToast }: {
             unit: 'units',
             unitCost: unitCostNum,
             vendorName: vendorName || undefined,
+            // Carry pack-size from the invoice so "Bath Towels 36/case" fills in automatically.
+            packSize: row.packSizeHint ?? undefined,
           });
           itemId = created;
           logged++;
@@ -3158,6 +3362,7 @@ function ScanInvoiceModal({ items, uid, pid, lang, onClose, showToast }: {
           itemId,
           itemName: row.matchedNewName || row.raw.item_name,
           quantity: qty,
+          quantityCases: row.quantityCases ?? undefined,
           unitCost: unitCostNum,
           vendorName: vendorName || undefined,
           receivedAt: invoiceDate ? new Date(invoiceDate) : new Date(),
@@ -3586,6 +3791,8 @@ function AddItemModal({ isOpen, onClose, uid, pid, lang, onAdded }: {
   const [perStayover, setPerStayover] = useState('');
   const [vendor, setVendor] = useState('');
   const [leadDays, setLeadDays] = useState('');
+  const [packSize, setPackSize] = useState('');
+  const [caseUnit, setCaseUnit] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [saving, setSaving] = useState(false);
   const [openInfo, setOpenInfo] = useState<string | null>(null);
@@ -3607,11 +3814,14 @@ function AddItemModal({ isOpen, onClose, uid, pid, lang, onAdded }: {
         usagePerStayover: perStayover.trim() === '' ? undefined : parseFloat(perStayover),
         vendorName: vendor.trim() || undefined,
         reorderLeadDays: leadDays.trim() === '' ? undefined : parseInt(leadDays),
+        packSize: packSize.trim() === '' ? undefined : Math.max(1, parseInt(packSize) || 0),
+        caseUnit: caseUnit.trim() || undefined,
       });
       onAdded();
       onClose();
       setName(''); setStock('0'); setTarget('100'); setReorderAt('30');
       setUnitCost(''); setPerCheckout(''); setPerStayover(''); setVendor(''); setLeadDays('');
+      setPackSize(''); setCaseUnit('');
       setShowAdvanced(false);
     } finally {
       setSaving(false);
@@ -3728,6 +3938,8 @@ function AddItemModal({ isOpen, onClose, uid, pid, lang, onAdded }: {
             perStayover={perStayover} setPerStayover={setPerStayover}
             vendor={vendor} setVendor={setVendor}
             leadDays={leadDays} setLeadDays={setLeadDays}
+            packSize={packSize} setPackSize={setPackSize}
+            caseUnit={caseUnit} setCaseUnit={setCaseUnit}
             openInfo={openInfo} setOpenInfo={setOpenInfo}
           />
         )}
@@ -3753,7 +3965,7 @@ function AddItemModal({ isOpen, onClose, uid, pid, lang, onAdded }: {
 
 // ─── Edit Item Modal ─────────────────────────────────────────────────────────
 
-function EditItemModal({ item, uid, pid, lang, onClose, onSaved, onDeleted }: {
+function EditItemModal({ item, uid, pid, lang, onClose, onSaved, onDeleted, onDiscard, onReconcile }: {
   item: InventoryItem;
   uid: string;
   pid: string;
@@ -3761,6 +3973,8 @@ function EditItemModal({ item, uid, pid, lang, onClose, onSaved, onDeleted }: {
   onClose: () => void;
   onSaved: () => void;
   onDeleted: () => void;
+  onDiscard: () => void;
+  onReconcile: () => void;
 }) {
   const [name, setName] = useState(item.name);
   const [category, setCategory] = useState<InventoryCategory>(item.category);
@@ -3772,9 +3986,11 @@ function EditItemModal({ item, uid, pid, lang, onClose, onSaved, onDeleted }: {
   const [perStayover, setPerStayover] = useState(item.usagePerStayover != null ? String(item.usagePerStayover) : '');
   const [vendor, setVendor] = useState(item.vendorName ?? '');
   const [leadDays, setLeadDays] = useState(item.reorderLeadDays != null ? String(item.reorderLeadDays) : '');
+  const [packSize, setPackSize] = useState(item.packSize != null ? String(item.packSize) : '');
+  const [caseUnit, setCaseUnit] = useState(item.caseUnit ?? '');
   const [showAdvanced, setShowAdvanced] = useState(
     item.unitCost != null || item.usagePerCheckout != null || item.usagePerStayover != null ||
-    !!item.vendorName || item.reorderLeadDays != null
+    !!item.vendorName || item.reorderLeadDays != null || item.packSize != null
   );
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -3795,6 +4011,8 @@ function EditItemModal({ item, uid, pid, lang, onClose, onSaved, onDeleted }: {
         usagePerStayover: perStayover.trim() === '' ? undefined : parseFloat(perStayover),
         vendorName: vendor.trim() || undefined,
         reorderLeadDays: leadDays.trim() === '' ? undefined : parseInt(leadDays),
+        packSize: packSize.trim() === '' ? undefined : Math.max(1, parseInt(packSize) || 0),
+        caseUnit: caseUnit.trim() || undefined,
       });
       onSaved();
     } finally {
@@ -3922,9 +4140,40 @@ function EditItemModal({ item, uid, pid, lang, onClose, onSaved, onDeleted }: {
             perStayover={perStayover} setPerStayover={setPerStayover}
             vendor={vendor} setVendor={setVendor}
             leadDays={leadDays} setLeadDays={setLeadDays}
+            packSize={packSize} setPackSize={setPackSize}
+            caseUnit={caseUnit} setCaseUnit={setCaseUnit}
             openInfo={openInfo} setOpenInfo={setOpenInfo}
           />
         )}
+
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button
+            type="button"
+            onClick={onDiscard}
+            style={{
+              flex: 1, padding: '10px 14px', border: '1px solid #c5c5d4',
+              borderRadius: '9999px', cursor: 'pointer', background: '#fff',
+              color: '#454652', fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+            }}
+          >
+            <TrendingDown size={13} />
+            {lang === 'es' ? 'Marcar Descartado' : 'Mark Discarded'}
+          </button>
+          <button
+            type="button"
+            onClick={onReconcile}
+            style={{
+              flex: 1, padding: '10px 14px', border: '1px solid #c5c5d4',
+              borderRadius: '9999px', cursor: 'pointer', background: '#fff',
+              color: '#454652', fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+            }}
+          >
+            <ClipboardCheck size={13} />
+            {lang === 'es' ? 'Reconciliar' : 'Reconcile'}
+          </button>
+        </div>
 
         <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
           <button
@@ -3964,7 +4213,7 @@ function EditItemModal({ item, uid, pid, lang, onClose, onSaved, onDeleted }: {
 
 function AdvancedFields({
   lang, unitCost, setUnitCost, perCheckout, setPerCheckout, perStayover, setPerStayover,
-  vendor, setVendor, leadDays, setLeadDays, openInfo, setOpenInfo,
+  vendor, setVendor, leadDays, setLeadDays, packSize, setPackSize, caseUnit, setCaseUnit, openInfo, setOpenInfo,
 }: {
   lang: 'en' | 'es';
   unitCost: string; setUnitCost: (v: string) => void;
@@ -3972,6 +4221,8 @@ function AdvancedFields({
   perStayover: string; setPerStayover: (v: string) => void;
   vendor: string; setVendor: (v: string) => void;
   leadDays: string; setLeadDays: (v: string) => void;
+  packSize: string; setPackSize: (v: string) => void;
+  caseUnit: string; setCaseUnit: (v: string) => void;
   openInfo: string | null; setOpenInfo: (v: string | null) => void;
 }) {
   const inputStyle: React.CSSProperties = {
@@ -4032,6 +4283,25 @@ function AdvancedFields({
           <input value={vendor} onChange={e => setVendor(e.target.value)} placeholder="—" style={inputStyle} />
         </FieldWithInfo>
       </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+        <FieldWithInfo
+          label={lang === 'es' ? 'Tamaño de Caja' : 'Pack Size'}
+          tooltip={lang === 'es' ? 'Unidades por caja. Si recibe "3 cajas de 36", deja que el sistema haga la matemática.' : 'Units per case/box. When set, receiving "3 cases" auto-resolves to N × pack-size units.'}
+          isOpen={openInfo === 'pack'}
+          onToggle={() => setOpenInfo(openInfo === 'pack' ? null : 'pack')}
+        >
+          <input type="number" min="1" value={packSize} onChange={e => setPackSize(e.target.value)} placeholder="—" style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
+        </FieldWithInfo>
+        <FieldWithInfo
+          label={lang === 'es' ? 'Etiqueta de Caja' : 'Pack Label'}
+          tooltip={lang === 'es' ? 'Cómo llamar la caja en la UI ("caja", "docena").' : 'Display label for the pack ("case", "box", "dozen"). Cosmetic only — math comes from Pack Size.'}
+          isOpen={openInfo === 'caseunit'}
+          onToggle={() => setOpenInfo(openInfo === 'caseunit' ? null : 'caseunit')}
+        >
+          <input value={caseUnit} onChange={e => setCaseUnit(e.target.value)} placeholder={lang === 'es' ? 'caja' : 'case'} style={inputStyle} />
+        </FieldWithInfo>
+      </div>
     </div>
   );
 }
@@ -4076,6 +4346,514 @@ function FieldWithInfo({ label, tooltip, isOpen, onToggle, children }: {
           {tooltip}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Discard Modal ──────────────────────────────────────────────────────────
+//
+// Logs a discard event (stained linen, damaged, lost, theft). Decrements
+// current_stock too — the discard is removing real inventory from the floor.
+
+function DiscardModal({ item, uid, pid, lang, onClose, onSaved }: {
+  item: InventoryItem;
+  uid: string;
+  pid: string;
+  lang: 'en' | 'es';
+  onClose: () => void;
+  onSaved: (qty: number) => void;
+}) {
+  const [quantity, setQuantity] = useState('');
+  const [reason, setReason] = useState<InventoryDiscardReason>('stained');
+  const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '12px 16px', borderRadius: '16px',
+    border: '1px solid #c5c5d4', background: '#fff',
+    fontFamily: "'Inter', sans-serif", fontSize: '14px', color: '#1b1c19',
+    outline: 'none',
+  };
+
+  const reasons: { value: InventoryDiscardReason; en: string; es: string }[] = [
+    { value: 'stained', en: 'Stained', es: 'Manchado' },
+    { value: 'damaged', en: 'Damaged', es: 'Dañado' },
+    { value: 'lost', en: 'Lost', es: 'Perdido' },
+    { value: 'theft', en: 'Theft', es: 'Robo' },
+    { value: 'other', en: 'Other', es: 'Otro' },
+  ];
+
+  const qty = parseInt(quantity) || 0;
+  const costImpact = item.unitCost != null ? qty * item.unitCost : null;
+  const canSave = qty > 0 && qty <= item.currentStock && !saving;
+
+  const handleSave = async () => {
+    if (!canSave) return;
+    setSaving(true);
+    try {
+      await addInventoryDiscard(uid, pid, {
+        propertyId: pid,
+        itemId: item.id,
+        itemName: item.name,
+        quantity: qty,
+        reason,
+        unitCost: item.unitCost ?? undefined,
+        costValue: costImpact ?? undefined,
+        discardedAt: new Date(),
+        notes: notes.trim() || undefined,
+      });
+      // Decrement current_stock so the inventory reflects reality. Don't bump
+      // last_counted_at — discards aren't counts.
+      await updateInventoryItem(uid, pid, item.id, {
+        currentStock: Math.max(0, item.currentStock - qty),
+        lastCountedAt: item.lastCountedAt ?? undefined,
+      });
+      onSaved(qty);
+    } catch (err) {
+      console.error('[discard] save failed', err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 60,
+        background: 'rgba(27,28,25,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
+      }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{
+        width: '100%', maxWidth: '460px', background: '#fbf9f4', borderRadius: '24px',
+        padding: '24px', display: 'flex', flexDirection: 'column', gap: '14px',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <h2 style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: '17px', color: '#1b1c19', margin: 0 }}>
+              {lang === 'es' ? 'Marcar como Descartado' : 'Mark as Discarded'}
+            </h2>
+            <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#757684', margin: '4px 0 0' }}>
+              <strong>{item.name}</strong> — {item.currentStock} {item.unit} {lang === 'es' ? 'en stock' : 'on hand'}
+            </p>
+          </div>
+          <button onClick={onClose} style={{ background: '#eae8e3', border: 'none', cursor: 'pointer', padding: '8px', borderRadius: '50%' }}>
+            <XIcon size={14} color="#454652" />
+          </button>
+        </div>
+
+        <div>
+          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>
+            {lang === 'es' ? 'Cantidad' : 'Quantity'}
+          </label>
+          <input type="number" min="0" max={item.currentStock} value={quantity} onChange={e => setQuantity(e.target.value)} style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
+          {qty > item.currentStock && (
+            <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#ba1a1a', margin: '4px 0 0' }}>
+              {lang === 'es' ? `Solo hay ${item.currentStock} en stock.` : `Only ${item.currentStock} on hand.`}
+            </p>
+          )}
+        </div>
+
+        <div>
+          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>
+            {lang === 'es' ? 'Motivo' : 'Reason'}
+          </label>
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+            {reasons.map(r => (
+              <button
+                key={r.value}
+                type="button"
+                onClick={() => setReason(r.value)}
+                style={{
+                  padding: '8px 14px', borderRadius: '9999px', border: 'none',
+                  fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, cursor: 'pointer',
+                  background: reason === r.value ? '#006565' : '#f0eee9',
+                  color: reason === r.value ? '#fff' : '#454652',
+                }}
+              >
+                {lang === 'es' ? r.es : r.en}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>
+            {lang === 'es' ? 'Notas' : 'Notes'}
+          </label>
+          <input value={notes} onChange={e => setNotes(e.target.value)} style={inputStyle} placeholder={lang === 'es' ? 'Opcional' : 'Optional'} />
+        </div>
+
+        {costImpact != null && qty > 0 && (
+          <div style={{
+            padding: '12px 14px', background: 'rgba(186,26,26,0.06)', borderRadius: '12px',
+            fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#ba1a1a',
+            display: 'flex', alignItems: 'center', gap: '8px',
+          }}>
+            <DollarSign size={14} />
+            {lang === 'es' ? `Pérdida estimada: $${costImpact.toFixed(2)}` : `Loss value: $${costImpact.toFixed(2)}`}
+          </div>
+        )}
+
+        <button
+          onClick={handleSave}
+          disabled={!canSave}
+          style={{
+            padding: '14px', border: 'none', borderRadius: '9999px',
+            background: canSave ? '#364262' : '#eae8e3',
+            color: canSave ? '#fff' : '#757684',
+            fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 600,
+            cursor: canSave ? 'pointer' : 'not-allowed', minHeight: '50px',
+          }}
+        >
+          {saving
+            ? (lang === 'es' ? 'Guardando...' : 'Saving...')
+            : (lang === 'es' ? 'Registrar Descarte' : 'Log Discard')}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Reconcile Modal ────────────────────────────────────────────────────────
+//
+// Single-item physical-recount workflow. Compares against AI estimate, deducts
+// known discards since the last reconciliation, and surfaces unaccounted
+// shrinkage in dollars. Updates current_stock to the physical count.
+
+function ReconcileModal({ item, uid, pid, lang, estimatedStockNow, onClose, onSaved }: {
+  item: InventoryItem;
+  uid: string;
+  pid: string;
+  lang: 'en' | 'es';
+  estimatedStockNow: number;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [physical, setPhysical] = useState('');
+  const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [lastRecAt, setLastRecAt] = useState<Date | null>(null);
+  const [discardsSinceLast, setDiscardsSinceLast] = useState(0);
+
+  // Load: last reconciliation date + discards since then.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const map = await lastReconciliationByItem(uid, pid);
+        const last = map.get(item.id);
+        if (cancelled) return;
+        const since = last?.reconciledAt ?? null;
+        setLastRecAt(since);
+        const sinceDate = since ?? new Date(0);
+        const dQty = await sumDiscardsSince(uid, pid, item.id, sinceDate);
+        if (cancelled) return;
+        setDiscardsSinceLast(dQty);
+      } catch (err) {
+        console.error('[reconcile] failed to load history', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [uid, pid, item.id]);
+
+  const physicalNum = parseInt(physical);
+  const validPhysical = Number.isFinite(physicalNum) && physicalNum >= 0;
+  const variance = validPhysical ? physicalNum - (estimatedStockNow - discardsSinceLast) : 0;
+  const varianceCost = item.unitCost != null && validPhysical ? variance * item.unitCost : null;
+  const canSave = validPhysical && !saving;
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '12px 16px', borderRadius: '16px',
+    border: '1px solid #c5c5d4', background: '#fff',
+    fontFamily: "'Inter', sans-serif", fontSize: '14px', color: '#1b1c19',
+    outline: 'none',
+  };
+
+  const handleSave = async () => {
+    if (!canSave) return;
+    setSaving(true);
+    try {
+      await addInventoryReconciliation(uid, pid, {
+        propertyId: pid,
+        itemId: item.id,
+        itemName: item.name,
+        reconciledAt: new Date(),
+        physicalCount: physicalNum,
+        systemEstimate: Math.round(estimatedStockNow),
+        discardsSinceLast,
+        unaccountedVariance: variance,
+        unaccountedVarianceValue: varianceCost ?? undefined,
+        unitCost: item.unitCost ?? undefined,
+        notes: notes.trim() || undefined,
+      });
+      // Sync current_stock to the physical count — the user just told us the
+      // truth, so the AI estimate gets reset.
+      await updateInventoryItem(uid, pid, item.id, {
+        currentStock: physicalNum,
+        lastCountedAt: new Date(),
+      });
+      onSaved();
+    } catch (err) {
+      console.error('[reconcile] save failed', err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 60,
+        background: 'rgba(27,28,25,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
+      }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{
+        width: '100%', maxWidth: '480px', background: '#fbf9f4', borderRadius: '24px',
+        padding: '24px', display: 'flex', flexDirection: 'column', gap: '14px',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <h2 style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: '17px', color: '#1b1c19', margin: 0 }}>
+              {lang === 'es' ? 'Reconciliar Conteo' : 'Reconcile Count'}
+            </h2>
+            <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#757684', margin: '4px 0 0' }}>
+              <strong>{item.name}</strong> · {lang === 'es' ? 'conteo físico vs estimación del sistema' : 'physical count vs system estimate'}
+            </p>
+          </div>
+          <button onClick={onClose} style={{ background: '#eae8e3', border: 'none', cursor: 'pointer', padding: '8px', borderRadius: '50%' }}>
+            <XIcon size={14} color="#454652" />
+          </button>
+        </div>
+
+        <div style={{
+          padding: '12px 14px', background: 'rgba(0,101,101,0.06)', borderRadius: '12px',
+          fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#454652',
+          display: 'flex', flexDirection: 'column', gap: '4px',
+        }}>
+          <div>{lang === 'es' ? 'Estimación del sistema:' : 'System estimate:'} <strong style={{ color: '#1b1c19' }}>{Math.round(estimatedStockNow)} {item.unit}</strong></div>
+          <div>{lang === 'es' ? 'Descartes registrados desde la última reconciliación:' : 'Discards since last reconciliation:'} <strong style={{ color: '#1b1c19' }}>{discardsSinceLast}</strong></div>
+          <div style={{ fontSize: '11px', color: '#757684' }}>
+            {lastRecAt
+              ? (lang === 'es' ? `Última reconciliación: ${lastRecAt.toLocaleDateString()}` : `Last reconciled: ${lastRecAt.toLocaleDateString()}`)
+              : (lang === 'es' ? 'Primera reconciliación.' : 'First reconciliation.')}
+          </div>
+        </div>
+
+        <div>
+          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>
+            {lang === 'es' ? 'Conteo físico actual' : 'Current physical count'}
+          </label>
+          <input type="number" min="0" value={physical} onChange={e => setPhysical(e.target.value)} placeholder={lang === 'es' ? 'Cuente y escriba aquí' : 'Count and enter here'} style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
+        </div>
+
+        {validPhysical && (
+          <div style={{
+            padding: '12px 14px',
+            background: variance < 0 ? 'rgba(186,26,26,0.06)' : 'rgba(0,101,101,0.06)',
+            borderRadius: '12px', fontFamily: "'Inter', sans-serif", fontSize: '13px',
+            color: variance < 0 ? '#ba1a1a' : '#006565',
+          }}>
+            {variance === 0 ? (
+              lang === 'es' ? '✓ Sin variación inexplicada.' : '✓ No unaccounted variance.'
+            ) : (
+              <>
+                <div style={{ fontWeight: 700 }}>
+                  {variance > 0
+                    ? (lang === 'es' ? `Sobrante inexplicado: +${variance} ${item.unit}` : `Unaccounted surplus: +${variance} ${item.unit}`)
+                    : (lang === 'es' ? `Pérdida inexplicada: ${variance} ${item.unit}` : `Unaccounted loss: ${variance} ${item.unit}`)}
+                </div>
+                {varianceCost != null && (
+                  <div style={{ fontSize: '12px', marginTop: '2px' }}>
+                    {lang === 'es' ? `Impacto: $${Math.abs(varianceCost).toFixed(2)}` : `Impact: $${Math.abs(varianceCost).toFixed(2)}`}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        <div>
+          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>
+            {lang === 'es' ? 'Notas' : 'Notes'}
+          </label>
+          <input value={notes} onChange={e => setNotes(e.target.value)} style={inputStyle} placeholder={lang === 'es' ? 'Opcional' : 'Optional'} />
+        </div>
+
+        <button
+          onClick={handleSave}
+          disabled={!canSave}
+          style={{
+            padding: '14px', border: 'none', borderRadius: '9999px',
+            background: canSave ? '#364262' : '#eae8e3',
+            color: canSave ? '#fff' : '#757684',
+            fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 600,
+            cursor: canSave ? 'pointer' : 'not-allowed', minHeight: '50px',
+          }}
+        >
+          {saving
+            ? (lang === 'es' ? 'Guardando...' : 'Saving...')
+            : (lang === 'es' ? 'Guardar Reconciliación' : 'Save Reconciliation')}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Budget Settings Modal ──────────────────────────────────────────────────
+//
+// Per-property × per-category × monthly budget. The Smart Reorder List shows
+// remaining budget; the Accounting page shows budget vs actual.
+
+function BudgetSettingsModal({ uid, pid, lang, onClose, onSaved }: {
+  uid: string;
+  pid: string;
+  lang: 'en' | 'es';
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const monthStart = useMemo(() => {
+    const d = new Date();
+    return new Date(Date.UTC(d.getFullYear(), d.getMonth(), 1));
+  }, []);
+  const [housekeeping, setHousekeeping] = useState('');
+  const [maintenance, setMaintenance] = useState('');
+  const [breakfast, setBreakfast] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const budgets = await listInventoryBudgets(uid, pid, monthStart);
+        for (const b of budgets) {
+          const dollars = (b.budgetCents / 100).toFixed(2);
+          if (b.category === 'housekeeping') setHousekeeping(dollars);
+          else if (b.category === 'maintenance') setMaintenance(dollars);
+          else if (b.category === 'breakfast') setBreakfast(dollars);
+        }
+      } catch (err) {
+        console.error('[budgets] load failed', err);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [uid, pid, monthStart]);
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '12px 16px', borderRadius: '16px',
+    border: '1px solid #c5c5d4', background: '#fff',
+    fontFamily: "'Inter', sans-serif", fontSize: '14px', color: '#1b1c19',
+    outline: 'none',
+  };
+
+  const handleSave = async () => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      const writes: Array<{ cat: InventoryCategory; cents: number }> = [
+        { cat: 'housekeeping', cents: Math.max(0, Math.round(parseFloat(housekeeping || '0') * 100)) },
+        { cat: 'maintenance', cents: Math.max(0, Math.round(parseFloat(maintenance || '0') * 100)) },
+        { cat: 'breakfast', cents: Math.max(0, Math.round(parseFloat(breakfast || '0') * 100)) },
+      ];
+      for (const w of writes) {
+        await upsertInventoryBudget(uid, pid, {
+          propertyId: pid,
+          category: w.cat,
+          monthStart,
+          budgetCents: w.cents,
+        });
+      }
+      onSaved();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const monthLabel = monthStart.toLocaleDateString(lang === 'es' ? 'es-MX' : 'en-US', { month: 'long', year: 'numeric' });
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 60,
+        background: 'rgba(27,28,25,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
+      }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{
+        width: '100%', maxWidth: '460px', background: '#fbf9f4', borderRadius: '24px',
+        padding: '24px', display: 'flex', flexDirection: 'column', gap: '14px',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <h2 style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: '17px', color: '#1b1c19', margin: 0 }}>
+              {lang === 'es' ? 'Presupuestos Mensuales' : 'Monthly Budgets'}
+            </h2>
+            <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#757684', margin: '4px 0 0', textTransform: 'capitalize' }}>
+              {monthLabel}
+            </p>
+          </div>
+          <button onClick={onClose} style={{ background: '#eae8e3', border: 'none', cursor: 'pointer', padding: '8px', borderRadius: '50%' }}>
+            <XIcon size={14} color="#454652" />
+          </button>
+        </div>
+
+        {loading ? (
+          <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#757684' }}>{lang === 'es' ? 'Cargando...' : 'Loading...'}</p>
+        ) : (
+          <>
+            <BudgetField label={lang === 'es' ? 'Limpieza' : 'Housekeeping'} value={housekeeping} setValue={setHousekeeping} inputStyle={inputStyle} />
+            <BudgetField label={lang === 'es' ? 'Mantenimiento' : 'Maintenance'} value={maintenance} setValue={setMaintenance} inputStyle={inputStyle} />
+            <BudgetField label={lang === 'es' ? 'Desayuno / A&B' : 'Breakfast / F&B'} value={breakfast} setValue={setBreakfast} inputStyle={inputStyle} />
+
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              style={{
+                padding: '14px', border: 'none', borderRadius: '9999px',
+                background: '#364262', color: '#fff',
+                fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 600,
+                cursor: saving ? 'not-allowed' : 'pointer', minHeight: '50px',
+              }}
+            >
+              {saving
+                ? (lang === 'es' ? 'Guardando...' : 'Saving...')
+                : (lang === 'es' ? 'Guardar Presupuestos' : 'Save Budgets')}
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BudgetField({ label, value, setValue, inputStyle }: {
+  label: string;
+  value: string;
+  setValue: (v: string) => void;
+  inputStyle: React.CSSProperties;
+}) {
+  return (
+    <div>
+      <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>
+        {label}
+      </label>
+      <div style={{ position: 'relative' }}>
+        <span style={{ position: 'absolute', left: '14px', top: '50%', transform: 'translateY(-50%)', color: '#757684', fontFamily: "'JetBrains Mono', monospace", fontSize: '14px' }}>$</span>
+        <input
+          type="number" step="0.01" min="0" value={value}
+          onChange={e => setValue(e.target.value)}
+          placeholder="0.00"
+          style={{ ...inputStyle, paddingLeft: '28px', fontFamily: "'JetBrains Mono', monospace" }}
+        />
+      </div>
     </div>
   );
 }
