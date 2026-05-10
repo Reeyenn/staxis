@@ -253,3 +253,49 @@ export function predictionByItem(
   for (const p of predictions) m.set(p.itemId, p);
   return m;
 }
+
+// ─── Budget headroom ───────────────────────────────────────────────────────
+//
+// Pure helper for the Smart Reorder List + accounting view. Given a spend
+// total (already aggregated month-to-date) and a budget cap, compute the
+// remaining headroom and a fits-in-budget flag for a proposed order.
+//
+// Returning a record per category keeps the UI loop simple — index by item's
+// category to render the badge. Categories without a configured budget show
+// up as `budgetCents: null`, which the UI renders as "no budget set".
+
+import type { InventoryCategory } from '@/types';
+
+export interface BudgetStatus {
+  category: InventoryCategory;
+  budgetCents: number | null;       // null = not configured for this month
+  spentCents: number;                // month-to-date
+  remainingCents: number | null;     // null when no budget; can go negative
+}
+
+export function computeBudgetStatuses(
+  spendByCategory: Record<InventoryCategory, number>,           // dollars (numeric)
+  budgetByCategory: Partial<Record<InventoryCategory, number>>, // cents
+): Record<InventoryCategory, BudgetStatus> {
+  const cats: InventoryCategory[] = ['housekeeping', 'maintenance', 'breakfast'];
+  const out = {} as Record<InventoryCategory, BudgetStatus>;
+  for (const cat of cats) {
+    const spent = Math.round((spendByCategory[cat] ?? 0) * 100);
+    const budget = budgetByCategory[cat];
+    out[cat] = {
+      category: cat,
+      budgetCents: budget ?? null,
+      spentCents: spent,
+      remainingCents: budget != null ? budget - spent : null,
+    };
+  }
+  return out;
+}
+
+export function fitsInBudget(
+  status: BudgetStatus,
+  proposedSpendCents: number,
+): boolean {
+  if (status.remainingCents == null) return true; // no budget configured = no constraint
+  return proposedSpendCents <= status.remainingCents;
+}
