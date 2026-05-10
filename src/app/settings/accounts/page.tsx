@@ -349,10 +349,10 @@ export default function AccountsPage() {
             display: 'flex', alignItems: 'center', gap: '6px',
           }}>
             <Users size={15} color="var(--navy)" />
-            {t('accountManagement', lang)}
+            {lang === 'es' ? 'Cuenta y equipo' : 'Account & Team'}
           </h1>
           <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginTop: '4px' }}>
-            {lang === 'es' ? 'Administra inicios de sesión y acceso a propiedades para tu equipo.' : 'Manage logins and property access for your team.'}
+            {lang === 'es' ? 'Tu perfil y cuentas del equipo.' : 'Your profile and team accounts.'}
           </p>
         </div>
 
