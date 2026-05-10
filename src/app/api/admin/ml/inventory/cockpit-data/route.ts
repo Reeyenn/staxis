@@ -41,6 +41,12 @@ const isUuid = (s: unknown): s is string =>
 const TRAINING_FRESH_SEC = 8 * 86400;       // 8 days — cron is weekly
 const PREDICTION_FRESH_SEC = 36 * 3600;     // 36 hours — cron is daily
 
+// Test-property heuristic. Properties whose names match this regex are
+// flagged isTest and EXCLUDED from fleet aggregates (but still listed in
+// the sidebar with a 🧪 chip). Reeyen's CANARY fleet-cua test property
+// trips both 'canary' and 'test' — either match flags it.
+const TEST_PROPERTY_NAME_RE = /\b(test|canary)\b/i;
+
 // ─── Types ────────────────────────────────────────────────────────────────
 
 export interface PropertySidebarEntry {
@@ -54,6 +60,12 @@ export interface PropertySidebarEntry {
   lastTrainingAt: string | null;
   lastPredictionAt: string | null;
   countsLast7d: number;
+  /** Counts in the last hour — "active right now" indicator. */
+  countsLast1h: number;
+  /** ISO timestamp the property was added to the platform. */
+  joinedAt: string | null;
+  /** True for properties matching the test-property heuristic; excluded from fleet aggregates. */
+  isTest: boolean;
 }
 
 export interface AggregateStats {
@@ -61,6 +73,7 @@ export interface AggregateStats {
   totalCounts: number;
   totalCountsLast7d: number;
   totalCountsLast24h: number;
+  totalCountsLast1h: number;
   totalItems: number;
   totalItemsGraduated: number;
   totalItemsLearning: number;
@@ -157,15 +170,21 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // 1. Properties — basic metadata for sidebar + aggregation scoping
     const { data: allProps, error: propsErr } = await supabaseAdmin
       .from('properties')
-      .select('id, name, brand, inventory_ai_mode')
+      .select('id, name, brand, inventory_ai_mode, created_at')
       .order('name', { ascending: true });
     if (propsErr) throw propsErr;
     const propsList = allProps ?? [];
 
-    // Decide scope: list of property IDs to aggregate over
+    // Decide scope: list of property IDs to aggregate over.
+    //
+    // Network mode excludes test properties from the aggregate (so
+    // CANARY fleet-cua test doesn't pull "fleet median day" toward 0).
+    // Test properties still appear in the sidebar with a 🧪 chip and can
+    // be drilled into via ?propertyId=<uuid>; they just don't count toward
+    // network rollups.
     const scopeIds: string[] = propertyIdParam
       ? propsList.filter((p) => p.id === propertyIdParam).map((p) => p.id)
-      : propsList.map((p) => p.id);
+      : propsList.filter((p) => !TEST_PROPERTY_NAME_RE.test(p.name)).map((p) => p.id);
 
     if (propertyIdParam && scopeIds.length === 0) {
       return NextResponse.json({ ok: false, error: 'property_not_found' }, { status: 404 });
@@ -245,21 +264,23 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       if (prev === undefined || t < prev) firstCountByProp.set(pid, t);
     }
 
-    // Counts per-property (with last-7d / last-24h tallies + items touched + last-counted)
+    // Counts per-property (with last-7d / last-24h / last-1h tallies + items touched + last-counted)
     interface PropCountTally {
-      total: number; last7d: number; last24h: number; itemsSet: Set<string>; latest: number;
+      total: number; last7d: number; last24h: number; last1h: number;
+      itemsSet: Set<string>; latest: number;
     }
     const tallyByProp = new Map<string, PropCountTally>();
     for (const c of counts) {
       const pid = c.property_id as string;
       if (!tallyByProp.has(pid)) {
-        tallyByProp.set(pid, { total: 0, last7d: 0, last24h: 0, itemsSet: new Set(), latest: 0 });
+        tallyByProp.set(pid, { total: 0, last7d: 0, last24h: 0, last1h: 0, itemsSet: new Set(), latest: 0 });
       }
       const t = c.counted_at ? new Date(c.counted_at).getTime() : 0;
       const entry = tallyByProp.get(pid)!;
       entry.total += 1;
       if (c.item_id) entry.itemsSet.add(c.item_id);
       const age = Date.now() - t;
+      if (age <= 3600000) entry.last1h += 1;
       if (age <= 86400000) entry.last24h += 1;
       if (age <= 7 * 86400000) entry.last7d += 1;
       if (t > entry.latest) entry.latest = t;
@@ -326,6 +347,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         lastTrainingAt: lastTr ? new Date(lastTr).toISOString() : null,
         lastPredictionAt: lastPr ? new Date(lastPr).toISOString() : null,
         countsLast7d: tally?.last7d ?? 0,
+        countsLast1h: tally?.last1h ?? 0,
+        joinedAt: (p as { created_at?: string }).created_at ?? null,
+        isTest: TEST_PROPERTY_NAME_RE.test(p.name),
       };
     });
 
@@ -360,12 +384,17 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         // Patch sidebar entries for other hotels
         const otherFirst = new Map<string, number>();
         const otherTally = new Map<string, number>();    // count_last7d
+        const otherLast1h = new Map<string, number>();
         for (const c of otherCountsRes.data ?? []) {
           const pid = c.property_id as string;
           const t = c.counted_at ? new Date(c.counted_at).getTime() : 0;
           if (t && (otherFirst.get(pid) ?? Infinity) > t) otherFirst.set(pid, t);
-          if (Date.now() - t <= 7 * 86400000) {
+          const age = Date.now() - t;
+          if (age <= 7 * 86400000) {
             otherTally.set(pid, (otherTally.get(pid) ?? 0) + 1);
+          }
+          if (age <= 3600000) {
+            otherLast1h.set(pid, (otherLast1h.get(pid) ?? 0) + 1);
           }
         }
         const otherItemsCount = new Map<string, number>();
@@ -395,6 +424,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           entry.itemsTotal = otherItemsCount.get(entry.id) ?? 0;
           entry.itemsGraduated = otherGrad.get(entry.id) ?? 0;
           entry.countsLast7d = otherTally.get(entry.id) ?? 0;
+          entry.countsLast1h = otherLast1h.get(entry.id) ?? 0;
           const lastTr = otherLastTr.get(entry.id) ?? null;
           const lastPr = otherLastPr.get(entry.id) ?? null;
           entry.lastTrainingAt = lastTr ? new Date(lastTr).toISOString() : null;
@@ -418,6 +448,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const totalCounts = counts.length;
     const totalCountsLast7d = scopedSidebar.reduce((s, p) => s + p.countsLast7d, 0);
     const totalCountsLast24h = scopedSidebar.reduce((s, p) => s + (tallyByProp.get(p.id)?.last24h ?? 0), 0);
+    const totalCountsLast1h = scopedSidebar.reduce((s, p) => s + p.countsLast1h, 0);
     const totalItems = scopedSidebar.reduce((s, p) => s + p.itemsTotal, 0);
     const totalItemsGraduated = scopedSidebar.reduce((s, p) => s + p.itemsGraduated, 0);
     const totalItemsLearning = Math.max(0, totalItems - totalItemsGraduated);
@@ -472,6 +503,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       totalCounts,
       totalCountsLast7d,
       totalCountsLast24h,
+      totalCountsLast1h,
       totalItems,
       totalItemsGraduated,
       totalItemsLearning,

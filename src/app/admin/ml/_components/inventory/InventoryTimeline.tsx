@@ -48,6 +48,7 @@ interface SingleModeProps {
   day: number;
   itemsTotal: number;
   itemsGraduated: number;
+  countsLast1h: number;
   daysToNextMilestone: number | null;
   nextMilestoneLabel: string;
   aiMode: 'off' | 'auto' | 'always-on';
@@ -60,6 +61,7 @@ interface FleetModeProps {
   hotelCount: number;
   itemsLearningTotal: number;
   itemsGraduatedTotal: number;
+  totalCountsLast1h: number;
   daysToNextMilestoneMedian: number | null;
   nextMilestoneLabel: string;
   phaseHistogram: PhaseHistogramRow[];
@@ -154,7 +156,7 @@ export function InventoryTimeline(props: SingleModeProps | FleetModeProps) {
       {/* Stats strip */}
       <div style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(3, 1fr)',
+        gridTemplateColumns: 'repeat(4, 1fr)',
         gap: '12px',
         marginTop: '12px',
       }}>
@@ -162,6 +164,12 @@ export function InventoryTimeline(props: SingleModeProps | FleetModeProps) {
           <>
             <Stat label="Items learning" value={`${props.itemsTotal - props.itemsGraduated} / ${props.itemsTotal}`} />
             <Stat label="Items auto-filling" value={String(props.itemsGraduated)} color="#00a050" />
+            <Stat
+              label="Counting right now"
+              value={String(props.countsLast1h)}
+              subtitle="Counts last hour"
+              color={props.countsLast1h > 0 ? '#00a050' : '#7a8a9e'}
+            />
             <Stat
               label={props.daysToNextMilestone === null
                 ? 'Next milestone'
@@ -173,6 +181,12 @@ export function InventoryTimeline(props: SingleModeProps | FleetModeProps) {
           <>
             <Stat label="Items learning (network)" value={String(props.itemsLearningTotal)} />
             <Stat label="Items auto-filling (network)" value={String(props.itemsGraduatedTotal)} color="#00a050" />
+            <Stat
+              label="Counting right now"
+              value={String(props.totalCountsLast1h)}
+              subtitle="Counts last hour"
+              color={props.totalCountsLast1h > 0 ? '#00a050' : '#7a8a9e'}
+            />
             <Stat
               label={props.daysToNextMilestoneMedian === null
                 ? 'Fleet next milestone'
@@ -269,7 +283,7 @@ const cardStyle: React.CSSProperties = {
   padding: '24px',
 };
 
-function Stat({ label, value, color }: { label: string; value: string; color?: string }) {
+function Stat({ label, value, color, subtitle }: { label: string; value: string; color?: string; subtitle?: string }) {
   return (
     <div>
       <div style={{ fontSize: '11px', color: '#7a8a9e', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
@@ -278,6 +292,9 @@ function Stat({ label, value, color }: { label: string; value: string; color?: s
       <div style={{ fontSize: '20px', fontWeight: 600, color: color ?? '#1b1c19', marginTop: '2px' }}>
         {value}
       </div>
+      {subtitle && (
+        <div style={{ fontSize: '10px', color: '#7a8a9e', marginTop: '1px' }}>{subtitle}</div>
+      )}
     </div>
   );
 }

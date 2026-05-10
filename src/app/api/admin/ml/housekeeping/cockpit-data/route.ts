@@ -32,6 +32,11 @@ const isUuid = (s: unknown): s is string =>
 const TRAINING_FRESH_SEC = 8 * 86400;
 const PREDICTION_FRESH_SEC = 36 * 3600;
 
+// Test-property heuristic — same as inventory cockpit. Test properties are
+// excluded from fleet aggregates but still listed in the sidebar with a
+// 🧪 chip.
+const TEST_PROPERTY_NAME_RE = /\b(test|canary)\b/i;
+
 // ─── Types ────────────────────────────────────────────────────────────────
 
 export interface HKPropertyEntry {
@@ -45,6 +50,12 @@ export interface HKPropertyEntry {
   lastTrainingAt: string | null;
   lastInferenceAt: string | null;
   eventsLast7d: number;
+  /** Recorded events in the last hour — "working right now" indicator. */
+  eventsLast1h: number;
+  /** ISO timestamp the property was added to the platform. */
+  joinedAt: string | null;
+  /** True for test/canary properties; excluded from fleet aggregates. */
+  isTest: boolean;
 }
 
 export interface HKAggregateStats {
@@ -52,6 +63,8 @@ export interface HKAggregateStats {
   totalEvents: number;
   totalEventsLast7d: number;
   totalEventsLast24h: number;
+  totalEventsLast1h: number;
+  totalDiscardedEvents: number;
   distinctStaff: number;
   distinctRooms: number;
   fleetMedianDay: number;
@@ -155,14 +168,17 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   try {
     const { data: allProps, error: propsErr } = await supabaseAdmin
       .from('properties')
-      .select('id, name, brand')
+      .select('id, name, brand, created_at')
       .order('name', { ascending: true });
     if (propsErr) throw propsErr;
     const propsList = allProps ?? [];
 
+    // Network mode excludes test properties from the aggregate. Test
+    // properties still appear in the sidebar with a 🧪 chip and can be
+    // drilled into via ?propertyId=<uuid>.
     const scopeIds: string[] = propertyIdParam
       ? propsList.filter((p) => p.id === propertyIdParam).map((p) => p.id)
-      : propsList.map((p) => p.id);
+      : propsList.filter((p) => !TEST_PROPERTY_NAME_RE.test(p.name)).map((p) => p.id);
 
     if (propertyIdParam && scopeIds.length === 0) {
       return NextResponse.json({ ok: false, error: 'property_not_found' }, { status: 404 });
@@ -230,6 +246,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       total: number;
       last7d: number;
       last24h: number;
+      last1h: number;
+      discarded: number;
       staffSet: Set<string>;
       roomSet: Set<string>;
       firstAt: number;
@@ -239,10 +257,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     for (const e of eventsAll) {
       const pid = e.property_id as string;
       if (!tally.has(pid)) {
-        tally.set(pid, { total: 0, last7d: 0, last24h: 0, staffSet: new Set(), roomSet: new Set(), firstAt: Infinity, eventsLast7dRecorded: 0 });
+        tally.set(pid, { total: 0, last7d: 0, last24h: 0, last1h: 0, discarded: 0, staffSet: new Set(), roomSet: new Set(), firstAt: Infinity, eventsLast7dRecorded: 0 });
       }
       const t = tally.get(pid)!;
       const status = (e.status as string) ?? '';
+      if (status === 'discarded') t.discarded += 1;
       if (status !== 'discarded') {
         t.total += 1;
         if (e.staff_id) t.staffSet.add(e.staff_id);
@@ -251,6 +270,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       const ts = e.created_at ? new Date(e.created_at).getTime() : 0;
       if (ts > 0 && ts < t.firstAt) t.firstAt = ts;
       const age = Date.now() - ts;
+      if (age <= 3600000 && status !== 'discarded') t.last1h += 1;
       if (age <= 86400000 && status !== 'discarded') t.last24h += 1;
       if (age <= 7 * 86400000 && status !== 'discarded') t.last7d += 1;
     }
@@ -310,6 +330,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         lastTrainingAt: lastTr ? new Date(lastTr).toISOString() : null,
         lastInferenceAt: lastIn ? new Date(lastIn).toISOString() : null,
         eventsLast7d: t?.last7d ?? 0,
+        eventsLast1h: t?.last1h ?? 0,
+        joinedAt: (p as { created_at?: string }).created_at ?? null,
+        isTest: TEST_PROPERTY_NAME_RE.test(p.name),
       };
     });
 
@@ -323,6 +346,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const totalEvents = scopedProps.reduce((s, p) => s + (tally.get(p.id)?.total ?? 0), 0);
     const totalEventsLast7d = scopedProps.reduce((s, p) => s + (tally.get(p.id)?.last7d ?? 0), 0);
     const totalEventsLast24h = scopedProps.reduce((s, p) => s + (tally.get(p.id)?.last24h ?? 0), 0);
+    const totalEventsLast1h = scopedProps.reduce((s, p) => s + (tally.get(p.id)?.last1h ?? 0), 0);
+    const totalDiscardedEvents = scopedProps.reduce((s, p) => s + (tally.get(p.id)?.discarded ?? 0), 0);
     const distinctStaff = (() => {
       const set = new Set<string>();
       for (const p of scopedProps) {
@@ -396,6 +421,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       totalEvents,
       totalEventsLast7d,
       totalEventsLast24h,
+      totalEventsLast1h,
+      totalDiscardedEvents,
       distinctStaff,
       distinctRooms,
       fleetMedianDay,

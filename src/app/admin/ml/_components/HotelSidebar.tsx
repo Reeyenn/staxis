@@ -25,6 +25,14 @@ export interface HotelSidebarEntry {
   name: string;
   brand: string | null;
   status: 'healthy' | 'warming' | 'issue';
+  /** Plain-English count tag: "99 events" / "112 counts" / etc. Optional. */
+  volumeLabel: string | null;
+  /** "Joined 14 days ago" — short tag under hotel name. Optional. */
+  joinedLabel: string | null;
+  /** True for test properties; render with a 🧪 chip + dim styling. */
+  isTest: boolean;
+  /** Last-hour activity ("3 working" / "2 counting"). Renders next to status. */
+  activeNowLabel: string | null;
 }
 
 export function HotelSidebar({
@@ -89,6 +97,10 @@ export function HotelSidebar({
           title="All hotels"
           subtitle={`${totalNetworkCount} ${totalNetworkCount === 1 ? 'hotel' : 'hotels'}`}
           status={null}
+          volumeLabel={null}
+          joinedLabel={null}
+          activeNowLabel={null}
+          isTest={false}
         />
 
         {/* Divider */}
@@ -104,6 +116,10 @@ export function HotelSidebar({
             title={p.name}
             subtitle={p.brand ?? ''}
             status={p.status}
+            volumeLabel={p.volumeLabel}
+            joinedLabel={p.joinedLabel}
+            activeNowLabel={p.activeNowLabel}
+            isTest={p.isTest}
           />
         ))}
 
@@ -124,6 +140,10 @@ function SidebarRow({
   title,
   subtitle,
   status,
+  volumeLabel,
+  joinedLabel,
+  activeNowLabel,
+  isTest,
 }: {
   active: boolean;
   onClick: () => void;
@@ -131,13 +151,26 @@ function SidebarRow({
   title: string;
   subtitle: string;
   status: 'healthy' | 'warming' | 'issue' | null;
+  volumeLabel: string | null;
+  joinedLabel: string | null;
+  activeNowLabel: string | null;
+  isTest: boolean;
 }) {
+  // Compose the meta line under the hotel name. Order: brand · volume ·
+  // active-now · joined. Skip empty parts. Tested property gets a 🧪 prefix.
+  const metaParts: string[] = [];
+  if (subtitle) metaParts.push(subtitle);
+  if (volumeLabel) metaParts.push(volumeLabel);
+  if (activeNowLabel) metaParts.push(activeNowLabel);
+  if (joinedLabel) metaParts.push(joinedLabel);
+  const meta = metaParts.join(' · ');
+
   return (
     <button
       onClick={onClick}
       style={{
         display: 'flex',
-        alignItems: 'center',
+        alignItems: 'flex-start',
         gap: '8px',
         width: '100%',
         padding: '8px 10px',
@@ -147,6 +180,7 @@ function SidebarRow({
         cursor: 'pointer',
         textAlign: 'left',
         transition: 'background 0.15s',
+        opacity: isTest ? 0.65 : 1,    // dim test properties so they read as secondary
       }}
       onMouseEnter={e => !active && (e.currentTarget.style.background = 'rgba(0,0,0,0.03)')}
       onMouseLeave={e => !active && (e.currentTarget.style.background = 'transparent')}
@@ -154,22 +188,37 @@ function SidebarRow({
       {icon}
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{
+          display: 'flex', alignItems: 'center', gap: '5px',
           fontSize: '13px',
           fontWeight: active ? 600 : 500,
           color: active ? '#004b4b' : '#1b1c19',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
         }}>
-          {title}
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+            {title}
+          </span>
+          {isTest && (
+            <span title="Test property — excluded from fleet aggregates" style={{
+              fontSize: '9px', fontWeight: 600,
+              padding: '1px 5px',
+              background: 'rgba(122,138,158,0.12)',
+              color: '#454652',
+              borderRadius: '4px',
+              flexShrink: 0,
+            }}>
+              TEST
+            </span>
+          )}
         </div>
-        {subtitle && (
-          <div style={{ fontSize: '11px', color: '#7a8a9e', marginTop: '1px' }}>
-            {subtitle}
+        {meta && (
+          <div style={{
+            fontSize: '11px', color: '#7a8a9e', marginTop: '2px',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>
+            {meta}
           </div>
         )}
       </div>
-      {status && <StatusPip status={status} />}
+      {status && <div style={{ paddingTop: '2px', flexShrink: 0 }}><StatusPip status={status} /></div>}
     </button>
   );
 }

@@ -43,10 +43,14 @@ interface InventoryCockpitData {
     status: 'healthy' | 'warming' | 'issue';
     lastTrainingAt: string | null; lastPredictionAt: string | null;
     countsLast7d: number;
+    countsLast1h: number;
+    joinedAt: string | null;
+    isTest: boolean;
   }>;
   aggregate: {
     hotelCount: number; totalCounts: number; totalCountsLast7d: number;
-    totalCountsLast24h: number; totalItems: number; totalItemsGraduated: number;
+    totalCountsLast24h: number; totalCountsLast1h: number;
+    totalItems: number; totalItemsGraduated: number;
     totalItemsLearning: number; fleetMedianDay: number;
     daysOfHistoryRange: { min: number; max: number };
     healthCounts: { healthy: number; warming: number; issue: number };
@@ -79,10 +83,14 @@ interface HKCockpitData {
     status: 'healthy' | 'warming' | 'issue';
     lastTrainingAt: string | null; lastInferenceAt: string | null;
     eventsLast7d: number;
+    eventsLast1h: number;
+    joinedAt: string | null;
+    isTest: boolean;
   }>;
   aggregate: {
     hotelCount: number; totalEvents: number; totalEventsLast7d: number;
-    totalEventsLast24h: number; distinctStaff: number; distinctRooms: number;
+    totalEventsLast24h: number; totalEventsLast1h: number; totalDiscardedEvents: number;
+    distinctStaff: number; distinctRooms: number;
     fleetMedianDay: number; daysOfHistoryRange: { min: number; max: number };
     healthCounts: { healthy: number; warming: number; issue: number };
     daysToNextMilestoneMedian: number | null;
@@ -102,6 +110,20 @@ interface HKCockpitData {
     staffId: string; staffName: string; roomsAssigned: number; roomsWithEvent: number;
     adoptionPct: number; propertyId: string; propertyName: string;
   }>;
+}
+
+// Format an ISO date as "Joined N days ago" or null if no date.
+function joinedAgo(iso: string | null): string | null {
+  if (!iso) return null;
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 0) return null;
+  const days = Math.floor(ms / 86400000);
+  if (days < 1) return 'Joined today';
+  if (days < 30) return `Joined ${days} day${days === 1 ? '' : 's'} ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `Joined ${months} month${months === 1 ? '' : 's'} ago`;
+  const years = Math.floor(months / 12);
+  return `Joined ${years} year${years === 1 ? '' : 's'} ago`;
 }
 
 export default function MLPage() {
@@ -221,11 +243,27 @@ function MLPageInner() {
     );
   }
 
-  // Sidebar entries based on the active tab's data
+  // Sidebar entries based on the active tab's data. Each tab generates its
+  // own volumeLabel + activeNowLabel since the units differ (events vs counts).
   const sidebarEntries: HotelSidebarEntry[] = tab === 'inventory'
-    ? (invCockpit?.properties.map((p) => ({ id: p.id, name: p.name, brand: p.brand, status: p.status })) ?? [])
-    : (hkCockpit?.properties.map((p) => ({ id: p.id, name: p.name, brand: p.brand, status: p.status })) ?? []);
-  const totalNetworkCount = sidebarEntries.length;
+    ? (invCockpit?.properties.map((p) => ({
+        id: p.id, name: p.name, brand: p.brand, status: p.status,
+        isTest: p.isTest,
+        volumeLabel: `${p.countsLast7d.toLocaleString()} count${p.countsLast7d === 1 ? '' : 's'} / 7d`,
+        activeNowLabel: p.countsLast1h > 0 ? `${p.countsLast1h} counting now` : null,
+        joinedLabel: joinedAgo(p.joinedAt),
+      })) ?? [])
+    : (hkCockpit?.properties.map((p) => ({
+        id: p.id, name: p.name, brand: p.brand, status: p.status,
+        isTest: p.isTest,
+        volumeLabel: `${p.eventsLast7d.toLocaleString()} clean${p.eventsLast7d === 1 ? '' : 's'} / 7d`,
+        activeNowLabel: p.eventsLast1h > 0 ? `${p.eventsLast1h} working now` : null,
+        joinedLabel: joinedAgo(p.joinedAt),
+      })) ?? []);
+  // Network count = number of NON-test hotels (matches what the fleet
+  // aggregate covers). The sidebar still lists test hotels but they're
+  // dimmed and tagged.
+  const totalNetworkCount = sidebarEntries.filter((e) => !e.isTest).length;
 
   return (
     <AppLayout>
@@ -348,6 +386,7 @@ function InventoryPanels({ cockpit }: { cockpit: InventoryCockpitData }) {
           day={me.daysSinceFirstCount}
           itemsTotal={me.itemsTotal}
           itemsGraduated={me.itemsGraduated}
+          countsLast1h={me.countsLast1h}
           daysToNextMilestone={aggregate.daysToNextMilestoneMedian}
           nextMilestoneLabel={aggregate.nextMilestoneLabel}
           aiMode="auto"
@@ -386,6 +425,7 @@ function InventoryPanels({ cockpit }: { cockpit: InventoryCockpitData }) {
         hotelCount={aggregate.hotelCount}
         itemsLearningTotal={aggregate.totalItemsLearning}
         itemsGraduatedTotal={aggregate.totalItemsGraduated}
+        totalCountsLast1h={aggregate.totalCountsLast1h}
         daysToNextMilestoneMedian={aggregate.daysToNextMilestoneMedian}
         nextMilestoneLabel={aggregate.nextMilestoneLabel}
         phaseHistogram={aggregate.phaseHistogram}
@@ -438,6 +478,7 @@ function HousekeepingPanels({ cockpit }: { cockpit: HKCockpitData }) {
           day={me.daysSinceFirstEvent}
           staffActive={me.staffActive}
           modelsActive={me.modelsActive}
+          eventsLast1h={me.eventsLast1h}
           daysToNextMilestone={aggregate.daysToNextMilestoneMedian}
           nextMilestoneLabel={aggregate.nextMilestoneLabel}
           hotelName={sp.name}
@@ -448,6 +489,8 @@ function HousekeepingPanels({ cockpit }: { cockpit: HKCockpitData }) {
           totalEvents={aggregate.totalEvents}
           eventsLast7d={aggregate.totalEventsLast7d}
           eventsLast24h={aggregate.totalEventsLast24h}
+          eventsLast1h={aggregate.totalEventsLast1h}
+          totalDiscardedEvents={aggregate.totalDiscardedEvents}
           distinctStaff={aggregate.distinctStaff}
           distinctRooms={aggregate.distinctRooms}
           dailyEventSeries={aggregate.dailyEventSeries}
@@ -478,6 +521,7 @@ function HousekeepingPanels({ cockpit }: { cockpit: HKCockpitData }) {
         hotelCount={aggregate.hotelCount}
         totalStaff={aggregate.distinctStaff}
         totalModelsActive={aggregate.activeModelRunCount}
+        totalEventsLast1h={aggregate.totalEventsLast1h}
         daysToNextMilestoneMedian={aggregate.daysToNextMilestoneMedian}
         nextMilestoneLabel={aggregate.nextMilestoneLabel}
         phaseHistogram={aggregate.phaseHistogram}
@@ -488,6 +532,8 @@ function HousekeepingPanels({ cockpit }: { cockpit: HKCockpitData }) {
         totalEvents={aggregate.totalEvents}
         eventsLast7d={aggregate.totalEventsLast7d}
         eventsLast24h={aggregate.totalEventsLast24h}
+        eventsLast1h={aggregate.totalEventsLast1h}
+        totalDiscardedEvents={aggregate.totalDiscardedEvents}
         distinctStaff={aggregate.distinctStaff}
         distinctRooms={aggregate.distinctRooms}
         dailyEventSeries={aggregate.dailyEventSeries}

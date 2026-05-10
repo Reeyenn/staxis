@@ -43,6 +43,7 @@ interface SingleModeProps {
   day: number;
   staffActive: number;
   modelsActive: number;
+  eventsLast1h: number;
   daysToNextMilestone: number | null;
   nextMilestoneLabel: string;
   hotelName: string;
@@ -55,6 +56,7 @@ interface FleetModeProps {
   hotelCount: number;
   totalStaff: number;
   totalModelsActive: number;
+  totalEventsLast1h: number;
   daysToNextMilestoneMedian: number | null;
   nextMilestoneLabel: string;
   phaseHistogram: HKPhaseHistogramRow[];
@@ -148,17 +150,24 @@ export function HousekeepingTimeline(props: SingleModeProps | FleetModeProps) {
       {/* Stats strip */}
       <div style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(3, 1fr)',
+        gridTemplateColumns: 'repeat(4, 1fr)',
         gap: '12px',
         marginTop: '12px',
       }}>
         {props.mode === 'single' ? (
           <>
-            <Stat label="Active staff" value={String(props.staffActive)} />
+            <Stat label="Active staff" value={String(props.staffActive)} subtitle="Last 30 days" />
+            <Stat
+              label="Working right now"
+              value={String(props.eventsLast1h)}
+              subtitle="Cleans last hour"
+              color={props.eventsLast1h > 0 ? '#00a050' : '#7a8a9e'}
+            />
             <Stat
               label="Models active"
               value={`${props.modelsActive}/3`}
               color={props.optimizerActive ? '#00a050' : '#7a8a9e'}
+              subtitle="Demand · Supply · Optimizer"
             />
             <Stat
               label={props.daysToNextMilestone === null
@@ -169,7 +178,13 @@ export function HousekeepingTimeline(props: SingleModeProps | FleetModeProps) {
           </>
         ) : (
           <>
-            <Stat label="Active staff (network)" value={String(props.totalStaff)} />
+            <Stat label="Active staff (network)" value={String(props.totalStaff)} subtitle="Last 30 days" />
+            <Stat
+              label="Working right now"
+              value={String(props.totalEventsLast1h)}
+              subtitle="Cleans last hour"
+              color={props.totalEventsLast1h > 0 ? '#00a050' : '#7a8a9e'}
+            />
             <Stat
               label="Active models (network)"
               value={String(props.totalModelsActive)}
@@ -271,7 +286,7 @@ const cardStyle: React.CSSProperties = {
   padding: '24px',
 };
 
-function Stat({ label, value, color }: { label: string; value: string; color?: string }) {
+function Stat({ label, value, color, subtitle }: { label: string; value: string; color?: string; subtitle?: string }) {
   return (
     <div>
       <div style={{ fontSize: '11px', color: '#7a8a9e', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
@@ -280,6 +295,9 @@ function Stat({ label, value, color }: { label: string; value: string; color?: s
       <div style={{ fontSize: '20px', fontWeight: 600, color: color ?? '#1b1c19', marginTop: '2px' }}>
         {value}
       </div>
+      {subtitle && (
+        <div style={{ fontSize: '10px', color: '#7a8a9e', marginTop: '1px' }}>{subtitle}</div>
+      )}
     </div>
   );
 }

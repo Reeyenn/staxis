@@ -22,6 +22,9 @@ interface CommonProps {
   totalEvents: number;
   eventsLast7d: number;
   eventsLast24h: number;
+  eventsLast1h: number;
+  /** Total discarded (throwaway) taps — under-3-min auto-discards + Done→Reset undos. */
+  totalDiscardedEvents: number;
   distinctStaff: number;
   distinctRooms: number;
   /** 30-day per-day series; recorded vs discarded tallies */
@@ -68,7 +71,7 @@ export function HousekeepingDataFuelGauge(props: SingleModeProps | FleetModeProp
         <p style={{ fontSize: '12px', color: '#7a8a9e', marginTop: '4px' }}>{subtitle}</p>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '16px', marginBottom: '20px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '16px', marginBottom: '12px' }}>
         <Stat label="Total events" value={total.toLocaleString()} />
         <Stat label="Last 7 days" value={props.eventsLast7d.toLocaleString()} />
         <Stat label="Last 24 hours" value={props.eventsLast24h.toLocaleString()} />
@@ -79,6 +82,11 @@ export function HousekeepingDataFuelGauge(props: SingleModeProps | FleetModeProp
           value={historyDisplay}
         />
       </div>
+
+      {/* Throwaway tap rate — when this is high it means staff are tapping
+          Done by accident or tapping Start without a Stop. Worth surfacing
+          so Reeyen can spot bad UX or training issues. */}
+      <ThrowawayRow recorded={props.totalEvents} discarded={props.totalDiscardedEvents} />
 
       {/* Progress bar to next milestone */}
       <div style={{ marginBottom: '20px' }}>
@@ -136,6 +144,45 @@ function Stat({ label, value }: { label: string; value: string }) {
     <div>
       <div style={{ fontSize: '20px', fontWeight: 600, color: '#1b1c19' }}>{value}</div>
       <div style={{ fontSize: '11px', color: '#7a8a9e', marginTop: '2px' }}>{label}</div>
+    </div>
+  );
+}
+
+function ThrowawayRow({ recorded, discarded }: { recorded: number; discarded: number }) {
+  const total = recorded + discarded;
+  if (total === 0) return null;
+  const pct = Math.round((discarded / total) * 1000) / 10;     // one decimal
+  const isHigh = pct >= 30;
+  const isMid = pct >= 15;
+  const color = isHigh ? '#dc3545' : isMid ? '#f0ad4e' : '#7a8a9e';
+  const message = isHigh
+    ? 'High throwaway rate — likely accidental Done-taps or Done→Reset undos. Worth checking app UX or training.'
+    : isMid
+    ? 'Some throwaway taps — normal at small N but watch for trend.'
+    : 'Throwaway rate looks healthy.';
+  return (
+    <div style={{
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: '12px',
+      padding: '10px 12px',
+      background: '#f7fafb',
+      border: '1px solid rgba(78,90,122,0.08)',
+      borderRadius: '8px',
+      marginBottom: '20px',
+    }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+        <div style={{ fontSize: '11px', color: '#7a8a9e', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+          Throwaway tap rate
+        </div>
+        <div style={{ fontSize: '12px', color: '#454652' }}>
+          {discarded.toLocaleString()} throwaway / {total.toLocaleString()} total · {message}
+        </div>
+      </div>
+      <div style={{ fontSize: '22px', fontWeight: 700, color, flexShrink: 0 }}>
+        {pct}%
+      </div>
     </div>
   );
 }
