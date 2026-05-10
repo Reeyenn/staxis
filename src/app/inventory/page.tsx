@@ -1017,11 +1017,32 @@ function CountMode({
   onCancel: () => void;
 }) {
   const sorted = useMemo(() => [...items].sort((a, b) => a.name.localeCompare(b.name)), [items]);
+
+  // Pre-fill the count input with the AI's best guess of current stock —
+  // i.e. the estimated stock when usage rates are configured, otherwise the
+  // last manually-typed value (currentStock). The user sees ONE number per
+  // item and adjusts up/down based on what they physically count. We
+  // deliberately don't show the estimate as a separate column anymore;
+  // showing two numbers per row was confusing the GM ICP.
+  const initialValueFor = useCallback((item: InventoryItem): number => {
+    const est = estimates.get(item.id);
+    return est?.hasEstimate ? Math.round(est.estimated) : item.currentStock;
+  }, [estimates]);
+
   const [counts, setCounts] = useState<Record<string, string>>(() => {
     const init: Record<string, string> = {};
-    sorted.forEach(item => { init[item.id] = String(item.currentStock); });
+    sorted.forEach(item => { init[item.id] = String(initialValueFor(item)); });
     return init;
   });
+  // Snapshot of what the input was pre-filled with — used to detect "untouched"
+  // rows in the photo-count merge logic. Stays stable across the modal lifetime.
+  const initialValuesRef = useRef<Record<string, string>>({});
+  useEffect(() => {
+    const snap: Record<string, string> = {};
+    sorted.forEach(item => { snap[item.id] = String(initialValueFor(item)); });
+    initialValuesRef.current = snap;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [saving, setSaving] = useState(false);
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
@@ -1074,7 +1095,13 @@ function CountMode({
           const item = items.find(i => i.name === c.item_name);
           if (!item) continue;
           if (aiFilled[item.id]) continue;
-          const isUntouched = (prev[item.id] ?? '0') === String(item.currentStock);
+          // "Untouched" = still equal to whatever we pre-filled the row with
+          // when Count Mode opened. Manual typing breaks that match and
+          // protects the user's edits from being overwritten by a later
+          // photo. Compares against the snapshot, not currentStock — the
+          // pre-filled value is now the AI estimate when one exists.
+          const initial = initialValuesRef.current[item.id] ?? String(item.currentStock);
+          const isUntouched = (prev[item.id] ?? '0') === initial;
           if (!isUntouched) continue;
           next[item.id] = String(c.estimated_count);
           fresh[item.id] = c.confidence;
@@ -1229,7 +1256,7 @@ function CountMode({
 
         <div style={{ overflowY: 'auto', flex: 1 }}>
           <div style={{
-            display: 'grid', gridTemplateColumns: '1fr 64px 80px 50px',
+            display: 'grid', gridTemplateColumns: '1fr 80px 50px',
             gap: '8px', padding: '10px 24px', background: '#f5f3ee',
             borderBottom: '1px solid rgba(197,197,212,0.2)',
             fontFamily: "'Inter', sans-serif", fontSize: '10px', fontWeight: 600, textTransform: 'uppercase',
@@ -1237,7 +1264,6 @@ function CountMode({
             position: 'sticky', top: 0, zIndex: 1,
           }}>
             <span>{lang === 'es' ? 'Artículo' : 'Item'}</span>
-            <span style={{ textAlign: 'right' }}>{lang === 'es' ? 'Est.' : 'Est.'}</span>
             <span style={{ textAlign: 'center' }}>{lang === 'es' ? 'Conteo' : 'Count'}</span>
             <span style={{ textAlign: 'right' }}>{lang === 'es' ? 'Meta' : 'Target'}</span>
           </div>
@@ -1245,13 +1271,13 @@ function CountMode({
           {sorted.map((item, idx) => {
             const val = parseInt(counts[item.id] ?? '0') || 0;
             const status = stockStatus(val, item.parLevel, item.reorderAt);
-            const changed = val !== item.currentStock;
-            const est = estimates.get(item.id);
+            const initial = initialValuesRef.current[item.id];
+            const changed = initial != null && counts[item.id] !== initial;
             return (
               <div
                 key={item.id}
                 style={{
-                  display: 'grid', gridTemplateColumns: '1fr 64px 80px 50px',
+                  display: 'grid', gridTemplateColumns: '1fr 80px 50px',
                   gap: '8px', padding: '12px 24px', alignItems: 'center',
                   borderBottom: '1px solid rgba(197,197,212,0.2)',
                   background: changed ? 'rgba(0,101,101,0.04)' : undefined,
@@ -1264,9 +1290,6 @@ function CountMode({
                   <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684', textTransform: 'uppercase' }}>
                     {item.category} · {item.unit}
                   </div>
-                </div>
-                <div style={{ textAlign: 'right', fontSize: '12px', color: est?.hasEstimate ? '#006565' : '#c5c5d4', fontFamily: "'JetBrains Mono', monospace", fontWeight: 600 }}>
-                  {est?.hasEstimate ? Math.round(est.estimated) : '—'}
                 </div>
                 <div style={{ position: 'relative' }}>
                   <input
