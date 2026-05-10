@@ -1046,12 +1046,22 @@ function EditMemberModal({ member, hotelId, isSelf, onClose, onSaved }: {
   );
 }
 
-// Build a full-URL signup link for a code. window.location.origin is used
-// at click-time so this works in dev (localhost) and prod (getstaxis.com)
-// without hard-coding the host. SSR-safe — never called during render.
+// Build a full-URL signup link for a code.
+//
+// We always use the canonical production host (getstaxis.com) when the app
+// is running outside of localhost — even if the user is currently viewing
+// the app on the legacy hotelops-ai.vercel.app alias. Reeyen flagged this:
+// the link shouldn't leak our pre-domain Vercel URL to staff.
+//
+// In development we still echo window.location.origin so localhost-based
+// QA flows produce clickable local URLs.
+const CANONICAL_SITE_URL = 'https://getstaxis.com';
 function signupLinkFor(code: string): string {
   if (typeof window === 'undefined') return `/signup?code=${code}`;
-  return `${window.location.origin}/signup?code=${code}`;
+  if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+    return `${window.location.origin}/signup?code=${code}`;
+  }
+  return `${CANONICAL_SITE_URL}/signup?code=${code}`;
 }
 
 // CopyButton — writes `value` to the clipboard and lights up loud enough
