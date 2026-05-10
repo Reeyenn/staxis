@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
+import { supabase } from '@/lib/supabase';
 import { t } from '@/lib/translations';
 
 export default function SignInPage() {
@@ -17,20 +18,24 @@ export default function SignInPage() {
   const [error, setError] = useState('');
   const [signing, setSigning] = useState(false);
 
+  // Auto-redirect users with an existing session AWAY from /signin — but
+  // skip the redirect while a sign-in is in flight. Without that guard,
+  // signIn()'s setUser() fires this useEffect and lands the user on
+  // /property-selector BEFORE handleSubmit can run the trust check + OTP
+  // step (which itself signs the user out again and redirects to
+  // /signin/verify). That race produced the "flash dashboard then bounce
+  // back to signin" loop reported on 2026-05-10.
   useEffect(() => {
-    if (!loading && user) router.replace('/property-selector');
-  }, [user, loading, router]);
+    if (!loading && user && !signing) router.replace('/property-selector');
+  }, [user, loading, router, signing]);
 
-  // 2026-05-10: 2FA flow temporarily disabled. The original flow had two
-  // bugs that locked users out:
-  //   1. Supabase project SITE_URL was localhost so magic-link emails
-  //      pointed to a dev URL that doesn't resolve for end users.
-  //   2. Email template didn't include the 6-digit token, only the link.
-  //   3. Race: setUser() inside signIn() triggered the redirect-on-user
-  //      useEffect BEFORE the trust check + OTP redirect could run.
-  // For now: plain password sign-in → straight to /property-selector via
-  // the useEffect above. 2FA will come back once SITE_URL + the OTP email
-  // template are properly configured.
+  // Sign-in flow:
+  //   1. signInWithPassword — verifies the password, issues a session.
+  //   2. Ask the server if this device is already trusted (httpOnly cookie
+  //      + matching row in trusted_devices). Trusted → done.
+  //   3. Untrusted → signOut() the just-issued session, ask Supabase to
+  //      email a 6-digit OTP, route the user to /signin/verify?email=…
+  //      where they enter the code.
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email.trim() || !password) return;
@@ -46,8 +51,47 @@ export default function SignInPage() {
         setSigning(false);
         return;
       }
-      // signIn() sets the AuthContext user, the useEffect above will
-      // router.replace to /property-selector. Nothing else to do here.
+
+      // Password verified. Pull the session for the trust-check API.
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData.session?.access_token;
+
+      let trusted = false;
+      if (accessToken) {
+        try {
+          const res = await fetch('/api/auth/check-trust', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${accessToken}` },
+            credentials: 'include',
+          });
+          if (res.ok) {
+            const body = await res.json() as { data?: { trusted?: boolean } };
+            trusted = !!body.data?.trusted;
+          }
+        } catch (err) {
+          console.warn('check-trust failed', err);
+          // Fail-closed: treat as untrusted → user goes through OTP.
+        }
+      }
+
+      if (trusted) {
+        // Drop the signing guard so the useEffect can navigate.
+        setSigning(false);
+        return;
+      }
+
+      // Untrusted device → send an OTP and route to the verify screen.
+      await supabase.auth.signOut();
+      const { error: otpErr } = await supabase.auth.signInWithOtp({
+        email: normalizedEmail,
+        options: { shouldCreateUser: false },
+      });
+      if (otpErr) {
+        setError(otpErr.message);
+        setSigning(false);
+        return;
+      }
+      router.replace(`/signin/verify?email=${encodeURIComponent(normalizedEmail)}`);
     } catch {
       setError(t('invalidCredentials', lang));
       setSigning(false);
