@@ -61,6 +61,8 @@ interface InventoryCockpitData {
     lastTrainingRunAt: string | null; lastInferenceWriteAt: string | null;
     lastAnomalyFiredAt: string | null;
     predictionsLast24h: number; activeItemModelCount: number;
+    nextTrainingAt: string;
+    nextPredictionAt: string;
   };
   recentAnomalies: Array<{
     id: string; itemId: string | null; itemName: string;
@@ -101,6 +103,8 @@ interface HKCockpitData {
     lastOverrideAt: string | null;
     predictionsLast24h: number; activeModelRunCount: number;
     optimizerActive: boolean;
+    nextTrainingAt: string;
+    nextPredictionAt: string;
   };
   recentOverrides: Array<{
     id: string; date: string; optimizerRecommendation: number; manualHeadcount: number;
@@ -409,6 +413,8 @@ function InventoryPanels({ cockpit }: { cockpit: InventoryCockpitData }) {
           lastAnomalyFiredAt={aggregate.lastAnomalyFiredAt}
           activeItemModelCount={aggregate.activeItemModelCount}
           predictionsLast24h={aggregate.predictionsLast24h}
+          nextTrainingAt={aggregate.nextTrainingAt}
+          nextPredictionAt={aggregate.nextPredictionAt}
           hotelName={sp.name}
         />
         <InventoryRecentAnomaliesTable mode="single" rows={recentAnomalies} />
@@ -447,6 +453,8 @@ function InventoryPanels({ cockpit }: { cockpit: InventoryCockpitData }) {
         lastAnomalyFiredAt={aggregate.lastAnomalyFiredAt}
         activeItemModelCount={aggregate.activeItemModelCount}
         predictionsLast24h={aggregate.predictionsLast24h}
+        nextTrainingAt={aggregate.nextTrainingAt}
+        nextPredictionAt={aggregate.nextPredictionAt}
         hotelCount={aggregate.hotelCount}
         healthCounts={aggregate.healthCounts}
       />
@@ -505,6 +513,8 @@ function HousekeepingPanels({ cockpit }: { cockpit: HKCockpitData }) {
           activeModelRunCount={aggregate.activeModelRunCount}
           predictionsLast24h={aggregate.predictionsLast24h}
           optimizerActive={aggregate.optimizerActive}
+          nextTrainingAt={aggregate.nextTrainingAt}
+          nextPredictionAt={aggregate.nextPredictionAt}
           hotelName={sp.name}
         />
         <HousekeepingOverridesTable mode="single" rows={recentOverrides} />
@@ -548,6 +558,8 @@ function HousekeepingPanels({ cockpit }: { cockpit: HKCockpitData }) {
         activeModelRunCount={aggregate.activeModelRunCount}
         predictionsLast24h={aggregate.predictionsLast24h}
         optimizerActive={aggregate.optimizerActive}
+        nextTrainingAt={aggregate.nextTrainingAt}
+        nextPredictionAt={aggregate.nextPredictionAt}
         hotelCount={aggregate.hotelCount}
         healthCounts={aggregate.healthCounts}
       />

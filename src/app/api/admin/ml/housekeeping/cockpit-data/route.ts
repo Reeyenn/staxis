@@ -21,6 +21,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/admin-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
+import { getHKNextScheduled } from '@/lib/ml-cron-schedule';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -80,6 +81,10 @@ export interface HKAggregateStats {
   predictionsLast24h: number;
   activeModelRunCount: number;
   optimizerActive: boolean;
+  /** Next scheduled training cron firing (ISO). */
+  nextTrainingAt: string;
+  /** Next scheduled inference cron firing (ISO). */
+  nextPredictionAt: string;
 }
 
 export interface HKOverrideRow {
@@ -438,6 +443,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       predictionsLast24h: predLast24h,
       activeModelRunCount: scopedProps.reduce((s, p) => s + p.modelsActive, 0),
       optimizerActive,
+      ...getHKNextScheduled(),
     };
 
     // Recent overrides (with hotel names)

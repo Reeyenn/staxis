@@ -30,6 +30,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/admin-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
+import { getInventoryNextScheduled } from '@/lib/ml-cron-schedule';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -92,6 +93,10 @@ export interface AggregateStats {
   lastAnomalyFiredAt: string | null;
   predictionsLast24h: number;
   activeItemModelCount: number;
+  /** Next scheduled training cron firing (ISO). Computed at request time. */
+  nextTrainingAt: string;
+  /** Next scheduled inference cron firing (ISO). Computed at request time. */
+  nextPredictionAt: string;
 }
 
 export interface CockpitAnomalyRow {
@@ -519,6 +524,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       lastAnomalyFiredAt,
       predictionsLast24h: predLast24h,
       activeItemModelCount: scopedSidebar.reduce((s, p) => s + (activeByProp.get(p.id) ?? 0), 0),
+      ...getInventoryNextScheduled(),
     };
 
     // ── Recent anomalies (with hotel name) ──

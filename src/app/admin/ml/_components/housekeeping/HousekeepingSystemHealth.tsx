@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { Activity, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { formatNextCron } from '@/lib/ml-cron-schedule';
 
 /**
  * Housekeeping system health panel — banner-driven view of "is the
@@ -18,6 +19,8 @@ interface CommonProps {
   activeModelRunCount: number;
   predictionsLast24h: number;
   optimizerActive: boolean;
+  nextTrainingAt: string;
+  nextPredictionAt: string;
 }
 
 interface SingleModeProps extends CommonProps {
@@ -86,11 +89,13 @@ export function HousekeepingSystemHealth(props: SingleModeProps | FleetModeProps
           label="Last training run"
           value={fmt(props.lastTrainingRunAt)}
           healthy={isFresh(props.lastTrainingRunAt, TRAINING_FRESH_SEC)}
+          subtitle={formatNextCron(new Date(props.nextTrainingAt))}
         />
         <Row
           label="Last prediction write"
           value={fmt(props.lastInferenceWriteAt)}
           healthy={isFresh(props.lastInferenceWriteAt, PREDICTION_FRESH_SEC)}
+          subtitle={formatNextCron(new Date(props.nextPredictionAt))}
         />
         <Row
           label="Last override (Maria)"
@@ -215,16 +220,17 @@ function fmt(d: string | null): string {
   return `${days} days ago`;
 }
 
-function Row({ label, value, healthy }: { label: string; value: string; healthy: boolean }) {
+function Row({ label, value, healthy, subtitle }: { label: string; value: string; healthy: boolean; subtitle?: string }) {
   return (
     <div style={{
       display: 'flex',
-      alignItems: 'center',
+      alignItems: 'flex-start',
       justifyContent: 'space-between',
       paddingBottom: '12px',
       borderBottom: '1px solid rgba(78,90,122,0.06)',
+      gap: '12px',
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#7a8a9e', fontSize: '12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#7a8a9e', fontSize: '12px', paddingTop: '2px' }}>
         <span style={{
           width: '6px', height: '6px', borderRadius: '50%',
           background: healthy ? '#00a050' : '#dc3545',
@@ -232,11 +238,18 @@ function Row({ label, value, healthy }: { label: string; value: string; healthy:
         }} />
         <span>{label}</span>
       </div>
-      <div style={{
-        fontSize: '13px',
-        color: healthy ? '#1b1c19' : '#b21e2f',
-        fontWeight: healthy ? 500 : 600,
-      }}>{value}</div>
+      <div style={{ textAlign: 'right' }}>
+        <div style={{
+          fontSize: '13px',
+          color: healthy ? '#1b1c19' : '#b21e2f',
+          fontWeight: healthy ? 500 : 600,
+        }}>{value}</div>
+        {subtitle && (
+          <div style={{ fontSize: '11px', color: '#7a8a9e', marginTop: '2px', fontFamily: "'JetBrains Mono', monospace" }}>
+            {subtitle}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
