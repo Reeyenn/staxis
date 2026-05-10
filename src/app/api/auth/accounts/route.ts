@@ -20,8 +20,10 @@ import { getOrMintRequestId } from '@/lib/log';
 
 type AccountRole = 'admin' | 'owner' | 'staff';
 
-function syntheticEmail(username: string): string {
-  return `${username.toLowerCase().trim()}@staxis.local`;
+// Basic email validation — RFC-compliant enough for our purposes. Server-side
+// guard; the form also enforces type=email client-side.
+function isValidEmail(s: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 }
 
 /**
@@ -71,7 +73,8 @@ async function verifyAdmin(req: NextRequest) {
 
 // Translate an accounts row to the public-facing shape consumed by
 // settings/accounts/page.tsx. Admin rows report propertyAccess = ['*'] for
-// consistency with the AuthContext's translation.
+// consistency with the AuthContext's translation. `email` comes from
+// auth.users (joined client-side via data_user_id → email map).
 function serializeAccount(row: {
   id: string;
   username: string;
@@ -79,11 +82,13 @@ function serializeAccount(row: {
   role: string;
   property_access: string[];
   created_at: string | null;
-}) {
+  data_user_id: string;
+}, emailByUserId: Map<string, string>) {
   return {
     accountId: row.id,
     username: row.username,
     displayName: row.display_name,
+    email: emailByUserId.get(row.data_user_id) ?? '',
     role: row.role as AccountRole,
     propertyAccess: row.role === 'admin' ? ['*'] : (row.property_access ?? []),
     createdAt: row.created_at,
@@ -98,7 +103,7 @@ export async function GET(req: NextRequest) {
 
   const { data, error } = await supabaseAdmin
     .from('accounts')
-    .select('id, username, display_name, role, property_access, created_at')
+    .select('id, username, display_name, role, property_access, created_at, data_user_id')
     .order('created_at', { ascending: true });
 
   if (error) {
@@ -106,7 +111,20 @@ export async function GET(req: NextRequest) {
     return err('Failed to load accounts', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
-  return ok({ accounts: (data ?? []).map(serializeAccount) }, { requestId });
+  // Join auth.users emails. listUsers paginates (50 default, max 1000) —
+  // fine for our scale; revisit when we cross ~500 accounts.
+  const emailByUserId = new Map<string, string>();
+  const { data: authPage, error: listErr } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
+  if (listErr) {
+    console.error('[accounts:GET] auth listUsers failed', listErr);
+    // Don't fail the request — render with blank emails so the UI is still usable.
+  } else {
+    for (const u of authPage?.users ?? []) {
+      if (u.id && u.email) emailByUserId.set(u.id, u.email);
+    }
+  }
+
+  return ok({ accounts: (data ?? []).map(r => serializeAccount(r, emailByUserId)) }, { requestId });
 }
 
 // POST /api/auth/accounts - create account (admin only)
@@ -116,16 +134,17 @@ export async function POST(req: NextRequest) {
   if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
 
   const body = await req.json();
-  const { username, password, displayName, role, propertyAccess } = body as {
+  const { username, email, password, displayName, role, propertyAccess } = body as {
     username: string;
+    email: string;
     password: string;
     displayName?: string;
     role: AccountRole;
     propertyAccess?: string[];
   };
 
-  if (!username || !password || !role) {
-    return err('username, password, and role are required', {
+  if (!username || !email || !password || !role) {
+    return err('username, email, password, and role are required', {
       requestId, status: 400, code: ApiErrorCode.ValidationFailed,
     });
   }
@@ -134,11 +153,17 @@ export async function POST(req: NextRequest) {
       requestId, status: 400, code: ApiErrorCode.ValidationFailed,
     });
   }
-  // Enforce a username shape compatible with the synthetic-email scheme.
-  // Allowed: lowercase a–z, 0–9, dot, underscore, plus, hyphen.
+  // Username is a display-only handle now (login is by email). Allowed:
+  // lowercase a–z, 0–9, dot, underscore, plus, hyphen.
   const normalizedUsername = username.toLowerCase().trim();
   if (!/^[a-z0-9._+-]{2,40}$/.test(normalizedUsername)) {
     return err('Username must be 2–40 chars: lowercase letters, digits, . _ + -', {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
+  }
+  const normalizedEmail = email.toLowerCase().trim();
+  if (!isValidEmail(normalizedEmail)) {
+    return err('A valid email is required', {
       requestId, status: 400, code: ApiErrorCode.ValidationFailed,
     });
   }
@@ -157,11 +182,11 @@ export async function POST(req: NextRequest) {
     return err('Username already exists', { requestId, status: 409, code: ApiErrorCode.IdempotencyConflict });
   }
 
-  // Step 1: create the auth.users row. email_confirm: true skips the
-  // email-verification step since these aren't real deliverable emails.
-  const email = syntheticEmail(normalizedUsername);
+  // Step 1: create the auth.users row with the real email. email_confirm:
+  // true skips Supabase's verification step — the invite/code flow in
+  // Phase 3 will do its own email verification.
   const { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
-    email,
+    email: normalizedEmail,
     password,
     email_confirm: true,
     user_metadata: { username: normalizedUsername, displayName: displayName || normalizedUsername },
@@ -210,7 +235,7 @@ export async function POST(req: NextRequest) {
       rollbackError = errToString(rollErr);
     }
     if (rollbackError) {
-      console.error(`[accounts:POST] AUTH ROLLBACK FAILED — orphaned auth.users row id=${authData.user.id} email=${normalizedUsername}@staxis.local. Insert error: ${errToString(insErr)}. Rollback error: ${rollbackError}`);
+      console.error(`[accounts:POST] AUTH ROLLBACK FAILED — orphaned auth.users row id=${authData.user.id} email=${normalizedEmail}. Insert error: ${errToString(insErr)}. Rollback error: ${rollbackError}`);
       return err(
         `Failed to create account record. ALSO: rollback of the auth user failed — orphaned auth row remains for username "${normalizedUsername}". Have an admin delete the row manually in Supabase Authentication.`,
         { requestId, status: 500, code: ApiErrorCode.InternalError },
@@ -229,9 +254,10 @@ export async function PUT(req: NextRequest) {
   if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
 
   const body = await req.json();
-  const { accountId, displayName, role, propertyAccess, password } = body as {
+  const { accountId, displayName, email, role, propertyAccess, password } = body as {
     accountId: string;
     displayName?: string;
+    email?: string;
     role?: AccountRole;
     propertyAccess?: string[];
     password?: string;
@@ -279,21 +305,31 @@ export async function PUT(req: NextRequest) {
     }
   }
 
-  // Password rotation goes through Supabase Auth's admin API.
-  if (password) {
-    const { error: pwErr } = await supabaseAdmin.auth.admin.updateUserById(
+  // Password + email rotation go through Supabase Auth's admin API.
+  const authUpdates: { password?: string; email?: string; email_confirm?: boolean } = {};
+  if (password) authUpdates.password = password;
+  if (email !== undefined) {
+    const normalizedEmail = email.toLowerCase().trim();
+    if (!isValidEmail(normalizedEmail)) {
+      return err('A valid email is required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    }
+    authUpdates.email = normalizedEmail;
+    authUpdates.email_confirm = true;
+  }
+  if (Object.keys(authUpdates).length > 0) {
+    const { error: authErr } = await supabaseAdmin.auth.admin.updateUserById(
       target.data_user_id,
-      { password },
+      authUpdates,
     );
-    if (pwErr) {
-      console.error('[accounts:PUT] password update failed', pwErr);
-      return err(pwErr.message ?? 'Failed to update password', {
+    if (authErr) {
+      console.error('[accounts:PUT] auth update failed', authErr);
+      return err(authErr.message ?? 'Failed to update account', {
         requestId, status: 400, code: ApiErrorCode.ValidationFailed,
       });
     }
   }
 
-  if (Object.keys(updates).length === 0 && !password) {
+  if (Object.keys(updates).length === 0 && Object.keys(authUpdates).length === 0) {
     return err('Nothing to update', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 

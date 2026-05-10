@@ -34,7 +34,7 @@ interface AuthContextType {
   user: AppUser | null;
   loading: boolean;
   /** Returns an error string on failure, or null on success */
-  signIn: (username: string, password: string) => Promise<string | null>;
+  signIn: (email: string, password: string) => Promise<string | null>;
   signOut: () => Promise<void>;
 }
 
@@ -44,11 +44,6 @@ const AuthContext = createContext<AuthContextType>({
   signIn: async () => null,
   signOut: async () => {},
 });
-
-// Username → synthetic email. Lowercase + trim for consistency with schema.
-export function usernameToEmail(username: string): string {
-  return `${username.toLowerCase().trim()}@staxis.local`;
-}
 
 // Fetch the accounts row for the current auth user and translate to AppUser.
 // Returns null if no accounts row exists (dangling auth user — treat as
@@ -237,17 +232,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  const signIn = async (username: string, password: string): Promise<string | null> => {
+  const signIn = async (email: string, password: string): Promise<string | null> => {
     try {
-      const email = usernameToEmail(username);
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      const normalizedEmail = email.trim().toLowerCase();
+      const { data, error } = await supabase.auth.signInWithPassword({ email: normalizedEmail, password });
 
       if (error) {
-        // Supabase returns "Invalid login credentials" for both bad username
+        // Supabase returns "Invalid login credentials" for both bad email
         // and bad password — surface that as a generic message to avoid
-        // leaking whether a username exists.
+        // leaking whether an email exists.
         if (error.message.toLowerCase().includes('invalid')) {
-          return 'Invalid username or password';
+          return 'Invalid email or password';
         }
         return error.message;
       }

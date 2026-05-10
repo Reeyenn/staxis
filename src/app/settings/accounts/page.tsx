@@ -14,6 +14,7 @@ interface AccountRow {
   accountId: string;
   username: string;
   displayName: string;
+  email: string;
   role: 'admin' | 'owner' | 'staff';
   propertyAccess: string[];
   createdAt: string | null;
@@ -22,6 +23,7 @@ interface AccountRow {
 interface FormState {
   username: string;
   displayName: string;
+  email: string;
   password: string;
   role: 'admin' | 'owner' | 'staff';
   propertyAccess: string[];  // property IDs, or ["*"] for all
@@ -30,6 +32,7 @@ interface FormState {
 const BLANK_FORM: FormState = {
   username: '',
   displayName: '',
+  email: '',
   password: '',
   role: 'owner',
   propertyAccess: [],
@@ -98,6 +101,7 @@ export default function AccountsPage() {
     setForm({
       username: acct.username,
       displayName: acct.displayName,
+      email: acct.email,
       password: '',
       role: acct.role,
       propertyAccess: acct.propertyAccess,
@@ -109,6 +113,7 @@ export default function AccountsPage() {
   const handleSave = async () => {
     if (!user) return;
     if (!form.username.trim()) { setFormError(lang === 'es' ? 'El nombre de usuario es requerido' : 'Username is required'); return; }
+    if (!form.email.trim()) { setFormError(lang === 'es' ? 'El correo es requerido' : 'Email is required'); return; }
     if (!editingId && !form.password.trim()) { setFormError(lang === 'es' ? 'La contraseña es requerida para cuentas nuevas' : 'Password is required for new accounts'); return; }
 
     setSaving(true);
@@ -122,6 +127,7 @@ export default function AccountsPage() {
           body: JSON.stringify({
             accountId: editingId,
             displayName: form.displayName || form.username,
+            email: form.email.trim(),
             role: form.role,
             propertyAccess: form.propertyAccess,
             ...(form.password ? { password: form.password } : {}),
@@ -141,6 +147,7 @@ export default function AccountsPage() {
           body: JSON.stringify({
             username: form.username.trim(),
             displayName: form.displayName || form.username,
+            email: form.email.trim(),
             password: form.password,
             role: form.role,
             propertyAccess: form.propertyAccess,
@@ -408,6 +415,20 @@ export default function AccountsPage() {
                 value={form.displayName}
                 onChange={e => setForm(f => ({ ...f, displayName: e.target.value }))}
                 placeholder={lang === 'es' ? 'Nombre completo (ej. Jay Patel)' : 'Full name (e.g. Jay Patel)'}
+                style={inputStyle}
+              />
+            </div>
+
+            {/* Email — used for sign-in and password recovery */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <label style={labelStyle}>{lang === 'es' ? 'Correo electrónico' : 'Email'}</label>
+              <input
+                type="email"
+                value={form.email}
+                onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
+                placeholder="name@example.com"
+                autoCapitalize="off"
+                spellCheck={false}
                 style={inputStyle}
               />
             </div>

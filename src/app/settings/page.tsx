@@ -4,23 +4,25 @@ import React from 'react';
 import Link from 'next/link';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useLang } from '@/contexts/LanguageContext';
-import { useProperty } from '@/contexts/PropertyContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { t } from '@/lib/translations';
-import { Building2, Wifi, Users, ChevronRight, Settings, Wrench } from 'lucide-react';
+import { Wifi, Users, ChevronRight } from 'lucide-react';
 
 export default function SettingsPage() {
   const { lang }           = useLang();
-  const { activeProperty } = useProperty();
   const { user }           = useAuth();
 
+  // Account & Team is the hub for profile + (eventually) team management;
+  // visible to admin today, opens up to owner/GM in Phase 3.
   const sections = [
-    { href:'/settings/property', icon:Building2, label:t('property', lang),         desc:t('propertySettingsDesc', lang)              },
-    { href:'/settings/operations', icon:Wrench, label:t('operationsConfig', lang), desc:t('operationsConfigDesc', lang)            },
-    { href:'/settings/pms',      icon:Wifi,      label:t('pmsConnection', lang),  desc: lang === 'es' ? 'Sincronización automática con tu sistema de gestión hotelera' : 'Auto-sync data from your property management system'},
-    { href:'/staff',             icon:Users,     label:t('staffDirectory', lang), desc: lang === 'es' ? 'Ver y gestionar todo el personal del hotel por departamento' : 'View and manage all hotel staff by department'      },
+    { href:'/settings/pms', icon:Wifi, label:t('pmsConnection', lang), desc: lang === 'es' ? 'Sincronización automática con tu sistema de gestión hotelera' : 'Auto-sync data from your property management system' },
     ...(user?.role === 'admin'
-      ? [{ href:'/settings/accounts', icon:Users, label:t('accountManagement', lang), desc:t('accountManagementDesc', lang) }]
+      ? [{
+          href:'/settings/accounts',
+          icon:Users,
+          label: lang === 'es' ? 'Cuenta y equipo' : 'Account & Team',
+          desc: lang === 'es' ? 'Tu perfil, contraseña y cuentas del equipo' : 'Your profile, password, and team accounts',
+        }]
       : []),
   ];
 

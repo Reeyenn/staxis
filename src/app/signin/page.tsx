@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
@@ -11,7 +12,7 @@ export default function SignInPage() {
   const { lang } = useLang();
   const router = useRouter();
 
-  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [signing, setSigning] = useState(false);
@@ -22,13 +23,13 @@ export default function SignInPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim() || !password) return;
+    if (!email.trim() || !password) return;
 
     setSigning(true);
     setError('');
 
     try {
-      const err = await signIn(username.trim(), password);
+      const err = await signIn(email.trim(), password);
       if (err) {
         setError(err);
         setSigning(false);
@@ -87,13 +88,13 @@ export default function SignInPage() {
               color: 'var(--text-secondary)', textTransform: 'uppercase',
               fontFamily: 'var(--font-sans)',
             }}>
-              {t('username', lang)}
+              {lang === 'es' ? 'Correo electrónico' : 'Email'}
             </label>
             <input
-              type="text"
-              value={username}
-              onChange={e => { setUsername(e.target.value); setError(''); }}
-              autoComplete="username"
+              type="email"
+              value={email}
+              onChange={e => { setEmail(e.target.value); setError(''); }}
+              autoComplete="email"
               autoCapitalize="off"
               spellCheck={false}
               disabled={signing}
@@ -113,13 +114,24 @@ export default function SignInPage() {
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            <label style={{
-              fontSize: '12px', fontWeight: 600, letterSpacing: '0.04em',
-              color: 'var(--text-secondary)', textTransform: 'uppercase',
-              fontFamily: 'var(--font-sans)',
-            }}>
-              {t('password', lang)}
-            </label>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+              <label style={{
+                fontSize: '12px', fontWeight: 600, letterSpacing: '0.04em',
+                color: 'var(--text-secondary)', textTransform: 'uppercase',
+                fontFamily: 'var(--font-sans)',
+              }}>
+                {t('password', lang)}
+              </label>
+              <Link
+                href="/signin/forgot"
+                style={{
+                  fontSize: '12px', color: 'var(--navy-light)',
+                  textDecoration: 'none', fontFamily: 'var(--font-sans)',
+                }}
+              >
+                {lang === 'es' ? '¿Olvidaste tu contraseña?' : 'Forgot password?'}
+              </Link>
+            </div>
             <input
               type="password"
               value={password}
@@ -156,17 +168,17 @@ export default function SignInPage() {
 
           <button
             type="submit"
-            disabled={signing || !username.trim() || !password}
+            disabled={signing || !email.trim() || !password}
             style={{
               width: '100%', height: '48px', marginTop: '4px',
               borderRadius: 'var(--radius-md)',
-              background: (signing || !username.trim() || !password)
+              background: (signing || !email.trim() || !password)
                 ? 'rgba(37,99,235,0.4)'
                 : 'var(--navy-light)',
               color: '#FFFFFF',
               fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: '15px',
               border: 'none',
-              cursor: (signing || !username.trim() || !password) ? 'not-allowed' : 'pointer',
+              cursor: (signing || !email.trim() || !password) ? 'not-allowed' : 'pointer',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               transition: 'all 120ms',
             }}
