@@ -15,15 +15,11 @@ import { PipelineHealth } from './_components/PipelineHealth';
 import { ManualTriggers } from './_components/ManualTriggers';
 import { RecentOverridesTable } from './_components/RecentOverridesTable';
 import { DisagreementHistory } from './_components/DisagreementHistory';
+import { InventoryTimeline } from './_components/inventory/InventoryTimeline';
 import { InventoryDataFuelGauge } from './_components/inventory/InventoryDataFuelGauge';
-import { InventoryLayerStatusPanel } from './_components/inventory/InventoryLayerStatusPanel';
-import { InventoryShadowMAEChart } from './_components/inventory/InventoryShadowMAEChart';
-import { InventoryTodaysPredictionsTable } from './_components/inventory/InventoryTodaysPredictionsTable';
 import { InventoryPipelineHealth } from './_components/inventory/InventoryPipelineHealth';
-import { InventoryManualTriggers } from './_components/inventory/InventoryManualTriggers';
 import { InventoryRecentAnomaliesTable } from './_components/inventory/InventoryRecentAnomaliesTable';
 import { InventoryAdoptionPanel } from './_components/inventory/InventoryAdoptionPanel';
-import { InventoryNetworkHealth } from './_components/inventory/InventoryNetworkHealth';
 
 /**
  * /admin/ml — Owner-only ML cockpit (split into Housekeeping + Inventory tabs).
@@ -246,35 +242,30 @@ function MLPageInner() {
           </div>
         )}
 
-        {/* Inventory tab — 8 mirroring panels */}
+        {/* Inventory tab — simplified to 5 panels per Reeyen's review.
+            Order is intentional: Timeline (where am I?) → Data fuel (am I
+            collecting enough data?) → System health (is anything broken?) →
+            Anomalies → Who's counting. The dropped panels (rate models,
+            today's predictions, prediction accuracy chart, manual triggers,
+            network health) duplicated info already on the Timeline / Data
+            Fuel / Health panels and added cognitive load without value at
+            1-hotel scale. */}
         {tab === 'inventory' && (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', marginBottom: '24px' }}>
+            <div style={{ gridColumn: '1 / -1' }}>
+              <InventoryTimeline />
+            </div>
             <div style={{ gridColumn: '1 / -1' }}>
               <InventoryDataFuelGauge />
             </div>
             <div style={{ gridColumn: '1 / -1' }}>
-              <InventoryLayerStatusPanel />
-            </div>
-            <div style={{ gridColumn: '1 / -1' }}>
-              <InventoryTodaysPredictionsTable />
-            </div>
-            <div style={{ gridColumn: '1 / -1' }}>
-              <InventoryShadowMAEChart />
-            </div>
-            <div style={{ gridColumn: '1 / 2' }}>
               <InventoryPipelineHealth />
-            </div>
-            <div style={{ gridColumn: '2 / 3' }}>
-              <InventoryManualTriggers />
             </div>
             <div style={{ gridColumn: '1 / -1' }}>
               <InventoryRecentAnomaliesTable />
             </div>
             <div style={{ gridColumn: '1 / -1' }}>
               <InventoryAdoptionPanel />
-            </div>
-            <div style={{ gridColumn: '1 / -1' }}>
-              <InventoryNetworkHealth />
             </div>
           </div>
         )}
