@@ -182,8 +182,6 @@ type TranslationKey =
   | 'noRoomsAssigned' | 'checkBackSoon'
   | 'describeIssue' | 'submit'
   | 'keepHolding' | 'holdToFinish'
-  // ── Header ────────────────────────────────────────────────────────────────
-  | 'allProperties'
   // ── Room availability ─────────────────────────────────────────────────────
   | 'availableRooms' | 'available' | 'roomOccupied'
   // ── Inventory tracking ────────────────────────────────────────────────────
@@ -716,8 +714,6 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     submit: 'Submit',
     keepHolding: 'Keep holding…',
     holdToFinish: 'Hold to Finish',
-    // ── Header ──
-    allProperties: 'All properties…',
     // ── Room availability ──
     availableRooms: 'Available Rooms',
     available: 'Available',
@@ -1342,8 +1338,6 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     submit: 'Enviar',
     keepHolding: 'Sigue presionando…',
     holdToFinish: 'Mantén para terminar',
-    // ── Header ──
-    allProperties: 'Todas las propiedades…',
     // ── Room availability ──
     availableRooms: 'Hab. Disponibles',
     available: 'Disponible',
