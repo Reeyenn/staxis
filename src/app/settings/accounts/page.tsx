@@ -7,7 +7,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
-import { Users, Plus, Trash2, Pencil, X, Check, ChevronLeft, Shield, User, Mail, KeyRound, Copy } from 'lucide-react';
+import { Users, Plus, Trash2, Pencil, X, Check, ChevronLeft, Shield, User, Mail, KeyRound, Copy, Link2 } from 'lucide-react';
 import { fetchWithAuth } from '@/lib/api-fetch';
 
 import { ALL_ROLES, ASSIGNABLE_ROLES, roleLabel, canManageTeam, type AppRole, type AssignableRole } from '@/lib/roles';
@@ -633,9 +633,8 @@ export default function AccountsPage() {
                       {lang === 'es' ? 'expira' : 'expires'} {new Date(c.expires_at).toLocaleDateString()}
                     </div>
                   </div>
-                  <button onClick={() => navigator.clipboard?.writeText(c.code)} style={iconBtnStyle} aria-label="Copy">
-                    <Copy size={13} />
-                  </button>
+                  <CopyButton value={c.code} label={lang === 'es' ? 'Copiar código' : 'Copy code'} small />
+                  <CopyButton value={signupLinkFor(c.code)} label={lang === 'es' ? 'Copiar enlace' : 'Copy link'} small linkIcon />
                   <button onClick={() => handleRevokeCode(c.id)} style={revokeBtnStyle} aria-label="Revoke">
                     <Trash2 size={13} />
                   </button>
@@ -892,14 +891,36 @@ export default function AccountsPage() {
                   fontSize: '20px', fontWeight: 700, fontFamily: 'var(--font-mono)',
                   letterSpacing: '0.1em', color: 'var(--text-primary)',
                 }}>{codeResult.code}</span>
-                <button onClick={() => navigator.clipboard?.writeText(codeResult.code)} style={iconBtnStyle} aria-label="Copy">
-                  <Copy size={14} />
-                </button>
+                <CopyButton value={codeResult.code} label={lang === 'es' ? 'Copiar código' : 'Copy code'} />
               </div>
+
+              {/* Shareable link with code prefilled — Reeyen flagged that
+                  bare "/signup" was confusing because users can't type a
+                  path into Google. This is the full URL they can text to
+                  staff. Uses window.location.origin so localhost works
+                  in dev and getstaxis.com works in production. */}
+              <p style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--text-muted)', fontFamily: 'var(--font-sans)' }}>
+                {lang === 'es' ? 'O comparte este enlace' : 'Or share this link'}
+              </p>
+              <div style={{
+                background: 'var(--bg-card)', border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-md)', padding: '10px 12px',
+                display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0,
+              }}>
+                <span style={{
+                  flex: 1, minWidth: 0, fontSize: '12px',
+                  fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)',
+                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                }}>
+                  {signupLinkFor(codeResult.code)}
+                </span>
+                <CopyButton value={signupLinkFor(codeResult.code)} label={lang === 'es' ? 'Copiar enlace' : 'Copy link'} />
+              </div>
+
               <p style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
                 {lang === 'es'
-                  ? <>Válido por una semana. Tu equipo lo usa en <code>/signup</code> y elige su rol al crear la cuenta.</>
-                  : <>Valid for one week. Your team uses it at <code>/signup</code> and picks their role when creating the account.</>}
+                  ? 'Válido por una semana. Tu equipo elige su rol al crear la cuenta.'
+                  : 'Valid for one week. Your team picks their role when creating the account.'}
               </p>
               <button onClick={() => setShowCodeModal(false)} style={primaryBtnStyle(false)}>
                 {lang === 'es' ? 'Cerrar' : 'Close'}
@@ -1022,6 +1043,65 @@ function EditMemberModal({ member, hotelId, isSelf, onClose, onSaved }: {
           : (lang === 'es' ? 'Guardar' : 'Save changes')}
       </button>
     </ModalShell>
+  );
+}
+
+// Build a full-URL signup link for a code. window.location.origin is used
+// at click-time so this works in dev (localhost) and prod (getstaxis.com)
+// without hard-coding the host. SSR-safe — never called during render.
+function signupLinkFor(code: string): string {
+  if (typeof window === 'undefined') return `/signup?code=${code}`;
+  return `${window.location.origin}/signup?code=${code}`;
+}
+
+// CopyButton — writes `value` to the clipboard and shows a brief "Copied!"
+// confirmation. Reeyen flagged the previous version as broken because
+// clicking it had no visible effect; this fixes that with a 1.5s state
+// flip swapping the icon to a check + showing the word "Copied".
+function CopyButton({ value, label, small, linkIcon }: {
+  value: string;
+  label: string;
+  small?: boolean;
+  linkIcon?: boolean;
+}) {
+  const [copied, setCopied] = useState(false);
+  const handleClick = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard API can fail on insecure origins (http://) or in some
+      // embedded contexts. Fallback so the user still gets feedback that
+      // something happened — they can long-press the text to copy.
+      alert(label + ': ' + value);
+    }
+  };
+  const Icon = copied ? Check : (linkIcon ? Link2 : Copy);
+  const iconSize = small ? 13 : 14;
+  return (
+    <button
+      onClick={handleClick}
+      aria-label={label}
+      title={label}
+      style={{
+        height: small ? '32px' : '34px',
+        padding: copied ? '0 10px' : (small ? '0' : '0 8px'),
+        minWidth: small ? '32px' : '34px',
+        borderRadius: 'var(--radius-sm)',
+        background: copied ? 'var(--green-dim, rgba(34,197,94,0.12))' : 'transparent',
+        border: `1px solid ${copied ? 'var(--green-border, rgba(34,197,94,0.35))' : 'var(--border)'}`,
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+        cursor: 'pointer',
+        color: copied ? 'var(--green, #22c55e)' : 'var(--text-muted)',
+        fontFamily: 'var(--font-sans)',
+        fontSize: '12px', fontWeight: 600,
+        transition: 'background 120ms, color 120ms, border-color 120ms',
+      }}
+    >
+      <Icon size={iconSize} />
+      {copied && <span>Copied</span>}
+    </button>
   );
 }
 
