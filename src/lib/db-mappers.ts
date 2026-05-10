@@ -41,6 +41,8 @@ import type {
   ManagerNotification,
   DeepCleanRecord,
   LandscapingTask,
+  Vendor,
+  ServiceContract,
 } from '@/types';
 
 // ─── tiny utilities ─────────────────────────────────────────────────────────
@@ -365,6 +367,7 @@ export function toWorkOrderRow(o: Partial<WorkOrder>): Record<string, unknown> {
     equipment_id: o.equipmentId,
     repair_cost: o.repairCost,
     parts_used: o.partsUsed,
+    vendor_id: o.vendorId,
     resolved_at: toISO(o.resolvedAt),
   });
 }
@@ -391,6 +394,7 @@ export function fromWorkOrderRow(r: Record<string, unknown>): WorkOrder {
     equipmentId: (r.equipment_id as string) ?? undefined,
     repairCost: r.repair_cost == null ? undefined : Number(r.repair_cost),
     partsUsed: (r.parts_used as string[]) ?? undefined,
+    vendorId: (r.vendor_id as string) ?? undefined,
     createdAt: toDate(r.created_at),
     updatedAt: toDate(r.updated_at),
     resolvedAt: toDate(r.resolved_at),
@@ -416,6 +420,8 @@ export function fromEquipmentRow(r: Record<string, unknown>): Equipment {
     pmIntervalDays: r.pm_interval_days == null ? undefined : Number(r.pm_interval_days),
     lastPmAt: toDate(r.last_pm_at),
     notes: (r.notes as string) ?? undefined,
+    vendorId: (r.vendor_id as string) ?? undefined,
+    warrantyEndDate: toDate(r.warranty_end_date),
     createdAt: toDate(r.created_at) ?? new Date(),
     updatedAt: toDate(r.updated_at) ?? new Date(),
   };
@@ -437,6 +443,10 @@ export function toEquipmentRow(e: Partial<Equipment>): Record<string, unknown> {
     pm_interval_days: e.pmIntervalDays,
     last_pm_at: toISO(e.lastPmAt),
     notes: e.notes,
+    vendor_id: e.vendorId,
+    warranty_end_date: e.warrantyEndDate
+      ? (e.warrantyEndDate instanceof Date ? e.warrantyEndDate.toISOString().slice(0, 10) : e.warrantyEndDate)
+      : (e.warrantyEndDate === null ? null : undefined),
   });
 }
 
@@ -733,4 +743,72 @@ export function fromDeepCleanRecordRow(r: Record<string, unknown>): DeepCleanRec
     assignedAt: (r.assigned_at as string) ?? undefined,
     completedAt: (r.completed_at as string) ?? undefined,
   };
+}
+
+// ─── Vendor ─────────────────────────────────────────────────────────────────
+
+export function fromVendorRow(r: Record<string, unknown>): Vendor {
+  return {
+    id: String(r.id),
+    propertyId: String(r.property_id ?? ''),
+    name: String(r.name ?? ''),
+    category: (r.category as Vendor['category']) ?? 'other',
+    contactName: (r.contact_name as string) ?? undefined,
+    contactEmail: (r.contact_email as string) ?? undefined,
+    contactPhone: (r.contact_phone as string) ?? undefined,
+    notes: (r.notes as string) ?? undefined,
+    createdAt: toDate(r.created_at) ?? new Date(),
+    updatedAt: toDate(r.updated_at) ?? new Date(),
+  };
+}
+
+export function toVendorRow(v: Partial<Vendor>): Record<string, unknown> {
+  return dropUndefined({
+    property_id: v.propertyId,
+    name: v.name,
+    category: v.category,
+    contact_name: v.contactName,
+    contact_email: v.contactEmail,
+    contact_phone: v.contactPhone,
+    notes: v.notes,
+  });
+}
+
+// ─── Service contract ───────────────────────────────────────────────────────
+
+export function fromServiceContractRow(r: Record<string, unknown>): ServiceContract {
+  return {
+    id: String(r.id),
+    propertyId: String(r.property_id ?? ''),
+    vendorId: (r.vendor_id as string) ?? undefined,
+    name: String(r.name ?? ''),
+    category: (r.category as ServiceContract['category']) ?? 'other',
+    cadence: (r.cadence as ServiceContract['cadence']) ?? 'monthly',
+    lastServicedAt: toDate(r.last_serviced_at),
+    nextDueAt: toDate(r.next_due_at),
+    monthlyCost: r.monthly_cost == null ? undefined : Number(r.monthly_cost),
+    notes: (r.notes as string) ?? undefined,
+    createdAt: toDate(r.created_at) ?? new Date(),
+    updatedAt: toDate(r.updated_at) ?? new Date(),
+  };
+}
+
+export function toServiceContractRow(c: Partial<ServiceContract>): Record<string, unknown> {
+  const dateOnly = (d: Date | string | null | undefined): string | null | undefined => {
+    if (d === undefined) return undefined;
+    if (d === null) return null;
+    if (d instanceof Date) return d.toISOString().slice(0, 10);
+    return d;
+  };
+  return dropUndefined({
+    property_id: c.propertyId,
+    vendor_id: c.vendorId,
+    name: c.name,
+    category: c.category,
+    cadence: c.cadence,
+    last_serviced_at: dateOnly(c.lastServicedAt),
+    next_due_at: dateOnly(c.nextDueAt),
+    monthly_cost: c.monthlyCost,
+    notes: c.notes,
+  });
 }

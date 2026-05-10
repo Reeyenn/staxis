@@ -35,6 +35,8 @@ export * from './db/work-orders';
 export * from './db/equipment';
 export * from './db/preventive';
 export * from './db/landscaping';
+export * from './db/vendors';
+export * from './db/service-contracts';
 export * from './db/inventory';
 export * from './db/inventory-counts';
 export * from './db/inventory-orders';

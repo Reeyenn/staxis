@@ -32,7 +32,7 @@
 // this, lift the same interfaces into the Python service later.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import type { Equipment, WorkOrder, PreventiveTask } from '@/types';
+import type { Equipment, WorkOrder, PreventiveTask, ServiceContract } from '@/types';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -112,6 +112,7 @@ export function generateColdStartAlerts(
   equipment: Equipment[],
   workOrders: WorkOrder[],
   preventiveTasks: PreventiveTask[],
+  serviceContracts: ServiceContract[] = [],
 ): MaintenanceAlert[] {
   const now = Date.now();
   const alerts: MaintenanceAlert[] = [];
@@ -286,6 +287,39 @@ export function generateColdStartAlerts(
           message: `${t.name} due in ${daysUntilDue} day${daysUntilDue === 1 ? '' : 's'}`,
           recommendation: `Frequency: every ${t.frequencyDays} days. Schedule before it's overdue.`,
           data: { taskId: t.id, daysUntilDue, preDue: true },
+        });
+      }
+    }
+  }
+
+  // Service contracts — outsourced recurring services (pool service, fire
+  // suppression, pest control). Same threshold logic as PM: pre-due at
+  // 30/14/7 days, then escalating overdue.
+  for (const c of serviceContracts) {
+    if (!c.nextDueAt) continue;
+    const daysUntilDue = Math.ceil((c.nextDueAt.getTime() - now) / DAY_MS);
+    if (daysUntilDue < 0) {
+      const overdueDays = -daysUntilDue;
+      alerts.push({
+        equipmentId: `contract:${c.id}`,
+        alertType: 'pm_overdue',
+        severity: overdueDays > 14 ? 'critical' : 'warning',
+        message: `${c.name} is ${overdueDays} day${overdueDays === 1 ? '' : 's'} overdue`,
+        recommendation: c.vendorId
+          ? `Schedule next visit with the assigned vendor.`
+          : `Schedule next visit; assign a vendor for faster follow-up next time.`,
+        data: { contractId: c.id, overdueDays, cadence: c.cadence },
+      });
+    } else {
+      const preDueSeverity = preDueSeverityFor(daysUntilDue);
+      if (preDueSeverity) {
+        alerts.push({
+          equipmentId: `contract:${c.id}`,
+          alertType: 'pm_overdue',
+          severity: preDueSeverity,
+          message: `${c.name} due in ${daysUntilDue} day${daysUntilDue === 1 ? '' : 's'}`,
+          recommendation: `Cadence: ${c.cadence}. Schedule the next visit before it's overdue.`,
+          data: { contractId: c.id, daysUntilDue, preDue: true, cadence: c.cadence },
         });
       }
     }

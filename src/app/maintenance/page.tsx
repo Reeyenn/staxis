@@ -17,8 +17,10 @@ import {
   subscribeToPreventiveTasks,
   subscribeToInventory, updateInventoryItem,
   addPreventiveTask,
+  subscribeToVendors, addVendor, updateVendor, deleteVendor,
+  subscribeToServiceContracts, addServiceContract, updateServiceContract, deleteServiceContract,
 } from '@/lib/db';
-import type { WorkOrder, WorkOrderSeverity, WorkOrderStatus, LandscapingTask, LandscapingSeason, Equipment, EquipmentCategory, EquipmentStatus, PreventiveTask, InventoryItem } from '@/types';
+import type { WorkOrder, WorkOrderSeverity, WorkOrderStatus, LandscapingTask, LandscapingSeason, Equipment, EquipmentCategory, EquipmentStatus, PreventiveTask, InventoryItem, Vendor, VendorCategory, ServiceContract, ServiceContractCadence } from '@/types';
 import {
   generateColdStartAlerts, predictFailures, repairVsReplace,
   type MaintenanceAlert,
@@ -32,7 +34,40 @@ import {
 
 // ─── Tab config ──────────────────────────────────────────────────────────────
 
-type TabKey = 'workOrders' | 'preventive' | 'equipment' | 'landscaping';
+type TabKey = 'workOrders' | 'preventive' | 'equipment' | 'landscaping' | 'contracts';
+
+// Service contract cadence → days, used for next-due defaulting + alert math.
+const CADENCE_DAYS: Record<ServiceContractCadence, number> = {
+  weekly: 7,
+  biweekly: 14,
+  monthly: 30,
+  quarterly: 90,
+  annual: 365,
+};
+
+const VENDOR_CATEGORIES: VendorCategory[] = [
+  'hvac','plumbing','electrical','appliance','pool','landscaping',
+  'pest','fire','elevator','laundry','kitchen','structural','other',
+];
+
+const VENDOR_CATEGORY_LABEL = (cat: VendorCategory, lang: 'en' | 'es'): string => {
+  const map: Record<VendorCategory, [string, string]> = {
+    hvac:        ['HVAC', 'HVAC'],
+    plumbing:    ['Plumbing', 'Plomería'],
+    electrical:  ['Electrical', 'Eléctrico'],
+    appliance:   ['Appliance', 'Electrodoméstico'],
+    pool:        ['Pool', 'Piscina'],
+    landscaping: ['Landscaping', 'Jardinería'],
+    pest:        ['Pest Control', 'Control de Plagas'],
+    fire:        ['Fire / Life Safety', 'Incendios / Seguridad'],
+    elevator:    ['Elevator', 'Ascensor'],
+    laundry:     ['Laundry', 'Lavandería'],
+    kitchen:     ['Kitchen', 'Cocina'],
+    structural:  ['Structural', 'Estructural'],
+    other:       ['Other', 'Otro'],
+  };
+  return map[cat][lang === 'es' ? 1 : 0];
+};
 
 // Default equipment seed — first time the equipment tab loads with zero
 // rows, we drop these in so the user has a starting point. They edit
@@ -159,7 +194,7 @@ export default function MaintenancePage() {
     // Initial read from URL (?tab=preventive) so refresh keeps the tab.
     if (typeof window === 'undefined') return 'workOrders';
     const p = new URLSearchParams(window.location.search).get('tab');
-    if (p === 'preventive' || p === 'landscaping' || p === 'workOrders' || p === 'equipment') return p;
+    if (p === 'preventive' || p === 'landscaping' || p === 'workOrders' || p === 'equipment' || p === 'contracts') return p;
     return 'workOrders';
   });
   const setActiveTab = useCallback((tab: TabKey) => {
@@ -213,6 +248,15 @@ export default function MaintenancePage() {
   const [showEquipmentModal, setShowEquipmentModal] = useState(false);
   const [editingEquipment, setEditingEquipment] = useState<Equipment | null>(null);
   const equipmentSeededRef = useRef(false);
+
+  // Vendors (Maintenance V6)
+  const [vendors, setVendors] = useState<Vendor[]>([]);
+  const [showVendorsModal, setShowVendorsModal] = useState(false);
+
+  // Service contracts (Maintenance V6)
+  const [serviceContracts, setServiceContracts] = useState<ServiceContract[]>([]);
+  const [editingContract, setEditingContract] = useState<ServiceContract | null>(null);
+  const [showContractModal, setShowContractModal] = useState(false);
 
   // Maintenance-category inventory for the resolve-with-supplies modal.
   // We subscribe to ALL inventory + filter client-side because there's no
@@ -271,6 +315,18 @@ export default function MaintenancePage() {
   useEffect(() => {
     if (!user || !activePropertyId) return;
     return subscribeToPreventiveTasks(user.uid, activePropertyId, setPreventiveTasks);
+  }, [user, activePropertyId]);
+
+  // Vendors subscription (Maintenance V6).
+  useEffect(() => {
+    if (!user || !activePropertyId) return;
+    return subscribeToVendors(user.uid, activePropertyId, setVendors);
+  }, [user, activePropertyId]);
+
+  // Service contracts subscription (Maintenance V6).
+  useEffect(() => {
+    if (!user || !activePropertyId) return;
+    return subscribeToServiceContracts(user.uid, activePropertyId, setServiceContracts);
   }, [user, activePropertyId]);
 
   // Maintenance-category inventory — drives the supply-deduction modal that
@@ -708,6 +764,7 @@ export default function MaintenancePage() {
             { key: 'workOrders' as TabKey, label: t('workOrders', lang) },
             { key: 'preventive' as TabKey, label: t('preventive', lang) },
             { key: 'equipment' as TabKey, label: lang === 'es' ? 'Equipos' : 'Equipment' },
+            { key: 'contracts' as TabKey, label: t('contracts', lang) },
             { key: 'landscaping' as TabKey, label: t('landscaping', lang) },
           ]).map(tab => (
             <button
@@ -954,11 +1011,23 @@ export default function MaintenancePage() {
           <EquipmentTab
             equipment={equipment}
             workOrders={orders}
+            vendors={vendors}
             uid={user!.uid}
             pid={activePropertyId!}
             lang={lang}
             onEdit={(e) => { setEditingEquipment(e); setShowEquipmentModal(true); }}
             onAdd={() => { setEditingEquipment(null); setShowEquipmentModal(true); }}
+            onManageVendors={() => setShowVendorsModal(true)}
+          />
+        ) : activeTab === 'contracts' ? (
+          /* ── Service Contracts Tab (Maintenance V6) ── */
+          <ContractsTab
+            contracts={serviceContracts}
+            vendors={vendors}
+            lang={lang}
+            onEdit={(c) => { setEditingContract(c); setShowContractModal(true); }}
+            onAdd={() => { setEditingContract(null); setShowContractModal(true); }}
+            onManageVendors={() => setShowVendorsModal(true)}
           />
         ) : (
           /* ── Landscaping Tab — Stitch Concierge Layout ── */
@@ -1404,6 +1473,11 @@ export default function MaintenancePage() {
                   </option>
                 ))}
               </select>
+              <WarrantyBanner
+                equipment={equipment.find(eq => eq.id === newEquipmentId) ?? null}
+                vendors={vendors}
+                lang={lang}
+              />
             </div>
 
             {/* Description */}
@@ -1685,6 +1759,11 @@ export default function MaintenancePage() {
                     </option>
                   ))}
                 </select>
+                <WarrantyBanner
+                  equipment={equipment.find(eq => eq.id === editEquipmentId) ?? null}
+                  vendors={vendors}
+                  lang={lang}
+                />
               </div>
 
               {/* Repair Cost */}
@@ -2024,11 +2103,37 @@ export default function MaintenancePage() {
       {showEquipmentModal && user && activePropertyId && (
         <EquipmentEditModal
           item={editingEquipment}
+          vendors={vendors}
           uid={user.uid}
           pid={activePropertyId}
           lang={lang}
           onClose={() => { setShowEquipmentModal(false); setEditingEquipment(null); }}
           onSaved={(_msg) => { setShowEquipmentModal(false); setEditingEquipment(null); }}
+        />
+      )}
+
+      {/* Vendor management modal (Maintenance V6) */}
+      {showVendorsModal && user && activePropertyId && (
+        <ManageVendorsModal
+          vendors={vendors}
+          uid={user.uid}
+          pid={activePropertyId}
+          lang={lang}
+          onClose={() => setShowVendorsModal(false)}
+          onToast={(msg) => setToast(msg)}
+        />
+      )}
+
+      {/* Service contract edit modal (Maintenance V6) */}
+      {showContractModal && user && activePropertyId && (
+        <ContractEditModal
+          item={editingContract}
+          vendors={vendors}
+          uid={user.uid}
+          pid={activePropertyId}
+          lang={lang}
+          onClose={() => { setShowContractModal(false); setEditingContract(null); }}
+          onSaved={(msg) => { setShowContractModal(false); setEditingContract(null); setToast(msg); }}
         />
       )}
 
@@ -2488,15 +2593,17 @@ function formatShortDollars(n: number): string {
 
 // ─── Equipment Tab ──────────────────────────────────────────────────────────
 function EquipmentTab({
-  equipment, workOrders, uid, pid, lang, onEdit, onAdd,
+  equipment, workOrders, vendors, uid, pid, lang, onEdit, onAdd, onManageVendors,
 }: {
   equipment: Equipment[];
   workOrders: WorkOrder[];
+  vendors: Vendor[];
   uid: string;
   pid: string;
   lang: 'en' | 'es';
   onEdit: (e: Equipment) => void;
   onAdd: () => void;
+  onManageVendors: () => void;
 }) {
   // Cold-start alerts for the banner at the top of this tab.
   const alerts = useMemo(
@@ -2559,7 +2666,7 @@ function EquipmentTab({
         </div>
       )}
 
-      {/* Header + Add button */}
+      {/* Header + Add button + Manage Vendors */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <h2 style={{ fontFamily: "'Inter', sans-serif", fontSize: '15px', fontWeight: 700, color: '#1b1c19', margin: 0 }}>
           {lang === 'es' ? 'Registro de Equipos' : 'Equipment Registry'}
@@ -2567,18 +2674,35 @@ function EquipmentTab({
             {equipment.length}
           </span>
         </h2>
-        <button
-          onClick={onAdd}
-          style={{
-            background: '#364262', color: '#fff', border: 'none',
-            padding: '8px 14px', borderRadius: '9999px',
-            fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
-            cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
-          }}
-        >
-          <Plus size={13} />
-          {lang === 'es' ? 'Agregar' : 'Add'}
-        </button>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button
+            onClick={onManageVendors}
+            style={{
+              background: '#fff', color: '#364262', border: '1px solid #c5c5d4',
+              padding: '8px 12px', borderRadius: '9999px',
+              fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+              cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
+            }}
+            title={t('manageVendors', lang)}
+          >
+            {t('manageVendors', lang)}
+            <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', color: '#757684' }}>
+              {vendors.length}
+            </span>
+          </button>
+          <button
+            onClick={onAdd}
+            style={{
+              background: '#364262', color: '#fff', border: 'none',
+              padding: '8px 14px', borderRadius: '9999px',
+              fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+              cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
+            }}
+          >
+            <Plus size={13} />
+            {lang === 'es' ? 'Agregar' : 'Add'}
+          </button>
+        </div>
       </div>
 
       {/* Empty state */}
@@ -2676,9 +2800,10 @@ function EquipmentTab({
 
 // ─── Equipment Edit Modal ───────────────────────────────────────────────────
 function EquipmentEditModal({
-  item, uid, pid, lang, onClose, onSaved,
+  item, vendors, uid, pid, lang, onClose, onSaved,
 }: {
   item: Equipment | null;     // null = creating
+  vendors: Vendor[];
   uid: string;
   pid: string;
   lang: 'en' | 'es';
@@ -2699,6 +2824,10 @@ function EquipmentEditModal({
   const [pmInterval, setPmInterval] = useState(item?.pmIntervalDays != null ? String(item.pmIntervalDays) : '');
   const [status, setStatus] = useState<EquipmentStatus>(item?.status ?? 'operational');
   const [notes, setNotes] = useState(item?.notes ?? '');
+  const [vendorId, setVendorId] = useState<string>(item?.vendorId ?? '');
+  const [warrantyEndDate, setWarrantyEndDate] = useState(
+    item?.warrantyEndDate ? item.warrantyEndDate.toISOString().slice(0, 10) : '',
+  );
   const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
@@ -2716,6 +2845,8 @@ function EquipmentEditModal({
         replacementCost: replacementCost ? parseFloat(replacementCost) : undefined,
         pmIntervalDays: pmInterval ? parseInt(pmInterval) : undefined,
         notes: notes.trim() || undefined,
+        vendorId: vendorId || undefined,
+        warrantyEndDate: warrantyEndDate ? new Date(warrantyEndDate) : null,
       };
       if (item) {
         await updateEquipment(uid, pid, item.id, patch);
@@ -2859,6 +2990,30 @@ function EquipmentEditModal({
               {lang === 'es' ? 'Costo de Reemplazo' : 'Replacement Cost'}
             </label>
             <input type="number" step="0.01" min="0" value={replacementCost} onChange={e => setReplacementCost(e.target.value)} style={inputStyle} />
+          </div>
+        </div>
+
+        {/* Vendor + warranty (Maintenance V6) */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+          <div>
+            <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+              {lang === 'es' ? 'Proveedor' : 'Vendor'}
+            </label>
+            <select value={vendorId} onChange={e => setVendorId(e.target.value)} style={inputStyle}>
+              <option value="">{lang === 'es' ? '— ninguno —' : '— none —'}</option>
+              {vendors
+                .slice()
+                .sort((a, b) => a.name.localeCompare(b.name))
+                .map(v => (
+                  <option key={v.id} value={v.id}>{v.name}</option>
+                ))}
+            </select>
+          </div>
+          <div>
+            <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+              {t('warrantyEndDate', lang)}
+            </label>
+            <input type="date" value={warrantyEndDate} onChange={e => setWarrantyEndDate(e.target.value)} style={inputStyle} />
           </div>
         </div>
 
@@ -3182,6 +3337,722 @@ function PreventiveIntelligence({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Warranty Banner ────────────────────────────────────────────────────────
+//
+// Renders a green / amber / muted info card under the equipment dropdown in
+// the Work Order create + edit forms. Shows when the selected piece of
+// equipment has a warranty_end_date — green if still under warranty, amber
+// if expired, hidden if no equipment selected or no warranty tracked.
+function WarrantyBanner({
+  equipment, vendors, lang,
+}: {
+  equipment: Equipment | null;
+  vendors: Vendor[];
+  lang: 'en' | 'es';
+}) {
+  if (!equipment) return null;
+  if (!equipment.warrantyEndDate) return null;
+  const now = Date.now();
+  const endTs = equipment.warrantyEndDate.getTime();
+  const stillCovered = endTs >= now;
+  const vendor = equipment.vendorId ? vendors.find(v => v.id === equipment.vendorId) : null;
+  const dateStr = equipment.warrantyEndDate.toLocaleDateString(lang === 'es' ? 'es' : 'en-US', {
+    year: 'numeric', month: 'short', day: 'numeric',
+  });
+  return (
+    <div style={{
+      marginTop: '8px', padding: '10px 12px', borderRadius: '10px',
+      background: stillCovered ? 'rgba(34,197,94,0.08)' : 'rgba(201,138,20,0.08)',
+      border: stillCovered ? '1px solid rgba(34,197,94,0.25)' : '1px solid rgba(201,138,20,0.25)',
+      display: 'flex', alignItems: 'flex-start', gap: '8px',
+    }}>
+      <CheckCircle2 size={14} color={stillCovered ? '#16a34a' : '#c98a14'} style={{ flexShrink: 0, marginTop: '2px' }} />
+      <div style={{ flex: 1, fontFamily: "'Inter', sans-serif", fontSize: '12px', lineHeight: 1.4 }}>
+        <div style={{ fontWeight: 600, color: stillCovered ? '#15803d' : '#92750f' }}>
+          {stillCovered ? `${t('underWarrantyUntil', lang)} ${dateStr}` : `${t('warrantyExpired', lang)} (${dateStr})`}
+        </div>
+        {stillCovered && vendor && (
+          <div style={{ color: '#454652', marginTop: '2px' }}>
+            {t('callVendorBeforePaying', lang)}{' '}
+            <span style={{ fontWeight: 600 }}>{vendor.name}</span>
+            {vendor.contactPhone ? ` · ${vendor.contactPhone}` : ''}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Manage Vendors Modal ──────────────────────────────────────────────────
+//
+// List + add/edit/delete the property's vendor roster. Reachable from the
+// "Manage Vendors" button on the Equipment tab and from the Contracts tab.
+function ManageVendorsModal({
+  vendors, uid, pid, lang, onClose, onToast,
+}: {
+  vendors: Vendor[];
+  uid: string;
+  pid: string;
+  lang: 'en' | 'es';
+  onClose: () => void;
+  onToast: (msg: string) => void;
+}) {
+  const [editing, setEditing] = useState<Vendor | null>(null);
+  const [showForm, setShowForm] = useState(false);
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '10px 12px', borderRadius: '12px',
+    border: '1px solid #c5c5d4', background: '#fff',
+    fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#1b1c19',
+    outline: 'none',
+  };
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 60,
+        background: 'rgba(27,28,25,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
+      }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{
+        background: '#fbf9f4', borderRadius: '20px', width: '100%', maxWidth: '560px',
+        maxHeight: '90vh', overflowY: 'auto', padding: '20px 22px',
+        display: 'flex', flexDirection: 'column', gap: '12px',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <h2 style={{ fontFamily: "'Inter', sans-serif", fontSize: '17px', fontWeight: 700, color: '#1b1c19', margin: 0 }}>
+            {t('manageVendors', lang)}
+          </h2>
+          <button onClick={onClose} style={{ background: '#eae8e3', border: 'none', cursor: 'pointer', padding: '6px', borderRadius: '50%' }}>
+            <X size={14} color="#454652" />
+          </button>
+        </div>
+
+        {/* Add button */}
+        {!showForm && (
+          <button
+            onClick={() => { setEditing(null); setShowForm(true); }}
+            style={{
+              padding: '10px 14px', borderRadius: '9999px',
+              background: '#364262', color: '#fff', border: 'none',
+              fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 600,
+              cursor: 'pointer', alignSelf: 'flex-start',
+              display: 'flex', alignItems: 'center', gap: '6px',
+            }}
+          >
+            <Plus size={13} /> {t('addVendor', lang)}
+          </button>
+        )}
+
+        {/* Inline form (add or edit) */}
+        {showForm && (
+          <VendorForm
+            vendor={editing}
+            uid={uid} pid={pid} lang={lang}
+            inputStyle={inputStyle}
+            onCancel={() => { setShowForm(false); setEditing(null); }}
+            onSaved={(msg) => {
+              setShowForm(false);
+              setEditing(null);
+              onToast(msg);
+            }}
+          />
+        )}
+
+        {/* List */}
+        {!showForm && vendors.length === 0 && (
+          <div style={{
+            padding: '24px 12px', textAlign: 'center', borderRadius: '14px',
+            background: 'rgba(0,0,0,0.02)', border: '1px dashed #c5c5d4',
+          }}>
+            <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#757684', margin: 0 }}>
+              {t('noVendors', lang)}
+            </p>
+          </div>
+        )}
+        {!showForm && vendors.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {vendors
+              .slice()
+              .sort((a, b) => a.name.localeCompare(b.name))
+              .map(v => (
+                <div
+                  key={v.id}
+                  onClick={() => { setEditing(v); setShowForm(true); }}
+                  style={{
+                    background: '#fff', borderRadius: '12px', padding: '10px 12px',
+                    border: '1px solid rgba(78,90,122,0.06)', cursor: 'pointer',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+                    <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 600, color: '#1b1c19' }}>
+                      {v.name}
+                    </span>
+                    <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684' }}>
+                      {VENDOR_CATEGORY_LABEL(v.category, lang)}
+                    </span>
+                  </div>
+                  {(v.contactName || v.contactPhone || v.contactEmail) && (
+                    <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#454652', marginTop: '2px' }}>
+                      {[v.contactName, v.contactPhone, v.contactEmail].filter(Boolean).join(' · ')}
+                    </div>
+                  )}
+                </div>
+              ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Vendor add/edit inline form ───────────────────────────────────────────
+function VendorForm({
+  vendor, uid, pid, lang, inputStyle, onCancel, onSaved,
+}: {
+  vendor: Vendor | null;
+  uid: string;
+  pid: string;
+  lang: 'en' | 'es';
+  inputStyle: React.CSSProperties;
+  onCancel: () => void;
+  onSaved: (msg: string) => void;
+}) {
+  const [name, setName] = useState(vendor?.name ?? '');
+  const [category, setCategory] = useState<VendorCategory>(vendor?.category ?? 'hvac');
+  const [contactName, setContactName] = useState(vendor?.contactName ?? '');
+  const [contactPhone, setContactPhone] = useState(vendor?.contactPhone ?? '');
+  const [contactEmail, setContactEmail] = useState(vendor?.contactEmail ?? '');
+  const [notes, setNotes] = useState(vendor?.notes ?? '');
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    if (!name.trim()) return;
+    setSaving(true);
+    try {
+      const patch: Partial<Vendor> = {
+        name: name.trim(),
+        category,
+        contactName: contactName.trim() || undefined,
+        contactPhone: contactPhone.trim() || undefined,
+        contactEmail: contactEmail.trim() || undefined,
+        notes: notes.trim() || undefined,
+      };
+      if (vendor) {
+        await updateVendor(uid, pid, vendor.id, patch);
+        onSaved(lang === 'es' ? 'Proveedor actualizado ✓' : 'Vendor updated ✓');
+      } else {
+        await addVendor(uid, pid, { ...patch, propertyId: pid } as Omit<Vendor, 'id' | 'createdAt' | 'updatedAt'>);
+        onSaved(lang === 'es' ? 'Proveedor agregado ✓' : 'Vendor added ✓');
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!vendor) return;
+    if (!confirm(lang === 'es' ? `¿Eliminar "${vendor.name}"?` : `Delete "${vendor.name}"?`)) return;
+    setSaving(true);
+    try {
+      await deleteVendor(uid, pid, vendor.id);
+      onSaved(lang === 'es' ? 'Proveedor eliminado ✓' : 'Vendor deleted ✓');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{
+      background: '#fff', borderRadius: '14px', padding: '14px',
+      border: '1px solid rgba(78,90,122,0.08)',
+      display: 'flex', flexDirection: 'column', gap: '10px',
+    }}>
+      <h3 style={{ fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 700, color: '#1b1c19', margin: 0 }}>
+        {vendor ? t('editVendor', lang) : t('addVendor', lang)}
+      </h3>
+
+      <div>
+        <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+          {t('vendorName', lang)} *
+        </label>
+        <input value={name} onChange={e => setName(e.target.value)} style={inputStyle} />
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+        <div>
+          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+            {lang === 'es' ? 'Categoría' : 'Category'}
+          </label>
+          <select value={category} onChange={e => setCategory(e.target.value as VendorCategory)} style={inputStyle}>
+            {VENDOR_CATEGORIES.map(c => (
+              <option key={c} value={c}>{VENDOR_CATEGORY_LABEL(c, lang)}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+            {t('vendorContact', lang)}
+          </label>
+          <input value={contactName} onChange={e => setContactName(e.target.value)} style={inputStyle} />
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+        <div>
+          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+            {t('vendorPhone', lang)}
+          </label>
+          <input value={contactPhone} onChange={e => setContactPhone(e.target.value)} style={inputStyle} />
+        </div>
+        <div>
+          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+            {t('vendorEmail', lang)}
+          </label>
+          <input type="email" value={contactEmail} onChange={e => setContactEmail(e.target.value)} style={inputStyle} />
+        </div>
+      </div>
+
+      <div>
+        <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+          {lang === 'es' ? 'Notas' : 'Notes'}
+        </label>
+        <textarea
+          value={notes}
+          onChange={e => setNotes(e.target.value)}
+          rows={2}
+          style={{ ...inputStyle, resize: 'vertical', minHeight: '50px' }}
+        />
+      </div>
+
+      <div style={{ display: 'flex', gap: '8px' }}>
+        {vendor && (
+          <button
+            onClick={handleDelete}
+            disabled={saving}
+            style={{
+              padding: '10px 14px', borderRadius: '9999px',
+              background: '#fff', border: '1px solid #ffdad6', color: '#ba1a1a',
+              fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+              cursor: saving ? 'wait' : 'pointer',
+            }}
+          >
+            <Trash2 size={12} style={{ marginRight: '4px', verticalAlign: '-2px' }} />
+            {lang === 'es' ? 'Eliminar' : 'Delete'}
+          </button>
+        )}
+        <button
+          onClick={onCancel}
+          disabled={saving}
+          style={{
+            padding: '10px 14px', borderRadius: '9999px',
+            background: '#fff', border: '1px solid #c5c5d4', color: '#454652',
+            fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+            cursor: saving ? 'wait' : 'pointer',
+          }}
+        >
+          {lang === 'es' ? 'Cancelar' : 'Cancel'}
+        </button>
+        <button
+          onClick={handleSave}
+          disabled={saving || !name.trim()}
+          style={{
+            flex: 1, padding: '10px', borderRadius: '9999px',
+            background: name.trim() ? '#364262' : '#eae8e3',
+            color: name.trim() ? '#fff' : '#757684',
+            border: 'none', cursor: name.trim() && !saving ? 'pointer' : 'not-allowed',
+            fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 600,
+          }}
+        >
+          {saving ? (lang === 'es' ? 'Guardando...' : 'Saving...') : (lang === 'es' ? 'Guardar' : 'Save')}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Contracts Tab ─────────────────────────────────────────────────────────
+//
+// Service contracts = recurring outsourced services (pool weekly, fire
+// inspection annual, etc.). Status pill follows the same 30/14/7 rules as
+// PM alerts; if next_due_at is in the past it's red.
+function ContractsTab({
+  contracts, vendors, lang, onEdit, onAdd, onManageVendors,
+}: {
+  contracts: ServiceContract[];
+  vendors: Vendor[];
+  lang: 'en' | 'es';
+  onEdit: (c: ServiceContract) => void;
+  onAdd: () => void;
+  onManageVendors: () => void;
+}) {
+  const now = Date.now();
+  const DAY_MS = 1000 * 60 * 60 * 24;
+
+  const sorted = useMemo(() => {
+    const ranked = (c: ServiceContract): number => {
+      if (!c.nextDueAt) return Number.MAX_SAFE_INTEGER;
+      return c.nextDueAt.getTime();
+    };
+    return [...contracts].sort((a, b) => ranked(a) - ranked(b));
+  }, [contracts]);
+
+  const monthlyCostTotal = useMemo(
+    () => contracts.reduce((sum, c) => sum + (c.monthlyCost ?? 0), 0),
+    [contracts],
+  );
+
+  const statusFor = (c: ServiceContract) => {
+    if (!c.nextDueAt) return { color: '#757684', bg: 'rgba(117,118,132,0.08)', label: lang === 'es' ? 'sin fecha' : 'no date' };
+    const days = Math.ceil((c.nextDueAt.getTime() - now) / DAY_MS);
+    if (days < 0) return { color: '#ba1a1a', bg: 'rgba(186,26,26,0.10)', label: lang === 'es' ? `${-days}d vencido` : `${-days}d overdue` };
+    if (days <= 7) return { color: '#ba1a1a', bg: 'rgba(186,26,26,0.10)', label: lang === 'es' ? `en ${days}d` : `in ${days}d` };
+    if (days <= 14) return { color: '#c98a14', bg: 'rgba(201,138,20,0.10)', label: lang === 'es' ? `en ${days}d` : `in ${days}d` };
+    if (days <= 30) return { color: '#364262', bg: 'rgba(54,66,98,0.08)', label: lang === 'es' ? `en ${days}d` : `in ${days}d` };
+    return { color: '#16a34a', bg: 'rgba(34,197,94,0.08)', label: lang === 'es' ? `en ${days}d` : `in ${days}d` };
+  };
+
+  const cadenceLabel = (cad: ServiceContractCadence): string => {
+    return t(cad as 'weekly', lang);
+  };
+
+  return (
+    <div className="animate-in stagger-1" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+      {/* Header + Add + Manage Vendors */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <h2 style={{ fontFamily: "'Inter', sans-serif", fontSize: '15px', fontWeight: 700, color: '#1b1c19', margin: 0 }}>
+          {t('contracts', lang)}
+          <span style={{ marginLeft: '8px', fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', color: '#757684', fontWeight: 500 }}>
+            {contracts.length}
+          </span>
+          {monthlyCostTotal > 0 && (
+            <span style={{ marginLeft: '12px', fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', color: '#454652', fontWeight: 600 }}>
+              ${monthlyCostTotal.toFixed(0)}/mo
+            </span>
+          )}
+        </h2>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button
+            onClick={onManageVendors}
+            style={{
+              background: '#fff', color: '#364262', border: '1px solid #c5c5d4',
+              padding: '8px 12px', borderRadius: '9999px',
+              fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            {t('manageVendors', lang)}
+          </button>
+          <button
+            onClick={onAdd}
+            style={{
+              background: '#364262', color: '#fff', border: 'none',
+              padding: '8px 14px', borderRadius: '9999px',
+              fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+              cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
+            }}
+          >
+            <Plus size={13} /> {t('addContract', lang)}
+          </button>
+        </div>
+      </div>
+
+      {/* Empty state */}
+      {contracts.length === 0 && (
+        <div style={{
+          padding: '32px 12px', textAlign: 'center', borderRadius: '14px',
+          background: 'rgba(0,0,0,0.02)', border: '1px dashed #c5c5d4',
+        }}>
+          <Wrench size={20} color="#757684" style={{ margin: '0 auto 6px' }} />
+          <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#757684', margin: 0 }}>
+            {t('noContracts', lang)}
+          </p>
+        </div>
+      )}
+
+      {/* List */}
+      {sorted.map(c => {
+        const vendor = c.vendorId ? vendors.find(v => v.id === c.vendorId) : null;
+        const st = statusFor(c);
+        return (
+          <div
+            key={c.id}
+            onClick={() => onEdit(c)}
+            style={{
+              background: '#fff', borderRadius: '12px', padding: '12px 14px',
+              border: '1px solid rgba(78,90,122,0.06)', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: '12px',
+            }}
+          >
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', flexWrap: 'wrap' }}>
+                <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 600, color: '#1b1c19' }}>
+                  {c.name}
+                </span>
+                <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684' }}>
+                  {VENDOR_CATEGORY_LABEL(c.category, lang)} · {cadenceLabel(c.cadence)}
+                </span>
+              </div>
+              <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#454652', marginTop: '3px' }}>
+                {vendor && <span>{vendor.name}{vendor.contactPhone ? ` · ${vendor.contactPhone}` : ''}</span>}
+                {!vendor && <span style={{ color: '#757684' }}>{lang === 'es' ? 'Sin proveedor asignado' : 'No vendor assigned'}</span>}
+                {c.monthlyCost != null && (
+                  <span style={{ marginLeft: '10px', fontFamily: "'JetBrains Mono', monospace", color: '#1b1c19', fontWeight: 600 }}>
+                    ${c.monthlyCost.toFixed(0)}/mo
+                  </span>
+                )}
+              </div>
+              {c.nextDueAt && (
+                <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '10px', color: '#757684', marginTop: '2px' }}>
+                  {t('nextDue', lang)}: {c.nextDueAt.toLocaleDateString(lang === 'es' ? 'es' : 'en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                </div>
+              )}
+            </div>
+            <div style={{
+              padding: '4px 10px', borderRadius: '9999px',
+              background: st.bg, color: st.color,
+              fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, whiteSpace: 'nowrap',
+            }}>
+              {st.label}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Contract Edit Modal ───────────────────────────────────────────────────
+function ContractEditModal({
+  item, vendors, uid, pid, lang, onClose, onSaved,
+}: {
+  item: ServiceContract | null;
+  vendors: Vendor[];
+  uid: string;
+  pid: string;
+  lang: 'en' | 'es';
+  onClose: () => void;
+  onSaved: (msg: string) => void;
+}) {
+  const [name, setName] = useState(item?.name ?? '');
+  const [category, setCategory] = useState<VendorCategory>(item?.category ?? 'pool');
+  const [vendorId, setVendorId] = useState<string>(item?.vendorId ?? '');
+  const [cadence, setCadence] = useState<ServiceContractCadence>(item?.cadence ?? 'monthly');
+  const [lastServicedAt, setLastServicedAt] = useState(
+    item?.lastServicedAt ? item.lastServicedAt.toISOString().slice(0, 10) : '',
+  );
+  const [nextDueAt, setNextDueAt] = useState(
+    item?.nextDueAt ? item.nextDueAt.toISOString().slice(0, 10) : '',
+  );
+  const [monthlyCost, setMonthlyCost] = useState(item?.monthlyCost != null ? String(item.monthlyCost) : '');
+  const [notes, setNotes] = useState(item?.notes ?? '');
+  const [saving, setSaving] = useState(false);
+
+  // Auto-compute next_due_at from last_serviced_at + cadence when the user
+  // sets last_serviced and hasn't manually overridden next_due.
+  useEffect(() => {
+    if (!lastServicedAt || nextDueAt) return;
+    const last = new Date(lastServicedAt);
+    if (isNaN(last.getTime())) return;
+    const days = CADENCE_DAYS[cadence];
+    const nd = new Date(last.getTime() + days * 24 * 60 * 60 * 1000);
+    setNextDueAt(nd.toISOString().slice(0, 10));
+  }, [lastServicedAt, cadence, nextDueAt]);
+
+  const handleSave = async () => {
+    if (!name.trim()) return;
+    setSaving(true);
+    try {
+      const patch: Partial<ServiceContract> = {
+        name: name.trim(),
+        category,
+        vendorId: vendorId || undefined,
+        cadence,
+        lastServicedAt: lastServicedAt ? new Date(lastServicedAt) : null,
+        nextDueAt: nextDueAt ? new Date(nextDueAt) : null,
+        monthlyCost: monthlyCost ? parseFloat(monthlyCost) : undefined,
+        notes: notes.trim() || undefined,
+      };
+      if (item) {
+        await updateServiceContract(uid, pid, item.id, patch);
+        onSaved(lang === 'es' ? 'Contrato actualizado ✓' : 'Contract updated ✓');
+      } else {
+        await addServiceContract(uid, pid, { ...patch, propertyId: pid } as Omit<ServiceContract, 'id' | 'createdAt' | 'updatedAt'>);
+        onSaved(lang === 'es' ? 'Contrato agregado ✓' : 'Contract added ✓');
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!item) return;
+    if (!confirm(lang === 'es' ? `¿Eliminar "${item.name}"?` : `Delete "${item.name}"?`)) return;
+    setSaving(true);
+    try {
+      await deleteServiceContract(uid, pid, item.id);
+      onSaved(lang === 'es' ? 'Contrato eliminado ✓' : 'Contract deleted ✓');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '10px 12px', borderRadius: '12px',
+    border: '1px solid #c5c5d4', background: '#fff',
+    fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#1b1c19',
+    outline: 'none',
+  };
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 60,
+        background: 'rgba(27,28,25,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
+      }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{
+        background: '#fbf9f4', borderRadius: '20px', width: '100%', maxWidth: '520px',
+        maxHeight: '90vh', overflowY: 'auto', padding: '20px 22px',
+        display: 'flex', flexDirection: 'column', gap: '12px',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <h2 style={{ fontFamily: "'Inter', sans-serif", fontSize: '17px', fontWeight: 700, color: '#1b1c19', margin: 0 }}>
+            {item ? t('editContract', lang) : t('addContract', lang)}
+          </h2>
+          <button onClick={onClose} style={{ background: '#eae8e3', border: 'none', cursor: 'pointer', padding: '6px', borderRadius: '50%' }}>
+            <X size={14} color="#454652" />
+          </button>
+        </div>
+
+        <div>
+          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+            {t('contractName', lang)} *
+          </label>
+          <input
+            value={name}
+            onChange={e => setName(e.target.value)}
+            placeholder={lang === 'es' ? 'p.ej. Servicio de piscina - Bayou Pools' : 'e.g. Pool service - Bayou Pools'}
+            style={inputStyle}
+          />
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+          <div>
+            <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+              {lang === 'es' ? 'Categoría' : 'Category'}
+            </label>
+            <select value={category} onChange={e => setCategory(e.target.value as VendorCategory)} style={inputStyle}>
+              {VENDOR_CATEGORIES.map(c => (
+                <option key={c} value={c}>{VENDOR_CATEGORY_LABEL(c, lang)}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+              {t('cadence', lang)}
+            </label>
+            <select value={cadence} onChange={e => setCadence(e.target.value as ServiceContractCadence)} style={inputStyle}>
+              {(['weekly','biweekly','monthly','quarterly','annual'] as ServiceContractCadence[]).map(c => (
+                <option key={c} value={c}>{t(c as 'weekly', lang)}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+            {lang === 'es' ? 'Proveedor' : 'Vendor'}
+          </label>
+          <select value={vendorId} onChange={e => setVendorId(e.target.value)} style={inputStyle}>
+            <option value="">{lang === 'es' ? '— ninguno —' : '— none —'}</option>
+            {vendors.slice().sort((a, b) => a.name.localeCompare(b.name)).map(v => (
+              <option key={v.id} value={v.id}>{v.name}</option>
+            ))}
+          </select>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+          <div>
+            <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+              {t('lastServiced', lang)}
+            </label>
+            <input type="date" value={lastServicedAt} onChange={e => setLastServicedAt(e.target.value)} style={inputStyle} />
+          </div>
+          <div>
+            <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+              {t('nextDue', lang)}
+            </label>
+            <input type="date" value={nextDueAt} onChange={e => setNextDueAt(e.target.value)} style={inputStyle} />
+          </div>
+        </div>
+
+        <div>
+          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+            {t('monthlyCost', lang)}
+          </label>
+          <input
+            type="number" step="0.01" min="0"
+            value={monthlyCost}
+            onChange={e => setMonthlyCost(e.target.value)}
+            placeholder="0.00"
+            style={inputStyle}
+          />
+        </div>
+
+        <div>
+          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '4px' }}>
+            {lang === 'es' ? 'Notas' : 'Notes'}
+          </label>
+          <textarea
+            value={notes}
+            onChange={e => setNotes(e.target.value)}
+            rows={3}
+            style={{ ...inputStyle, resize: 'vertical', minHeight: '60px' }}
+          />
+        </div>
+
+        <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+          {item && (
+            <button
+              onClick={handleDelete}
+              disabled={saving}
+              style={{
+                padding: '12px 16px', borderRadius: '9999px',
+                background: '#fff', border: '1px solid #ffdad6', color: '#ba1a1a',
+                fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 600,
+                cursor: saving ? 'wait' : 'pointer',
+              }}
+            >
+              <Trash2 size={13} style={{ marginRight: '4px', verticalAlign: '-2px' }} />
+              {lang === 'es' ? 'Eliminar' : 'Delete'}
+            </button>
+          )}
+          <button
+            onClick={handleSave}
+            disabled={saving || !name.trim()}
+            style={{
+              flex: 1, padding: '12px', borderRadius: '9999px',
+              background: name.trim() ? '#364262' : '#eae8e3',
+              color: name.trim() ? '#fff' : '#757684',
+              border: 'none', cursor: name.trim() && !saving ? 'pointer' : 'not-allowed',
+              fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 600,
+            }}
+          >
+            {saving ? (lang === 'es' ? 'Guardando...' : 'Saving...') : (lang === 'es' ? 'Guardar' : 'Save')}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

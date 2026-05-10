@@ -214,7 +214,16 @@ type TranslationKey =
   | 'inspect' | 'inspection' | 'approve' | 'reject' | 'rejectReason'
   | 'roomApproved' | 'roomRejected' | 'allCaughtUp' | 'alreadyInspected'
   | 'roomsCleaned' | 'avgTime' | 'noRoomsCompleted' | 'avgTurnover'
-  | 'noDataYet' | 'cleanedBy' | 'cleanTime' | 'sendBack';
+  | 'noDataYet' | 'cleanedBy' | 'cleanTime' | 'sendBack'
+  // ── Vendors / warranty / service contracts (Maintenance V6) ───────────────
+  | 'vendors' | 'manageVendors' | 'addVendor' | 'editVendor' | 'noVendors'
+  | 'vendorName' | 'vendorContact' | 'vendorEmail' | 'vendorPhone'
+  | 'warrantyEndDate' | 'underWarrantyUntil' | 'callVendorBeforePaying'
+  | 'noWarrantyTracked' | 'warrantyExpired'
+  | 'contracts' | 'addContract' | 'editContract' | 'noContracts'
+  | 'contractName' | 'cadence' | 'biweekly' | 'monthly'
+  | 'quarterly' | 'annual'
+  | 'lastServiced' | 'nextDue' | 'monthlyCost';
 
 const translations: Record<Language, Record<TranslationKey, string>> = {
   en: {
@@ -813,6 +822,34 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     cleanedBy: 'Cleaned by',
     cleanTime: 'Clean time',
     sendBack: 'Send Back',
+    // ── Vendors / warranty / service contracts ──
+    vendors: 'Vendors',
+    manageVendors: 'Manage Vendors',
+    addVendor: 'Add Vendor',
+    editVendor: 'Edit Vendor',
+    noVendors: 'No vendors yet',
+    vendorName: 'Vendor name',
+    vendorContact: 'Contact name',
+    vendorEmail: 'Email',
+    vendorPhone: 'Phone',
+    warrantyEndDate: 'Warranty ends',
+    underWarrantyUntil: 'Under warranty until',
+    callVendorBeforePaying: 'Contact this vendor before paying for repairs.',
+    noWarrantyTracked: 'No warranty tracked',
+    warrantyExpired: 'Warranty expired',
+    contracts: 'Contracts',
+    addContract: 'Add Contract',
+    editContract: 'Edit Contract',
+    noContracts: 'No service contracts yet',
+    contractName: 'Contract name',
+    cadence: 'Cadence',
+    biweekly: 'Biweekly',
+    monthly: 'Monthly',
+    quarterly: 'Quarterly',
+    annual: 'Annual',
+    lastServiced: 'Last serviced',
+    nextDue: 'Next due',
+    monthlyCost: 'Monthly cost',
   },
 
   es: {
@@ -1411,6 +1448,34 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     cleanedBy: 'Limpiada por',
     cleanTime: 'Tiempo de limpieza',
     sendBack: 'Devolver',
+    // ── Vendors / garantía / contratos de servicio ──
+    vendors: 'Proveedores',
+    manageVendors: 'Gestionar Proveedores',
+    addVendor: 'Añadir Proveedor',
+    editVendor: 'Editar Proveedor',
+    noVendors: 'Aún no hay proveedores',
+    vendorName: 'Nombre del proveedor',
+    vendorContact: 'Persona de contacto',
+    vendorEmail: 'Correo electrónico',
+    vendorPhone: 'Teléfono',
+    warrantyEndDate: 'Garantía vence',
+    underWarrantyUntil: 'En garantía hasta',
+    callVendorBeforePaying: 'Contacte al proveedor antes de pagar reparaciones.',
+    noWarrantyTracked: 'Sin garantía registrada',
+    warrantyExpired: 'Garantía vencida',
+    contracts: 'Contratos',
+    addContract: 'Añadir Contrato',
+    editContract: 'Editar Contrato',
+    noContracts: 'Aún no hay contratos de servicio',
+    contractName: 'Nombre del contrato',
+    cadence: 'Frecuencia',
+    biweekly: 'Quincenal',
+    monthly: 'Mensual',
+    quarterly: 'Trimestral',
+    annual: 'Anual',
+    lastServiced: 'Último servicio',
+    nextDue: 'Próximo vencimiento',
+    monthlyCost: 'Costo mensual',
   },
 };
 

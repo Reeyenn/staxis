@@ -368,6 +368,8 @@ export interface WorkOrder {
   equipmentId?: string;       // optional link to the equipment asset that broke
   repairCost?: number;        // dollars spent fixing this issue
   partsUsed?: string[];       // free-text list of parts/supplies consumed
+  // ── Vendor (added 2026-05-09, migration 0043) ───────────────────────────
+  vendorId?: string;          // optional link to the vendor who performed the repair
   createdAt: Date | null;
   updatedAt: Date | null;
   resolvedAt?: Date | null;
@@ -397,6 +399,48 @@ export interface Equipment {
   status: EquipmentStatus;
   pmIntervalDays?: number;
   lastPmAt?: Date | null;
+  notes?: string;
+  // ── Vendor + warranty (added 2026-05-09, migration 0043) ────────────────
+  vendorId?: string;             // optional link to vendor who installs/services this asset
+  warrantyEndDate?: Date | null; // manufacturer/installer warranty end (null = none tracked)
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// ─── Vendors ───────────────────────────────────────────────────────────────
+
+export type VendorCategory =
+  | 'hvac' | 'plumbing' | 'electrical' | 'appliance' | 'pool'
+  | 'landscaping' | 'pest' | 'fire' | 'elevator' | 'laundry'
+  | 'kitchen' | 'structural' | 'other';
+
+export interface Vendor {
+  id: string;
+  propertyId: string;
+  name: string;
+  category: VendorCategory;
+  contactName?: string;
+  contactEmail?: string;
+  contactPhone?: string;
+  notes?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// ─── Service Contracts ─────────────────────────────────────────────────────
+
+export type ServiceContractCadence = 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'annual';
+
+export interface ServiceContract {
+  id: string;
+  propertyId: string;
+  vendorId?: string;             // who performs the service (optional)
+  name: string;                  // e.g. "Pool service - Bayou Pools"
+  category: VendorCategory;      // shares the vendor category vocabulary
+  cadence: ServiceContractCadence;
+  lastServicedAt?: Date | null;  // YYYY-MM-DD anchored
+  nextDueAt?: Date | null;       // computed from last+cadence on insert; user can override
+  monthlyCost?: number;          // dollars per month (annualized for non-monthly cadences when summed)
   notes?: string;
   createdAt: Date;
   updatedAt: Date;
