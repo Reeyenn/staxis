@@ -93,6 +93,21 @@ export default function AccountsPage() {
     }
   }, [user, teamHotelId]);
 
+  // ── Team members for the selected hotel ─────────────────────────────────
+  // Visible to admin / owner / GM via the /api/auth/team endpoint, which
+  // returns every account with access to the selected hotel (including
+  // admins, since they implicitly have access everywhere).
+  const [team, setTeam] = useState<AccountRow[]>([]);
+  const loadTeam = useCallback(async () => {
+    if (!user || !teamHotelId) return;
+    const res = await fetchWithAuth(`/api/auth/team?hotelId=${teamHotelId}`);
+    if (res.ok) {
+      const body = await res.json() as { data?: { team?: AccountRow[] } };
+      setTeam(body.data?.team ?? []);
+    }
+  }, [user, teamHotelId]);
+  useEffect(() => { void loadTeam(); }, [loadTeam]);
+
   // ── Join codes ───────────────────────────────────────────────────────────
   interface CodeRow { id: string; code: string; role: AssignableRole; expires_at: string; max_uses: number; used_count: number }
   const [codes, setCodes] = useState<CodeRow[]>([]);
@@ -478,6 +493,50 @@ export default function AccountsPage() {
               <select value={teamHotelId} onChange={e => setTeamHotelId(e.target.value)} style={{ ...inputStyle, height: '42px' }}>
                 {manageableHotels.map(h => <option key={h.id} value={h.id}>{h.name}</option>)}
               </select>
+            </div>
+          )}
+
+          {/* Existing team members for the selected hotel — visible to
+              admin/owner/GM. Admins are included since they implicitly
+              have access to every hotel. */}
+          {team.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <h3 style={subHeadingStyle}>
+                {lang === 'es' ? 'Miembros del equipo' : 'Team members'} ({team.length})
+              </h3>
+              {team.map(m => (
+                <div key={m.accountId} style={{
+                  background: 'var(--bg-card)', border: '1px solid var(--border)',
+                  borderRadius: 'var(--radius-md)', padding: '12px 14px',
+                  display: 'flex', alignItems: 'center', gap: '12px',
+                }}>
+                  <div style={{
+                    width: '34px', height: '34px', borderRadius: '50%',
+                    background: m.role === 'admin' ? 'var(--amber-dim)' : 'rgba(100,116,139,0.12)',
+                    border: `1px solid ${m.role === 'admin' ? 'var(--amber-border)' : 'var(--border)'}`,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    flexShrink: 0,
+                  }}>
+                    {m.role === 'admin'
+                      ? <Shield size={14} color="var(--amber)" />
+                      : <User size={14} color="var(--text-muted)" />
+                    }
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                      {m.displayName}
+                      {m.accountId === user.accountId && (
+                        <span style={{ marginLeft: '6px', fontSize: '11px', color: 'var(--text-muted)', fontWeight: 500 }}>
+                          {lang === 'es' ? '(tú)' : '(you)'}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                      {roleLabel(m.role)} · {m.email}
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
 
