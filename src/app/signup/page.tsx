@@ -16,6 +16,7 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useLang } from '@/contexts/LanguageContext';
 import { roleLabel } from '@/lib/roles';
+import { supabase } from '@/lib/supabase';
 
 type SignupRole = 'front_desk' | 'housekeeping' | 'maintenance';
 
@@ -34,7 +35,6 @@ function SignupInner() {
   const [role, setRole] = useState<SignupRole>('housekeeping');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
-  const [done, setDone] = useState(false);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -67,7 +67,23 @@ function SignupInner() {
         setSubmitting(false);
         return;
       }
-      setDone(true);
+
+      // Account created but email is unverified. Send the OTP and bounce
+      // to /signin/verify with postSignup=1 so the verify page auto-trusts
+      // this browser (no extra checkbox needed — Reeyen wants the device
+      // remembered automatically right after signup).
+      const normalizedEmail = email.trim().toLowerCase();
+      try {
+        await supabase.auth.signInWithOtp({
+          email: normalizedEmail,
+          options: { shouldCreateUser: false },
+        });
+      } catch (otpErr) {
+        // Non-fatal — the account exists, they can still hit /signin and
+        // go through the normal OTP path. Just log and proceed.
+        console.warn('signInWithOtp after signup failed', otpErr);
+      }
+      router.replace(`/signin/verify?email=${encodeURIComponent(normalizedEmail)}&postSignup=1`);
     } catch {
       setError(lang === 'es' ? 'Algo salió mal.' : 'Something went wrong.');
       setSubmitting(false);
@@ -114,20 +130,7 @@ function SignupInner() {
           </p>
         </div>
 
-        {done ? (
-          <div style={{
-            background: 'var(--bg-card)', border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-lg)', padding: '24px 20px', textAlign: 'center',
-          }}>
-            <p style={{ fontSize: '14px', color: 'var(--text-primary)', marginBottom: '14px' }}>
-              {lang === 'es' ? '¡Cuenta creada! Inicia sesión para continuar.' : 'Account created! Sign in to continue.'}
-            </p>
-            <button onClick={() => router.replace('/signin')} style={primaryBtnStyle(false)}>
-              {lang === 'es' ? 'Iniciar sesión' : 'Sign in'}
-            </button>
-          </div>
-        ) : (
-          <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
               <label style={labelStyle}>{lang === 'es' ? 'Código del hotel' : 'Hotel code'}</label>
@@ -191,7 +194,6 @@ function SignupInner() {
               {lang === 'es' ? '← Ya tengo una cuenta' : '← I already have an account'}
             </Link>
           </form>
-        )}
       </div>
     </div>
   );

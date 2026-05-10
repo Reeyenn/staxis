@@ -110,10 +110,16 @@ export async function POST(req: NextRequest) {
     username = (username + Math.floor(Math.random() * 10000)).slice(0, 40);
   }
 
+  // email_confirm:false so the staff member must verify their email via the
+  // OTP flow on /signin/verify before they can sign in. /signup triggers
+  // supabase.auth.signInWithOtp(email) right after this returns, which
+  // sends a 6-digit code to their inbox; verifyOtp marks the email
+  // confirmed AND issues a fresh session, and we auto-trust the device
+  // because they just proved ownership of the email.
   const { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
     email: normalizedEmail,
     password,
-    email_confirm: true,
+    email_confirm: false,
     user_metadata: { username, displayName },
   });
   if (authErr || !authData.user) {

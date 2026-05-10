@@ -27,6 +27,11 @@ function VerifyInner() {
   const router = useRouter();
   const params = useSearchParams();
   const email = params.get('email') ?? '';
+  // postSignup=1 means the user landed here directly from /signup. They just
+  // proved ownership of the email by entering an OTP that was sent to it,
+  // so we auto-trust the device and hide the checkbox entirely — Reeyen
+  // wants signups to skip the extra "remember this device?" prompt.
+  const postSignup = params.get('postSignup') === '1';
 
   const [code, setCode] = useState('');
   const [trust, setTrust] = useState(true);
@@ -97,7 +102,9 @@ function VerifyInner() {
             fontSize: '22px', letterSpacing: '-0.02em',
             color: 'var(--text-primary)', marginBottom: '6px',
           }}>
-            {lang === 'es' ? 'Verifica tu correo' : 'Verify your email'}
+            {postSignup
+              ? (lang === 'es' ? 'Confirma tu correo' : 'Confirm your email')
+              : (lang === 'es' ? 'Verifica tu correo' : 'Verify your email')}
           </h1>
           <p style={{ color: 'var(--text-muted)', fontSize: '14px', lineHeight: 1.5 }}>
             {lang === 'es'
@@ -140,23 +147,30 @@ function VerifyInner() {
             />
           </div>
 
-          <label style={{
-            display: 'flex', alignItems: 'center', gap: '10px',
-            padding: '10px 12px', borderRadius: 'var(--radius-md)',
-            background: 'var(--bg-card)', border: '1px solid var(--border)',
-            cursor: submitting ? 'not-allowed' : 'pointer',
-            fontSize: '13px', color: 'var(--text-secondary)',
-            fontFamily: 'var(--font-sans)',
-          }}>
-            <input
-              type="checkbox"
-              checked={trust}
-              onChange={e => setTrust(e.target.checked)}
-              disabled={submitting}
-              style={{ width: '16px', height: '16px', cursor: submitting ? 'not-allowed' : 'pointer' }}
-            />
-            {lang === 'es' ? 'Confiar en este dispositivo' : 'Trust this device'}
-          </label>
+          {/* Post-signup mode skips the checkbox entirely — we always trust
+              the device because the user just proved ownership of the
+              email and Reeyen wants returning users to skip 2FA without
+              having to opt-in. Regular sign-in path still shows the
+              checkbox so users keep that control. */}
+          {!postSignup && (
+            <label style={{
+              display: 'flex', alignItems: 'center', gap: '10px',
+              padding: '10px 12px', borderRadius: 'var(--radius-md)',
+              background: 'var(--bg-card)', border: '1px solid var(--border)',
+              cursor: submitting ? 'not-allowed' : 'pointer',
+              fontSize: '13px', color: 'var(--text-secondary)',
+              fontFamily: 'var(--font-sans)',
+            }}>
+              <input
+                type="checkbox"
+                checked={trust}
+                onChange={e => setTrust(e.target.checked)}
+                disabled={submitting}
+                style={{ width: '16px', height: '16px', cursor: submitting ? 'not-allowed' : 'pointer' }}
+              />
+              {lang === 'es' ? 'Confiar en este dispositivo' : 'Trust this device'}
+            </label>
+          )}
 
           {error && (
             <p style={{
