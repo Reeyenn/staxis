@@ -301,7 +301,13 @@ describe('sanitizeForSms', () => {
 // ─── safeBaseUrl ───────────────────────────────────────────────────────────
 
 describe('safeBaseUrl', () => {
-  test('accepts allow-listed prod URL', () => {
+  test('accepts canonical prod URL', () => {
+    assert.equal(safeBaseUrl('https://getstaxis.com'), 'https://getstaxis.com');
+  });
+
+  test('still accepts the legacy Vercel alias', () => {
+    // Kept allow-listed so any old SMS link in flight still validates;
+    // next.config.ts 301s the user to getstaxis.com on click.
     assert.equal(safeBaseUrl('https://hotelops-ai.vercel.app'), 'https://hotelops-ai.vercel.app');
   });
 
@@ -312,20 +318,20 @@ describe('safeBaseUrl', () => {
 
   test('strips path/query and returns origin only', () => {
     assert.equal(
-      safeBaseUrl('https://hotelops-ai.vercel.app/dashboard?from=email'),
-      'https://hotelops-ai.vercel.app',
+      safeBaseUrl('https://getstaxis.com/dashboard?from=email'),
+      'https://getstaxis.com',
     );
   });
 
   test('falls back when input is a non-allow-listed origin', () => {
     // Phishing protection — attacker-controlled domain is dropped.
-    assert.equal(safeBaseUrl('https://evil.example.com'), 'https://hotelops-ai.vercel.app');
+    assert.equal(safeBaseUrl('https://evil.example.com'), 'https://getstaxis.com');
   });
 
   test('falls back on garbage input', () => {
-    assert.equal(safeBaseUrl('not a url'), 'https://hotelops-ai.vercel.app');
-    assert.equal(safeBaseUrl(undefined), 'https://hotelops-ai.vercel.app');
-    assert.equal(safeBaseUrl(123), 'https://hotelops-ai.vercel.app');
+    assert.equal(safeBaseUrl('not a url'), 'https://getstaxis.com');
+    assert.equal(safeBaseUrl(undefined), 'https://getstaxis.com');
+    assert.equal(safeBaseUrl(123), 'https://getstaxis.com');
   });
 
   test('honors a custom fallback', () => {
