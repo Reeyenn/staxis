@@ -36,7 +36,7 @@ import {
 } from 'recharts';
 import {
   ArrowLeft, Calendar, DollarSign, TrendingDown, AlertTriangle, Wallet, Calculator,
-  FileText, Bed, Printer,
+  FileText, Bed, Printer, Copy,
 } from 'lucide-react';
 import { formatCurrency as formatCurrencyBase } from '@/lib/utils';
 
@@ -177,8 +177,17 @@ export default function InventoryReportsPage() {
     return properties.find(p => p.id === activePropertyId)?.name ?? 'Property';
   }, [properties, activePropertyId]);
 
-  // ─── Send to Owner: copy/print a plain-text summary of this month ──────
-  const handleSendToOwner = useCallback(() => {
+  // ─── Print / PDF: opens the browser's print dialog. The dialog includes
+  //     a "Save as PDF" destination on every modern browser/OS, so a single
+  //     button covers both physical printing AND PDF download.
+  const handlePrint = useCallback(() => {
+    if (typeof window !== 'undefined') window.print();
+  }, []);
+
+  // ─── Copy: plain-text summary onto the clipboard for fast paste-into-
+  //     email / SMS / Slack workflows. Useful when you don't need the full
+  //     printable layout — just the numbers.
+  const handleCopy = useCallback(() => {
     if (!summary) return;
     const lines: string[] = [];
     lines.push(`${propertyName} — ${lang === 'es' ? 'Reporte de Inventario' : 'Inventory Report'}`);
@@ -226,11 +235,42 @@ export default function InventoryReportsPage() {
 
   return (
     <AppLayout>
-      <div style={{ maxWidth: '1100px', margin: '0 auto', padding: '24px' }}>
+      {/* Print stylesheet — strips dashboard chrome so the printed page is
+          just the report itself. Triggered both by the "Print / PDF" button
+          (window.print) and by the user's native Cmd+P / Ctrl+P. The
+          "Save as PDF" destination on macOS / Chrome / Safari uses the same
+          stylesheet, so a clean PDF download falls out of the same code. */}
+      <style>{`
+        @media print {
+          header, .no-print { display: none !important; }
+          .print-only { display: block !important; }
+          body { background: #fff !important; }
+          .reports-page { max-width: none !important; padding: 0 !important; }
+          .reports-card  { box-shadow: none !important; border: 1px solid #ddd !important; page-break-inside: avoid; }
+          .reports-section { page-break-inside: avoid; }
+          @page { margin: 0.5in; }
+        }
+        .print-only { display: none; }
+      `}</style>
+      <div className="reports-page" style={{ maxWidth: '1100px', margin: '0 auto', padding: '24px' }}>
+        {/* Print-only banner: shows on the printed/PDF copy so the page
+            identifies itself when shared. Hidden on screen. */}
+        <div className="print-only" style={{
+          marginBottom: '16px', paddingBottom: '12px',
+          borderBottom: '2px solid #1b1c19',
+          fontFamily: "'Inter', sans-serif",
+        }}>
+          <div style={{ fontSize: '20px', fontWeight: 700, color: '#1b1c19' }}>
+            {propertyName}
+          </div>
+          <div style={{ fontSize: '14px', color: '#454652', marginTop: '4px' }}>
+            {lang === 'es' ? 'Reporte de Inventario' : 'Inventory Report'} · <span style={{ textTransform: 'capitalize' }}>{monthLabel}</span>
+          </div>
+        </div>
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '20px', flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <Link href="/inventory" style={{
+            <Link href="/inventory" className="no-print" style={{
               display: 'flex', alignItems: 'center', gap: '6px',
               padding: '8px 12px', borderRadius: '9999px',
               border: '1px solid #c5c5d4', background: '#fff', color: '#454652',
@@ -245,7 +285,7 @@ export default function InventoryReportsPage() {
               {lang === 'es' ? 'Reportes' : 'Reports'}
             </h1>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div className="no-print" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Calendar size={14} color="#757684" />
             <select
               value={month}
@@ -262,8 +302,9 @@ export default function InventoryReportsPage() {
               ))}
             </select>
             <button
-              onClick={handleSendToOwner}
+              onClick={handlePrint}
               disabled={!summary}
+              title={lang === 'es' ? 'Imprime, o elige "Guardar como PDF" en el diálogo' : 'Print, or pick "Save as PDF" in the dialog'}
               style={{
                 padding: '8px 14px', borderRadius: '9999px',
                 border: 'none', background: '#364262', color: '#fff',
@@ -274,7 +315,23 @@ export default function InventoryReportsPage() {
               }}
             >
               <Printer size={13} />
-              {lang === 'es' ? 'Enviar al dueño' : 'Send to Owner'}
+              {lang === 'es' ? 'Imprimir / PDF' : 'Print / PDF'}
+            </button>
+            <button
+              onClick={handleCopy}
+              disabled={!summary}
+              title={lang === 'es' ? 'Copia un resumen de texto al portapapeles' : 'Copy a text summary to your clipboard'}
+              style={{
+                padding: '8px 14px', borderRadius: '9999px',
+                border: '1px solid #c5c5d4', background: '#fff', color: '#454652',
+                fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 600,
+                cursor: summary ? 'pointer' : 'not-allowed',
+                display: 'flex', alignItems: 'center', gap: '6px',
+                opacity: summary ? 1 : 0.5,
+              }}
+            >
+              <Copy size={13} />
+              {lang === 'es' ? 'Copiar' : 'Copy'}
             </button>
           </div>
         </div>
