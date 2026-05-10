@@ -111,8 +111,6 @@ export default function InventoryPage() {
   const [showScanInvoice, setShowScanInvoice] = useState(false);
   const [editItem, setEditItem] = useState<InventoryItem | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [reconciliation, setReconciliation] = useState<ReconciliationData | null>(null);
-  const [orderPrompt, setOrderPrompt] = useState<OrderPromptData | null>(null);
   const [discardItem, setDiscardItem] = useState<InventoryItem | null>(null);
   const [reconcileItem, setReconcileItem] = useState<InventoryItem | null>(null);
   const [showBudgetSettings, setShowBudgetSettings] = useState(false);
@@ -337,87 +335,82 @@ export default function InventoryPage() {
     breakfast: fbItems.filter(i => stockStatus(effectiveStock(i), i.parLevel, i.reorderAt) !== 'good').length,
   }), [hkItems, maintItems, fbItems, effectiveStock]);
 
-  // ─── Count Mode → Reconciliation pipeline ──────────────────────────────
+  // ─── Count Mode save handler ───────────────────────────────────────────
+  // Writes the per-item audit log and dismisses the modal with a toast.
+  // Reeyen pulled the reconciliation popup + "did you receive an order?"
+  // chain on 2026-05-10 — they were too many steps for a non-technical GM
+  // who already saw the new numbers in the input boxes. The audit log
+  // (inventory_counts) still writes silently so nothing is lost
+  // historically; the user just isn't shown a recap they don't need.
   const handleCountDone = useCallback((updatedCounts: Record<string, number>) => {
     setCounting(false);
 
-    // Build reconciliation rows: one per item that changed.
-    const rows: ReconciliationRow[] = [];
-    const orderRows: OrderPromptRow[] = [];
+    // Per-item audit rows. We compute estimate + variance here purely so
+    // the inventory_counts table has the same shape it did before — the
+    // analytics chart on /inventory/reports reads variance for the
+    // shrinkage trend, so we can't drop those columns.
+    const countLogRows: Array<{
+      propertyId: string;
+      itemId: string;
+      itemName: string;
+      countedStock: number;
+      estimatedStock?: number;
+      variance?: number;
+      varianceValue?: number;
+      unitCost?: number;
+      countedAt: Date;
+      countedBy?: string;
+    }> = [];
+    let changedItems = 0;
 
     items.forEach(item => {
       const counted = updatedCounts[item.id];
       if (counted == null) return;
-      const previous = item.currentStock;
+      if (counted !== item.currentStock) changedItems++;
       const est = estimates.get(item.id);
       const hasEst = est?.hasEstimate ?? false;
-      const estimated = hasEst ? est!.estimated : null;
-      const variance = estimated != null ? counted - estimated : null;
-      const varianceValue = variance != null && item.unitCost != null ? variance * item.unitCost : null;
+      const estimated = hasEst ? est!.estimated : undefined;
+      const variance = estimated != null ? counted - estimated : undefined;
+      const varianceValue = variance != null && item.unitCost != null ? variance * item.unitCost : undefined;
 
-      rows.push({
-        item,
-        counted,
-        previous,
-        estimated,
+      countLogRows.push({
+        propertyId: activePropertyId ?? '',
+        itemId: item.id,
+        itemName: item.name,
+        countedStock: counted,
+        estimatedStock: estimated,
         variance,
         varianceValue,
+        unitCost: item.unitCost,
+        countedAt: new Date(),
+        countedBy: user?.displayName ?? user?.username ?? undefined,
       });
-
-      // If stock went up, candidate for order logging.
-      // Snapshot previous + new explicitly so the modal doesn't have to
-      // re-derive them from a captured `item` whose currentStock is the
-      // pre-count value.
-      if (counted > previous) {
-        orderRows.push({
-          item,
-          delta: counted - previous,
-          previousStock: previous,
-          newStock: counted,
-        });
-      }
     });
 
-    // Save count rows to the audit log (best-effort; non-blocking)
-    if (user && activePropertyId) {
-      const countLogRows = rows.map(r => ({
-        propertyId: activePropertyId,
-        itemId: r.item.id,
-        itemName: r.item.name,
-        countedStock: r.counted,
-        estimatedStock: r.estimated ?? undefined,
-        variance: r.variance ?? undefined,
-        varianceValue: r.varianceValue ?? undefined,
-        unitCost: r.item.unitCost,
-        countedAt: new Date(),
-        countedBy: user.displayName ?? user.username ?? undefined,
-      }));
+    // Best-effort audit-log write. Non-blocking — failure here doesn't
+    // surface to the user; the count itself is already persisted via the
+    // updateInventoryItem calls in CountMode's handleSave.
+    if (user && activePropertyId && countLogRows.length > 0) {
       addInventoryCountBatch(user.uid, activePropertyId, countLogRows)
         .catch(err => console.error('[inventory] count log failed:', err));
     }
 
-    // SMS alerts for critical inventory are disabled (2026-05-10). Tara at
-    // Home2 Suites and Reeyen both decided text-message notifications were
-    // more annoying than useful — the GM is going to see the red badge in
-    // the UI when she opens inventory anyway. The /api/inventory/check-alerts
-    // endpoint is intentionally left in the codebase as a no-op call site
-    // so future per-property opt-in can be wired up by re-enabling this
-    // dispatch behind a property-level toggle.
+    // SMS alerts for critical inventory are disabled (2026-05-10). The GM
+    // sees the red status badge in the UI on next open; SMS was duplicate
+    // noise. /api/inventory/check-alerts stays in the codebase as a dead
+    // call site so a future per-property opt-in can re-enable it.
 
-    // Always show reconciliation; chain to order prompt + low stock notice from there.
-    setReconciliation({ rows, pendingOrders: orderRows });
-  }, [items, estimates, user, activePropertyId]);
-
-  const handleReconciliationClose = useCallback(() => {
-    setReconciliation(prev => {
-      if (prev?.pendingOrders && prev.pendingOrders.length > 0) {
-        setOrderPrompt({ rows: prev.pendingOrders, index: 0 });
-      } else {
-        showToast(lang === 'es' ? 'Conteo guardado ✓' : 'Inventory count saved ✓');
-      }
-      return null;
-    });
-  }, [lang, showToast]);
+    // Single, simple confirmation. No reconciliation popup, no order prompt.
+    if (changedItems > 0) {
+      showToast(
+        lang === 'es'
+          ? `${changedItems} artículo${changedItems === 1 ? '' : 's'} actualizado${changedItems === 1 ? '' : 's'} ✓`
+          : `${changedItems} item${changedItems === 1 ? '' : 's'} updated ✓`,
+      );
+    } else {
+      showToast(lang === 'es' ? 'Sin cambios' : 'No changes');
+    }
+  }, [items, estimates, user, activePropertyId, lang, showToast]);
 
   // Loading guard
   if (authLoading || propLoading || !user || !activePropertyId) {
@@ -882,34 +875,6 @@ export default function InventoryPage() {
         />
       )}
 
-      {/* Reconciliation */}
-      {reconciliation && (
-        <ReconciliationModal
-          rows={reconciliation.rows}
-          lang={lang}
-          onClose={handleReconciliationClose}
-        />
-      )}
-
-      {/* Order logging */}
-      {orderPrompt && (
-        <OrderLoggingModal
-          rows={orderPrompt.rows}
-          index={orderPrompt.index}
-          uid={user.uid}
-          pid={activePropertyId}
-          lang={lang}
-          onAdvance={(nextIdx) => {
-            if (nextIdx >= orderPrompt.rows.length) {
-              setOrderPrompt(null);
-              showToast(lang === 'es' ? 'Conteo guardado ✓' : 'Inventory count saved ✓');
-            } else {
-              setOrderPrompt({ ...orderPrompt, index: nextIdx });
-            }
-          }}
-        />
-      )}
-
       {/* Count Mode */}
       {counting && (
         <CountMode
@@ -941,35 +906,7 @@ export default function InventoryPage() {
   );
 }
 
-// ─── Reconciliation types ───────────────────────────────────────────────────
-
-interface ReconciliationRow {
-  item: InventoryItem;
-  counted: number;
-  previous: number;
-  estimated: number | null;
-  variance: number | null;       // counted - estimated
-  varianceValue: number | null;  // variance * unit_cost
-}
-
-interface ReconciliationData {
-  rows: ReconciliationRow[];
-  pendingOrders: OrderPromptRow[];
-}
-
-interface OrderPromptRow {
-  item: InventoryItem;
-  delta: number;
-  /**
-   * Stock BEFORE the count. The captured `item.currentStock` is also the
-   * pre-count value (Realtime hasn't refreshed yet at capture time), but
-   * we snapshot it explicitly so the modal isn't subtly tied to that
-   * race-condition.
-   */
-  previousStock: number;
-  /** Stock AFTER the count (= previousStock + delta). */
-  newStock: number;
-}
+// ─── Photo Count review modal types ────────────────────────────────────────
 
 // One row in the Photo Count review modal — what the AI saw vs. what's
 // already in the count input the user might have typed or pre-filled.
@@ -991,11 +928,6 @@ interface PhotoDecision {
   mode: 'add' | 'replace';
   aiCount: number;
   confidence: 'high' | 'medium' | 'low';
-}
-
-interface OrderPromptData {
-  rows: OrderPromptRow[];
-  index: number;
 }
 
 // ─── COUNT MODE ──────────────────────────────────────────────────────────────
@@ -1393,310 +1325,6 @@ function CountMode({
   );
 }
 
-// ─── Reconciliation Modal ────────────────────────────────────────────────────
-//
-// Shown after a Count Mode save. Lists items where the system estimate
-// differed from the user's count by more than 1 unit. Color-coded by
-// magnitude. Total dollar variance shown at the top when unit costs are set.
-
-function ReconciliationModal({
-  rows, lang, onClose,
-}: {
-  rows: ReconciliationRow[];
-  lang: 'en' | 'es';
-  onClose: () => void;
-}) {
-  // Filter: only show rows with meaningful variance (>1)
-  const significant = useMemo(
-    () => rows.filter(r => r.variance != null && Math.abs(r.variance) > 1),
-    [rows],
-  );
-
-  const totalVarianceDollars = useMemo(
-    () => significant.reduce((sum, r) => sum + (r.varianceValue ?? 0), 0),
-    [significant],
-  );
-
-  // Nothing to show → auto-close (hooks must run before any conditional return).
-  useEffect(() => {
-    if (significant.length === 0) onClose();
-  }, [significant.length, onClose]);
-
-  if (significant.length === 0) return null;
-
-  const colorFor = (r: ReconciliationRow) => {
-    if (r.variance == null || r.estimated == null || r.estimated === 0) return '#757684';
-    const pct = Math.abs(r.variance) / Math.max(1, r.estimated);
-    if (pct > 0.25) return '#ba1a1a';
-    if (pct > 0.10) return '#c98a14';
-    return '#006565';
-  };
-
-  return (
-    <div style={{
-      position: 'fixed', inset: 0, zIndex: 100,
-      background: 'rgba(27,28,25,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
-    }}
-      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div style={{
-        background: '#fbf9f4', borderRadius: '24px',
-        width: '100%', maxWidth: '560px', maxHeight: '85vh', overflow: 'hidden',
-        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
-        display: 'flex', flexDirection: 'column',
-      }}>
-        <div style={{
-          padding: '20px 24px', background: '#1b1c19',
-          color: '#fff', borderRadius: '24px 24px 0 0',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '4px' }}>
-            <TrendingDown size={22} />
-            <div style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: '17px' }}>
-              {lang === 'es' ? 'Reconciliación' : 'Reconciliation'}
-            </div>
-          </div>
-          <div style={{ fontSize: '13px', opacity: 0.85, fontFamily: "'Inter', sans-serif" }}>
-            {lang === 'es'
-              ? `${significant.length} artículo(s) con variación. Pérdida no contabilizada: ${formatCurrency(totalVarianceDollars)}`
-              : `${significant.length} item${significant.length !== 1 ? 's' : ''} with variance. Unaccounted: ${formatCurrency(totalVarianceDollars)}`}
-          </div>
-        </div>
-
-        <div style={{ overflow: 'auto', flex: 1 }}>
-          {significant.map(r => {
-            const color = colorFor(r);
-            const variance = r.variance ?? 0;
-            return (
-              <div key={r.item.id} style={{
-                padding: '14px 24px', borderBottom: '1px solid rgba(197,197,212,0.2)',
-                display: 'flex', flexDirection: 'column', gap: '4px',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: color, flexShrink: 0 }} />
-                  <span style={{ fontFamily: "'Inter', sans-serif", fontWeight: 600, fontSize: '14px', color: '#1b1c19' }}>
-                    {r.item.name}
-                  </span>
-                  {r.varianceValue != null && (
-                    <span style={{ marginLeft: 'auto', fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: '13px', color }}>
-                      {variance > 0 ? '+' : ''}{formatCurrency(r.varianceValue)}
-                    </span>
-                  )}
-                </div>
-                <div style={{ display: 'flex', gap: '14px', fontSize: '12px', fontFamily: "'JetBrains Mono', monospace", color: '#757684', paddingLeft: '16px' }}>
-                  <span>{lang === 'es' ? 'Estimado' : 'Estimated'}: <strong style={{ color: '#454652' }}>{r.estimated != null ? Math.round(r.estimated) : '—'}</strong></span>
-                  <span>{lang === 'es' ? 'Contado' : 'Counted'}: <strong style={{ color: '#454652' }}>{r.counted}</strong></span>
-                  <span>{lang === 'es' ? 'Variación' : 'Variance'}: <strong style={{ color }}>{variance > 0 ? '+' : ''}{Math.round(variance)}</strong></span>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        <div style={{ padding: '16px 24px', borderTop: '1px solid rgba(197,197,212,0.2)' }}>
-          <button
-            onClick={onClose}
-            style={{
-              width: '100%', padding: '14px', borderRadius: '9999px',
-              background: '#364262', color: '#fff', border: 'none',
-              fontFamily: "'Inter', sans-serif", fontSize: '15px', fontWeight: 600, cursor: 'pointer',
-            }}
-          >
-            {lang === 'es' ? 'Continuar' : 'Continue'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Order Logging Modal ─────────────────────────────────────────────────────
-//
-// Shown one item at a time when stock went UP after a count. User confirms
-// they received an order; we write a row to inventory_orders.
-
-function OrderLoggingModal({
-  rows, index, uid, pid, lang, onAdvance,
-}: {
-  rows: OrderPromptRow[];
-  index: number;
-  uid: string;
-  pid: string;
-  lang: 'en' | 'es';
-  onAdvance: (nextIdx: number) => void;
-}) {
-  const current = rows[index];
-  const packSize = current.item.packSize ?? null;
-  const caseLabel = current.item.caseUnit?.trim() || 'case';
-  const [quantity, setQuantity] = useState(String(current.delta));
-  const [cases, setCases] = useState('');                 // case-form input; resolves into quantity
-  const [unitCost, setUnitCost] = useState(current.item.unitCost != null ? String(current.item.unitCost) : '');
-  const [vendor, setVendor] = useState(current.item.vendorName ?? '');
-  const [notes, setNotes] = useState('');
-  const [saving, setSaving] = useState(false);
-
-  // Reset when index changes
-  useEffect(() => {
-    setQuantity(String(current.delta));
-    setCases('');
-    setUnitCost(current.item.unitCost != null ? String(current.item.unitCost) : '');
-    setVendor(current.item.vendorName ?? '');
-    setNotes('');
-  }, [current]);
-
-  // When the user types into the case field, recompute the resolved unit qty.
-  const handleCasesChange = (v: string) => {
-    setCases(v);
-    if (v.trim() === '' || packSize == null) return;
-    const n = parseInt(v);
-    if (!Number.isFinite(n) || n < 0) return;
-    setQuantity(String(n * packSize));
-  };
-
-  const handleConfirm = async () => {
-    setSaving(true);
-    try {
-      const qty = parseFloat(quantity) || 0;
-      const casesNum = cases.trim() === '' ? undefined : parseInt(cases);
-      const cost = unitCost.trim() === '' ? undefined : parseFloat(unitCost);
-      await addInventoryOrder(uid, pid, {
-        propertyId: pid,
-        itemId: current.item.id,
-        itemName: current.item.name,
-        quantity: qty,
-        quantityCases: Number.isFinite(casesNum) && (casesNum ?? 0) > 0 ? casesNum : undefined,
-        unitCost: cost,
-        vendorName: vendor.trim() || undefined,
-        receivedAt: new Date(),
-        notes: notes.trim() || undefined,
-      });
-      onAdvance(index + 1);
-    } catch (err) {
-      console.error('[order log] save failed', err);
-      onAdvance(index + 1);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleSkip = () => onAdvance(index + 1);
-
-  const inputStyle: React.CSSProperties = {
-    width: '100%', padding: '12px 16px', borderRadius: '16px',
-    border: '1px solid #c5c5d4', background: '#fff',
-    fontFamily: "'Inter', sans-serif", fontSize: '14px', color: '#1b1c19',
-    outline: 'none',
-  };
-
-  return (
-    <div style={{
-      position: 'fixed', inset: 0, zIndex: 100,
-      background: 'rgba(27,28,25,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
-    }}>
-      <div style={{
-        width: '100%', maxWidth: '480px', background: '#fbf9f4', borderRadius: '24px',
-        padding: '24px', display: 'flex', flexDirection: 'column', gap: '14px',
-        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
-      }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
-            <Truck size={20} color="#006565" />
-            <h2 style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: '17px', color: '#1b1c19', margin: 0 }}>
-              {lang === 'es' ? '¿Recibió un pedido?' : 'Did you receive an order?'}
-            </h2>
-          </div>
-          <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#757684', margin: 0 }}>
-            <strong>{current.item.name}</strong> — {lang === 'es'
-              ? `el stock subió de ${current.previousStock} a ${current.newStock} (+${current.delta}).`
-              : `stock went from ${current.previousStock} to ${current.newStock} (+${current.delta}).`}
-          </p>
-          <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684', margin: '6px 0 0' }}>
-            {lang === 'es' ? `Item ${index + 1} de ${rows.length}` : `Item ${index + 1} of ${rows.length}`}
-          </p>
-        </div>
-
-        {packSize != null && packSize > 0 ? (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-            <div>
-              <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>
-                {lang === 'es' ? `${caseLabel === 'case' ? 'Cajas' : caseLabel} recibidas` : `${caseLabel.charAt(0).toUpperCase() + caseLabel.slice(1)}s received`}
-              </label>
-              <input
-                type="number" min="0" value={cases}
-                onChange={e => handleCasesChange(e.target.value)}
-                style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }}
-                placeholder={lang === 'es' ? `1 ${caseLabel === 'case' ? 'caja' : caseLabel} = ${packSize} unidades` : `1 ${caseLabel} = ${packSize} ${current.item.unit || 'units'}`}
-              />
-            </div>
-            <div>
-              <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>
-                {lang === 'es' ? 'Total unidades' : 'Total units'}
-              </label>
-              <input type="number" min="0" value={quantity} onChange={e => { setQuantity(e.target.value); setCases(''); }} style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
-            </div>
-          </div>
-        ) : (
-          <div>
-            <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>
-              {lang === 'es' ? 'Cantidad recibida' : 'Quantity received'}
-            </label>
-            <input type="number" min="0" value={quantity} onChange={e => setQuantity(e.target.value)} style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
-          </div>
-        )}
-
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-          <div>
-            <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>
-              {lang === 'es' ? 'Costo unitario ($)' : 'Unit cost ($)'}
-            </label>
-            <input type="number" step="0.01" min="0" value={unitCost} onChange={e => setUnitCost(e.target.value)} style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} placeholder="—" />
-          </div>
-          <div>
-            <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>
-              {lang === 'es' ? 'Proveedor' : 'Vendor'}
-            </label>
-            <input value={vendor} onChange={e => setVendor(e.target.value)} style={inputStyle} placeholder={lang === 'es' ? 'Opcional' : 'Optional'} />
-          </div>
-        </div>
-
-        <div>
-          <label style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600, color: '#454652', display: 'block', marginBottom: '6px' }}>
-            {lang === 'es' ? 'Notas' : 'Notes'}
-          </label>
-          <input value={notes} onChange={e => setNotes(e.target.value)} style={inputStyle} placeholder={lang === 'es' ? 'Opcional' : 'Optional'} />
-        </div>
-
-        <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
-          <button
-            onClick={handleSkip}
-            disabled={saving}
-            style={{
-              padding: '14px 20px', border: '1px solid #c5c5d4', borderRadius: '9999px',
-              background: '#fff', color: '#454652', cursor: 'pointer',
-              fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 600,
-            }}
-          >
-            {lang === 'es' ? 'Omitir' : 'Skip'}
-          </button>
-          <button
-            onClick={handleConfirm}
-            disabled={saving}
-            style={{
-              flex: 1, padding: '14px', border: 'none', borderRadius: '9999px',
-              background: '#364262', color: '#fff', cursor: 'pointer',
-              fontFamily: "'Inter', sans-serif", fontSize: '14px', fontWeight: 600,
-            }}
-          >
-            {saving
-              ? (lang === 'es' ? 'Guardando...' : 'Saving...')
-              : (lang === 'es' ? 'Registrar Pedido' : 'Log Order')}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // ─── Count History Modal ────────────────────────────────────────────────────
 //
