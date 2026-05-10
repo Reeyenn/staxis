@@ -155,7 +155,7 @@ function VerifyInner() {
               disabled={submitting}
               style={{ width: '16px', height: '16px', cursor: submitting ? 'not-allowed' : 'pointer' }}
             />
-            {lang === 'es' ? 'Confiar en este dispositivo por 30 días' : 'Trust this device for 30 days'}
+            {lang === 'es' ? 'Confiar en este dispositivo' : 'Trust this device'}
           </label>
 
           {error && (

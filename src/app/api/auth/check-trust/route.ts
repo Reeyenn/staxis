@@ -14,7 +14,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { hashDeviceToken, readDeviceCookie } from '@/lib/trusted-device';
+import { hashDeviceToken, readDeviceCookie, trustCookieOptions } from '@/lib/trusted-device';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 
@@ -73,11 +73,25 @@ export async function POST(req: NextRequest) {
     .update({ last_seen_at: new Date().toISOString() })
     .eq('id', row.id);
 
-  // Build response with the trusted=true payload but using the standard
-  // ok() envelope.
+  // Re-issue the cookie with a fresh maxAge so the trust window rolls
+  // forward on every active sign-in. Browser caps cookies at 400 days
+  // (Chrome), so without this an active user would still get prompted
+  // for OTP exactly once every ~400 days. With this, as long as they
+  // sign in at least once a year they'll never see the OTP step again
+  // on this device.
   const response = NextResponse.json(
     { ok: true, requestId, data: { trusted: true } },
     { status: 200 },
   );
+  const opts = trustCookieOptions();
+  response.cookies.set({
+    name: opts.name,
+    value: cookieValue,
+    httpOnly: opts.httpOnly,
+    secure: opts.secure,
+    sameSite: opts.sameSite,
+    path: opts.path,
+    maxAge: opts.maxAge,
+  });
   return response;
 }

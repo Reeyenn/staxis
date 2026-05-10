@@ -17,7 +17,7 @@ import {
   generateDeviceToken,
   hashDeviceToken,
   trustCookieOptions,
-  TRUST_DURATION_MS,
+  TRUST_DURATION_DB_MS,
 } from '@/lib/trusted-device';
 import { err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
@@ -48,7 +48,7 @@ export async function POST(req: NextRequest) {
 
   const newToken = generateDeviceToken();
   const tokenHash = hashDeviceToken(newToken);
-  const expiresAt = new Date(Date.now() + TRUST_DURATION_MS).toISOString();
+  const expiresAt = new Date(Date.now() + TRUST_DURATION_DB_MS).toISOString();
   const ua = req.headers.get('user-agent') ?? null;
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
     ?? req.headers.get('x-real-ip')
