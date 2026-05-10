@@ -29,20 +29,13 @@ export function Header() {
     { href: '/staff',        label: lang === 'es' ? 'Personal' : 'Staff' },
   ];
 
-  // Owner/admin-only ML tab. AppUser.role is 'admin' | 'owner' | 'staff'
-  // (see contexts/AuthContext.tsx). Reeyen has admin/owner; the J-login (his
-  // dad) does not. Role-only gate — no ownerId match because Property doesn't
-  // expose that column. Cockpit data is currently stubbed; restoring the link
-  // so the page is reachable for development + future wiring.
-  const isOwner = user?.role === 'owner' || user?.role === 'admin';
-  // Admin-only Admin tab — fleet view across all properties for support
-  // triage. Reeyen sees this; the J-login (owner role only) does not.
-  // The page is gated server-side too via requireAdmin(), so even if the
-  // link leaks through a UI bug a non-admin can't load the data.
+  // ML and Admin tabs are both admin-only. AppUser.role is 'admin' | 'owner'
+  // | 'staff' (see contexts/AuthContext.tsx). Server-side gates on
+  // /api/admin/* and /admin/* pages still enforce this independently.
   const isAdmin = user?.role === 'admin';
   const navLinks = [
     ...baseNavLinks,
-    ...(isOwner ? [{ href: '/admin/ml', label: 'ML' }] : []),
+    ...(isAdmin ? [{ href: '/admin/ml', label: 'ML' }] : []),
     ...(isAdmin ? [{ href: '/admin/properties', label: 'Admin' }] : []),
   ];
 
