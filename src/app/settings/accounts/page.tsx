@@ -371,7 +371,7 @@ export default function AccountsPage() {
             }}
           >
             <Plus size={15} />
-            {lang === 'es' ? 'Agregar' : 'Add'} {t('accountManagement', lang)}
+            {lang === 'es' ? 'Agregar cuenta' : 'Add account'}
           </button>
         )}
 
@@ -566,7 +566,9 @@ export default function AccountsPage() {
                 fontFamily: 'var(--font-sans)', fontWeight: 700,
                 fontSize: '18px', color: 'var(--text-primary)',
               }}>
-                {editingId ? t('edit', lang) : (lang === 'es' ? 'Agregar' : 'Add')} {t('accountManagement', lang)}
+                {editingId
+                  ? (lang === 'es' ? 'Editar cuenta' : 'Edit account')
+                  : (lang === 'es' ? 'Agregar cuenta' : 'Add account')}
               </h2>
               <button
                 onClick={() => setShowForm(false)}
