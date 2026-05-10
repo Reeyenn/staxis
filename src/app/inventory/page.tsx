@@ -396,40 +396,13 @@ export default function InventoryPage() {
         .catch(err => console.error('[inventory] count log failed:', err));
     }
 
-    // Critical SMS alerts: ONLY items that newly transitioned into critical
-    // status during this count. An item that was already critical before the
-    // count (e.g. zero stock that's still zero, or an item that started below
-    // its reorder threshold and is still below) does NOT re-alert. This
-    // prevents the SMS-burst bug where every below-par item fired an alert
-    // every time the user saved a count.
-    //
-    // Transition definition: stockStatus(previous) was 'good' OR 'low', AND
-    // stockStatus(counted) is 'out'. The 24h dedupe inside the API route is
-    // a second line of defense if a transition happens twice in a window.
-    const transitionedIds = items
-      .filter(item => {
-        const counted = updatedCounts[item.id];
-        if (counted == null) return false;
-        const prevStatus = stockStatus(item.currentStock, item.parLevel, item.reorderAt);
-        const newStatus = stockStatus(counted, item.parLevel, item.reorderAt);
-        return prevStatus !== 'out' && newStatus === 'out';
-      })
-      .map(i => i.id);
-
-    if (transitionedIds.length > 0 && activePropertyId) {
-      fetchWithAuth('/api/inventory/check-alerts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pid: activePropertyId, criticalItemIds: transitionedIds }),
-      })
-        .then(r => r.json())
-        .then(data => {
-          if (data?.sent > 0) {
-            showToast(lang === 'es' ? `Alerta SMS enviada (${data.sent})` : `SMS alert sent (${data.sent})`);
-          }
-        })
-        .catch(err => console.error('[inventory] alert dispatch failed:', err));
-    }
+    // SMS alerts for critical inventory are disabled (2026-05-10). Tara at
+    // Home2 Suites and Reeyen both decided text-message notifications were
+    // more annoying than useful — the GM is going to see the red badge in
+    // the UI when she opens inventory anyway. The /api/inventory/check-alerts
+    // endpoint is intentionally left in the codebase as a no-op call site
+    // so future per-property opt-in can be wired up by re-enabling this
+    // dispatch behind a property-level toggle.
 
     // Always show reconciliation; chain to order prompt + low stock notice from there.
     setReconciliation({ rows, pendingOrders: orderRows });
