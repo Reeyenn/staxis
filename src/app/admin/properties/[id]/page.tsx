@@ -491,10 +491,11 @@ function AddPersonModal({
 
   const submit = async () => {
     if (!user) return;
+    const activeMode: 'new' | 'existing' = eligibleToAttach.length > 0 ? mode : 'new';
     setError('');
     setSubmitting(true);
     try {
-      if (mode === 'new') {
+      if (activeMode === 'new') {
         if (!displayName.trim() || !email.trim() || !password.trim()) { setError('Name, email, and password are required'); return; }
         if (password.length < 6) { setError('Password must be at least 6 characters'); return; }
         const res = await fetchWithAuth('/api/auth/accounts', {
@@ -530,17 +531,24 @@ function AddPersonModal({
     }
   };
 
+  // Force Create mode + hide the tab toggle entirely when there are no
+  // existing accounts that could be attached. Showing a disabled tab is
+  // confusing — the user can't tell why it doesn't work.
+  const hasEligibleExisting = eligibleToAttach.length > 0;
+  const effectiveMode: 'new' | 'existing' = hasEligibleExisting ? mode : 'new';
+
   return (
     <ModalShell onClose={onClose} title="Attach person">
-      {/* Tabs */}
-      <div style={{ display: 'flex', gap: '4px', background: 'var(--surface-secondary)', borderRadius: '8px', padding: '3px' }}>
-        <TabButton active={mode === 'new'} onClick={() => setMode('new')}>Create new</TabButton>
-        <TabButton active={mode === 'existing'} onClick={() => setMode('existing')} disabled={eligibleToAttach.length === 0}>
-          Attach existing {eligibleToAttach.length > 0 ? `(${eligibleToAttach.length})` : ''}
-        </TabButton>
-      </div>
+      {hasEligibleExisting && (
+        <div style={{ display: 'flex', gap: '4px', background: 'var(--surface-secondary)', borderRadius: '8px', padding: '3px' }}>
+          <TabButton active={effectiveMode === 'new'} onClick={() => setMode('new')}>Create new</TabButton>
+          <TabButton active={effectiveMode === 'existing'} onClick={() => setMode('existing')}>
+            Attach existing ({eligibleToAttach.length})
+          </TabButton>
+        </div>
+      )}
 
-      {mode === 'new' ? (
+      {effectiveMode === 'new' ? (
         <>
           <FieldText label="Full name" value={displayName} onChange={setDisplayName} placeholder="e.g. Maria Lopez" autoFocus />
           <FieldText label="Email" type="email" value={email} onChange={setEmail} placeholder="name@example.com" />
@@ -548,16 +556,10 @@ function AddPersonModal({
           <FieldRole role={role} onChange={setRole} />
         </>
       ) : (
-        eligibleToAttach.length === 0 ? (
-          <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
-            All non-admin accounts are already attached to this hotel.
-          </p>
-        ) : (
-          <FieldSelect label="Account" value={pickId} onChange={setPickId} options={[
-            { value: '', label: 'Pick an account…' },
-            ...eligibleToAttach.map(a => ({ value: a.accountId, label: `${a.displayName} — ${roleLabel(a.role)} (${a.email})` })),
-          ]} />
-        )
+        <FieldSelect label="Account" value={pickId} onChange={setPickId} options={[
+          { value: '', label: 'Pick an account…' },
+          ...eligibleToAttach.map(a => ({ value: a.accountId, label: `${a.displayName} — ${roleLabel(a.role)} (${a.email})` })),
+        ]} />
       )}
 
       {error && <ErrorBox>{error}</ErrorBox>}
@@ -565,7 +567,7 @@ function AddPersonModal({
       <button disabled={submitting} onClick={submit} style={primaryBtnStyle(submitting)}>
         {submitting
           ? <div className="spinner" style={{ width: '18px', height: '18px', borderTopColor: '#FFFFFF', borderColor: 'rgba(255,255,255,0.3)' }} />
-          : (mode === 'new' ? 'Create account' : 'Attach')}
+          : (effectiveMode === 'new' ? 'Create account' : 'Attach')}
       </button>
     </ModalShell>
   );
