@@ -7,15 +7,17 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
-import { Users, Plus, Trash2, Pencil, X, Check, ChevronLeft, Shield, User } from 'lucide-react';
+import { Users, Plus, Trash2, Pencil, X, Check, ChevronLeft, Shield, User, Mail, KeyRound, Copy } from 'lucide-react';
 import { fetchWithAuth } from '@/lib/api-fetch';
+
+import { ALL_ROLES, ASSIGNABLE_ROLES, roleLabel, canManageTeam, type AppRole, type AssignableRole } from '@/lib/roles';
 
 interface AccountRow {
   accountId: string;
   username: string;
   displayName: string;
   email: string;
-  role: 'admin' | 'owner' | 'staff';
+  role: AppRole;
   propertyAccess: string[];
   createdAt: string | null;
 }
@@ -25,7 +27,7 @@ interface FormState {
   displayName: string;
   email: string;
   password: string;
-  role: 'admin' | 'owner' | 'staff';
+  role: AppRole;
   propertyAccess: string[];  // property IDs, or ["*"] for all
 }
 
@@ -55,13 +57,124 @@ export default function AccountsPage() {
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
 
-  // Redirect non-admins
+  // Allow admin / owner / general_manager. Front-desk / housekeeping /
+  // maintenance roles get bounced back to /settings.
   useEffect(() => {
-    if (user && user.role !== 'admin') router.replace('/settings');
+    if (user && !canManageTeam(user.role)) router.replace('/settings');
   }, [user, router]);
 
+  const isAdmin = user?.role === 'admin';
+
+  // Hotels this user can manage. Admin sees all properties; owner/GM only
+  // see hotels in their property_access (which is what useProperty already
+  // returns since PropertyContext filters by access).
+  const manageableHotels = properties;
+  const [teamHotelId, setTeamHotelId] = useState<string>('');
+  useEffect(() => {
+    if (!teamHotelId && manageableHotels.length > 0) setTeamHotelId(manageableHotels[0].id);
+  }, [manageableHotels, teamHotelId]);
+
+  // ── Invites ──────────────────────────────────────────────────────────────
+  interface InviteRow { id: string; email: string; role: AssignableRole; expires_at: string }
+  const [invites, setInvites] = useState<InviteRow[]>([]);
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState<AssignableRole>('housekeeping');
+  const [inviteSubmitting, setInviteSubmitting] = useState(false);
+  const [inviteError, setInviteError] = useState('');
+  const [inviteResult, setInviteResult] = useState<string | null>(null);
+
+  const loadInvites = useCallback(async () => {
+    if (!user || !teamHotelId) return;
+    const res = await fetchWithAuth(`/api/auth/invites?hotelId=${teamHotelId}`);
+    if (res.ok) {
+      const body = await res.json() as { data?: { invites?: InviteRow[] } };
+      setInvites(body.data?.invites ?? []);
+    }
+  }, [user, teamHotelId]);
+
+  // ── Join codes ───────────────────────────────────────────────────────────
+  interface CodeRow { id: string; code: string; role: AssignableRole; expires_at: string; max_uses: number; used_count: number }
+  const [codes, setCodes] = useState<CodeRow[]>([]);
+  const [showCodeModal, setShowCodeModal] = useState(false);
+  const [codeRole, setCodeRole] = useState<AssignableRole>('housekeeping');
+  const [codeExpiryHours, setCodeExpiryHours] = useState(24);
+  const [codeMaxUses, setCodeMaxUses] = useState(1);
+  const [codeSubmitting, setCodeSubmitting] = useState(false);
+  const [codeError, setCodeError] = useState('');
+  const [codeResult, setCodeResult] = useState<CodeRow | null>(null);
+
+  const loadCodes = useCallback(async () => {
+    if (!user || !teamHotelId) return;
+    const res = await fetchWithAuth(`/api/auth/join-codes?hotelId=${teamHotelId}`);
+    if (res.ok) {
+      const body = await res.json() as { data?: { codes?: CodeRow[] } };
+      setCodes(body.data?.codes ?? []);
+    }
+  }, [user, teamHotelId]);
+
+  useEffect(() => { void loadInvites(); void loadCodes(); }, [loadInvites, loadCodes]);
+
+  const handleInviteSubmit = async () => {
+    if (!user || !teamHotelId) return;
+    setInviteError('');
+    setInviteSubmitting(true);
+    try {
+      const res = await fetchWithAuth('/api/auth/invites', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hotelId: teamHotelId, email: inviteEmail.trim(), role: inviteRole }),
+      });
+      const body = await res.json() as { ok?: boolean; error?: string; data?: { inviteLink?: string } };
+      if (!res.ok || !body.ok) {
+        setInviteError(body.error ?? 'Failed to send invite');
+        return;
+      }
+      setInviteResult(body.data?.inviteLink ?? '');
+      setInviteEmail('');
+      void loadInvites();
+    } finally {
+      setInviteSubmitting(false);
+    }
+  };
+
+  const handleRevokeInvite = async (id: string) => {
+    if (!confirm(lang === 'es' ? '¿Revocar esta invitación?' : 'Revoke this invite?')) return;
+    await fetchWithAuth(`/api/auth/invites?id=${id}`, { method: 'DELETE' });
+    void loadInvites();
+  };
+
+  const handleGenerateCode = async () => {
+    if (!user || !teamHotelId) return;
+    setCodeError('');
+    setCodeSubmitting(true);
+    try {
+      const res = await fetchWithAuth('/api/auth/join-codes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hotelId: teamHotelId, role: codeRole, expiryHours: codeExpiryHours, maxUses: codeMaxUses }),
+      });
+      const body = await res.json() as { ok?: boolean; error?: string; data?: { joinCode?: CodeRow } };
+      if (!res.ok || !body.ok) {
+        setCodeError(body.error ?? 'Failed to generate code');
+        return;
+      }
+      setCodeResult(body.data?.joinCode ?? null);
+      void loadCodes();
+    } finally {
+      setCodeSubmitting(false);
+    }
+  };
+
+  const handleRevokeCode = async (id: string) => {
+    if (!confirm(lang === 'es' ? '¿Revocar este código?' : 'Revoke this code?')) return;
+    await fetchWithAuth(`/api/auth/join-codes?id=${id}`, { method: 'DELETE' });
+    void loadCodes();
+  };
+
   const loadAccounts = useCallback(async () => {
-    if (!user) return;
+    // Only admin can list all accounts; owners/GMs use the team panel below.
+    if (!user || user.role !== 'admin') { setLoading(false); return; }
     setLoading(true);
     try {
       // fetchWithAuth attaches the Authorization: Bearer <jwt> header. The
@@ -208,7 +321,7 @@ export default function AccountsPage() {
     setForm(f => ({ ...f, propertyAccess: admin ? ['*'] : [] }));
   };
 
-  if (user?.role !== 'admin') return null;
+  if (!user || !canManageTeam(user.role)) return null;
 
   return (
     <AppLayout>
@@ -243,25 +356,27 @@ export default function AccountsPage() {
           </p>
         </div>
 
-        {/* Add button */}
-        <button
-          onClick={openAdd}
-          className="animate-in stagger-1"
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: '8px',
-            background: 'var(--navy-light)', color: '#FFFFFF',
-            border: 'none', borderRadius: 'var(--radius-md)',
-            padding: '10px 16px', fontSize: '14px', fontWeight: 600,
-            cursor: 'pointer', fontFamily: 'var(--font-sans)',
-            alignSelf: 'flex-start',
-          }}
-        >
-          <Plus size={15} />
-          {lang === 'es' ? 'Agregar' : 'Add'} {t('accountManagement', lang)}
-        </button>
+        {/* Add button — admin only (full account creation w/ any role) */}
+        {isAdmin && (
+          <button
+            onClick={openAdd}
+            className="animate-in stagger-1"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: '8px',
+              background: 'var(--navy-light)', color: '#FFFFFF',
+              border: 'none', borderRadius: 'var(--radius-md)',
+              padding: '10px 16px', fontSize: '14px', fontWeight: 600,
+              cursor: 'pointer', fontFamily: 'var(--font-sans)',
+              alignSelf: 'flex-start',
+            }}
+          >
+            <Plus size={15} />
+            {lang === 'es' ? 'Agregar' : 'Add'} {t('accountManagement', lang)}
+          </button>
+        )}
 
-        {/* List */}
-        {loading ? (
+        {/* All-accounts list — admin only */}
+        {isAdmin && (loading ? (
           <div style={{ display: 'flex', justifyContent: 'center', padding: '32px' }}>
             <div className="spinner" style={{ width: '28px', height: '28px' }} />
           </div>
@@ -349,7 +464,79 @@ export default function AccountsPage() {
               </div>
             ))}
           </div>
-        )}
+        ))}
+
+        {/* ─── Team management — visible to admin / owner / GM ───────────── */}
+        <div style={{ marginTop: '24px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          <h2 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '15px', color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
+            {lang === 'es' ? 'Equipo' : 'Team'}
+          </h2>
+
+          {manageableHotels.length > 1 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <label style={labelStyle}>{lang === 'es' ? 'Hotel' : 'Hotel'}</label>
+              <select value={teamHotelId} onChange={e => setTeamHotelId(e.target.value)} style={{ ...inputStyle, height: '42px' }}>
+                {manageableHotels.map(h => <option key={h.id} value={h.id}>{h.name}</option>)}
+              </select>
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <button onClick={() => { setInviteResult(null); setInviteError(''); setShowInviteModal(true); }} style={teamBtnStyle}>
+              <Mail size={14} />
+              {lang === 'es' ? 'Invitar por correo' : 'Invite by email'}
+            </button>
+            <button onClick={() => { setCodeResult(null); setCodeError(''); setShowCodeModal(true); }} style={teamBtnStyle}>
+              <KeyRound size={14} />
+              {lang === 'es' ? 'Generar código' : 'Generate code'}
+            </button>
+          </div>
+
+          {/* Pending invites */}
+          {invites.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <h3 style={subHeadingStyle}>{lang === 'es' ? 'Invitaciones pendientes' : 'Pending invites'}</h3>
+              {invites.map(iv => (
+                <div key={iv.id} style={teamRowStyle}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>{iv.email}</div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                      {roleLabel(iv.role)} · {lang === 'es' ? 'expira' : 'expires'} {new Date(iv.expires_at).toLocaleDateString()}
+                    </div>
+                  </div>
+                  <button onClick={() => handleRevokeInvite(iv.id)} style={revokeBtnStyle} aria-label="Revoke">
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Active codes */}
+          {codes.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <h3 style={subHeadingStyle}>{lang === 'es' ? 'Códigos activos' : 'Active codes'}</h3>
+              {codes.map(c => (
+                <div key={c.id} style={teamRowStyle}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: '14px', fontWeight: 700, fontFamily: 'var(--font-mono)', letterSpacing: '0.05em', color: 'var(--text-primary)' }}>
+                      {c.code}
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                      {roleLabel(c.role)} · {c.used_count}/{c.max_uses} {lang === 'es' ? 'usados' : 'used'} · {lang === 'es' ? 'expira' : 'expires'} {new Date(c.expires_at).toLocaleString()}
+                    </div>
+                  </div>
+                  <button onClick={() => navigator.clipboard?.writeText(c.code)} style={iconBtnStyle} aria-label="Copy">
+                    <Copy size={13} />
+                  </button>
+                  <button onClick={() => handleRevokeCode(c.id)} style={revokeBtnStyle} aria-label="Revoke">
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
 
       </div>
 
@@ -448,18 +635,18 @@ export default function AccountsPage() {
             {/* Role */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
               <label style={labelStyle}>{t('type', lang)}</label>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                {(['admin', 'owner', 'staff'] as const).map(r => (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                {ALL_ROLES.filter(r => r !== 'staff').map(r => (
                   <button key={r} onClick={() => setForm(f => ({ ...f, role: r }))} style={{
-                    flex: 1, height: '36px', borderRadius: 'var(--radius-sm)',
+                    minWidth: '90px', flex: '1 1 90px', height: '36px',
+                    borderRadius: 'var(--radius-sm)',
                     background: form.role === r ? 'var(--amber-dim)' : 'var(--bg-card)',
                     border: `1px solid ${form.role === r ? 'var(--amber-border)' : 'var(--border)'}`,
                     color: form.role === r ? 'var(--amber)' : 'var(--text-secondary)',
-                    fontSize: '13px', fontWeight: form.role === r ? 600 : 400,
+                    fontSize: '12px', fontWeight: form.role === r ? 600 : 400,
                     cursor: 'pointer', fontFamily: 'var(--font-sans)',
-                    textTransform: 'capitalize',
                   }}>
-                    {r}
+                    {roleLabel(r)}
                   </button>
                 ))}
               </div>
@@ -538,7 +725,126 @@ export default function AccountsPage() {
           </div>
         </div>
       )}
+
+      {/* ─── Invite-by-email modal ──────────────────────────────────────── */}
+      {showInviteModal && (
+        <ModalShell onClose={() => setShowInviteModal(false)} title={lang === 'es' ? 'Invitar por correo' : 'Invite by email'}>
+          {inviteResult !== null ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <p style={{ fontSize: '13px', color: 'var(--text-primary)', lineHeight: 1.5 }}>
+                {lang === 'es' ? 'Invitación enviada. Comparte este enlace si el correo no llega:' : 'Invite sent. Share this link if the email doesn’t arrive:'}
+              </p>
+              <input readOnly value={inviteResult ?? ''} style={{ ...inputStyle, fontFamily: 'var(--font-mono)', fontSize: '12px' }} onFocus={e => e.currentTarget.select()} />
+              <button onClick={() => setShowInviteModal(false)} style={primaryBtnStyle(false)}>
+                {lang === 'es' ? 'Cerrar' : 'Close'}
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <label style={labelStyle}>{lang === 'es' ? 'Correo' : 'Email'}</label>
+                <input type="email" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} placeholder="name@example.com" style={inputStyle} />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <label style={labelStyle}>{lang === 'es' ? 'Rol' : 'Role'}</label>
+                <select value={inviteRole} onChange={e => setInviteRole(e.target.value as AssignableRole)} style={{ ...inputStyle, height: '42px' }}>
+                  {ASSIGNABLE_ROLES.map(r => <option key={r} value={r}>{roleLabel(r)}</option>)}
+                </select>
+              </div>
+              {inviteError && <ErrorBox>{inviteError}</ErrorBox>}
+              <button disabled={inviteSubmitting || !inviteEmail.trim()} onClick={handleInviteSubmit} style={primaryBtnStyle(inviteSubmitting || !inviteEmail.trim())}>
+                {inviteSubmitting
+                  ? <div className="spinner" style={{ width: '18px', height: '18px', borderTopColor: '#FFFFFF', borderColor: 'rgba(255,255,255,0.3)' }} />
+                  : (lang === 'es' ? 'Enviar invitación' : 'Send invite')}
+              </button>
+            </div>
+          )}
+        </ModalShell>
+      )}
+
+      {/* ─── Generate-join-code modal ──────────────────────────────────── */}
+      {showCodeModal && (
+        <ModalShell onClose={() => setShowCodeModal(false)} title={lang === 'es' ? 'Generar código' : 'Generate code'}>
+          {codeResult ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <p style={{ fontSize: '13px', color: 'var(--text-primary)', lineHeight: 1.5 }}>
+                {lang === 'es' ? 'Código creado. Compártelo con la persona que se va a unir:' : 'Code created. Share it with the person joining:'}
+              </p>
+              <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '14px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: '20px', fontWeight: 700, fontFamily: 'var(--font-mono)', letterSpacing: '0.1em', color: 'var(--text-primary)' }}>{codeResult.code}</span>
+                <button onClick={() => navigator.clipboard?.writeText(codeResult.code)} style={iconBtnStyle} aria-label="Copy">
+                  <Copy size={14} />
+                </button>
+              </div>
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                {roleLabel(codeResult.role)} · {lang === 'es' ? 'usar en' : 'use at'} <code>/join</code> · {lang === 'es' ? 'expira' : 'expires'} {new Date(codeResult.expires_at).toLocaleString()}
+              </p>
+              <button onClick={() => setShowCodeModal(false)} style={primaryBtnStyle(false)}>
+                {lang === 'es' ? 'Cerrar' : 'Close'}
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <label style={labelStyle}>{lang === 'es' ? 'Rol' : 'Role'}</label>
+                <select value={codeRole} onChange={e => setCodeRole(e.target.value as AssignableRole)} style={{ ...inputStyle, height: '42px' }}>
+                  {ASSIGNABLE_ROLES.map(r => <option key={r} value={r}>{roleLabel(r)}</option>)}
+                </select>
+              </div>
+              <div style={{ display: 'flex', gap: '12px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', flex: 1 }}>
+                  <label style={labelStyle}>{lang === 'es' ? 'Validez (h)' : 'Valid for (hr)'}</label>
+                  <input type="number" min={1} max={720} value={codeExpiryHours} onChange={e => setCodeExpiryHours(Number(e.target.value))} style={inputStyle} />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', flex: 1 }}>
+                  <label style={labelStyle}>{lang === 'es' ? 'Usos máx.' : 'Max uses'}</label>
+                  <input type="number" min={1} max={100} value={codeMaxUses} onChange={e => setCodeMaxUses(Number(e.target.value))} style={inputStyle} />
+                </div>
+              </div>
+              {codeError && <ErrorBox>{codeError}</ErrorBox>}
+              <button disabled={codeSubmitting} onClick={handleGenerateCode} style={primaryBtnStyle(codeSubmitting)}>
+                {codeSubmitting
+                  ? <div className="spinner" style={{ width: '18px', height: '18px', borderTopColor: '#FFFFFF', borderColor: 'rgba(255,255,255,0.3)' }} />
+                  : (lang === 'es' ? 'Generar' : 'Generate')}
+              </button>
+            </div>
+          )}
+        </ModalShell>
+      )}
     </AppLayout>
+  );
+}
+
+function ModalShell({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 60,
+      background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(4px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
+    }} onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{
+        width: '100%', maxWidth: '440px',
+        background: 'var(--bg-elevated)', borderRadius: 'var(--radius-lg)',
+        border: '1px solid var(--border-bright)', padding: '20px',
+        display: 'flex', flexDirection: 'column', gap: '14px',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <h2 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '16px', color: 'var(--text-primary)' }}>{title}</h2>
+          <button onClick={onClose} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: '4px' }}>
+            <X size={18} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function ErrorBox({ children }: { children: React.ReactNode }) {
+  return (
+    <p style={{ fontSize: '13px', color: 'var(--red)', background: 'var(--red-dim)', border: '1px solid var(--red-border, rgba(239,68,68,0.2))', borderRadius: 'var(--radius-sm)', padding: '10px 12px', margin: 0 }}>
+      {children}
+    </p>
   );
 }
 
@@ -556,3 +862,48 @@ const inputStyle: React.CSSProperties = {
   fontFamily: 'var(--font-sans)',
   outline: 'none', width: '100%',
 };
+
+const subHeadingStyle: React.CSSProperties = {
+  fontSize: '11px', fontWeight: 600, letterSpacing: '0.06em',
+  color: 'var(--text-muted)', textTransform: 'uppercase',
+  fontFamily: 'var(--font-sans)',
+};
+
+const teamBtnStyle: React.CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', gap: '8px',
+  background: 'var(--bg-card)', color: 'var(--text-primary)',
+  border: '1px solid var(--border)', borderRadius: 'var(--radius-md)',
+  padding: '10px 14px', fontSize: '13px', fontWeight: 600,
+  cursor: 'pointer', fontFamily: 'var(--font-sans)',
+};
+
+const teamRowStyle: React.CSSProperties = {
+  background: 'var(--bg-card)', border: '1px solid var(--border)',
+  borderRadius: 'var(--radius-md)', padding: '10px 12px',
+  display: 'flex', alignItems: 'center', gap: '10px',
+};
+
+const iconBtnStyle: React.CSSProperties = {
+  width: '32px', height: '32px', borderRadius: 'var(--radius-sm)',
+  background: 'transparent', border: '1px solid var(--border)',
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+  cursor: 'pointer', color: 'var(--text-muted)',
+};
+
+const revokeBtnStyle: React.CSSProperties = {
+  width: '32px', height: '32px', borderRadius: 'var(--radius-sm)',
+  background: 'transparent', border: '1px solid var(--red-border, rgba(239,68,68,0.3))',
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+  cursor: 'pointer', color: 'var(--red)',
+};
+
+function primaryBtnStyle(disabled: boolean): React.CSSProperties {
+  return {
+    width: '100%', height: '44px',
+    borderRadius: 'var(--radius-md)',
+    background: disabled ? 'rgba(37,99,235,0.4)' : 'var(--navy-light)',
+    color: '#FFFFFF', fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: '14px',
+    border: 'none', cursor: disabled ? 'not-allowed' : 'pointer',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+  };
+}

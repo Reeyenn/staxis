@@ -1,0 +1,123 @@
+// /api/auth/join-codes — manage hotel join codes.
+//   GET     ?hotelId=…  — list active (non-expired, not-revoked) codes
+//   POST                — create (body: hotelId, role, expiryHours, maxUses)
+//   DELETE  ?id=…       — revoke (sets revoked_at)
+
+import { NextRequest } from 'next/server';
+import { supabaseAdmin } from '@/lib/supabase-admin';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { getOrMintRequestId } from '@/lib/log';
+import { verifyTeamManager, canManageHotel } from '@/lib/team-auth';
+import { isAssignableRole } from '@/lib/roles';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+// Generate a code like "BEAU-K9F2": 4 letters + 4 alphanum.
+const CODE_LETTERS = 'ABCDEFGHJKMNPQRSTUVWXYZ'; // no I/L/O for clarity
+const CODE_ALPHANUM = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+function randomCharsFrom(set: string, n: number): string {
+  let s = '';
+  for (let i = 0; i < n; i++) s += set[Math.floor(Math.random() * set.length)];
+  return s;
+}
+function generateJoinCode(hotelName?: string): string {
+  const prefix = hotelName
+    ? hotelName.replace(/[^A-Za-z]/g, '').slice(0, 4).toUpperCase().padEnd(4, 'X')
+    : randomCharsFrom(CODE_LETTERS, 4);
+  return `${prefix}-${randomCharsFrom(CODE_ALPHANUM, 4)}`;
+}
+
+export async function GET(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
+  const caller = await verifyTeamManager(req);
+  if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+
+  const { searchParams } = new URL(req.url);
+  const hotelId = searchParams.get('hotelId');
+  if (!hotelId) return err('hotelId required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  if (!canManageHotel(caller, hotelId)) {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  }
+
+  const { data, error: qErr } = await supabaseAdmin
+    .from('hotel_join_codes')
+    .select('id, code, role, expires_at, max_uses, used_count, created_at, revoked_at')
+    .eq('hotel_id', hotelId)
+    .is('revoked_at', null)
+    .order('created_at', { ascending: false });
+  if (qErr) {
+    console.error('[join-codes:GET] failed', qErr);
+    return err('Failed to load codes', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  }
+  return ok({ codes: data ?? [] }, { requestId });
+}
+
+export async function POST(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
+  const caller = await verifyTeamManager(req);
+  if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+
+  const body = await req.json() as { hotelId?: string; role?: string; expiryHours?: number; maxUses?: number };
+  const { hotelId, role, expiryHours, maxUses } = body;
+  if (!hotelId || !role) {
+    return err('hotelId and role required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  }
+  if (!canManageHotel(caller, hotelId)) {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  }
+  if (!isAssignableRole(role)) {
+    return err('Invalid role', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  }
+  const ttl = Math.min(Math.max(Number(expiryHours ?? 24), 1), 24 * 30);  // 1h–30d
+  const uses = Math.min(Math.max(Number(maxUses ?? 1), 1), 100);
+
+  // Pull hotel name for the code prefix.
+  const { data: prop } = await supabaseAdmin.from('properties').select('name').eq('id', hotelId).maybeSingle();
+
+  // Try a few times in case of collision.
+  let lastErr: unknown = null;
+  for (let i = 0; i < 5; i++) {
+    const code = generateJoinCode(prop?.name);
+    const expiresAt = new Date(Date.now() + ttl * 60 * 60 * 1000).toISOString();
+    const { data: ins, error: insErr } = await supabaseAdmin.from('hotel_join_codes').insert({
+      hotel_id: hotelId,
+      code,
+      role,
+      expires_at: expiresAt,
+      max_uses: uses,
+      created_by: caller.accountId,
+    }).select('id, code, role, expires_at, max_uses, used_count, created_at').single();
+    if (!insErr && ins) return ok({ joinCode: ins }, { requestId });
+    lastErr = insErr;
+    if (insErr && !String(insErr.message ?? '').toLowerCase().includes('duplicate')) break;
+  }
+  console.error('[join-codes:POST] insert failed after retries', lastErr);
+  return err('Failed to create join code', { requestId, status: 500, code: ApiErrorCode.InternalError });
+}
+
+export async function DELETE(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
+  const caller = await verifyTeamManager(req);
+  if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+
+  const { searchParams } = new URL(req.url);
+  const id = searchParams.get('id');
+  if (!id) return err('id required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+
+  const { data: row } = await supabaseAdmin.from('hotel_join_codes').select('hotel_id').eq('id', id).maybeSingle();
+  if (!row) return err('Not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+  if (!canManageHotel(caller, row.hotel_id)) {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  }
+
+  const { error: updErr } = await supabaseAdmin
+    .from('hotel_join_codes')
+    .update({ revoked_at: new Date().toISOString() })
+    .eq('id', id);
+  if (updErr) {
+    console.error('[join-codes:DELETE] failed', updErr);
+    return err('Failed to revoke', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  }
+  return ok({ success: true }, { requestId });
+}

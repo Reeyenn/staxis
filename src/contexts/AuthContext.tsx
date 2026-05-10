@@ -20,13 +20,14 @@
 
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
+import type { AppRole } from '@/lib/roles';
 
 export interface AppUser {
   uid: string;               // auth.users.id  AND  accounts.data_user_id (same value)
   accountId: string;         // accounts.id
   username: string;          // lowercase username (no @staxis.local suffix)
   displayName: string;
-  role: 'admin' | 'owner' | 'staff';
+  role: AppRole;
   propertyAccess: string[];  // ["*"] = all properties (admin-only convention), or specific property UUIDs
 }
 

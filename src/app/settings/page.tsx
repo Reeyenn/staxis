@@ -7,16 +7,18 @@ import { useLang } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { t } from '@/lib/translations';
 import { Wifi, Users, ChevronRight } from 'lucide-react';
+import { canManageTeam } from '@/lib/roles';
 
 export default function SettingsPage() {
   const { lang }           = useLang();
   const { user }           = useAuth();
 
-  // Account & Team is the hub for profile + (eventually) team management;
-  // visible to admin today, opens up to owner/GM in Phase 3.
+  // Account & Team is the hub for profile + team management. Visible to
+  // admin/owner/GM (anyone who can manage a team). Other roles see only the
+  // PMS-connection card today.
   const sections = [
     { href:'/settings/pms', icon:Wifi, label:t('pmsConnection', lang), desc: lang === 'es' ? 'Sincronización automática con tu sistema de gestión hotelera' : 'Auto-sync data from your property management system' },
-    ...(user?.role === 'admin'
+    ...(user && canManageTeam(user.role)
       ? [{
           href:'/settings/accounts',
           icon:Users,

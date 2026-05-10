@@ -18,7 +18,9 @@ import { getOrMintRequestId } from '@/lib/log';
 // removes both sides atomically.
 // ───────────────────────────────────────────────────────────────────────────
 
-type AccountRole = 'admin' | 'owner' | 'staff';
+import { ALL_ROLES, isValidRole, type AppRole } from '@/lib/roles';
+
+type AccountRole = AppRole;
 
 // Basic email validation — RFC-compliant enough for our purposes. Server-side
 // guard; the form also enforces type=email client-side.
@@ -148,8 +150,8 @@ export async function POST(req: NextRequest) {
       requestId, status: 400, code: ApiErrorCode.ValidationFailed,
     });
   }
-  if (!['admin', 'owner', 'staff'].includes(role)) {
-    return err('role must be one of admin, owner, staff', {
+  if (!isValidRole(role)) {
+    return err(`role must be one of: ${ALL_ROLES.join(', ')}`, {
       requestId, status: 400, code: ApiErrorCode.ValidationFailed,
     });
   }
@@ -266,8 +268,8 @@ export async function PUT(req: NextRequest) {
   if (!accountId) {
     return err('accountId required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
-  if (role !== undefined && !['admin', 'owner', 'staff'].includes(role)) {
-    return err('role must be one of admin, owner, staff', {
+  if (role !== undefined && !isValidRole(role)) {
+    return err(`role must be one of: ${ALL_ROLES.join(', ')}`, {
       requestId, status: 400, code: ApiErrorCode.ValidationFailed,
     });
   }
