@@ -59,7 +59,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          URL="https://hotelops-ai.vercel.app/api/admin/doctor"
+          URL="https://getstaxis.com/api/admin/doctor"
 
           http_code=$(curl \
             --silent \
@@ -99,7 +99,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          URL="https://hotelops-ai.vercel.app/api/cron/scraper-health"
+          URL="https://getstaxis.com/api/cron/scraper-health"
 
           http_code=$(curl \
             --silent \

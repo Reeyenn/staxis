@@ -59,7 +59,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          URL="https://hotelops-ai.vercel.app/api/admin/doctor"
+          URL="https://getstaxis.com/api/admin/doctor"
 
           # Vercel deploys finish in 60–180s typically. Give them up to 5
           # min (20 tries * 15s) before we start failing loudly. During

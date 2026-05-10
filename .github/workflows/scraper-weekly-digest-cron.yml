@@ -33,7 +33,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          URL="https://hotelops-ai.vercel.app/api/cron/scraper-weekly-digest"
+          URL="https://getstaxis.com/api/cron/scraper-weekly-digest"
 
           RESPONSE=$(curl \
             --fail-with-body \

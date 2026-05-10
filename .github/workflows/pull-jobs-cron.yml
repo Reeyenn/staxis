@@ -47,7 +47,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          URL="https://hotelops-ai.vercel.app/api/cron/enqueue-property-pulls"
+          URL="https://getstaxis.com/api/cron/enqueue-property-pulls"
 
           RESPONSE=$(curl \
             --fail-with-body \

@@ -45,7 +45,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          URL="https://hotelops-ai.vercel.app/api/admin/sentry-test"
+          URL="https://getstaxis.com/api/admin/sentry-test"
 
           # --fail-with-body so HTTP 4xx/5xx fails the workflow loudly.
           # Capture the marker from the response so the run log includes

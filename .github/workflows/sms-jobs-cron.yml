@@ -48,7 +48,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          URL="https://hotelops-ai.vercel.app/api/cron/process-sms-jobs"
+          URL="https://getstaxis.com/api/cron/process-sms-jobs"
 
           # Use --fail-with-body so HTTP 4xx/5xx exits non-zero and fails
           # the workflow (so GitHub emails us). -sS hides progress but

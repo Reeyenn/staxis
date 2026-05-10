@@ -40,7 +40,7 @@ jobs:
         run: |
           curl -fsS --retry 2 --retry-delay 5 \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "https://hotelops-ai.vercel.app/api/cron/ml-train-demand" | tee /tmp/result.json
+            "https://getstaxis.com/api/cron/ml-train-demand" | tee /tmp/result.json
           # Fail the job if the response indicates a problem
           jq -e '.ok == true' /tmp/result.json
 
@@ -52,7 +52,7 @@ jobs:
         run: |
           curl -fsS --retry 2 --retry-delay 5 \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "https://hotelops-ai.vercel.app/api/cron/ml-train-supply" | tee /tmp/result.json
+            "https://getstaxis.com/api/cron/ml-train-supply" | tee /tmp/result.json
           jq -e '.ok == true' /tmp/result.json
 
   train-inventory:
@@ -63,7 +63,7 @@ jobs:
         run: |
           curl -fsS --retry 2 --retry-delay 5 \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "https://hotelops-ai.vercel.app/api/cron/ml-train-inventory" | tee /tmp/result.json
+            "https://getstaxis.com/api/cron/ml-train-inventory" | tee /tmp/result.json
           jq -e '.ok == true' /tmp/result.json
 
   run-inference:
@@ -74,7 +74,7 @@ jobs:
         run: |
           curl -fsS --retry 2 --retry-delay 5 \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "https://hotelops-ai.vercel.app/api/cron/ml-run-inference" | tee /tmp/result.json
+            "https://getstaxis.com/api/cron/ml-run-inference" | tee /tmp/result.json
           jq -e '.ok == true' /tmp/result.json
 
   predict-inventory:
@@ -85,7 +85,7 @@ jobs:
         run: |
           curl -fsS --retry 2 --retry-delay 5 \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "https://hotelops-ai.vercel.app/api/cron/ml-predict-inventory" | tee /tmp/result.json
+            "https://getstaxis.com/api/cron/ml-predict-inventory" | tee /tmp/result.json
           jq -e '.ok == true' /tmp/result.json
 
   aggregate-priors:
@@ -96,5 +96,5 @@ jobs:
         run: |
           curl -fsS --retry 2 --retry-delay 5 \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "https://hotelops-ai.vercel.app/api/cron/ml-aggregate-priors" | tee /tmp/result.json
+            "https://getstaxis.com/api/cron/ml-aggregate-priors" | tee /tmp/result.json
           jq -e '.ok == true' /tmp/result.json
