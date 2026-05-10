@@ -2,30 +2,44 @@
 
 import React from 'react';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
-import type { PropertySidebarEntry } from '@/app/api/admin/ml/inventory/cockpit-data/route';
 import { Building2, CheckCircle2, AlertTriangle, Circle } from 'lucide-react';
 
 /**
- * Hotel selector rail for the Inventory cockpit. Lists every platform
- * property with a tiny status pip; click switches the cockpit to that
- * hotel via `?propertyId=<uuid>`. The "All hotels" entry at the top is
- * the network/aggregate view (no propertyId param).
+ * Shared hotel selector rail for the ML Cockpit (Inventory + Housekeeping
+ * tabs use the same component). Lists every platform property with a tiny
+ * status pip; click switches the cockpit to that hotel via
+ * `?propertyId=<uuid>`. The "All hotels" entry at the top is the
+ * network/aggregate view (no propertyId param).
  *
  * Status pips:
  *   • 🟢 healthy  — training fresh + predictions fresh
  *   • 🟡 warming  — bootstrap state, no first run yet
  *   • 🔴 issue    — training >8d stale or predictions >36h stale
+ *
+ * The status semantics are tab-specific (computed by each tab's API
+ * endpoint) but the colors and pip rendering are shared.
  */
-export function InventoryHotelSidebar({
+
+export interface HotelSidebarEntry {
+  id: string;
+  name: string;
+  brand: string | null;
+  status: 'healthy' | 'warming' | 'issue';
+}
+
+export function HotelSidebar({
   properties,
   selectedPropertyId,
   totalNetworkCount,
+  /** Which tab the user is on — preserved when switching hotels. */
+  activeTab,
 }: {
-  properties: PropertySidebarEntry[];
+  properties: HotelSidebarEntry[];
   /** null when "All hotels" is the active view. */
   selectedPropertyId: string | null;
   /** Number of hotels for the "All hotels (N)" label. */
   totalNetworkCount: number;
+  activeTab: 'inventory' | 'housekeeping';
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -39,7 +53,10 @@ export function InventoryHotelSidebar({
     const params = new URLSearchParams(searchParams.toString());
     if (id) params.set('propertyId', id);
     else params.delete('propertyId');
-    if (params.get('tab') !== 'inventory') params.set('tab', 'inventory');
+    if (params.get('tab') !== activeTab) {
+      if (activeTab === 'housekeeping') params.delete('tab');
+      else params.set('tab', activeTab);
+    }
     const target = `${pathname}${params.toString() ? `?${params.toString()}` : ''}`;
     router.push(target, { scroll: false });
   };

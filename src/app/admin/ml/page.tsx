@@ -7,39 +7,34 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { getProperty } from '@/lib/db';
 import { supabase } from '@/lib/supabase';
-import { DataFuelGauge } from './_components/DataFuelGauge';
-import { AdoptionPerHK } from './_components/AdoptionPerHK';
-import { LayerStatusPanel } from './_components/LayerStatusPanel';
-import { ShadowMAEChart } from './_components/ShadowMAEChart';
-import { TodaysPredictionsTable } from './_components/TodaysPredictionsTable';
-import { PipelineHealth } from './_components/PipelineHealth';
-import { ManualTriggers } from './_components/ManualTriggers';
-import { RecentOverridesTable } from './_components/RecentOverridesTable';
-import { DisagreementHistory } from './_components/DisagreementHistory';
+import { HotelSidebar, type HotelSidebarEntry } from './_components/HotelSidebar';
 import { InventoryTimeline } from './_components/inventory/InventoryTimeline';
 import { InventoryDataFuelGauge } from './_components/inventory/InventoryDataFuelGauge';
 import { InventoryPipelineHealth } from './_components/inventory/InventoryPipelineHealth';
 import { InventoryRecentAnomaliesTable } from './_components/inventory/InventoryRecentAnomaliesTable';
 import { InventoryAdoptionPanel } from './_components/inventory/InventoryAdoptionPanel';
-import { InventoryHotelSidebar } from './_components/inventory/InventoryHotelSidebar';
+import { HousekeepingTimeline } from './_components/housekeeping/HousekeepingTimeline';
+import { HousekeepingDataFuelGauge } from './_components/housekeeping/HousekeepingDataFuelGauge';
+import { HousekeepingSystemHealth } from './_components/housekeeping/HousekeepingSystemHealth';
+import { HousekeepingOverridesTable } from './_components/housekeeping/HousekeepingOverridesTable';
+import { HousekeepingAdoption } from './_components/housekeeping/HousekeepingAdoption';
 
 /**
  * /admin/ml — Owner-only ML cockpit.
  *
- * Two tabs: Housekeeping (per-active-property) + Inventory (network-wide
- * with optional drill-down via ?propertyId).
+ * Two tabs: Housekeeping + Inventory. Both share the same layout pattern:
+ *   • Default = network view aggregating across every platform property
+ *   • Right sidebar lists hotels with status pips; click to drill in
+ *   • URL ?propertyId=<uuid> drives single-hotel mode
  *
- * Page is gated to property owners. Non-owners see a "Page not found" stub.
- * Inventory tab additionally requires admin role on the API side
- * (`/api/admin/ml/inventory/cockpit-data` uses requireAdmin) so it's
- * protected even if a non-admin owner somehow loaded the page.
+ * Both tabs are admin-only via API-side requireAdmin (page-level owner gate
+ * provides defense-in-depth).
  */
 
 type Tab = 'housekeeping' | 'inventory';
 
-// Shape mirrors the API route response. Imported inline to avoid circular
-// import noise (route file lives under /app/api).
-interface CockpitData {
+// ─── Inventory cockpit data shape (matches /api/admin/ml/inventory/cockpit-data) ──
+interface InventoryCockpitData {
   mode: 'network' | 'single';
   selectedProperty: { id: string; name: string } | null;
   properties: Array<{
@@ -74,6 +69,41 @@ interface CockpitData {
   }>;
 }
 
+// ─── Housekeeping cockpit data shape ──
+interface HKCockpitData {
+  mode: 'network' | 'single';
+  selectedProperty: { id: string; name: string } | null;
+  properties: Array<{
+    id: string; name: string; brand: string | null;
+    daysSinceFirstEvent: number; staffActive: number; modelsActive: number;
+    status: 'healthy' | 'warming' | 'issue';
+    lastTrainingAt: string | null; lastInferenceAt: string | null;
+    eventsLast7d: number;
+  }>;
+  aggregate: {
+    hotelCount: number; totalEvents: number; totalEventsLast7d: number;
+    totalEventsLast24h: number; distinctStaff: number; distinctRooms: number;
+    fleetMedianDay: number; daysOfHistoryRange: { min: number; max: number };
+    healthCounts: { healthy: number; warming: number; issue: number };
+    daysToNextMilestoneMedian: number | null;
+    nextMilestoneLabel: string;
+    phaseHistogram: Array<{ phaseId: string; phaseLabel: string; phaseDay: number; hotelCount: number }>;
+    dailyEventSeries: Array<{ date: string; recorded: number; discarded: number }>;
+    lastTrainingRunAt: string | null; lastInferenceWriteAt: string | null;
+    lastOverrideAt: string | null;
+    predictionsLast24h: number; activeModelRunCount: number;
+    optimizerActive: boolean;
+  };
+  recentOverrides: Array<{
+    id: string; date: string; optimizerRecommendation: number; manualHeadcount: number;
+    overrideReason: string | null; propertyId: string; propertyName: string;
+  }>;
+  topAdoption: Array<{
+    staffId: string; staffName: string; roomsAssigned: number; roomsWithEvent: number;
+    adoptionPct: number; propertyId: string; propertyName: string;
+  }>;
+}
+
 export default function MLPage() {
   return (
     <Suspense fallback={
@@ -88,7 +118,7 @@ export default function MLPage() {
 
 function MLPageInner() {
   const { user, loading: authLoading } = useAuth();
-  const { activeProperty, activePropertyId, loading: propLoading } = useProperty();
+  const { activePropertyId, loading: propLoading } = useProperty();
   const router = useRouter();
   const searchParams = useSearchParams();
   const tabParam = searchParams.get('tab');
@@ -96,11 +126,12 @@ function MLPageInner() {
   const propertyIdParam = searchParams.get('propertyId');
 
   const [isOwner, setIsOwner] = useState<boolean | null>(null);
-  const [cockpit, setCockpit] = useState<CockpitData | null>(null);
+  const [invCockpit, setInvCockpit] = useState<InventoryCockpitData | null>(null);
+  const [hkCockpit, setHkCockpit] = useState<HKCockpitData | null>(null);
   const [cockpitLoading, setCockpitLoading] = useState(true);
   const [cockpitErr, setCockpitErr] = useState<string | null>(null);
 
-  // ── Owner gating ──
+  // Owner gating
   useEffect(() => {
     if (authLoading || propLoading || !user || !activePropertyId) return;
     (async () => {
@@ -122,7 +153,7 @@ function MLPageInner() {
     })();
   }, [user, activePropertyId, authLoading, propLoading]);
 
-  // ── Redirects ──
+  // Redirects
   useEffect(() => {
     if (!authLoading && !user) router.replace('/signin');
   }, [user, authLoading, router]);
@@ -130,24 +161,28 @@ function MLPageInner() {
     if (!authLoading && !propLoading && user && !activePropertyId) router.replace('/onboarding');
   }, [user, authLoading, propLoading, activePropertyId, router]);
 
-  // ── Fetch cockpit data when on inventory tab ──
+  // Fetch cockpit data — branch on tab
   useEffect(() => {
-    if (tab !== 'inventory' || isOwner !== true) return;
+    if (isOwner !== true) return;
     let cancelled = false;
     (async () => {
       setCockpitLoading(true);
       setCockpitErr(null);
       try {
         const { data: { session } } = await supabase.auth.getSession();
-        const url = propertyIdParam
-          ? `/api/admin/ml/inventory/cockpit-data?propertyId=${propertyIdParam}`
-          : '/api/admin/ml/inventory/cockpit-data';
+        const base = tab === 'inventory'
+          ? '/api/admin/ml/inventory/cockpit-data'
+          : '/api/admin/ml/housekeeping/cockpit-data';
+        const url = propertyIdParam ? `${base}?propertyId=${propertyIdParam}` : base;
         const res = await fetch(url, {
           headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
         });
         const json = await res.json();
         if (!res.ok || !json.ok) throw new Error(json.error || `HTTP ${res.status}`);
-        if (!cancelled) setCockpit(json.data);
+        if (!cancelled) {
+          if (tab === 'inventory') setInvCockpit(json.data);
+          else setHkCockpit(json.data);
+        }
       } catch (e) {
         if (!cancelled) setCockpitErr((e as Error).message ?? 'failed');
       } finally {
@@ -159,16 +194,13 @@ function MLPageInner() {
 
   const setTab = (next: Tab) => {
     const params = new URLSearchParams(searchParams.toString());
-    if (next === 'housekeeping') {
-      params.delete('tab');
-      params.delete('propertyId');     // drop hotel selection when leaving inventory
-    } else {
-      params.set('tab', next);
-    }
+    if (next === 'housekeeping') params.delete('tab');
+    else params.set('tab', next);
+    params.delete('propertyId');     // drop hotel selection on tab switch
     router.replace(`/admin/ml${params.toString() ? `?${params.toString()}` : ''}`, { scroll: false });
   };
 
-  // ── Loading / not-owner gates ──
+  // Loading / not-owner gates
   if (authLoading || propLoading || isOwner === null) {
     return (
       <AppLayout>
@@ -189,13 +221,19 @@ function MLPageInner() {
     );
   }
 
+  // Sidebar entries based on the active tab's data
+  const sidebarEntries: HotelSidebarEntry[] = tab === 'inventory'
+    ? (invCockpit?.properties.map((p) => ({ id: p.id, name: p.name, brand: p.brand, status: p.status })) ?? [])
+    : (hkCockpit?.properties.map((p) => ({ id: p.id, name: p.name, brand: p.brand, status: p.status })) ?? []);
+  const totalNetworkCount = sidebarEntries.length;
+
   return (
     <AppLayout>
       <div style={{ padding: '32px', maxWidth: '1920px', margin: '0 auto' }}>
         {/* Header */}
         <div style={{ marginBottom: '20px' }}>
           <h1 style={{ fontSize: '28px', fontWeight: 600, color: '#1b1c19', margin: 0 }}>
-            ML Cockpit{tab === 'housekeeping' ? ` — ${activeProperty?.name ?? 'Loading...'}` : ''}
+            ML Cockpit
           </h1>
           <p style={{ fontSize: '14px', color: '#7a8a9e', marginTop: '4px' }}>
             Monitor model health, predictions, and system state.
@@ -246,89 +284,51 @@ function MLPageInner() {
           })}
         </div>
 
-        {/* Housekeeping tab — single-property panels (unchanged) */}
-        {tab === 'housekeeping' && (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', marginBottom: '24px' }}>
-            <div style={{ gridColumn: '1 / -1' }}>
-              <DataFuelGauge />
-            </div>
-            <LayerStatusPanel layer="demand" />
-            <LayerStatusPanel layer="supply" />
-            <div style={{ gridColumn: '1 / -1' }}>
-              <LayerStatusPanel layer="optimizer" />
-            </div>
-            <div style={{ gridColumn: '1 / -1' }}>
-              <ShadowMAEChart />
-            </div>
-            <div style={{ gridColumn: '1 / -1' }}>
-              <AdoptionPerHK />
-            </div>
-            <div style={{ gridColumn: '1 / -1' }}>
-              <TodaysPredictionsTable />
-            </div>
-            <div style={{ gridColumn: '1 / 2' }}>
-              <PipelineHealth />
-            </div>
-            <div style={{ gridColumn: '2 / 3' }}>
-              <ManualTriggers />
-            </div>
-            <div style={{ gridColumn: '1 / -1' }}>
-              <RecentOverridesTable />
-            </div>
-            <div style={{ gridColumn: '1 / -1' }}>
-              <DisagreementHistory />
-            </div>
+        {/* Two-column layout for both tabs (panels left, sidebar right) */}
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'minmax(0, 1fr) 280px',
+          gap: '24px',
+          alignItems: 'flex-start',
+        }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            {cockpitLoading ? (
+              <div style={{ padding: '32px', textAlign: 'center', color: '#7a8a9e', fontSize: '13px' }}>
+                Loading cockpit data…
+              </div>
+            ) : cockpitErr ? (
+              <div style={{
+                padding: '14px 16px',
+                background: 'rgba(220,52,69,0.06)',
+                border: '1px solid rgba(220,52,69,0.20)',
+                borderRadius: '10px',
+                color: '#b21e2f',
+                fontSize: '13px',
+              }}>
+                Failed to load cockpit: {cockpitErr}
+              </div>
+            ) : tab === 'inventory' && invCockpit ? (
+              <InventoryPanels cockpit={invCockpit} />
+            ) : tab === 'housekeeping' && hkCockpit ? (
+              <HousekeepingPanels cockpit={hkCockpit} />
+            ) : null}
           </div>
-        )}
 
-        {/* Inventory tab — network default + sidebar drill-down */}
-        {tab === 'inventory' && (
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'minmax(0, 1fr) 280px',
-            gap: '24px',
-            alignItems: 'flex-start',
-          }}>
-            {/* Left column — panels */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-              {cockpitLoading ? (
-                <div style={{ padding: '32px', textAlign: 'center', color: '#7a8a9e', fontSize: '13px' }}>
-                  Loading cockpit data…
-                </div>
-              ) : cockpitErr ? (
-                <div style={{
-                  padding: '14px 16px',
-                  background: 'rgba(220,52,69,0.06)',
-                  border: '1px solid rgba(220,52,69,0.20)',
-                  borderRadius: '10px',
-                  color: '#b21e2f',
-                  fontSize: '13px',
-                }}>
-                  Failed to load cockpit: {cockpitErr}
-                </div>
-              ) : cockpit ? (
-                <InventoryPanels cockpit={cockpit} />
-              ) : null}
-            </div>
-
-            {/* Right column — sidebar */}
-            <InventoryHotelSidebar
-              properties={cockpit?.properties ?? []}
-              selectedPropertyId={propertyIdParam}
-              totalNetworkCount={cockpit?.properties.length ?? 0}
-            />
-          </div>
-        )}
+          <HotelSidebar
+            properties={sidebarEntries}
+            selectedPropertyId={propertyIdParam}
+            totalNetworkCount={totalNetworkCount}
+            activeTab={tab}
+          />
+        </div>
       </div>
     </AppLayout>
   );
 }
 
-/**
- * Renders the 5 inventory panels using the cockpit data slice. Picks
- * fleet-mode vs single-mode based on `cockpit.mode`.
- */
-function InventoryPanels({ cockpit }: { cockpit: CockpitData }) {
+// ─── Inventory panels (existing, unchanged) ──
+
+function InventoryPanels({ cockpit }: { cockpit: InventoryCockpitData }) {
   const { mode, selectedProperty, aggregate, recentAnomalies, topCounters, properties } = cockpit;
 
   if (mode === 'single') {
@@ -350,7 +350,7 @@ function InventoryPanels({ cockpit }: { cockpit: CockpitData }) {
           itemsGraduated={me.itemsGraduated}
           daysToNextMilestone={aggregate.daysToNextMilestoneMedian}
           nextMilestoneLabel={aggregate.nextMilestoneLabel}
-          aiMode="auto"  /* ai_mode is per-property; cockpit-data doesn't return it. Default 'auto' is correct for the vast majority case. */
+          aiMode="auto"
           hotelName={sp.name}
         />
         <InventoryDataFuelGauge
@@ -378,7 +378,6 @@ function InventoryPanels({ cockpit }: { cockpit: CockpitData }) {
     );
   }
 
-  // Network/fleet mode
   return (
     <>
       <InventoryTimeline
@@ -413,6 +412,101 @@ function InventoryPanels({ cockpit }: { cockpit: CockpitData }) {
       />
       <InventoryRecentAnomaliesTable mode="fleet" rows={recentAnomalies} />
       <InventoryAdoptionPanel mode="fleet" rows={topCounters} />
+    </>
+  );
+}
+
+// ─── Housekeeping panels (new — mirror inventory pattern) ──
+
+function HousekeepingPanels({ cockpit }: { cockpit: HKCockpitData }) {
+  const { mode, selectedProperty, aggregate, recentOverrides, topAdoption, properties } = cockpit;
+
+  if (mode === 'single') {
+    const sp = selectedProperty;
+    const me = sp ? properties.find((p) => p.id === sp.id) : null;
+    if (!sp || !me) {
+      return (
+        <div style={{ color: '#7a8a9e', fontSize: '13px' }}>
+          Selected hotel not found.
+        </div>
+      );
+    }
+    return (
+      <>
+        <HousekeepingTimeline
+          mode="single"
+          day={me.daysSinceFirstEvent}
+          staffActive={me.staffActive}
+          modelsActive={me.modelsActive}
+          daysToNextMilestone={aggregate.daysToNextMilestoneMedian}
+          nextMilestoneLabel={aggregate.nextMilestoneLabel}
+          hotelName={sp.name}
+          optimizerActive={aggregate.optimizerActive}
+        />
+        <HousekeepingDataFuelGauge
+          mode="single"
+          totalEvents={aggregate.totalEvents}
+          eventsLast7d={aggregate.totalEventsLast7d}
+          eventsLast24h={aggregate.totalEventsLast24h}
+          distinctStaff={aggregate.distinctStaff}
+          distinctRooms={aggregate.distinctRooms}
+          dailyEventSeries={aggregate.dailyEventSeries}
+          daysOfHistory={me.daysSinceFirstEvent}
+          hotelName={sp.name}
+        />
+        <HousekeepingSystemHealth
+          mode="single"
+          lastTrainingRunAt={aggregate.lastTrainingRunAt}
+          lastInferenceWriteAt={aggregate.lastInferenceWriteAt}
+          lastOverrideAt={aggregate.lastOverrideAt}
+          activeModelRunCount={aggregate.activeModelRunCount}
+          predictionsLast24h={aggregate.predictionsLast24h}
+          optimizerActive={aggregate.optimizerActive}
+          hotelName={sp.name}
+        />
+        <HousekeepingOverridesTable mode="single" rows={recentOverrides} />
+        <HousekeepingAdoption mode="single" rows={topAdoption} />
+      </>
+    );
+  }
+
+  return (
+    <>
+      <HousekeepingTimeline
+        mode="fleet"
+        fleetMedianDay={aggregate.fleetMedianDay}
+        hotelCount={aggregate.hotelCount}
+        totalStaff={aggregate.distinctStaff}
+        totalModelsActive={aggregate.activeModelRunCount}
+        daysToNextMilestoneMedian={aggregate.daysToNextMilestoneMedian}
+        nextMilestoneLabel={aggregate.nextMilestoneLabel}
+        phaseHistogram={aggregate.phaseHistogram}
+        optimizerActive={aggregate.optimizerActive}
+      />
+      <HousekeepingDataFuelGauge
+        mode="fleet"
+        totalEvents={aggregate.totalEvents}
+        eventsLast7d={aggregate.totalEventsLast7d}
+        eventsLast24h={aggregate.totalEventsLast24h}
+        distinctStaff={aggregate.distinctStaff}
+        distinctRooms={aggregate.distinctRooms}
+        dailyEventSeries={aggregate.dailyEventSeries}
+        hotelCount={aggregate.hotelCount}
+        daysOfHistoryRange={aggregate.daysOfHistoryRange}
+      />
+      <HousekeepingSystemHealth
+        mode="fleet"
+        lastTrainingRunAt={aggregate.lastTrainingRunAt}
+        lastInferenceWriteAt={aggregate.lastInferenceWriteAt}
+        lastOverrideAt={aggregate.lastOverrideAt}
+        activeModelRunCount={aggregate.activeModelRunCount}
+        predictionsLast24h={aggregate.predictionsLast24h}
+        optimizerActive={aggregate.optimizerActive}
+        hotelCount={aggregate.hotelCount}
+        healthCounts={aggregate.healthCounts}
+      />
+      <HousekeepingOverridesTable mode="fleet" rows={recentOverrides} />
+      <HousekeepingAdoption mode="fleet" rows={topAdoption} />
     </>
   );
 }
