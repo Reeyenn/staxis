@@ -240,6 +240,30 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       requestId, status: 500, code: ApiErrorCode.InternalError, headers,
     });
   }
+
+  // Pull the property's master room inventory (migration 0025). Same
+  // motivation as in /api/populate-rooms-from-plan: Choice Advantage's
+  // Housekeeping Center page only returns rooms that need attention
+  // today (dirty / occupied / checkout / arrival). Vacant-clean rooms
+  // get omitted entirely. Without phantom-seeding the missing ones, the
+  // Rooms tab would only show ~20 of 74 every time Mario hits "Load
+  // Rooms from CSV." The phantom-seed loop after the upsert below adds
+  // any inventory member that's neither in the HK Center pull nor
+  // already in the DB as vacant + clean. Empty inventory (the schema
+  // default for un-onboarded properties) skips the union, preserving
+  // the old CA-only behavior.
+  const { data: propRow, error: propErr } = await supabaseAdmin
+    .from('properties')
+    .select('room_inventory')
+    .eq('id', pid)
+    .maybeSingle();
+  if (propErr) {
+    log.error('refresh-from-pms: property read failed', { requestId, route: 'refresh-from-pms', pid, err: propErr as unknown as Error });
+    return err(`property read failed: ${errToString(propErr)}`, {
+      requestId, status: 500, code: ApiErrorCode.InternalError, headers,
+    });
+  }
+  const inventory = (propRow?.room_inventory as string[] | null) ?? [];
   const existingByNumber = new Map<string, { id: string; status: string; started_at: string | null; completed_at: string | null }>();
   for (const r of existing ?? []) {
     existingByNumber.set(String(r.number), {
@@ -361,6 +385,64 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
   }
 
+  // ─── 3. Phantom-seed missing inventory rooms ─────────────────────────
+  // Anything in `properties.room_inventory` that the HK Center pull
+  // didn't mention and that doesn't already have a row for this date
+  // gets seeded as vacant + clean. This is what makes the "Load Rooms
+  // from CSV" button result in all 74 rooms on the board, not just the
+  // ~20 dirty/occupied/checkout subset CA bothers to return.
+  //
+  // Reasoning is identical to populate-rooms-from-plan's phantom-seed
+  // step (lines ~281-325). Kept in lockstep so a Mario click here and
+  // the morning seeder both produce a complete board.
+  //
+  // Safety:
+  //   • upsert with onConflict='property_id,date,number' silently no-ops
+  //     if a parallel request raced us to the row.
+  //   • We diff against `existingByNumber` (rows already in the table at
+  //     the start of the request) AND against the HK Center pull (just
+  //     inserted). Together they cover every row that should NOT be
+  //     phantom-seeded.
+  let phantomCreated = 0;
+  if (inventory.length > 0) {
+    const hkCenterNumbers = new Set(rooms.map((r) => r.number).filter(Boolean));
+    const phantomRows: Array<Record<string, unknown>> = [];
+    for (const num of inventory) {
+      if (!num) continue;
+      if (hkCenterNumbers.has(num)) continue;       // CA already covered it (insert OR update path above)
+      if (existingByNumber.has(num)) continue;      // row pre-existed — leave it alone (could be in_progress, etc.)
+      phantomRows.push({
+        property_id: pid,
+        number: num,
+        date,
+        type: 'vacant',
+        status: 'clean',
+        priority: 'standard',
+        is_dnd: false,
+      });
+    }
+    if (phantomRows.length > 0) {
+      const { error: phantomErr } = await supabaseAdmin
+        .from('rooms')
+        .upsert(phantomRows, { onConflict: 'property_id,date,number' });
+      if (phantomErr) {
+        // Phantom-seed failure is degraded but not fatal — the CA-side
+        // updates already landed. Log and surface a partial success so the
+        // UI toast can warn rather than scream.
+        log.error('refresh-from-pms: phantom-seed insert failed', { requestId, route: 'refresh-from-pms', pid, err: phantomErr as unknown as Error, attempted: phantomRows.length });
+        return err(`phantom-seed insert failed: ${errToString(phantomErr)}`, {
+          requestId, status: 500, code: ApiErrorCode.InternalError, headers,
+          details: {
+            partiallySucceeded: true,
+            partial: { createdCount, updatedCount, totalFromHkCenter: rooms.length, phantomCreated: 0 },
+          },
+        });
+      }
+      phantomCreated = phantomRows.length;
+      createdCount += phantomCreated;
+    }
+  }
+
   log.info('refresh-from-pms: ok', {
     requestId,
     route: 'refresh-from-pms',
@@ -369,6 +451,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     totalFromHkCenter: rooms.length,
     createdCount,
     updatedCount,
+    phantomCreated,
     scraperElapsedMs: scraperBody.elapsedMs,
   });
   return ok({
@@ -377,5 +460,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     totalFromHkCenter: rooms.length,
     createdCount,
     updatedCount,
+    phantomCreated,
   }, { requestId, headers });
 }
