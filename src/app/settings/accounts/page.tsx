@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useAuth } from '@/contexts/AuthContext';
@@ -1054,10 +1055,17 @@ function signupLinkFor(code: string): string {
   return `${window.location.origin}/signup?code=${code}`;
 }
 
-// CopyButton — writes `value` to the clipboard and shows a brief "Copied!"
-// confirmation. Reeyen flagged the previous version as broken because
-// clicking it had no visible effect; this fixes that with a 1.5s state
-// flip swapping the icon to a check + showing the word "Copied".
+// CopyButton — writes `value` to the clipboard and lights up loud enough
+// that the user can't miss it.
+//
+// Reeyen explicitly called out twice that the previous "subtle green
+// background + checkmark" feedback wasn't visible enough. Two changes
+// here to make it unmissable:
+//   1. The button itself becomes SOLID green with white "✓ Copied!" text
+//      for 2 seconds, replacing the icon entirely.
+//   2. A toast pill slides up at the bottom of the viewport saying
+//      "Copied to clipboard" — mounted via React portal so it isn't
+//      trapped inside a modal's containing block.
 function CopyButton({ value, label, small, linkIcon }: {
   value: string;
   label: string;
@@ -1069,7 +1077,7 @@ function CopyButton({ value, label, small, linkIcon }: {
     try {
       await navigator.clipboard.writeText(value);
       setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
+      window.setTimeout(() => setCopied(false), 2000);
     } catch {
       // Clipboard API can fail on insecure origins (http://) or in some
       // embedded contexts. Fallback so the user still gets feedback that
@@ -1078,31 +1086,76 @@ function CopyButton({ value, label, small, linkIcon }: {
     }
   };
   const Icon = copied ? Check : (linkIcon ? Link2 : Copy);
-  const iconSize = small ? 13 : 14;
+  const iconSize = small ? 14 : 15;
   return (
-    <button
-      onClick={handleClick}
-      aria-label={label}
-      title={label}
+    <>
+      <button
+        onClick={handleClick}
+        aria-label={label}
+        title={label}
+        style={{
+          height: small ? '32px' : '34px',
+          padding: copied ? '0 12px' : (small ? '0' : '0 8px'),
+          minWidth: small ? '32px' : '34px',
+          borderRadius: 'var(--radius-sm)',
+          background: copied ? '#22c55e' : 'transparent',
+          border: `1px solid ${copied ? '#22c55e' : 'var(--border)'}`,
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+          cursor: 'pointer',
+          color: copied ? '#ffffff' : 'var(--text-muted)',
+          fontFamily: 'var(--font-sans)',
+          fontSize: '13px', fontWeight: 700,
+          transition: 'background 140ms, color 140ms, border-color 140ms, transform 140ms',
+          transform: copied ? 'scale(1.04)' : 'scale(1)',
+          boxShadow: copied ? '0 4px 12px -2px rgba(34,197,94,0.35)' : 'none',
+        }}
+      >
+        <Icon size={iconSize} strokeWidth={copied ? 3 : 2} />
+        {copied && <span>Copied!</span>}
+      </button>
+      {copied && <CopyToast text="Copied to clipboard" />}
+    </>
+  );
+}
+
+// Portal-mounted toast pinned to the bottom-center of the viewport. We use
+// a portal so the toast escapes any modal's containing block (modal has
+// backdrop-filter, which would otherwise reposition fixed children).
+function CopyToast({ text }: { text: string }) {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    // Animate in on mount.
+    const id = window.requestAnimationFrame(() => setMounted(true));
+    return () => window.cancelAnimationFrame(id);
+  }, []);
+  if (typeof document === 'undefined') return null;
+  const node = (
+    <div
+      role="status"
+      aria-live="polite"
       style={{
-        height: small ? '32px' : '34px',
-        padding: copied ? '0 10px' : (small ? '0' : '0 8px'),
-        minWidth: small ? '32px' : '34px',
-        borderRadius: 'var(--radius-sm)',
-        background: copied ? 'var(--green-dim, rgba(34,197,94,0.12))' : 'transparent',
-        border: `1px solid ${copied ? 'var(--green-border, rgba(34,197,94,0.35))' : 'var(--border)'}`,
-        display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-        cursor: 'pointer',
-        color: copied ? 'var(--green, #22c55e)' : 'var(--text-muted)',
-        fontFamily: 'var(--font-sans)',
-        fontSize: '12px', fontWeight: 600,
-        transition: 'background 120ms, color 120ms, border-color 120ms',
+        position: 'fixed',
+        left: '50%',
+        bottom: '32px',
+        transform: `translateX(-50%) translateY(${mounted ? '0' : '12px'})`,
+        opacity: mounted ? 1 : 0,
+        transition: 'opacity 160ms, transform 160ms',
+        background: '#22c55e',
+        color: '#ffffff',
+        padding: '10px 18px',
+        borderRadius: '999px',
+        fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: '14px',
+        boxShadow: '0 12px 32px -6px rgba(34,197,94,0.45), 0 4px 12px -2px rgba(0,0,0,0.15)',
+        display: 'inline-flex', alignItems: 'center', gap: '8px',
+        zIndex: 9999,
+        pointerEvents: 'none',
       }}
     >
-      <Icon size={iconSize} />
-      {copied && <span>Copied</span>}
-    </button>
+      <Check size={16} strokeWidth={3} />
+      {text}
+    </div>
   );
+  return createPortal(node, document.body);
 }
 
 function ModalShell({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
