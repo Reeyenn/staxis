@@ -144,38 +144,69 @@ export async function getCleaningEventStats(pid: string): Promise<CleaningEventS
 }
 
 /**
- * Per-day count of cleaning events for the gauge's trend chart.
- * Returns an array of N most-recent days, oldest first, with zeros for
- * days that had no events so the line chart doesn't have gaps.
+ * Per-day breakdown of cleaning events for the daily activity chart.
+ *
+ * Returns an array of N most-recent days, oldest first, with both:
+ *   • recorded:  count of "real cleans" (status in 'recorded' / 'flagged' /
+ *                'approved' / 'rejected' — anything that wasn't auto-thrown
+ *                out as a sub-3-min accidental tap)
+ *   • discarded: count of throwaway taps (status 'discarded' — the under-
+ *                3-min and over-90-min auto-discards plus the Done→Reset
+ *                undos within 60s)
+ *
+ * Why both: Reeyen wants to see at a glance whether housekeepers are
+ * actually USING the platform on a given day, even when the taps don't
+ * count as real cleans. A day with 50 throwaway taps still proves the app
+ * was open in someone's hand — the "real cleans" count alone hides that
+ * signal. Days with zero of both = nobody touched the app.
+ *
+ * Days with no events get zero on both counts so the chart x-axis stays
+ * continuous and "no activity" days are visually obvious.
+ *
+ * `count` is preserved as `recorded` to keep the legacy field name working
+ * for any callers that haven't been updated.
  */
 export async function getCleaningEventsPerDay(
   pid: string,
   days: number,
-): Promise<Array<{ date: string; count: number }>> {
+): Promise<Array<{ date: string; count: number; recorded: number; discarded: number }>> {
   const since = dateOnlyMinus(days - 1);
   const { data, error } = await supabase
     .from('cleaning_events')
-    .select('date')
+    .select('date,status')
     .eq('property_id', pid)
-    .neq('status', 'discarded')
     .gte('date', since)
     .limit(100000);
   if (error) {
     logErr('getCleaningEventsPerDay', error);
     return [];
   }
-  const buckets = new Map<string, number>();
+  const recordedBuckets = new Map<string, number>();
+  const discardedBuckets = new Map<string, number>();
   for (const r of data ?? []) {
     if (!r.date) continue;
-    buckets.set(r.date, (buckets.get(r.date) ?? 0) + 1);
+    const date = r.date as string;
+    const status = (r.status as string) ?? '';
+    if (status === 'discarded') {
+      discardedBuckets.set(date, (discardedBuckets.get(date) ?? 0) + 1);
+    } else {
+      recordedBuckets.set(date, (recordedBuckets.get(date) ?? 0) + 1);
+    }
   }
   // Build a complete window so the chart x-axis is continuous.
-  const out: Array<{ date: string; count: number }> = [];
+  const out: Array<{ date: string; count: number; recorded: number; discarded: number }> = [];
   const today = new Date();
   for (let i = days - 1; i >= 0; i--) {
     const d = new Date(today.getTime() - i * 24 * 60 * 60 * 1000);
     const iso = d.toISOString().slice(0, 10);
-    out.push({ date: iso.slice(5), count: buckets.get(iso) ?? 0 });
+    const recorded = recordedBuckets.get(iso) ?? 0;
+    const discarded = discardedBuckets.get(iso) ?? 0;
+    out.push({
+      date: iso.slice(5),
+      count: recorded,
+      recorded,
+      discarded,
+    });
   }
   return out;
 }
