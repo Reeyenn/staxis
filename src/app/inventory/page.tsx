@@ -998,6 +998,28 @@ interface OrderPromptRow {
   newStock: number;
 }
 
+// One row in the Photo Count review modal — what the AI saw vs. what's
+// already in the count input the user might have typed or pre-filled.
+interface PhotoDetection {
+  itemId: string;
+  itemName: string;
+  unit: string;
+  aiCount: number;
+  confidence: 'high' | 'medium' | 'low';
+  /** Whatever was in the count input when the photo finished processing. */
+  currentInput: number;
+}
+
+// One decision from the review modal — accept or reject, and (when
+// accepting) whether to add the AI count to the current input or replace it.
+interface PhotoDecision {
+  itemId: string;
+  action: 'accept' | 'reject';
+  mode: 'add' | 'replace';
+  aiCount: number;
+  confidence: 'high' | 'medium' | 'low';
+}
+
 interface OrderPromptData {
   rows: OrderPromptRow[];
   index: number;
@@ -1054,6 +1076,10 @@ function CountMode({
   const [showPhotoPicker, setShowPhotoPicker] = useState(false);
   const [photoBusy, setPhotoBusy] = useState(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
+  // After the API responds, we open a review modal with the AI's detections
+  // so the user can confirm / reject each one and pick Add vs. Replace mode.
+  // null = no review pending (default).
+  const [photoReview, setPhotoReview] = useState<PhotoDetection[] | null>(null);
 
   const handlePhotoPicked = useCallback(async (img: PickedImage) => {
     setShowPhotoPicker(false);
@@ -1080,44 +1106,32 @@ function CountMode({
         });
       } catch { /* non-fatal */ }
 
-      const fresh: Record<string, 'high' | 'medium' | 'low'> = {};
       const apiCounts: Array<{ item_name: string; estimated_count: number; confidence: 'high' | 'medium' | 'low' }> = json.counts ?? [];
-      // Use functional setCounts so we read the latest value at apply time —
-      // protects against the user editing rows while the photo is processing.
-      // For each item the AI returned: skip if any prior AI photo already
-      // filled it, OR if the value differs from the original (meaning the
-      // user manually edited it). Both cases preserve the human/earlier-AI
-      // signal — later photos only fill rows that are still untouched.
-      let acceptedCount = 0;
-      setCounts(prev => {
-        const next = { ...prev };
-        for (const c of apiCounts) {
-          const item = items.find(i => i.name === c.item_name);
-          if (!item) continue;
-          if (aiFilled[item.id]) continue;
-          // "Untouched" = still equal to whatever we pre-filled the row with
-          // when Count Mode opened. Manual typing breaks that match and
-          // protects the user's edits from being overwritten by a later
-          // photo. Compares against the snapshot, not currentStock — the
-          // pre-filled value is now the AI estimate when one exists.
-          const initial = initialValuesRef.current[item.id] ?? String(item.currentStock);
-          const isUntouched = (prev[item.id] ?? '0') === initial;
-          if (!isUntouched) continue;
-          next[item.id] = String(c.estimated_count);
-          fresh[item.id] = c.confidence;
-          acceptedCount++;
-        }
-        return next;
-      });
-      if (acceptedCount === 0) {
-        setPhotoError(
-          lang === 'es'
-            ? 'No se identificaron artículos nuevos. Pruebe con otra foto.'
-            : "No new items identified. Try another photo.",
-        );
-      } else {
-        setAiFilled(prev => ({ ...prev, ...fresh }));
+
+      // Map detections to known items + capture the input value at the time
+      // the photo was processed (so the review modal can show "Currently: N"
+      // even if the user is mid-edit on another row).
+      const detections: PhotoDetection[] = [];
+      for (const c of apiCounts) {
+        const item = items.find(i => i.name === c.item_name);
+        if (!item) continue;
+        const currentInput = parseInt(counts[item.id] ?? '0') || 0;
+        detections.push({
+          itemId: item.id,
+          itemName: item.name,
+          unit: item.unit,
+          aiCount: c.estimated_count,
+          confidence: c.confidence,
+          currentInput,
+        });
       }
+
+      // Sort by confidence (high first) so the user reviews the most-trusted
+      // detections at the top of the list.
+      const order = { high: 0, medium: 1, low: 2 } as const;
+      detections.sort((a, b) => order[a.confidence] - order[b.confidence]);
+
+      setPhotoReview(detections);
     } catch (e) {
       setPhotoError(
         lang === 'es'
@@ -1127,7 +1141,26 @@ function CountMode({
     } finally {
       setPhotoBusy(false);
     }
-  }, [pid, items, aiFilled, lang]);
+  }, [pid, items, counts, lang]);
+
+  // Apply user's accepted decisions from the review modal into the count
+  // inputs. `mode` is per-detection so the user can mix Add and Replace.
+  const handlePhotoApply = useCallback((decisions: PhotoDecision[]) => {
+    const fresh: Record<string, 'high' | 'medium' | 'low'> = {};
+    setCounts(prev => {
+      const next = { ...prev };
+      for (const d of decisions) {
+        if (d.action !== 'accept') continue;
+        const currentInput = parseInt(prev[d.itemId] ?? '0') || 0;
+        const newValue = d.mode === 'add' ? currentInput + d.aiCount : d.aiCount;
+        next[d.itemId] = String(newValue);
+        fresh[d.itemId] = d.confidence;
+      }
+      return next;
+    });
+    setAiFilled(prev => ({ ...prev, ...fresh }));
+    setPhotoReview(null);
+  }, []);
 
   const handleSave = async () => {
     setSaving(true);
@@ -1252,6 +1285,15 @@ function CountMode({
               {lang === 'es' ? 'Cancelar foto' : 'Cancel photo'}
             </button>
           </div>
+        )}
+
+        {photoReview && (
+          <PhotoCountReviewModal
+            detections={photoReview}
+            lang={lang}
+            onCancel={() => setPhotoReview(null)}
+            onApply={handlePhotoApply}
+          />
         )}
 
         <div style={{ overflowY: 'auto', flex: 1 }}>
@@ -2598,6 +2640,372 @@ function ReorderRowView({
   );
 }
 
+
+// ─── Photo Count Review Modal ──────────────────────────────────────────────
+//
+// Opens after the AI returns counts from a photo. Shows every detection
+// alongside the user's current count input and lets them decide per item
+// whether to accept it (and whether to ADD the detected count to current
+// stock or REPLACE the current value with it). Items the user rejects
+// stay untouched.
+//
+// Mode toggle at the top is the default for all rows; per-row "use other
+// mode" link lets the user mix modes when a single inventory pass mostly
+// follows one rule but has exceptions (e.g. "this is a full count except
+// the body wash shipment we just received — add that one").
+
+function PhotoCountReviewModal({
+  detections, lang, onCancel, onApply,
+}: {
+  detections: PhotoDetection[];
+  lang: 'en' | 'es';
+  onCancel: () => void;
+  onApply: (decisions: PhotoDecision[]) => void;
+}) {
+  type RowState = { action: 'pending' | 'accept' | 'reject'; mode: 'add' | 'replace' };
+  const [globalMode, setGlobalMode] = useState<'add' | 'replace'>('add');
+  const [rowStates, setRowStates] = useState<Record<string, RowState>>(() => {
+    const init: Record<string, RowState> = {};
+    detections.forEach(d => { init[d.itemId] = { action: 'pending', mode: 'add' }; });
+    return init;
+  });
+
+  // When the user flips the global toggle, sync any rows that haven't been
+  // individually overridden. We track "overridden" implicitly: if a row's
+  // mode currently matches the OLD global, it follows the new global.
+  // Rows the user already toggled to the opposite mode keep their override.
+  const handleGlobalMode = (next: 'add' | 'replace') => {
+    setRowStates(prev => {
+      const out: Record<string, RowState> = { ...prev };
+      for (const id in out) {
+        if (out[id].mode === globalMode) {
+          out[id] = { ...out[id], mode: next };
+        }
+      }
+      return out;
+    });
+    setGlobalMode(next);
+  };
+
+  const setRowAction = (id: string, action: 'accept' | 'reject') => {
+    setRowStates(prev => ({ ...prev, [id]: { ...prev[id], action } }));
+  };
+  const flipRowMode = (id: string) => {
+    setRowStates(prev => ({
+      ...prev,
+      [id]: { ...prev[id], mode: prev[id].mode === 'add' ? 'replace' : 'add' },
+    }));
+  };
+
+  const counts = useMemo(() => {
+    let accepted = 0, rejected = 0, pending = 0;
+    for (const d of detections) {
+      const s = rowStates[d.itemId];
+      if (s?.action === 'accept') accepted++;
+      else if (s?.action === 'reject') rejected++;
+      else pending++;
+    }
+    return { accepted, rejected, pending };
+  }, [detections, rowStates]);
+
+  const allDecided = counts.pending === 0;
+
+  const handleApplyClick = () => {
+    const decisions: PhotoDecision[] = detections.map(d => ({
+      itemId: d.itemId,
+      action: rowStates[d.itemId]?.action === 'accept' ? 'accept' : 'reject',
+      mode: rowStates[d.itemId]?.mode ?? 'add',
+      aiCount: d.aiCount,
+      confidence: d.confidence,
+    }));
+    onApply(decisions);
+  };
+
+  const handleAcceptAll = () => {
+    setRowStates(prev => {
+      const next: Record<string, RowState> = {};
+      for (const id in prev) next[id] = { ...prev[id], action: 'accept' };
+      return next;
+    });
+  };
+
+  const confidenceColor = (c: 'high' | 'medium' | 'low') =>
+    c === 'high' ? '#00a050' : c === 'medium' ? '#f0ad4e' : '#dc3545';
+  const confidenceLabel = (c: 'high' | 'medium' | 'low') =>
+    lang === 'es'
+      ? (c === 'high' ? 'alta' : c === 'medium' ? 'media' : 'baja')
+      : c;
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 200,
+        background: 'rgba(27,28,25,0.6)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
+      }}
+      onClick={e => { if (e.target === e.currentTarget) onCancel(); }}
+    >
+      <div style={{
+        width: '100%', maxWidth: '640px', maxHeight: '90vh',
+        background: '#fbf9f4', borderRadius: '24px',
+        display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+      }}>
+        {/* Header */}
+        <div style={{ padding: '20px 24px', borderBottom: '1px solid rgba(197,197,212,0.2)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+            <div>
+              <h2 style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: '17px', color: '#1b1c19', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Camera size={16} color="#006565" />
+                {lang === 'es' ? 'Resultados de Foto' : 'Photo Count Results'}
+              </h2>
+              <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#757684', margin: '4px 0 0' }}>
+                {detections.length === 0
+                  ? (lang === 'es' ? 'La IA no identificó ningún artículo. Pruebe con otra foto.' : "AI didn't see any tracked items. Try another photo.")
+                  : (lang === 'es'
+                    ? `La IA identificó ${detections.length} artículo${detections.length === 1 ? '' : 's'}. Acepta o rechaza cada uno.`
+                    : `AI saw ${detections.length} item${detections.length === 1 ? '' : 's'}. Accept or reject each.`)}
+              </p>
+            </div>
+            <button onClick={onCancel} style={{ background: '#eae8e3', border: 'none', cursor: 'pointer', padding: '8px', borderRadius: '50%' }}>
+              <XIcon size={14} color="#454652" />
+            </button>
+          </div>
+
+          {/* Mode toggle */}
+          {detections.length > 0 && (
+            <div style={{ marginTop: '14px' }}>
+              <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', fontWeight: 700, color: '#454652', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '6px' }}>
+                {lang === 'es' ? 'Modo' : 'Mode'}
+              </div>
+              <div style={{ display: 'inline-flex', background: '#eae8e3', borderRadius: '9999px', padding: '3px' }}>
+                <ModeChip
+                  active={globalMode === 'add'}
+                  label={lang === 'es' ? 'Sumar al actual' : 'Add to current'}
+                  onClick={() => handleGlobalMode('add')}
+                />
+                <ModeChip
+                  active={globalMode === 'replace'}
+                  label={lang === 'es' ? 'Reemplazar total' : 'Replace total'}
+                  onClick={() => handleGlobalMode('replace')}
+                />
+              </div>
+              <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684', margin: '6px 0 0' }}>
+                {globalMode === 'add'
+                  ? (lang === 'es'
+                    ? 'El conteo de la IA se suma a lo que ya está en stock. Úsalo para conteos parciales o entregas nuevas.'
+                    : 'AI count gets added to what\'s already in stock. Use this for partial counts or new deliveries.')
+                  : (lang === 'es'
+                    ? 'El conteo de la IA se convierte en el total nuevo. Úsalo para un conteo completo de inventario.'
+                    : 'AI count becomes the new total. Use this for a full inventory count.')}
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* Body */}
+        {detections.length > 0 ? (
+          <>
+            <div style={{ overflowY: 'auto', flex: 1, padding: '8px 0' }}>
+              {detections.map(d => {
+                const state = rowStates[d.itemId];
+                const newTotal = state.mode === 'add' ? d.currentInput + d.aiCount : d.aiCount;
+                const isAccepted = state.action === 'accept';
+                const isRejected = state.action === 'reject';
+                const bg = isAccepted ? 'rgba(0,160,80,0.06)'
+                  : isRejected ? 'rgba(186,26,26,0.04)'
+                  : 'transparent';
+
+                return (
+                  <div key={d.itemId} style={{
+                    padding: '14px 24px', background: bg,
+                    borderBottom: '1px solid rgba(197,197,212,0.2)',
+                    opacity: isRejected ? 0.55 : 1,
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+                      <div style={{ flex: 1, minWidth: '180px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{
+                            width: '8px', height: '8px', borderRadius: '50%',
+                            background: confidenceColor(d.confidence),
+                          }} />
+                          <span style={{
+                            fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: '14px',
+                            color: '#1b1c19',
+                            textDecoration: isRejected ? 'line-through' : 'none',
+                          }}>
+                            {d.itemName}
+                          </span>
+                          <span style={{ fontFamily: "'Inter', sans-serif", fontSize: '10px', color: '#757684', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                            {lang === 'es' ? `confianza ${confidenceLabel(d.confidence)}` : `${confidenceLabel(d.confidence)} confidence`}
+                          </span>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '14px', marginTop: '6px', flexWrap: 'wrap', fontFamily: "'JetBrains Mono', monospace", fontSize: '13px' }}>
+                          <span style={{ color: '#454652' }}>
+                            <span style={{ color: '#757684', fontFamily: "'Inter', sans-serif", fontSize: '11px' }}>
+                              {lang === 'es' ? 'IA vio: ' : 'AI saw: '}
+                            </span>
+                            <strong>{d.aiCount}</strong>
+                          </span>
+                          <span style={{ color: '#454652' }}>
+                            <span style={{ color: '#757684', fontFamily: "'Inter', sans-serif", fontSize: '11px' }}>
+                              {lang === 'es' ? 'Actual: ' : 'Currently: '}
+                            </span>
+                            <strong>{d.currentInput}</strong>
+                          </span>
+                          <span style={{ color: '#006565' }}>
+                            <span style={{ color: '#757684', fontFamily: "'Inter', sans-serif", fontSize: '11px' }}>
+                              {lang === 'es' ? 'Nuevo total: ' : 'New total: '}
+                            </span>
+                            <strong>{newTotal}</strong>
+                          </span>
+                        </div>
+
+                        {/* Per-row mode override */}
+                        <button
+                          type="button"
+                          onClick={() => flipRowMode(d.itemId)}
+                          style={{
+                            background: 'transparent', border: 'none', cursor: 'pointer',
+                            color: '#006565', fontFamily: "'Inter', sans-serif",
+                            fontSize: '11px', fontWeight: 600, padding: '4px 0', marginTop: '4px',
+                          }}
+                        >
+                          {state.mode === 'add'
+                            ? (lang === 'es' ? '↻ usar reemplazar para este' : '↻ use replace for this')
+                            : (lang === 'es' ? '↻ usar sumar para este' : '↻ use add for this')}
+                        </button>
+                      </div>
+
+                      <div style={{ display: 'flex', gap: '6px' }}>
+                        <button
+                          onClick={() => setRowAction(d.itemId, 'reject')}
+                          style={{
+                            padding: '8px 14px', borderRadius: '9999px',
+                            border: isRejected ? 'none' : '1px solid #c5c5d4',
+                            background: isRejected ? '#ba1a1a' : '#fff',
+                            color: isRejected ? '#fff' : '#454652',
+                            fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {lang === 'es' ? 'Rechazar' : 'Reject'}
+                        </button>
+                        <button
+                          onClick={() => setRowAction(d.itemId, 'accept')}
+                          style={{
+                            padding: '8px 14px', borderRadius: '9999px', border: 'none',
+                            background: isAccepted ? '#006565' : '#364262',
+                            color: '#fff',
+                            fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {isAccepted
+                            ? (lang === 'es' ? '✓ Aceptado' : '✓ Accepted')
+                            : (lang === 'es' ? 'Aceptar' : 'Accept')}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Footer */}
+            <div style={{ padding: '14px 24px', borderTop: '1px solid rgba(197,197,212,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
+              <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#454652' }}>
+                <strong style={{ color: '#006565' }}>{counts.accepted}</strong> {lang === 'es' ? 'aceptado' : 'accepted'}
+                {' · '}
+                <strong style={{ color: '#ba1a1a' }}>{counts.rejected}</strong> {lang === 'es' ? 'rechazado' : 'rejected'}
+                {' · '}
+                <strong style={{ color: '#7a5400' }}>{counts.pending}</strong> {lang === 'es' ? 'pendiente' : 'pending'}
+              </div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                {counts.pending > 0 && (
+                  <button
+                    onClick={handleAcceptAll}
+                    style={{
+                      padding: '10px 16px', borderRadius: '9999px',
+                      border: '1px solid #006565', background: '#fff', color: '#006565',
+                      fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {lang === 'es' ? 'Aceptar todos' : 'Accept all'}
+                  </button>
+                )}
+                <button
+                  onClick={onCancel}
+                  style={{
+                    padding: '10px 16px', borderRadius: '9999px',
+                    border: '1px solid #c5c5d4', background: '#fff', color: '#454652',
+                    fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {lang === 'es' ? 'Cancelar' : 'Cancel'}
+                </button>
+                <button
+                  onClick={handleApplyClick}
+                  disabled={!allDecided}
+                  style={{
+                    padding: '10px 16px', borderRadius: '9999px', border: 'none',
+                    background: allDecided ? '#364262' : '#eae8e3',
+                    color: allDecided ? '#fff' : '#757684',
+                    fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+                    cursor: allDecided ? 'pointer' : 'not-allowed',
+                  }}
+                >
+                  {lang === 'es' ? 'Aplicar' : 'Apply'}
+                </button>
+              </div>
+            </div>
+          </>
+        ) : (
+          <div style={{ padding: '40px 24px', textAlign: 'center' }}>
+            <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '13px', color: '#757684' }}>
+              {lang === 'es'
+                ? 'La IA no identificó ningún artículo en esta foto. Pruebe con una imagen más clara o más cercana al estante.'
+                : "AI didn't see any tracked items in this photo. Try a clearer shot or get closer to the shelf."}
+            </div>
+            <button
+              onClick={onCancel}
+              style={{
+                marginTop: '16px',
+                padding: '10px 20px', borderRadius: '9999px', border: 'none',
+                background: '#364262', color: '#fff',
+                fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              {lang === 'es' ? 'Cerrar' : 'Close'}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ModeChip({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        padding: '6px 14px', borderRadius: '9999px', border: 'none',
+        background: active ? '#1b1c19' : 'transparent',
+        color: active ? '#fff' : '#454652',
+        fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
+        cursor: 'pointer',
+        transition: 'all 150ms',
+      }}
+    >
+      {label}
+    </button>
+  );
+}
 
 // ─── Image picker helper (shared by Invoice OCR and Photo Counting) ─────────
 //
