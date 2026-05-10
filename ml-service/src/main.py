@@ -11,9 +11,11 @@ from src.auth import verify_bearer_token
 from src.config import get_settings
 from src.health import router as health_router
 from src.inference.demand import predict_demand
+from src.inference.inventory_rate import predict_inventory_rates
 from src.inference.supply import predict_supply
 from src.optimizer.monte_carlo import optimize_headcount
 from src.training.demand import train_demand_model
+from src.training.inventory_rate import train_inventory_rate_model
 from src.training.supply import train_supply_model
 
 
@@ -150,6 +152,66 @@ class OptimizeResponse(BaseModel):
     error: Optional[str] = None
 
 
+class TrainInventoryRateRequest(BaseModel):
+    """Request to train inventory_rate models for a property.
+
+    item_id is optional — when omitted, trains every item in the property.
+    The cockpit's "Retrain this item" button passes a specific item_id.
+    """
+
+    property_id: str
+    item_id: Optional[str] = None
+
+    @field_validator("property_id")
+    @classmethod
+    def _check_pid(cls, v: str) -> str:
+        return _validate_uuid_str(v)
+
+    @field_validator("item_id")
+    @classmethod
+    def _check_iid(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        return _validate_uuid_str(v)
+
+
+class TrainInventoryRateResponse(BaseModel):
+    """Response for inventory_rate training run.
+
+    Returns aggregate counts across all items trained in this run.
+    """
+
+    items_trained: int = 0
+    items_skipped_insufficient_data: int = 0
+    items_with_active_model: int = 0
+    items_with_auto_fill: int = 0
+    errors: list = []
+    error: Optional[str] = None
+
+
+class PredictInventoryRateRequest(BaseModel):
+    """Request to generate inventory_rate predictions for a property."""
+
+    property_id: str
+    date: Optional[date] = None  # The operational date predictions are FOR. Default = tomorrow.
+
+    @field_validator("property_id")
+    @classmethod
+    def _check_pid(cls, v: str) -> str:
+        return _validate_uuid_str(v)
+
+
+class PredictInventoryRateResponse(BaseModel):
+    """Response for inventory_rate prediction run."""
+
+    predicted: int = 0
+    skipped_no_active_model: int = 0
+    errors: list = []
+    target_date: Optional[str] = None
+    error: Optional[str] = None
+    note: Optional[str] = None
+
+
 # FastAPI app
 app = FastAPI(
     title="Staxis ML Service",
@@ -270,6 +332,59 @@ async def optimize_endpoint(
         prediction_date=request.date,
     )
     return OptimizeResponse(**result)
+
+
+# Inventory-rate endpoints (per-item Bayesian / XGBoost)
+
+@app.post(
+    "/train/inventory-rate",
+    response_model=TrainInventoryRateResponse,
+    tags=["training"],
+    summary="Train inventory_rate models (per item)",
+)
+async def train_inventory_rate_endpoint(
+    request: TrainInventoryRateRequest,
+    token: str = Depends(verify_bearer_token),
+) -> TrainInventoryRateResponse:
+    """Train per-(property × item) inventory rate models.
+
+    When item_id is provided, retrains just that item. Otherwise iterates
+    every inventory.id in the property and trains one model per item that
+    has ≥3 count events.
+
+    Requires bearer token authentication.
+    """
+    result = await train_inventory_rate_model(
+        property_id=request.property_id,
+        item_id=request.item_id,
+    )
+    return TrainInventoryRateResponse(**result)
+
+
+@app.post(
+    "/predict/inventory-rate",
+    response_model=PredictInventoryRateResponse,
+    tags=["inference"],
+    summary="Predict inventory daily rates (per item)",
+)
+async def predict_inventory_rate_endpoint(
+    request: PredictInventoryRateRequest,
+    token: str = Depends(verify_bearer_token),
+) -> PredictInventoryRateResponse:
+    """Generate inventory_rate predictions for tomorrow (or a specified date).
+
+    Iterates every active model_runs row of layer='inventory_rate' for the
+    property, predicts daily_rate via the cached posterior, computes
+    predicted_current_stock for Count Mode auto-fill, and writes one row
+    per item to inventory_rate_predictions.
+
+    Requires bearer token authentication.
+    """
+    result = await predict_inventory_rates(
+        property_id=request.property_id,
+        target_date=request.date,
+    )
+    return PredictInventoryRateResponse(**result)
 
 
 # Error handlers

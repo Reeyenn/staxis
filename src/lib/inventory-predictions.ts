@@ -155,21 +155,67 @@ export async function fetchDailyAverages(
   return { avgDailyCheckouts: 0, avgDailyStayovers: 0, daysOfData: 0, source: 'none' };
 }
 
+// ─── ML-learned rate fetch ─────────────────────────────────────────────────
+//
+// The Bayesian / XGBoost models in ml-service write a row per (property × item)
+// per nightly inference run to inventory_rate_predictions. When a fresh
+// prediction (< 7 days old) exists, we use its rate as the source of truth
+// instead of the manager-typed usagePerCheckout × avgDailyCheckouts math.
+//
+// Returns a Map<itemId, dailyRate>. Empty when no predictions exist or the
+// ai_mode is 'off'. The caller passes this map to predictReorders().
+
+const ML_PREDICTION_FRESHNESS_DAYS = 7;
+
+export async function fetchMlPredictedRates(pid: string): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  try {
+    const since = new Date();
+    since.setDate(since.getDate() - ML_PREDICTION_FRESHNESS_DAYS);
+    const { data, error } = await supabase
+      .from('inventory_rate_predictions')
+      .select('item_id, predicted_daily_rate, predicted_at')
+      .eq('property_id', pid)
+      .gte('predicted_at', since.toISOString())
+      .order('predicted_at', { ascending: false })
+      .limit(2000);
+    if (error || !data) return out;
+    // Most-recent first; first hit per item wins.
+    for (const r of data) {
+      const id = String(r.item_id);
+      if (out.has(id)) continue;
+      const rate = Number(r.predicted_daily_rate);
+      if (Number.isFinite(rate) && rate >= 0) out.set(id, rate);
+    }
+  } catch {
+    // Silent fall-through — caller still has the rule-based path.
+  }
+  return out;
+}
+
 // ─── Single-item prediction ────────────────────────────────────────────────
 
 export function predictReorder(
   item: Pick<InventoryItem, 'id' | 'usagePerCheckout' | 'usagePerStayover' | 'reorderLeadDays'>,
   averages: DailyAverages,
   effectiveStock: number,
+  overrideDailyRate?: number,
 ): PredictionResult {
   const perCheckout = item.usagePerCheckout ?? 0;
   const perStayover = item.usagePerStayover ?? 0;
-  const dailyBurnRate =
-    averages.avgDailyCheckouts * perCheckout +
-    averages.avgDailyStayovers * perStayover;
+  // ML-learned rate wins when supplied (>= 0 covers items the model genuinely
+  // predicts as zero usage). Otherwise fall back to rule-based math.
+  const dailyBurnRate = overrideDailyRate !== undefined && overrideDailyRate >= 0
+    ? overrideDailyRate
+    : averages.avgDailyCheckouts * perCheckout + averages.avgDailyStayovers * perStayover;
 
-  // Sample too small to predict honestly.
-  if (averages.daysOfData < MIN_DAYS_OF_DATA) {
+  // ML-learned rates are honest at any sample size — the Bayesian posterior
+  // already encodes uncertainty. Only the rule-based path needs the
+  // MIN_DAYS_OF_DATA gate to avoid noise. Skip the gate when ML rate is in use.
+  const usingMlRate = overrideDailyRate !== undefined && overrideDailyRate >= 0;
+
+  // Sample too small to predict honestly (rule-based path only).
+  if (!usingMlRate && averages.daysOfData < MIN_DAYS_OF_DATA) {
     return {
       itemId: item.id,
       dailyBurnRate,
@@ -237,10 +283,12 @@ export function predictReorders(
   items: InventoryItem[],
   averages: DailyAverages,
   effectiveStockMap?: Map<string, number>,
+  mlRateMap?: Map<string, number>,
 ): PredictionResult[] {
   return items.map(item => {
     const eff = effectiveStockMap?.get(item.id) ?? item.currentStock;
-    return predictReorder(item, averages, eff);
+    const override = mlRateMap?.get(item.id);
+    return predictReorder(item, averages, eff, override);
   });
 }
 

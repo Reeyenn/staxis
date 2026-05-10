@@ -45,6 +45,7 @@ export * from './db/inventory-reconciliations';
 export * from './db/inventory-budgets';
 export * from './db/inventory-accounting';
 export * from './db/ml-stubs';
+export * from './db/ml-inventory-cockpit';
 export * from './db/inspections';
 export * from './db/handoff-logs';
 export * from './db/guest-requests';

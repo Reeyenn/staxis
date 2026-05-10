@@ -29,6 +29,17 @@ class Settings(BaseSettings):
     disagreement_threshold_fallback: float = 0.30
     disagreement_zscore_threshold: float = 2.0
 
+    # Inventory rate model
+    # Inventory has way less data per (property × item) than housekeeping has
+    # per property — typically 12–50 count events per item per year vs ~365
+    # operational days for housekeeping. So thresholds are an order of
+    # magnitude lower across the board.
+    inventory_min_events_per_item: int = 3              # Need at least 3 consecutive counts to fit anything
+    inventory_xgboost_activation_events: int = 100      # Per-item event count above which XGBoost beats Bayesian
+    inventory_graduation_min_events: int = 30           # Auto-fill graduation gate #1
+    inventory_graduation_mae_ratio: float = 0.10        # Auto-fill graduation gate #2 (MAE/mean must be < this)
+    inventory_graduation_consecutive_passes: int = 5    # Auto-fill graduation gate #3
+
     @field_validator("ml_service_secret")
     @classmethod
     def validate_secret(cls, v: str) -> str:

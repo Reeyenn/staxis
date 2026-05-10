@@ -25,7 +25,10 @@ module.exports = [
     // should fall through to the rules defined above.
     ignores: [
       '.next/**',
+      '**/.next/**',          // catches .claude/worktrees/*/.next/** etc.
       'node_modules/**',
+      '**/node_modules/**',
+      '.claude/**',           // worktrees, plans, MCP state — not source
       'dist/**',
       'build/**',
       'coverage/**',

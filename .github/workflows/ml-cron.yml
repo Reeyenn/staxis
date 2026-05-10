@@ -25,7 +25,9 @@ on:
     # cron is UTC. CDT is UTC-5; CST is UTC-6.
     - cron: '0 8 * * 0'    # Sunday 03:00 CDT — train/demand
     - cron: '30 8 * * 0'   # Sunday 03:30 CDT — train/supply
-    - cron: '30 10 * * *'  # Daily 05:30 CDT — run inference
+    - cron: '0 9 * * 0'    # Sunday 04:00 CDT — train/inventory-rate
+    - cron: '30 10 * * *'  # Daily 05:30 CDT — run inference (housekeeping)
+    - cron: '0 11 * * *'   # Daily 06:00 CDT — predict/inventory-rate
   workflow_dispatch: {}    # manual trigger from the Actions UI
 
 jobs:
@@ -52,6 +54,17 @@ jobs:
             "https://hotelops-ai.vercel.app/api/cron/ml-train-supply" | tee /tmp/result.json
           jq -e '.ok == true' /tmp/result.json
 
+  train-inventory:
+    if: github.event.schedule == '0 9 * * 0' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit /api/cron/ml-train-inventory
+        run: |
+          curl -fsS --retry 2 --retry-delay 5 \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://hotelops-ai.vercel.app/api/cron/ml-train-inventory" | tee /tmp/result.json
+          jq -e '.ok == true' /tmp/result.json
+
   run-inference:
     if: github.event.schedule == '30 10 * * *' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -61,4 +74,15 @@ jobs:
           curl -fsS --retry 2 --retry-delay 5 \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             "https://hotelops-ai.vercel.app/api/cron/ml-run-inference" | tee /tmp/result.json
+          jq -e '.ok == true' /tmp/result.json
+
+  predict-inventory:
+    if: github.event.schedule == '0 11 * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit /api/cron/ml-predict-inventory
+        run: |
+          curl -fsS --retry 2 --retry-delay 5 \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://hotelops-ai.vercel.app/api/cron/ml-predict-inventory" | tee /tmp/result.json
           jq -e '.ok == true' /tmp/result.json

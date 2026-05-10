@@ -12,11 +12,14 @@ import {
   addInventoryDiscard, sumDiscardsSince,
   addInventoryReconciliation, lastReconciliationByItem,
   listInventoryBudgets, upsertInventoryBudget, monthToDateSpendByCategory,
+  getInventoryAutoFillMap,
 } from '@/lib/db';
+import type { AutoFillItem } from '@/lib/db/ml-inventory-cockpit';
 import type { InventoryDiscardReason, InventoryReconciliation } from '@/types';
 import { fetchOccupancyBundle, computeOccupancyForItem, calculateEstimatedStock, type OccupancyBundle } from '@/lib/inventory-estimate';
 import {
   fetchDailyAverages, predictReorders, predictionByItem, computeBudgetStatuses,
+  fetchMlPredictedRates,
   type DailyAverages, type PredictionResult,
 } from '@/lib/inventory-predictions';
 import { supabase } from '@/lib/supabase';
@@ -25,7 +28,7 @@ import type { InventoryItem, InventoryCategory, InventoryCount, InventoryOrder }
 import {
   Plus, Package, ClipboardCheck, AlertTriangle, Check, Info, Settings,
   TrendingDown, DollarSign, Truck, Clock, ChevronDown, ChevronRight,
-  ShoppingCart, FileText, Copy, Camera, Upload, ScanLine,
+  ShoppingCart, FileText, Copy, Camera, Upload, ScanLine, Sparkles,
   X as XIcon,
 } from 'lucide-react';
 import Link from 'next/link';
@@ -103,6 +106,17 @@ export default function InventoryPage() {
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [occupancyBundle, setOccupancyBundle] = useState<OccupancyBundle | null>(null);
   const [dailyAverages, setDailyAverages] = useState<DailyAverages | null>(null);
+  // ML-learned daily-rate map (item_id → units/day). When non-empty, the
+  // reorder list uses these instead of the manager-typed usage rates. Empty
+  // when AI mode is off, no models exist, or all predictions are stale.
+  const [mlRateMap, setMlRateMap] = useState<Map<string, number>>(() => new Map());
+  // Per-item auto-fill payload: predicted_current_stock + algorithm + whether
+  // the item has graduated (passed all 3 gates). When the item is in this map
+  // AND the property's ai_mode is 'auto' or 'always-on', Count Mode pre-fills
+  // the count input with predictedCurrentStock.
+  const [autoFillMap, setAutoFillMap] = useState<Map<string, AutoFillItem>>(() => new Map());
+  // Property-level AI Helper toggle. Read from properties.inventory_ai_mode.
+  const [aiMode, setAiMode] = useState<'off' | 'auto' | 'always-on'>('auto');
   const [counting, setCounting] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showBulkRates, setShowBulkRates] = useState(false);
@@ -202,6 +216,45 @@ export default function InventoryPage() {
       .catch(err => console.error('[inventory] daily averages fetch failed:', err));
   }, [activePropertyId]);
 
+  // ─── ML predictions: learned daily rates + auto-fill map ───────────────
+  // Drives the reorder list and Count Mode pre-fill. Honors the property
+  // inventory_ai_mode toggle: 'off' clears both maps; 'auto' shows graduated
+  // items only; 'always-on' shows every active prediction.
+  useEffect(() => {
+    if (!activePropertyId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        // Read property ai_mode
+        const { data: prop } = await supabase
+          .from('properties')
+          .select('inventory_ai_mode')
+          .eq('id', activePropertyId)
+          .maybeSingle();
+        const mode = ((prop?.inventory_ai_mode ?? 'auto') as string) as 'off' | 'auto' | 'always-on';
+        if (cancelled) return;
+        setAiMode(mode);
+        if (mode === 'off') {
+          setMlRateMap(new Map());
+          setAutoFillMap(new Map());
+          return;
+        }
+        // Fetch learned daily rates (always when not off — feeds reorder list)
+        const rates = await fetchMlPredictedRates(activePropertyId);
+        // Fetch auto-fill map (per-item predicted_current_stock for Count Mode)
+        const items = await getInventoryAutoFillMap(activePropertyId, mode);
+        if (cancelled) return;
+        setMlRateMap(rates);
+        const m = new Map<string, AutoFillItem>();
+        for (const it of items) m.set(it.itemId, it);
+        setAutoFillMap(m);
+      } catch (err) {
+        console.error('[inventory] ML data fetch failed:', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [activePropertyId]);
+
   // Per-item estimates — each item's window starts at its own last_counted_at.
   const estimates = useMemo(() => {
     const map = new Map<string, ReturnType<typeof calculateEstimatedStock>>();
@@ -220,13 +273,17 @@ export default function InventoryPage() {
   }, [estimates]);
 
   // Predictions — one per item, keyed by id. Pure derivation from the items
-  // array + daily averages + per-item effective stock.
+  // array + daily averages + per-item effective stock + ML-learned rates.
+  // When mlRateMap has a rate for an item, predictReorders uses that rate
+  // directly (bypassing the rule-based usagePerCheckout × avgDailyCheckouts
+  // math). The AI mode being 'off' is handled upstream by leaving mlRateMap
+  // empty, so all items fall through to the rule-based path.
   const predictions = useMemo<PredictionResult[]>(() => {
     if (!dailyAverages) return [];
     const stockMap = new Map<string, number>();
     items.forEach(i => stockMap.set(i.id, effectiveStock(i)));
-    return predictReorders(items, dailyAverages, stockMap);
-  }, [items, dailyAverages, effectiveStock]);
+    return predictReorders(items, dailyAverages, stockMap, mlRateMap);
+  }, [items, dailyAverages, effectiveStock, mlRateMap]);
 
   const predictionMap = useMemo(() => predictionByItem(predictions), [predictions]);
 
@@ -570,6 +627,29 @@ export default function InventoryPage() {
                 <Settings size={13} />
                 {lang === 'es' ? 'Presupuestos' : 'Budgets'}
               </button>
+              {/* AI Helper chip — opens the explainer page where the user
+                  can read about the AI and flip its mode (off / auto / always-on). */}
+              <Link
+                href="/inventory/ai-helper"
+                style={{
+                  background: 'rgba(0,101,101,0.08)',
+                  color: '#006565',
+                  border: '1px solid rgba(0,101,101,0.25)',
+                  padding: '8px 16px',
+                  borderRadius: '9999px',
+                  fontFamily: "'Inter', sans-serif",
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  textDecoration: 'none',
+                }}
+              >
+                <Sparkles size={13} />
+                {lang === 'es' ? 'Asistente IA' : 'AI Helper'}
+              </Link>
               <button
                 onClick={() => setShowScanInvoice(true)}
                 style={{
@@ -880,6 +960,7 @@ export default function InventoryPage() {
         <CountMode
           items={items}
           estimates={estimates}
+          autoFillMap={autoFillMap}
           uid={user.uid}
           pid={activePropertyId}
           lang={lang}
@@ -933,10 +1014,12 @@ interface PhotoDecision {
 // ─── COUNT MODE ──────────────────────────────────────────────────────────────
 
 function CountMode({
-  items, estimates, uid, pid, lang, onDone, onCancel,
+  items, estimates, autoFillMap, uid, pid, lang, onDone, onCancel,
 }: {
   items: InventoryItem[];
   estimates: Map<string, ReturnType<typeof calculateEstimatedStock>>;
+  /** ML-graduated items get their predicted_current_stock pre-filled here. */
+  autoFillMap: Map<string, AutoFillItem>;
   uid: string;
   pid: string;
   lang: 'en' | 'es';
@@ -945,16 +1028,24 @@ function CountMode({
 }) {
   const sorted = useMemo(() => [...items].sort((a, b) => a.name.localeCompare(b.name)), [items]);
 
-  // Pre-fill the count input with the AI's best guess of current stock —
-  // i.e. the estimated stock when usage rates are configured, otherwise the
-  // last manually-typed value (currentStock). The user sees ONE number per
-  // item and adjusts up/down based on what they physically count. We
-  // deliberately don't show the estimate as a separate column anymore;
-  // showing two numbers per row was confusing the GM ICP.
+  // Pre-fill the count input with the AI's best guess of current stock.
+  //
+  // Priority:
+  //   1. ML auto-fill (from inventory_rate_predictions) — highest, only when
+  //      the per-item model has graduated AND the property's ai_mode allows it
+  //      (the autoFillMap is already filtered upstream).
+  //   2. Rule-based estimated stock — when usage rates are configured.
+  //   3. Last manually-typed currentStock — fallback.
+  //
+  // The user sees ONE number per item and adjusts up/down. Showing two
+  // numbers per row confused the GM ICP earlier; we keep the same single-input
+  // pattern.
   const initialValueFor = useCallback((item: InventoryItem): number => {
+    const af = autoFillMap.get(item.id);
+    if (af) return Math.round(af.predictedCurrentStock);
     const est = estimates.get(item.id);
     return est?.hasEstimate ? Math.round(est.estimated) : item.currentStock;
-  }, [estimates]);
+  }, [estimates, autoFillMap]);
 
   const [counts, setCounts] = useState<Record<string, string>>(() => {
     const init: Record<string, string> = {};
@@ -973,11 +1064,16 @@ function CountMode({
   const [saving, setSaving] = useState(false);
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
-  // Photo Count state — tracks which inputs were filled by AI and at what
-  // confidence level so we can render the colored "AI" badge per row.
-  // Multiple photos accumulate: later photos only fill items the AI didn't
-  // touch yet (we never overwrite a previous AI value with a later AI value).
-  const [aiFilled, setAiFilled] = useState<Record<string, 'high' | 'medium' | 'low'>>({});
+  // Photo Count + ML auto-fill state — tracks which inputs were filled by AI
+  // and at what confidence level so we can render the colored "AI" badge per
+  // row. Initialized from autoFillMap (graduated ML predictions) so items
+  // pre-filled from inventory_rate_predictions show the green dot from the
+  // moment Count Mode opens. Photo Count layers on top.
+  const [aiFilled, setAiFilled] = useState<Record<string, 'high' | 'medium' | 'low'>>(() => {
+    const init: Record<string, 'high' | 'medium' | 'low'> = {};
+    autoFillMap.forEach((af, id) => { init[id] = af.graduated ? 'high' : 'medium'; });
+    return init;
+  });
   const [showPhotoPicker, setShowPhotoPicker] = useState(false);
   const [photoBusy, setPhotoBusy] = useState(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
