@@ -15,6 +15,7 @@ from src.inference.inventory_rate import predict_inventory_rates
 from src.inference.supply import predict_supply
 from src.optimizer.monte_carlo import optimize_headcount
 from src.training.demand import train_demand_model
+from src.training.inventory_priors import aggregate_inventory_priors
 from src.training.inventory_rate import train_inventory_rate_model
 from src.training.supply import train_supply_model
 
@@ -212,6 +213,15 @@ class PredictInventoryRateResponse(BaseModel):
     note: Optional[str] = None
 
 
+class AggregatePriorsResponse(BaseModel):
+    """Response for cohort prior aggregation."""
+
+    cohorts_updated: int = 0
+    items_canonical: int = 0
+    errors: list = []
+    note: Optional[str] = None
+
+
 # FastAPI app
 app = FastAPI(
     title="Staxis ML Service",
@@ -359,6 +369,30 @@ async def train_inventory_rate_endpoint(
         item_id=request.item_id,
     )
     return TrainInventoryRateResponse(**result)
+
+
+@app.post(
+    "/train/inventory-priors",
+    response_model=AggregatePriorsResponse,
+    tags=["training"],
+    summary="Aggregate cross-hotel cohort priors",
+)
+async def train_inventory_priors_endpoint(
+    token: str = Depends(verify_bearer_token),
+) -> AggregatePriorsResponse:
+    """Recompute cohort + global inventory_rate_priors from network data.
+
+    No body — operates across all properties. Idempotent: each run replaces
+    every (cohort_key, item_canonical_name) row. Industry-benchmark seeds
+    from migration 0062 are NOT overwritten because they live under
+    cohort_key='global' with source='industry-benchmark', and this endpoint
+    only writes rows with source='cohort-aggregate' for cohorts that have
+    actual data. Cohorts with no aggregated data don't touch the seeds.
+
+    Requires bearer token authentication.
+    """
+    result = await aggregate_inventory_priors()
+    return AggregatePriorsResponse(**result)
 
 
 @app.post(

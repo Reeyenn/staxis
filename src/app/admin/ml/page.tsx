@@ -23,6 +23,7 @@ import { InventoryPipelineHealth } from './_components/inventory/InventoryPipeli
 import { InventoryManualTriggers } from './_components/inventory/InventoryManualTriggers';
 import { InventoryRecentAnomaliesTable } from './_components/inventory/InventoryRecentAnomaliesTable';
 import { InventoryAdoptionPanel } from './_components/inventory/InventoryAdoptionPanel';
+import { InventoryNetworkHealth } from './_components/inventory/InventoryNetworkHealth';
 
 /**
  * /admin/ml — Owner-only ML cockpit (split into Housekeeping + Inventory tabs).
@@ -271,6 +272,9 @@ function MLPageInner() {
             </div>
             <div style={{ gridColumn: '1 / -1' }}>
               <InventoryAdoptionPanel />
+            </div>
+            <div style={{ gridColumn: '1 / -1' }}>
+              <InventoryNetworkHealth />
             </div>
           </div>
         )}

@@ -28,6 +28,7 @@ on:
     - cron: '0 9 * * 0'    # Sunday 04:00 CDT — train/inventory-rate
     - cron: '30 10 * * *'  # Daily 05:30 CDT — run inference (housekeeping)
     - cron: '0 11 * * *'   # Daily 06:00 CDT — predict/inventory-rate
+    - cron: '0 12 * * *'   # Daily 07:00 CDT — aggregate cohort priors
   workflow_dispatch: {}    # manual trigger from the Actions UI
 
 jobs:
@@ -85,4 +86,15 @@ jobs:
           curl -fsS --retry 2 --retry-delay 5 \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             "https://hotelops-ai.vercel.app/api/cron/ml-predict-inventory" | tee /tmp/result.json
+          jq -e '.ok == true' /tmp/result.json
+
+  aggregate-priors:
+    if: github.event.schedule == '0 12 * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit /api/cron/ml-aggregate-priors
+        run: |
+          curl -fsS --retry 2 --retry-delay 5 \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://hotelops-ai.vercel.app/api/cron/ml-aggregate-priors" | tee /tmp/result.json
           jq -e '.ok == true' /tmp/result.json

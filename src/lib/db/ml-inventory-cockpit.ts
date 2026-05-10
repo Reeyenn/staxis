@@ -607,6 +607,96 @@ export interface InventoryAiStatus {
   lastInferenceAt: string | null;
 }
 
+/**
+ * Network-wide cohort summary for the InventoryNetworkHealth panel.
+ *
+ * Returns:
+ *   - cohorts: list of (cohort_key, n_hotels, n_items, prior_strength)
+ *   - totalHotels: total hotels across all cohorts
+ *   - totalProperties: from properties table
+ *   - networkModelActive: true once cohort 'global' has n_hotels >= 5
+ *
+ * Empty/uninteresting at 1 hotel — but the panel renders so Reeyen can see
+ * the infrastructure is in place. Becomes meaningful at ~10+ hotels.
+ */
+export interface CohortSummaryRow {
+  cohortKey: string;
+  itemCount: number;
+  hotelsContributing: number;
+  priorStrength: number;
+  source: 'industry-benchmark' | 'cohort-aggregate';
+  updatedAt: string;
+}
+
+export interface InventoryNetworkSummary {
+  totalProperties: number;
+  cohorts: CohortSummaryRow[];
+  industryBenchmarkItems: number;
+  networkModelActive: boolean;
+}
+
+export async function getInventoryNetworkSummary(): Promise<InventoryNetworkSummary> {
+  const [propsRes, priorsRes] = await Promise.all([
+    supabase.from('properties').select('id', { count: 'exact', head: true }),
+    supabase
+      .from('inventory_rate_priors')
+      .select('cohort_key,item_canonical_name,n_hotels_contributing,prior_strength,source,updated_at')
+      .limit(2000),
+  ]);
+  const totalProperties = propsRes.count ?? 0;
+  const rows = priorsRes.data ?? [];
+
+  const byCohort = new Map<string, {
+    n_hotels: number;
+    items: Set<string>;
+    strengths: number[];
+    sources: Set<string>;
+    latest: string;
+  }>();
+  let industryBenchmarkItems = 0;
+  for (const r of rows) {
+    const ck = String(r.cohort_key);
+    if (r.source === 'industry-benchmark') industryBenchmarkItems += 1;
+    if (!byCohort.has(ck)) {
+      byCohort.set(ck, { n_hotels: 0, items: new Set(), strengths: [], sources: new Set(), latest: '' });
+    }
+    const entry = byCohort.get(ck)!;
+    entry.n_hotels = Math.max(entry.n_hotels, Number(r.n_hotels_contributing ?? 0));
+    entry.items.add(String(r.item_canonical_name));
+    entry.strengths.push(Number(r.prior_strength ?? 1.0));
+    entry.sources.add(String(r.source ?? 'industry-benchmark'));
+    if (!entry.latest || (r.updated_at && r.updated_at > entry.latest)) {
+      entry.latest = String(r.updated_at ?? '');
+    }
+  }
+
+  const cohorts: CohortSummaryRow[] = Array.from(byCohort.entries())
+    .map(([cohortKey, e]) => ({
+      cohortKey,
+      itemCount: e.items.size,
+      hotelsContributing: e.n_hotels,
+      priorStrength: e.strengths.length > 0
+        ? e.strengths.reduce((s, v) => s + v, 0) / e.strengths.length
+        : 1.0,
+      source: e.sources.has('cohort-aggregate') ? 'cohort-aggregate' as const : 'industry-benchmark' as const,
+      updatedAt: e.latest,
+    }))
+    .sort((a, b) => b.hotelsContributing - a.hotelsContributing);
+
+  // 'Network model active' = global cohort with n_hotels >= 5 (i.e. real data
+  // beats the industry-benchmark seeds). Until then we run on seeds + local data.
+  const globalCohort = cohorts.find((c) => c.cohortKey === 'global');
+  const networkModelActive = !!globalCohort && globalCohort.hotelsContributing >= 5
+    && globalCohort.source === 'cohort-aggregate';
+
+  return {
+    totalProperties,
+    cohorts,
+    industryBenchmarkItems,
+    networkModelActive,
+  };
+}
+
 export async function getInventoryAiStatus(pid: string): Promise<InventoryAiStatus> {
   const [propRes, countRes, itemsRes, runsRes, predRes] = await Promise.all([
     supabase

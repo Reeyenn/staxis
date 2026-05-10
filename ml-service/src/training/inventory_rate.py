@@ -275,8 +275,12 @@ def _train_single_item(
         return {"skipped": True, "reason": "insufficient_clean_rows",
                 "rows": len(df)}
 
-    # Look up cohort prior (mu_0 intercept). Falls back to global → default.
-    prior_rate = _lookup_prior_rate(client, cohort_key, item, item_name)
+    # Look up cohort prior (mu_0 intercept) + its strength. Falls back to
+    # global → default. Strength schedule (set by aggregate_inventory_priors):
+    #   <10 hotels → 0.5  (weak — let property data dominate)
+    #   10-50      → 2.0  (moderate)
+    #   50+        → 5.0  (strong — cohort dominates new-hotel cold-start)
+    prior_rate, prior_strength = _lookup_prior(client, cohort_key, item, item_name)
 
     # Features + target
     X = df[INVENTORY_FEATURE_COLS].copy()
@@ -300,7 +304,10 @@ def _train_single_item(
         model_version = f"inventory-xgboost-v1-{item_id}-{datetime.utcnow().isoformat()}"
         algorithm = "xgboost-quantile"
     else:
-        model = BayesianRegression(prior_strength=2.0)
+        # prior_strength comes from the inventory_rate_priors row — varies by
+        # cohort size. Bigger cohort → stronger prior → cold-start hotels lean
+        # more on cohort and less on their own (still-noisy) data.
+        model = BayesianRegression(prior_strength=prior_strength)
         # Inject the cohort prior as the intercept's mu_0 (override default 60.0).
         # We do this via a lightweight wrapper — set _initialize_prior to use our value.
         _seed_bayesian_intercept(model, prior_rate)
@@ -522,11 +529,11 @@ def _avg_occupancy_in_window(
     return sum(matched) / len(matched) if matched else 50.0
 
 
-def _lookup_prior_rate(client, cohort_key: str, item: Dict[str, Any], item_name: str) -> float:
-    """Look up cohort prior; fall back to 'global'; fall back to default constant.
+def _lookup_prior(client, cohort_key: str, item: Dict[str, Any], item_name: str) -> tuple:
+    """Look up (rate, strength) for cohort → fall back to 'global' → default.
 
-    Uses item_canonical_name_view to resolve the item's canonical name. If
-    nothing matches, returns DEFAULT_GLOBAL_RATE_PER_ROOM_PER_DAY.
+    Returns (prior_rate_per_room_per_day, prior_strength). When no row matches,
+    falls back to DEFAULT_GLOBAL_RATE_PER_ROOM_PER_DAY with a weak strength=1.0.
     """
     # Resolve canonical name for this item
     try:
@@ -543,9 +550,9 @@ def _lookup_prior_rate(client, cohort_key: str, item: Dict[str, Any], item_name:
         canonical_name = "unknown"
 
     if canonical_name == "unknown":
-        return DEFAULT_GLOBAL_RATE_PER_ROOM_PER_DAY
+        return (DEFAULT_GLOBAL_RATE_PER_ROOM_PER_DAY, 1.0)
 
-    # Try cohort-specific prior first
+    # Try cohort-specific prior first, then global
     for ckey in (cohort_key, "global"):
         rows = client.fetch_many(
             "inventory_rate_priors",
@@ -553,9 +560,12 @@ def _lookup_prior_rate(client, cohort_key: str, item: Dict[str, Any], item_name:
             limit=1,
         )
         if rows:
-            return float(rows[0]["prior_rate_per_room_per_day"])
+            row = rows[0]
+            rate = float(row.get("prior_rate_per_room_per_day") or DEFAULT_GLOBAL_RATE_PER_ROOM_PER_DAY)
+            strength = float(row.get("prior_strength") or 1.0)
+            return (rate, strength)
 
-    return DEFAULT_GLOBAL_RATE_PER_ROOM_PER_DAY
+    return (DEFAULT_GLOBAL_RATE_PER_ROOM_PER_DAY, 1.0)
 
 
 def _seed_bayesian_intercept(model: BayesianRegression, prior_rate: float) -> None:
