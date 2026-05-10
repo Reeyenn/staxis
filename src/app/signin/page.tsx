@@ -5,7 +5,6 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
-import { supabase } from '@/lib/supabase';
 import { t } from '@/lib/translations';
 
 export default function SignInPage() {
@@ -22,12 +21,16 @@ export default function SignInPage() {
     if (!loading && user) router.replace('/property-selector');
   }, [user, loading, router]);
 
-  // Phase-2 sign-in flow:
-  //   1. Verify password with signInWithPassword (issues a session).
-  //   2. Ask the server if this device is trusted (cookie + DB check).
-  //   3. Trusted → keep the session, normal redirect.
-  //      Untrusted → sign out, send OTP via signInWithOtp, route user to
-  //                  /signin/verify?email=… to finish 2FA.
+  // 2026-05-10: 2FA flow temporarily disabled. The original flow had two
+  // bugs that locked users out:
+  //   1. Supabase project SITE_URL was localhost so magic-link emails
+  //      pointed to a dev URL that doesn't resolve for end users.
+  //   2. Email template didn't include the 6-digit token, only the link.
+  //   3. Race: setUser() inside signIn() triggered the redirect-on-user
+  //      useEffect BEFORE the trust check + OTP redirect could run.
+  // For now: plain password sign-in → straight to /property-selector via
+  // the useEffect above. 2FA will come back once SITE_URL + the OTP email
+  // template are properly configured.
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email.trim() || !password) return;
@@ -43,46 +46,8 @@ export default function SignInPage() {
         setSigning(false);
         return;
       }
-
-      // Password verified — get the fresh session for the trust check.
-      const { data: sessionData } = await supabase.auth.getSession();
-      const accessToken = sessionData.session?.access_token;
-
-      let trusted = false;
-      if (accessToken) {
-        try {
-          const res = await fetch('/api/auth/check-trust', {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${accessToken}` },
-            credentials: 'include',
-          });
-          if (res.ok) {
-            const body = await res.json() as { data?: { trusted?: boolean } };
-            trusted = !!body.data?.trusted;
-          }
-        } catch (err) {
-          console.warn('check-trust failed', err);
-          // Fail-closed: untrusted on error → user does the OTP step.
-        }
-      }
-
-      if (trusted) {
-        // useEffect above will router.replace once user is set.
-        return;
-      }
-
-      // Untrusted — drop the session and send an OTP.
-      await supabase.auth.signOut();
-      const { error: otpErr } = await supabase.auth.signInWithOtp({
-        email: normalizedEmail,
-        options: { shouldCreateUser: false },
-      });
-      if (otpErr) {
-        setError(otpErr.message);
-        setSigning(false);
-        return;
-      }
-      router.replace(`/signin/verify?email=${encodeURIComponent(normalizedEmail)}`);
+      // signIn() sets the AuthContext user, the useEffect above will
+      // router.replace to /property-selector. Nothing else to do here.
     } catch {
       setError(t('invalidCredentials', lang));
       setSigning(false);
