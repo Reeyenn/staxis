@@ -50,9 +50,15 @@ export async function GET(req: NextRequest) {
     return err('Failed to load team', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
-  const teamRows = (rows ?? []).filter(r =>
-    r.role === 'admin' || (Array.isArray(r.property_access) && r.property_access.includes(hotelId))
-  );
+  // Hide admins from non-admin viewers. Staxis (us) is the platform
+  // operator — customers shouldn't see our staff in their hotel's team
+  // list. Admin-on-admin debug view: admins still see every row including
+  // other admins, because for them this doubles as a quick "who has
+  // access" check.
+  const teamRows = (rows ?? []).filter(r => {
+    if (r.role === 'admin') return caller.isAdmin;
+    return Array.isArray(r.property_access) && r.property_access.includes(hotelId);
+  });
 
   const emailByUserId = new Map<string, string>();
   const { data: authPage, error: listErr } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
