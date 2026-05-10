@@ -184,9 +184,10 @@ export function generateColdStartAlerts(
       }
     }
 
-    // PM overdue. If we've never recorded a PM (lastPmAt is null), don't
-    // claim it's "Infinity days overdue" — the equipment may be brand new.
-    // Fall back to installDate, then equipment.createdAt as the anchor.
+    // PM overdue + pre-emptive "due soon" alerts. If we've never recorded
+    // a PM (lastPmAt is null), don't claim it's "Infinity days overdue" —
+    // the equipment may be brand new. Fall back to installDate, then
+    // equipment.createdAt as the anchor.
     if (eq.pmIntervalDays && eq.pmIntervalDays > 0) {
       const anchor = eq.lastPmAt?.getTime()
         ?? eq.installDate?.getTime()
@@ -207,6 +208,19 @@ export function generateColdStartAlerts(
             recommendation: `Recommended PM interval: every ${eq.pmIntervalDays} days. Schedule a PM visit.`,
             data: { overdueDays, intervalDays: eq.pmIntervalDays, neverDone },
           });
+        } else {
+          const daysUntilDue = Math.ceil(eq.pmIntervalDays - daysSinceAnchor);
+          const preDueSeverity = preDueSeverityFor(daysUntilDue);
+          if (preDueSeverity) {
+            alerts.push({
+              equipmentId: eq.id,
+              alertType: 'pm_overdue',
+              severity: preDueSeverity,
+              message: `${eq.name} preventive maintenance due in ${daysUntilDue} day${daysUntilDue === 1 ? '' : 's'}`,
+              recommendation: `Recommended PM interval: every ${eq.pmIntervalDays} days. Schedule a PM visit before it's overdue.`,
+              data: { daysUntilDue, intervalDays: eq.pmIntervalDays, preDue: true },
+            });
+          }
         }
       }
     }
@@ -247,8 +261,8 @@ export function generateColdStartAlerts(
     }
   }
 
-  // PM overdue can also fire from the preventive_tasks table even when no
-  // equipment is linked — same rule, different source.
+  // PM overdue + pre-due alerts can also fire from the preventive_tasks
+  // table even when no equipment is linked — same rule, different source.
   for (const t of preventiveTasks) {
     if (!t.lastCompletedAt || !t.frequencyDays) continue;
     const daysSince = (now - t.lastCompletedAt.getTime()) / DAY_MS;
@@ -261,10 +275,39 @@ export function generateColdStartAlerts(
         recommendation: `Frequency: every ${t.frequencyDays} days.`,
         data: { taskId: t.id, overdueDays: Math.round(daysSince - t.frequencyDays) },
       });
+    } else {
+      const daysUntilDue = Math.ceil(t.frequencyDays - daysSince);
+      const preDueSeverity = preDueSeverityFor(daysUntilDue);
+      if (preDueSeverity) {
+        alerts.push({
+          equipmentId: t.equipmentId ?? `pm:${t.id}`,
+          alertType: 'pm_overdue',
+          severity: preDueSeverity,
+          message: `${t.name} due in ${daysUntilDue} day${daysUntilDue === 1 ? '' : 's'}`,
+          recommendation: `Frequency: every ${t.frequencyDays} days. Schedule before it's overdue.`,
+          data: { taskId: t.id, daysUntilDue, preDue: true },
+        });
+      }
     }
   }
 
   return alerts;
+}
+
+/**
+ * Map "days until due" → alert severity. Used by both equipment-PM and
+ * preventive-task pre-due alert paths so the thresholds stay in sync.
+ *   ≤7d  → critical
+ *   ≤14d → warning
+ *   ≤30d → info
+ *   >30d → null (no alert)
+ */
+function preDueSeverityFor(daysUntilDue: number): 'info' | 'warning' | 'critical' | null {
+  if (daysUntilDue <= 0) return null;
+  if (daysUntilDue <= 7) return 'critical';
+  if (daysUntilDue <= 14) return 'warning';
+  if (daysUntilDue <= 30) return 'info';
+  return null;
 }
 
 // ─── Layer 2: statistical models ───────────────────────────────────────────
