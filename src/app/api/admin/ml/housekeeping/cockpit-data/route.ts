@@ -341,6 +341,84 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       };
     });
 
+    // ── Sidebar properties for hotels NOT in scope: fetch their per-hotel
+    //    summary too, otherwise their sidebar entries show empty stats
+    //    (mirrors the inventory cockpit's behavior). Also covers test
+    //    properties when network mode excludes them from the main fetch.
+    const otherPids = propsList.map((p) => p.id).filter((id) => !scopeIds.includes(id));
+    if (otherPids.length > 0) {
+      const [otherEventsRes, otherRunsRes, otherPredsRes] = await Promise.all([
+        supabaseAdmin
+          .from('cleaning_events')
+          .select('property_id, staff_id, room_number, status, created_at')
+          .in('property_id', otherPids)
+          .limit(100000),
+        supabaseAdmin
+          .from('model_runs')
+          .select('property_id, trained_at')
+          .in('property_id', otherPids)
+          .in('layer', ['demand', 'supply', 'optimizer'])
+          .eq('is_active', true),
+        supabaseAdmin
+          .from('demand_predictions')
+          .select('property_id, predicted_at')
+          .in('property_id', otherPids)
+          .order('predicted_at', { ascending: false })
+          .limit(2000),
+      ]);
+      const otherFirst = new Map<string, number>();
+      const otherLast7d = new Map<string, number>();
+      const otherLast1h = new Map<string, number>();
+      const otherStaff = new Map<string, Set<string>>();
+      for (const e of otherEventsRes.data ?? []) {
+        const pid = e.property_id as string;
+        const t = e.created_at ? new Date(e.created_at).getTime() : 0;
+        const status = (e.status as string) ?? '';
+        if (!t) continue;
+        if (status === 'discarded') continue;
+        if ((otherFirst.get(pid) ?? Infinity) > t) otherFirst.set(pid, t);
+        const age = Date.now() - t;
+        if (age <= 7 * 86400000) otherLast7d.set(pid, (otherLast7d.get(pid) ?? 0) + 1);
+        if (age <= 3600000) otherLast1h.set(pid, (otherLast1h.get(pid) ?? 0) + 1);
+        if (e.staff_id) {
+          if (!otherStaff.has(pid)) otherStaff.set(pid, new Set());
+          otherStaff.get(pid)!.add(e.staff_id);
+        }
+      }
+      const otherModels = new Map<string, number>();
+      const otherLastTr = new Map<string, number>();
+      for (const r of otherRunsRes.data ?? []) {
+        const pid = r.property_id as string;
+        otherModels.set(pid, (otherModels.get(pid) ?? 0) + 1);
+        const t = r.trained_at ? new Date(r.trained_at).getTime() : 0;
+        if (t > (otherLastTr.get(pid) ?? 0)) otherLastTr.set(pid, t);
+      }
+      const otherLastIn = new Map<string, number>();
+      for (const p of otherPredsRes.data ?? []) {
+        const pid = p.property_id as string;
+        const t = p.predicted_at ? new Date(p.predicted_at).getTime() : 0;
+        if (t > (otherLastIn.get(pid) ?? 0)) otherLastIn.set(pid, t);
+      }
+      for (const entry of properties) {
+        if (scopeIds.includes(entry.id)) continue;
+        const firstAt = otherFirst.get(entry.id) ?? null;
+        entry.daysSinceFirstEvent = firstAt
+          ? Math.max(0, Math.floor((Date.now() - firstAt) / 86400000)) : 0;
+        entry.staffActive = otherStaff.get(entry.id)?.size ?? 0;
+        entry.modelsActive = otherModels.get(entry.id) ?? 0;
+        entry.eventsLast7d = otherLast7d.get(entry.id) ?? 0;
+        entry.eventsLast1h = otherLast1h.get(entry.id) ?? 0;
+        const lastTr = otherLastTr.get(entry.id) ?? null;
+        const lastIn = otherLastIn.get(entry.id) ?? null;
+        entry.lastTrainingAt = lastTr ? new Date(lastTr).toISOString() : null;
+        entry.lastInferenceAt = lastIn ? new Date(lastIn).toISOString() : null;
+        const trainOk = lastTr !== null && (Date.now() - lastTr) / 1000 <= TRAINING_FRESH_SEC;
+        const predOk = lastIn !== null && (Date.now() - lastIn) / 1000 <= PREDICTION_FRESH_SEC;
+        const everRanAny = lastTr !== null || lastIn !== null;
+        entry.status = !everRanAny ? 'warming' : (trainOk && predOk) ? 'healthy' : 'issue';
+      }
+    }
+
     // Scoped sidebar (only the hotels we aggregate over)
     const scopedProps = properties.filter((p) => scopeIds.includes(p.id));
     const dayValues = scopedProps.map((p) => p.daysSinceFirstEvent);
