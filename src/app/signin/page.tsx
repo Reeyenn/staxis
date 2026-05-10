@@ -245,6 +245,19 @@ export default function SignInPage() {
             }
           </button>
 
+          {/* Create-account link — staff sign up at /signup using a code
+              the hotel owner generated. Existing users sign in above. */}
+          <p style={{
+            textAlign: 'center', marginTop: '8px',
+            fontSize: '13px', color: 'var(--text-muted)',
+            fontFamily: 'var(--font-sans)',
+          }}>
+            {lang === 'es' ? '¿No tienes una cuenta? ' : "Don't have an account? "}
+            <Link href="/signup" style={{ color: 'var(--navy-light)', textDecoration: 'none', fontWeight: 600 }}>
+              {lang === 'es' ? 'Crear cuenta' : 'Create account'}
+            </Link>
+          </p>
+
         </form>
 
       </div>

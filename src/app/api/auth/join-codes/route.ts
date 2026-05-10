@@ -1,6 +1,9 @@
 // /api/auth/join-codes — manage hotel join codes.
 //   GET     ?hotelId=…  — list active (non-expired, not-revoked) codes
-//   POST                — create (body: hotelId, role, expiryHours, maxUses)
+//   POST                — create. Body: { hotelId }. Codes are valid for
+//                         7 days and accept up to 100 signups. Role is
+//                         chosen by the staff member during /signup; not
+//                         pre-baked into the code.
 //   DELETE  ?id=…       — revoke (sets revoked_at)
 
 import { NextRequest } from 'next/server';
@@ -8,8 +11,13 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { verifyTeamManager, canManageHotel } from '@/lib/team-auth';
-import { isAssignableRole } from '@/lib/roles';
 import { writeAudit } from '@/lib/audit';
+
+// New-flow defaults: codes don't pre-bind a role; the staff member chooses
+// their own role at /signup. Validity is fixed at 7 days and up to 100
+// signups per code — enough for a hotel-wide share without being unlimited.
+const CODE_TTL_HOURS = 24 * 7;       // 7 days
+const CODE_MAX_USES = 100;
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -59,19 +67,16 @@ export async function POST(req: NextRequest) {
   const caller = await verifyTeamManager(req);
   if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
 
-  const body = await req.json() as { hotelId?: string; role?: string; expiryHours?: number; maxUses?: number };
-  const { hotelId, role, expiryHours, maxUses } = body;
-  if (!hotelId || !role) {
-    return err('hotelId and role required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  const body = await req.json() as { hotelId?: string };
+  const { hotelId } = body;
+  if (!hotelId) {
+    return err('hotelId required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   if (!canManageHotel(caller, hotelId)) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
-  if (!isAssignableRole(role)) {
-    return err('Invalid role', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  }
-  const ttl = Math.min(Math.max(Number(expiryHours ?? 24), 1), 24 * 30);  // 1h–30d
-  const uses = Math.min(Math.max(Number(maxUses ?? 1), 1), 100);
+  const ttl = CODE_TTL_HOURS;
+  const uses = CODE_MAX_USES;
 
   // Pull hotel name for the code prefix.
   const { data: prop } = await supabaseAdmin.from('properties').select('name').eq('id', hotelId).maybeSingle();
@@ -84,7 +89,7 @@ export async function POST(req: NextRequest) {
     const { data: ins, error: insErr } = await supabaseAdmin.from('hotel_join_codes').insert({
       hotel_id: hotelId,
       code,
-      role,
+      role: null,
       expires_at: expiresAt,
       max_uses: uses,
       created_by: caller.accountId,
@@ -97,7 +102,7 @@ export async function POST(req: NextRequest) {
         targetType: 'join_code',
         targetId: ins.id,
         hotelId,
-        metadata: { code: ins.code, role, max_uses: ins.max_uses },
+        metadata: { code: ins.code, max_uses: ins.max_uses, ttl_hours: ttl },
       });
       return ok({ joinCode: ins }, { requestId });
     }

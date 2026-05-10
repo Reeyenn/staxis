@@ -130,12 +130,12 @@ export default function AccountsPage() {
   };
 
   // ── Join codes ───────────────────────────────────────────────────────────
-  interface CodeRow { id: string; code: string; role: AssignableRole; expires_at: string; max_uses: number; used_count: number }
+  // Codes are now role-less: the staff member picks their role at /signup.
+  // Code generation just needs a hotelId; the API fixes validity at 7 days
+  // and max-uses at 100.
+  interface CodeRow { id: string; code: string; role: AssignableRole | null; expires_at: string; max_uses: number; used_count: number }
   const [codes, setCodes] = useState<CodeRow[]>([]);
   const [showCodeModal, setShowCodeModal] = useState(false);
-  const [codeRole, setCodeRole] = useState<AssignableRole>('housekeeping');
-  const [codeExpiryHours, setCodeExpiryHours] = useState(24);
-  const [codeMaxUses, setCodeMaxUses] = useState(1);
   const [codeSubmitting, setCodeSubmitting] = useState(false);
   const [codeError, setCodeError] = useState('');
   const [codeResult, setCodeResult] = useState<CodeRow | null>(null);
@@ -188,7 +188,7 @@ export default function AccountsPage() {
       const res = await fetchWithAuth('/api/auth/join-codes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hotelId: teamHotelId, role: codeRole, expiryHours: codeExpiryHours, maxUses: codeMaxUses }),
+        body: JSON.stringify({ hotelId: teamHotelId }),
       });
       const body = await res.json() as { ok?: boolean; error?: string; data?: { joinCode?: CodeRow } };
       if (!res.ok || !body.ok) {
@@ -630,7 +630,7 @@ export default function AccountsPage() {
                       {c.code}
                     </div>
                     <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
-                      {roleLabel(c.role)} · {c.used_count}/{c.max_uses} {lang === 'es' ? 'usados' : 'used'} · {lang === 'es' ? 'expira' : 'expires'} {new Date(c.expires_at).toLocaleString()}
+                      {lang === 'es' ? 'expira' : 'expires'} {new Date(c.expires_at).toLocaleDateString()}
                     </div>
                   </div>
                   <button onClick={() => navigator.clipboard?.writeText(c.code)} style={iconBtnStyle} aria-label="Copy">
@@ -872,21 +872,34 @@ export default function AccountsPage() {
       )}
 
       {/* ─── Generate-join-code modal ──────────────────────────────────── */}
+      {/* Codes are role-less; the staff member picks their role at signup.
+          Validity is fixed at 7 days. No knobs to turn — just generate. */}
       {showCodeModal && (
         <ModalShell onClose={() => setShowCodeModal(false)} title={lang === 'es' ? 'Generar código' : 'Generate code'}>
           {codeResult ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <p style={{ fontSize: '13px', color: 'var(--text-primary)', lineHeight: 1.5 }}>
-                {lang === 'es' ? 'Código creado. Compártelo con la persona que se va a unir:' : 'Code created. Share it with the person joining:'}
+                {lang === 'es'
+                  ? 'Código creado. Compártelo con tu equipo:'
+                  : 'Code created. Share it with your team:'}
               </p>
-              <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '14px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: '20px', fontWeight: 700, fontFamily: 'var(--font-mono)', letterSpacing: '0.1em', color: 'var(--text-primary)' }}>{codeResult.code}</span>
+              <div style={{
+                background: 'var(--bg-card)', border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-md)', padding: '14px 16px',
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              }}>
+                <span style={{
+                  fontSize: '20px', fontWeight: 700, fontFamily: 'var(--font-mono)',
+                  letterSpacing: '0.1em', color: 'var(--text-primary)',
+                }}>{codeResult.code}</span>
                 <button onClick={() => navigator.clipboard?.writeText(codeResult.code)} style={iconBtnStyle} aria-label="Copy">
                   <Copy size={14} />
                 </button>
               </div>
-              <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                {roleLabel(codeResult.role)} · {lang === 'es' ? 'usar en' : 'use at'} <code>/join</code> · {lang === 'es' ? 'expira' : 'expires'} {new Date(codeResult.expires_at).toLocaleString()}
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                {lang === 'es'
+                  ? <>Válido por una semana. Tu equipo lo usa en <code>/signup</code> y elige su rol al crear la cuenta.</>
+                  : <>Valid for one week. Your team uses it at <code>/signup</code> and picks their role when creating the account.</>}
               </p>
               <button onClick={() => setShowCodeModal(false)} style={primaryBtnStyle(false)}>
                 {lang === 'es' ? 'Cerrar' : 'Close'}
@@ -894,22 +907,11 @@ export default function AccountsPage() {
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={labelStyle}>{lang === 'es' ? 'Rol' : 'Role'}</label>
-                <select value={codeRole} onChange={e => setCodeRole(e.target.value as AssignableRole)} style={{ ...inputStyle, height: '42px' }}>
-                  {ASSIGNABLE_ROLES.map(r => <option key={r} value={r}>{roleLabel(r)}</option>)}
-                </select>
-              </div>
-              <div style={{ display: 'flex', gap: '12px' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', flex: 1 }}>
-                  <label style={labelStyle}>{lang === 'es' ? 'Validez (h)' : 'Valid for (hr)'}</label>
-                  <input type="number" min={1} max={720} value={codeExpiryHours} onChange={e => setCodeExpiryHours(Number(e.target.value))} style={inputStyle} />
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', flex: 1 }}>
-                  <label style={labelStyle}>{lang === 'es' ? 'Usos máx.' : 'Max uses'}</label>
-                  <input type="number" min={1} max={100} value={codeMaxUses} onChange={e => setCodeMaxUses(Number(e.target.value))} style={inputStyle} />
-                </div>
-              </div>
+              <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                {lang === 'es'
+                  ? 'Esto crea un código de una semana que tu equipo puede usar para registrarse en este hotel. Cada persona elige su propio rol cuando crea la cuenta.'
+                  : 'This creates a one-week code your team can use to sign up for this hotel. Each person picks their own role when they create their account.'}
+              </p>
               {codeError && <ErrorBox>{codeError}</ErrorBox>}
               <button disabled={codeSubmitting} onClick={handleGenerateCode} style={primaryBtnStyle(codeSubmitting)}>
                 {codeSubmitting
