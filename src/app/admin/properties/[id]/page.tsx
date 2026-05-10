@@ -20,8 +20,9 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import {
   ArrowLeft, RefreshCw, AlertTriangle, CheckCircle2, Clock,
   ShieldAlert, ExternalLink, Loader2, Activity, Users, Plus, Trash2, FileText,
+  Pencil, X,
 } from 'lucide-react';
-import { roleLabel, type AppRole } from '@/lib/roles';
+import { ASSIGNABLE_ROLES, roleLabel, type AppRole, type AssignableRole } from '@/lib/roles';
 
 interface HealthData {
   property: {
@@ -368,8 +369,8 @@ function PeopleWithAccessSection({ propertyId }: { propertyId: string }) {
   const { user } = useAuth();
   const [allAccounts, setAllAccounts] = useState<AccountRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showAdd, setShowAdd] = useState(false);
-  const [pickAccountId, setPickAccountId] = useState('');
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [editAccount, setEditAccount] = useState<AccountRow | null>(null);
 
   const load = React.useCallback(async () => {
     if (!user) return;
@@ -384,13 +385,12 @@ function PeopleWithAccessSection({ propertyId }: { propertyId: string }) {
   }, [user]);
   useEffect(() => { void load(); }, [load, propertyId]);
 
-  // "Has access" = role admin (sees everything) or propertyAccess includes this property.
   const withAccess = allAccounts.filter(a => a.role === 'admin' || a.propertyAccess.includes(propertyId));
-  const eligibleToAdd = allAccounts.filter(a => a.role !== 'admin' && !a.propertyAccess.includes(propertyId));
+  const eligibleToAttach = allAccounts.filter(a => a.role !== 'admin' && !a.propertyAccess.includes(propertyId));
 
   const detach = async (acct: AccountRow) => {
     if (!user) return;
-    if (acct.role === 'admin') return; // admins always have access
+    if (acct.role === 'admin') return;
     if (!confirm(`Remove ${acct.displayName} from this hotel?`)) return;
     const newAccess = acct.propertyAccess.filter(p => p !== propertyId);
     await fetchWithAuth('/api/auth/accounts', {
@@ -401,58 +401,16 @@ function PeopleWithAccessSection({ propertyId }: { propertyId: string }) {
     void load();
   };
 
-  const attach = async () => {
-    if (!user || !pickAccountId) return;
-    const acct = allAccounts.find(a => a.accountId === pickAccountId);
-    if (!acct) return;
-    const newAccess = Array.from(new Set([...acct.propertyAccess, propertyId]));
-    await fetchWithAuth('/api/auth/accounts', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'x-account-id': user.accountId },
-      body: JSON.stringify({ accountId: pickAccountId, propertyAccess: newAccess }),
-    });
-    setShowAdd(false);
-    setPickAccountId('');
-    void load();
-  };
-
   return (
     <div style={{ marginTop: '20px' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
         <h2 style={{ fontSize: '15px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px' }}>
           <Users size={16} /> People with access
         </h2>
-        <button onClick={() => setShowAdd(v => !v)} style={{
-          display: 'inline-flex', alignItems: 'center', gap: '6px',
-          background: 'var(--surface-secondary)', color: 'var(--text-primary)',
-          border: '1px solid var(--border)', borderRadius: '8px',
-          padding: '6px 12px', fontSize: '12px', fontWeight: 600,
-          cursor: 'pointer',
-        }}>
+        <button onClick={() => setShowAddModal(true)} style={attachBtnStyle}>
           <Plus size={13} /> Attach person
         </button>
       </div>
-
-      {showAdd && (
-        <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
-          <select value={pickAccountId} onChange={e => setPickAccountId(e.target.value)} style={{
-            flex: 1, height: '38px', borderRadius: '8px',
-            background: 'var(--surface-primary)', border: '1px solid var(--border)',
-            padding: '0 12px', color: 'var(--text-primary)', fontSize: '13px',
-          }}>
-            <option value="">Pick an account…</option>
-            {eligibleToAdd.map(a => (
-              <option key={a.accountId} value={a.accountId}>{a.displayName} — {roleLabel(a.role)} ({a.email})</option>
-            ))}
-          </select>
-          <button disabled={!pickAccountId} onClick={attach} style={{
-            background: pickAccountId ? 'var(--navy-light)' : 'rgba(37,99,235,0.4)',
-            color: '#FFFFFF', border: 'none', borderRadius: '8px',
-            padding: '0 16px', fontSize: '13px', fontWeight: 600,
-            cursor: pickAccountId ? 'pointer' : 'not-allowed',
-          }}>Attach</button>
-        </div>
-      )}
 
       {loading ? (
         <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Loading…</p>
@@ -464,7 +422,7 @@ function PeopleWithAccessSection({ propertyId }: { propertyId: string }) {
             <div key={a.accountId} style={{
               padding: '12px 14px',
               borderBottom: idx < withAccess.length - 1 ? '1px solid var(--border)' : 'none',
-              display: 'flex', alignItems: 'center', gap: '12px',
+              display: 'flex', alignItems: 'center', gap: '8px',
             }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: '13px', fontWeight: 600 }}>{a.displayName}</div>
@@ -472,13 +430,11 @@ function PeopleWithAccessSection({ propertyId }: { propertyId: string }) {
                   {roleLabel(a.role)} · {a.email}
                 </div>
               </div>
+              <button onClick={() => setEditAccount(a)} aria-label={`Edit ${a.displayName}`} style={iconBtnStyle}>
+                <Pencil size={13} />
+              </button>
               {a.role !== 'admin' && a.accountId !== user?.accountId && (
-                <button onClick={() => detach(a)} aria-label={`Remove ${a.displayName}`} style={{
-                  width: '32px', height: '32px', borderRadius: '6px',
-                  background: 'transparent', border: '1px solid rgba(239,68,68,0.3)',
-                  color: 'var(--red)', cursor: 'pointer',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}>
+                <button onClick={() => detach(a)} aria-label={`Remove ${a.displayName}`} style={iconBtnRedStyle}>
                   <Trash2 size={13} />
                 </button>
               )}
@@ -486,9 +442,343 @@ function PeopleWithAccessSection({ propertyId }: { propertyId: string }) {
           ))}
         </div>
       )}
+
+      {showAddModal && (
+        <AddPersonModal
+          propertyId={propertyId}
+          eligibleToAttach={eligibleToAttach}
+          onClose={() => setShowAddModal(false)}
+          onSuccess={() => { setShowAddModal(false); void load(); }}
+        />
+      )}
+      {editAccount && (
+        <EditPersonModal
+          account={editAccount}
+          propertyId={propertyId}
+          onClose={() => setEditAccount(null)}
+          onSuccess={() => { setEditAccount(null); void load(); }}
+        />
+      )}
     </div>
   );
 }
+
+// ─── Add Person modal ──────────────────────────────────────────────────
+function AddPersonModal({
+  propertyId, eligibleToAttach, onClose, onSuccess,
+}: {
+  propertyId: string;
+  eligibleToAttach: AccountRow[];
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const { user } = useAuth();
+  const [mode, setMode] = useState<'new' | 'existing'>('new');
+  // Create-new state
+  const [displayName, setDisplayName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [role, setRole] = useState<AssignableRole>('housekeeping');
+  // Attach-existing state
+  const [pickId, setPickId] = useState('');
+  const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const usernameFromEmail = (e: string) => {
+    const local = e.split('@')[0]?.toLowerCase().replace(/[^a-z0-9._+-]/g, '') ?? '';
+    return local.slice(0, 40) || `user${Date.now().toString(36)}`;
+  };
+
+  const submit = async () => {
+    if (!user) return;
+    setError('');
+    setSubmitting(true);
+    try {
+      if (mode === 'new') {
+        if (!displayName.trim() || !email.trim() || !password.trim()) { setError('Name, email, and password are required'); return; }
+        if (password.length < 6) { setError('Password must be at least 6 characters'); return; }
+        const res = await fetchWithAuth('/api/auth/accounts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-account-id': user.accountId },
+          body: JSON.stringify({
+            username: usernameFromEmail(email),
+            displayName,
+            email: email.trim(),
+            password,
+            role,
+            propertyAccess: [propertyId],
+          }),
+        });
+        const body = await res.json() as { ok?: boolean; error?: string };
+        if (!res.ok || !body.ok) { setError(body.error ?? 'Failed to create account'); return; }
+      } else {
+        if (!pickId) { setError('Pick an account'); return; }
+        const acct = eligibleToAttach.find(a => a.accountId === pickId);
+        if (!acct) { setError('Account not found'); return; }
+        const newAccess = Array.from(new Set([...acct.propertyAccess, propertyId]));
+        const res = await fetchWithAuth('/api/auth/accounts', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', 'x-account-id': user.accountId },
+          body: JSON.stringify({ accountId: pickId, propertyAccess: newAccess }),
+        });
+        const body = await res.json() as { ok?: boolean; error?: string };
+        if (!res.ok || !body.ok) { setError(body.error ?? 'Failed to attach account'); return; }
+      }
+      onSuccess();
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <ModalShell onClose={onClose} title="Attach person">
+      {/* Tabs */}
+      <div style={{ display: 'flex', gap: '4px', background: 'var(--surface-secondary)', borderRadius: '8px', padding: '3px' }}>
+        <TabButton active={mode === 'new'} onClick={() => setMode('new')}>Create new</TabButton>
+        <TabButton active={mode === 'existing'} onClick={() => setMode('existing')} disabled={eligibleToAttach.length === 0}>
+          Attach existing {eligibleToAttach.length > 0 ? `(${eligibleToAttach.length})` : ''}
+        </TabButton>
+      </div>
+
+      {mode === 'new' ? (
+        <>
+          <FieldText label="Full name" value={displayName} onChange={setDisplayName} placeholder="e.g. Maria Lopez" autoFocus />
+          <FieldText label="Email" type="email" value={email} onChange={setEmail} placeholder="name@example.com" />
+          <FieldText label="Password" type="password" value={password} onChange={setPassword} placeholder="At least 6 characters" />
+          <FieldRole role={role} onChange={setRole} />
+        </>
+      ) : (
+        eligibleToAttach.length === 0 ? (
+          <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
+            All non-admin accounts are already attached to this hotel.
+          </p>
+        ) : (
+          <FieldSelect label="Account" value={pickId} onChange={setPickId} options={[
+            { value: '', label: 'Pick an account…' },
+            ...eligibleToAttach.map(a => ({ value: a.accountId, label: `${a.displayName} — ${roleLabel(a.role)} (${a.email})` })),
+          ]} />
+        )
+      )}
+
+      {error && <ErrorBox>{error}</ErrorBox>}
+
+      <button disabled={submitting} onClick={submit} style={primaryBtnStyle(submitting)}>
+        {submitting
+          ? <div className="spinner" style={{ width: '18px', height: '18px', borderTopColor: '#FFFFFF', borderColor: 'rgba(255,255,255,0.3)' }} />
+          : (mode === 'new' ? 'Create account' : 'Attach')}
+      </button>
+    </ModalShell>
+  );
+}
+
+// ─── Edit Person modal ─────────────────────────────────────────────────
+function EditPersonModal({
+  account, propertyId, onClose, onSuccess,
+}: {
+  account: AccountRow;
+  propertyId: string;
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const { user } = useAuth();
+  const [displayName, setDisplayName] = useState(account.displayName);
+  const [email, setEmail] = useState(account.email);
+  const [password, setPassword] = useState('');
+  const [role, setRole] = useState<AppRole>(account.role);
+  const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const isAdminRow = account.role === 'admin';
+
+  const submit = async () => {
+    if (!user) return;
+    setError('');
+    setSubmitting(true);
+    try {
+      const payload: Record<string, unknown> = { accountId: account.accountId };
+      if (displayName !== account.displayName) payload.displayName = displayName;
+      if (email !== account.email) payload.email = email.trim();
+      if (role !== account.role && !isAdminRow) payload.role = role;
+      if (password) {
+        if (password.length < 6) { setError('Password must be at least 6 characters'); return; }
+        payload.password = password;
+      }
+      if (Object.keys(payload).length === 1) { setError('Nothing changed'); return; }
+
+      const res = await fetchWithAuth('/api/auth/accounts', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'x-account-id': user.accountId },
+        body: JSON.stringify(payload),
+      });
+      const body = await res.json() as { ok?: boolean; error?: string };
+      if (!res.ok || !body.ok) { setError(body.error ?? 'Failed to update'); return; }
+      onSuccess();
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const removeFromHotel = async () => {
+    if (!user || isAdminRow) return;
+    if (!confirm(`Remove ${account.displayName} from this hotel?`)) return;
+    const newAccess = account.propertyAccess.filter(p => p !== propertyId);
+    await fetchWithAuth('/api/auth/accounts', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-account-id': user.accountId },
+      body: JSON.stringify({ accountId: account.accountId, propertyAccess: newAccess }),
+    });
+    onSuccess();
+  };
+
+  return (
+    <ModalShell onClose={onClose} title={`Edit ${account.displayName}`}>
+      <FieldText label="Full name" value={displayName} onChange={setDisplayName} />
+      <FieldText label="Email" type="email" value={email} onChange={setEmail} />
+      <FieldText label="New password (optional)" type="password" value={password} onChange={setPassword} placeholder="Leave blank to keep current" />
+      {!isAdminRow && <FieldRole role={role as AssignableRole} onChange={(r) => setRole(r)} />}
+
+      {error && <ErrorBox>{error}</ErrorBox>}
+
+      <button disabled={submitting} onClick={submit} style={primaryBtnStyle(submitting)}>
+        {submitting
+          ? <div className="spinner" style={{ width: '18px', height: '18px', borderTopColor: '#FFFFFF', borderColor: 'rgba(255,255,255,0.3)' }} />
+          : 'Save changes'}
+      </button>
+      {!isAdminRow && account.accountId !== user?.accountId && (
+        <button onClick={removeFromHotel} style={{
+          width: '100%', height: '40px', borderRadius: '8px',
+          background: 'transparent', border: '1px solid rgba(239,68,68,0.3)',
+          color: 'var(--red)', fontSize: '13px', fontWeight: 600,
+          cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+        }}>
+          <Trash2 size={13} /> Remove from this hotel
+        </button>
+      )}
+    </ModalShell>
+  );
+}
+
+// ─── Modal building blocks ─────────────────────────────────────────────
+function ModalShell({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 60,
+      background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(4px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
+    }} onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{
+        width: '100%', maxWidth: '440px',
+        background: 'var(--surface-primary)', borderRadius: '12px',
+        border: '1px solid var(--border)', padding: '20px',
+        display: 'flex', flexDirection: 'column', gap: '12px',
+        maxHeight: '90vh', overflowY: 'auto',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <h2 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '16px', color: 'var(--text-primary)' }}>{title}</h2>
+          <button onClick={onClose} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: '4px' }}>
+            <X size={18} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function TabButton({ active, disabled, onClick, children }: { active: boolean; disabled?: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      flex: 1, height: '34px', borderRadius: '6px',
+      background: active ? 'var(--surface-primary)' : 'transparent',
+      border: active ? '1px solid var(--border)' : '1px solid transparent',
+      color: disabled ? 'var(--text-muted)' : 'var(--text-primary)',
+      fontSize: '13px', fontWeight: active ? 600 : 500,
+      cursor: disabled ? 'not-allowed' : 'pointer',
+      opacity: disabled ? 0.5 : 1,
+    }}>{children}</button>
+  );
+}
+
+function FieldText({ label, value, onChange, type='text', placeholder, autoFocus }: { label: string; value: string; onChange: (v: string) => void; type?: string; placeholder?: string; autoFocus?: boolean }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+      <label style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>{label}</label>
+      <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} autoFocus={autoFocus}
+        style={{ height: '40px', borderRadius: '8px', background: 'var(--surface-primary)', border: '1px solid var(--border)', padding: '0 12px', color: 'var(--text-primary)', fontSize: '14px', outline: 'none' }} />
+    </div>
+  );
+}
+
+function FieldSelect({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: { value: string; label: string }[] }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+      <label style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>{label}</label>
+      <select value={value} onChange={e => onChange(e.target.value)}
+        style={{ height: '40px', borderRadius: '8px', background: 'var(--surface-primary)', border: '1px solid var(--border)', padding: '0 12px', color: 'var(--text-primary)', fontSize: '14px', outline: 'none' }}>
+        {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+    </div>
+  );
+}
+
+function FieldRole({ role, onChange }: { role: AssignableRole; onChange: (r: AssignableRole) => void }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+      <label style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Role</label>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+        {ASSIGNABLE_ROLES.map(r => (
+          <button key={r} onClick={() => onChange(r)} style={{
+            minWidth: '90px', flex: '1 1 90px', height: '34px',
+            borderRadius: '6px',
+            background: role === r ? 'var(--amber-dim, rgba(245,158,11,0.12))' : 'var(--surface-primary)',
+            border: `1px solid ${role === r ? 'var(--amber, #f59e0b)' : 'var(--border)'}`,
+            color: role === r ? 'var(--amber, #f59e0b)' : 'var(--text-secondary)',
+            fontSize: '12px', fontWeight: role === r ? 600 : 400,
+            cursor: 'pointer',
+          }}>
+            {roleLabel(r)}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ErrorBox({ children }: { children: React.ReactNode }) {
+  return (
+    <p style={{ fontSize: '12px', color: 'var(--red)', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: '6px', padding: '8px 10px', margin: 0 }}>{children}</p>
+  );
+}
+
+function primaryBtnStyle(disabled: boolean): React.CSSProperties {
+  return {
+    width: '100%', height: '42px', borderRadius: '8px',
+    background: disabled ? 'rgba(37,99,235,0.4)' : 'var(--navy-light)',
+    color: '#FFFFFF', fontSize: '14px', fontWeight: 600,
+    border: 'none', cursor: disabled ? 'not-allowed' : 'pointer',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+  };
+}
+
+const attachBtnStyle: React.CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', gap: '6px',
+  background: 'var(--surface-secondary)', color: 'var(--text-primary)',
+  border: '1px solid var(--border)', borderRadius: '8px',
+  padding: '6px 12px', fontSize: '12px', fontWeight: 600,
+  cursor: 'pointer',
+};
+const iconBtnStyle: React.CSSProperties = {
+  width: '32px', height: '32px', borderRadius: '6px',
+  background: 'transparent', border: '1px solid var(--border)',
+  color: 'var(--text-muted)', cursor: 'pointer',
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+};
+const iconBtnRedStyle: React.CSSProperties = {
+  width: '32px', height: '32px', borderRadius: '6px',
+  background: 'transparent', border: '1px solid rgba(239,68,68,0.3)',
+  color: 'var(--red)', cursor: 'pointer',
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+};
 
 // ─── GM activity (this hotel only) ──────────────────────────────────────
 interface ActivityRow {
