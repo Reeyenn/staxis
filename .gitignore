@@ -54,6 +54,8 @@ next-env.d.ts
 
 # Claude Code
 .claude/worktrees/
+.claude/scheduled_tasks.lock
+.claude/scheduled_tasks*.json
 CLAUDE.md
 
 # Local-only deploy helpers — these can contain API keys / secrets at any
