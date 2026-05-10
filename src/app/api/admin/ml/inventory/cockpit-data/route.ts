@@ -358,10 +358,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       };
     });
 
-    // ── Sidebar properties for hotels NOT in scope: we need to fetch their
-    //    per-hotel summary too, otherwise their status pip is blank in single mode ──
-    if (propertyIdParam) {
-      const otherPids = propsList.map((p) => p.id).filter((id) => id !== propertyIdParam);
+    // ── Sidebar properties for hotels NOT in scope: fetch their per-hotel
+    //    summary so the sidebar shows real stats. This applies in two cases:
+    //    1) single-hotel mode → other hotels are out of scope
+    //    2) network mode → test properties are filtered from scope
+    {
+      const otherPids = propsList.map((p) => p.id).filter((id) => !scopeIds.includes(id));
       if (otherPids.length > 0) {
         const [otherCountsRes, otherItemsRes, otherRunsRes, otherPredsRes] = await Promise.all([
           supabaseAdmin
@@ -422,7 +424,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           if (t > (otherLastPr.get(pid) ?? 0)) otherLastPr.set(pid, t);
         }
         for (const entry of sidebarProperties) {
-          if (entry.id === propertyIdParam) continue;
+          // Skip in-scope properties — they already have correct data from the
+          // main fetch. We only patch out-of-scope hotels here.
+          if (scopeIds.includes(entry.id)) continue;
           const firstAt = otherFirst.get(entry.id) ?? null;
           entry.daysSinceFirstCount = firstAt
             ? Math.max(0, Math.floor((Date.now() - firstAt) / 86400000)) : 0;
