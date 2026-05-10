@@ -167,7 +167,7 @@ function resolveBaseUrl(): string {
     process.env.NEXT_PUBLIC_APP_URL ||
     process.env.NEXT_PUBLIC_SITE_URL ||
     process.env.NEXT_PUBLIC_BASE_URL ||
-    'https://hotelops-ai.vercel.app';
+    'https://getstaxis.com';
   return safeBaseUrl(candidate);
 }
 

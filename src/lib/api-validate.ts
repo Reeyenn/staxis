@@ -146,13 +146,19 @@ export function sanitizeForSms(s: string): string {
  * Whitelist a base URL — used to keep `baseUrl` from request bodies from
  * pointing to phishing sites in the SMS link.
  */
+// getstaxis.com is the canonical brand domain. The legacy
+// hotelops-ai.vercel.app alias is kept here as an allowed value because
+// any old SMS link Twilio fires back through this route may still embed
+// it — the next.config.ts 301 will redirect the user to getstaxis.com
+// on click. Once we're confident nothing in the wild references the
+// alias anymore, we can drop it.
 const ALLOWED_BASE_URLS = new Set<string>([
+  'https://getstaxis.com',
   'https://hotelops-ai.vercel.app',
-  'https://staxis.app',  // future custom domain placeholder
   'http://localhost:3000',
   'http://localhost:3001',
 ]);
-export function safeBaseUrl(input: unknown, fallback = 'https://hotelops-ai.vercel.app'): string {
+export function safeBaseUrl(input: unknown, fallback = 'https://getstaxis.com'): string {
   if (typeof input !== 'string') return fallback;
   try {
     const u = new URL(input);

@@ -1418,7 +1418,7 @@ async function checkStripeBillingConfigured(): Promise<Omit<Check, 'name' | 'dur
     return {
       status: 'warn',
       detail: 'Stripe not configured — app running in trial-only mode. Self-signups complete without billing.',
-      fix: 'When ready to charge: set STRIPE_SECRET_KEY (sk_live_…), STRIPE_WEBHOOK_SECRET (whsec_…), STRIPE_PRICE_ID (price_…) in Vercel → Project Settings → Environment Variables. Add the webhook endpoint at https://hotelops-ai.vercel.app/api/stripe/webhook in Stripe Dashboard.',
+      fix: 'When ready to charge: set STRIPE_SECRET_KEY (sk_live_…), STRIPE_WEBHOOK_SECRET (whsec_…), STRIPE_PRICE_ID (price_…) in Vercel → Project Settings → Environment Variables. Add the webhook endpoint at https://getstaxis.com/api/stripe/webhook in Stripe Dashboard.',
     };
   }
 
@@ -1429,7 +1429,7 @@ async function checkStripeBillingConfigured(): Promise<Omit<Check, 'name' | 'dur
     if (!pr.trim()) missing.push('STRIPE_PRICE_ID');
     const fixSteps = [`Set ${missing.join(', ')} in Vercel → Project Settings → Environment Variables and redeploy.`];
     if (!wh.trim()) {
-      fixSteps.push('STRIPE_WEBHOOK_SECRET also requires creating the webhook endpoint at https://hotelops-ai.vercel.app/api/stripe/webhook in Stripe Dashboard → Developers → Webhooks (the secret is shown after creation).');
+      fixSteps.push('STRIPE_WEBHOOK_SECRET also requires creating the webhook endpoint at https://getstaxis.com/api/stripe/webhook in Stripe Dashboard → Developers → Webhooks (the secret is shown after creation).');
     }
     fixSteps.push('Or unset all three to fall back to trial-only mode.');
     return {

@@ -154,7 +154,7 @@ export async function ensureStaffAuthUser(
  * staff member who's never had a link generated. The returned URL has the
  * shape:
  *
- *   https://hotelops-ai.vercel.app/housekeeper/{staffId}?pid={pid}&token={hashed_token}
+ *   https://getstaxis.com/housekeeper/{staffId}?pid={pid}&token={hashed_token}
  *
  * Same path + query the page already supports for unauthenticated callers
  * (the `token` param is the only addition). When the page sees `token`,
@@ -170,7 +170,7 @@ export async function ensureStaffAuthUser(
  * @param staffId  UUID of the staff member
  * @param pid      UUID of the property the URL is scoped to
  * @param baseUrl  Optional override for the deployment origin. Defaults
- *                 to https://hotelops-ai.vercel.app — the production
+ *                 to https://getstaxis.com — the production
  *                 deploy. Pass `req.nextUrl.origin` from inside an API
  *                 route if you want preview deploys to mint preview-
  *                 scoped links.
@@ -178,7 +178,7 @@ export async function ensureStaffAuthUser(
 export async function buildHousekeeperLink(
   staffId: string,
   pid: string,
-  baseUrl: string = 'https://hotelops-ai.vercel.app',
+  baseUrl: string = 'https://getstaxis.com',
 ): Promise<string> {
   const { email } = await ensureStaffAuthUser(staffId);
 

@@ -118,6 +118,24 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  /**
+   * Permanent 301 redirect: any request that lands on the legacy Vercel
+   * alias (hotelops-ai.vercel.app) is bounced to the canonical brand
+   * domain (getstaxis.com) with the same path + query. Reeyen retired
+   * the Vercel alias as a user-facing URL; this keeps old bookmarks,
+   * shared signup links, and any cached search results working without
+   * needing the alias to actually be deleted in Vercel.
+   */
+  async redirects() {
+    return [
+      {
+        source: '/:path*',
+        has: [{ type: 'host', value: 'hotelops-ai.vercel.app' }],
+        destination: 'https://getstaxis.com/:path*',
+        permanent: true,
+      },
+    ];
+  },
 };
 
 export default nextConfig;

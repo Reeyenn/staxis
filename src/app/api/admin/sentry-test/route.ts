@@ -16,7 +16,7 @@
  *
  * Verification flow:
  *   curl -H "Authorization: Bearer $CRON_SECRET" \
- *        https://hotelops-ai.vercel.app/api/admin/sentry-test
+ *        https://getstaxis.com/api/admin/sentry-test
  *   # → { "ok": true, "fired": "synthetic-...", "requestId": "..." }
  *
  *   Open https://staxis.sentry.io/issues/?project=4511304385888256
