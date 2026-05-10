@@ -68,6 +68,21 @@ export interface AccountingSummary {
     discardsValue: number;
     byCategory: Record<InventoryCategory, number>; // receipts $ per category
   }>;
+  /** Top problem items this month — sorted by combined loss ($ discards + $ unaccounted shrinkage). */
+  topProblemItems: Array<{
+    itemId: string;
+    itemName: string;
+    discardValue: number;
+    discardQty: number;
+    unaccountedValue: number;       // sum of negative reconciliation variance values
+  }>;
+  /** Cost-per-occupied-room: receipts $ / occupied room-nights. Null when no occupancy data. */
+  costPerOccupiedRoom: {
+    thisMonth: number | null;
+    lastMonth: number | null;
+    occupiedNightsThisMonth: number;
+    occupiedNightsLastMonth: number;
+  };
 }
 
 interface InventoryItemRow {
@@ -310,11 +325,106 @@ export async function getInventoryAccountingSummary(
   };
   totals.remainingCents = totals.budgetCents != null ? totals.budgetCents - totals.spendCents : null;
 
+  // 10. Top problem items this month — combine discards + unaccounted shrinkage by item.
+  type DiscardItemRow = {
+    item_id: string;
+    cost_value: number | null;
+    quantity: number | null;
+    unit_cost: number | null;
+    inventory: { name: string } | Array<{ name: string }> | null;
+  };
+  type RecItemRow = {
+    item_id: string;
+    unaccounted_variance_value: number | null;
+    inventory: { name: string } | Array<{ name: string }> | null;
+  };
+  const { data: discardsByItemRaw } = await client
+    .from('inventory_discards')
+    .select('item_id, cost_value, quantity, unit_cost, inventory!inner(name)')
+    .eq('property_id', pid)
+    .gte('discarded_at', monthStart.toISOString())
+    .lt('discarded_at', monthEndExclusive.toISOString());
+  const { data: recsByItemRaw } = await client
+    .from('inventory_reconciliations')
+    .select('item_id, unaccounted_variance_value, inventory!inner(name)')
+    .eq('property_id', pid)
+    .gte('reconciled_at', monthStart.toISOString())
+    .lt('reconciled_at', monthEndExclusive.toISOString());
+
+  const problemMap = new Map<string, { itemId: string; itemName: string; discardValue: number; discardQty: number; unaccountedValue: number }>();
+  for (const d of (discardsByItemRaw ?? []) as DiscardItemRow[]) {
+    const name = Array.isArray(d.inventory) ? d.inventory[0]?.name : d.inventory?.name;
+    if (!d.item_id || !name) continue;
+    const v = d.cost_value != null
+      ? Number(d.cost_value)
+      : (d.unit_cost != null && d.quantity != null ? Number(d.unit_cost) * Number(d.quantity) : 0);
+    const prev = problemMap.get(d.item_id) ?? { itemId: d.item_id, itemName: name, discardValue: 0, discardQty: 0, unaccountedValue: 0 };
+    prev.discardValue += v;
+    prev.discardQty += Number(d.quantity ?? 0);
+    problemMap.set(d.item_id, prev);
+  }
+  for (const r of (recsByItemRaw ?? []) as RecItemRow[]) {
+    const name = Array.isArray(r.inventory) ? r.inventory[0]?.name : r.inventory?.name;
+    if (!r.item_id || !name) continue;
+    const v = Number(r.unaccounted_variance_value ?? 0);
+    if (v >= 0) continue; // only count unexplained loss, not surplus
+    const prev = problemMap.get(r.item_id) ?? { itemId: r.item_id, itemName: name, discardValue: 0, discardQty: 0, unaccountedValue: 0 };
+    prev.unaccountedValue += Math.abs(v);
+    problemMap.set(r.item_id, prev);
+  }
+  const topProblemItems = Array.from(problemMap.values())
+    .filter(p => (p.discardValue + p.unaccountedValue) > 0)
+    .sort((a, b) => (b.discardValue + b.unaccountedValue) - (a.discardValue + a.unaccountedValue))
+    .slice(0, 5);
+
+  // 11. Cost-per-occupied-room — receipts ÷ occupied room-nights for this and last month.
+  const lastMonthStart = new Date(Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() - 1, 1));
+  const startStr = lastMonthStart.toISOString().slice(0, 10);
+  const thisStartStr = monthStart.toISOString().slice(0, 10);
+  const endStr = monthEndExclusive.toISOString().slice(0, 10);
+
+  const { data: occRows } = await client
+    .from('daily_logs')
+    .select('date, occupied')
+    .eq('property_id', pid)
+    .gte('date', startStr)
+    .lt('date', endStr);
+  let nightsThis = 0;
+  let nightsLast = 0;
+  for (const r of (occRows ?? []) as Array<{ date: string; occupied: number | null }>) {
+    const occ = Number(r.occupied ?? 0);
+    if (r.date >= thisStartStr) nightsThis += occ;
+    else nightsLast += occ;
+  }
+
+  // Last-month receipts for the comparison ratio.
+  const { data: lastReceiptsRaw } = await client
+    .from('inventory_orders')
+    .select('total_cost, quantity, unit_cost')
+    .eq('property_id', pid)
+    .gte('received_at', lastMonthStart.toISOString())
+    .lt('received_at', monthStart.toISOString());
+  let lastReceipts = 0;
+  for (const o of (lastReceiptsRaw ?? []) as Array<{ total_cost: number | null; quantity: number | null; unit_cost: number | null }>) {
+    lastReceipts += o.total_cost != null
+      ? Number(o.total_cost)
+      : (o.unit_cost != null && o.quantity != null ? Number(o.unit_cost) * Number(o.quantity) : 0);
+  }
+
+  const costPerOccupiedRoom = {
+    thisMonth: nightsThis > 0 ? totals.receiptsValue / nightsThis : null,
+    lastMonth: nightsLast > 0 ? lastReceipts / nightsLast : null,
+    occupiedNightsThisMonth: nightsThis,
+    occupiedNightsLastMonth: nightsLast,
+  };
+
   return {
     monthStart,
     monthEndExclusive,
     totals,
     byCategory: cats.map(c => rows[c]),
     ytd: Array.from(ytdBuckets.values()).sort((a, b) => a.monthStart.localeCompare(b.monthStart)),
+    topProblemItems,
+    costPerOccupiedRoom,
   };
 }
