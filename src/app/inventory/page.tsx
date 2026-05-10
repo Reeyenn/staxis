@@ -1745,12 +1745,38 @@ function ReorderListModal({
       .map(item => {
         const prediction = predictions.get(item.id);
         if (!prediction) return null;
-        if (prediction.urgency === 'unknown') return null;
         const eff = effectiveStockOf(item);
         const suggestedQty = Math.max(0, Math.ceil(item.parLevel - eff));
         if (suggestedQty <= 0) return null;
+
+        // When the AI prediction has nothing to say (no usage rates
+        // configured for the item, or <7 days of occupancy data), fall back
+        // to a simple threshold check so items sitting at zero / critically
+        // low ALWAYS show up here. Without this fallback, a critically low
+        // item could display the red "Critical" badge on the main page and
+        // simultaneously be missing from the reorder list — which is what
+        // Reeyen flagged on 2026-05-10.
+        let effectivePrediction = prediction;
+        if (prediction.urgency === 'unknown') {
+          const status = stockStatus(eff, item.parLevel, item.reorderAt);
+          if (status === 'out') {
+            effectivePrediction = { ...prediction, urgency: 'now' };
+          } else if (status === 'low') {
+            effectivePrediction = { ...prediction, urgency: 'soon' };
+          } else {
+            // status === 'good' — really no reason to surface this item.
+            return null;
+          }
+        }
+
         const estimatedCost = item.unitCost ? suggestedQty * item.unitCost : 0;
-        return { item, prediction, effectiveStock: eff, suggestedQty, estimatedCost };
+        return {
+          item,
+          prediction: effectivePrediction,
+          effectiveStock: eff,
+          suggestedQty,
+          estimatedCost,
+        };
       })
       .filter((r): r is ReorderRow => r !== null);
   }, [items, predictions, effectiveStockOf]);
