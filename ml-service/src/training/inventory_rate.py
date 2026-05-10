@@ -171,6 +171,7 @@ def _train_inventory_inner(
         try:
             result = _train_single_item(
                 property_id=property_id,
+                property_meta=prop or {},
                 item=item,
                 cohort_key=cohort_key,
                 settings=settings,
@@ -219,6 +220,7 @@ def _build_cohort_key(prop: Dict[str, Any]) -> str:
 
 def _train_single_item(
     property_id: str,
+    property_meta: Dict[str, Any],
     item: Dict[str, Any],
     cohort_key: str,
     settings,
@@ -308,9 +310,11 @@ def _train_single_item(
         # cohort size. Bigger cohort → stronger prior → cold-start hotels lean
         # more on cohort and less on their own (still-noisy) data.
         model = BayesianRegression(prior_strength=prior_strength)
-        # Inject the cohort prior as the intercept's mu_0 (override default 60.0).
-        # We do this via a lightweight wrapper — set _initialize_prior to use our value.
-        _seed_bayesian_intercept(model, prior_rate)
+        # Inject the cohort prior as the intercept's mu_0. Scale by the
+        # property's total room count: a 200-room hotel uses ~3x as much
+        # shampoo as a 60-room hotel at the same per-room rate.
+        room_count = int(property_meta.get("total_rooms") or 60)
+        _seed_bayesian_intercept(model, prior_rate, room_count)
         model_version = f"inventory-bayesian-v1-{item_id}-{datetime.utcnow().isoformat()}"
         algorithm = "bayesian"
 
@@ -568,31 +572,27 @@ def _lookup_prior(client, cohort_key: str, item: Dict[str, Any], item_name: str)
     return (DEFAULT_GLOBAL_RATE_PER_ROOM_PER_DAY, 1.0)
 
 
-def _seed_bayesian_intercept(model: BayesianRegression, prior_rate: float) -> None:
+def _seed_bayesian_intercept(model: BayesianRegression, prior_rate: float, room_count: int) -> None:
     """Override BayesianRegression's default mu_0[0]=60.0 with our cohort prior.
 
-    BayesianRegression initializes mu_0 lazily inside fit(), but we want the
-    cohort-prior value to be the intercept's prior mean. Patch the
-    `_initialize_prior` method to use prior_rate × room_count_proxy.
+    BayesianRegression initializes mu_0 lazily inside fit(). The intercept's
+    prior mean should match the units of the target — which is total daily
+    consumption (units of the item / day). prior_rate is per-room-per-day,
+    so we multiply by the property's total_rooms to get the absolute
+    expected daily consumption.
 
-    The original method sets mu_0[0]=60.0 (housekeeping minutes). For
-    inventory rate per-room-per-day, the prior should be the rate itself
-    (the model is trained on daily totals, not per-room rates, so we scale
-    by ~60 rooms as a default — Bayesian will quickly learn the true
-    intercept from data anyway).
+    Why patch the method instead of editing mu_0 directly: BayesianRegression
+    only knows X.shape inside _initialize_prior, so we have to wait until
+    fit() is called. Wrapping the method runs our override AFTER the parent
+    has set up the right-shaped mu_0 array.
     """
     original = model._initialize_prior
 
     def patched(X: pd.DataFrame) -> None:
         original(X)
-        # Override intercept's prior mean with cohort prior * default room count.
-        # This is a soft prior — the posterior will move toward observed data quickly.
         n_features = X.shape[1]
         if model.mu_0 is None or n_features == 0:
             return
-        # Use prior_rate scaled by 60 (default room count) as the intercept prior.
-        # Items at hotels with very different room counts will see the data
-        # dominate after a few rows.
-        model.mu_0[0] = prior_rate * 60.0
+        model.mu_0[0] = prior_rate * float(max(room_count, 1))
 
     model._initialize_prior = patched  # type: ignore[assignment]
