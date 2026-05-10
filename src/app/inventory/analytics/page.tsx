@@ -277,14 +277,6 @@ export default function InventoryAnalyticsPage() {
             </h1>
           </div>
           <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
-            {properties.length > 1 && (
-              <Link href="/inventory/compare" style={{
-                fontFamily: "'Inter', sans-serif", fontSize: '12px', color: '#006565',
-                textDecoration: 'none', fontWeight: 600,
-              }}>
-                {lang === 'es' ? 'Comparar entre propiedades →' : 'Compare across properties →'}
-              </Link>
-            )}
             {/* Range selector */}
             <div style={{ display: 'flex', gap: '6px', background: '#f0eee9', padding: '4px', borderRadius: '9999px' }}>
               {(['30', '90', 'all'] as const).map(r => (

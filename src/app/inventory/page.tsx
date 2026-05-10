@@ -642,21 +642,6 @@ export default function InventoryPage() {
                 <ScanLine size={13} />
                 {lang === 'es' ? 'Escanear Factura' : 'Scan Invoice'}
               </button>
-              {properties.length > 1 && (
-                <Link
-                  href="/inventory/compare"
-                  style={{
-                    background: 'transparent', color: '#364262', border: '1px solid #c5c5d4',
-                    padding: '8px 16px', borderRadius: '9999px',
-                    fontFamily: "'Inter', sans-serif", fontSize: '12px', fontWeight: 600,
-                    cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
-                    textDecoration: 'none',
-                  }}
-                >
-                  <Package size={13} />
-                  {lang === 'es' ? 'Comparar' : 'Compare'}
-                </Link>
-              )}
             </div>
           </div>
         </header>
