@@ -663,13 +663,21 @@ function ModalShell({ title, onClose, children }: { title: string; onClose: () =
   return (
     <div style={{
       position: 'fixed', inset: 0, zIndex: 60,
-      background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(4px)',
+      background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(6px)',
+      WebkitBackdropFilter: 'blur(6px)',
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
     }} onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
       <div style={{
         width: '100%', maxWidth: '440px',
-        background: 'var(--surface-primary)', borderRadius: '12px',
-        border: '1px solid var(--border)', padding: '20px',
+        // Opaque white so the modal stands out against the dark backdrop.
+        // Was using var(--surface-primary) which on the light theme is the
+        // same near-white as the page itself, making the modal nearly
+        // invisible. Forcing a hard color + a real drop shadow.
+        background: '#ffffff',
+        borderRadius: '12px',
+        border: '1px solid rgba(0,0,0,0.08)',
+        boxShadow: '0 20px 60px -10px rgba(0,0,0,0.35), 0 8px 20px -6px rgba(0,0,0,0.18)',
+        padding: '20px',
         display: 'flex', flexDirection: 'column', gap: '12px',
         maxHeight: '90vh', overflowY: 'auto',
       }}>
