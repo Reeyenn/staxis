@@ -9,6 +9,7 @@ import { canManageTeam, type AppRole } from '@/lib/roles';
 export interface TeamCaller {
   accountId: string;
   authUserId: string;
+  authEmail?: string;
   role: AppRole;
   propertyAccess: string[];
   isAdmin: boolean;
@@ -35,6 +36,7 @@ export async function verifyTeamManager(req: NextRequest): Promise<TeamCaller | 
   return {
     accountId: account.id,
     authUserId: userData.user.id,
+    authEmail: userData.user.email ?? undefined,
     role,
     propertyAccess: (account.property_access ?? []) as string[],
     isAdmin: role === 'admin',

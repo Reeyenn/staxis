@@ -24,13 +24,21 @@ export async function GET(req: NextRequest) {
 
   const url = new URL(req.url);
   const limit = Math.min(parseInt(url.searchParams.get('limit') ?? '100', 10) || 100, 500);
+  // Optional ?propertyId=... — filters to events tagged with metadata.hotel_id
+  // matching the property OR target_id matching the property. Used by
+  // /admin/properties/[id] for the per-hotel audit panel.
+  const propertyId = url.searchParams.get('propertyId');
 
-  const { data, error } = await supabaseAdmin
+  let query = supabaseAdmin
     .from('admin_audit_log')
     .select('*')
     .order('ts', { ascending: false })
     .limit(limit);
+  if (propertyId) {
+    query = query.or(`metadata->>hotel_id.eq.${propertyId},target_id.eq.${propertyId}`);
+  }
 
+  const { data, error } = await query;
   if (error) return err(`audit-log query failed: ${error.message}`, { requestId, status: 500 });
 
   return ok({ entries: data ?? [] }, { requestId });

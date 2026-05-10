@@ -13,6 +13,7 @@ import { createHash } from 'node:crypto';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { writeAudit } from '@/lib/audit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -93,6 +94,16 @@ export async function POST(req: NextRequest) {
     .from('account_invites')
     .update({ accepted_at: new Date().toISOString() })
     .eq('id', invite.id);
+
+  await writeAudit({
+    action: 'invite.accept',
+    actorUserId: authData.user.id,
+    actorEmail: invite.email,
+    targetType: 'invite',
+    targetId: invite.id,
+    hotelId: invite.hotel_id,
+    metadata: { role: invite.role, username },
+  });
 
   return ok({ email: invite.email }, { requestId });
 }

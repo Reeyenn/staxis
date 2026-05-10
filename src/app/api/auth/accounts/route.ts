@@ -19,6 +19,7 @@ import { getOrMintRequestId } from '@/lib/log';
 // ───────────────────────────────────────────────────────────────────────────
 
 import { ALL_ROLES, isValidRole, type AppRole } from '@/lib/roles';
+import { writeAudit } from '@/lib/audit';
 
 type AccountRole = AppRole;
 
@@ -70,7 +71,7 @@ async function verifyAdmin(req: NextRequest) {
     return null;
   }
 
-  return account;
+  return { ...account, userId: userData.user.id, userEmail: userData.user.email ?? undefined };
 }
 
 // Translate an accounts row to the public-facing shape consumed by
@@ -246,6 +247,15 @@ export async function POST(req: NextRequest) {
     return err('Failed to create account record', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
+  await writeAudit({
+    action: 'account.create',
+    actorUserId: caller.userId,
+    actorEmail: caller.userEmail,
+    targetType: 'account',
+    targetId: inserted.id,
+    metadata: { username: normalizedUsername, email: normalizedEmail, role, hotelIds: effectivePropertyAccess },
+  });
+
   return ok({ accountId: inserted.id }, { requestId });
 }
 
@@ -335,6 +345,21 @@ export async function PUT(req: NextRequest) {
     return err('Nothing to update', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
+  await writeAudit({
+    action: 'account.update',
+    actorUserId: caller.userId,
+    actorEmail: caller.userEmail,
+    targetType: 'account',
+    targetId: accountId,
+    metadata: {
+      changedFields: [
+        ...Object.keys(updates),
+        ...(authUpdates.password ? ['password'] : []),
+        ...(authUpdates.email ? ['email'] : []),
+      ],
+    },
+  });
+
   return ok({ success: true }, { requestId });
 }
 
@@ -379,6 +404,14 @@ export async function DELETE(req: NextRequest) {
     } catch { /* best effort — primary goal was deleting the auth user */ }
     return err('Failed to delete account', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
+
+  await writeAudit({
+    action: 'account.delete',
+    actorUserId: caller.userId,
+    actorEmail: caller.userEmail,
+    targetType: 'account',
+    targetId: accountId,
+  });
 
   return ok({ success: true }, { requestId });
 }

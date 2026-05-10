@@ -19,7 +19,7 @@ import { fetchWithAuth } from '@/lib/api-fetch';
 import { AppLayout } from '@/components/layout/AppLayout';
 import {
   ArrowLeft, RefreshCw, AlertTriangle, CheckCircle2, Clock,
-  ShieldAlert, ExternalLink, Loader2, Activity, Users, Plus, Trash2,
+  ShieldAlert, ExternalLink, Loader2, Activity, Users, Plus, Trash2, FileText,
 } from 'lucide-react';
 import { roleLabel, type AppRole } from '@/lib/roles';
 
@@ -343,6 +343,9 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
             {/* GM activity & engagement — moved here from fleet view */}
             <GmActivitySection propertyId={id} />
 
+            {/* Audit log — Phase 5 */}
+            <AuditLogSection propertyId={id} />
+
           </>
         )}
         <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
@@ -578,4 +581,76 @@ function subscriptionColor(s: string | null): string {
   if (s === 'trial') return 'var(--amber)';
   if (s === 'past_due' || s === 'canceled') return 'var(--red)';
   return 'var(--text-secondary)';
+}
+
+// ─── Audit log (this hotel only) ────────────────────────────────────────
+interface AuditEntry {
+  id: string;
+  ts: string;
+  actor_email: string | null;
+  action: string;
+  target_type: string | null;
+  target_id: string | null;
+  metadata: Record<string, unknown>;
+}
+
+function AuditLogSection({ propertyId }: { propertyId: string }) {
+  const [entries, setEntries] = useState<AuditEntry[] | null>(null);
+  useEffect(() => {
+    fetchWithAuth(`/api/admin/audit-log?propertyId=${propertyId}&limit=100`)
+      .then(r => r.json())
+      .then((body: { ok?: boolean; data?: { entries?: AuditEntry[] } }) => {
+        if (body.ok) setEntries(body.data?.entries ?? []);
+        else setEntries([]);
+      })
+      .catch(() => setEntries([]));
+  }, [propertyId]);
+
+  return (
+    <div style={{ marginTop: '20px' }}>
+      <h2 style={{ fontSize: '15px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+        <FileText size={16} /> Audit log
+      </h2>
+      {entries === null ? (
+        <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Loading…</p>
+      ) : entries.length === 0 ? (
+        <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>No events recorded for this hotel yet.</p>
+      ) : (
+        <div style={{ border: '1px solid var(--border)', borderRadius: '10px', overflow: 'hidden' }}>
+          {entries.map((e, idx) => (
+            <div key={e.id} style={{
+              padding: '10px 14px',
+              borderBottom: idx < entries.length - 1 ? '1px solid var(--border)' : 'none',
+              display: 'grid', gridTemplateColumns: '1fr 1.5fr 1fr', gap: '12px', alignItems: 'center',
+              fontSize: '12px',
+            }}>
+              <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
+                {e.action}
+              </div>
+              <div style={{ color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {summarizeMetadata(e)}
+              </div>
+              <div style={{ textAlign: 'right', color: 'var(--text-muted)', fontSize: '11px' }}>
+                <div>{e.actor_email ?? '—'}</div>
+                <div style={{ marginTop: '2px' }}>{new Date(e.ts).toLocaleString()}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function summarizeMetadata(e: AuditEntry): string {
+  const m = e.metadata ?? {};
+  const parts: string[] = [];
+  for (const k of ['email', 'username', 'role', 'code']) {
+    const v = (m as Record<string, unknown>)[k];
+    if (typeof v === 'string') parts.push(`${k}: ${v}`);
+  }
+  if (Array.isArray((m as Record<string, unknown>).changedFields)) {
+    parts.push(`fields: ${((m as Record<string, unknown>).changedFields as string[]).join(', ')}`);
+  }
+  return parts.join(' · ');
 }

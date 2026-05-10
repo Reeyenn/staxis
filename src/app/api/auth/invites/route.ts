@@ -13,6 +13,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { verifyTeamManager, canManageHotel } from '@/lib/team-auth';
 import { isAssignableRole } from '@/lib/roles';
+import { writeAudit } from '@/lib/audit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -78,18 +79,28 @@ export async function POST(req: NextRequest) {
   const tokenHash = hashToken(rawToken);
   const expiresAt = new Date(Date.now() + INVITE_TTL_MS).toISOString();
 
-  const { error: insErr } = await supabaseAdmin.from('account_invites').insert({
+  const { data: inserted, error: insErr } = await supabaseAdmin.from('account_invites').insert({
     hotel_id: hotelId,
     email: normalizedEmail,
     role,
     token_hash: tokenHash,
     expires_at: expiresAt,
     invited_by: caller.accountId,
-  });
-  if (insErr) {
+  }).select('id').single();
+  if (insErr || !inserted) {
     console.error('[invites:POST] insert failed', insErr);
     return err('Failed to create invite', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
+
+  await writeAudit({
+    action: 'invite.create',
+    actorUserId: caller.authUserId,
+    actorEmail: caller.authEmail,
+    targetType: 'invite',
+    targetId: inserted.id,
+    hotelId,
+    metadata: { email: normalizedEmail, role },
+  });
 
   // Send the email via Supabase's built-in mailer using the invite link as
   // the redirect target. We use generateLink type='magiclink' as a transport
@@ -135,5 +146,13 @@ export async function DELETE(req: NextRequest) {
     console.error('[invites:DELETE] failed', delErr);
     return err('Failed to revoke invite', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
+  await writeAudit({
+    action: 'invite.revoke',
+    actorUserId: caller.authUserId,
+    actorEmail: caller.authEmail,
+    targetType: 'invite',
+    targetId: id,
+    hotelId: row.hotel_id,
+  });
   return ok({ success: true }, { requestId });
 }

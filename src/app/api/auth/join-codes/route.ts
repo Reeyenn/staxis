@@ -9,6 +9,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { verifyTeamManager, canManageHotel } from '@/lib/team-auth';
 import { isAssignableRole } from '@/lib/roles';
+import { writeAudit } from '@/lib/audit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -88,7 +89,18 @@ export async function POST(req: NextRequest) {
       max_uses: uses,
       created_by: caller.accountId,
     }).select('id, code, role, expires_at, max_uses, used_count, created_at').single();
-    if (!insErr && ins) return ok({ joinCode: ins }, { requestId });
+    if (!insErr && ins) {
+      await writeAudit({
+        action: 'join_code.create',
+        actorUserId: caller.authUserId,
+        actorEmail: caller.authEmail,
+        targetType: 'join_code',
+        targetId: ins.id,
+        hotelId,
+        metadata: { code: ins.code, role, max_uses: ins.max_uses },
+      });
+      return ok({ joinCode: ins }, { requestId });
+    }
     lastErr = insErr;
     if (insErr && !String(insErr.message ?? '').toLowerCase().includes('duplicate')) break;
   }
@@ -119,5 +131,13 @@ export async function DELETE(req: NextRequest) {
     console.error('[join-codes:DELETE] failed', updErr);
     return err('Failed to revoke', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
+  await writeAudit({
+    action: 'join_code.revoke',
+    actorUserId: caller.authUserId,
+    actorEmail: caller.authEmail,
+    targetType: 'join_code',
+    targetId: id,
+    hotelId: row.hotel_id,
+  });
   return ok({ success: true }, { requestId });
 }

@@ -10,6 +10,7 @@ import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { writeAudit } from '@/lib/audit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -85,6 +86,16 @@ export async function POST(req: NextRequest) {
     .from('hotel_join_codes')
     .update({ used_count: row.used_count + 1 })
     .eq('id', row.id);
+
+  await writeAudit({
+    action: 'join_code.use',
+    actorUserId: authData.user.id,
+    actorEmail: normalizedEmail,
+    targetType: 'join_code',
+    targetId: row.id,
+    hotelId: row.hotel_id,
+    metadata: { code: normalizedCode, role: row.role, username },
+  });
 
   return ok({ email: normalizedEmail }, { requestId });
 }
