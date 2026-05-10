@@ -36,7 +36,7 @@ import {
 } from 'recharts';
 import {
   ArrowLeft, Calendar, DollarSign, TrendingDown, AlertTriangle, Wallet, Calculator,
-  FileText, Bed, Printer, Copy,
+  FileText, Bed, Printer,
 } from 'lucide-react';
 import { formatCurrency as formatCurrencyBase } from '@/lib/utils';
 
@@ -184,45 +184,6 @@ export default function InventoryReportsPage() {
     if (typeof window !== 'undefined') window.print();
   }, []);
 
-  // ─── Copy: plain-text summary onto the clipboard for fast paste-into-
-  //     email / SMS / Slack workflows. Useful when you don't need the full
-  //     printable layout — just the numbers.
-  const handleCopy = useCallback(() => {
-    if (!summary) return;
-    const lines: string[] = [];
-    lines.push(`${propertyName} — ${lang === 'es' ? 'Reporte de Inventario' : 'Inventory Report'}`);
-    lines.push(monthLabel);
-    lines.push('');
-    lines.push(`${lang === 'es' ? 'Resumen' : 'Summary'}:`);
-    lines.push(`  ${lang === 'es' ? 'Apertura' : 'Opening'}: ${formatCurrency(summary.totals.openingValue)}`);
-    lines.push(`  ${lang === 'es' ? 'Compras' : 'Purchases'}: ${formatCurrency(summary.totals.receiptsValue)}`);
-    lines.push(`  ${lang === 'es' ? 'Pérdidas' : 'Losses'}: ${formatCurrency(summary.totals.discardsValue)}`);
-    lines.push(`  ${lang === 'es' ? 'Cierre' : 'Closing'}: ${formatCurrency(summary.totals.closingValue)}`);
-    lines.push('');
-    lines.push(`${lang === 'es' ? 'Por categoría' : 'By category'}:`);
-    for (const row of summary.byCategory) {
-      const label = CATEGORY_LABEL(row.category, lang);
-      const budget = row.budgetCents != null ? `, ${lang === 'es' ? 'presup.' : 'budget'} $${(row.budgetCents / 100).toFixed(0)}` : '';
-      lines.push(`  ${label}: ${formatCurrency(row.receiptsValue)} ${lang === 'es' ? 'gastado' : 'spent'}${budget}`);
-    }
-    if (summary.topProblemItems.length > 0) {
-      lines.push('');
-      lines.push(`${lang === 'es' ? 'Top pérdidas' : 'Top problem items'}:`);
-      for (const p of summary.topProblemItems) {
-        lines.push(`  ${p.itemName}: ${formatCurrency(p.discardValue + p.unaccountedValue)}`);
-      }
-    }
-    if (summary.costPerOccupiedRoom.thisMonth != null) {
-      lines.push('');
-      lines.push(`${lang === 'es' ? 'Costo por habitación ocupada' : 'Cost per occupied room'}: ${formatCurrency(summary.costPerOccupiedRoom.thisMonth)}`);
-    }
-    const text = lines.join('\n');
-    navigator.clipboard.writeText(text).then(
-      () => alert(lang === 'es' ? 'Reporte copiado al portapapeles ✓' : 'Report copied to clipboard ✓'),
-      () => alert(lang === 'es' ? 'No se pudo copiar' : 'Copy failed'),
-    );
-  }, [summary, monthLabel, lang, propertyName]);
-
   if (!user || !activePropertyId) {
     return (
       <AppLayout>
@@ -316,22 +277,6 @@ export default function InventoryReportsPage() {
             >
               <Printer size={13} />
               {lang === 'es' ? 'Imprimir / PDF' : 'Print / PDF'}
-            </button>
-            <button
-              onClick={handleCopy}
-              disabled={!summary}
-              title={lang === 'es' ? 'Copia un resumen de texto al portapapeles' : 'Copy a text summary to your clipboard'}
-              style={{
-                padding: '8px 14px', borderRadius: '9999px',
-                border: '1px solid #c5c5d4', background: '#fff', color: '#454652',
-                fontFamily: "'Inter', sans-serif", fontSize: '13px', fontWeight: 600,
-                cursor: summary ? 'pointer' : 'not-allowed',
-                display: 'flex', alignItems: 'center', gap: '6px',
-                opacity: summary ? 1 : 0.5,
-              }}
-            >
-              <Copy size={13} />
-              {lang === 'es' ? 'Copiar' : 'Copy'}
             </button>
           </div>
         </div>
