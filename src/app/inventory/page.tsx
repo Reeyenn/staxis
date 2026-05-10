@@ -450,6 +450,17 @@ export default function InventoryPage() {
     if (user && activePropertyId && countLogRows.length > 0) {
       addInventoryCountBatch(user.uid, activePropertyId, countLogRows)
         .catch(err => console.error('[inventory] count log failed:', err));
+
+      // Post-count ML processing: pair the counts with predictions for
+      // shadow-MAE tracking, run anomaly detection. Server-side because
+      // prediction_log writes need service-role + we need to enforce the
+      // ai_mode kill-switch. Best-effort; never blocks the toast.
+      const itemIds = countLogRows.map((r) => r.itemId);
+      fetchWithAuth('/api/inventory/post-count-process', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ propertyId: activePropertyId, itemIds }),
+      }).catch(err => console.error('[inventory] post-count process failed:', err));
     }
 
     // SMS alerts for critical inventory are disabled (2026-05-10). The GM
@@ -930,6 +941,16 @@ export default function InventoryPage() {
           predictions={predictionMap}
           effectiveStockOf={effectiveStock}
           dailyAverages={dailyAverages}
+          aiConfidentItemIds={
+            // Items where the per-item ML model has graduated. The reorder
+            // list shows a small green confidence dot next to these names —
+            // a Wi-Fi-bar-style hint, no tooltip needed.
+            new Set(
+              Array.from(autoFillMap.values())
+                .filter(a => a.graduated)
+                .map(a => a.itemId),
+            )
+          }
           uid={user.uid}
           pid={activePropertyId}
           lang={lang}
@@ -1822,12 +1843,16 @@ interface ReorderRow {
 
 function ReorderListModal({
   items, predictions, effectiveStockOf, dailyAverages,
+  aiConfidentItemIds,
   uid, pid, lang, onClose, showToast, onOpenBudgets,
 }: {
   items: InventoryItem[];
   predictions: Map<string, PredictionResult>;
   effectiveStockOf: (item: InventoryItem) => number;
   dailyAverages: DailyAverages | null;
+  /** Items whose per-item ML model has graduated. Triggers the small
+      green confidence dot next to the item name. */
+  aiConfidentItemIds: Set<string>;
   uid: string;
   pid: string;
   lang: 'en' | 'es';
@@ -2069,6 +2094,7 @@ function ReorderListModal({
                 uid={uid}
                 pid={pid}
                 showToast={showToast}
+                aiConfidentItemIds={aiConfidentItemIds}
               />
               <ReorderSection
                 title={lang === 'es' ? 'Pedir Esta Semana' : 'Order This Week'}
@@ -2080,6 +2106,7 @@ function ReorderListModal({
                 uid={uid}
                 pid={pid}
                 showToast={showToast}
+                aiConfidentItemIds={aiConfidentItemIds}
               />
               {/* Upcoming — collapsed by default */}
               {okRows.length > 0 && (
@@ -2111,6 +2138,7 @@ function ReorderListModal({
                       pid={pid}
                       showToast={showToast}
                       hideHeader
+                      aiConfidentItemIds={aiConfidentItemIds}
                     />
                   )}
                 </div>
@@ -2162,6 +2190,7 @@ function ReorderListModal({
 
 function ReorderSection({
   title, tone, rows, lang, openInline, setOpenInline, uid, pid, showToast, hideHeader,
+  aiConfidentItemIds,
 }: {
   title: string;
   tone: 'urgent' | 'soon' | 'ok';
@@ -2173,6 +2202,7 @@ function ReorderSection({
   pid: string;
   showToast: (msg: string) => void;
   hideHeader?: boolean;
+  aiConfidentItemIds: Set<string>;
 }) {
   if (rows.length === 0) return null;
   const headerColor = tone === 'urgent' ? '#ba1a1a' : tone === 'soon' ? '#c98a14' : '#757684';
@@ -2204,6 +2234,7 @@ function ReorderSection({
           uid={uid}
           pid={pid}
           showToast={showToast}
+          aiConfident={aiConfidentItemIds.has(r.item.id)}
         />
       ))}
     </div>
@@ -2211,7 +2242,7 @@ function ReorderSection({
 }
 
 function ReorderRowView({
-  row, tone, lang, isOpen, onToggle, uid, pid, showToast,
+  row, tone, lang, isOpen, onToggle, uid, pid, showToast, aiConfident,
 }: {
   row: ReorderRow;
   tone: 'urgent' | 'soon' | 'ok';
@@ -2221,6 +2252,7 @@ function ReorderRowView({
   uid: string;
   pid: string;
   showToast: (msg: string) => void;
+  aiConfident: boolean;
 }) {
   const { item, prediction, effectiveStock: eff, suggestedQty, estimatedCost } = row;
   const accent = tone === 'urgent' ? '#ba1a1a' : tone === 'soon' ? '#c98a14' : '#757684';
@@ -2286,6 +2318,22 @@ function ReorderRowView({
               <span style={{ fontFamily: "'Inter', sans-serif", fontWeight: 600, fontSize: '14px', color: '#1b1c19' }}>
                 {item.name}
               </span>
+              {/* AI confidence dot — green pip when the per-item ML model has
+                  graduated. No tooltip, no label; just a Wi-Fi-bar-style hint
+                  that this row's number is AI-confident. */}
+              {aiConfident && (
+                <span
+                  aria-label={lang === 'es' ? 'IA con alta confianza' : 'AI high confidence'}
+                  title={lang === 'es' ? 'IA con alta confianza' : 'AI high confidence'}
+                  style={{
+                    width: '6px',
+                    height: '6px',
+                    borderRadius: '50%',
+                    background: '#00a050',
+                    flexShrink: 0,
+                  }}
+                />
+              )}
             </div>
             <div style={{ fontFamily: "'Inter', sans-serif", fontSize: '11px', color: '#757684', marginTop: '2px' }}>
               {Math.round(eff)} / {item.parLevel} {item.unit} ·{' '}
