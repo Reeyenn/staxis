@@ -110,16 +110,23 @@ export async function POST(req: NextRequest) {
     username = (username + Math.floor(Math.random() * 10000)).slice(0, 40);
   }
 
-  // email_confirm:false so the staff member must verify their email via the
-  // OTP flow on /signin/verify before they can sign in. /signup triggers
-  // supabase.auth.signInWithOtp(email) right after this returns, which
-  // sends a 6-digit code to their inbox; verifyOtp marks the email
-  // confirmed AND issues a fresh session, and we auto-trust the device
-  // because they just proved ownership of the email.
+  // email_confirm:true so signInWithOtp (called by /signup right after)
+  // triggers Supabase's MAGIC-LINK template — the one we customized to
+  // show a 6-digit {{ .Token }} prominently. With email_confirm:false
+  // Supabase instead sends its "Confirm Your Signup" template, which is
+  // a link-only email with no code — useless for the verify-then-trust
+  // flow we route the user to.
+  //
+  // Account-level "verification" is still gated behind the OTP step:
+  // /signup redirects to /signin/verify, the user can't reach the
+  // dashboard without entering the code, and the device-trust check on
+  // the regular /signin path also requires an OTP for untrusted browsers.
+  // So email-ownership is still proven before the user gets in; the only
+  // thing email_confirm:true changes is which Supabase template is sent.
   const { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
     email: normalizedEmail,
     password,
-    email_confirm: false,
+    email_confirm: true,
     user_metadata: { username, displayName },
   });
   if (authErr || !authData.user) {
