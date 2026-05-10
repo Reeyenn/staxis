@@ -406,7 +406,7 @@ export default function InventoryPage() {
 
     // Always show reconciliation; chain to order prompt + low stock notice from there.
     setReconciliation({ rows, pendingOrders: orderRows });
-  }, [items, estimates, user, activePropertyId, lang, showToast]);
+  }, [items, estimates, user, activePropertyId]);
 
   const handleReconciliationClose = useCallback(() => {
     setReconciliation(prev => {
