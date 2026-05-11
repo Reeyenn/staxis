@@ -18,8 +18,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { AppLayout } from '@/components/layout/AppLayout';
 import {
-  ArrowLeft, RefreshCw, AlertTriangle, CheckCircle2, Clock,
-  ShieldAlert, ExternalLink, Loader2, Activity, Users, Plus, Trash2, FileText,
+  ArrowLeft, RefreshCw,
+  ShieldAlert, Loader2, Activity, Users, Plus, Trash2, FileText,
   Pencil, X,
 } from 'lucide-react';
 import { ASSIGNABLE_ROLES, roleLabel, type AppRole, type AssignableRole } from '@/lib/roles';
@@ -158,7 +158,7 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
 
   return (
     <AppLayout>
-      <div style={{ padding: '24px', maxWidth: '900px', margin: '0 auto' }}>
+      <div style={{ padding: '24px', maxWidth: '1400px', margin: '0 auto' }}>
 
         <Link href="/admin/properties" style={{
           display: 'inline-flex', alignItems: 'center', gap: '6px',
@@ -182,20 +182,18 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
         {data && (
           <>
             <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '24px' }}>
-              <div>
-                <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '22px', letterSpacing: '-0.01em' }}>
-                  {data.property.name ?? '(unnamed)'}
-                </h1>
-                <p style={{ fontSize: '12px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginTop: '4px' }}>
-                  {data.property.id}
-                </p>
-              </div>
+              <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '22px', letterSpacing: '-0.01em' }}>
+                {data.property.name ?? '(unnamed)'}
+              </h1>
               <button onClick={load} disabled={loading} className="btn btn-secondary" style={{ fontSize: '13px' }}>
                 <RefreshCw size={14} style={{ animation: loading ? 'spin 1s linear infinite' : undefined }} /> Refresh
               </button>
             </div>
 
-            {/* Summary cards */}
+            {/* Summary cards — kept Subscription, PMS, Owner per Reeyen.
+                Removed: Active recipe, Staff sample, Source. Property UUID
+                under the name and the Recent onboarding jobs section are
+                also gone. */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px', marginBottom: '20px' }}>
               <DetailCard title="Subscription">
                 <p style={{ fontSize: '15px', fontWeight: 600, color: subscriptionColor(data.property.subscriptionStatus) }}>
@@ -227,31 +225,6 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
                 )}
               </DetailCard>
 
-              <DetailCard title="Active recipe">
-                {data.activeRecipe ? (
-                  <>
-                    <p style={{ fontSize: '14px', fontWeight: 600 }}>v{data.activeRecipe.version}</p>
-                    <p style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                      {data.activeRecipe.id.slice(0, 8)}…
-                    </p>
-                    <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
-                      learned {new Date(data.activeRecipe.created_at).toLocaleDateString()}
-                    </p>
-                  </>
-                ) : (
-                  <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>No active recipe</p>
-                )}
-              </DetailCard>
-
-              <DetailCard title="Staff">
-                <p style={{ fontSize: '15px', fontWeight: 600 }}>{data.staff.count}</p>
-                {data.staff.sample.slice(0, 3).map((s) => (
-                  <p key={s.id} style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                    {s.name} {s.is_active ? '' : '(inactive)'}
-                  </p>
-                ))}
-              </DetailCard>
-
               <DetailCard title="Owner">
                 {data.owner ? (
                   <>
@@ -262,22 +235,15 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
                   <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>No owner row</p>
                 )}
               </DetailCard>
-
-              <DetailCard title="Source">
-                <p style={{ fontSize: '13px' }}>{data.property.onboardingSource}</p>
-                <p style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                  Created {new Date(data.property.createdAt).toLocaleDateString()}
-                </p>
-              </DetailCard>
             </div>
 
-            {/* Action: regenerate recipe */}
+            {/* Action: regenerate recipe — kept near the header as a small
+                utility. The big "Active recipe" card itself is gone. */}
             {data.credentials && (
-              <div style={{ padding: '16px', border: '1px solid var(--border)', borderRadius: '12px', marginBottom: '20px' }}>
-                <p style={{ fontSize: '13px', fontWeight: 600, marginBottom: '6px' }}>Recipe re-mapping</p>
-                <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '12px' }}>
-                  Use this when a PMS UI change has broken the active recipe. Demotes current active and queues a fresh CUA mapping run (~$1-3).
-                </p>
+              <div style={{ padding: '12px 14px', border: '1px solid var(--border)', borderRadius: '12px', marginBottom: '24px', display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '12px', color: 'var(--text-muted)', flex: 1, minWidth: '180px' }}>
+                  Use when a PMS UI change has broken the active recipe (~$1-3).
+                </span>
                 <button
                   onClick={handleRegenerate}
                   disabled={regenerating}
@@ -289,63 +255,23 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
                     : (<>Regenerate recipe</>)}
                 </button>
                 {regenerateMsg && (
-                  <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '10px' }}>{regenerateMsg}</p>
+                  <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{regenerateMsg}</span>
                 )}
               </div>
             )}
 
-            {/* Recent jobs */}
-            <div>
-              <p style={{ fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '12px' }}>
-                Recent onboarding jobs (last 10)
-              </p>
-              {data.jobs.length === 0 ? (
-                <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>No jobs yet.</p>
-              ) : (
-                <div style={{ border: '1px solid var(--border)', borderRadius: '12px', overflow: 'hidden' }}>
-                  {data.jobs.map((j, idx) => (
-                    <div key={j.id} style={{
-                      padding: '12px 14px',
-                      borderBottom: idx < data.jobs.length - 1 ? '1px solid var(--border)' : 'none',
-                      display: 'grid', gridTemplateColumns: '1fr 1.5fr 1fr', gap: '12px', alignItems: 'flex-start',
-                    }}>
-                      <div>
-                        <JobIconStatus status={j.status} />
-                        <p style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginTop: '4px' }}>
-                          {j.id.slice(0, 8)}…
-                        </p>
-                      </div>
-                      <div>
-                        {j.step && <p style={{ fontSize: '12px' }}>{j.step}</p>}
-                        {j.error && <p style={{ fontSize: '11px', color: 'var(--red)', marginTop: '4px' }}>{j.error}</p>}
-                        {j.worker_id && (
-                          <p style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginTop: '4px' }}>
-                            {j.worker_id}
-                          </p>
-                        )}
-                      </div>
-                      <div style={{ fontSize: '11px', color: 'var(--text-muted)', textAlign: 'right' }}>
-                        <p>{new Date(j.created_at).toLocaleString()}</p>
-                        {j.completed_at && j.started_at && (
-                          <p style={{ marginTop: '2px' }}>
-                            took {Math.round((Date.parse(j.completed_at) - Date.parse(j.started_at)) / 1000)}s
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
+            {/* 3-column horizontal layout below the cards.
+                Left: People with access · Middle: GM activity · Right: Audit log */}
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+              gap: '20px',
+              alignItems: 'start',
+            }}>
+              <PeopleWithAccessSection propertyId={id} />
+              <GmActivitySection propertyId={id} />
+              <AuditLogSection propertyId={id} />
             </div>
-
-            {/* People with access — Phase 4 */}
-            <PeopleWithAccessSection propertyId={id} />
-
-            {/* GM activity & engagement — moved here from fleet view */}
-            <GmActivitySection propertyId={id} />
-
-            {/* Audit log — Phase 5 */}
-            <AuditLogSection propertyId={id} />
 
           </>
         )}
@@ -872,20 +798,6 @@ function DetailCard({ title, children }: { title: string; children: React.ReactN
         {title}
       </p>
       {children}
-    </div>
-  );
-}
-
-function JobIconStatus({ status }: { status: string }) {
-  const Icon = status === 'complete' ? CheckCircle2
-             : status === 'failed' ? AlertTriangle
-             : Clock;
-  const color = status === 'complete' ? 'var(--green)'
-              : status === 'failed' ? 'var(--red)'
-              : 'var(--amber)';
-  return (
-    <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '12px', color, fontWeight: 600 }}>
-      <Icon size={14} /> {status.toUpperCase()}
     </div>
   );
 }
