@@ -88,6 +88,12 @@ class PredictDemandRequest(BaseModel):
 
     property_id: str
     date: Optional[date] = None
+    # IANA timezone for the property (e.g. "America/New_York"). When omitted
+    # the inference function falls back to America/Chicago — fine for the
+    # current single-property deploy, wrong for non-Texas hotels because
+    # "tomorrow" rolls at the wrong UTC hour. Vercel callers should send
+    # `properties.timezone`.
+    property_timezone: Optional[str] = None
 
     @field_validator("property_id")
     @classmethod
@@ -113,6 +119,7 @@ class PredictSupplyRequest(BaseModel):
 
     property_id: str
     date: Optional[date] = None
+    property_timezone: Optional[str] = None  # see PredictDemandRequest
 
     @field_validator("property_id")
     @classmethod
@@ -135,6 +142,7 @@ class OptimizeRequest(BaseModel):
 
     property_id: str
     date: Optional[date] = None
+    property_timezone: Optional[str] = None  # see PredictDemandRequest
 
     @field_validator("property_id")
     @classmethod
@@ -195,6 +203,7 @@ class PredictInventoryRateRequest(BaseModel):
 
     property_id: str
     date: Optional[date] = None  # The operational date predictions are FOR. Default = tomorrow.
+    property_timezone: Optional[str] = None  # see PredictDemandRequest
 
     @field_validator("property_id")
     @classmethod
@@ -296,6 +305,7 @@ async def predict_demand_endpoint(
     result = await predict_demand(
         property_id=request.property_id,
         prediction_date=request.date,
+        property_timezone=request.property_timezone,
     )
     return PredictDemandResponse(**result)
 
@@ -317,6 +327,7 @@ async def predict_supply_endpoint(
     result = await predict_supply(
         property_id=request.property_id,
         prediction_date=request.date,
+        property_timezone=request.property_timezone,
     )
     return PredictSupplyResponse(**result)
 
@@ -340,6 +351,7 @@ async def optimize_endpoint(
     result = await optimize_headcount(
         property_id=request.property_id,
         prediction_date=request.date,
+        property_timezone=request.property_timezone,
     )
     return OptimizeResponse(**result)
 
@@ -417,6 +429,7 @@ async def predict_inventory_rate_endpoint(
     result = await predict_inventory_rates(
         property_id=request.property_id,
         target_date=request.date,
+        property_timezone=request.property_timezone,
     )
     return PredictInventoryRateResponse(**result)
 

@@ -11,11 +11,19 @@ from src.config import get_settings
 from src.supabase_client import get_supabase_client
 
 
-def _tomorrow_in_property_tz() -> date:
-    """Tomorrow as seen by a Houston property (matches demand.py)."""
+DEFAULT_PROPERTY_TIMEZONE = "America/Chicago"
+
+
+def _tomorrow_in_property_tz(tz_name: str = DEFAULT_PROPERTY_TIMEZONE) -> date:
+    """Tomorrow as seen by a property in `tz_name` (matches demand.py).
+
+    Pass `properties.timezone` so the optimizer's "tomorrow" matches when
+    the demand+supply models predicted, otherwise multi-property results
+    can be off by a day on the East/West coast.
+    """
     try:
         from zoneinfo import ZoneInfo
-        tz = ZoneInfo("America/Chicago")
+        tz = ZoneInfo(tz_name)
     except Exception:  # pragma: no cover
         tz = timezone(timedelta(hours=-6))
     now_local = datetime.now(timezone.utc).astimezone(tz)
@@ -33,6 +41,7 @@ def _validate_property_id(property_id: str) -> Optional[str]:
 async def optimize_headcount(
     property_id: str,
     prediction_date: Optional[date] = None,
+    property_timezone: Optional[str] = None,
 ) -> dict:
     """Run Monte Carlo optimizer to recommend headcount.
 
@@ -55,7 +64,9 @@ async def optimize_headcount(
     client = get_supabase_client()
 
     if prediction_date is None:
-        prediction_date = _tomorrow_in_property_tz()
+        prediction_date = _tomorrow_in_property_tz(
+            property_timezone or DEFAULT_PROPERTY_TIMEZONE
+        )
 
     # Fetch active L1 + L2 predictions
     demand_preds = client.fetch_many(

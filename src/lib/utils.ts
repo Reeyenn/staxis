@@ -11,18 +11,27 @@ export function formatDate(date: Date | string, fmt = 'yyyy-MM-dd'): string {
   return format(d, fmt);
 }
 
-// Hard-code Central time so "today" on the HK page matches what the Texas
-// scraper writes, regardless of whose phone or laptop is opening the page.
-// en-CA gives us the ISO YYYY-MM-DD format directly.
-const APP_TIMEZONE = 'America/Chicago';
+// Default timezone for date helpers. Stays 'America/Chicago' because that's
+// where Comfort Suites (the only property today) is. Per-property TZ comes
+// from `properties.timezone` (migration 0016) and is wired through callers
+// that have a property id in scope — housekeeper page, ML inference, etc.
+// Code paths that don't have a property in scope (admin UI, generic
+// utilities) continue to use this default.
+export const APP_TIMEZONE = 'America/Chicago';
 
-export function todayStr(): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: APP_TIMEZONE }).format(new Date());
+/**
+ * Return today's date as YYYY-MM-DD in the given IANA timezone (or
+ * APP_TIMEZONE if omitted). Callers with a property in scope should pass
+ * `properties.timezone` so a Florida hotel doesn't roll the day at the
+ * wrong hour relative to a Texas hotel.
+ */
+export function todayStr(tz: string = APP_TIMEZONE): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date());
 }
 
-export function yesterdayStr(): string {
+export function yesterdayStr(tz: string = APP_TIMEZONE): string {
   const d = new Date(Date.now() - 24 * 60 * 60 * 1000);
-  return new Intl.DateTimeFormat('en-CA', { timeZone: APP_TIMEZONE }).format(d);
+  return new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(d);
 }
 
 /**

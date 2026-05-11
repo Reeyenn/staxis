@@ -11,14 +11,20 @@
 // load. RLS on the ML tables enforces owner-only reads.
 import { supabase } from '@/lib/supabase';
 import { logErr } from './db/_common';
+import { APP_TIMEZONE } from './utils';
 
 /**
- * Compute tomorrow's date in CT timezone (matching the scraper's view).
+ * Compute tomorrow's date as YYYY-MM-DD in the given IANA timezone.
+ *
+ * Defaults to APP_TIMEZONE (Comfort Suites' Central Time) for backward
+ * compatibility. When a property has a different timezone (e.g. a Florida
+ * hotel on America/New_York), callers should pass `properties.timezone`
+ * so the predicted "tomorrow" matches when the scraper rolls its date.
  */
-function getTomorrowDateStr(): string {
+function getTomorrowDateStr(tz: string = APP_TIMEZONE): string {
   const now = new Date();
-  const ct = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
-  const tomorrow = new Date(ct);
+  const local = new Date(now.toLocaleString('en-US', { timeZone: tz }));
+  const tomorrow = new Date(local);
   tomorrow.setDate(tomorrow.getDate() + 1);
   return tomorrow.toISOString().split('T')[0];
 }
@@ -29,12 +35,13 @@ function getTomorrowDateStr(): string {
  */
 export async function getActiveOptimizerForTomorrow(
   propertyId: string,
+  tz?: string,
 ): Promise<{
   recommendedHeadcount: number;
   completionProbabilityCurve: Array<{ headcount: number; p: number }>;
 } | null> {
   try {
-    const tomorrow = getTomorrowDateStr();
+    const tomorrow = getTomorrowDateStr(tz);
     const { data, error } = await supabase
       .from('optimizer_results')
       .select('recommended_headcount, completion_probability_curve')
@@ -66,12 +73,13 @@ export async function getActiveOptimizerForTomorrow(
  */
 export async function getActiveDemandForTomorrow(
   propertyId: string,
+  tz?: string,
 ): Promise<{
   predictedHeadcountP80: number;
   predictedHeadcountP95: number;
 } | null> {
   try {
-    const tomorrow = getTomorrowDateStr();
+    const tomorrow = getTomorrowDateStr(tz);
     const { data, error } = await supabase
       .from('demand_predictions')
       .select('predicted_headcount_p80, predicted_headcount_p95')
@@ -131,9 +139,10 @@ export async function getActiveModelRunInfo(
  */
 export async function getActiveSupplyPredictionsForTomorrow(
   propertyId: string,
+  tz?: string,
 ): Promise<Map<string, number>> {
   try {
-    const tomorrow = getTomorrowDateStr();
+    const tomorrow = getTomorrowDateStr(tz);
     const { data, error } = await supabase
       .from('supply_predictions')
       .select('room_number, staff_id, predicted_minutes_p50')

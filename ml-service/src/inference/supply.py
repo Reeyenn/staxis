@@ -12,11 +12,19 @@ from src.features.supply_matrix import build_supply_features
 from src.supabase_client import get_supabase_client
 
 
-def _tomorrow_in_property_tz() -> date:
-    """Tomorrow as seen by a Houston property (matches demand.py)."""
+DEFAULT_PROPERTY_TIMEZONE = "America/Chicago"
+
+
+def _tomorrow_in_property_tz(tz_name: str = DEFAULT_PROPERTY_TIMEZONE) -> date:
+    """Tomorrow as seen by a property in `tz_name` (matches demand.py).
+
+    Pass `properties.timezone` explicitly so a Florida hotel doesn't roll
+    "tomorrow" at the wrong UTC hour. Defaults to the Texas property TZ
+    for back-compat with single-property callers.
+    """
     try:
         from zoneinfo import ZoneInfo
-        tz = ZoneInfo("America/Chicago")
+        tz = ZoneInfo(tz_name)
     except Exception:  # pragma: no cover
         tz = timezone(timedelta(hours=-6))
     now_local = datetime.now(timezone.utc).astimezone(tz)
@@ -74,6 +82,7 @@ def _hydrate_bayesian_from_run(model_run: dict):
 async def predict_supply(
     property_id: str,
     prediction_date: Optional[date] = None,
+    property_timezone: Optional[str] = None,
 ) -> dict:
     """Predict per-(room × housekeeper) cleaning times for a property.
 
@@ -91,7 +100,9 @@ async def predict_supply(
     client = get_supabase_client()
 
     if prediction_date is None:
-        prediction_date = _tomorrow_in_property_tz()
+        prediction_date = _tomorrow_in_property_tz(
+            property_timezone or DEFAULT_PROPERTY_TIMEZONE
+        )
 
     # Find active supply model
     active_models = client.fetch_many(

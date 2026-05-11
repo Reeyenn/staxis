@@ -18,9 +18,14 @@ import { toDate } from '../db-mappers';
 // The scraper pulls hourly during the active window and writes every pull
 // to TODAY's plan_snapshots row (keyed by current local date). At midnight
 // the next pull lands on the new day's row.
-const SCRAPER_TIMEZONE = 'America/Chicago';
-const SCRAPER_WINDOW_START_HOUR = 5;   // inclusive
-const SCRAPER_WINDOW_END_HOUR = 23;    // exclusive
+//
+// Defaults match Comfort Suites (Central Time). Per-property TZ comes from
+// `properties.timezone` (migration 0016) — callers that have a property in
+// scope should pass it via the `tz` / `windowStartHour` / `windowEndHour`
+// options on `csvFreshness()`.
+const SCRAPER_TIMEZONE_DEFAULT = 'America/Chicago';
+const SCRAPER_WINDOW_START_HOUR_DEFAULT = 5;   // inclusive
+const SCRAPER_WINDOW_END_HOUR_DEFAULT = 23;    // exclusive
 
 export interface PlanSnapshot {
   date: string;
@@ -258,11 +263,28 @@ export const CSV_STALE_MINUTES = 75;
 export const CSV_ERROR_MINUTES = 180;
 const CSV_PIPELINE_FAILURE_THRESHOLD = 2;
 
+export interface CsvFreshnessOptions {
+  nowMs?: number;
+  /** IANA timezone for the property (e.g. America/New_York). Default Central. */
+  timezone?: string;
+  /** Inclusive start hour of the scraper's daily operating window. Default 5. */
+  windowStartHour?: number;
+  /** Exclusive end hour of the scraper's daily operating window. Default 23. */
+  windowEndHour?: number;
+}
+
 export function csvFreshness(
   snapshot: PlanSnapshot | null,
   pipeline: CsvPipelineStatus,
-  nowMs: number = Date.now(),
+  nowOrOptions: number | CsvFreshnessOptions = Date.now(),
 ): CsvFreshnessResult {
+  // Back-compat: old signature was (snapshot, pipeline, nowMs).
+  const opts: CsvFreshnessOptions =
+    typeof nowOrOptions === 'number' ? { nowMs: nowOrOptions } : nowOrOptions;
+  const nowMs = opts.nowMs ?? Date.now();
+  const tz = opts.timezone ?? SCRAPER_TIMEZONE_DEFAULT;
+  const startHour = opts.windowStartHour ?? SCRAPER_WINDOW_START_HOUR_DEFAULT;
+  const endHour = opts.windowEndHour ?? SCRAPER_WINDOW_END_HOUR_DEFAULT;
   // ── 1. Active pipeline failure overrides everything ──────────────────────
   // If morning OR evening has hit the consecutive-failure threshold, that's a
   // real outage we should surface no matter what the snapshot age looks like.
@@ -290,11 +312,11 @@ export function csvFreshness(
   }
 
   // ── 2. Pipeline is healthy. Check time-of-day window. ────────────────────
-  const localHourCT = parseInt(
-    new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: SCRAPER_TIMEZONE }).format(new Date(nowMs)),
+  const localHour = parseInt(
+    new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: tz }).format(new Date(nowMs)),
     10,
   );
-  const inScraperWindow = localHourCT >= SCRAPER_WINDOW_START_HOUR && localHourCT < SCRAPER_WINDOW_END_HOUR;
+  const inScraperWindow = localHour >= startHour && localHour < endHour;
 
   if (!snapshot?.pulledAt) {
     // No plan_snapshot for today yet. Inside the scraper window we consider

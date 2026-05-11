@@ -14,6 +14,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/admin-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
+import { getPropertyOpsConfig } from '@/lib/property-config';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -53,6 +54,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }, { status: 503 });
   }
 
+  // Resolve property TZ so the ML service computes "tomorrow" in the
+  // property's local clock, not Texas time.
+  const ops = await getPropertyOpsConfig(body.propertyId);
+
   try {
     const res = await fetch(`${mlServiceUrl.replace(/\/$/, '')}/predict/inventory-rate`, {
       method: 'POST',
@@ -64,6 +69,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       body: JSON.stringify({
         property_id: body.propertyId,
         date: body.date ?? null,
+        property_timezone: ops.timezone,
       }),
       signal: AbortSignal.timeout(55_000),
     });

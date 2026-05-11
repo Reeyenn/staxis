@@ -36,9 +36,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     });
   }
 
+  // Pull `timezone` so each property's "tomorrow" is computed against its
+  // own local clock (a Florida hotel must not predict a Texas-timed date).
   const { data: properties, error } = await supabaseAdmin
     .from('properties')
-    .select('id, name, inventory_ai_mode');
+    .select('id, name, timezone, inventory_ai_mode');
   if (error) {
     return NextResponse.json({ ok: false, error: errToString(error), requestId }, { status: 500 });
   }
@@ -49,6 +51,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       results.push({ property_id: property.id, status: 'skipped_ai_off' });
       continue;
     }
+    const propertyTz = (property.timezone as string | null) ?? 'America/Chicago';
     try {
       const res = await fetch(`${mlServiceUrl.replace(/\/$/, '')}/predict/inventory-rate`, {
         method: 'POST',
@@ -57,7 +60,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           'Content-Type': 'application/json',
           'x-request-id': requestId,
         },
-        body: JSON.stringify({ property_id: property.id }),
+        body: JSON.stringify({ property_id: property.id, property_timezone: propertyTz }),
         signal: AbortSignal.timeout(75_000),
       });
       const json = await res.json().catch(() => ({ error: 'non_json_response', http: res.status }));

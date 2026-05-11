@@ -12,8 +12,22 @@ predicted_at timestamp for auditability).
 """
 import json
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+
+
+DEFAULT_PROPERTY_TIMEZONE = "America/Chicago"
+
+
+def _tomorrow_in_property_tz(tz_name: str = DEFAULT_PROPERTY_TIMEZONE) -> date:
+    """Property-local tomorrow (matches demand/supply/optimizer)."""
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(tz_name)
+    except Exception:  # pragma: no cover
+        tz = timezone(timedelta(hours=-6))
+    now_local = datetime.now(timezone.utc).astimezone(tz)
+    return (now_local + timedelta(days=1)).date()
 
 import numpy as np
 import pandas as pd
@@ -34,13 +48,18 @@ def _validate_property_id(property_id: str) -> Optional[str]:
 async def predict_inventory_rates(
     property_id: str,
     target_date: Optional[date] = None,
+    property_timezone: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Generate inventory_rate predictions for every active model.
 
     Args:
         property_id: Property UUID.
         target_date: The operational date these predictions are FOR. Defaults
-            to tomorrow.
+            to tomorrow in the property's local timezone.
+        property_timezone: IANA timezone (e.g. "America/New_York"). When
+            omitted the function falls back to the host's date — fine for
+            single-property (Texas) deploys but wrong for east/west-coast
+            hotels around midnight UTC.
 
     Returns:
         Summary: {predicted, skipped_no_active_model, errors}.
@@ -53,7 +72,9 @@ async def predict_inventory_rates(
     client = get_supabase_client()
 
     if target_date is None:
-        target_date = date.today() + timedelta(days=1)
+        target_date = _tomorrow_in_property_tz(
+            property_timezone or DEFAULT_PROPERTY_TIMEZONE
+        )
     target_date_iso = target_date.isoformat()
 
     # Find every active inventory_rate model_runs row for this property

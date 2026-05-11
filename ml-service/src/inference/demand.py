@@ -11,28 +11,29 @@ from src.config import get_settings
 from src.supabase_client import get_supabase_client
 
 
-# Property timezone — Comfort Suites is in Houston (Central Time). Hard-coded
-# for the single-property deployment. When a `properties.timezone` column is
-# added, switch this to look up per-property.
-PROPERTY_TZ_OFFSET_HOURS = -6  # CST (UTC-6); CDT becomes -5. We compensate below
-                                # by deriving "today/tomorrow" from a TZ-aware
-                                # calculation rather than a fixed offset.
+# Default property timezone — Comfort Suites is in Houston (Central Time).
+# Callers should pass `property_timezone` explicitly so a Florida hotel on
+# America/New_York doesn't predict for the wrong day across the 18:00–06:00
+# UTC window. This default is the last-resort fallback if the caller
+# omits it (matches the legacy single-property behavior).
+DEFAULT_PROPERTY_TIMEZONE = "America/Chicago"
+PROPERTY_TZ_OFFSET_HOURS = -6  # CST (UTC-6); fallback if zoneinfo missing.
 
 
-def _tomorrow_in_property_tz() -> date:
+def _tomorrow_in_property_tz(tz_name: str = DEFAULT_PROPERTY_TIMEZONE) -> date:
     """Return the property's local 'tomorrow' as a date.
 
-    The 5:30 AM CT cron passes prediction_date explicitly, so this is a
-    fallback path for manual triggers. Using naive datetime.utcnow() here
-    silently rolls past the date boundary in the wrong place across the
-    18:00–06:00 UTC window. Compute it in America/Chicago instead.
+    Computing this in UTC silently rolls past the date boundary in the
+    wrong place across the 18:00–06:00 UTC window — for a Texas property
+    that means "tomorrow" flips at 6pm local instead of midnight. Use
+    Intl-equivalent zoneinfo lookup to bucket correctly.
     """
     try:
         from zoneinfo import ZoneInfo
-        tz = ZoneInfo("America/Chicago")
+        tz = ZoneInfo(tz_name)
     except Exception:  # pragma: no cover — zoneinfo is stdlib on 3.9+
         # Fall back to a fixed-offset CST. Slightly wrong during DST half
-        # the year, but better than UTC for a Houston property.
+        # the year, but better than UTC.
         tz = timezone(timedelta(hours=PROPERTY_TZ_OFFSET_HOURS))
     now_local = datetime.now(timezone.utc).astimezone(tz)
     return (now_local + timedelta(days=1)).date()
@@ -50,12 +51,17 @@ def _validate_property_id(property_id: str) -> Optional[str]:
 async def predict_demand(
     property_id: str,
     prediction_date: Optional[date] = None,
+    property_timezone: Optional[str] = None,
 ) -> dict:
     """Predict total workload (demand) for a property on a given date.
 
     Args:
         property_id: Property UUID
         prediction_date: Date to predict for (defaults to tomorrow in property TZ)
+        property_timezone: IANA timezone for the property
+            (e.g. "America/New_York"). Defaults to DEFAULT_PROPERTY_TIMEZONE
+            when omitted — caller should pass `properties.timezone` for
+            non-Texas hotels so "tomorrow" rolls at the right hour.
 
     Returns:
         Dictionary with predictions
@@ -68,7 +74,9 @@ async def predict_demand(
     client = get_supabase_client()
 
     if prediction_date is None:
-        prediction_date = _tomorrow_in_property_tz()
+        prediction_date = _tomorrow_in_property_tz(
+            property_timezone or DEFAULT_PROPERTY_TIMEZONE
+        )
 
     # Find active demand model
     active_models = client.fetch_many(

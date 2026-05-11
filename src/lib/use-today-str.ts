@@ -1,11 +1,11 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { todayStr } from './utils';
+import { todayStr, APP_TIMEZONE } from './utils';
 
 /**
  * Reactive version of `todayStr()` that re-renders the consumer when the
- * APP_TIMEZONE date rolls over (midnight Central).
+ * property's local-timezone date rolls over (midnight in `tz`).
  *
  * Why this exists: every page that subscribes to today's rooms used to do
  *
@@ -32,19 +32,19 @@ import { todayStr } from './utils';
  * timers, so when the user reopens the tab we recompute the date string and
  * resync if needed.
  */
-export function useTodayStr(): string {
-  const [today, setToday] = useState<string>(todayStr);
+export function useTodayStr(tz: string = APP_TIMEZONE): string {
+  const [today, setToday] = useState<string>(() => todayStr(tz));
 
   useEffect(() => {
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
     const scheduleNext = () => {
-      // Compute ms until next midnight in APP_TIMEZONE.
+      // Compute ms until next midnight in the property's timezone.
       // We do this by formatting "now" in en-CA (yyyy-mm-dd HH:mm:ss) for
       // the target timezone, parsing back the wall-clock components, and
       // computing how many ms remain until 00:00:00.001 of the next day.
       const fmt = new Intl.DateTimeFormat('en-CA', {
-        timeZone: 'America/Chicago',
+        timeZone: tz,
         hour12: false,
         year: 'numeric', month: '2-digit', day: '2-digit',
         hour: '2-digit', minute: '2-digit', second: '2-digit',
@@ -65,7 +65,7 @@ export function useTodayStr(): string {
       const delay = Math.max(msUntilMidnight + 2000, 1000);
 
       timeoutId = setTimeout(() => {
-        setToday(todayStr());
+        setToday(todayStr(tz));
         scheduleNext();
       }, delay);
     };
@@ -77,7 +77,7 @@ export function useTodayStr(): string {
     // the tab comes back to the foreground (or window regains focus), we
     // recompute the date and resync if it advanced.
     const resync = () => {
-      const now = todayStr();
+      const now = todayStr(tz);
       setToday(prev => (prev === now ? prev : now));
     };
     const onVisibility = () => { if (!document.hidden) resync(); };
@@ -90,7 +90,7 @@ export function useTodayStr(): string {
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('focus', resync);
     };
-  }, []);
+  }, [tz]);
 
   return today;
 }

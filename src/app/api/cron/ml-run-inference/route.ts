@@ -37,21 +37,30 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ ok: true, skipped: 'ML service not configured yet', requestId });
   }
 
+  // Pull `timezone` along with id so each property's "tomorrow" is computed
+  // against its own local clock — a Florida hotel on America/New_York must
+  // not predict a Texas-timed date.
   const { data: properties, error } = await supabaseAdmin
     .from('properties')
-    .select('id, name');
+    .select('id, name, timezone');
   if (error) {
     return NextResponse.json({ ok: false, error: errToString(error) }, { status: 500 });
   }
 
-  // Tomorrow in Texas time (matches the scraper + ML service convention).
-  const tzNow = new Date();
-  const ctNow = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago' }).format(tzNow);
-  const tomorrow = new Date(ctNow + 'T12:00:00Z');
-  tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
-  const targetDate = tomorrow.toISOString().slice(0, 10);
+  const tomorrowInTz = (tz: string): string => {
+    // Compute tomorrow as YYYY-MM-DD in the given IANA TZ.
+    const todayLocal = new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date());
+    const tomorrow = new Date(todayLocal + 'T12:00:00Z');
+    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+    return tomorrow.toISOString().slice(0, 10);
+  };
 
-  const callStage = async (stage: 'demand' | 'supply' | 'optimizer', propertyId: string) => {
+  const callStage = async (
+    stage: 'demand' | 'supply' | 'optimizer',
+    propertyId: string,
+    propertyTz: string,
+    targetDate: string,
+  ) => {
     const path = stage === 'optimizer' ? '/predict/optimizer' : `/predict/${stage}`;
     const t0 = Date.now();
     try {
@@ -62,7 +71,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           'Content-Type': 'application/json',
           'x-request-id': requestId,
         },
-        body: JSON.stringify({ property_id: propertyId, date: targetDate }),
+        // Pass both the computed date AND the property's tz — the date is
+        // authoritative for the prediction key, the tz is belt-and-suspenders
+        // so the ML service's own date fallback uses the same zone.
+        body: JSON.stringify({ property_id: propertyId, date: targetDate, property_timezone: propertyTz }),
         signal: AbortSignal.timeout(45_000),
       });
       const json = await res.json().catch(() => ({ status: 'non_json_response', http: res.status }));
@@ -77,15 +89,17 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     }
   };
 
-  const results: Array<{ property_id: string; demand: unknown; supply: unknown; optimizer: unknown }> = [];
+  const results: Array<{ property_id: string; target_date: string; demand: unknown; supply: unknown; optimizer: unknown }> = [];
   for (const property of properties ?? []) {
+    const propertyTz = (property.timezone as string | null) ?? 'America/Chicago';
+    const targetDate = tomorrowInTz(propertyTz);
     // Sequential per-property: optimizer needs demand+supply. Inter-property
     // is also serial here for simplicity (1 property today, scales on review).
-    const demandResult    = await callStage('demand',    property.id);
-    const supplyResult    = await callStage('supply',    property.id);
-    const optimizerResult = await callStage('optimizer', property.id);
-    results.push({ property_id: property.id, demand: demandResult, supply: supplyResult, optimizer: optimizerResult });
+    const demandResult    = await callStage('demand',    property.id, propertyTz, targetDate);
+    const supplyResult    = await callStage('supply',    property.id, propertyTz, targetDate);
+    const optimizerResult = await callStage('optimizer', property.id, propertyTz, targetDate);
+    results.push({ property_id: property.id, target_date: targetDate, demand: demandResult, supply: supplyResult, optimizer: optimizerResult });
   }
 
-  return NextResponse.json({ ok: true, requestId, target_date: targetDate, results });
+  return NextResponse.json({ ok: true, requestId, results });
 }
