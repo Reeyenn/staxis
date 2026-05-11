@@ -1,18 +1,18 @@
 'use client';
 
 /**
- * Money tab — Phase 8.
+ * Money tab.
  *
- * Sections:
- *   1. Pilot-mode banner (until billing flips on)
- *   2. Monthly summary chips (MRR / total cost / margin)
- *   3. Expenses panel — list + manual entry form
- *   4. Per-hotel revenue vs cost cards
- *   5. Direct links to Claude console + Stripe dashboard
+ * Top (full-width):
+ *   - Pilot-mode banner (only when MRR = 0)
+ *   - Monthly summary chips (MRR / Cost (30d) / Margin / This month spent)
  *
- * Claude API spend rolls up here automatically once the CUA service
- * starts writing claude_usage_log rows. Until then the per-hotel
- * Claude cost shows $0 — fall back to console.anthropic.com link.
+ * Below (3-column horizontal):
+ *   Expenses  │  Per-hotel economics  │  External links
+ *
+ * Claude API spend rolls into expenses automatically once claude_usage_log
+ * starts populating. Until then the per-hotel Claude cost shows $0 —
+ * console.anthropic.com link in the External column is the ground truth.
  */
 
 import React, { useEffect, useState } from 'react';
@@ -167,34 +167,36 @@ export function MoneyTab() {
         <SummaryChip label="This month spent" value={formatUSD(thisMonthCents)} color="var(--text-muted)" />
       </div>
 
-      {/* 3. Expenses */}
-      <ExpensesSection expenses={expenses} reload={load} />
+      {/* 3-column horizontal layout: Expenses | Per-hotel economics | External */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+        gap: '20px',
+        alignItems: 'start',
+      }}>
+        <ExpensesSection expenses={expenses} reload={load} />
 
-      {/* 4. Per-hotel economics */}
-      <section>
-        <h2 style={sectionTitle}>Per-hotel economics (last 30 days)</h2>
-        <p style={sectionHint}>
-          Worst-margin hotels first. Cost = Claude API + SMS + an even share of fleet expenses.
-        </p>
-        {econ.hotels.length === 0 ? (
-          <EmptyState text="No hotels yet." />
-        ) : (
+        <section style={{ minWidth: 0 }}>
+          <h2 style={sectionTitle}>Per-hotel economics</h2>
+          {econ.hotels.length === 0 ? (
+            <EmptyState text="No hotels yet." />
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+              {econ.hotels.map((h) => <HotelEconRow key={h.propertyId} row={h} />)}
+            </div>
+          )}
+        </section>
+
+        <section style={{ minWidth: 0 }}>
+          <h2 style={sectionTitle}>External</h2>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
-            {econ.hotels.map((h) => <HotelEconRow key={h.propertyId} row={h} />)}
+            <ExternalRow href="https://console.anthropic.com/cost"
+              title="Claude API spend" subtitle="console.anthropic.com" />
+            <ExternalRow href="https://dashboard.stripe.com/dashboard"
+              title="Stripe dashboard" subtitle="Subscriptions, invoices, payouts" />
           </div>
-        )}
-      </section>
-
-      {/* 5. External links */}
-      <section>
-        <h2 style={sectionTitle}>External</h2>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
-          <ExternalRow href="https://console.anthropic.com/cost"
-            title="Claude API spend" subtitle="console.anthropic.com — actual numbers, never estimated" />
-          <ExternalRow href="https://dashboard.stripe.com/dashboard"
-            title="Stripe dashboard" subtitle="Subscriptions, invoices, payouts" />
-        </div>
-      </section>
+        </section>
+      </div>
     </div>
   );
 }
@@ -274,15 +276,12 @@ function ExpensesSection({ expenses, reload }: { expenses: Expense[]; reload: ()
   };
 
   return (
-    <section>
+    <section style={{ minWidth: 0 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '8px' }}>
-        <div>
-          <h2 style={sectionTitle}>Expenses</h2>
-          <p style={sectionHint}>Last 12 months. Manual entries + auto-rolled Claude API spend.</p>
-        </div>
+        <h2 style={sectionTitle}>Expenses</h2>
         {!adding && (
           <button onClick={() => setAdding(true)} className="btn btn-secondary" style={{ fontSize: '12px' }}>
-            <Plus size={12} /> Add expense
+            <Plus size={12} /> Add
           </button>
         )}
       </div>
@@ -294,10 +293,12 @@ function ExpensesSection({ expenses, reload }: { expenses: Expense[]; reload: ()
           border: '1px solid var(--amber)',
           borderRadius: '10px',
           marginBottom: '8px',
-          display: 'grid',
-          gridTemplateColumns: '1fr 1fr 1fr 1fr auto',
-          gap: '6px',
-          alignItems: 'end',
+          // Narrower column = vertical form. The inputs flow naturally
+          // top-to-bottom which is also easier to scan than the 5-up
+          // horizontal row we used before.
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '8px',
         }}>
           <FieldLabel text="Category">
             {isNewCategory ? (
@@ -335,7 +336,7 @@ function ExpensesSection({ expenses, reload }: { expenses: Expense[]; reload: ()
           <FieldLabel text="Date">
             <input className="input" type="date" value={draft.incurredOn} onChange={(e) => setDraft({ ...draft, incurredOn: e.target.value })} style={{ fontSize: '12px' }} />
           </FieldLabel>
-          <div style={{ display: 'flex', gap: '4px' }}>
+          <div style={{ display: 'flex', gap: '4px', marginTop: '4px' }}>
             <button
               onClick={create}
               className="btn btn-primary"
@@ -496,11 +497,5 @@ const sectionTitle: React.CSSProperties = {
   fontSize: '15px',
   fontWeight: 600,
   letterSpacing: '-0.01em',
-};
-
-const sectionHint: React.CSSProperties = {
-  fontSize: '12px',
-  color: 'var(--text-muted)',
-  marginTop: '2px',
-  marginBottom: '8px',
+  marginBottom: '4px',
 };
