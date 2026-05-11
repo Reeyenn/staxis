@@ -21,7 +21,7 @@
  *                 mid-onboarding, or a misconfiguration).
  *   summary:      top-line counts for the admin overview.
  *
- * The "last seen" signal is derived from plan_snapshots.fetched_at —
+ * The "last seen" signal is derived from plan_snapshots.pulled_at —
  * the scraper writes a row there on every successful CSV pull. If a
  * Railway instance dies, its hotels stop refreshing within ~5 minutes
  * (Choice Advantage scraper tick cadence). We don't need a dedicated
@@ -96,7 +96,7 @@ export async function GET(req: NextRequest) {
       (properties ?? []).map((p) => [p.id as string, (p.name as string | null) ?? null]),
     );
 
-    // 3. Latest plan_snapshots.fetched_at per property — the scraper
+    // 3. Latest plan_snapshots.pulled_at per property — the scraper
     //    writes this on every successful CSV upsert, so it's our liveness
     //    signal.
     //
@@ -111,11 +111,15 @@ export async function GET(req: NextRequest) {
     //    SELECT/WITH only) because PostgREST's aggregate-via-select
     //    syntax has quirks across supabase-js versions. exec_sql is a
     //    stable contract.
+    //
+    //    Note: the column is plan_snapshots.pulled_at (not fetched_at —
+    //    an earlier draft had the wrong name; csv-scraper.js writes
+    //    `pulled_at` via supabase-helpers).
     const lastSeenSql = `
       select property_id::text as property_id,
-             max(fetched_at)::text as last_seen
+             max(pulled_at)::text as last_seen
       from plan_snapshots
-      where fetched_at > now() - interval '24 hours'
+      where pulled_at > now() - interval '24 hours'
       group by property_id
     `;
     const { data: lastSeenRows, error: snapsErr } =
