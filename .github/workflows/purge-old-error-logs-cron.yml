@@ -1,0 +1,56 @@
+# Error-log purge — GitHub Actions cron
+#
+# Why this lives here instead of vercel.json:
+#   Vercel Hobby plan caps cron at once-per-day, which is exactly what we
+#   want here, but the migration path matches our other GHA crons
+#   (sms-jobs, scraper-health) — consistent ops surface.
+#
+# What it does:
+#   Hits /api/cron/purge-old-error-logs once daily. That endpoint deletes
+#   error_logs rows older than 72 hours, matching the Live Hotels tab's
+#   "Recent errors" display window.
+#
+# Required GitHub Secrets:
+#   CRON_SECRET — same value as in Vercel env. Bearer auth.
+
+name: Purge old error logs
+
+on:
+  schedule:
+    # 09:30 UTC daily (~3:30am Central — quiet hour for Mario's hotel).
+    - cron: "30 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Purge error_logs older than 72h
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+
+          URL="https://getstaxis.com/api/cron/purge-old-error-logs"
+
+          RESPONSE=$(curl \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --max-time 60 \
+            --retry 2 \
+            --retry-delay 5 \
+            --retry-connrefused \
+            -H "Authorization: Bearer ${CRON_SECRET:-}" \
+            "$URL")
+
+          echo "Response: $RESPONSE"
+
+          echo "$RESPONSE" | grep -q '"ok":true' || {
+            echo "::error::purge-old-error-logs returned ok:false or malformed JSON"
+            exit 1
+          }

@@ -1,16 +1,14 @@
 'use client';
 
 /**
- * Live hotels tab — Phase 1 + 2.
+ * Live hotels tab.
  *
- * Sections:
- *   1. Health summary chips
- *   2. Hotels list (12h staleness threshold, problems first)
- *   3. Recent errors (grouped, last 24h)
- *   4. SMS health (per hotel, last 24h)
+ * Layout: chips row at top, then a 4-column responsive grid:
+ *   Hotels | Recent errors | SMS health | Feedback inbox
  *
- * Phase 5 layers on activity / engagement panel; Phase 6 adds the
- * in-app feedback inbox.
+ * Both the errors and SMS health columns use a 72h window now (the old
+ * 24h was too short for "did we miss anything overnight"). Error rows
+ * past 72h are purged daily by /api/cron/purge-old-error-logs.
  */
 
 import React, { useEffect, useState } from 'react';
@@ -80,10 +78,12 @@ export function LiveHotelsTab() {
   const load = async () => {
     setError(null);
     try {
+      // 72h window for errors + SMS health (used to be 24h).
+      const since72h = new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString();
       const [propsRes, errorsRes, smsRes, feedbackRes] = await Promise.all([
         fetchWithAuth('/api/admin/list-properties'),
-        fetchWithAuth('/api/admin/recent-errors'),
-        fetchWithAuth('/api/admin/sms-health'),
+        fetchWithAuth(`/api/admin/recent-errors?since=${encodeURIComponent(since72h)}`),
+        fetchWithAuth('/api/admin/sms-health?hours=72'),
         fetchWithAuth('/api/admin/feedback'),
       ]);
       const [propsJson, errorsJson, smsJson, feedbackJson] = await Promise.all([
@@ -141,119 +141,124 @@ export function LiveHotelsTab() {
   const summary = {
     total: enriched.length,
     active: enriched.filter((p) => p.subscriptionStatus === 'active').length,
-    stale12h: enriched.filter((p) => p.isStale12h).length,
-    pastDue: enriched.filter((p) => p.subscriptionStatus === 'past_due').length,
     disconnected: enriched.filter((p) => !p.pmsConnected).length,
   };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
 
-      {/* 1. Health chips */}
+      {/* Health chips — kept Total, Active, Disconnected PMS. Stale/Past due
+          chips removed per Reeyen (they were noise at single-property scale). */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
         <Chip label="Total" value={summary.total} color="var(--text-secondary)" />
         <Chip label="Active" value={summary.active} color="var(--green)" />
-        <Chip label="Stale (12h+)" value={summary.stale12h} color={summary.stale12h > 0 ? 'var(--red)' : 'var(--text-muted)'} />
-        <Chip label="Past due" value={summary.pastDue} color={summary.pastDue > 0 ? 'var(--red)' : 'var(--text-muted)'} />
         <Chip label="Disconnected PMS" value={summary.disconnected} color={summary.disconnected > 0 ? 'var(--amber)' : 'var(--text-muted)'} />
       </div>
 
-      {/* 2. Hotels list */}
-      <section>
-        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '8px' }}>
-          <div>
-            <h2 style={sectionTitle}>Hotels</h2>
-            <p style={sectionHint}>Sorted by problems first. Anything not synced in 12h is flagged red.</p>
-          </div>
-        </div>
+      {/* 4-column horizontal layout. minmax(280px, 1fr) so columns collapse
+          gracefully as the viewport narrows (admin is desktop-first but
+          shouldn't break at laptop widths). */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+        gap: '20px',
+        alignItems: 'start',
+      }}>
 
-        {enriched.length === 0 ? (
-          <div style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--text-muted)' }}>
-            <Building2 size={28} style={{ marginBottom: '8px' }} />
-            <p style={{ fontSize: '13px' }}>No live hotels yet — they'll appear here once their first sync completes.</p>
-          </div>
-        ) : (
-          <div style={{
-            border: '1px solid var(--border)',
-            borderRadius: '10px',
-            overflow: 'hidden',
-            background: 'var(--surface-primary)',
-          }}>
-            {enriched.map((p, idx) => (
-              <Link
-                key={p.id}
-                href={`/admin/properties/${p.id}`}
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: '2fr 1fr 1.2fr auto',
-                  gap: '12px',
-                  alignItems: 'center',
-                  padding: '14px 16px',
-                  borderBottom: idx < enriched.length - 1 ? '1px solid var(--border)' : 'none',
-                  textDecoration: 'none', color: 'inherit',
-                  background: rowBackground(p),
-                }}
-              >
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: '14px' }}>
-                    {p.name ?? '(unnamed)'}
+        {/* Column 1: Hotels */}
+        <section style={columnStyle}>
+          <h2 style={sectionTitle}>Hotels</h2>
+
+          {enriched.length === 0 ? (
+            <div style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--text-muted)' }}>
+              <Building2 size={28} style={{ marginBottom: '8px' }} />
+              <p style={{ fontSize: '13px' }}>No live hotels yet — they'll appear here once their first sync completes.</p>
+            </div>
+          ) : (
+            <div style={{
+              border: '1px solid var(--border)',
+              borderRadius: '10px',
+              overflow: 'hidden',
+              background: 'var(--surface-primary)',
+              marginTop: '8px',
+            }}>
+              {enriched.map((p, idx) => (
+                <Link
+                  key={p.id}
+                  href={`/admin/properties/${p.id}`}
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px',
+                    padding: '12px 14px',
+                    borderBottom: idx < enriched.length - 1 ? '1px solid var(--border)' : 'none',
+                    textDecoration: 'none', color: 'inherit',
+                    background: rowBackground(p),
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+                    <div style={{ fontWeight: 600, fontSize: '13px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {p.name ?? '(unnamed)'}
+                    </div>
+                    <ChevronRight size={14} color="var(--text-muted)" style={{ flexShrink: 0 }} />
                   </div>
-                  <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
                     {p.totalRooms ?? '—'} rooms · {p.staffCount} staff
                   </div>
-                </div>
-                <SubscriptionBadge status={p.subscriptionStatus} />
-                <SyncBadge p={p} />
-                <ChevronRight size={14} color="var(--text-muted)" />
-              </Link>
-            ))}
-          </div>
-        )}
-      </section>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginTop: '2px' }}>
+                    <SubscriptionBadge status={p.subscriptionStatus} />
+                    <SyncBadge p={p} />
+                  </div>
+                </Link>
+              ))}
+            </div>
+          )}
+        </section>
 
-      {/* 3. Recent errors grouped */}
-      <section>
-        <h2 style={sectionTitle}>Recent errors (last 24h)</h2>
-        <p style={sectionHint}>Grouped — 100 copies of the same error show as one row.</p>
-        {errors.length === 0 ? (
-          <EmptyState text="No errors in the last 24 hours ✓" />
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
-            {errors.map((g, idx) => <ErrorGroupRow key={idx} group={g} />)}
-          </div>
-        )}
-      </section>
+        {/* Column 2: Recent errors */}
+        <section style={columnStyle}>
+          <h2 style={sectionTitle}>Recent errors</h2>
+          {errors.length === 0 ? (
+            <EmptyState text="No errors ✓" />
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+              {errors.map((g, idx) => <ErrorGroupRow key={idx} group={g} />)}
+            </div>
+          )}
+        </section>
 
-      {/* 4. SMS health per hotel */}
-      <section>
-        <h2 style={sectionTitle}>SMS health (last 24h)</h2>
-        <p style={sectionHint}>Per hotel — failures bubble to the top so a broken phone number is never hidden in fleet averages.</p>
-        {sms.length === 0 ? (
-          <EmptyState text="No SMS activity in the last 24 hours." />
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
-            {sms.map((h) => <SmsHealthRowCard key={h.propertyId} row={h} />)}
-          </div>
-        )}
-      </section>
+        {/* Column 3: SMS health */}
+        <section style={columnStyle}>
+          <h2 style={sectionTitle}>SMS health</h2>
+          {sms.length === 0 ? (
+            <EmptyState text="No SMS activity." />
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+              {sms.map((h) => <SmsHealthRowCard key={h.propertyId} row={h} />)}
+            </div>
+          )}
+        </section>
 
-      {/* GM activity moved to /admin/properties/[id] (per-hotel deep dive) */}
+        {/* Column 4: Feedback inbox */}
+        <section style={columnStyle}>
+          <h2 style={sectionTitle}>Feedback inbox</h2>
+          {feedback.length === 0 ? (
+            <EmptyState text="No feedback yet." />
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+              {feedback.map((f) => <FeedbackRowCard key={f.id} row={f} onChange={load} />)}
+            </div>
+          )}
+        </section>
 
-      {/* Feedback inbox */}
-      <section>
-        <h2 style={sectionTitle}>Feedback inbox</h2>
-        <p style={sectionHint}>Submitted from inside the app. New first.</p>
-        {feedback.length === 0 ? (
-          <EmptyState text="No feedback yet. Once GMs send anything via the floating button, it shows up here." />
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
-            {feedback.map((f) => <FeedbackRowCard key={f.id} row={f} onChange={load} />)}
-          </div>
-        )}
-      </section>
+      </div>
     </div>
   );
 }
+
+const columnStyle: React.CSSProperties = {
+  minWidth: 0, // critical for grid children with long text — otherwise their content overflows the column
+};
 
 // ── Sub-components ─────────────────────────────────────────────────────
 
@@ -525,11 +530,5 @@ const sectionTitle: React.CSSProperties = {
   fontSize: '15px',
   fontWeight: 600,
   letterSpacing: '-0.01em',
-};
-
-const sectionHint: React.CSSProperties = {
-  fontSize: '12px',
-  color: 'var(--text-muted)',
-  marginTop: '2px',
-  marginBottom: '8px',
+  marginBottom: '4px',
 };
