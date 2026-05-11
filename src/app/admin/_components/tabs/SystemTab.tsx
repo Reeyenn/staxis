@@ -1,21 +1,22 @@
 'use client';
 
 /**
- * System tab — Phase 7.
+ * System tab.
  *
- * Sections:
- *   1. Marvel/Loki-style visual timeline (build status — main branch
- *      commits, deploy markers, active local worktrees)
- *   2. Scheduled jobs status — per-hotel pull_jobs health
- *   3. Personal product TODO / roadmap (CRUD)
- *   4. Admin audit log (read-only)
+ * Top (full-width): Marvel timeline — commits, deploys, worktrees,
+ * active Claude sessions.
+ *
+ * Below (2-column horizontal):
+ *   Your roadmap (CRUD)  │  Admin audit log (read-only)
+ *
+ * The old Scheduled jobs widget was removed — pull_jobs health is
+ * better surfaced inside each hotel's detail page when we want it.
  */
 
 import React, { useEffect, useRef, useState } from 'react';
-import Link from 'next/link';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import {
-  Plus, Save, Trash2, ExternalLink, AlertTriangle, CheckCircle2, Clock,
+  Plus, Save, Trash2,
 } from 'lucide-react';
 import { MarvelTimeline } from '@/app/admin/_components/MarvelTimeline';
 
@@ -78,11 +79,6 @@ interface ActiveSessionsResp {
 //     refreshes on its own.
 const CURSOR_MS = 2_000;
 const REFRESH_MS = 60_000;
-interface ScheduledRow {
-  propertyId: string; propertyName: string | null;
-  lastSuccessAt: string | null; lastFailedAt: string | null;
-  stuckCount: number; latestStatus: string | null; latestError: string | null;
-}
 interface RoadmapItem {
   id: string; title: string; description: string | null;
   status: RoadmapStatus; priority: number;
@@ -101,7 +97,6 @@ export function SystemTab() {
     pushes?: Push[]; openPRs?: OpenPR[];
     mainLatestTs?: string | null;
   } | null>(null);
-  const [scheduled, setScheduled] = useState<ScheduledRow[] | null>(null);
   const [roadmap, setRoadmap] = useState<RoadmapItem[] | null>(null);
   const [audit, setAudit] = useState<AuditEntry[] | null>(null);
   const [activeSessions, setActiveSessions] = useState<ActiveSessionsResp | null>(null);
@@ -110,18 +105,16 @@ export function SystemTab() {
   const load = async () => {
     setError(null);
     try {
-      const [buildRes, schedRes, roadmapRes, auditRes, sessionsRes] = await Promise.all([
+      const [buildRes, roadmapRes, auditRes, sessionsRes] = await Promise.all([
         fetchWithAuth('/api/admin/build-status'),
-        fetchWithAuth('/api/admin/scheduled-jobs'),
         fetchWithAuth('/api/admin/roadmap'),
         fetchWithAuth('/api/admin/audit-log?limit=30'),
         fetchWithAuth('/api/admin/active-sessions'),
       ]);
-      const [buildJson, schedJson, roadmapJson, auditJson, sessionsJson] = await Promise.all([
-        buildRes.json(), schedRes.json(), roadmapRes.json(), auditRes.json(), sessionsRes.json(),
+      const [buildJson, roadmapJson, auditJson, sessionsJson] = await Promise.all([
+        buildRes.json(), roadmapRes.json(), auditRes.json(), sessionsRes.json(),
       ]);
       if (buildJson.ok) setBuild(buildJson.data);
-      if (schedJson.ok) setScheduled(schedJson.data.rows);
       if (roadmapJson.ok) setRoadmap(roadmapJson.data.items);
       if (auditJson.ok) setAudit(auditJson.data.entries);
       if (sessionsJson.ok) setActiveSessions(sessionsJson.data);
@@ -202,7 +195,7 @@ export function SystemTab() {
     );
   }
 
-  if (!build || !scheduled || !roadmap || !audit) {
+  if (!build || !roadmap || !audit) {
     return (
       <div style={{ padding: '60px 0', textAlign: 'center' }}>
         <div className="spinner" style={{ width: '24px', height: '24px', margin: '0 auto' }} />
@@ -213,7 +206,7 @@ export function SystemTab() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
 
-      {/* 1. Marvel timeline */}
+      {/* Marvel timeline — full-width at top, unchanged */}
       <section>
         <MarvelTimeline
           commits={build.commits}
@@ -231,34 +224,25 @@ export function SystemTab() {
         )}
       </section>
 
-      {/* 2. Scheduled jobs */}
-      <section>
-        <h2 style={sectionTitle}>Scheduled jobs</h2>
-        <p style={sectionHint}>Per-hotel pull_jobs status. Stuck jobs (queued/running &gt; 30 min) bubble to the top.</p>
-        {scheduled.length === 0 ? (
-          <EmptyState text="No scheduled job history yet." />
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
-            {scheduled.map((s) => <ScheduledJobRow key={s.propertyId} row={s} />)}
-          </div>
-        )}
-      </section>
-
-      {/* 3. Roadmap */}
-      <RoadmapSection items={roadmap} reload={load} />
-
-      {/* 4. Audit log */}
-      <section>
-        <h2 style={sectionTitle}>Admin audit log</h2>
-        <p style={sectionHint}>Last 30 admin actions. Useful when you have help on the team.</p>
-        {audit.length === 0 ? (
-          <EmptyState text="No admin actions logged yet." />
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '8px' }}>
-            {audit.map((a) => <AuditRow key={a.id} entry={a} />)}
-          </div>
-        )}
-      </section>
+      {/* 2-column horizontal layout: Roadmap | Audit log */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+        gap: '20px',
+        alignItems: 'start',
+      }}>
+        <RoadmapSection items={roadmap} reload={load} />
+        <section style={{ minWidth: 0 }}>
+          <h2 style={sectionTitle}>Admin audit log</h2>
+          {audit.length === 0 ? (
+            <EmptyState text="No admin actions logged yet." />
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '8px' }}>
+              {audit.map((a) => <AuditRow key={a.id} entry={a} />)}
+            </div>
+          )}
+        </section>
+      </div>
     </div>
   );
 }
@@ -308,43 +292,6 @@ function ActiveSessionsPanel({ resp }: { resp: ActiveSessionsResp }) {
       </div>
       <style>{`@keyframes pulseDot { 0%,100% { opacity: 1; transform: scale(1) } 50% { opacity: 0.4; transform: scale(1.3) } }`}</style>
     </div>
-  );
-}
-
-function ScheduledJobRow({ row }: { row: ScheduledRow }) {
-  const isStuck = row.stuckCount > 0;
-  const failedRecently = row.lastFailedAt && (!row.lastSuccessAt || row.lastFailedAt > row.lastSuccessAt);
-  const StatusIcon = isStuck ? AlertTriangle : failedRecently ? AlertTriangle : CheckCircle2;
-  const color = isStuck ? 'var(--red)' : failedRecently ? 'var(--amber)' : 'var(--green)';
-
-  return (
-    <Link href={`/admin/properties/${row.propertyId}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-      <div style={{
-        padding: '12px 14px',
-        background: 'var(--surface-primary)',
-        border: `1px solid ${isStuck ? 'rgba(239,68,68,0.25)' : 'var(--border)'}`,
-        borderRadius: '10px',
-        display: 'flex', alignItems: 'center', gap: '12px',
-      }}>
-        <StatusIcon size={14} color={color} style={{ flexShrink: 0 }} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: '13px', fontWeight: 600 }}>
-            {row.propertyName ?? '(deleted property)'}
-          </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px', display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
-            {row.lastSuccessAt && <span style={{ color: 'var(--green)' }}>Last success {timeAgo(row.lastSuccessAt)}</span>}
-            {row.lastFailedAt && <span style={{ color: 'var(--red)' }}>Last fail {timeAgo(row.lastFailedAt)}</span>}
-            {row.stuckCount > 0 && <span style={{ color: 'var(--red)', fontWeight: 600 }}>{row.stuckCount} stuck</span>}
-            {!row.lastSuccessAt && !row.lastFailedAt && <span>—</span>}
-          </div>
-          {row.latestError && (
-            <div style={{ fontSize: '11px', color: 'var(--red)', marginTop: '4px', fontFamily: 'var(--font-mono)' }}>
-              {row.latestError.slice(0, 120)}
-            </div>
-          )}
-        </div>
-      </div>
-    </Link>
   );
 }
 
@@ -400,12 +347,9 @@ function RoadmapSection({ items, reload }: { items: RoadmapItem[]; reload: () =>
   };
 
   return (
-    <section>
+    <section style={{ minWidth: 0 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '8px' }}>
-        <div>
-          <h2 style={sectionTitle}>Your roadmap</h2>
-          <p style={sectionHint}>Personal product TODO. Lives here so admin doubles as your command center.</p>
-        </div>
+        <h2 style={sectionTitle}>Your roadmap</h2>
         {!adding && (
           <button onClick={() => setAdding(true)} className="btn btn-secondary" style={{ fontSize: '12px' }}>
             <Plus size={12} /> Add
@@ -566,11 +510,5 @@ const sectionTitle: React.CSSProperties = {
   fontSize: '15px',
   fontWeight: 600,
   letterSpacing: '-0.01em',
-};
-
-const sectionHint: React.CSSProperties = {
-  fontSize: '12px',
-  color: 'var(--text-muted)',
-  marginTop: '2px',
-  marginBottom: '8px',
+  marginBottom: '4px',
 };
