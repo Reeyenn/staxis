@@ -37,6 +37,35 @@ import * as Sentry from '@sentry/nextjs';
 
 type Scope = ReturnType<typeof Sentry.getCurrentScope>;
 
+// Sentry's documented max tag-value length is 200 chars; values above
+// the limit are silently dropped or truncated by the ingest endpoint.
+// We clamp here so a freakishly long hotel name (or a stray paragraph
+// in a `route` field) doesn't quietly disappear from the dashboard.
+const TAG_VALUE_MAX = 200;
+
+/**
+ * Normalize a value before setting it as a Sentry tag:
+ *   - Strip newlines/tabs (Sentry doesn't render them and some
+ *     transports reject the value).
+ *   - Collapse runs of whitespace.
+ *   - Trim.
+ *   - Clamp to TAG_VALUE_MAX; on truncation, append "…" to make the
+ *     cut visible in the dashboard.
+ *
+ * Returns null when the cleaned value is empty (caller should skip
+ * setting the tag — Sentry rejects empty values).
+ */
+function cleanTagValue(raw: string): string | null {
+  // Replace any whitespace span (newlines, tabs, multiple spaces) with
+  // a single space, then trim.
+  const collapsed = raw.replace(/\s+/g, ' ').trim();
+  if (collapsed.length === 0) return null;
+  if (collapsed.length <= TAG_VALUE_MAX) return collapsed;
+  // Truncate at TAG_VALUE_MAX-1 then add the ellipsis so the total
+  // string length is exactly TAG_VALUE_MAX.
+  return collapsed.slice(0, TAG_VALUE_MAX - 1) + '…';
+}
+
 /**
  * Lift property identifiers from a free-form extras bag onto an active
  * Sentry scope as TAGS. Exported because some callers (e.g. cron
@@ -57,20 +86,27 @@ export function setPropertyContextOnScope(
   // practice only one of them is set per call.
   const pidCandidate =
     extra.pid ?? extra.property_id ?? extra.propertyId;
-  const pid = typeof pidCandidate === 'string' && pidCandidate.length > 0 ? pidCandidate : null;
+  const pid =
+    typeof pidCandidate === 'string' && pidCandidate.length > 0
+      ? cleanTagValue(pidCandidate)
+      : null;
   if (pid) {
     scope.setTag('property.id', pid);
   }
 
   const nameCandidate = extra.property_name ?? extra.propertyName;
-  const name = typeof nameCandidate === 'string' && nameCandidate.length > 0 ? nameCandidate : null;
+  const name =
+    typeof nameCandidate === 'string' && nameCandidate.length > 0
+      ? cleanTagValue(nameCandidate)
+      : null;
   if (name) {
     scope.setTag('property.name', name);
   }
 
   // `route` is the next-most-useful filter — "all errors from
   // /api/sms-reply" is a routine support move. Cheap to lift.
-  const route = typeof extra.route === 'string' ? extra.route : null;
+  const routeCandidate = typeof extra.route === 'string' ? extra.route : null;
+  const route = routeCandidate ? cleanTagValue(routeCandidate) : null;
   if (route) {
     scope.setTag('route', route);
   }

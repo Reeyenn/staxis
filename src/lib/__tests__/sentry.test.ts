@@ -97,4 +97,32 @@ describe('setPropertyContextOnScope', () => {
     const pid = setPropertyContextOnScope(scope, { route: '/foo' });
     assert.equal(pid, null);
   });
+
+  it('clamps tag values at 200 chars with a trailing ellipsis', () => {
+    const { scope, calls } = makeFakeScope();
+    const longName = 'A'.repeat(500);
+    setPropertyContextOnScope(scope, { pid: 'abc', property_name: longName });
+    const tag = calls.tags['property.name'] as string;
+    assert.equal(tag.length, 200);
+    assert.ok(tag.endsWith('…'));
+    assert.ok(tag.startsWith('AAAA'));
+  });
+
+  it('collapses whitespace in tag values (newlines, tabs)', () => {
+    const { scope, calls } = makeFakeScope();
+    setPropertyContextOnScope(scope, {
+      pid: 'abc',
+      property_name: 'Comfort\n\tSuites    Beaumont',
+      route: '/api/x\n/y',
+    });
+    assert.equal(calls.tags['property.name'], 'Comfort Suites Beaumont');
+    assert.equal(calls.tags['route'], '/api/x /y');
+  });
+
+  it('drops tags whose value is only whitespace', () => {
+    const { scope, calls } = makeFakeScope();
+    setPropertyContextOnScope(scope, { pid: '   \n\t  ', property_name: '   ' });
+    assert.equal(calls.tags['property.id'], undefined);
+    assert.equal(calls.tags['property.name'], undefined);
+  });
 });

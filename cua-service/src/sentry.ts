@@ -93,6 +93,18 @@ export function initSentry(): boolean {
   return true;
 }
 
+// Sentry tag values cap at 200 chars and reject newline-bearing strings
+// at the ingest layer. Clamp here so a long hotel name or a stack-like
+// string in a `job_id` field doesn't silently disappear from the
+// dashboard. Mirrors cleanTagValue in src/lib/sentry.ts.
+const TAG_VALUE_MAX = 200;
+function cleanTagValue(raw: string): string | null {
+  const collapsed = raw.replace(/\s+/g, ' ').trim();
+  if (collapsed.length === 0) return null;
+  if (collapsed.length <= TAG_VALUE_MAX) return collapsed;
+  return collapsed.slice(0, TAG_VALUE_MAX - 1) + '…';
+}
+
 /**
  * Lift property identifiers out of free-form context onto Sentry tags
  * (filterable in the dashboard) rather than just extras (unfilterable).
@@ -106,21 +118,16 @@ export function initSentry(): boolean {
 function buildPropertyTags(context?: Record<string, unknown>): Record<string, string> {
   if (!context) return {};
   const tags: Record<string, string> = {};
-  const pidCandidate =
-    context.pid ?? context.property_id ?? context.propertyId;
-  if (typeof pidCandidate === 'string' && pidCandidate.length > 0) {
-    tags['property.id'] = pidCandidate;
-  }
-  const nameCandidate = context.property_name ?? context.propertyName;
-  if (typeof nameCandidate === 'string' && nameCandidate.length > 0) {
-    tags['property.name'] = nameCandidate;
-  }
+  const set = (key: string, raw: unknown): void => {
+    if (typeof raw !== 'string' || raw.length === 0) return;
+    const cleaned = cleanTagValue(raw);
+    if (cleaned) tags[key] = cleaned;
+  };
+  set('property.id', context.pid ?? context.property_id ?? context.propertyId);
+  set('property.name', context.property_name ?? context.propertyName);
   // CUA-specific: most errors are scoped to a job_id (one PMS-mapping run).
   // Surfacing it as a tag means "find every error from job X" is one click.
-  const jobCandidate = context.job_id ?? context.jobId;
-  if (typeof jobCandidate === 'string' && jobCandidate.length > 0) {
-    tags['cua.job_id'] = jobCandidate;
-  }
+  set('cua.job_id', context.job_id ?? context.jobId);
   return tags;
 }
 

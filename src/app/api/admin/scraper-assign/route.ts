@@ -33,7 +33,7 @@
 
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { requireSessionOrCron } from '@/lib/api-auth';
+import { requireAdminOrCron } from '@/lib/admin-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
@@ -50,15 +50,11 @@ const INSTANCE_RX = /^[A-Za-z0-9._-]{1,64}$/;
 
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
-  // Dual auth: a signed-in admin OR the CRON_SECRET (for ops scripts —
-  // the RUNBOOKS.md "spin up a new scraper instance" procedure uses a
-  // curl with CRON_SECRET so a fleet reassignment doesn't require
-  // opening a browser session). We don't enforce admin-role on the
-  // session leg because requireSessionOrCron's session leg is a valid
-  // Supabase user and this endpoint is otherwise low-stakes — the worst
-  // case is a non-admin staff member moving their own hotel between
-  // instances, which is corrective and audit-logged.
-  const auth = await requireSessionOrCron(req);
+  // Dual auth (signed-in admin OR CRON_SECRET) — see requireAdminOrCron
+  // in src/lib/admin-auth.ts. Earlier draft used requireSessionOrCron
+  // which let any signed-in user reassign hotels; that was wrong — only
+  // admins (or cron-secret-bearing scripts) should drive the fleet.
+  const auth = await requireAdminOrCron(req);
   if (!auth.ok) return auth.response;
   const actor =
     auth.kind === 'session'

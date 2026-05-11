@@ -32,7 +32,7 @@
 
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { requireSessionOrCron } from '@/lib/api-auth';
+import { requireAdminOrCron } from '@/lib/admin-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
@@ -67,10 +67,11 @@ interface InstanceSummary {
 
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
-  // Dual auth (session or CRON_SECRET) for parity with the POST sibling
-  // /api/admin/scraper-assign — the ops runbook curls this endpoint to
-  // verify fleet health after deploying a new instance.
-  const auth = await requireSessionOrCron(req);
+  // Admin OR cron-secret — fleet topology is sensitive and shouldn't be
+  // readable by every signed-in staff member. Earlier draft used
+  // requireSessionOrCron (any session); fixed to requireAdminOrCron to
+  // match the POST sibling /api/admin/scraper-assign.
+  const auth = await requireAdminOrCron(req);
   if (!auth.ok) return auth.response;
 
   try {
@@ -95,26 +96,39 @@ export async function GET(req: NextRequest) {
       (properties ?? []).map((p) => [p.id as string, (p.name as string | null) ?? null]),
     );
 
-    // 3. Latest plan_snapshots.fetched_at per property. The scraper writes
-    //    this on every successful CSV upsert, so it's our liveness signal.
-    //    We pull all rows from the last 24h and reduce in-memory rather
-    //    than running a per-property `max()` query (cheaper at fleet
-    //    scale, fine at current scale).
-    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const { data: snaps, error: snapsErr } = await supabaseAdmin
-      .from('plan_snapshots')
-      .select('property_id, fetched_at')
-      .gte('fetched_at', since)
-      .order('fetched_at', { ascending: false })
-      .limit(5000);
+    // 3. Latest plan_snapshots.fetched_at per property — the scraper
+    //    writes this on every successful CSV upsert, so it's our liveness
+    //    signal.
+    //
+    //    Earlier draft pulled all rows from the last 24h and reduced
+    //    in-memory with a 5000-row limit. That breaks at fleet scale:
+    //    50 hotels × 12 ticks/hour × 24h = 14,400 rows — half the data
+    //    would be truncated and hotels polled less recently would falsely
+    //    appear stale. Now we push the aggregation to Postgres so we
+    //    fetch at most one row per property regardless of fleet size.
+    //
+    //    Uses the exec_sql RPC (migration 0071 / hardened in 0072 to
+    //    SELECT/WITH only) because PostgREST's aggregate-via-select
+    //    syntax has quirks across supabase-js versions. exec_sql is a
+    //    stable contract.
+    const lastSeenSql = `
+      select property_id::text as property_id,
+             max(fetched_at)::text as last_seen
+      from plan_snapshots
+      where fetched_at > now() - interval '24 hours'
+      group by property_id
+    `;
+    const { data: lastSeenRows, error: snapsErr } =
+      await supabaseAdmin.rpc('exec_sql', { sql: lastSeenSql });
     if (snapsErr) {
-      log.error('scraper-instances: snapshots query failed', { requestId, err: snapsErr as unknown as Error });
-      return err('failed to load plan_snapshots', { requestId, status: 500 });
+      log.error('scraper-instances: last-seen aggregation failed', {
+        requestId, err: snapsErr as unknown as Error,
+      });
+      return err('failed to aggregate plan_snapshots', { requestId, status: 500 });
     }
     const latestByPid = new Map<string, string>();
-    for (const r of (snaps ?? [])) {
-      const pid = r.property_id as string;
-      if (!latestByPid.has(pid)) latestByPid.set(pid, r.fetched_at as string);
+    for (const r of (lastSeenRows ?? []) as Array<{ property_id: string; last_seen: string }>) {
+      latestByPid.set(r.property_id, r.last_seen);
     }
 
     const now = Date.now();

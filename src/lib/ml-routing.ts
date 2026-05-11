@@ -95,20 +95,37 @@ export function getPrimaryMlShardUrl(): string | null {
 }
 
 /**
- * Deterministic 32-bit hash of a UUID. UUIDs are random hex, so the
- * first 8 hex chars are already a uniform 32-bit value — no need for
- * a real hash function. parseInt(slice, 16) and we're done.
+ * Deterministic 32-bit hash of a property identifier.
  *
- * Non-UUID strings (e.g. a hyphenless property id, or a test value)
- * fall back to 0 rather than crashing — they land on shard 0, which
- * is the same behavior as a single-shard deploy.
+ * Earlier draft sliced the first 8 hex chars of the UUID. That worked
+ * for UUID v4 (the first 8 chars are uniformly random) but would
+ * catastrophically fail for UUID v7 — the first 8 chars are a
+ * monotonically increasing timestamp prefix, so every property created
+ * in a given second lands on the same shard. We don't use v7 today,
+ * but writing code that quietly breaks the day someone changes the
+ * UUID generator is exactly the kind of long-term landmine this audit
+ * is supposed to find.
+ *
+ * FNV-1a across the full string mixes ALL bytes into the result —
+ * uniform output regardless of input structure (v4, v7, ULIDs, ksuids,
+ * or even a non-UUID string from a test fixture). Public-domain prime
+ * constants from RFC 1320 / Glenn Fowler.
+ *
+ * Empty / non-string input collapses to the FNV offset basis (constant
+ * 0x811c9dc5), pinning bad input to a deterministic shard rather than
+ * crashing — same fail-safe shape as the prior version.
  */
-function stableHashUuid(uuid: string): number {
-  if (typeof uuid !== 'string') return 0;
-  const stripped = uuid.replace(/-/g, '');
-  if (stripped.length < 8) return 0;
-  const n = parseInt(stripped.slice(0, 8), 16);
-  return Number.isFinite(n) ? (n >>> 0) : 0;
+function stableHashUuid(input: string): number {
+  if (typeof input !== 'string' || input.length === 0) return 0x811c9dc5;
+  let hash = 0x811c9dc5; // FNV-1a 32-bit offset basis
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    // FNV prime is 16777619; the equivalent shift+add expression is
+    // standard for FNV in JS to avoid the >32-bit overflow that
+    // straight multiplication would hit.
+    hash = (hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24))) >>> 0;
+  }
+  return hash >>> 0;
 }
 
 /**
