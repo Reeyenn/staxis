@@ -778,16 +778,18 @@ When adding a new env var:
 
 1. **Pick an instance name.** Free-form text, regex `[A-Za-z0-9._-]{1,64}`. Conventions: `alpha`, `us-east-1`, `canary`. Avoid spaces and special chars (Railway service names + log filters break on them).
 
-2. **Reassign hotels to the new instance.** Use the admin API:
-   ```bash
-   curl -X POST \
-     -H "Authorization: Bearer $CRON_SECRET" \
-     -H "Content-Type: application/json" \
-     -d '{"property_id":"<uuid>","scraper_instance":"alpha"}' \
-     https://hotelops-ai.vercel.app/api/admin/scraper-assign
-   ```
-   The endpoint requires admin role (not just CRON_SECRET) — sign in as Reeyen first or use the session token from the browser.
-   Audit-logged as `scraper.reassign`.
+2. **Reassign hotels to the new instance.** Use the admin API. Two auth modes:
+   - **Script-driven (CRON_SECRET):** the canonical ops path. Works from any terminal.
+     ```bash
+     curl -X POST \
+       -H "Authorization: Bearer $CRON_SECRET" \
+       -H "Content-Type: application/json" \
+       -d '{"property_id":"<uuid>","scraper_instance":"alpha"}' \
+       https://getstaxis.com/api/admin/scraper-assign
+     ```
+   - **Browser-driven:** sign in as an admin user; the admin UI sends the Supabase session token automatically.
+
+   Either mode lands as a `scraper.reassign` entry in `admin_audit_log` with `actor_kind` (`session` or `cron`).
 
 3. **Create the new Railway service.** Duplicate the existing scraper service in Railway:
    - Copy ALL env vars from the existing service (CA_USERNAME, CA_PASSWORD, NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, TWILIO_*, CRON_SECRET, MANAGER_PHONE).
