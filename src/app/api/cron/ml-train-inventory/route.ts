@@ -15,6 +15,7 @@ import { requireCronSecret } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
+import { runWithConcurrency } from '@/lib/parallel';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -43,41 +44,52 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ ok: false, error: errToString(error), requestId }, { status: 500 });
   }
 
-  const results: Array<{ property_id: string; status: string; detail?: unknown }> = [];
-  for (const property of properties ?? []) {
-    if ((property as { inventory_ai_mode?: string }).inventory_ai_mode === 'off') {
-      results.push({ property_id: property.id, status: 'skipped_ai_off' });
-      continue;
-    }
-    const t0 = Date.now();
-    try {
-      const res = await fetch(`${mlServiceUrl.replace(/\/$/, '')}/train/inventory-rate`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${mlServiceSecret}`,
-          'Content-Type': 'application/json',
-          'x-request-id': requestId,
-        },
-        body: JSON.stringify({ property_id: property.id }),
-        signal: AbortSignal.timeout(75_000),
-      });
-      const json = await res.json().catch(() => ({ error: 'non_json_response', http: res.status }));
-      log.info('ml-train-inventory: result', {
-        requestId,
-        property_id: property.id,
-        elapsedMs: Date.now() - t0,
-        items_trained: (json as { items_trained?: number }).items_trained ?? null,
-      });
-      results.push({ property_id: property.id, status: 'ok', detail: json });
-    } catch (e) {
-      log.error('ml-train-inventory: ML service call failed', {
-        requestId,
-        property_id: property.id,
-        err: e as Error,
-      });
-      results.push({ property_id: property.id, status: 'error', detail: errToString(e) });
+  // Skip ai_off properties before fan-out so they don't take a parallel slot.
+  type PropertyRow = { id: string; name: string; inventory_ai_mode?: string };
+  const eligible: PropertyRow[] = [];
+  const skipped: Array<{ property_id: string; status: string }> = [];
+  for (const property of (properties ?? []) as PropertyRow[]) {
+    if (property.inventory_ai_mode === 'off') {
+      skipped.push({ property_id: property.id, status: 'skipped_ai_off' });
+    } else {
+      eligible.push(property);
     }
   }
+
+  // Parallel fan-out (concurrency 3 — inventory training is the heaviest
+  // stage; one call iterates every inventory.id in the property).
+  const outcomes = await runWithConcurrency(eligible, async (property) => {
+    const t0 = Date.now();
+    const res = await fetch(`${mlServiceUrl.replace(/\/$/, '')}/train/inventory-rate`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${mlServiceSecret}`,
+        'Content-Type': 'application/json',
+        'x-request-id': requestId,
+      },
+      body: JSON.stringify({ property_id: property.id }),
+      signal: AbortSignal.timeout(75_000),
+    });
+    const json = await res.json().catch(() => ({ error: 'non_json_response', http: res.status }));
+    log.info('ml-train-inventory: result', {
+      requestId,
+      property_id: property.id,
+      elapsedMs: Date.now() - t0,
+      items_trained: (json as { items_trained?: number }).items_trained ?? null,
+    });
+    return json;
+  }, 3);
+
+  const results = [
+    ...skipped,
+    ...outcomes.map((o) => {
+      if (o.ok) return { property_id: o.input.id, status: 'ok', detail: o.value };
+      log.error('ml-train-inventory: ML service call failed', {
+        requestId, property_id: o.input.id, err: o.error as Error,
+      });
+      return { property_id: o.input.id, status: 'error', detail: errToString(o.error) };
+    }),
+  ];
 
   return NextResponse.json({
     ok: true,

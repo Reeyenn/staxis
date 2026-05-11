@@ -20,6 +20,7 @@ import { requireCronSecret } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
+import { runWithConcurrency } from '@/lib/parallel';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -89,17 +90,40 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     }
   };
 
-  const results: Array<{ property_id: string; target_date: string; demand: unknown; supply: unknown; optimizer: unknown }> = [];
-  for (const property of properties ?? []) {
+  // Inter-property: parallel (concurrency 3 — Layer-3 optimizer is the most
+  // memory-heavy stage and runs Monte Carlo simulation on Railway).
+  // Intra-property: still sequential — optimizer depends on demand+supply
+  // outputs being already written.
+  const outcomes = await runWithConcurrency(properties ?? [], async (property) => {
     const propertyTz = (property.timezone as string | null) ?? 'America/Chicago';
     const targetDate = tomorrowInTz(propertyTz);
-    // Sequential per-property: optimizer needs demand+supply. Inter-property
-    // is also serial here for simplicity (1 property today, scales on review).
     const demandResult    = await callStage('demand',    property.id, propertyTz, targetDate);
     const supplyResult    = await callStage('supply',    property.id, propertyTz, targetDate);
     const optimizerResult = await callStage('optimizer', property.id, propertyTz, targetDate);
-    results.push({ property_id: property.id, target_date: targetDate, demand: demandResult, supply: supplyResult, optimizer: optimizerResult });
-  }
+    return { target_date: targetDate, demand: demandResult, supply: supplyResult, optimizer: optimizerResult };
+  }, 3);
+
+  const results = outcomes.map((o) => {
+    if (o.ok) {
+      return {
+        property_id: o.input.id,
+        target_date: o.value.target_date,
+        demand: o.value.demand,
+        supply: o.value.supply,
+        optimizer: o.value.optimizer,
+      };
+    }
+    log.error('ml-run-inference: property loop failed', {
+      requestId, property_id: o.input.id, err: o.error as Error,
+    });
+    return {
+      property_id: o.input.id,
+      target_date: null,
+      demand: { stage: 'demand', status: 'error', detail: errToString(o.error) },
+      supply: null,
+      optimizer: null,
+    };
+  });
 
   return NextResponse.json({ ok: true, requestId, results });
 }

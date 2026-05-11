@@ -15,6 +15,7 @@ import { requireCronSecret } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
+import { runWithConcurrency } from '@/lib/parallel';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -45,40 +46,50 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ ok: false, error: errToString(error), requestId }, { status: 500 });
   }
 
-  const results: Array<{ property_id: string; status: string; detail?: unknown }> = [];
-  for (const property of properties ?? []) {
-    if ((property as { inventory_ai_mode?: string }).inventory_ai_mode === 'off') {
-      results.push({ property_id: property.id, status: 'skipped_ai_off' });
-      continue;
-    }
-    const propertyTz = (property.timezone as string | null) ?? 'America/Chicago';
-    try {
-      const res = await fetch(`${mlServiceUrl.replace(/\/$/, '')}/predict/inventory-rate`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${mlServiceSecret}`,
-          'Content-Type': 'application/json',
-          'x-request-id': requestId,
-        },
-        body: JSON.stringify({ property_id: property.id, property_timezone: propertyTz }),
-        signal: AbortSignal.timeout(75_000),
-      });
-      const json = await res.json().catch(() => ({ error: 'non_json_response', http: res.status }));
-      log.info('ml-predict-inventory: result', {
-        requestId,
-        property_id: property.id,
-        predicted: (json as { predicted?: number }).predicted ?? null,
-      });
-      results.push({ property_id: property.id, status: 'ok', detail: json });
-    } catch (e) {
-      log.error('ml-predict-inventory: ML service call failed', {
-        requestId,
-        property_id: property.id,
-        err: e as Error,
-      });
-      results.push({ property_id: property.id, status: 'error', detail: errToString(e) });
+  // Partition into "skipped" and "eligible" before fan-out so ai_off rows
+  // don't occupy parallel slots.
+  type PropertyRow = { id: string; name: string; timezone: string | null; inventory_ai_mode?: string };
+  const eligible: PropertyRow[] = [];
+  const skipped: Array<{ property_id: string; status: string }> = [];
+  for (const property of (properties ?? []) as PropertyRow[]) {
+    if (property.inventory_ai_mode === 'off') {
+      skipped.push({ property_id: property.id, status: 'skipped_ai_off' });
+    } else {
+      eligible.push(property);
     }
   }
+
+  // Parallel fan-out (concurrency 5).
+  const outcomes = await runWithConcurrency(eligible, async (property) => {
+    const propertyTz = (property.timezone as string | null) ?? 'America/Chicago';
+    const res = await fetch(`${mlServiceUrl.replace(/\/$/, '')}/predict/inventory-rate`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${mlServiceSecret}`,
+        'Content-Type': 'application/json',
+        'x-request-id': requestId,
+      },
+      body: JSON.stringify({ property_id: property.id, property_timezone: propertyTz }),
+      signal: AbortSignal.timeout(75_000),
+    });
+    const json = await res.json().catch(() => ({ error: 'non_json_response', http: res.status }));
+    log.info('ml-predict-inventory: result', {
+      requestId, property_id: property.id,
+      predicted: (json as { predicted?: number }).predicted ?? null,
+    });
+    return json;
+  }, 5);
+
+  const results = [
+    ...skipped,
+    ...outcomes.map((o) => {
+      if (o.ok) return { property_id: o.input.id, status: 'ok', detail: o.value };
+      log.error('ml-predict-inventory: ML service call failed', {
+        requestId, property_id: o.input.id, err: o.error as Error,
+      });
+      return { property_id: o.input.id, status: 'error', detail: errToString(o.error) };
+    }),
+  ];
 
   return NextResponse.json({
     ok: true,

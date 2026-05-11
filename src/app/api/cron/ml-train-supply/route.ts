@@ -14,6 +14,7 @@ import { requireCronSecret } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
+import { runWithConcurrency } from '@/lib/parallel';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -39,25 +40,27 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ ok: false, error: errToString(error) }, { status: 500 });
   }
 
-  const results: Array<{ property_id: string; status: string; detail?: unknown }> = [];
-  for (const property of properties ?? []) {
-    try {
-      const res = await fetch(`${mlServiceUrl.replace(/\/$/, '')}/train/supply`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${mlServiceSecret}`,
-          'Content-Type': 'application/json',
-          'x-request-id': requestId,
-        },
-        body: JSON.stringify({ property_id: property.id }),
-        signal: AbortSignal.timeout(45_000),
-      });
-      const json = await res.json().catch(() => ({ status: 'non_json_response', http: res.status }));
-      results.push({ property_id: property.id, status: (json as { status?: string }).status ?? 'unknown', detail: json });
-    } catch (err) {
-      log.error('ml-train-supply: ML service call failed', { requestId, property_id: property.id, err: err as Error });
-      results.push({ property_id: property.id, status: 'error', detail: errToString(err) });
-    }
-  }
+  // Parallel fan-out (concurrency 5) — see ml-train-demand route header.
+  const outcomes = await runWithConcurrency(properties ?? [], async (property) => {
+    const res = await fetch(`${mlServiceUrl.replace(/\/$/, '')}/train/supply`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${mlServiceSecret}`,
+        'Content-Type': 'application/json',
+        'x-request-id': requestId,
+      },
+      body: JSON.stringify({ property_id: property.id }),
+      signal: AbortSignal.timeout(45_000),
+    });
+    const json = await res.json().catch(() => ({ status: 'non_json_response', http: res.status }));
+    return { status: (json as { status?: string }).status ?? 'unknown', detail: json };
+  }, 5);
+
+  const results = outcomes.map((o) => {
+    if (o.ok) return { property_id: o.input.id, status: o.value.status, detail: o.value.detail };
+    log.error('ml-train-supply: ML service call failed', { requestId, property_id: o.input.id, err: o.error as Error });
+    return { property_id: o.input.id, status: 'error', detail: errToString(o.error) };
+  });
+
   return NextResponse.json({ ok: true, requestId, results });
 }
