@@ -1,0 +1,54 @@
+# ML shadow-evaluate cron — promote or rollback shadow models after 7-day soak
+#
+# Companion to the weekly training cron. When inventory training re-fits an
+# item that already has a graduated active model, the new fit lands as a
+# shadow run (is_shadow=true, is_active=false). After 7 days, this cron
+# decides whether to promote (replace the active) or reject (mark the
+# shadow ended, leave the active in place). See
+# /api/cron/ml-shadow-evaluate route header for the full design.
+#
+# Required GitHub Secret: CRON_SECRET — matches Vercel env.
+
+name: ML shadow evaluate
+
+on:
+  schedule:
+    # 11:30 UTC daily — well after the weekly retrain crons (Sunday 08:00 UTC)
+    # so any shadow from the latest retrain has the freshest soak start
+    # timestamp before today's evaluation pass runs.
+    - cron: "30 11 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run shadow-evaluate pass
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+
+          URL="https://getstaxis.com/api/cron/ml-shadow-evaluate"
+
+          RESPONSE=$(curl \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --max-time 120 \
+            --retry 2 \
+            --retry-delay 5 \
+            --retry-connrefused \
+            -H "Authorization: Bearer ${CRON_SECRET:-}" \
+            "$URL")
+
+          echo "Response: $RESPONSE"
+
+          echo "$RESPONSE" | grep -q '"ok":true' || {
+            echo "::error::ml-shadow-evaluate returned ok:false or malformed JSON"
+            exit 1
+          }

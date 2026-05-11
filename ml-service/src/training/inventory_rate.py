@@ -411,10 +411,37 @@ def _train_single_item(
         and consecutive_passes >= settings.inventory_graduation_consecutive_passes
     )
 
-    # Activation: any model with ≥3 events activates as the "current" model for
-    # this item. We don't gate on MAE because Bayesian-with-prior is always at
-    # least as good as static prior. The graduation gate gates auto-fill.
-    is_active = True
+    # Shadow mode gate (Tier 2 Phase 5).
+    #
+    # If there's already a graduated active model for this (property, item),
+    # this retrain lands as a shadow run instead of replacing it. The
+    # shadow sits at is_active=false, is_shadow=true for 7 days while the
+    # daily shadow-evaluate cron compares its validation_mae to the
+    # active's. If the shadow performs as well or better, the cron
+    # promotes it; otherwise the existing active keeps serving.
+    #
+    # Only graduated (auto_fill_enabled=true) actives gate shadow mode —
+    # early-stage models that haven't earned production trust yet keep
+    # replacing each other on every retrain. Cold-start cohort-prior runs
+    # never auto_fill_enabled, so they also keep getting replaced.
+    existing_active_rows = client.fetch_many(
+        "model_runs",
+        filters={
+            "property_id": property_id,
+            "layer": "inventory_rate",
+            "item_id": item_id,
+            "is_active": True,
+        },
+        limit=1,
+    )
+    existing_graduated = bool(
+        existing_active_rows
+        and existing_active_rows[0].get("auto_fill_enabled")
+    )
+
+    is_shadow = existing_graduated
+    is_active = not is_shadow
+    shadow_started_at = datetime.utcnow().isoformat() if is_shadow else None
 
     # Posterior params for Bayesian models (so inference can rebuild without the model file)
     posterior_params = None
@@ -431,7 +458,9 @@ def _train_single_item(
             "feature_names": model.feature_names,
         }
 
-    # Deactivate the old active model_runs row for this (property, item) before activating new one.
+    # Deactivate the old active model_runs row for this (property, item) before
+    # activating a new active. Skipped when this run lands as a shadow — the
+    # existing active keeps serving while the shadow is evaluated.
     if is_active:
         try:
             client.client.table("model_runs").update({
@@ -459,9 +488,11 @@ def _train_single_item(
         "beats_baseline_pct": beats_baseline_pct,
         "validation_holdout_n": len(X_test),
         "is_active": is_active,
+        "is_shadow": is_shadow,
+        "shadow_started_at": shadow_started_at,
         "activated_at": datetime.utcnow().isoformat() if is_active else None,
         "consecutive_passing_runs": consecutive_passes,
-        "auto_fill_enabled": auto_fill_enabled,
+        "auto_fill_enabled": auto_fill_enabled if is_active else False,
         "auto_fill_enabled_at": datetime.utcnow().isoformat() if auto_fill_enabled else None,
         "posterior_params": json.dumps(posterior_params) if posterior_params else None,
         "hyperparameters": json.dumps({"prior_rate_used": prior_rate, "cohort_key": cohort_key,
