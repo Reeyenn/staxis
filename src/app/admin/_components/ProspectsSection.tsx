@@ -92,12 +92,7 @@ export function ProspectsSection() {
   return (
     <section>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '8px' }}>
-        <div>
-          <h2 style={{ fontSize: '15px', fontWeight: 600 }}>Soon to be onboarded</h2>
-          <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>
-            Hotels you've talked to but haven't signed up yet. Track them here so nothing slips.
-          </p>
-        </div>
+        <h2 style={{ fontSize: '15px', fontWeight: 600 }}>Onboarding</h2>
         {!creating && (
           <button
             onClick={() => setCreating(true)}

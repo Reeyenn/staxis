@@ -1,27 +1,25 @@
 'use client';
 
 /**
- * Onboarding tab — everything about getting a hotel set up, from sales
- * lead through first sync.
+ * Onboarding tab — 4-column horizontal layout.
  *
- * Sections (top → bottom):
- *   1. Live mapping — running CUA jobs, auto-refresh every 5s
- *   2. Onboarding pipeline — 4 buckets showing where each new hotel is
- *      stuck (Signed up → Wizard done → PMS connected → Mapping)
- *   3. PMS coverage (plain English) — replaces the technical jargon
- *      with green/amber/red status per supported PMS
- *   4. Recent sign-ups — last 24h
+ *   Onboarding (prospects)    │  CUA agent learning PMS  │  Onboarding pipeline  │  PMS coverage
+ *   (ProspectsSection)        │  (live mapping jobs)     │  (4-stage funnel)     │  (learned-only)
  *
- * Phase 1 uses existing APIs only. Phase 4 adds the "Soon to be onboarded"
- * sales-pipeline section + per-hotel launch checklist on top.
+ * The Recent sign-ups list that used to live below was removed — the
+ * Onboarding pipeline already surfaces the same hotels.
+ *
+ * PMS coverage is filtered to PMSes the agent has actually learned
+ * (recipe.coveragePct > 0). PMSes with zero progress are hidden — they
+ * just clutter the list when we have one customer.
  */
 
 import React, { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import {
-  CheckCircle2, AlertCircle, Clock, Loader2, ChevronRight,
-  Layers, ArrowRight, AlertTriangle,
+  CheckCircle2, AlertCircle, Clock, Loader2,
+  AlertTriangle,
 } from 'lucide-react';
 import { ProspectsSection } from '@/app/admin/_components/ProspectsSection';
 
@@ -128,35 +126,40 @@ export function OnboardingTab() {
   const inOnboarding = props.filter((p) => !p.lastSyncedAt);
   const stages = bucketByStage(inOnboarding, liveJobs);
 
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+  // PMS coverage filter: only show PMSes the agent has actually learned.
+  // The full registry (all supported PMSes including never-touched ones)
+  // is still available behind the "Show technical details" link.
+  const learnedPms = pms.filter((p) => p.recipe !== null);
 
-      {/* 0. Sales pipeline (Phase 4) */}
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+      gap: '20px',
+      alignItems: 'start',
+    }}>
+
+      {/* Column 1: Onboarding (sales pipeline) */}
       <ProspectsSection />
 
-      {/* 1. Live mapping */}
-      <section>
-        <h2 style={sectionTitle}>Live mapping</h2>
-        <p style={sectionHint}>The CUA agent learning a PMS in real time.</p>
+      {/* Column 2: CUA agent learning PMS */}
+      <section style={columnStyle}>
+        <h2 style={sectionTitle}>CUA agent learning PMS</h2>
         {liveJobs.length === 0 ? (
           <EmptyState text="Nothing mapping right now ✓" />
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
             {liveJobs.map((j) => <LiveJobCard key={j.id} job={j} />)}
           </div>
         )}
       </section>
 
-      {/* 2. Pipeline */}
-      <section>
+      {/* Column 3: Onboarding pipeline.
+          Keep the 4 sub-buckets but flow them vertically within the column
+          so they fit the narrower width. */}
+      <section style={columnStyle}>
         <h2 style={sectionTitle}>Onboarding pipeline</h2>
-        <p style={sectionHint}>Where each new hotel is stuck. Click any to see detail.</p>
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
-          gap: '8px',
-          marginTop: '12px',
-        }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
           <PipelineColumn title="Signed up" hint="Account exists, wizard not done" rows={stages.signedUp} />
           <PipelineColumn title="Wizard done" hint="Staff added, no PMS yet" rows={stages.wizardDone} />
           <PipelineColumn title="PMS connected" hint="Creds saved, not mapped" rows={stages.pmsConnected} />
@@ -164,33 +167,30 @@ export function OnboardingTab() {
         </div>
       </section>
 
-      {/* 3. PMS coverage in plain English */}
-      <section>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div>
-            <h2 style={sectionTitle}>PMS coverage</h2>
-            <p style={sectionHint}>Which PMSes the agent has learned. Mapped = future hotels onboard free.</p>
-          </div>
-          <Link href="/admin/pms" style={{ fontSize: '12px', color: 'var(--text-muted)', textDecoration: 'none' }}>
-            Show technical details →
+      {/* Column 4: PMS coverage — filtered to learned only */}
+      <section style={columnStyle}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
+          <h2 style={sectionTitle}>PMS coverage</h2>
+          <Link href="/admin/pms" style={{ fontSize: '11px', color: 'var(--text-muted)', textDecoration: 'none' }}>
+            details →
           </Link>
         </div>
-        <div style={{
-          marginTop: '12px',
-          display: 'flex', flexDirection: 'column', gap: '8px',
-        }}>
-          {pms.map((p) => <PMSRow key={p.pmsType} pms={p} />)}
-        </div>
+        {learnedPms.length === 0 ? (
+          <EmptyState text="No PMSes learned yet. First hotel onboarding will populate this list." />
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+            {learnedPms.map((p) => <PMSRow key={p.pmsType} pms={p} />)}
+          </div>
+        )}
       </section>
 
-      {/* 4. Recent sign-ups */}
-      <section>
-        <h2 style={sectionTitle}>Recent sign-ups (last 24h)</h2>
-        <RecentSignupsList properties={props} />
-      </section>
     </div>
   );
 }
+
+const columnStyle: React.CSSProperties = {
+  minWidth: 0, // critical for grid children so long names don't overflow
+};
 
 // ── Sub-components ─────────────────────────────────────────────────────
 
@@ -326,47 +326,6 @@ function PMSRow({ pms }: { pms: PMSCoverage }) {
   );
 }
 
-function RecentSignupsList({ properties }: { properties: PropertyRow[] }) {
-  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-  const recent = properties.filter((p) => Date.parse(p.createdAt) >= cutoff);
-  if (recent.length === 0) {
-    return <EmptyState text="No new sign-ups in the last 24 hours." />;
-  }
-  return (
-    <div style={{
-      marginTop: '8px',
-      border: '1px solid var(--border)',
-      borderRadius: '10px',
-      overflow: 'hidden',
-      background: 'var(--surface-primary)',
-    }}>
-      {recent.map((p, idx) => (
-        <Link
-          key={p.id}
-          href={`/admin/properties/${p.id}`}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '10px 14px',
-            borderBottom: idx < recent.length - 1 ? '1px solid var(--border)' : 'none',
-            textDecoration: 'none',
-            color: 'inherit',
-          }}
-        >
-          <div>
-            <div style={{ fontSize: '13px', fontWeight: 600 }}>{p.name ?? '(unnamed)'}</div>
-            <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
-              Joined {formatAge(p.createdAt)} · {p.staffCount} staff added · {p.pmsType ?? 'no PMS yet'}
-            </div>
-          </div>
-          <ChevronRight size={14} color="var(--text-muted)" />
-        </Link>
-      ))}
-    </div>
-  );
-}
-
 function EmptyState({ text }: { text: string }) {
   return (
     <div style={{
@@ -405,26 +364,9 @@ function bucketByStage(props: PropertyRow[], liveJobs: JobRow[]) {
   return { signedUp, wizardDone, pmsConnected, mapping };
 }
 
-function formatAge(iso: string): string {
-  const ms = Date.now() - new Date(iso).getTime();
-  const sec = Math.floor(ms / 1000);
-  if (sec < 60) return `${sec}s ago`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  return `${Math.floor(hr / 24)}d ago`;
-}
-
 const sectionTitle: React.CSSProperties = {
   fontSize: '15px',
   fontWeight: 600,
   letterSpacing: '-0.01em',
-};
-
-const sectionHint: React.CSSProperties = {
-  fontSize: '12px',
-  color: 'var(--text-muted)',
-  marginTop: '2px',
-  marginBottom: '8px',
+  marginBottom: '4px',
 };
