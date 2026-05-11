@@ -95,7 +95,7 @@ async def predict_inventory_rates(
     daily_logs = client.fetch_many(
         "daily_logs",
         filters={"property_id": property_id},
-        order_by="log_date",
+        order_by="date",  # daily_logs.date (was incorrectly "log_date" — fixed in Tier 2 triple-check)
         descending=True,
         limit=14,
     )

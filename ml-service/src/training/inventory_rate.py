@@ -291,7 +291,12 @@ def _train_single_item(
     daily_logs = client.fetch_many(
         "daily_logs",
         filters={"property_id": property_id},
-        order_by="log_date",
+        # daily_logs.date is the operational date (per inspection of
+        # information_schema). The earlier `log_date` reference would have
+        # been correct against an older schema; the deployed table uses
+        # `date`. Caught during Tier 2 triple-check after fixing the
+        # `descending=` keyword in supabase_client unmasked this layer.
+        order_by="date",
         descending=True,
         limit=400,
     )
@@ -583,7 +588,7 @@ def _avg_occupancy_in_window(
     start_d = t_start.date()
     end_d = t_end.date()
     for log in daily_logs:
-        ld = log.get("log_date")
+        ld = log.get("date")  # daily_logs.date — see fetch_many call above
         if not ld:
             continue
         try:
