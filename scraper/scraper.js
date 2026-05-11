@@ -51,6 +51,7 @@ const { pullOOOWorkOrders } = require('./ooo-pull');
 const { pullHkCenter } = require('./hk-center-pull');
 const { ScraperError, ERROR_CODES } = require('./scraper-errors');
 const { runVercelWatchdog } = require('./vercel-watchdog');
+const { loadActiveProperties } = require('./properties-loader');
 const { safeEval, goWithSettle } = require('./page-helpers');
 const { clickFirstMatching, fillFirstMatching } = require('./selector-helpers');
 const {
@@ -195,7 +196,21 @@ async function writeScrapeStatus(pullType, status, extra = {}) {
 
 // ─── Login ─────────────────────────────────────────────────────────────────
 
-async function login(page) {
+/**
+ * Log into Choice Advantage.
+ *
+ * The credentials and login URL can be passed in explicitly; if omitted, they
+ * fall back to the legacy CONFIG values driven by env vars. The optional
+ * `creds` parameter is the seam used by the multi-tenant path (Phase 1.1):
+ * scraper_credentials → loadActiveProperties() → here.
+ *
+ * @param {import('playwright').Page} page
+ * @param {{username?: string, password?: string, loginUrl?: string}} [creds]
+ */
+async function login(page, creds) {
+  const caUsername = (creds && creds.username) || CONFIG.CA_USERNAME;
+  const caPassword = (creds && creds.password) || CONFIG.CA_PASSWORD;
+  const caLoginUrl = (creds && creds.loginUrl) || CONFIG.CA_LOGIN_URL;
   log('Logging into Choice Advantage...');
 
   // Always clear cookies before login. CA's session-cookie state can land us
@@ -216,7 +231,7 @@ async function login(page) {
   try {
     // goWithSettle = page.goto + load + networkidle. The single correct way
     // to navigate CA in this scraper. See scraper/page-helpers.js header.
-    await goWithSettle(page, CONFIG.CA_LOGIN_URL);
+    await goWithSettle(page, caLoginUrl);
   } catch (err) {
     throw new ScraperError(ERROR_CODES.CA_UNREACHABLE, `Login page unreachable: ${err.message}`);
   }
@@ -238,13 +253,14 @@ async function login(page) {
     return;
   }
 
-  // Guard against missing credentials — if the env var is empty, the fill
+  // Guard against missing credentials — if the value is empty, the fill
   // below would submit blank fields and we'd misclassify the resulting
-  // rejection as a password-change. Be explicit.
-  if (!CONFIG.CA_USERNAME || !CONFIG.CA_PASSWORD) {
+  // rejection as a password-change. Be explicit. Credentials come from
+  // the `creds` arg first, env-var fallback second (see top of fn).
+  if (!caUsername || !caPassword) {
     throw new ScraperError(
       ERROR_CODES.LOGIN_FAILED,
-      'Missing CA_USERNAME / CA_PASSWORD env vars'
+      'Missing CA credentials (neither creds arg nor CA_USERNAME / CA_PASSWORD env vars set)'
     );
   }
 
@@ -262,7 +278,7 @@ async function login(page) {
         'input[type="text"][autocomplete="username"]',
         'label:has-text("Username") >> input',
         'label:has-text("User") >> input[type="text"]',
-      ], CONFIG.CA_USERNAME, 'username', log, { required: true });
+      ], caUsername, 'username', log, { required: true });
     } catch (err) {
       throw new ScraperError(ERROR_CODES.LOGIN_FAILED, err.message);
     }
@@ -274,7 +290,7 @@ async function login(page) {
         'input[id="password"]',
         'input[type="password"][autocomplete="current-password"]',
         'label:has-text("Password") >> input',
-      ], CONFIG.CA_PASSWORD, 'password', log, { required: true });
+      ], caPassword, 'password', log, { required: true });
     } catch (err) {
       throw new ScraperError(ERROR_CODES.LOGIN_FAILED, err.message);
     }
@@ -746,6 +762,47 @@ async function run() {
   // stale/revoked, crash loud now instead of writing garbage for hours.
   await verifySupabaseAuth(supabase, log);
 
+  // ─── Resolve the active property + credentials ────────────────────────
+  // Multi-tenant wire-up (Phase 1.1): the scraper instance is driven by
+  // scraper_credentials when it has a matching row for this SCRAPER_INSTANCE_ID,
+  // otherwise it falls back to the legacy env-var single-property model.
+  // Either way, ACTIVE.propertyId is what we stamp on every write, and
+  // ACTIVE.caUsername / caPassword / caLoginUrl is what login() uses.
+  //
+  // Today we still require N=1 — multi-property tick iteration is the
+  // next step (Phase 1.1b, lands when Hotel #2 is queued for onboarding).
+  // Returning >1 is an explicit error; the operator must intentionally
+  // expand the fleet (and the scraper must be redeployed with iteration
+  // support) before that path is safe.
+  const _allProps = await loadActiveProperties(supabase);
+  if (_allProps.length === 0) {
+    console.error(`[${new Date().toISOString()}] FATAL: no active properties.`);
+    console.error("Fix: either set HOTELOPS_PROPERTY_ID + CA_USERNAME + CA_PASSWORD env vars on Railway, or insert a row into scraper_credentials matching this instance's SCRAPER_INSTANCE_ID.");
+    process.exit(1);
+  }
+  if (_allProps.length > 1) {
+    console.error(`[${new Date().toISOString()}] FATAL: ${_allProps.length} active properties resolved for this scraper instance.`);
+    for (const p of _allProps) console.error(`  • ${p.propertyId} (${p.pmsType}) — fromFallback=${p.fromFallback}`);
+    console.error('Multi-property per-tick iteration is not yet wired into scraper.js. Either pin one property to this instance via SCRAPER_INSTANCE_ID, or wait for Phase 1.1b to land. Refusing to start to avoid silent cross-tenant writes.');
+    process.exit(1);
+  }
+  const ACTIVE = _allProps[0];
+  log(`Active property: ${ACTIVE.propertyId} (${ACTIVE.pmsType}, fromFallback=${ACTIVE.fromFallback})`);
+
+  // ─── Cross-check: ACTIVE must match HOTELOPS_PROPERTY_ID env ─────────
+  // The pull functions at module scope still reference CONFIG.PROPERTY_ID
+  // directly (csv-scraper, dashboard-pull, ooo-pull all stamp the env's
+  // property_id on writes). Phase 1.1b will plumb a per-property arg
+  // through; until then, refuse to run if the DB-driven property differs
+  // from the env-driven one — that's how cross-tenant writes would
+  // happen, and silently writing to the wrong hotel is exactly the
+  // failure mode we're hardening against.
+  if (ACTIVE.propertyId !== CONFIG.PROPERTY_ID) {
+    console.error(`[${new Date().toISOString()}] FATAL: scraper_credentials resolved property=${ACTIVE.propertyId}, but HOTELOPS_PROPERTY_ID env is ${CONFIG.PROPERTY_ID}.`);
+    console.error('Fix: align HOTELOPS_PROPERTY_ID env with the scraper_credentials.property_id for this SCRAPER_INSTANCE_ID, OR remove the scraper_credentials row to use pure env-var mode.');
+    process.exit(1);
+  }
+
   const browser = await chromium.launch({
     headless: process.env.HEADED !== 'true',
     args: ['--no-sandbox', '--disable-setuid-sandbox'], // needed on Railway/Linux
@@ -755,22 +812,31 @@ async function run() {
   // redeploy doesn't lose the CA login. Fall back to the on-disk session file
   // (which only survives within a single container's lifetime) if Supabase is
   // unreachable on boot. Either way, login() will refresh on a stale session.
-  const persistedState = await loadScraperSession(supabase, CONFIG.PROPERTY_ID, log);
+  // Session is keyed by the ACTIVE property's id so multiple properties can
+  // never share a single CA cookie jar.
+  const sessionFile = CONFIG.SESSION_FILE.replace(/\.json$/, `-${ACTIVE.propertyId}.json`);
+  const persistedState = await loadScraperSession(supabase, ACTIVE.propertyId, log);
   const contextOptions = persistedState
     ? { storageState: persistedState }
-    : (fs.existsSync(CONFIG.SESSION_FILE)
-        ? { storageState: CONFIG.SESSION_FILE }
+    : (fs.existsSync(sessionFile)
+        ? { storageState: sessionFile }
         : {});
   const context = await browser.newContext(contextOptions);
 
   const page = await context.newPage();
 
-  await login(page);
+  const ACTIVE_CREDS = {
+    username: ACTIVE.caUsername,
+    password: ACTIVE.caPassword,
+    loginUrl: ACTIVE.caLoginUrl,
+  };
+
+  await login(page, ACTIVE_CREDS);
   // Write to BOTH places: file-on-disk (legacy, useful for local dev) AND
   // Supabase (survives Railway redeploys). Writes are tolerant of failure.
-  await context.storageState({ path: CONFIG.SESSION_FILE });
+  await context.storageState({ path: sessionFile });
   const stateBlob = await context.storageState();
-  await saveScraperSession(supabase, CONFIG.PROPERTY_ID, stateBlob, log);
+  await saveScraperSession(supabase, ACTIVE.propertyId, stateBlob, log);
 
   // Optional: on startup, pull today's CSV immediately — useful for smoke tests.
   if (process.env.CSV_TEST_ON_STARTUP === 'true') {
@@ -825,13 +891,13 @@ async function run() {
       LOGIN_BREAKER.openSinceMs = null;
     }
     try {
-      await login(page);
+      await login(page, ACTIVE_CREDS);
       // Success — reset the counter and persist the fresh session to
       // both file and Supabase so a redeploy can resume.
       LOGIN_BREAKER.consecutiveFailures = 0;
-      await context.storageState({ path: CONFIG.SESSION_FILE });
+      await context.storageState({ path: sessionFile });
       const stateBlob = await context.storageState();
-      await saveScraperSession(supabase, CONFIG.PROPERTY_ID, stateBlob, log);
+      await saveScraperSession(supabase, ACTIVE.propertyId, stateBlob, log);
     } catch (err) {
       LOGIN_BREAKER.consecutiveFailures += 1;
       if (LOGIN_BREAKER.consecutiveFailures >= LOGIN_BREAKER.OPEN_AFTER_FAILURES) {
@@ -876,9 +942,9 @@ async function run() {
         await maybeRunOOOPull(page, relogin);
         // Refresh session cookie so we stay logged in. Best-effort
         // Supabase mirror so Railway redeploy doesn't force a fresh login.
-        await context.storageState({ path: CONFIG.SESSION_FILE });
+        await context.storageState({ path: sessionFile });
         const stateBlob = await context.storageState();
-        await saveScraperSession(supabase, CONFIG.PROPERTY_ID, stateBlob, log);
+        await saveScraperSession(supabase, ACTIVE.propertyId, stateBlob, log);
       });
     } catch (err) {
       log(`ERROR during tick: ${err.message}`);
