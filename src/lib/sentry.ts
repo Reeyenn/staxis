@@ -49,8 +49,14 @@ const TAG_VALUE_MAX = 200;
  *     transports reject the value).
  *   - Collapse runs of whitespace.
  *   - Trim.
- *   - Clamp to TAG_VALUE_MAX; on truncation, append "…" to make the
- *     cut visible in the dashboard.
+ *   - Clamp to TAG_VALUE_MAX codepoints; on truncation, append "…"
+ *     so the cut is visible in the dashboard.
+ *
+ * Codepoint-aware truncation matters: a hotel name like "🏨 Resort"
+ * uses a surrogate pair for the emoji (2 UTF-16 units, 1 codepoint).
+ * Naive `.slice(0, 199)` could land between the two halves of a
+ * surrogate pair and produce an invalid UTF-16 string. Array.from
+ * splits on codepoint boundaries — safe regardless of input shape.
  *
  * Returns null when the cleaned value is empty (caller should skip
  * setting the tag — Sentry rejects empty values).
@@ -60,10 +66,13 @@ function cleanTagValue(raw: string): string | null {
   // a single space, then trim.
   const collapsed = raw.replace(/\s+/g, ' ').trim();
   if (collapsed.length === 0) return null;
+  // Cheap path: ASCII inputs (the overwhelming majority — UUIDs, hotel
+  // names, route paths) have length === codepoint-count, no surrogate
+  // pairs possible. Skip Array.from entirely when well under the cap.
   if (collapsed.length <= TAG_VALUE_MAX) return collapsed;
-  // Truncate at TAG_VALUE_MAX-1 then add the ellipsis so the total
-  // string length is exactly TAG_VALUE_MAX.
-  return collapsed.slice(0, TAG_VALUE_MAX - 1) + '…';
+  const codepoints = Array.from(collapsed);
+  if (codepoints.length <= TAG_VALUE_MAX) return collapsed;
+  return codepoints.slice(0, TAG_VALUE_MAX - 1).join('') + '…';
 }
 
 /**

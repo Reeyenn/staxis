@@ -76,21 +76,41 @@ export async function GET(req: NextRequest) {
 
   try {
     // 1. All scraper_credentials rows (instance assignment).
+    //
+    // Explicit .range(0, FLEET_HARD_CAP - 1) bounds the result set so a
+    // future fleet of 1000+ hotels doesn't silently get truncated by
+    // PostgREST's default 1000-row limit. At 10,000 we'd want to
+    // paginate the response or aggregate server-side; for the
+    // foreseeable horizon a generous hard cap is enough. Logging on
+    // hit-cap so we know if we ever approach it.
+    const FLEET_HARD_CAP = 10_000;
     const { data: creds, error: credsErr } = await supabaseAdmin
       .from('scraper_credentials')
-      .select('property_id, scraper_instance, is_active, pms_type');
+      .select('property_id, scraper_instance, is_active, pms_type')
+      .range(0, FLEET_HARD_CAP - 1);
     if (credsErr) {
       log.error('scraper-instances: creds query failed', { requestId, err: credsErr as unknown as Error });
       return err('failed to load scraper_credentials', { requestId, status: 500 });
+    }
+    if ((creds ?? []).length >= FLEET_HARD_CAP) {
+      log.warn('scraper-instances: scraper_credentials hit hard cap — paginate or aggregate', {
+        requestId, fleet_hard_cap: FLEET_HARD_CAP,
+      });
     }
 
     // 2. All properties (so we can label, AND detect "unassigned" ones).
     const { data: properties, error: propErr } = await supabaseAdmin
       .from('properties')
-      .select('id, name');
+      .select('id, name')
+      .range(0, FLEET_HARD_CAP - 1);
     if (propErr) {
       log.error('scraper-instances: properties query failed', { requestId, err: propErr as unknown as Error });
       return err('failed to load properties', { requestId, status: 500 });
+    }
+    if ((properties ?? []).length >= FLEET_HARD_CAP) {
+      log.warn('scraper-instances: properties hit hard cap — paginate or aggregate', {
+        requestId, fleet_hard_cap: FLEET_HARD_CAP,
+      });
     }
     const nameByPid = new Map<string, string | null>(
       (properties ?? []).map((p) => [p.id as string, (p.name as string | null) ?? null]),

@@ -125,4 +125,27 @@ describe('setPropertyContextOnScope', () => {
     assert.equal(calls.tags['property.id'], undefined);
     assert.equal(calls.tags['property.name'], undefined);
   });
+
+  it('truncates emoji-heavy names on codepoint boundaries (no broken surrogate pairs)', () => {
+    const { scope, calls } = makeFakeScope();
+    // 250 hotel emoji = 250 codepoints = 500 UTF-16 units. A naive
+    // .slice(0, 199) on the UTF-16 form would cut the 99th emoji's
+    // surrogate pair in half, producing invalid UTF-16. Array.from-
+    // based truncation slices on codepoint boundaries, so the result
+    // is always valid.
+    const name = '🏨'.repeat(250);
+    setPropertyContextOnScope(scope, { pid: 'abc', property_name: name });
+    const tag = calls.tags['property.name'] as string;
+    // 199 emoji + 1 ellipsis = 200 codepoints. UTF-16 length is 399.
+    assert.equal(Array.from(tag).length, 200);
+    assert.ok(tag.endsWith('…'));
+    // Verify the string is valid UTF-16 by round-tripping through
+    // codepoint extraction — an invalid lone surrogate would survive
+    // Array.from as a single 16-bit unit, breaking this expectation.
+    for (const cp of tag) {
+      // Each codepoint should be either '🏨' or '…' — never a lone
+      // surrogate.
+      assert.ok(cp === '🏨' || cp === '…');
+    }
+  });
 });

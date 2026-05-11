@@ -96,13 +96,18 @@ export function initSentry(): boolean {
 // Sentry tag values cap at 200 chars and reject newline-bearing strings
 // at the ingest layer. Clamp here so a long hotel name or a stack-like
 // string in a `job_id` field doesn't silently disappear from the
-// dashboard. Mirrors cleanTagValue in src/lib/sentry.ts.
+// dashboard. Mirrors cleanTagValue in src/lib/sentry.ts — including the
+// codepoint-aware truncation (Array.from splits on codepoint
+// boundaries so a "🏨 Resort" hotel name doesn't get cut mid-surrogate-
+// pair and produce invalid UTF-16).
 const TAG_VALUE_MAX = 200;
 function cleanTagValue(raw: string): string | null {
   const collapsed = raw.replace(/\s+/g, ' ').trim();
   if (collapsed.length === 0) return null;
   if (collapsed.length <= TAG_VALUE_MAX) return collapsed;
-  return collapsed.slice(0, TAG_VALUE_MAX - 1) + '…';
+  const codepoints = Array.from(collapsed);
+  if (codepoints.length <= TAG_VALUE_MAX) return collapsed;
+  return codepoints.slice(0, TAG_VALUE_MAX - 1).join('') + '…';
 }
 
 /**
