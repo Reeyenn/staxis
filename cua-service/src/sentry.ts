@@ -93,16 +93,57 @@ export function initSentry(): boolean {
   return true;
 }
 
+/**
+ * Lift property identifiers out of free-form context onto Sentry tags
+ * (filterable in the dashboard) rather than just extras (unfilterable).
+ * The CUA worker is property-scoped by nature — every job runs against
+ * one hotel — so any error worth Sentry-ing is something we'll later
+ * want to slice "by which hotel did this happen to."
+ *
+ * Mirrors src/lib/sentry.ts in the main Next.js app so dashboards work
+ * the same way regardless of which service raised the error.
+ */
+function buildPropertyTags(context?: Record<string, unknown>): Record<string, string> {
+  if (!context) return {};
+  const tags: Record<string, string> = {};
+  const pidCandidate =
+    context.pid ?? context.property_id ?? context.propertyId;
+  if (typeof pidCandidate === 'string' && pidCandidate.length > 0) {
+    tags['property.id'] = pidCandidate;
+  }
+  const nameCandidate = context.property_name ?? context.propertyName;
+  if (typeof nameCandidate === 'string' && nameCandidate.length > 0) {
+    tags['property.name'] = nameCandidate;
+  }
+  // CUA-specific: most errors are scoped to a job_id (one PMS-mapping run).
+  // Surfacing it as a tag means "find every error from job X" is one click.
+  const jobCandidate = context.job_id ?? context.jobId;
+  if (typeof jobCandidate === 'string' && jobCandidate.length > 0) {
+    tags['cua.job_id'] = jobCandidate;
+  }
+  return tags;
+}
+
 export function captureException(err: unknown, context?: Record<string, unknown>): void {
   if (!initialized) return;
-  Sentry.captureException(err, context ? { extra: context } : undefined);
+  if (!context) {
+    Sentry.captureException(err);
+    return;
+  }
+  const tags = buildPropertyTags(context);
+  Sentry.captureException(err, {
+    extra: context,
+    ...(Object.keys(tags).length > 0 ? { tags } : {}),
+  });
 }
 
 export function captureMessage(msg: string, level: 'info' | 'warning' | 'error' = 'error', context?: Record<string, unknown>): void {
   if (!initialized) return;
+  const tags = buildPropertyTags(context);
   Sentry.captureMessage(msg, {
     level,
     extra: context,
+    ...(Object.keys(tags).length > 0 ? { tags } : {}),
   });
 }
 
