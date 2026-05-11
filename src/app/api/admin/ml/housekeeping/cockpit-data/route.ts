@@ -33,10 +33,9 @@ const isUuid = (s: unknown): s is string =>
 const TRAINING_FRESH_SEC = 8 * 86400;
 const PREDICTION_FRESH_SEC = 36 * 3600;
 
-// Test-property heuristic — same as inventory cockpit. Test properties are
-// excluded from fleet aggregates but still listed in the sidebar with a
-// 🧪 chip.
-const TEST_PROPERTY_NAME_RE = /\b(test|canary)\b/i;
+// Test-property flag comes from properties.is_test (migration 0068).
+// Test properties are excluded from fleet aggregates but still listed
+// in the sidebar with a 🧪 chip. Same model as inventory cockpit.
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -173,17 +172,17 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   try {
     const { data: allProps, error: propsErr } = await supabaseAdmin
       .from('properties')
-      .select('id, name, brand, created_at')
+      .select('id, name, brand, created_at, is_test')
       .order('name', { ascending: true });
     if (propsErr) throw propsErr;
     const propsList = allProps ?? [];
 
-    // Network mode excludes test properties from the aggregate. Test
-    // properties still appear in the sidebar with a 🧪 chip and can be
-    // drilled into via ?propertyId=<uuid>.
+    // Network mode excludes test properties (is_test = true) from the
+    // aggregate. Test properties still appear in the sidebar with a 🧪
+    // chip and can be drilled into via ?propertyId=<uuid>.
     const scopeIds: string[] = propertyIdParam
       ? propsList.filter((p) => p.id === propertyIdParam).map((p) => p.id)
-      : propsList.filter((p) => !TEST_PROPERTY_NAME_RE.test(p.name)).map((p) => p.id);
+      : propsList.filter((p) => !p.is_test).map((p) => p.id);
 
     if (propertyIdParam && scopeIds.length === 0) {
       return NextResponse.json({ ok: false, error: 'property_not_found' }, { status: 404 });
@@ -337,7 +336,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         eventsLast7d: t?.last7d ?? 0,
         eventsLast1h: t?.last1h ?? 0,
         joinedAt: (p as { created_at?: string }).created_at ?? null,
-        isTest: TEST_PROPERTY_NAME_RE.test(p.name),
+        isTest: Boolean(p.is_test),
       };
     });
 

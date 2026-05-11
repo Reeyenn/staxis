@@ -42,11 +42,11 @@ const isUuid = (s: unknown): s is string =>
 const TRAINING_FRESH_SEC = 8 * 86400;       // 8 days — cron is weekly
 const PREDICTION_FRESH_SEC = 36 * 3600;     // 36 hours — cron is daily
 
-// Test-property heuristic. Properties whose names match this regex are
-// flagged isTest and EXCLUDED from fleet aggregates (but still listed in
-// the sidebar with a 🧪 chip). Reeyen's CANARY fleet-cua test property
-// trips both 'canary' and 'test' — either match flags it.
-const TEST_PROPERTY_NAME_RE = /\b(test|canary)\b/i;
+// Test-property flag comes from properties.is_test (migration 0068).
+// Test properties are EXCLUDED from fleet aggregates but still listed
+// in the sidebar with a 🧪 chip. Replaces an earlier name-regex
+// heuristic that caused false positives on hotel names containing
+// "test" and false negatives on test properties named differently.
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -175,21 +175,21 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // 1. Properties — basic metadata for sidebar + aggregation scoping
     const { data: allProps, error: propsErr } = await supabaseAdmin
       .from('properties')
-      .select('id, name, brand, inventory_ai_mode, created_at')
+      .select('id, name, brand, inventory_ai_mode, created_at, is_test')
       .order('name', { ascending: true });
     if (propsErr) throw propsErr;
     const propsList = allProps ?? [];
 
     // Decide scope: list of property IDs to aggregate over.
     //
-    // Network mode excludes test properties from the aggregate (so
-    // CANARY fleet-cua test doesn't pull "fleet median day" toward 0).
-    // Test properties still appear in the sidebar with a 🧪 chip and can
-    // be drilled into via ?propertyId=<uuid>; they just don't count toward
-    // network rollups.
+    // Network mode excludes test properties (is_test = true) from the
+    // aggregate so a sandbox hotel doesn't pull "fleet median day" toward
+    // 0. Test properties still appear in the sidebar with a 🧪 chip and
+    // can be drilled into via ?propertyId=<uuid>; they just don't count
+    // toward network rollups.
     const scopeIds: string[] = propertyIdParam
       ? propsList.filter((p) => p.id === propertyIdParam).map((p) => p.id)
-      : propsList.filter((p) => !TEST_PROPERTY_NAME_RE.test(p.name)).map((p) => p.id);
+      : propsList.filter((p) => !p.is_test).map((p) => p.id);
 
     if (propertyIdParam && scopeIds.length === 0) {
       return NextResponse.json({ ok: false, error: 'property_not_found' }, { status: 404 });
@@ -354,7 +354,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         countsLast7d: tally?.last7d ?? 0,
         countsLast1h: tally?.last1h ?? 0,
         joinedAt: (p as { created_at?: string }).created_at ?? null,
-        isTest: TEST_PROPERTY_NAME_RE.test(p.name),
+        isTest: Boolean(p.is_test),
       };
     });
 
