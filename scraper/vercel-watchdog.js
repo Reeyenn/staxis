@@ -67,8 +67,13 @@ const ALERT_WINDOW_END   = 22;
 
 // Doctor endpoint — Vercel's production URL. We hit this URL from Railway
 // specifically because that's the whole point: cross-platform check.
+// Default to the canonical brand domain. The legacy alias
+// hotelops-ai.vercel.app now 301-redirects to getstaxis.com, and Node's
+// fetch() strips the Authorization header across that origin change —
+// the watchdog would silently report "auth_mismatch" forever. Always
+// hit the canonical host directly so the bearer token survives.
 const DOCTOR_URL = process.env.VERCEL_DOCTOR_URL
-  || 'https://hotelops-ai.vercel.app/api/admin/doctor';
+  || 'https://getstaxis.com/api/admin/doctor';
 
 // Max time to wait for doctor to respond. Doctor itself caps at 30s, so
 // 35s covers the round trip with headroom.
