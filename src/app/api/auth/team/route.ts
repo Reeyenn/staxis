@@ -25,6 +25,7 @@ import { getOrMintRequestId } from '@/lib/log';
 import { verifyTeamManager, canManageHotel } from '@/lib/team-auth';
 import { isAssignableRole, type AppRole } from '@/lib/roles';
 import { writeAudit } from '@/lib/audit';
+import { validateUuid } from '@/lib/api-validate';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -35,8 +36,11 @@ export async function GET(req: NextRequest) {
   if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
 
   const { searchParams } = new URL(req.url);
-  const hotelId = searchParams.get('hotelId');
-  if (!hotelId) return err('hotelId required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  const hotelIdRaw = searchParams.get('hotelId');
+  if (!hotelIdRaw) return err('hotelId required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  const hotelIdCheck = validateUuid(hotelIdRaw, 'hotelId');
+  if (hotelIdCheck.error) return err(hotelIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  const hotelId = hotelIdCheck.value!;
   if (!canManageHotel(caller, hotelId)) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
@@ -95,10 +99,16 @@ export async function PUT(req: NextRequest) {
     role?: string;
     password?: string;
   };
-  const { hotelId, accountId, displayName, role, password } = body;
+  const { displayName, role, password } = body;
 
-  if (!hotelId) return err('hotelId required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  if (!accountId) return err('accountId required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  const hotelIdCheck = validateUuid(body.hotelId, 'hotelId');
+  if (hotelIdCheck.error) return err(hotelIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  const hotelId = hotelIdCheck.value!;
+
+  const accountIdCheck = validateUuid(body.accountId, 'accountId');
+  if (accountIdCheck.error) return err(accountIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  const accountId = accountIdCheck.value!;
+
   if (!canManageHotel(caller, hotelId)) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
@@ -205,10 +215,14 @@ export async function DELETE(req: NextRequest) {
   if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
 
   const { searchParams } = new URL(req.url);
-  const hotelId = searchParams.get('hotelId');
-  const accountId = searchParams.get('accountId');
-  if (!hotelId) return err('hotelId required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  if (!accountId) return err('accountId required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  const hotelIdCheck = validateUuid(searchParams.get('hotelId'), 'hotelId');
+  if (hotelIdCheck.error) return err(hotelIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  const hotelId = hotelIdCheck.value!;
+
+  const accountIdCheck = validateUuid(searchParams.get('accountId'), 'accountId');
+  if (accountIdCheck.error) return err(accountIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  const accountId = accountIdCheck.value!;
+
   if (!canManageHotel(caller, hotelId)) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }

@@ -13,6 +13,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession } from '@/lib/api-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { validateUuid } from '@/lib/api-validate';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -35,14 +36,33 @@ export async function POST(req: NextRequest) {
     return err(`invalid category: ${category}`, { requestId, status: 400 });
   }
 
-  // Pull user display name + email so we don't need a join later.
+  // Pull user display name + email AND property_access in one round-trip
+  // so we can both denormalize identity onto the feedback row AND verify
+  // the caller has access to whatever propertyId they're claiming. Without
+  // the capability check, a signed-in team member of Hotel A could submit
+  // feedback tagged with Hotel B's id (admin's "feedback by hotel" view
+  // would attribute the complaint to the wrong property).
   const { data: account } = await supabaseAdmin
     .from('accounts')
-    .select('display_name, email')
+    .select('display_name, email, role, property_access')
     .eq('data_user_id', session.userId)
     .maybeSingle();
 
-  const propertyId = (body.propertyId as string | undefined) ?? null;
+  // propertyId is optional — feedback CAN be untagged (a generic "love this
+  // app" from a multi-property owner). But when supplied it must be a valid
+  // UUID and within the caller's property_access (admins bypass).
+  let propertyId: string | null = null;
+  if (body.propertyId !== undefined && body.propertyId !== null && body.propertyId !== '') {
+    const pidCheck = validateUuid(body.propertyId, 'propertyId');
+    if (pidCheck.error) return err(pidCheck.error, { requestId, status: 400 });
+    const claimedPid = pidCheck.value!;
+    const isAdmin = account?.role === 'admin';
+    const access = Array.isArray(account?.property_access) ? account!.property_access : [];
+    if (!isAdmin && !access.includes(claimedPid)) {
+      return err('You do not have access to that property', { requestId, status: 403 });
+    }
+    propertyId = claimedPid;
+  }
 
   const { data, error } = await supabaseAdmin
     .from('user_feedback')

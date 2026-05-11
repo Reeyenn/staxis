@@ -203,24 +203,41 @@ export async function POST(req: NextRequest) {
     // (potentially racking up charges and spoofing housekeeper replies).
     //
     // The April 16 bug-tracker run found this route was open. Adding it
-    // now via the official `twilio` SDK's `validateRequest`. We skip the
-    // check entirely if TWILIO_AUTH_TOKEN is not set (e.g. in a non-Twilio
-    // dev environment), and we accept JSON requests without a signature
-    // because Twilio doesn't sign JSON SMS webhooks — only the inbound
-    // form-encoded ones, which is the path that matters here.
+    // now via the official `twilio` SDK's `validateRequest`. We accept
+    // JSON requests without a signature because Twilio doesn't sign JSON
+    // SMS webhooks — only the inbound form-encoded ones, which is the
+    // path that matters here.
+    //
+    // Fail-closed: if TWILIO_ACCOUNT_SID is set on this deploy (Twilio is
+    // actually wired up) but TWILIO_AUTH_TOKEN is missing, the signature
+    // check would silently no-op and leave the route open. Refuse to
+    // process — this is config drift, not a dev environment. Pure-dev
+    // setups (no SID, no token) still pass through unsigned because
+    // there's no Twilio side to spoof.
     const signatureHeader = req.headers.get('x-twilio-signature');
     const isFormEncoded = !contentType.includes('application/json');
-    if (isFormEncoded && process.env.TWILIO_AUTH_TOKEN) {
-      const url = reconstructWebhookUrl(req);
-      const ok = verifyTwilioSignature(url, signatureHeader, formParams);
-      if (!ok) {
+    if (isFormEncoded) {
+      const twilioWired = !!process.env.TWILIO_ACCOUNT_SID;
+      const haveToken = !!process.env.TWILIO_AUTH_TOKEN;
+      if (twilioWired && !haveToken) {
         await logHit({
-          stage: 'signature_invalid',
-          url,
-          hasSignatureHeader: !!signatureHeader,
+          stage: 'config_drift_missing_auth_token',
           fromHeader: fromNumber ?? null,
         });
-        return forbidden('invalid twilio signature');
+        return forbidden('sms-reply not configured (auth token missing)');
+      }
+      if (haveToken) {
+        const url = reconstructWebhookUrl(req);
+        const ok = verifyTwilioSignature(url, signatureHeader, formParams);
+        if (!ok) {
+          await logHit({
+            stage: 'signature_invalid',
+            url,
+            hasSignatureHeader: !!signatureHeader,
+            fromHeader: fromNumber ?? null,
+          });
+          return forbidden('invalid twilio signature');
+        }
       }
     }
 
