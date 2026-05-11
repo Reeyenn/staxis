@@ -719,12 +719,61 @@ The scraper, app, and crons run on three platforms. Every env var below is requi
 | `HOTELOPS_PROPERTY_ID`        |        | ✅      |                | UUID of the property this scraper deploy belongs to. |
 | `TIMEZONE`                    |        | ✅      |                | IANA zone, defaults to `America/Chicago`. |
 | `TICK_MINUTES`                |        | ✅      |                | Defaults to 5. |
+| `SCRAPER_INSTANCE_ID`         |        | ✅      |                | Identifies a Railway scraper service in a multi-instance fleet. Defaults to `default`. See "Spinning up a new scraper instance" below. |
 
 When adding a new env var:
 1. Add to `REQUIRED_ENV_VARS` in `src/app/api/admin/doctor/route.ts` if it's needed on Vercel.
 2. Add to scraper preflight (`scraper/scraper.js` `preflightFailures`) if it's needed on Railway.
 3. Update this table.
 4. Update `.env.local.example` if it's used in local dev.
+
+---
+
+## Spinning up a new scraper instance (Tier 3 fleet scale-out)
+
+**When you'd run this:** the current Railway scraper is at capacity (CSV pulls running slow because too many hotels share one Playwright instance), OR you want geo-distribution (one scraper in us-east, one in us-west), OR you want a "canary" instance for testing a new PMS recipe without risking the main fleet.
+
+**Symptom that says you need this:** `/api/admin/scraper-instances` shows `healthy: true` but `property_count` ≥ ~20 on one instance, AND `plan_snapshots.fetched_at` lags consistently > 8 min behind for some hotels.
+
+**Architecture (TL;DR):**
+- `scraper_credentials.scraper_instance` (text, default `'default'`) tags each hotel with which Railway service should poll it.
+- Each Railway scraper deploy reads `SCRAPER_INSTANCE_ID` env var and filters to its own slice.
+- `properties-loader.js` enforces the filter; `scraper.js` startup refuses to boot if 0 or >1 properties match.
+
+**Steps:**
+
+1. **Pick an instance name.** Free-form text, regex `[A-Za-z0-9._-]{1,64}`. Conventions: `alpha`, `us-east-1`, `canary`. Avoid spaces and special chars (Railway service names + log filters break on them).
+
+2. **Reassign hotels to the new instance.** Use the admin API:
+   ```bash
+   curl -X POST \
+     -H "Authorization: Bearer $CRON_SECRET" \
+     -H "Content-Type: application/json" \
+     -d '{"property_id":"<uuid>","scraper_instance":"alpha"}' \
+     https://hotelops-ai.vercel.app/api/admin/scraper-assign
+   ```
+   The endpoint requires admin role (not just CRON_SECRET) — sign in as Reeyen first or use the session token from the browser.
+   Audit-logged as `scraper.reassign`.
+
+3. **Create the new Railway service.** Duplicate the existing scraper service in Railway:
+   - Copy ALL env vars from the existing service (CA_USERNAME, CA_PASSWORD, NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, TWILIO_*, CRON_SECRET, MANAGER_PHONE).
+   - Set `SCRAPER_INSTANCE_ID=alpha` (your new instance name).
+   - Set `HOTELOPS_PROPERTY_ID` to the UUID of the hotel you reassigned (today scraper.js still requires this to match the single-property row — Tier 1 carryover, will go away when per-tick multi-property iteration lands).
+   - Set `CA_USERNAME` / `CA_PASSWORD` to that hotel's PMS creds.
+   - Deploy from the same `main` branch.
+
+4. **Verify the new instance is alive.**
+   - In Railway logs, look for `Instance: alpha` near the top of boot output.
+   - After 1 tick (~5 min), hit `/api/admin/scraper-instances` and confirm:
+     - `instances[?(@.scraper_instance == 'alpha')].healthy === true`
+     - The reassigned hotel appears under instance `alpha`, not `default`.
+
+5. **Reverse if needed.** Reassign back to `default` via the same endpoint with `{"scraper_instance":"default"}`. The old service picks it up within 60s (cache TTL).
+
+**Pitfalls:**
+- Two instances both polling the same hotel = double-writes. Prevented at the schema level (`scraper_credentials` PK is `property_id`, so a hotel can only be tagged with one instance value). Don't ALTER that.
+- "I deployed alpha but assignments didn't move" → properties-loader caches for 60s. Wait one minute, then hit `/api/admin/scraper-instances` again.
+- An instance with 0 properties assigned will crash-loop at startup (intended — fail-loud over silent idle). Either assign at least one hotel to it BEFORE deploying, or tear down the service.
 
 ---
 

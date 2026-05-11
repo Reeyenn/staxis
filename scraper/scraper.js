@@ -732,6 +732,12 @@ async function maybeRunCSVPull(page, relogin) {
 
 async function run() {
   log('=== HotelOps AI / Staxis CSV Runner starting ===');
+  // Surface SCRAPER_INSTANCE_ID up-front so the Railway log line tells
+  // an operator which fleet member is booting. When we run >1 Railway
+  // service (Tier 3 multi-instance fleet — admin UI lives at
+  // /api/admin/scraper-instances), being able to grep the logs by
+  // "instance=alpha" vs "instance=default" makes incident triage cheap.
+  log(`Instance: ${process.env.SCRAPER_INSTANCE_ID || 'default'}`);
   log(`Property: ${CONFIG.PROPERTY_ID}`);
   log(`Timezone: ${CONFIG.TIMEZONE} | Local hour: ${localHour()} | Today: ${todayISO()}`);
   log(`Tick every ${CONFIG.TICK_MINUTES} min — CSV pulls hourly 5am–11pm, dashboard numbers + OOO work orders every 15 min 5am–11pm`);
