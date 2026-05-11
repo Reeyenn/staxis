@@ -29,6 +29,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { runWithConcurrency } from '@/lib/parallel';
+import { listMlShardUrls, resolveMlShardUrl } from '@/lib/ml-routing';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -39,10 +40,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const unauth = requireCronSecret(req);
   if (unauth) return unauth;
 
-  const mlServiceUrl = process.env.ML_SERVICE_URL;
+  const shardUrls = listMlShardUrls();
   const mlServiceSecret = process.env.ML_SERVICE_SECRET;
-  if (!mlServiceUrl || !mlServiceSecret) {
-    log.warn('ml-train-demand: ML_SERVICE_URL or ML_SERVICE_SECRET missing — skipping (this is fine until Railway ML service is deployed)', { requestId });
+  if (shardUrls.length === 0 || !mlServiceSecret) {
+    log.warn('ml-train-demand: ML service not configured — skipping (this is fine until Railway ML service is deployed)', { requestId });
     return NextResponse.json({
       ok: true,
       skipped: 'ML service not configured yet',
@@ -65,6 +66,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // speedup vs the old sequential loop while keeping memory bounded.
   const outcomes = await runWithConcurrency(properties ?? [], async (property) => {
     const t0 = Date.now();
+    // Resolve per-property so multi-shard deploys route to the right
+    // Railway service. Falls back to ML_SERVICE_URL on single-shard.
+    // resolveMlShardUrl can return null but the early-return above
+    // guarantees at least one URL is configured here.
+    const mlServiceUrl = resolveMlShardUrl(property.id)!;
     const res = await fetch(`${mlServiceUrl.replace(/\/$/, '')}/train/demand`, {
       method: 'POST',
       headers: {

@@ -17,6 +17,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireCronSecret } from '@/lib/api-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
+import { getPrimaryMlShardUrl } from '@/lib/ml-routing';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -27,10 +28,16 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const unauth = requireCronSecret(req);
   if (unauth) return unauth;
 
-  const mlServiceUrl = process.env.ML_SERVICE_URL;
+  // Cohort-prior aggregation is cross-fleet (reads from every property's
+  // historical actuals to build cohort + global priors). Any shard can run
+  // it because the source data is in the shared Supabase DB — there's no
+  // shard-local state. We pick the primary shard deterministically so the
+  // cross-fleet work hosts on the same Railway instance every day,
+  // which makes capacity planning and log grouping cleaner.
+  const mlServiceUrl = getPrimaryMlShardUrl();
   const mlServiceSecret = process.env.ML_SERVICE_SECRET;
   if (!mlServiceUrl || !mlServiceSecret) {
-    log.warn('ml-aggregate-priors: ML_SERVICE_URL or ML_SERVICE_SECRET missing', { requestId });
+    log.warn('ml-aggregate-priors: ML service not configured', { requestId });
     return NextResponse.json({
       ok: true,
       skipped: 'ML service not configured yet',

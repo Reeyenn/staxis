@@ -15,6 +15,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { runWithConcurrency } from '@/lib/parallel';
+import { listMlShardUrls, resolveMlShardUrl } from '@/lib/ml-routing';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -25,9 +26,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const unauth = requireCronSecret(req);
   if (unauth) return unauth;
 
-  const mlServiceUrl = process.env.ML_SERVICE_URL;
+  const shardUrls = listMlShardUrls();
   const mlServiceSecret = process.env.ML_SERVICE_SECRET;
-  if (!mlServiceUrl || !mlServiceSecret) {
+  if (shardUrls.length === 0 || !mlServiceSecret) {
     log.warn('ml-train-supply: ML service not configured — skipping', { requestId });
     return NextResponse.json({ ok: true, skipped: 'ML service not configured yet', requestId });
   }
@@ -42,6 +43,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
   // Parallel fan-out (concurrency 5) — see ml-train-demand route header.
   const outcomes = await runWithConcurrency(properties ?? [], async (property) => {
+    const mlServiceUrl = resolveMlShardUrl(property.id)!;
     const res = await fetch(`${mlServiceUrl.replace(/\/$/, '')}/train/supply`, {
       method: 'POST',
       headers: {

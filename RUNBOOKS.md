@@ -720,12 +720,46 @@ The scraper, app, and crons run on three platforms. Every env var below is requi
 | `TIMEZONE`                    |        | ✅      |                | IANA zone, defaults to `America/Chicago`. |
 | `TICK_MINUTES`                |        | ✅      |                | Defaults to 5. |
 | `SCRAPER_INSTANCE_ID`         |        | ✅      |                | Identifies a Railway scraper service in a multi-instance fleet. Defaults to `default`. See "Spinning up a new scraper instance" below. |
+| `ML_SERVICE_URL`              | ✅     |         |                | Single-shard ML service URL. Used by cron routes when `ML_SERVICE_URLS` is unset. |
+| `ML_SERVICE_URLS`             | (alt)  |         |                | Comma-separated URLs of all ML shards. When set, cron routes hash property UUIDs to pick a shard. See "Spinning up a new ML training shard" below. |
+| `ML_SERVICE_SECRET`           | ✅     |         |                | Bearer token Vercel sends to the ML service(s). Must match `ML_SERVICE_SECRET` on every Railway ML deploy. |
 
 When adding a new env var:
 1. Add to `REQUIRED_ENV_VARS` in `src/app/api/admin/doctor/route.ts` if it's needed on Vercel.
 2. Add to scraper preflight (`scraper/scraper.js` `preflightFailures`) if it's needed on Railway.
 3. Update this table.
 4. Update `.env.local.example` if it's used in local dev.
+
+---
+
+## Spinning up a new ML training shard (Tier 3 fleet scale-out)
+
+**When you'd run this:** the Railway ML service is OOM-killing or training crons are running past their 60s/90s Vercel timeout. At ~50 hotels the existing concurrency cap (3–5) plus per-call latency (~10s XGBoost fit) starts squeezing the budget — a second shard halves the per-shard load.
+
+**Architecture:** properties are partitioned by UUID hash modulo N shards. `src/lib/ml-routing.ts` is the source of truth for the partition function — every cron and admin route routes through `resolveMlShardUrl(propertyId)`. Single-shard deploys (`ML_SERVICE_URL` only) behave exactly like before this scaffolding landed.
+
+**Steps:**
+
+1. **Deploy a second Railway ML service.** Easiest: fork the existing service, give it a distinct name (e.g. `staxis-ml-shard-1`). Copy ALL env vars from the existing one (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, ANTHROPIC_API_KEY if used, ML_SERVICE_SECRET — must match the value Vercel sends, CRON_SECRET, SENTRY_DSN). The two services share the same Supabase DB so they coordinate via model_runs / predictions rows — no separate state.
+
+2. **Switch the routing env var on Vercel.** In Vercel project Settings → Environment Variables:
+   - Add `ML_SERVICE_URLS` with the comma-separated URLs of all shards, primary first:
+     ```
+     ML_SERVICE_URLS=https://staxis-ml.up.railway.app,https://staxis-ml-shard-1.up.railway.app
+     ```
+   - Leave `ML_SERVICE_URL` set to the primary as a fallback (defense in depth — if `ML_SERVICE_URLS` ever gets cleared, the routing helper falls back to the single URL).
+   - Redeploy Vercel (a no-op redeploy is fine — only env vars need to reload).
+
+3. **Verify the partition is balanced.** After the next ML training cron tick:
+   - In Railway logs for shard 0 and shard 1, count the per-property training entries. With UUIDs being random, expect ~50/50 split for the active fleet.
+   - The `/api/admin/doctor` endpoint reports model_runs counts — confirm both shards' training runs are landing in Supabase.
+
+4. **Roll back.** Remove `ML_SERVICE_URLS` from Vercel env (or empty its value) and redeploy. The routing helper falls back to `ML_SERVICE_URL`, and shard 0 absorbs all the traffic again. The second Railway service can be paused or deleted; data stays consistent because everything writes to the shared DB.
+
+**Pitfalls:**
+- **Don't change the partition function** (`src/lib/ml-routing.ts` `stableHashUuid`). A property's shard assignment is implicitly stable; if you alter the hash, every property reshuffles mid-cron and an in-flight training run lands on a different shard. Safe long-term (idempotent writes) but messy for one tick.
+- **Cohort prior aggregator** (`/api/cron/ml-aggregate-priors`) always runs on `getPrimaryMlShardUrl()` — the first URL in `ML_SERVICE_URLS`. It reads from every property regardless of shard (the source data is in the shared DB), so any shard works; we pin to the first for capacity-planning clarity.
+- **Cron timeouts**. Per-cron `maxDuration` is set in each route file (60s / 90s). Even with N shards in parallel, a single cron still has to finish within its budget — sharding helps because each shard's parallel pool covers fewer properties. If one cron still times out, raise its `maxDuration` (Vercel allows up to 300s on Pro).
 
 ---
 

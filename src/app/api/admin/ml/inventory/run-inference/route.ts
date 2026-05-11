@@ -15,6 +15,7 @@ import { requireAdmin } from '@/lib/admin-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { getPropertyOpsConfig } from '@/lib/property-config';
+import { resolveMlShardUrl } from '@/lib/ml-routing';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -44,7 +45,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ ok: false, error: 'invalid_date' }, { status: 400 });
   }
 
-  const mlServiceUrl = process.env.ML_SERVICE_URL;
+  const mlServiceUrl = resolveMlShardUrl(body.propertyId);
   const mlServiceSecret = process.env.ML_SERVICE_SECRET;
   if (!mlServiceUrl || !mlServiceSecret) {
     return NextResponse.json({

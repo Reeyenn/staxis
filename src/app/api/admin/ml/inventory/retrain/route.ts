@@ -17,6 +17,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/admin-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
+import { resolveMlShardUrl } from '@/lib/ml-routing';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -43,10 +44,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ ok: false, error: 'invalid_item_id' }, { status: 400 });
   }
 
-  const mlServiceUrl = process.env.ML_SERVICE_URL;
+  const mlServiceUrl = resolveMlShardUrl(body.propertyId);
   const mlServiceSecret = process.env.ML_SERVICE_SECRET;
   if (!mlServiceUrl || !mlServiceSecret) {
-    log.warn('ml-inventory-retrain: ML_SERVICE_URL or ML_SERVICE_SECRET missing', { requestId });
+    log.warn('ml-inventory-retrain: ML service not configured', { requestId });
     return NextResponse.json({
       ok: false,
       error: 'ml_service_not_configured',

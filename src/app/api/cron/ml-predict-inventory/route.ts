@@ -16,6 +16,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { runWithConcurrency } from '@/lib/parallel';
+import { listMlShardUrls, resolveMlShardUrl } from '@/lib/ml-routing';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -26,10 +27,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const unauth = requireCronSecret(req);
   if (unauth) return unauth;
 
-  const mlServiceUrl = process.env.ML_SERVICE_URL;
+  const shardUrls = listMlShardUrls();
   const mlServiceSecret = process.env.ML_SERVICE_SECRET;
-  if (!mlServiceUrl || !mlServiceSecret) {
-    log.warn('ml-predict-inventory: ML_SERVICE_URL or ML_SERVICE_SECRET missing', { requestId });
+  if (shardUrls.length === 0 || !mlServiceSecret) {
+    log.warn('ml-predict-inventory: ML service not configured', { requestId });
     return NextResponse.json({
       ok: true,
       skipped: 'ML service not configured yet',
@@ -62,6 +63,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // Parallel fan-out (concurrency 5).
   const outcomes = await runWithConcurrency(eligible, async (property) => {
     const propertyTz = (property.timezone as string | null) ?? 'America/Chicago';
+    const mlServiceUrl = resolveMlShardUrl(property.id)!;
     const res = await fetch(`${mlServiceUrl.replace(/\/$/, '')}/predict/inventory-rate`, {
       method: 'POST',
       headers: {

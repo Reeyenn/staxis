@@ -21,6 +21,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { runWithConcurrency } from '@/lib/parallel';
+import { listMlShardUrls, resolveMlShardUrl } from '@/lib/ml-routing';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -31,9 +32,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const unauth = requireCronSecret(req);
   if (unauth) return unauth;
 
-  const mlServiceUrl = process.env.ML_SERVICE_URL;
+  const shardUrls = listMlShardUrls();
   const mlServiceSecret = process.env.ML_SERVICE_SECRET;
-  if (!mlServiceUrl || !mlServiceSecret) {
+  if (shardUrls.length === 0 || !mlServiceSecret) {
     log.warn('ml-run-inference: ML service not configured — skipping', { requestId });
     return NextResponse.json({ ok: true, skipped: 'ML service not configured yet', requestId });
   }
@@ -63,6 +64,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     targetDate: string,
   ) => {
     const path = stage === 'optimizer' ? '/predict/optimizer' : `/predict/${stage}`;
+    // resolveMlShardUrl per property — all three stages for one property
+    // pin to the same shard (deterministic hash on property_id), so the
+    // optimizer's read of demand+supply rows lands on the shard that
+    // just wrote them. Single-shard deploys keep ML_SERVICE_URL.
+    const mlServiceUrl = resolveMlShardUrl(propertyId)!;
     const t0 = Date.now();
     try {
       const res = await fetch(`${mlServiceUrl.replace(/\/$/, '')}${path}`, {
