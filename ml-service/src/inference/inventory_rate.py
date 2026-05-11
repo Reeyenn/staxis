@@ -176,6 +176,21 @@ def _predict_single_item(
                 "error": str(exc),
             }))
             return {"predicted": False}
+    elif algorithm == "cold-start-cohort-prior" and posterior_params_json:
+        # Cold-start hotels: derive a daily rate directly from the cohort
+        # prior (no posterior to rebuild). Tier 2 Phase 4 — gives Maria a
+        # useful Day-1 prediction instead of an empty box, even before
+        # the Bayesian fit becomes possible.
+        try:
+            params = json.loads(posterior_params_json) if isinstance(posterior_params_json, str) else posterior_params_json
+            quantiles = _predict_from_cohort_prior(params, occ_pct)
+        except Exception as exc:
+            print(json.dumps({
+                "evt": "cold_start_rebuild_failed",
+                "item_id": item_id,
+                "error": str(exc),
+            }))
+            return {"predicted": False}
     else:
         # XGBoost path: would load the model artifact from storage. v1 not implemented;
         # falls back to the run's training_mae as p50 and ±2*MAE as p10/p90.
@@ -250,6 +265,39 @@ def _predict_bayesian_quantiles(params: Dict[str, Any], occ_pct: float) -> Dict[
         t_q = stats.t.ppf(q, df=nu)
         out[label] = max(pred_mean + pred_std * t_q, 0.0)  # Clip non-negative
     return out
+
+
+def _predict_from_cohort_prior(params: Dict[str, Any], occ_pct: float) -> Dict[str, float]:
+    """Quantiles for a cold-start (Day-1) model that has no count history.
+
+    No posterior to sample from — just the cohort/global prior rate scaled to
+    the property's room count and adjusted for occupancy. We surface this as
+    p50 with a wide uncertainty band so the cockpit / autofill can clearly
+    show "this is a network estimate, not your own data."
+
+    Math:
+        rate_hotel_today = prior_rate_per_room_per_day
+                         * room_count
+                         * (occ_pct / 50.0)   # 50% occupancy is the cohort baseline
+    Uncertainty band: ±50% around p50 for p10/p90 (vs the trained model's
+    posterior which typically converges to <±20% once mature). The band is
+    deliberately wide — auto-fill won't fire for cold-start models anyway
+    (`auto_fill_enabled` stays false until the real fit lands), and the
+    cockpit's confidence chip can warn Maria that this is a placeholder.
+    """
+    prior_rate = float(params.get("cohort_prior_rate", 0.0))
+    room_count = int(params.get("room_count", 60))
+    base = max(prior_rate * room_count, 0.0)
+    occ_factor = max(occ_pct, 0.0) / 50.0   # 50% = cohort baseline
+    p50 = base * occ_factor
+    spread = p50 * 0.5
+    return {
+        "p10": max(p50 - spread,        0.0),
+        "p25": max(p50 - spread * 0.6,  0.0),
+        "p50": max(p50,                  0.0),
+        "p75": max(p50 + spread * 0.6,  0.0),
+        "p90": max(p50 + spread,        0.0),
+    }
 
 
 def _compute_predicted_current_stock(

@@ -238,7 +238,40 @@ def _train_single_item(
         descending=False,
         limit=2000,
     )
+
+    # Cold-start fast path. When the hotel has too few counts for a real
+    # Bayesian fit, try to seed predictions from a cohort/global prior so
+    # Maria sees autofill values from Day 1 instead of empty boxes. Only
+    # fires when (a) the item resolves to a canonical name, and (b) the
+    # priors table actually has a row for that name (real cross-hotel
+    # signal — not the DEFAULT_GLOBAL_RATE_PER_ROOM_PER_DAY hardcoded
+    # placeholder). Inventory ONLY — housekeeping demand stays as-is
+    # because rooms differ in size across hotels.
     if len(counts) < settings.inventory_min_events_per_item:
+        prior_rate, prior_strength, prior_source = _lookup_prior_with_source(
+            client, cohort_key, item, item_name
+        )
+        if prior_source != "default":
+            cold_start_run = _create_cold_start_model_run(
+                client=client,
+                property_id=property_id,
+                property_meta=property_meta,
+                item=item,
+                cohort_key=cohort_key,
+                prior_rate=prior_rate,
+                prior_strength=prior_strength,
+                prior_source=prior_source,
+                events_observed=len(counts),
+            )
+            return {
+                "skipped": False,
+                "model_run_id": cold_start_run.get("id"),
+                "is_active": True,
+                "auto_fill_enabled": False,
+                "validation_mae": None,
+                "training_row_count": 0,
+                "cold_start": True,
+            }
         return {"skipped": True, "reason": "insufficient_count_events",
                 "events": len(counts)}
 
@@ -539,6 +572,26 @@ def _lookup_prior(client, cohort_key: str, item: Dict[str, Any], item_name: str)
     Returns (prior_rate_per_room_per_day, prior_strength). When no row matches,
     falls back to DEFAULT_GLOBAL_RATE_PER_ROOM_PER_DAY with a weak strength=1.0.
     """
+    rate, strength, _source = _lookup_prior_with_source(client, cohort_key, item, item_name)
+    return (rate, strength)
+
+
+def _lookup_prior_with_source(
+    client, cohort_key: str, item: Dict[str, Any], item_name: str
+) -> tuple:
+    """Same as `_lookup_prior` but also returns a third element, `source`, which
+    is one of:
+
+        - "cohort"  : matched a cohort-specific row in inventory_rate_priors
+        - "global"  : matched the global-tier row
+        - "default" : nothing matched; the returned rate is the hardcoded
+                      DEFAULT_GLOBAL_RATE_PER_ROOM_PER_DAY constant — i.e. we
+                      have NO real cross-hotel signal for this item.
+
+    Cold-start callers should only trust "cohort" or "global" sources; the
+    default is meaningless as a network-derived prior (it's just a number we
+    picked for "we don't know yet").
+    """
     # Resolve canonical name for this item
     try:
         canonical_rows = client.fetch_many(
@@ -554,7 +607,7 @@ def _lookup_prior(client, cohort_key: str, item: Dict[str, Any], item_name: str)
         canonical_name = "unknown"
 
     if canonical_name == "unknown":
-        return (DEFAULT_GLOBAL_RATE_PER_ROOM_PER_DAY, 1.0)
+        return (DEFAULT_GLOBAL_RATE_PER_ROOM_PER_DAY, 1.0, "default")
 
     # Try cohort-specific prior first, then global
     for ckey in (cohort_key, "global"):
@@ -567,9 +620,90 @@ def _lookup_prior(client, cohort_key: str, item: Dict[str, Any], item_name: str)
             row = rows[0]
             rate = float(row.get("prior_rate_per_room_per_day") or DEFAULT_GLOBAL_RATE_PER_ROOM_PER_DAY)
             strength = float(row.get("prior_strength") or 1.0)
-            return (rate, strength)
+            source = "cohort" if ckey == cohort_key else "global"
+            return (rate, strength, source)
 
-    return (DEFAULT_GLOBAL_RATE_PER_ROOM_PER_DAY, 1.0)
+    return (DEFAULT_GLOBAL_RATE_PER_ROOM_PER_DAY, 1.0, "default")
+
+
+def _create_cold_start_model_run(
+    *,
+    client,
+    property_id: str,
+    property_meta: Dict[str, Any],
+    item: Dict[str, Any],
+    cohort_key: str,
+    prior_rate: float,
+    prior_strength: float,
+    prior_source: str,
+    events_observed: int,
+) -> Dict[str, Any]:
+    """Persist a model_runs row that uses a cohort prior directly, no fit.
+
+    Bayesian cold-start for new hotels (Tier 2 Phase 4). On Day 1 a property
+    has zero count events for any item, so the real training path skips and
+    inventory predictions never get generated — Maria sees empty boxes
+    instead of useful starting estimates. This bypass writes a low-
+    confidence "we don't know yet, but the network says ~X/day" prediction
+    so the cockpit + Count Mode autofill have something to show.
+
+    The row uses algorithm='cold-start-cohort-prior'; inference reads it
+    via the same model_runs.is_active=True query and produces predictions
+    from posterior_params.cohort_prior_rate * room_count, adjusted by
+    occupancy. No graduation gate: this model never auto-fills, only
+    suggests. As soon as the real Bayesian fit becomes possible (≥3 count
+    events on next weekly retrain), it supersedes this row.
+    """
+    item_id = item["id"]
+    room_count = int(property_meta.get("total_rooms") or 60)
+    posterior_params = {
+        "cohort_prior_rate": prior_rate,           # per-room per-day
+        "cohort_prior_strength": prior_strength,
+        "room_count": room_count,
+        "prior_source": prior_source,              # 'cohort' or 'global'
+        "cohort_key": cohort_key,
+    }
+
+    # Deactivate the prior active row for this item, same pattern as the
+    # real training path. Best-effort.
+    try:
+        client.client.table("model_runs").update({
+            "is_active": False,
+            "deactivated_at": datetime.utcnow().isoformat(),
+            "deactivation_reason": "superseded",
+        }).eq("property_id", property_id).eq("layer", "inventory_rate")\
+          .eq("item_id", item_id).eq("is_active", True).execute()
+    except Exception:
+        pass
+
+    model_run = client.insert("model_runs", {
+        "property_id": property_id,
+        "layer": "inventory_rate",
+        "item_id": item_id,
+        "trained_at": datetime.utcnow().isoformat(),
+        "training_row_count": 0,
+        "feature_set_version": "v1",
+        "model_version": f"inventory-cold-start-v1-{item_id}-{datetime.utcnow().isoformat()}",
+        "algorithm": "cold-start-cohort-prior",
+        "training_mae": None,
+        "validation_mae": None,
+        "baseline_mae": None,
+        "beats_baseline_pct": None,
+        "validation_holdout_n": 0,
+        "is_active": True,
+        "activated_at": datetime.utcnow().isoformat(),
+        "consecutive_passing_runs": 0,
+        "auto_fill_enabled": False,
+        "auto_fill_enabled_at": None,
+        "posterior_params": json.dumps(posterior_params),
+        "hyperparameters": json.dumps({
+            "prior_rate_used": prior_rate,
+            "cohort_key": cohort_key,
+            "prior_source": prior_source,
+            "events_observed": events_observed,
+        }),
+    })
+    return model_run or {}
 
 
 def _seed_bayesian_intercept(model: BayesianRegression, prior_rate: float, room_count: int) -> None:
