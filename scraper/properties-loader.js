@@ -6,16 +6,19 @@
  * legacy env-var single-property model when the table is empty (or the
  * scraper deployment is in transition).
  *
- * STATUS (2026-04-29):
+ * STATUS (2026-05-10):
  *   This module is wired up but NOT yet driving the scraper.js tick loop.
  *   Once `scraper.js` is refactored to iterate across multiple properties
  *   per tick (managing Playwright contexts per-property, deduping login
  *   sessions, etc.), it will switch from reading process.env.HOTELOPS_PROPERTY_ID
  *   to calling `loadActiveProperties(supabase)` here.
  *
- *   See migration 0018_scraper_credentials.sql for the source-of-truth
- *   schema and `Second Brain/02 Projects/HotelOps AI/Project Overview …`
- *   open-problems list under "Auto-tick multi-property scraper loop".
+ *   See migration 0018_scraper_credentials.sql for the base schema and
+ *   migration 0069_encrypt_scraper_credentials.sql which encrypted the
+ *   ca_username/ca_password columns at rest (AES-256 via pgcrypto + a
+ *   master key stored in Supabase Vault). We read through the
+ *   scraper_credentials_decrypted view, which auto-decrypts on the way
+ *   out; service-role is the only grantee on that view.
  *
  * Migration plan (sketch):
  *   1. Insert one row in scraper_credentials per active property.
@@ -81,8 +84,13 @@ async function loadActiveProperties(supabase, opts = {}) {
 
   const instanceId = process.env.SCRAPER_INSTANCE_ID || ENV_FALLBACK_INSTANCE_ID;
 
+  // Read from the auto-decrypting view (migration 0069). The underlying
+  // scraper_credentials table stores ca_username/ca_password only as
+  // pgp_sym_encrypt(... , <vault key>) ciphertext. The view applies
+  // decrypt_pms_credential() on the way out. Service-role is the only
+  // grantee — RLS / GRANT enforced.
   const { data, error } = await supabase
-    .from('scraper_credentials')
+    .from('scraper_credentials_decrypted')
     .select('property_id, pms_type, ca_login_url, ca_username, ca_password, is_active, scraper_instance')
     .eq('is_active', true)
     .eq('scraper_instance', instanceId);
