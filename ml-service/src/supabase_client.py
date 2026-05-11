@@ -79,7 +79,14 @@ class SupabaseServiceClient:
             for key, value in filters.items():
                 query = query.eq(key, value)
         if order_by:
-            query = query.order(order_by, descending=descending)
+            # postgrest-py's .order() takes `desc=`, NOT `descending=`.
+            # The wrapper was forwarding the wrong keyword and every
+            # fetch_many() call with order_by was raising
+            # "BaseSelectRequestBuilder.order() got an unexpected keyword
+            # argument 'descending'". This silently broke inventory
+            # training, supply training, every per-property model-run
+            # lookup. Discovered during Tier 2 triple-check.
+            query = query.order(order_by, desc=descending)
         if limit:
             query = query.limit(limit)
         response = query.execute()
@@ -147,20 +154,22 @@ class SupabaseServiceClient:
         return response.data if response.data else []
 
     def execute_sql(self, sql: str) -> List[Dict[str, Any]]:
-        """Execute raw SQL.
+        """Execute raw SQL through the `public.exec_sql(text)` Postgres
+        function (migration 0071) and return the rows as a list of dicts.
 
-        Args:
-            sql: SQL query string
+        Used by paths that need cross-table JOINs the PostgREST builder
+        can't easily express — demand training, demand-inference plan
+        lookup, supply training. Service-role only on the EXECUTE grant.
 
-        Returns:
-            Query results
+        Previously this called `self._client.postgrest.request("GET",
+        "/rpc/exec_sql", ...)` which (a) used a SDK method
+        (`postgrest.request`) that newer supabase-py versions removed and
+        (b) called a function that didn't exist in the DB. Both bugs were
+        silently breaking every demand-training call. Discovered in the
+        Tier 2 triple-check.
         """
-        response = self._client.postgrest.request(
-            "GET",
-            "/rpc/exec_sql",
-            json={"sql": sql},
-        )
-        return response.json() if response.status_code == 200 else []
+        response = self._client.rpc("exec_sql", {"sql": sql}).execute()
+        return response.data if response.data else []
 
 
 def get_supabase_client() -> SupabaseServiceClient:

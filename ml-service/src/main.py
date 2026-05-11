@@ -1,6 +1,6 @@
 """FastAPI application for ML Service."""
 import json
-from datetime import date
+from datetime import date as DateType  # alias to avoid shadowing the Pydantic field name `date`
 from typing import Optional
 from uuid import UUID
 
@@ -87,7 +87,7 @@ class PredictDemandRequest(BaseModel):
     """Request demand prediction."""
 
     property_id: str
-    date: Optional[date] = None
+    date: Optional[DateType] = None
     # IANA timezone for the property (e.g. "America/New_York"). When omitted
     # the inference function falls back to America/Chicago — fine for the
     # current single-property deploy, wrong for non-Texas hotels because
@@ -118,7 +118,7 @@ class PredictSupplyRequest(BaseModel):
     """Request supply prediction."""
 
     property_id: str
-    date: Optional[date] = None
+    date: Optional[DateType] = None
     property_timezone: Optional[str] = None  # see PredictDemandRequest
 
     @field_validator("property_id")
@@ -141,7 +141,7 @@ class OptimizeRequest(BaseModel):
     """Request headcount optimization."""
 
     property_id: str
-    date: Optional[date] = None
+    date: Optional[DateType] = None
     property_timezone: Optional[str] = None  # see PredictDemandRequest
 
     @field_validator("property_id")
@@ -202,7 +202,7 @@ class PredictInventoryRateRequest(BaseModel):
     """Request to generate inventory_rate predictions for a property."""
 
     property_id: str
-    date: Optional[date] = None  # The operational date predictions are FOR. Default = tomorrow.
+    date: Optional[DateType] = None  # The operational date predictions are FOR. Default = tomorrow.
     property_timezone: Optional[str] = None  # see PredictDemandRequest
 
     @field_validator("property_id")
