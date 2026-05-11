@@ -463,20 +463,35 @@ def _train_single_item(
             "feature_names": model.feature_names,
         }
 
-    # Deactivate the old active model_runs row for this (property, item) before
-    # activating a new active. Skipped when this run lands as a shadow — the
-    # existing active keeps serving while the shadow is evaluated.
-    if is_active:
-        try:
+    # Deactivate the prior run in the same "slot" so the partial-unique
+    # indexes added in migration 0072 hold:
+    #   - if this run becomes active: clear the previous active for this
+    #     (property, item).
+    #   - if this run becomes a shadow: clear any in-flight shadow that
+    #     hasn't yet been evaluated/promoted (a senior-review bug —
+    #     without this, weekly retrains would accumulate shadows
+    #     indefinitely because shadow_promoted_at stays null until the
+    #     evaluate cron decides their fate).
+    try:
+        if is_active:
             client.client.table("model_runs").update({
                 "is_active": False,
                 "deactivated_at": datetime.utcnow().isoformat(),
                 "deactivation_reason": "superseded",
-            }).eq("property_id", property_id).eq("layer", "inventory_rate")\
+            }).eq("property_id", property_id).eq("layer", "inventory_rate") \
               .eq("item_id", item_id).eq("is_active", True).execute()
-        except Exception:
-            # Best-effort; partial-unique-index will reject the new insert if needed.
-            pass
+        elif is_shadow:
+            client.client.table("model_runs").update({
+                "is_shadow": False,
+                "is_active": False,
+                "deactivated_at": datetime.utcnow().isoformat(),
+                "deactivation_reason": "superseded_by_new_shadow",
+            }).eq("property_id", property_id).eq("layer", "inventory_rate") \
+              .eq("item_id", item_id).eq("is_shadow", True) \
+              .is_("shadow_promoted_at", "null").execute()
+    except Exception:
+        # Best-effort; partial-unique-index will reject the new insert if needed.
+        pass
 
     model_run = client.insert("model_runs", {
         "property_id": property_id,

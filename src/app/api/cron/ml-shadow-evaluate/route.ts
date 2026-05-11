@@ -68,12 +68,19 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // promoted yet. We don't filter by layer here; the cron handles every
   // layer that opts into shadow mode (inventory_rate is the only one
   // today; demand/supply can adopt by writing is_shadow=true on retrain).
+  //
+  // FIFO order on shadow_started_at — at fleet scale the limit could
+  // truncate the result set, and starving the oldest shadow is worse
+  // than starving the newest (oldest has been waiting longest for a
+  // verdict, and its target active is the one most likely to still be
+  // around for comparison).
   const { data: shadows, error: shErr } = await supabaseAdmin
     .from('model_runs')
     .select('id, property_id, layer, item_id, validation_mae, shadow_started_at')
     .eq('is_shadow', true)
     .is('shadow_promoted_at', null)
     .lte('shadow_started_at', cutoffIso)
+    .order('shadow_started_at', { ascending: true })
     .limit(500);
 
   if (shErr) {
@@ -85,7 +92,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     shadow_run_id: string;
     layer: string;
     item_id: string | null;
-    verdict: 'promoted' | 'rejected' | 'no_active_found' | 'error';
+    verdict: 'promoted' | 'rejected' | 'error';
     detail?: unknown;
   }> = [];
 
@@ -110,14 +117,18 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       const active = (actives ?? [])[0] as ActiveRow | undefined;
 
       if (!active) {
-        // Active was deleted/deactivated while shadow was soaking. Promote
-        // the shadow unconditionally — there's nothing to compare it to,
-        // and the alternative (leaving it shadow forever) would mean no
-        // model serves predictions for this item.
-        await promoteShadow(shadow.id, null);
+        // Active was deactivated or deleted while the shadow was soaking.
+        // Under the shadow-gating contract, a shadow only gets written
+        // when an active+graduated model existed at training time — so a
+        // missing active later means somebody (admin, manual cleanup,
+        // accidental deletion) intentionally removed it. Promoting the
+        // shadow would silently resurrect ML predictions that the
+        // operator just turned off. Reject instead.
+        await rejectShadow(shadow.id, shadow.validation_mae, 'active_disabled_during_soak');
         results.push({
           shadow_run_id: shadow.id, layer: shadow.layer, item_id: shadow.item_id,
-          verdict: 'no_active_found',
+          verdict: 'rejected',
+          detail: { reason: 'active_disabled_during_soak' },
         });
         continue;
       }
@@ -140,7 +151,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           detail: { shadowMae, activeMae },
         });
       } else {
-        await rejectShadow(shadow.id, shadowMae);
+        await rejectShadow(shadow.id, shadowMae, 'shadow_underperformed');
         results.push({
           shadow_run_id: shadow.id, layer: shadow.layer, item_id: shadow.item_id,
           verdict: 'rejected',
@@ -171,41 +182,29 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 }
 
 /**
- * Promote a shadow to active. Atomic-ish (two updates; if the second
- * fails the first leaves us with two actives, which the next training
- * pass will resolve — and the partial-unique index on inventory_rate
- * predictions catches duplicate writes).
+ * Promote a shadow to active. Atomic via the `promote_shadow_model_run`
+ * Postgres function (migration 0072) — one UPDATE flips the prior active
+ * to inactive and the shadow to active in a single statement, so a mid-
+ * promotion failure can't leave the item without an active model.
  */
-async function promoteShadow(shadowId: string, activeId: string | null): Promise<void> {
-  const nowIso = new Date().toISOString();
-
-  if (activeId) {
-    await supabaseAdmin
-      .from('model_runs')
-      .update({
-        is_active: false,
-        deactivated_at: nowIso,
-        deactivation_reason: 'superseded_by_shadow_promotion',
-      })
-      .eq('id', activeId);
-  }
-
-  await supabaseAdmin
-    .from('model_runs')
-    .update({
-      is_active: true,
-      is_shadow: false,
-      shadow_promoted_at: nowIso,
-      activated_at: nowIso,
-    })
-    .eq('id', shadowId);
+async function promoteShadow(shadowId: string, activeId: string): Promise<void> {
+  const { error } = await supabaseAdmin.rpc('promote_shadow_model_run', {
+    p_shadow_id: shadowId,
+    p_active_id: activeId,
+  });
+  if (error) throw error;
 }
 
 /**
- * Reject a shadow — it underperformed the active. Mark it as ended;
- * the existing active keeps serving without modification.
+ * Reject a shadow. Marks it as ended with the supplied reason so the
+ * admin audit log shows why it was killed; the existing active keeps
+ * serving without modification.
  */
-async function rejectShadow(shadowId: string, shadowMae: number | null): Promise<void> {
+async function rejectShadow(
+  shadowId: string,
+  shadowMae: number | null,
+  reason: 'shadow_underperformed' | 'active_disabled_during_soak',
+): Promise<void> {
   const nowIso = new Date().toISOString();
   await supabaseAdmin
     .from('model_runs')
@@ -213,7 +212,7 @@ async function rejectShadow(shadowId: string, shadowMae: number | null): Promise
       is_shadow: false,
       is_active: false,
       deactivated_at: nowIso,
-      deactivation_reason: 'shadow_underperformed',
+      deactivation_reason: reason,
       shadow_evaluation_mae: shadowMae,
     })
     .eq('id', shadowId);
