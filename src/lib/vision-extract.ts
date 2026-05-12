@@ -50,6 +50,31 @@ export interface VisionImage {
  * The prompt should instruct the model to return JSON; the caller is
  * responsible for parsing.
  */
+/**
+ * Sentinel error subclass thrown when Claude's response was truncated by
+ * `max_tokens`. The caller route can catch and surface a "split the invoice"
+ * message to the user instead of a generic 500. May 2026 audit pass-4
+ * found we were silently failing JSON parse on invoices with 100+ items.
+ */
+export class VisionTruncatedError extends Error {
+  constructor(public readonly tokensUsed: number, public readonly limit: number) {
+    super(
+      `Vision response truncated at ${tokensUsed} tokens (limit ${limit}). ` +
+      `The input image likely contains more items than fit in one response. ` +
+      `Split the source into pages or smaller crops and re-scan.`,
+    );
+    this.name = 'VisionTruncatedError';
+  }
+}
+
+// May 2026 audit pass-4: bumped from 4096 to 8192. 4096 truncated
+// wholesale-supplier invoices with 100+ line items, producing unclosed
+// JSON that fell through the parse fallbacks to a generic "vision_failed"
+// 500. 8192 covers ~150-item invoices comfortably. Any truncation that
+// still happens at 8192 throws VisionTruncatedError so the route can
+// surface a useful message instead of opaque parse failures.
+const VISION_MAX_TOKENS = 8192;
+
 export async function visionExtractText(
   image: VisionImage,
   prompt: string,
@@ -57,7 +82,7 @@ export async function visionExtractText(
   const client = getClient();
   const response = await client.messages.create({
     model: MODEL,
-    max_tokens: 4096,
+    max_tokens: VISION_MAX_TOKENS,
     messages: [
       {
         role: 'user',
@@ -75,6 +100,13 @@ export async function visionExtractText(
       },
     ],
   });
+
+  // Detect truncation BEFORE returning partial text. The downstream JSON
+  // parsers would otherwise hit unclosed braces and report a generic
+  // "non-JSON output" error, hiding the real cause from the operator.
+  if (response.stop_reason === 'max_tokens') {
+    throw new VisionTruncatedError(response.usage?.output_tokens ?? 0, VISION_MAX_TOKENS);
+  }
 
   // Concatenate any text blocks in the response (usually one).
   const text = response.content

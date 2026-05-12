@@ -14,7 +14,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { visionExtractJSON } from '@/lib/vision-extract';
+import { visionExtractJSON, VisionTruncatedError } from '@/lib/vision-extract';
 import { errToString } from '@/lib/utils';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
@@ -172,6 +172,19 @@ export async function POST(req: NextRequest) {
       items,
     });
   } catch (e) {
+    // Surface "invoice too complex" as a distinct, actionable error so
+    // the cockpit can show "split this invoice into pages and rescan"
+    // instead of a generic vision_failed. (May 2026 audit pass-4.)
+    if (e instanceof VisionTruncatedError) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: 'invoice_too_complex',
+          detail: 'This invoice has more line items than we can scan in one pass. Try splitting it into separate pages and scanning each page.',
+        },
+        { status: 422 },
+      );
+    }
     const msg = errToString(e);
     // Map common upstream errors to friendlier client codes.
     const status = /api[_ ]?key|ANTHROPIC_API_KEY/i.test(msg) ? 503 : 500;
