@@ -28,11 +28,15 @@ if (!API_KEY) {
 
 // Per-attempt timeout. CUA round-trips with screenshots can reach 60-90s
 // on slow PMS pages; 120s gives that headroom while still aborting hung
-// requests. Combined with maxRetries=2 = up to ~360s of retry budget.
+// requests. Codex audit pass-6 P1 — maxRetries was 2, but with backoff
+// the SDK can spend up to ~360s on a single call, ignoring the job's
+// 15-min deadline. Dropped to 1 retry so a stuck call times out closer
+// to the per-attempt budget; per-turn deadline checks in mapper.ts stop
+// the whole loop before a runaway burns through the cost cap.
 export const anthropic = new Anthropic({
   apiKey: API_KEY,
   timeout: 120_000,
-  maxRetries: 2,
+  maxRetries: 1,
 });
 
 /**

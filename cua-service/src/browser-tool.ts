@@ -555,16 +555,44 @@ function normalizeUrl(u: string): string {
 }
 
 /**
- * Same-site check for the navigate domain guard. We treat any host that
- * shares the registrable domain (last two labels for ccTLDs / single TLDs)
- * as same-site — so app.example.com / login.example.com / example.com
- * all match. We don't need PSL-perfect parsing here; a coarse check is
- * fine because the *only* thing this guards against is wandering to a
- * completely different vendor (beds24.com vs choiceadvantage.com).
+ * Same-site check for the navigate domain guard. Codex audit pass-6 P1:
+ * the previous version blindly took the last two hostname labels, which
+ * treats `foo.co.uk` and `bar.co.uk` as the same site — same for `co.za`,
+ * `com.au`, `co.jp`, etc. For multi-part public suffixes we have to take
+ * three labels instead, otherwise an attacker on the same ccTLD bucket
+ * (or just a same-ccTLD vendor) would pass the guard.
+ *
+ * We don't ship a full Public Suffix List — that's overkill for hotel
+ * PMS hosts, which are nearly all `.com`. A small allow-list of common
+ * multi-part suffixes covers the realistic deployment surface; new
+ * suffixes can be added here as we onboard hotels in new regions.
  */
+const MULTI_PART_PUBLIC_SUFFIXES: ReadonlySet<string> = new Set([
+  'co.uk', 'org.uk', 'gov.uk', 'ac.uk', 'me.uk',
+  'com.au', 'org.au', 'net.au', 'edu.au', 'gov.au',
+  'co.nz', 'org.nz', 'net.nz',
+  'co.za', 'org.za', 'gov.za',
+  'com.br', 'net.br', 'org.br',
+  'co.jp', 'or.jp', 'ne.jp', 'ac.jp',
+  'co.kr', 'or.kr', 'ne.kr',
+  'com.mx', 'org.mx',
+  'co.in', 'net.in',
+  'com.sg', 'edu.sg',
+  'com.hk', 'org.hk',
+]);
+
+function registrableDomain(host: string): string {
+  const labels = host.toLowerCase().split('.').filter(Boolean);
+  if (labels.length < 2) return labels.join('.');
+  const lastTwo = labels.slice(-2).join('.');
+  if (labels.length >= 3 && MULTI_PART_PUBLIC_SUFFIXES.has(lastTwo)) {
+    return labels.slice(-3).join('.');
+  }
+  return lastTwo;
+}
+
 function hostsAreSameSite(a: string, b: string): boolean {
-  const tail = (h: string) => h.toLowerCase().split('.').slice(-2).join('.');
-  return tail(a) === tail(b);
+  return registrableDomain(a) === registrableDomain(b);
 }
 
 function normalizeKey(raw: string): string {
