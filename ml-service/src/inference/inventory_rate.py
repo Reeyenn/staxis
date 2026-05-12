@@ -248,12 +248,24 @@ def _predict_bayesian_quantiles(params: Dict[str, Any], occ_pct: float) -> Dict[
 
     # Feature vector: [intercept, occupancy_pct]
     x = np.array([1.0, occ_pct])
-    # Defensive: if shape mismatch (model trained on different feature set), pad/truncate.
+    # ── Strict shape match (May 2026 audit pass-4) ─────────────────────
+    # Previously: silently pad with zeros or truncate. Pad is dangerous
+    # — adding a third feature to training (e.g. day_of_week) would
+    # leave the inference vector as [1.0, occ, 0.0] forever, with the
+    # third coefficient multiplied by 0 every prediction. Predictions
+    # are numerically valid but semantically wrong: the feature the
+    # model learned to use is permanently zeroed at serve time.
+    # Truncation has the symmetric problem (drops new features).
+    # Fail loud so the predict cron's anyError accumulator surfaces it
+    # in the doctor — much better than silently bad predictions.
     if mu_n.shape[0] != x.shape[0]:
-        if mu_n.shape[0] > x.shape[0]:
-            x = np.pad(x, (0, mu_n.shape[0] - x.shape[0]), constant_values=0.0)
-        else:
-            x = x[:mu_n.shape[0]]
+        raise ValueError(
+            f"Bayesian feature shape mismatch: model posterior has "
+            f"{mu_n.shape[0]} dims, inference built {x.shape[0]} dims. "
+            f"This means features were added or removed between training "
+            f"and now. Retrain the model, or update the inference feature "
+            f"vector to match the model's training schema."
+        )
 
     pred_mean = float(x @ mu_n)
     pred_var = (beta_n / alpha_n) * (1 + x @ sigma_n @ x)

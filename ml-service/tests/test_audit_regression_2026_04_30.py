@@ -172,3 +172,36 @@ def test_supply_training_rejects_non_uuid_property_id():
     result = asyncio.run(train_supply_model("'; DROP TABLE model_runs; --"))
     assert result.get("error")
     assert "UUID" in result["error"]
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# PASS-4-1: Bayesian inference must REJECT feature shape mismatch, not pad.
+# Previously: inference path silently zero-padded x to match mu_n's shape, so
+# adding a third training feature would leave inference computing
+# `x @ mu_n` with the new dimension forced to 0 every prediction — semantically
+# wrong but numerically valid output.
+# ────────────────────────────────────────────────────────────────────────────
+def test_bayesian_inference_rejects_feature_shape_mismatch():
+    """_predict_bayesian_quantiles must raise on dim mismatch, not silently pad."""
+    from src.inference.inventory_rate import _predict_bayesian_quantiles
+
+    # Simulate a model trained with 3 features (intercept, occupancy, dow)
+    # while the inference path only builds 2 features (intercept, occupancy).
+    params = {
+        "mu_n":    [0.5, 0.01, 0.03],          # 3 dims — model thinks day_of_week matters
+        "sigma_n": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+        "alpha_n": 5.0,
+        "beta_n":  2.0,
+    }
+    with pytest.raises(ValueError, match="Bayesian feature shape mismatch"):
+        _predict_bayesian_quantiles(params, occ_pct=70.0)
+
+    # Conversely: a 1-dim model with a 2-dim inference vector also raises.
+    params_short = {
+        "mu_n":    [0.5],
+        "sigma_n": [[1]],
+        "alpha_n": 5.0,
+        "beta_n":  2.0,
+    }
+    with pytest.raises(ValueError, match="Bayesian feature shape mismatch"):
+        _predict_bayesian_quantiles(params_short, occ_pct=70.0)
