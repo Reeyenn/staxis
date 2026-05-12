@@ -14,7 +14,7 @@ from src.advisory_lock import advisory_lock
 from src.config import get_settings
 from src.layers.bayesian_regression import BayesianRegression
 from src.layers.static_baseline import StaticBaseline
-from src.layers.xgboost_quantile import XGBoostQuantile
+from src.layers.xgboost_quantile import XGBoostQuantile, XGBOOST_INFERENCE_READY
 from src.supabase_client import get_supabase_client
 
 
@@ -281,6 +281,14 @@ def _train_demand_inner(
             break  # Stop counting at first non-passing run
 
     should_activate = passes_gates and consecutive_passes >= settings.consecutive_passing_runs_required
+
+    # Codex audit pass-6 P0 — XGBoost graduates at training time but
+    # inference doesn't yet load XGBoost artifacts (returns an error).
+    # Block activation until inference is wired up so a graduated
+    # property doesn't silently lose predictions. Training still runs
+    # and the row gets logged so we can compare metrics.
+    if model.get_config()["algorithm"] == "xgboost-quantile" and not XGBOOST_INFERENCE_READY:
+        should_activate = False
 
     # Prepare posterior params if Bayesian
     posterior_params = None

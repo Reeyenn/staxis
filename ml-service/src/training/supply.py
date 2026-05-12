@@ -13,7 +13,7 @@ from src.advisory_lock import advisory_lock
 from src.config import get_settings
 from src.features.supply_matrix import build_supply_features
 from src.layers.bayesian_regression import BayesianRegression
-from src.layers.xgboost_quantile import XGBoostQuantile
+from src.layers.xgboost_quantile import XGBoostQuantile, XGBOOST_INFERENCE_READY
 from src.supabase_client import get_supabase_client
 
 
@@ -221,6 +221,13 @@ def _train_supply_inner(
             break  # Stop counting at first non-passing run
 
     should_activate = passes_gates and consecutive_passes >= settings.consecutive_passing_runs_required
+
+    # Codex audit pass-6 P0 — supply inference returns an explicit error
+    # for active XGBoost runs (deserialization not yet wired up). Block
+    # XGBoost activation until inference can serve the artifact, so a
+    # graduated property doesn't silently lose all supply predictions.
+    if model.get_config()["algorithm"] == "xgboost-quantile" and not XGBOOST_INFERENCE_READY:
+        should_activate = False
 
     # Serialize Bayesian posterior so supply inference can rebuild the model
     # without re-fitting. Without this the inference function silently fell

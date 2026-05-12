@@ -35,7 +35,7 @@ import psycopg2
 from src.advisory_lock import advisory_lock
 from src.config import get_settings
 from src.layers.bayesian_regression import BayesianRegression
-from src.layers.xgboost_quantile import XGBoostQuantile
+from src.layers.xgboost_quantile import XGBoostQuantile, XGBOOST_INFERENCE_READY
 from src.supabase_client import get_supabase_client
 
 
@@ -504,6 +504,21 @@ def _train_single_item(
             f"rejected_high_mae: validation_mae={validation_mae:.4f} >= "
             f"threshold={max(mean_observed_rate * 1.0, 1.0):.4f} "
             f"(mean_rate={mean_observed_rate:.4f})"
+        )
+
+    # ── XGBoost-not-served gate (Codex audit pass-6 P0) ──────────────────
+    # Inventory inference returns predicted=False for any active XGBoost
+    # run because artifact deserialization isn't wired up yet. Activating
+    # an XGBoost run would silently stop emitting per-day predictions for
+    # the item the moment it crosses the 100-event activation threshold.
+    # Force is_active=False (run still gets logged with metrics so we can
+    # compare XGBoost vs Bayesian quality) until inference is ready.
+    if is_active and algorithm == "xgboost-quantile" and not XGBOOST_INFERENCE_READY:
+        is_active = False
+        mae_reject_notes = (
+            (mae_reject_notes + "; " if mae_reject_notes else "")
+            + "rejected_xgboost_inference_unavailable: XGBoost graduates "
+              "but inference can't deserialize the artifact yet"
         )
 
     # Posterior params for Bayesian models (so inference can rebuild without the model file)

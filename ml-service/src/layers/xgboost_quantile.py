@@ -11,6 +11,18 @@ import xgboost as xgb
 
 from src.layers.base import BaseModel
 
+# ── Inference availability gate (Codex audit pass-6 P0) ─────────────────
+# Training graduates to XGBoost at the configured row threshold, but the
+# inference paths for demand / supply / inventory don't yet support
+# loading a serialized XGBoost artifact — they return errors or skip the
+# run entirely when an active model has algorithm='xgboost-quantile'.
+# Activating an XGBoost model in that state silently breaks production
+# predictions for the property the moment it graduates. Until artifact
+# storage + deserialization lands in inference/*.py, this flag MUST stay
+# False; training routines call XGBOOST_INFERENCE_READY before flipping
+# is_active=True on any XGBoost run.
+XGBOOST_INFERENCE_READY = False
+
 
 class XGBoostQuantile(BaseModel):
     """XGBoost-based quantile regressor with per-quantile models."""
