@@ -1181,6 +1181,15 @@ const EXPECTED_MIGRATIONS: ReadonlyArray<string> = [
   '0025', '0026', '0027', '0028', '0029', '0030',
   '0031', '0032', '0033', '0034', '0035', '0036',
   '0037', '0038', '0039',
+  // Pre-launch additions (May 2026 audit pass-4: list was frozen at
+  // 0039, so 0040+ schema drift was invisible to the doctor).
+  // 0044-0049 intentionally skipped — those slots were never written.
+  '0040', '0041', '0042', '0043',
+  '0050', '0051', '0052', '0053', '0054', '0055',
+  '0056', '0057', '0058', '0059', '0060', '0061', '0062', '0063',
+  '0064', '0065', '0066', '0067', '0068', '0069',
+  // Tier 2/3 ML and fleet ops:
+  '0070', '0071', '0072', '0073', '0074', '0075',
 ];
 async function checkAppliedMigrations(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {
