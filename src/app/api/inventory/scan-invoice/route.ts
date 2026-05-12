@@ -17,6 +17,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { visionExtractJSON } from '@/lib/vision-extract';
 import { errToString } from '@/lib/utils';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -108,6 +109,19 @@ export async function POST(req: NextRequest) {
   }
   if (!SUPPORTED_MEDIA_TYPES.includes(mediaType as typeof SUPPORTED_MEDIA_TYPES[number])) {
     return NextResponse.json({ ok: false, error: 'unsupported_media_type' }, { status: 400 });
+  }
+
+  // ── Rate limit (May 2026 audit pass-5) ─────────────────────────────
+  // Vision calls cost $0.003-0.01 per image. Session-gated so this is
+  // never anonymous spam, but a compromised session or buggy retry
+  // loop in the client could fire hundreds of scans/hour with no cap.
+  // 50/hr per property is generous (Maria scanning a stack of weekly
+  // invoices); fail-open behavior on Postgres errors is documented in
+  // api-ratelimit.ts and now visible via the doctor's api_limits_
+  // writable check.
+  const rl = await checkAndIncrementRateLimit('scan-invoice', pid);
+  if (!rl.allowed) {
+    return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec) as NextResponse;
   }
 
   try {

@@ -40,6 +40,11 @@ export type RateLimitEndpoint =
   // hit them, a compromised admin account or scripted retry storm
   // could rack up real spend. Cap at 10/hr per property.
   | 'admin-regenerate-recipe'
+  // Invoice OCR — Claude Vision call per image ($0.003-0.01/scan).
+  // Maria might scan 5-10 invoices a week in normal use; 50/hr per
+  // property is generous headroom. A compromised session or buggy
+  // retry loop hits the cap fast. May 2026 audit pass-5.
+  | 'scan-invoice'
   // Public signup — keyed on a per-IP UUID (sha256(ip) → UUID shape).
   // No auth gate, creates auth.users + properties + Stripe customer +
   // bcrypt CPU work, so trivially abusable without a rate cap. (Pass-3
@@ -57,6 +62,10 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // Admin recipe regeneration costs $1-3 each. 10/hour/property is
   // generous for legitimate ops use; tight enough to stop a runaway.
   'admin-regenerate-recipe':    10,
+  // Invoice scans cost $0.003-0.01 each; 50/hr per property absorbs
+  // legitimate use (Maria scanning a stack of weekly invoices) but
+  // caps runaway loops fast.
+  'scan-invoice':               50,
   // Maria might re-send shift confirmations 2-3 times if she tweaks the
   // schedule. 10/hour gives plenty of room without unlimited resend abuse.
   'send-shift-confirmations': 10,
