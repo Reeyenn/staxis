@@ -119,6 +119,15 @@ const checks: Array<[string, CheckFn]> = [
   ['scraper_csv_pull',               checkScraperCsvPull],
   ['scraper_health_cron',            checkScraperHealthCronLiveness],
   ['twilio_credentials',             checkTwilioCredentials],
+  // Twilio FROM-number registration: existing twilio_credentials check
+  // only verifies the account is alive and not suspended. It does NOT
+  // verify that TWILIO_FROM_NUMBER is actually a phone number owned by
+  // this Twilio account. If Reeyen ever rotates Twilio numbers and
+  // updates the env var but the new number isn't yet registered (or
+  // the toll-free verification expired), sends silently 400 inside
+  // sms.ts with error 21659 "From is not a valid, SMS-capable
+  // Twilio phone number." May 2026 audit pass-3 closure.
+  ['twilio_from_number_registered',  checkTwilioFromNumberRegistered],
   ['alert_phone_shape',              checkAlertPhoneShape],
   ['cron_secret_shape',              checkCronSecretShape],
   ['cron_secret_cross_platform',     checkCronSecretCrossPlatform],
@@ -637,6 +646,80 @@ async function checkTwilioCredentials(): Promise<Omit<Check, 'name' | 'durationM
     };
   } catch (err) {
     return { status: 'fail', detail: `Twilio API call failed: ${errToString(err)}` };
+  }
+}
+
+/**
+ * twilio_from_number_registered — verify TWILIO_FROM_NUMBER is a phone
+ * number that this Twilio account actually owns and can send SMS from.
+ *
+ * Why this matters: checkTwilioCredentials confirms the SID+token are
+ * valid and the account isn't suspended. It does NOT confirm that the
+ * specific number in TWILIO_FROM_NUMBER is registered to the account.
+ * If Reeyen rotates Twilio numbers and updates the env var but the new
+ * number isn't registered yet — or the toll-free verification lapsed —
+ * Twilio rejects sends with error 21659 ("From is not a valid SMS-
+ * capable Twilio phone number"). sendSms() throws; the caller catches
+ * it as "send failed" in Vercel logs. Maria's shift confirmations
+ * never arrive and the only signal is a single error-log line.
+ *
+ * The probe: GET the IncomingPhoneNumbers resource filtered by the
+ * configured number. Twilio returns the number's details if it's
+ * registered, empty list if not. SMS capabilities are reported in
+ * the `capabilities.sms` field — we fail if the number is registered
+ * but not SMS-capable (a voice-only number landed in the env var).
+ */
+async function checkTwilioFromNumberRegistered(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const sid = process.env.TWILIO_ACCOUNT_SID;
+  const tok = process.env.TWILIO_AUTH_TOKEN;
+  const from = process.env.TWILIO_FROM_NUMBER || process.env.TWILIO_PHONE_NUMBER;
+  if (!sid || !tok || !from) {
+    return { status: 'skipped', detail: 'Twilio env vars missing (reported by env_vars check)' };
+  }
+  try {
+    const url = new URL(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(sid)}/IncomingPhoneNumbers.json`);
+    url.searchParams.set('PhoneNumber', from);
+    url.searchParams.set('PageSize', '5');
+    const res = await fetch(url.toString(), {
+      headers: { Authorization: `Basic ${Buffer.from(`${sid}:${tok}`).toString('base64')}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) {
+      // 401 will already fire from checkTwilioCredentials — don't double-report.
+      if (res.status === 401) {
+        return { status: 'skipped', detail: 'auth handled by twilio_credentials check' };
+      }
+      return { status: 'fail', detail: `Twilio IncomingPhoneNumbers returned ${res.status} ${res.statusText}` };
+    }
+    const json = await res.json() as {
+      incoming_phone_numbers?: Array<{
+        phone_number?: string;
+        sid?: string;
+        capabilities?: { sms?: boolean; mms?: boolean; voice?: boolean };
+      }>;
+    };
+    const list = json.incoming_phone_numbers ?? [];
+    if (list.length === 0) {
+      return {
+        status: 'fail',
+        detail: `TWILIO_FROM_NUMBER "${from}" is NOT registered to account ${sid.slice(0, 10)}…. Twilio will reject every send with error 21659.`,
+        fix: 'Twilio Console → Phone Numbers → Manage → Active. Confirm the number is owned by this account, or buy/port a new one and update TWILIO_FROM_NUMBER in Vercel.',
+      };
+    }
+    const match = list.find((n) => n.phone_number === from) ?? list[0];
+    if (!match.capabilities?.sms) {
+      return {
+        status: 'fail',
+        detail: `TWILIO_FROM_NUMBER "${from}" is registered but NOT SMS-capable (likely a voice-only number). Sends will fail.`,
+        fix: 'Twilio Console → Phone Numbers → click the number → Capabilities → ensure SMS is on. Or pick a different number and update TWILIO_FROM_NUMBER.',
+      };
+    }
+    return {
+      status: 'ok',
+      detail: `TWILIO_FROM_NUMBER "${from}" registered + SMS-capable.`,
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `Twilio number check raised: ${errToString(err)}` };
   }
 }
 
