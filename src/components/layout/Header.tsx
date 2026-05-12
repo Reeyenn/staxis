@@ -8,9 +8,25 @@ import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { ChevronDown, LogOut, Globe, LayoutGrid, Settings, Bell } from 'lucide-react';
-import { format } from 'date-fns';
-import { es as esLocale } from 'date-fns/locale';
+import { LogOut, Globe, Settings, Bell } from 'lucide-react';
+
+// Snow design system — chevron mark from the locked Dashboard
+// Explorations design. Drawn in a 64x64 viewBox so the strokes scale
+// crisply at any size; markColor stays true black per design lock.
+function ChevronMark({ size = 26, color = '#1A1F1B' }: { size?: number; color?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 64 64" aria-hidden="true">
+      <path
+        d="M18 28 L26 20 M18 38 L38 18 M28 38 L38 28 M28 48 L46 30"
+        stroke={color}
+        strokeWidth={4.4}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+    </svg>
+  );
+}
 
 export function Header() {
   const { user, signOut } = useAuth();
@@ -18,7 +34,6 @@ export function Header() {
   const { lang, setLang } = useLang();
   const router = useRouter();
   const pathname = usePathname();
-  const [showPropMenu, setShowPropMenu] = React.useState(false);
   const [showUserMenu, setShowUserMenu] = React.useState(false);
 
   const baseNavLinks = [
@@ -27,10 +42,10 @@ export function Header() {
     { href: '/maintenance',  label: lang === 'es' ? 'Mantenimiento' : 'Maintenance' },
     { href: '/inventory',    label: lang === 'es' ? 'Inventario' : 'Inventory' },
     { href: '/staff',        label: lang === 'es' ? 'Personal' : 'Staff' },
+    { href: '/front-desk',   label: lang === 'es' ? 'Recepción' : 'Front desk' },
   ];
 
-  // ML and Admin tabs are both admin-only. AppUser.role is 'admin' | 'owner'
-  // | 'staff' (see contexts/AuthContext.tsx). Server-side gates on
+  // ML and Admin tabs are both admin-only. Server-side gates on
   // /api/admin/* and /admin/* pages still enforce this independently.
   const isAdmin = user?.role === 'admin';
   const navLinks = [
@@ -42,66 +57,76 @@ export function Header() {
   const handleSwitchProperty = (id: string) => {
     setActivePropertyId(id);
     sessionStorage.setItem('hotelops-session-selected', '1');
-    setShowPropMenu(false);
+    setShowUserMenu(false);
   };
 
-  const handleGoToSelector = () => {
-    sessionStorage.removeItem('hotelops-session-selected');
-    setShowPropMenu(false);
-    router.push('/property-selector');
-  };
+  const sansFont = "var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif";
+  const ink = 'var(--snow-ink)';
+  const ink2 = 'var(--snow-ink2)';
+  const ink3 = 'var(--snow-ink3)';
+  const rule = 'var(--snow-rule)';
+  const sage = 'var(--snow-sage)';
 
   return (
     <header style={{
       position: 'sticky', top: 0, zIndex: 40,
-      background: 'rgba(251, 249, 244, 0.85)',
-      backdropFilter: 'blur(64px)',
-      WebkitBackdropFilter: 'blur(64px)',
-      boxShadow: '0 4px 24px -2px rgba(27,28,25,0.04)',
+      background: 'var(--snow-bg)',
+      borderBottom: `1px solid ${rule}`,
     }}>
       <div style={{
         maxWidth: '1920px', margin: '0 auto',
-        padding: '0 32px', height: '64px',
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px',
+        padding: '0 48px', height: '64px',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '24px',
       }}>
 
-        {/* Left: Logo + Nav Links */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '32px' }}>
-          {/* Logo */}
+        {/* Left: Chevron + Staxis wordmark + property name */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '7px', minWidth: 0 }}>
+          <ChevronMark size={26} color="var(--snow-mark)" />
           <span style={{
-            fontFamily: 'var(--font-sans)', fontWeight: 600,
-            fontSize: '20px', color: '#364262', letterSpacing: '-0.02em',
+            fontFamily: sansFont, fontSize: '18px', fontWeight: 600,
+            color: ink, letterSpacing: '-0.02em',
           }}>
             Staxis
           </span>
-
-          {/* Nav Links */}
-          <nav style={{ display: 'flex', gap: '24px' }}>
-            {navLinks.map(link => {
-              const isActive = pathname.startsWith(link.href);
-              return (
-                <Link
-                  key={link.href}
-                  href={link.href}
-                  style={{
-                    fontFamily: 'var(--font-sans)', fontWeight: 500,
-                    fontSize: '18px', letterSpacing: '-0.01em',
-                    color: isActive ? '#364262' : '#454652',
-                    textDecoration: 'none',
-                    borderBottom: isActive ? '2px solid #364262' : '2px solid transparent',
-                    paddingBottom: '4px',
-                    transition: 'color 0.15s ease',
-                  }}
-                >
-                  {link.label}
-                </Link>
-              );
-            })}
-          </nav>
+          {activeProperty && (
+            <>
+              <span style={{ width: 1, height: 14, background: rule, marginLeft: 7 }} />
+              <span style={{
+                fontFamily: sansFont, fontSize: '13px', color: ink2,
+                whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0,
+              }}>
+                {activeProperty.name}
+              </span>
+            </>
+          )}
         </div>
 
-        {/* Right controls */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '16px', minWidth: 0 }}>
+        {/* Center: Nav links */}
+        <nav style={{ display: 'flex', gap: '24px' }}>
+          {navLinks.map(link => {
+            const isActive = pathname.startsWith(link.href);
+            return (
+              <Link
+                key={link.href}
+                href={link.href}
+                style={{
+                  fontFamily: sansFont, fontWeight: isActive ? 600 : 400,
+                  fontSize: '13px', color: isActive ? ink : ink3,
+                  textDecoration: 'none',
+                  borderBottom: isActive ? `1.5px solid ${sage}` : 'none',
+                  paddingBottom: '2px',
+                  transition: 'color 0.15s ease',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {link.label}
+              </Link>
+            );
+          })}
+        </nav>
+
+        {/* Right: controls */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
 
           {/* Notifications bell */}
           <button
@@ -112,26 +137,27 @@ export function Header() {
               transition: 'background 0.15s',
             }}
             onClick={() => {}}
+            aria-label="Notifications"
           >
-            <Bell size={20} color="#364262" />
+            <Bell size={18} color={ink2} />
           </button>
 
-          {/* Language toggle (standalone, visible at all times) */}
+          {/* Language toggle */}
           <button
             onClick={() => setLang(lang === 'en' ? 'es' : 'en')}
             title={lang === 'en' ? 'Switch to Español' : 'Cambiar a English'}
             aria-label={lang === 'en' ? 'Switch language to Spanish' : 'Switch language to English'}
             style={{
-              padding: '8px 10px', borderRadius: '8px', border: 'none',
+              padding: '6px 10px', borderRadius: '8px', border: 'none',
               background: 'transparent', cursor: 'pointer',
               display: 'flex', alignItems: 'center', gap: '6px',
-              fontFamily: 'var(--font-sans)',
-              fontWeight: 600, fontSize: '12px', color: '#364262',
+              fontFamily: sansFont,
+              fontWeight: 600, fontSize: '11px', color: ink2,
               letterSpacing: '0.04em',
               transition: 'background 0.15s',
             }}
           >
-            <Globe size={18} color="#364262" />
+            <Globe size={16} color={ink2} />
             {lang === 'en' ? 'EN' : 'ES'}
           </button>
 
@@ -144,23 +170,25 @@ export function Header() {
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               transition: 'background 0.15s',
             }}
+            aria-label="Settings"
           >
-            <Settings size={20} color="#364262" />
+            <Settings size={18} color={ink2} />
           </button>
 
-          {/* User avatar */}
+          {/* User avatar + dropdown */}
           {user && (
-            <div style={{ position: 'relative', flexShrink: 0, marginLeft: '8px' }}>
+            <div style={{ position: 'relative', flexShrink: 0, marginLeft: '4px' }}>
               <button
                 onClick={() => setShowUserMenu(v => !v)}
                 style={{
-                  width: '40px', height: '40px', borderRadius: '50%',
-                  border: 'none', overflow: 'hidden', cursor: 'pointer',
-                  background: '#eae8e3',
+                  width: '34px', height: '34px', borderRadius: '50%',
+                  border: `1px solid ${rule}`, overflow: 'hidden', cursor: 'pointer',
+                  background: 'var(--snow-bg)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  color: '#364262', fontWeight: 600, fontSize: '16px', flexShrink: 0,
-                  fontFamily: 'var(--font-sans)',
+                  color: ink, fontWeight: 600, fontSize: '13px', flexShrink: 0,
+                  fontFamily: sansFont,
                 }}
+                aria-label="User menu"
               >
                 {(user.displayName?.[0] ?? user.username?.[0] ?? 'U').toUpperCase()}
               </button>
@@ -170,16 +198,16 @@ export function Header() {
                   <div style={{ position: 'fixed', inset: 0, zIndex: 48 }} onClick={() => setShowUserMenu(false)} />
                   <div style={{
                     position: 'absolute', right: 0, top: 'calc(100% + 8px)',
-                    background: '#ffffff', border: '1px solid rgba(78,90,122,0.12)',
-                    borderRadius: '12px', minWidth: '200px',
+                    background: 'var(--snow-bg)', border: `1px solid ${rule}`,
+                    borderRadius: '12px', minWidth: '220px',
                     overflow: 'hidden', zIndex: 50,
-                    boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+                    boxShadow: '0 8px 24px rgba(31,35,28,0.08)',
                   }}>
-                    <div style={{ padding: '12px 16px', borderBottom: '1px solid rgba(78,90,122,0.08)' }}>
-                      <div style={{ fontSize: '14px', fontWeight: 600, color: '#1b1c19' }}>
+                    <div style={{ padding: '12px 16px', borderBottom: `1px solid ${rule}` }}>
+                      <div style={{ fontSize: '13px', fontWeight: 600, color: ink, fontFamily: sansFont }}>
                         {user.displayName ?? 'User'}
                       </div>
-                      <div style={{ fontSize: '12px', color: '#454652', marginTop: '2px' }}>
+                      <div style={{ fontSize: '11px', color: ink2, marginTop: '2px', fontFamily: sansFont }}>
                         {user.role ? user.role.charAt(0).toUpperCase() + user.role.slice(1) : ''}
                       </div>
                     </div>
@@ -190,12 +218,12 @@ export function Header() {
                         onClick={() => handleSwitchProperty(p.id)}
                         style={{
                           width: '100%', padding: '10px 16px', textAlign: 'left',
-                          background: p.id === activeProperty?.id ? 'rgba(0,101,101,0.06)' : 'transparent',
-                          color: p.id === activeProperty?.id ? '#004b4b' : '#1b1c19',
+                          background: p.id === activeProperty?.id ? 'rgba(158,183,166,0.12)' : 'transparent',
+                          color: p.id === activeProperty?.id ? 'var(--snow-sage-deep)' : ink,
                           fontSize: '13px', fontWeight: p.id === activeProperty?.id ? 600 : 400,
                           cursor: 'pointer', border: 'none',
-                          borderBottom: '1px solid rgba(78,90,122,0.06)',
-                          fontFamily: 'var(--font-sans)',
+                          borderBottom: `1px solid var(--snow-rule-soft)`,
+                          fontFamily: sansFont,
                         }}
                       >
                         {p.name}
@@ -209,9 +237,9 @@ export function Header() {
                         width: '100%', padding: '10px 16px',
                         display: 'flex', alignItems: 'center', gap: '8px',
                         background: 'transparent', border: 'none',
-                        borderBottom: '1px solid rgba(78,90,122,0.06)',
-                        color: '#1b1c19', fontSize: '13px',
-                        cursor: 'pointer', fontFamily: 'var(--font-sans)',
+                        borderBottom: `1px solid var(--snow-rule-soft)`,
+                        color: ink, fontSize: '13px',
+                        cursor: 'pointer', fontFamily: sansFont,
                         textAlign: 'left',
                       }}
                     >
@@ -225,8 +253,8 @@ export function Header() {
                         width: '100%', padding: '10px 16px',
                         display: 'flex', alignItems: 'center', gap: '8px',
                         background: 'transparent', border: 'none',
-                        color: '#ba1a1a', fontSize: '13px',
-                        cursor: 'pointer', fontFamily: 'var(--font-sans)',
+                        color: 'var(--snow-warm)', fontSize: '13px',
+                        cursor: 'pointer', fontFamily: sansFont,
                       }}
                     >
                       <LogOut size={14} />
