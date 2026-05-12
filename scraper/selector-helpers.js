@@ -155,26 +155,37 @@ async function fillFirstMatching(page, selectors, value, label, log, options = {
 }
 
 /**
- * Select an option in the first matching <select>. Falls through silently
- * on miss (returns null) — the caller is responsible for deciding whether
- * a missing dropdown is fatal. CA's report forms often have sensible
+ * Select an option in the first matching <select>. By default, falls through
+ * silently on miss (returns null) — the caller is responsible for deciding
+ * whether a missing dropdown is fatal. CA's report forms often have sensible
  * defaults, so missing a "Select All" gesture isn't always a hard error.
+ *
+ * 2026-05-12 (Codex audit, re-applied after first edit didn't persist):
+ * added options.required. When true, throws on miss instead of warning.
+ * Use for filters where falling through to CA's sticky last-used value
+ * would corrupt the data downstream (status/condition/housekeeper on the
+ * Housekeeping Check-off List CSV report).
  *
  * @returns {Promise<string|null>}
  */
-async function selectFirstMatching(page, selectors, value, label, log) {
+async function selectFirstMatching(page, selectors, value, label, log, options = {}) {
   for (const sel of selectors) {
     let count = 0;
     try { count = await page.locator(sel).count(); } catch { continue; }
     if (count === 0) continue;
     try {
       await page.selectOption(sel, value, { timeout: 5000 });
-      log(`Set ${label} \u2192 ${value} (selector: ${sel})`);
+      log(`Set ${label} → ${value} (selector: ${sel})`);
       return sel;
     } catch (e) {
       // CA sometimes wraps select in a custom dropdown — fall through.
       log(`selectOption failed on ${sel} for ${label}: ${e.message}`);
     }
+  }
+  if (options.required) {
+    throw new Error(
+      `Could not set required filter "${label}". Tried ${selectors.length} selectors on ${page.url()}.`,
+    );
   }
   log(`WARNING: Could not set ${label}. Continuing with whatever default CA used.`);
   return null;

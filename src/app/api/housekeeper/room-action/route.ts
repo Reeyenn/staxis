@@ -223,7 +223,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     if (room.property_id !== pid) {
       return err('room/property mismatch', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
     }
-    if (room.assigned_to !== staffId) {
+    // 2026-05-12 (pre-merge review fix): allow null assigned_to. The
+    // schema has `assigned_to uuid references staff(id) on delete set
+    // null` (migration 0001), so when a housekeeper is deleted mid-day
+    // their rooms cascade to NULL. A strict `!==` here would reject any
+    // other housekeeper picking up that work — a real recovery flow.
+    // Only reject when the room is ACTIVELY assigned to a DIFFERENT
+    // staff member.
+    if (room.assigned_to && room.assigned_to !== staffId) {
       // Same response shape as room/property mismatch so we don't reveal
       // which side of the pair was wrong to an enumerator.
       return err('room not assigned to this staff', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });

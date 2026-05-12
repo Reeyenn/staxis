@@ -38,15 +38,21 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 export function requireCronSecret(req: NextRequest): NextResponse | null {
   const secret = process.env.CRON_SECRET;
   if (!secret) {
-    // Fail-closed in production. A missing CRON_SECRET on a prod deploy is
-    // config drift (env var dropped during a redeploy) — historically this
-    // would silently open every admin/cron endpoint. Refuse to serve until
-    // the var is restored; the failure surfaces in Sentry/logs.
-    if (process.env.NODE_ENV === 'production') {
+    // Fail-closed in TRUE production only. A missing CRON_SECRET on a
+    // real prod deploy is config drift (env var dropped during a redeploy)
+    // — historically this would silently open every admin/cron endpoint.
+    //
+    // Vercel preview deploys also have NODE_ENV='production' but are not
+    // a security boundary; gating on VERCEL_ENV lets previews still pass
+    // through unsigned for smoke tests. Railway/Fly prod (no VERCEL_ENV)
+    // falls through to the NODE_ENV check.
+    const isVercelProd = process.env.VERCEL_ENV === 'production';
+    const isOtherProd = process.env.NODE_ENV === 'production' && !process.env.VERCEL_ENV;
+    if (isVercelProd || isOtherProd) {
       console.error('[api-auth] CRON_SECRET unset in production — refusing request');
       return NextResponse.json({ error: 'server misconfigured' }, { status: 500 });
     }
-    return null;  // dev mode — no secret configured
+    return null;  // dev / preview — no secret configured
   }
   const auth = req.headers.get('authorization') ?? '';
   const expected = `Bearer ${secret}`;
@@ -130,10 +136,13 @@ export async function requireSessionOrCron(req: NextRequest): Promise<
 
   // Try cron-secret first (fast path, constant time).
   const cronSecret = process.env.CRON_SECRET;
-  // In production a missing CRON_SECRET means we can't accept the cron
-  // path at all — but session validation may still succeed below, so we
-  // just skip the cron check rather than 500.
-  if (!cronSecret && process.env.NODE_ENV === 'production') {
+  // In TRUE production a missing CRON_SECRET means the cron path is
+  // disabled — session validation may still succeed below. Same
+  // VERCEL_ENV gating as requireCronSecret so preview deploys don't
+  // spam this log line.
+  const isVercelProd = process.env.VERCEL_ENV === 'production';
+  const isOtherProd = process.env.NODE_ENV === 'production' && !process.env.VERCEL_ENV;
+  if (!cronSecret && (isVercelProd || isOtherProd)) {
     console.error('[api-auth] CRON_SECRET unset in production — cron path disabled');
   }
   if (cronSecret) {
