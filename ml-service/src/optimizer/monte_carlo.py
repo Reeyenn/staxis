@@ -190,17 +190,23 @@ async def optimize_headcount(
         if recommended_headcount is None:
             recommended_headcount = max(completion_curves, key=lambda c: c["p"])["headcount"]
 
+    # Look up completion_prob by headcount value (not array index) so a
+    # future change to the search range (e.g. range(2, 12)) doesn't
+    # silently misalign. May 2026 audit pass-5: line 200 had a guard but
+    # the symmetric lookup at line 227 didn't — IndexError if anything
+    # ever pushes recommended_headcount past len(completion_curves).
+    achieved_p = next(
+        (c["p"] for c in completion_curves if c["headcount"] == recommended_headcount),
+        0.95,
+    )
+
     # Write optimizer_results
     optimizer_result = {
         "property_id": property_id,
         "date": str(prediction_date),
         "recommended_headcount": recommended_headcount,
         "target_completion_probability": float(target_prob),
-        "achieved_completion_probability": float(
-            completion_curves[recommended_headcount - 1]["p"]
-            if recommended_headcount <= len(completion_curves)
-            else 0.95
-        ),
+        "achieved_completion_probability": float(achieved_p),
         "completion_probability_curve": json.dumps(completion_curves),
         "assignment_plan": json.dumps({}),  # Simplified
         "sensitivity_analysis": json.dumps({
@@ -223,9 +229,7 @@ async def optimize_headcount(
             "property_id": property_id,
             "date": str(prediction_date),
             "recommended_headcount": recommended_headcount,
-            "achieved_completion_probability": float(
-                completion_curves[recommended_headcount - 1]["p"]
-            ),
+            "achieved_completion_probability": float(achieved_p),
             "completion_probability_curve": completion_curves,
         }
     except Exception as e:
