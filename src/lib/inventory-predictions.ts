@@ -172,16 +172,42 @@ export async function fetchMlPredictedRates(pid: string): Promise<Map<string, nu
   try {
     const since = new Date();
     since.setDate(since.getDate() - ML_PREDICTION_FRESHNESS_DAYS);
+
+    // ── Filter to predictions from ACTIVE models (May 2026 audit pass-5) ──
+    // The MAE-gate fixes deactivate models that fail validation. Their
+    // prior predictions (with rates that could be off 10-50x) stay in
+    // the table for up to 7 days. Without this filter, deactivated
+    // models still feed the reorder list, leading to over-ordering on
+    // items the AI just decided it can't predict reliably.
+    //
+    // Also filters out is_shadow=true rows: shadow models write
+    // predictions for comparison only — operators should never see them.
+    //
+    // Two-query approach because supabase-js doesn't support a true
+    // INNER JOIN with WHERE in one round-trip. Fetch the small set of
+    // active run IDs first, then filter the prediction stream client-
+    // side. At fleet scale this is ~10 IDs per property × 1 query, cheap.
+    const { data: activeRuns } = await supabase
+      .from('model_runs')
+      .select('id')
+      .eq('property_id', pid)
+      .eq('layer', 'inventory_rate')
+      .eq('is_active', true);
+    const activeRunIds = new Set((activeRuns ?? []).map((r) => String(r.id)));
+    if (activeRunIds.size === 0) return out;  // no active models → no rates
+
     const { data, error } = await supabase
       .from('inventory_rate_predictions')
-      .select('item_id, predicted_daily_rate, predicted_at')
+      .select('item_id, predicted_daily_rate, predicted_at, model_run_id, is_shadow')
       .eq('property_id', pid)
+      .eq('is_shadow', false)
       .gte('predicted_at', since.toISOString())
       .order('predicted_at', { ascending: false })
       .limit(2000);
     if (error || !data) return out;
-    // Most-recent first; first hit per item wins.
+    // Most-recent first; first hit per item wins (post active-model filter).
     for (const r of data) {
+      if (!activeRunIds.has(String(r.model_run_id))) continue;
       const id = String(r.item_id);
       if (out.has(id)) continue;
       const rate = Number(r.predicted_daily_rate);

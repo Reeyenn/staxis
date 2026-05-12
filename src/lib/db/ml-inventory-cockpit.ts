@@ -251,11 +251,18 @@ export async function getInventoryTodaysPredictions(
   pid: string,
   limit = 100,
 ): Promise<InventoryTodayPrediction[]> {
-  const [predRes, itemsRes] = await Promise.all([
+  // ── Filter to predictions from ACTIVE models (May 2026 audit pass-5) ──
+  // The MAE-gate fixes deactivate models that fail validation. Their
+  // prior predictions stay in the table — without this filter, the
+  // admin cockpit's "Today's Predictions" surfaces rates from models
+  // we already decided are untrustworthy. Also filters is_shadow=true
+  // shadow predictions which are comparison-only.
+  const [predRes, itemsRes, activeRunsRes] = await Promise.all([
     supabase
       .from('inventory_rate_predictions')
-      .select('item_id,item_name,predicted_daily_rate,predicted_current_stock,predicted_at,model_run_id')
+      .select('item_id,item_name,predicted_daily_rate,predicted_current_stock,predicted_at,model_run_id,is_shadow')
       .eq('property_id', pid)
+      .eq('is_shadow', false)
       .order('predicted_at', { ascending: false })
       .limit(2000),
     supabase
@@ -263,14 +270,31 @@ export async function getInventoryTodaysPredictions(
       .select('id,name,current_stock')
       .eq('property_id', pid)
       .limit(limit),
+    supabase
+      .from('model_runs')
+      .select('id,algorithm')
+      .eq('property_id', pid)
+      .eq('layer', 'inventory_rate')
+      .eq('is_active', true),
   ]);
 
   if (predRes.error) {
     logErr('getInventoryTodaysPredictions pred', predRes.error);
     return [];
   }
+
+  // Build active-run set and algorithm lookup in one pass.
+  const algoByRun = new Map<string, string>();
+  const activeRunIds = new Set<string>();
+  for (const r of activeRunsRes.data ?? []) {
+    activeRunIds.add(String(r.id));
+    algoByRun.set(String(r.id), r.algorithm ?? '');
+  }
+
   const byItem = new Map<string, Record<string, unknown>>();
   for (const r of predRes.data ?? []) {
+    // Skip predictions from deactivated models — see header comment.
+    if (!activeRunIds.has(String(r.model_run_id))) continue;
     const key = String(r.item_id);
     if (!byItem.has(key)) byItem.set(key, r as Record<string, unknown>); // first = most recent because order desc
   }
@@ -278,19 +302,6 @@ export async function getInventoryTodaysPredictions(
   const itemMap = new Map<string, { name: string; stock: number }>();
   for (const item of itemsRes.data ?? []) {
     itemMap.set(item.id, { name: item.name, stock: Number(item.current_stock ?? 0) });
-  }
-
-  // Algorithm lookup for the active model_run
-  const runIds = Array.from(new Set(Array.from(byItem.values()).map((p) => String(p.model_run_id))));
-  const algoByRun = new Map<string, string>();
-  if (runIds.length > 0) {
-    const algoRes = await supabase
-      .from('model_runs')
-      .select('id,algorithm')
-      .in('id', runIds);
-    for (const r of algoRes.data ?? []) {
-      algoByRun.set(r.id, r.algorithm ?? '');
-    }
   }
 
   const out: InventoryTodayPrediction[] = [];
