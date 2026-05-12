@@ -62,7 +62,23 @@ async def compute_rolling_shadow_mae(
     property_id: str,
     layer: str,
 ) -> Optional[Tuple[float, float, float]]:
-    """Compute rolling 14-day shadow MAE for active model vs baseline.
+    """Compute rolling 14-day shadow MAE for active model vs the most
+    recent previous active model (the natural rollback target).
+
+    Codex audit pass-6 P1 — three statistical issues fixed here:
+
+    1. The 14-day cutoff was computed but never applied to the fetch,
+       so old predictions could influence rollback decisions long after
+       the window closed.
+    2. The previous "baseline" was every log not from the active model,
+       which mixed multiple prior models + shadows + static baseline
+       into one comparator. Now we pin the comparator to a single
+       model_run_id (the most recent previously-active model) so the
+       comparison is between two known cohorts.
+    3. Mann-Whitney U is unpaired. Each error pair comes from the same
+       day's prediction; the natural test is paired (Wilcoxon signed-
+       rank). Paired tests are far more powerful when the two samples
+       share day-to-day variation.
 
     Args:
         property_id: Property UUID
@@ -85,53 +101,104 @@ async def compute_rolling_shadow_mae(
         return None
 
     active_model_id = active_models[0]["id"]
-    activation_mae = active_models[0].get("validation_mae", 5.0)
 
-    # Fetch prediction_log for last 14 days
-    cutoff_date = (datetime.utcnow() - timedelta(days=settings.auto_rollback_window_days)).isoformat()
-
-    logs = client.fetch_many(
-        "prediction_log",
-        filters={"property_id": property_id, "layer": layer},
-        order_by="logged_at",
+    # Pick the comparator: the most recent previously-active non-shadow
+    # run that ISN'T the current active model and wasn't itself rolled
+    # back. This is the run we'd roll back TO, so it's the right thing
+    # to compare against.
+    prior_runs = client.fetch_many(
+        "model_runs",
+        filters={"property_id": property_id, "layer": layer, "is_shadow": False},
+        order_by="activated_at",
         descending=True,
-        limit=1000,
+        limit=10,
     )
+    comparator_model_id = None
+    for row in prior_runs:
+        if row.get("id") == active_model_id:
+            continue
+        if (row.get("deactivation_reason") or "").lower() == "auto_rollback":
+            continue
+        if not row.get("activated_at"):
+            continue
+        comparator_model_id = row["id"]
+        break
+
+    if comparator_model_id is None:
+        # Nothing to compare against — never rolled over from a previous
+        # active model. Can't make a rollback decision in that state.
+        return None
+
+    # Fetch prediction_log for last `auto_rollback_window_days` days
+    # ONLY. The cutoff was previously computed-but-unused; pass it
+    # through execute_sql so PostgREST applies the date filter at the DB.
+    cutoff_dt = datetime.utcnow() - timedelta(days=settings.auto_rollback_window_days)
+    cutoff_iso = cutoff_dt.isoformat()
+    logs_query = f"""
+        select model_run_id, abs_error, prediction_date
+        from prediction_log
+        where property_id = '{property_id}'
+          and layer = '{layer}'
+          and logged_at >= '{cutoff_iso}'
+          and model_run_id in ('{active_model_id}', '{comparator_model_id}')
+        order by prediction_date asc
+    """
+    try:
+        logs = client.execute_sql(logs_query)
+    except Exception:
+        return None
 
     if not logs or len(logs) < 10:
         return None
 
-    # Split into active model and baseline
-    active_errors = []
-    baseline_errors = []
-
+    # Bucket errors by (date) so we can pair them across the two models.
+    # Each bucket holds at most one active-error and one comparator-error
+    # per date; a date that has both contributes one paired observation.
+    by_date: dict = {}
     for log in logs:
-        error = float(log.get("abs_error", 0))
-        is_active = log.get("model_run_id") == active_model_id
+        d = log.get("prediction_date")
+        if d is None:
+            continue
+        bucket = by_date.setdefault(str(d), {})
+        try:
+            err = float(log.get("abs_error", 0))
+        except (TypeError, ValueError):
+            continue
+        run_id = log.get("model_run_id")
+        if run_id == active_model_id and "active" not in bucket:
+            bucket["active"] = err
+        elif run_id == comparator_model_id and "comparator" not in bucket:
+            bucket["comparator"] = err
 
-        if is_active:
-            active_errors.append(error)
-        else:
-            baseline_errors.append(error)
+    paired_active: list = []
+    paired_baseline: list = []
+    for bucket in by_date.values():
+        if "active" in bucket and "comparator" in bucket:
+            paired_active.append(bucket["active"])
+            paired_baseline.append(bucket["comparator"])
 
-    if len(active_errors) < 5 or len(baseline_errors) < 5:
+    if len(paired_active) < 5:
+        # Not enough paired days yet to make a confident call.
         return None
 
-    # Compute MAE
-    active_mae = np.mean(active_errors)
-    baseline_mae = np.mean(baseline_errors)
+    active_mae = float(np.mean(paired_active))
+    baseline_mae = float(np.mean(paired_baseline))
 
-    # Mann-Whitney U test (unpaired test for comparing two independent samples)
-    # Null: active and baseline have same distribution
-    # Alt: active is worse (higher errors) — one-tailed
+    # Wilcoxon signed-rank: paired, one-sided test that active errors
+    # are GREATER than baseline errors (i.e. the active model is worse).
+    # zero_method="zsplit" handles ties (same error on both models)
+    # without throwing on Wilcoxon's no-difference fast-path.
     try:
-        statistic, pvalue = stats.mannwhitneyu(
-            active_errors, baseline_errors, alternative="greater"
+        result = stats.wilcoxon(
+            paired_active, paired_baseline,
+            alternative="greater",
+            zero_method="zsplit",
         )
+        pvalue = float(result.pvalue)
     except Exception:
         return None
 
-    return (active_mae, baseline_mae, float(pvalue))
+    return (active_mae, baseline_mae, pvalue)
 
 
 async def check_auto_rollback(
