@@ -67,15 +67,26 @@ async function fetchOOOWorkOrders(page, log) {
     // mid-evaluate (the 2026-04-27 outage signature). Without this, every
     // OOO pull during a CA redirect dance died with "Execution context
     // was destroyed" until the scraper process was restarted.
+    //
+    // 2026-05-12 (Codex audit): added a 20s AbortSignal so a hung
+    // WorkOrders.jx endpoint can't pin page.evaluate forever and starve
+    // the rest of the scraper tick.
     body = await safeEval(page, async (url) => {
-      const r = await fetch(url, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: 'workOrderType=ROOM',
-      });
-      const text = await r.text();
-      return { status: r.status, text, loc: location.href };
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 20_000);
+      try {
+        const r = await fetch(url, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'workOrderType=ROOM',
+          signal: ctrl.signal,
+        });
+        const text = await r.text();
+        return { status: r.status, text, loc: location.href };
+      } finally {
+        clearTimeout(t);
+      }
     }, WORK_ORDERS_URL);
   } catch (err) {
     throw new ScraperError(

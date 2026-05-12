@@ -394,28 +394,31 @@ async function downloadCSVFromCA(page, log) {
   await page.waitForTimeout(1000); // CA forms can be slow
 
   // ── Set all filters explicitly (never trust defaults / sticky state) ──
-  // Each one falls through gracefully if the dropdown can't be set —
-  // we'd rather get permissive default data than no data.
+  // 2026-05-12 (Codex audit): status/condition/housekeeper are marked
+  // required — silently falling through to CA's sticky last-used value
+  // could produce a CSV with the wrong filter applied (fewer rooms, or
+  // only one HK's set) that still passes the minimum-rooms guard
+  // downstream but writes wrong counts to plan_snapshots.
   await selectFirstMatching(page, [
     'select[name="status"]',
     'select[id="status"]',
     'select[id*="status" i]',
     'label:has-text("Status") >> select',
-  ], '*', 'Status → Select All', csvLog);
+  ], '*', 'Status → Select All', csvLog, { required: true });
 
   await selectFirstMatching(page, [
     'select[name="condition"]',
     'select[id="condition"]',
     'select[id*="condition" i]',
     'label:has-text("Condition") >> select',
-  ], '*', 'Condition → Select All', csvLog);
+  ], '*', 'Condition → Select All', csvLog, { required: true });
 
   await selectFirstMatching(page, [
     'select[name="housekeeper"]',
     'select[id="housekeeper"]',
     'select[id*="housekeep" i]',
     'label:has-text("Housekeeper") >> select',
-  ], '*', 'Housekeeper → Select All', csvLog);
+  ], '*', 'Housekeeper → Select All', csvLog, { required: true });
 
   // Room range — fail loud (we need this).
   await fillFirstMatching(page, [
@@ -688,9 +691,17 @@ async function downloadCSVFromCA(page, log) {
     const pages = page.context().pages();
     if (pages.length > 1) {
       const lastPage = pages[pages.length - 1];
-      await lastPage.waitForLoadState('domcontentloaded', { timeout: 10000 });
-      csvText = await lastPage.evaluate(() => document.body.innerText || document.body.textContent || '');
-      log(`[CSV] Got ${csvText.length} bytes from last tab`);
+      // 2026-05-12 (Codex audit): close lastPage in finally so repeated
+      // long-running pulls don't accumulate orphan pages in the browser
+      // context (memory + use-after-navigation risk). The normal popup
+      // path above already closes its popup; this fallback path didn't.
+      try {
+        await lastPage.waitForLoadState('domcontentloaded', { timeout: 10000 });
+        csvText = await lastPage.evaluate(() => document.body.innerText || document.body.textContent || '');
+        log(`[CSV] Got ${csvText.length} bytes from last tab`);
+      } finally {
+        await lastPage.close().catch(() => {});
+      }
     } else {
       // Try reading response body or page content
       csvText = await page.evaluate(() => {
