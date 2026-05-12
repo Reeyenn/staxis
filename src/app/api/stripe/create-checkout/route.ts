@@ -87,11 +87,24 @@ export async function POST(req: NextRequest) {
       .eq('id', pidV.value!);
   }
 
-  // Build success/cancel URLs. Default to dashboard + back-to-billing-page.
-  const origin = req.headers.get('origin') ?? new URL(req.url).origin;
-  const customReturn = typeof body.returnUrl === 'string' ? body.returnUrl : null;
-  const successUrl = `${origin}/dashboard?billing=success&session_id={CHECKOUT_SESSION_ID}`;
-  const cancelUrl  = customReturn ?? `${origin}/dashboard?billing=cancelled`;
+  // 2026-05-12 (Codex audit): build URLs from a fixed canonical origin
+  // instead of trusting request headers. The old code took whatever the
+  // client sent in `Origin` (or could send via custom `returnUrl`), so
+  // an authenticated owner could mint a Stripe Checkout session whose
+  // post-payment redirect landed on an attacker-controlled host —
+  // useful for phishing follow-on flows. Use NEXT_PUBLIC_APP_URL with
+  // a hardcoded fallback; allow only relative paths in returnUrl.
+  const CANONICAL_ORIGIN = process.env.NEXT_PUBLIC_APP_URL || 'https://getstaxis.com';
+  const safeReturn = (() => {
+    const v = typeof body.returnUrl === 'string' ? body.returnUrl : null;
+    // Only accept paths like /dashboard or /settings/billing — never full URLs.
+    if (v && /^\/[A-Za-z0-9._~!$&'()*+,;=:@/?-]*$/.test(v) && !v.startsWith('//')) {
+      return v;
+    }
+    return null;
+  })();
+  const successUrl = `${CANONICAL_ORIGIN}/dashboard?billing=success&session_id={CHECKOUT_SESSION_ID}`;
+  const cancelUrl  = safeReturn ? `${CANONICAL_ORIGIN}${safeReturn}` : `${CANONICAL_ORIGIN}/dashboard?billing=cancelled`;
 
   const checkout = await createCheckoutSession({
     customerId,

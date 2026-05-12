@@ -171,6 +171,11 @@ async function sendTwilioSms(to, body) {
   if (!sid || !token || !from) {
     return { ok: false, detail: 'Twilio env vars missing on Railway (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM_NUMBER)' };
   }
+  // 2026-05-12 (Codex audit): wrap in a 10s AbortController so a hung
+  // Twilio connection can't pin the watchdog tick and delay the next
+  // scheduled run.
+  const ctrl = new AbortController();
+  const timeoutHandle = setTimeout(() => ctrl.abort(), 10_000);
   try {
     const form = new URLSearchParams({ From: from, To: to, Body: body });
     const auth = Buffer.from(`${sid}:${token}`).toString('base64');
@@ -183,6 +188,7 @@ async function sendTwilioSms(to, body) {
           'Content-Type': 'application/x-www-form-urlencoded',
         },
         body: form.toString(),
+        signal: ctrl.signal,
       }
     );
     if (!res.ok) {
@@ -191,7 +197,12 @@ async function sendTwilioSms(to, body) {
     }
     return { ok: true };
   } catch (err) {
+    if (err && err.name === 'AbortError') {
+      return { ok: false, detail: 'Twilio alert send timed out after 10s' };
+    }
     return { ok: false, detail: err.message || String(err) };
+  } finally {
+    clearTimeout(timeoutHandle);
   }
 }
 

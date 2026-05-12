@@ -19,9 +19,15 @@ export async function addInventoryOrder(
 ): Promise<string> {
   // Auto-compute total_cost when both pieces are present so callers don't
   // have to do it themselves.
+  //
+  // 2026-05-12 (Codex audit): round to cents on write so float artefacts
+  // (0.1 * 3 = 0.30000000000000004) don't accumulate in the ledger and
+  // make downstream "spend this month" summaries drift between runs.
   const totalCost =
     order.totalCost ??
-    (order.unitCost != null ? Number(order.unitCost) * Number(order.quantity ?? 0) : undefined);
+    (order.unitCost != null
+      ? Math.round(Number(order.unitCost) * Number(order.quantity ?? 0) * 100) / 100
+      : undefined);
 
   const row = {
     ...toInventoryOrderRow({ ...order, propertyId: pid, totalCost }),
