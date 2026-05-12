@@ -56,6 +56,28 @@ interface LogContext {
 }
 
 /**
+ * In-process running total of Claude spend per job_id.
+ *
+ * Why: getJobCostMicros() queries claude_usage_log to compute cumulative
+ * spend, but logClaudeUsage is fire-and-forget (`void logClaudeUsage(...)`).
+ * The row may not be committed by the time the NEXT phase queries. Two
+ * concurrent phases starting at the same instant could both see 0 spend
+ * and pass the cap check, then both burn $2.40 — net $4.80 before the
+ * next phase catches it.
+ *
+ * This map gives us a tight, lag-free running total inside a single
+ * Node process (each Fly.io CUA worker is one process). getJobCostMicros
+ * checks this map FIRST and falls back to the DB only if a process
+ * restart wiped the in-memory state.
+ *
+ * Capped at 1000 entries with LRU eviction to bound memory; an
+ * onboarding job lives a few minutes so eviction would only happen
+ * after a very long-running worker that's seen 1000+ jobs.
+ */
+const IN_PROC_COST_BY_JOB = new Map<string, number>();
+const IN_PROC_COST_CAP = 1000;
+
+/**
  * Compute cost in micro-dollars from a usage object.
  * 1 micro-dollar = $0.000001 = 0.0001 cents.
  */
@@ -80,17 +102,27 @@ function computeCostMicros(usage: AnthropicUsage, model: string): number {
 }
 
 /**
- * Sum cost_micros across all claude_usage_log rows for a given job.
- * Used by the CUA mapper as a cumulative-cost circuit-breaker: each
- * phase queries this before starting, and aborts the run if the job
- * is already over budget. May 2026 audit pass-5: the existing
- * per-phase token + wallclock budgets cap each phase at ~$2.40, but
- * a 5-phase mapper run could compound to $12+ before any abort.
+ * Sum cost_micros for a given job. Checks the in-process map FIRST
+ * (zero-lag, no DB round-trip) and falls back to the DB only when the
+ * in-memory state is unknown (worker restart since the job started).
+ *
+ * May 2026 audit pass-4: the previous version queried only the DB,
+ * which had two race windows: (1) logClaudeUsage is fire-and-forget,
+ * so the row may not be committed before the next check; (2) two
+ * concurrent phases could both query and see stale-zero. The
+ * in-process map closes both windows.
  *
  * Returns 0 on any error (fail-open — never block a job because the
  * cost-lookup itself failed).
  */
 export async function getJobCostMicros(jobId: string): Promise<number> {
+  // Fast path: in-process state is authoritative when present.
+  const inProc = IN_PROC_COST_BY_JOB.get(jobId);
+  if (inProc !== undefined) return inProc;
+
+  // Fallback: DB read. Used only when the worker restarted between
+  // logClaudeUsage and the next checkBudget — rare but possible on
+  // Fly.io worker rescheduling.
   try {
     const { data, error } = await supabase
       .from('claude_usage_log')
@@ -101,6 +133,8 @@ export async function getJobCostMicros(jobId: string): Promise<number> {
     for (const row of data) {
       total += Number((row as { cost_micros?: number }).cost_micros ?? 0);
     }
+    // Seed the in-process map so subsequent calls hit the fast path.
+    IN_PROC_COST_BY_JOB.set(jobId, total);
     return total;
   } catch {
     return 0;
@@ -110,6 +144,20 @@ export async function getJobCostMicros(jobId: string): Promise<number> {
 export async function logClaudeUsage(usage: AnthropicUsage, context: LogContext): Promise<void> {
   try {
     const cost = computeCostMicros(usage, context.model);
+
+    // Update the in-process running total IMMEDIATELY (before the DB
+    // round-trip). The cost-cap check downstream sees this without lag.
+    if (context.jobId) {
+      const current = IN_PROC_COST_BY_JOB.get(context.jobId) ?? 0;
+      IN_PROC_COST_BY_JOB.set(context.jobId, current + cost);
+      // Bounded-size eviction: drop the oldest entry when over cap.
+      // Maps preserve insertion order, so the first key is the oldest.
+      if (IN_PROC_COST_BY_JOB.size > IN_PROC_COST_CAP) {
+        const oldest = IN_PROC_COST_BY_JOB.keys().next().value;
+        if (oldest !== undefined) IN_PROC_COST_BY_JOB.delete(oldest);
+      }
+    }
+
     const { error } = await supabase.from('claude_usage_log').insert({
       property_id: context.propertyId ?? null,
       workload: context.workload,
