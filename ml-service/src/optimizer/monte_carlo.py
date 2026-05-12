@@ -92,12 +92,34 @@ async def optimize_headcount(
     target_prob = (flags.get("target_completion_prob", settings.target_completion_probability)
                    if flags else settings.target_completion_probability)
 
-    # Fetch L2 supply predictions if available
+    # Fetch L2 supply predictions if available.
+    #
+    # Codex audit pass-6 P0 — this used to cap at limit=100 with the
+    # comment "Fetch all supply predictions for this date". A hotel
+    # with >100 scheduled rooms had its workload silently truncated,
+    # producing a headcount recommendation that was too low. Beaumont
+    # is under 100 today but the system needs to handle multi-property
+    # / larger-property deployments without quietly undercounting.
+    #
+    # Bumped to 5000 (well above any realistic single-property room
+    # count) and we emit a structured warning if we hit the new ceiling
+    # so we know to add real pagination before that ever bites.
+    SUPPLY_PRED_FETCH_CEILING = 5000
     supply_preds = client.fetch_many(
         "supply_predictions",
         filters={"property_id": property_id, "date": str(prediction_date)},
-        limit=100,  # Fetch all supply predictions for this date
+        limit=SUPPLY_PRED_FETCH_CEILING,
     )
+    if len(supply_preds) >= SUPPLY_PRED_FETCH_CEILING:
+        print(json.dumps({
+            "level": "warning",
+            "event": "monte_carlo_supply_fetch_at_ceiling",
+            "property_id": property_id,
+            "date": str(prediction_date),
+            "rows_returned": len(supply_preds),
+            "ceiling": SUPPLY_PRED_FETCH_CEILING,
+            "note": "supply predictions may be truncated; add pagination",
+        }))
 
     # Use L2 supply predictions if available and sufficient, otherwise fall back to L1 uniform
     use_l2_supply = len(supply_preds) >= 10
