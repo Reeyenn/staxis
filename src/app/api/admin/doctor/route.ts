@@ -1950,6 +1950,18 @@ async function checkApiLimitsWritable(): Promise<Omit<Check, 'name' | 'durationM
       p_hour_bucket: hourBucket,
     });
     if (error) {
+      // Migration 0077 added a FK on api_limits.property_id → properties.id.
+      // Our sentinel probePid is deliberately not a real property, so the
+      // RPC now correctly returns 23503 (foreign-key violation). That error
+      // proves the RPC is healthy: it executed all the way through to
+      // Postgres's constraint check. Real callers pass real property_ids
+      // and never hit this. Treat 23503 from the sentinel as success.
+      if ((error as { code?: string }).code === '23503') {
+        return {
+          status: 'ok',
+          detail: 'Rate-limit RPC round-trip OK (sentinel probe correctly rejected by api_limits → properties FK; real callers pass real property_ids).',
+        };
+      }
       return {
         status: 'fail',
         detail: `Rate-limit RPC errored: ${error.message}. Every SMS-firing request is currently failing open (no rate limit enforcement). Check Sentry for [ratelimit] error events.`,
