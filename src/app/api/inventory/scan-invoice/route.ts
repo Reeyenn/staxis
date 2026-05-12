@@ -14,8 +14,9 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { visionExtractJSON, VisionTruncatedError } from '@/lib/vision-extract';
+import { visionExtractJSON, VisionTruncatedError, VisionImageInvalidError } from '@/lib/vision-extract';
 import { errToString } from '@/lib/utils';
+import { log } from '@/lib/log';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 
@@ -185,10 +186,29 @@ export async function POST(req: NextRequest) {
         { status: 422 },
       );
     }
+    // Image rejected by validation in vision-extract.ts. Surface the
+    // specific reason — these are user-actionable ("file too large",
+    // "wrong format") and don't leak any internal detail.
+    if (e instanceof VisionImageInvalidError) {
+      return NextResponse.json(
+        { ok: false, error: 'invalid_image', detail: e.message },
+        { status: 400 },
+      );
+    }
     const msg = errToString(e);
     // Map common upstream errors to friendlier client codes.
     const status = /api[_ ]?key|ANTHROPIC_API_KEY/i.test(msg) ? 503 : 500;
-    return NextResponse.json({ ok: false, error: 'vision_failed', detail: msg }, { status });
+    // Codex audit pass-6: don't echo upstream error detail to clients —
+    // it can leak prompt fragments, model output, or internal config.
+    // Log server-side and return a stable client message.
+    log.error('[scan-invoice] vision call failed', {
+      err: e instanceof Error ? e : new Error(msg),
+      pid,
+    });
+    return NextResponse.json(
+      { ok: false, error: status === 503 ? 'vision_unavailable' : 'vision_failed' },
+      { status },
+    );
   }
 }
 

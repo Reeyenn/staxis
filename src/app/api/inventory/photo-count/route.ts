@@ -13,8 +13,9 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { visionExtractJSON, VisionTruncatedError } from '@/lib/vision-extract';
+import { visionExtractJSON, VisionTruncatedError, VisionImageInvalidError } from '@/lib/vision-extract';
 import { errToString } from '@/lib/utils';
+import { log } from '@/lib/log';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 
@@ -201,8 +202,24 @@ export async function POST(req: NextRequest) {
         { status: 422 },
       );
     }
+    // Image rejected by validation in vision-extract.ts. The reason is
+    // user-actionable and safe to surface (size/format only, no internals).
+    if (e instanceof VisionImageInvalidError) {
+      return NextResponse.json(
+        { ok: false, error: 'invalid_image', detail: e.message },
+        { status: 400 },
+      );
+    }
     const msg = errToString(e);
     const status = /api[_ ]?key|ANTHROPIC_API_KEY/i.test(msg) ? 503 : 500;
-    return NextResponse.json({ ok: false, error: 'vision_failed', detail: msg }, { status });
+    // Codex audit pass-6: don't leak upstream error detail to clients.
+    log.error('[photo-count] vision call failed', {
+      err: e instanceof Error ? e : new Error(msg),
+      pid,
+    });
+    return NextResponse.json(
+      { ok: false, error: status === 503 ? 'vision_unavailable' : 'vision_failed' },
+      { status },
+    );
   }
 }

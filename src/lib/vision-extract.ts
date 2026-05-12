@@ -45,6 +45,98 @@ export interface VisionImage {
   mediaType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
 }
 
+export type VisionMediaType = VisionImage['mediaType'];
+
+/**
+ * Sentinel error subclass for image-validation failures. Routes catch this
+ * to return a 400 with a friendly message instead of letting Anthropic
+ * reject the request (which would burn an API call and surface an opaque
+ * 5xx upstream error).
+ */
+export class VisionImageInvalidError extends Error {
+  constructor(public readonly reason: string) {
+    super(`Image rejected: ${reason}`);
+    this.name = 'VisionImageInvalidError';
+  }
+}
+
+// ── Image validation (Codex audit pass-6) ─────────────────────────────────
+//
+// Anthropic Vision charges per byte. The routes used to gate uploads only on
+// `imageBase64.length > 100` — a 50MB photo or an HTML file labeled as
+// image/png would sail through and burn the bill. This wrapper now decodes
+// the base64, verifies the byte length is sane, and matches the leading
+// magic bytes against the declared mediaType.
+//
+// 5MB raw is Anthropic's documented per-image hard limit; we enforce a
+// slightly tighter 5MB to leave headroom for SDK encoding overhead. Modern
+// phone cameras produce 2-4MB JPEGs, so 5MB covers legitimate hotel use.
+const VISION_MAX_DECODED_BYTES = 5 * 1024 * 1024;
+const VISION_MIN_DECODED_BYTES = 256;
+
+const MAGIC_BYTES: Record<VisionMediaType, (bytes: Uint8Array) => boolean> = {
+  // FF D8 FF — start of any JPEG variant (JFIF, EXIF, etc.).
+  'image/jpeg': b => b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
+  // 89 50 4E 47 0D 0A 1A 0A — PNG signature.
+  'image/png': b =>
+    b.length >= 8 &&
+    b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47 &&
+    b[4] === 0x0d && b[5] === 0x0a && b[6] === 0x1a && b[7] === 0x0a,
+  // RIFF....WEBP — bytes 0-3 are "RIFF", bytes 8-11 are "WEBP".
+  'image/webp': b =>
+    b.length >= 12 &&
+    b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
+    b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50,
+  // GIF87a or GIF89a.
+  'image/gif': b =>
+    b.length >= 6 &&
+    b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x38 &&
+    (b[4] === 0x37 || b[4] === 0x39) && b[5] === 0x61,
+};
+
+function validateImage(image: VisionImage): void {
+  if (typeof image.data !== 'string' || image.data.length === 0) {
+    throw new VisionImageInvalidError('empty image data');
+  }
+  // Reject obvious data-URL prefixes — callers must strip them first. A
+  // sneaked-in "data:image/png;base64," prefix would corrupt the decode
+  // and mask the magic-byte check.
+  if (image.data.startsWith('data:')) {
+    throw new VisionImageInvalidError('data URL prefix not allowed; pass raw base64');
+  }
+  let decoded: Buffer;
+  try {
+    decoded = Buffer.from(image.data, 'base64');
+  } catch {
+    throw new VisionImageInvalidError('not valid base64');
+  }
+  // Buffer.from(..., 'base64') silently drops invalid characters instead
+  // of throwing. A garbage-in / tiny-out result is the canary that the
+  // input wasn't really base64 image bytes.
+  if (decoded.length < VISION_MIN_DECODED_BYTES) {
+    throw new VisionImageInvalidError(
+      `decoded payload is only ${decoded.length} bytes — too small to be a real image`,
+    );
+  }
+  if (decoded.length > VISION_MAX_DECODED_BYTES) {
+    throw new VisionImageInvalidError(
+      `decoded payload is ${(decoded.length / 1024 / 1024).toFixed(1)}MB; ` +
+      `max is ${VISION_MAX_DECODED_BYTES / 1024 / 1024}MB. ` +
+      `Re-take the photo at a lower resolution or compress before upload.`,
+    );
+  }
+  const check = MAGIC_BYTES[image.mediaType];
+  if (!check) {
+    throw new VisionImageInvalidError(`unsupported mediaType: ${image.mediaType}`);
+  }
+  if (!check(decoded)) {
+    throw new VisionImageInvalidError(
+      `payload does not start with valid ${image.mediaType} bytes ` +
+      `(file may be corrupt or mislabeled)`,
+    );
+  }
+}
+
 /**
  * Send an image + a text prompt to Claude. Returns the model's text response.
  * The prompt should instruct the model to return JSON; the caller is
@@ -79,6 +171,9 @@ export async function visionExtractText(
   image: VisionImage,
   prompt: string,
 ): Promise<string> {
+  // Validate BEFORE we burn an API call. Throws VisionImageInvalidError
+  // which routes catch to return a structured 400.
+  validateImage(image);
   const client = getClient();
   const response = await client.messages.create({
     model: MODEL,
@@ -162,5 +257,14 @@ export async function visionExtractJSON<T>(
     }
   }
 
-  throw new Error(`Vision API returned non-JSON output. First 200 chars: ${text.slice(0, 200)}`);
+  // Don't echo model output to the caller — routes that surface
+  // `error.message` to the browser would otherwise leak whatever the
+  // model produced (potentially OCR text from a customer's invoice or
+  // injected commentary). Log the head server-side for diagnostics
+  // and throw a stable, content-free message.
+  // eslint-disable-next-line no-console
+  console.warn('[vision-extract] model returned non-JSON output', {
+    head: text.slice(0, 200),
+  });
+  throw new Error('Vision API returned non-JSON output (see server logs for diagnostic head).');
 }
