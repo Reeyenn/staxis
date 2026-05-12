@@ -31,6 +31,22 @@ Sentry.init({
   // that legitimately want this can opt in per-event via withScope.
   sendDefaultPii: false,
 
+  // 2026-05-12: drop transient upstream-fetch noise from the Sentry inbox.
+  // Routes like /api/admin/build-status fan-out to many external APIs
+  // (GitHub, Vercel, Fly) in parallel. When any of those connections is
+  // closed mid-response, undici raises SocketError: other side closed
+  // → TypeError: fetch failed → Next.js wraps it as "failed to pipe
+  // response". The caller already catches these (Promise.all(.catch())
+  // pattern) so the user sees no degradation — they're pure noise. Sentry's
+  // auto-instrumentation still captures them before our catch runs, which
+  // is what we're filtering here. If we ever stop catching upstream fetch
+  // errors at the route level, REMOVE these so we don't silently mask
+  // real outages.
+  ignoreErrors: [
+    'failed to pipe response',
+    /other side closed/,
+  ],
+
   // 2026-05-12 (Codex audit): scrub custom error text / tags / contexts /
   // breadcrumbs for PII (phones, emails, JWT/Bearer tokens, etc.) before
   // ingestion. sendDefaultPii=false only handles the SDK's automatic
