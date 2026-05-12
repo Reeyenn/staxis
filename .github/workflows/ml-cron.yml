@@ -35,10 +35,14 @@ jobs:
   train-demand:
     if: github.event.schedule == '0 8 * * 0' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    # Hard cap so a hung TLS handshake / DNS pathology can't block this
+    # workflow queue for 6h (GH default). Cron tick is at most ~5 min
+    # of real work; 5 min cap is generous headroom for retries.
+    timeout-minutes: 5
     steps:
       - name: Hit /api/cron/ml-train-demand
         run: |
-          curl -fsS --retry 2 --retry-delay 5 \
+          curl -fsS --max-time 120 --retry 2 --retry-delay 5 \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             "https://getstaxis.com/api/cron/ml-train-demand" | tee /tmp/result.json
           # Fail the job if the response indicates a problem
@@ -73,10 +77,14 @@ jobs:
   train-supply:
     if: github.event.schedule == '30 8 * * 0' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    # Hard cap so a hung TLS handshake / DNS pathology can't block this
+    # workflow queue for 6h (GH default). Cron tick is at most ~5 min
+    # of real work; 5 min cap is generous headroom for retries.
+    timeout-minutes: 5
     steps:
       - name: Hit /api/cron/ml-train-supply
         run: |
-          curl -fsS --retry 2 --retry-delay 5 \
+          curl -fsS --max-time 120 --retry 2 --retry-delay 5 \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             "https://getstaxis.com/api/cron/ml-train-supply" | tee /tmp/result.json
           # Outer .ok must be true AND no per-property result may have
@@ -110,10 +118,14 @@ jobs:
   train-inventory:
     if: github.event.schedule == '0 9 * * 0' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    # Hard cap so a hung TLS handshake / DNS pathology can't block this
+    # workflow queue for 6h (GH default). Cron tick is at most ~5 min
+    # of real work; 5 min cap is generous headroom for retries.
+    timeout-minutes: 5
     steps:
       - name: Hit /api/cron/ml-train-inventory
         run: |
-          curl -fsS --retry 2 --retry-delay 5 \
+          curl -fsS --max-time 120 --retry 2 --retry-delay 5 \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             "https://getstaxis.com/api/cron/ml-train-inventory" | tee /tmp/result.json
           # Outer .ok must be true AND no per-property result may have
@@ -147,10 +159,14 @@ jobs:
   run-inference:
     if: github.event.schedule == '30 10 * * *' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    # Hard cap so a hung TLS handshake / DNS pathology can't block this
+    # workflow queue for 6h (GH default). Cron tick is at most ~5 min
+    # of real work; 5 min cap is generous headroom for retries.
+    timeout-minutes: 5
     steps:
       - name: Hit /api/cron/ml-run-inference
         run: |
-          curl -fsS --retry 2 --retry-delay 5 \
+          curl -fsS --max-time 120 --retry 2 --retry-delay 5 \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             "https://getstaxis.com/api/cron/ml-run-inference" | tee /tmp/result.json
           # Outer .ok must be true AND no per-property result may have
@@ -184,10 +200,14 @@ jobs:
   predict-inventory:
     if: github.event.schedule == '0 11 * * *' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    # Hard cap so a hung TLS handshake / DNS pathology can't block this
+    # workflow queue for 6h (GH default). Cron tick is at most ~5 min
+    # of real work; 5 min cap is generous headroom for retries.
+    timeout-minutes: 5
     steps:
       - name: Hit /api/cron/ml-predict-inventory
         run: |
-          curl -fsS --retry 2 --retry-delay 5 \
+          curl -fsS --max-time 120 --retry 2 --retry-delay 5 \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             "https://getstaxis.com/api/cron/ml-predict-inventory" | tee /tmp/result.json
           # Outer .ok must be true AND no per-property result may have
@@ -221,10 +241,14 @@ jobs:
   aggregate-priors:
     if: github.event.schedule == '0 12 * * *' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    # Hard cap so a hung TLS handshake / DNS pathology can't block this
+    # workflow queue for 6h (GH default). Cron tick is at most ~5 min
+    # of real work; 5 min cap is generous headroom for retries.
+    timeout-minutes: 5
     steps:
       - name: Hit /api/cron/ml-aggregate-priors
         run: |
-          curl -fsS --retry 2 --retry-delay 5 \
+          curl -fsS --max-time 120 --retry 2 --retry-delay 5 \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             "https://getstaxis.com/api/cron/ml-aggregate-priors" | tee /tmp/result.json
           # Outer .ok must be true AND no per-property result may have
