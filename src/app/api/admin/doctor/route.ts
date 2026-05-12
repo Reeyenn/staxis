@@ -129,6 +129,20 @@ const checks: Array<[string, CheckFn]> = [
   // we know they fired is by reading these counters.
   ['ml_occupancy_capture_failures',  checkOccupancyCaptureFailures],
   ['ml_feature_derivation_failures', checkFeatureDerivationFailures],
+  // Prediction freshness — closes the silent-cron-success bug class.
+  // The cron route returns ok:true even if the inner ML calls all fail;
+  // the only way to detect that is "did the database actually get new
+  // prediction rows today?". May 2026 audit added these checks after
+  // discovering inventory_rate_predictions had only today's data while
+  // ml-cron had been "green" for weeks.
+  ['ml_inventory_predictions_fresh', checkMlInventoryPredictionsFresh],
+  ['ml_demand_predictions_fresh',    checkMlDemandPredictionsFresh],
+  ['ml_supply_predictions_fresh',    checkMlSupplyPredictionsFresh],
+  // Cron heartbeat freshness — independent of GitHub Actions success
+  // status. Each cron route writes a heartbeat row as its LAST step;
+  // doctor fails if any expected cron is older than 2× its cadence.
+  // See migration 0074 + src/lib/cron-heartbeat.ts.
+  ['cron_heartbeats_fresh',          checkCronHeartbeatsFresh],
   // Billing config — fails LOUD on the half-configured state where some
   // Stripe vars are set and others aren't. Warns when none are set
   // (pre-launch trial-only mode). Fails when keys are clearly malformed.
@@ -1347,6 +1361,219 @@ async function checkFeatureDerivationFailures(): Promise<Omit<Check, 'name' | 'd
     'feature_derivation',
     'Inspect Vercel logs for /api/housekeeper/room-action "feature derivation threw" errors. The helper swallows its own internal failures, so reaching the outer catch means an upstream contract broke (schema drift, helper signature change, missing column). Cleaning_events lands with all 10 ML feature columns NULL until fixed — supply model retrains on null-padded rows.',
   );
+}
+
+/**
+ * Inventory predictions freshness — fail if no row in
+ * inventory_rate_predictions has predicted_for_date >= today AND at
+ * least one active inventory_rate model exists.
+ *
+ * Why "active model exists" gate: at fleet-day-0 (brand new property,
+ * never trained anything), no predictions is expected. The check should
+ * fire only when we HAVE trained models but the predict cron isn't
+ * writing rows — that's the failure mode this audit found (Pydantic
+ * date-field rejection that hid behind cron silent-success).
+ *
+ * Skipped (not fail) when no active inventory model anywhere — that's
+ * the legitimate "no hotels mature enough yet" state.
+ */
+async function checkMlInventoryPredictionsFresh(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data: activeModels, error: modelErr } = await supabaseAdmin
+      .from('model_runs')
+      .select('property_id')
+      .eq('layer', 'inventory_rate')
+      .eq('is_active', true)
+      .eq('is_shadow', false)
+      .limit(1);
+    if (modelErr) {
+      return { status: 'warn', detail: `model_runs read failed: ${errToString(modelErr)}` };
+    }
+    if (!activeModels || activeModels.length === 0) {
+      return {
+        status: 'skipped',
+        detail: 'no active inventory_rate models — nothing to predict yet',
+      };
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    const { data: preds, error: predErr } = await supabaseAdmin
+      .from('inventory_rate_predictions')
+      .select('property_id')
+      .gte('predicted_for_date', today)
+      .limit(1);
+    if (predErr) {
+      return { status: 'warn', detail: `inventory_rate_predictions read failed: ${errToString(predErr)}` };
+    }
+    if (!preds || preds.length === 0) {
+      return {
+        status: 'fail',
+        detail: `Active inventory models exist but no predictions for today (${today}) or beyond. The predict-inventory cron is likely silent-failing.`,
+        fix: 'Trigger /api/cron/ml-predict-inventory manually and inspect the response. Check the Railway ml-service logs for Pydantic validation errors or "insufficient data" returns. The new tightened jq check in ml-cron.yml should catch this going forward.',
+      };
+    }
+    return { status: 'ok', detail: `inventory_rate_predictions has fresh rows for ${today} or later` };
+  } catch (err) {
+    return { status: 'warn', detail: `check threw: ${errToString(err)}` };
+  }
+}
+
+/**
+ * Demand predictions freshness — same shape as inventory but reads from
+ * demand_predictions. Demand training requires labels_complete on every
+ * scheduled staff member (via attendance_marks). The seal-daily cron
+ * fills the gap; until it's been running for the property's first
+ * training-eligible window, demand model_runs will be absent and this
+ * check skips.
+ */
+async function checkMlDemandPredictionsFresh(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  return checkLayerPredictionsFresh({
+    layer: 'demand',
+    table: 'demand_predictions',
+    dateCol: 'date',
+    fix: 'No demand predictions for today. Verify (a) seal-daily cron is running and producing attendance_marks (check workflow: Seal Daily Cron), (b) headcount_actuals_view shows labels_complete=true for at least training_row_count_min days, (c) the latest /api/cron/ml-run-inference response.',
+  });
+}
+
+async function checkMlSupplyPredictionsFresh(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  return checkLayerPredictionsFresh({
+    layer: 'supply',
+    table: 'supply_predictions',
+    dateCol: 'date',
+    fix: 'No supply predictions for today. Likely root cause matches demand (shared training prereqs). See checkMlDemandPredictionsFresh "fix" guidance.',
+  });
+}
+
+/**
+ * Cron heartbeat freshness — generalized stand-in for the per-workflow
+ * checks the doctor previously didn't have. Each cron route writes its
+ * heartbeat at the end of every successful run; this check fails if any
+ * expected cron's heartbeat is older than 2× the cadence (e.g. hourly
+ * crons fail at 2h stale, daily crons fail at 48h stale).
+ *
+ * EXPECTED_CRONS encodes the cadence per workflow — keep in sync with
+ * .github/workflows/*.yml. Adding a new cron means:
+ *   1. Write its heartbeat via writeCronHeartbeat(name) on success.
+ *   2. Add an entry here so the doctor watches it.
+ *   3. Note it in FAILSAFES.md "Cron heartbeats" section.
+ *
+ * "first-run grace": if the heartbeat row doesn't exist yet (cron has
+ * never succeeded since deploy of this file), we WARN rather than FAIL.
+ * Otherwise the deploy itself would turn the doctor red until the next
+ * tick — a brief window but enough to scare an operator.
+ */
+const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; description: string }> = [
+  // Tight cadences
+  { name: 'scraper-health',          cadenceHours: 0.25, description: '15-min liveness watcher' },
+  { name: 'process-sms-jobs',        cadenceHours: 0.05, description: '3-min SMS jobs queue worker' },
+  { name: 'seal-daily',              cadenceHours: 1,    description: 'hourly per-property daily-seal' },
+  // Daily
+  { name: 'ml-run-inference',        cadenceHours: 24,   description: 'daily demand+supply+optimizer predictions' },
+  { name: 'ml-predict-inventory',    cadenceHours: 24,   description: 'daily inventory predictions for tomorrow' },
+  { name: 'ml-aggregate-priors',     cadenceHours: 24,   description: 'daily cross-fleet cohort prior aggregation' },
+  { name: 'ml-shadow-evaluate',      cadenceHours: 24,   description: 'daily shadow-model promote/reject pass' },
+  { name: 'purge-old-error-logs',    cadenceHours: 24,   description: 'daily error_logs retention sweep' },
+  { name: 'expire-trials',           cadenceHours: 24,   description: 'daily trial-expiration flip' },
+  // Weekly
+  { name: 'ml-train-demand',         cadenceHours: 168,  description: 'weekly demand training (Sunday)' },
+  { name: 'ml-train-supply',         cadenceHours: 168,  description: 'weekly supply training (Sunday)' },
+  { name: 'ml-train-inventory',      cadenceHours: 168,  description: 'weekly inventory training (Sunday)' },
+  { name: 'scraper-weekly-digest',   cadenceHours: 168,  description: 'weekly scraper health digest SMS' },
+];
+
+async function checkCronHeartbeatsFresh(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data: rows, error } = await supabaseAdmin
+      .from('cron_heartbeats')
+      .select('cron_name, last_success_at');
+    if (error) {
+      return { status: 'warn', detail: `cron_heartbeats read failed: ${errToString(error)}` };
+    }
+    const byName = new Map<string, string>();
+    for (const r of (rows ?? []) as Array<{ cron_name: string; last_success_at: string }>) {
+      byName.set(r.cron_name, r.last_success_at);
+    }
+    const now = Date.now();
+    const stale: string[] = [];
+    const missing: string[] = [];
+    for (const c of EXPECTED_CRONS) {
+      const last = byName.get(c.name);
+      if (!last) {
+        missing.push(c.name);
+        continue;
+      }
+      const ageHours = (now - new Date(last).getTime()) / (60 * 60 * 1000);
+      if (ageHours > c.cadenceHours * 2) {
+        stale.push(`${c.name} (${ageHours.toFixed(1)}h old, expected < ${(c.cadenceHours * 2).toFixed(1)}h)`);
+      }
+    }
+    if (stale.length > 0) {
+      return {
+        status: 'fail',
+        detail: `Stale cron heartbeats: ${stale.join('; ')}`,
+        fix: 'Open the matching GitHub Actions workflow at https://github.com/Reeyenn/staxis/actions and inspect the latest run. If the workflow itself is silently disabled, click "Enable workflow" and re-run. If runs are succeeding but the heartbeat is stale, the route is silent-erroring before the writeCronHeartbeat() call — check Vercel logs.',
+      };
+    }
+    if (missing.length > 0) {
+      // First-run grace — heartbeats not seeded yet. Warn so the
+      // operator notices but don't block the deploy on a fresh schema.
+      return {
+        status: 'warn',
+        detail: `Heartbeats not yet written for: ${missing.join(', ')}. Will resolve after each cron's next tick.`,
+      };
+    }
+    return {
+      status: 'ok',
+      detail: `All ${EXPECTED_CRONS.length} expected crons have fresh heartbeats`,
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `cron-heartbeats check threw: ${errToString(err)}` };
+  }
+}
+
+async function checkLayerPredictionsFresh(opts: {
+  layer: string;
+  table: string;
+  dateCol: string;
+  fix: string;
+}): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data: activeModels, error: modelErr } = await supabaseAdmin
+      .from('model_runs')
+      .select('property_id')
+      .eq('layer', opts.layer)
+      .eq('is_active', true)
+      .eq('is_shadow', false)
+      .limit(1);
+    if (modelErr) {
+      return { status: 'warn', detail: `model_runs read failed: ${errToString(modelErr)}` };
+    }
+    if (!activeModels || activeModels.length === 0) {
+      return {
+        status: 'skipped',
+        detail: `no active ${opts.layer} models — training prereqs probably still unmet (attendance labels, min-rows-per-property)`,
+      };
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const { data: preds, error: predErr } = await supabaseAdmin
+      .from(opts.table)
+      .select('property_id')
+      .gte(opts.dateCol, today)
+      .limit(1);
+    if (predErr) {
+      return { status: 'warn', detail: `${opts.table} read failed: ${errToString(predErr)}` };
+    }
+    if (!preds || preds.length === 0) {
+      return {
+        status: 'fail',
+        detail: `Active ${opts.layer} models exist but no predictions for today (${today}) or beyond.`,
+        fix: opts.fix,
+      };
+    }
+    return { status: 'ok', detail: `${opts.table} has fresh rows for ${today} or later` };
+  } catch (err) {
+    return { status: 'warn', detail: `check threw: ${errToString(err)}` };
+  }
 }
 
 // ─── Handler ─────────────────────────────────────────────────────────────

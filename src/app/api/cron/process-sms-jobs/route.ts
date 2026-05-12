@@ -21,6 +21,7 @@ import { requireCronSecret } from '@/lib/api-auth';
 import { processSmsJobs, resetStuckSmsJobs } from '@/lib/sms-jobs';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -49,6 +50,10 @@ export async function GET(req: NextRequest) {
       durationMs,
     });
 
+    await writeCronHeartbeat('process-sms-jobs', {
+      requestId,
+      notes: { claimed: result.claimed, sent: result.sent, retried: result.retried, dead: result.dead },
+    });
     return ok({
       stuckReset,
       claimed: result.claimed,

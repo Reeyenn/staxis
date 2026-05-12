@@ -18,6 +18,7 @@ import { requireCronSecret } from '@/lib/api-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { getPrimaryMlShardUrl } from '@/lib/ml-routing';
+import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -58,6 +59,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     });
     const json = await res.json().catch(() => ({ error: 'non_json_response', http: res.status }));
     log.info('ml-aggregate-priors: result', { requestId, mlStatus: res.status, json });
+    await writeCronHeartbeat('ml-aggregate-priors', { requestId });
     return NextResponse.json({ ok: true, requestId, result: json });
   } catch (e) {
     log.error('ml-aggregate-priors: ML service call failed', { requestId, err: e as Error });

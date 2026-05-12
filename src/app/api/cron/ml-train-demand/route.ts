@@ -30,6 +30,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { runWithConcurrency } from '@/lib/parallel';
 import { listMlShardUrls, resolveMlShardUrl } from '@/lib/ml-routing';
+import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -101,6 +102,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     return { property_id: o.input.id, status: 'error', detail: errToString(o.error) };
   });
 
+  const anyError = results.some((r) => r.status === 'error');
+  if (!anyError) {
+    await writeCronHeartbeat('ml-train-demand', {
+      requestId,
+      notes: { properties_processed: results.length },
+    });
+  }
   return NextResponse.json({
     ok: true,
     requestId,

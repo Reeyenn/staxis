@@ -224,11 +224,44 @@ export async function GET(req: NextRequest) {
       healthy_window_min: HEALTHY_WINDOW_MIN,
     };
 
+    // Legacy-mode detection — when scraper_credentials is empty but the
+    // env-var-driven scraper is still polling for Comfort Suites (or
+    // whichever hotel is on the single-property fallback), the page
+    // would otherwise say "0 instances, 1 unassigned" and look broken.
+    // Surface the legacy state explicitly so the operator sees "the
+    // scraper IS running, just not yet migrated to the fleet model".
+    //
+    // Liveness signal: scraper_status['heartbeat'] within last 10 min.
+    let legacy_mode_active = false;
+    let legacy_heartbeat_at: string | null = null;
+    if ((creds ?? []).length === 0) {
+      const { data: hb } = await supabaseAdmin
+        .from('scraper_status')
+        .select('updated_at')
+        .eq('key', 'heartbeat')
+        .maybeSingle();
+      const updatedAt = hb?.updated_at as string | undefined;
+      if (updatedAt) {
+        const ageMs = Date.now() - new Date(updatedAt).getTime();
+        if (ageMs < 10 * 60 * 1000) {
+          legacy_mode_active = true;
+          legacy_heartbeat_at = updatedAt;
+        }
+      }
+    }
+
     return ok(
       {
         instances,
         unassigned_properties,
         summary,
+        legacy_mode: {
+          active: legacy_mode_active,
+          heartbeat_at: legacy_heartbeat_at,
+          note: legacy_mode_active
+            ? 'Scraper is running in legacy single-property env-var mode (no scraper_credentials rows). The scraper IS alive; the fleet view is empty by design. See RUNBOOKS.md "Spinning up a new scraper instance" to move into the fleet model.'
+            : null,
+        },
       },
       { requestId },
     );

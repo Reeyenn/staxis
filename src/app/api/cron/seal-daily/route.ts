@@ -38,6 +38,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { runWithConcurrency } from '@/lib/parallel';
+import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -139,12 +140,26 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // .github/workflows/ml-cron.yml which guards against the silent-success
   // bug class — outer ok:true masking inner errors).
   const anyError = sealOutcomes.some((o) => o.error);
+  const sealedCount = sealOutcomes.filter((o) => o.daily_log_written).length;
+  const skippedCount = sealOutcomes.filter((o) => o.skipped_reason).length;
+  const erroredCount = sealOutcomes.filter((o) => o.error).length;
+
+  // Heartbeat on full success only. Doctor's cron_heartbeats_fresh check
+  // reads back: a heartbeat older than 2× the cadence (hourly → > 2h
+  // stale) flags as broken.
+  if (!anyError) {
+    await writeCronHeartbeat('seal-daily', {
+      requestId,
+      notes: { sealed: sealedCount, skipped: skippedCount, errored: erroredCount },
+    });
+  }
+
   return NextResponse.json({
     ok: !anyError,
     requestId,
-    sealed: sealOutcomes.filter((o) => o.daily_log_written).length,
-    skipped: sealOutcomes.filter((o) => o.skipped_reason).length,
-    errored: sealOutcomes.filter((o) => o.error).length,
+    sealed: sealedCount,
+    skipped: skippedCount,
+    errored: erroredCount,
     results: sealOutcomes,
   });
 }

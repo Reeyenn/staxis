@@ -43,6 +43,7 @@ import { requireCronSecret } from '@/lib/api-auth';
 import { supabaseAdmin, verifySupabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
+import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -406,6 +407,7 @@ export async function GET(req: NextRequest) {
 
   try {
     const result = await runHealthCheck();
+    await writeCronHeartbeat('scraper-health');
     return NextResponse.json({ ok: true, ...result });
   } catch (err) {
     const msg = errToString(err);

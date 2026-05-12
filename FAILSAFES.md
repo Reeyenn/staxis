@@ -101,6 +101,39 @@ Symptom → diagnosis → fix → verify → prevention, per failure type. When 
 
 ---
 
+## 7. Cron heartbeats (`src/lib/cron-heartbeat.ts` + migration 0074)
+
+**What it does:** Every cron route's LAST step is a write to `cron_heartbeats` with its name + timestamp. The doctor's `cron_heartbeats_fresh` check reads back and fails if any expected cron is older than 2× its cadence. Independent of GitHub Actions' "workflow succeeded" signal (which silent-passed for weeks while inner ML calls all failed).
+
+**Why it exists:** The May 2026 audit found that the previous health signal — "GitHub Actions workflow returned 200" — could be green while the route silently aggregated 100% per-item errors. A heartbeat written AFTER all the real work means "the route actually finished, not just returned." Pairs with the tightened jq checks in `ml-cron.yml` and `seal-daily-cron.yml`.
+
+**Don't:**
+- Move the `writeCronHeartbeat()` call earlier in the route. It must come AFTER every write that matters; otherwise a silent partial-failure still writes the heartbeat.
+- Remove a workflow from the `EXPECTED_CRONS` list in `doctor/route.ts` without also removing the cron itself. Otherwise the doctor reports "missing heartbeat" forever.
+- Bump the cadence multiplier from 2× to 3× or higher. 2× catches one missed tick; higher hides drift.
+
+**Touch points:** every file under `src/app/api/cron/`, plus the doctor route's `EXPECTED_CRONS` list. When you add a new cron, update both.
+
+---
+
+## 8. Tier 3 fleet-ops invariants
+
+These are guards added in the May 2026 multi-tenant scaling work. Don't weaken them in a refactor.
+
+**`requireAdminOrCron` (`src/lib/admin-auth.ts`)** — fleet endpoints (`/api/admin/scraper-instances`, `/api/admin/scraper-assign`) require admin role OR `CRON_SECRET`. The earlier draft used `requireSessionOrCron` which accepted ANY signed-in user; that let non-admin staff reassign hotels between scrapers. Don't loosen.
+
+**`cleanTagValue` (`src/lib/sentry.ts`, `cua-service/src/sentry.ts`)** — clamps Sentry tag values to 200 codepoints with whitespace collapse + ellipsis. Uses `Array.from` so surrogate pairs (emoji in hotel names) survive truncation intact. Don't replace with `.slice()` — silently produces invalid UTF-16 on emoji.
+
+**`resolveMlShardUrl` / FNV-1a hash (`src/lib/ml-routing.ts`)** — the partition function that maps property UUIDs to ML shard URLs. FNV-1a hashes the FULL string, not just the first 8 hex chars; this is what makes the partition stable across UUID v4 / v7 / non-UUID inputs. Don't switch back to a prefix slice — UUID v7 would catastrophically collapse all same-second properties onto one shard.
+
+**`scraper_credentials.scraper_instance` CHECK constraint (migration 0073)** — enforces `^[A-Za-z0-9._-]{1,64}$` at the DB layer regardless of write path. The TS validator does the same on the admin reassign endpoint, but a direct service-role INSERT or a future API that forgets to validate would bypass it. Don't drop the constraint.
+
+**`promote_shadow_model_run` (migration 0072)** — atomic ONE-statement swap that deactivates the prior active model AND activates the shadow in the same transaction. The pre-audit version did two separate UPDATEs; a mid-promotion failure could leave an item with NO active model (predictions stop until next retrain). Don't refactor to two calls "for clarity."
+
+**Tier 3 fleet ownership recheck (`scraper/scraper.js` tick prologue)** — every tick re-reads `scraper_credentials.scraper_instance` for the active property. If it no longer matches our `SCRAPER_INSTANCE_ID` env, the tick is skipped. Closes the 60-second reassignment overlap window from the properties-loader cache. Don't remove — without it, two Railway instances will briefly both write data for a reassigned hotel.
+
+---
+
 ## How to verify all failsafes still work
 
 Run after any significant infra change:

@@ -939,6 +939,39 @@ async function run() {
       // only — doesn't touch `page` — so it can run outside the lock.
       await writeHeartbeat();
 
+      // ─── Ownership recheck (Tier 3 reassignment safety) ──────────────
+      // properties-loader caches the scraper_credentials list for 60s.
+      // During reassignment ("hotel X is now on instance alpha, not
+      // default"), the OLD instance keeps the stale assignment for up
+      // to 60s and writes one more cycle's worth of data for a hotel
+      // it shouldn't own. Most write paths are idempotent upserts so
+      // overlap is harmless, but the Choice Advantage session-state
+      // file is per-property; two simultaneous logins with the same
+      // creds invalidate each other.
+      //
+      // Cheap fix: read scraper_credentials.scraper_instance for the
+      // active property fresh every tick. If the row no longer matches
+      // this instance's SCRAPER_INSTANCE_ID env, skip the tick (and
+      // log) instead of writing. The new owner picks up on its next
+      // tick. Overlap window collapses from 60s to ~5s (next tick).
+      const ourInstance = process.env.SCRAPER_INSTANCE_ID || 'default';
+      const { data: credRow } = await supabase
+        .from('scraper_credentials')
+        .select('scraper_instance, is_active')
+        .eq('property_id', ACTIVE.propertyId)
+        .maybeSingle();
+      // Only enforce when a creds row exists. The env-var fallback path
+      // (no scraper_credentials row in DB) means this instance is the
+      // only one polling — no ownership question to answer.
+      if (credRow && (credRow.scraper_instance !== ourInstance || credRow.is_active === false)) {
+        log(
+          `Tick skipped: ownership changed (creds.scraper_instance=${credRow.scraper_instance} ` +
+          `vs our SCRAPER_INSTANCE_ID=${ourInstance}, is_active=${credRow.is_active}). ` +
+          `Another Railway instance is the new owner — letting it pick up.`,
+        );
+        return;
+      }
+
       // All page-touching work goes through the lock so an in-flight
       // HTTP scrape (e.g., Mario hitting "Load Rooms from CSV") doesn't
       // race with us.

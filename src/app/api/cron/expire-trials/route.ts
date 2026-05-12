@@ -20,6 +20,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireCronSecret } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -48,6 +49,10 @@ export async function GET(req: NextRequest) {
   }
 
   const list = expired ?? [];
+  await writeCronHeartbeat('expire-trials', {
+    requestId,
+    notes: { expired: list.length },
+  });
   return ok({
     expired: list.length,
     sample: list.slice(0, 10).map((p) => ({

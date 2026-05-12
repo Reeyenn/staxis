@@ -34,6 +34,7 @@ import { requireCronSecret } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
+import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -172,6 +173,18 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   log.info('ml-shadow-evaluate: pass complete', {
     requestId, evaluated: results.length,
   });
+
+  const anyVerdictError = results.some((r) => r.verdict === 'error');
+  if (!anyVerdictError) {
+    await writeCronHeartbeat('ml-shadow-evaluate', {
+      requestId,
+      notes: {
+        evaluated: results.length,
+        promoted: results.filter((r) => r.verdict === 'promoted').length,
+        rejected: results.filter((r) => r.verdict === 'rejected').length,
+      },
+    });
+  }
 
   return NextResponse.json({
     ok: true,

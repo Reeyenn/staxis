@@ -25,6 +25,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireCronSecret } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -55,8 +56,13 @@ export async function GET(req: NextRequest) {
     });
   }
 
+  const purgedCount = (deleted ?? []).length;
+  await writeCronHeartbeat('purge-old-error-logs', {
+    requestId,
+    notes: { purged: purgedCount },
+  });
   return ok({
-    purged: (deleted ?? []).length,
+    purged: purgedCount,
     cutoff,
     retentionHours: RETENTION_HOURS,
   }, { requestId });
