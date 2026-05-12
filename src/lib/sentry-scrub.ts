@@ -14,7 +14,12 @@
  * are compliance issues.
  */
 
-import type { Event, EventHint } from '@sentry/types';
+// Pull the ErrorEvent / EventHint types via the same entry point the
+// rest of the codebase uses for the SDK; @sentry/nextjs re-exports them.
+// beforeSend is typed against ErrorEvent specifically (a subtype of
+// Event whose `type` is undefined — transaction events go to
+// beforeSendTransaction).
+import type { ErrorEvent, EventHint } from '@sentry/nextjs';
 
 const PHONE_RX = /\+?1?[\s.-]?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/g;
 const EMAIL_RX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
@@ -62,7 +67,7 @@ function scrubRecord(rec: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
-export function scrubSentryEvent(event: Event, _hint?: EventHint): Event | null {
+export function scrubSentryEvent(event: ErrorEvent, _hint?: EventHint): ErrorEvent | null {
   // Top-level message
   if (event.message) event.message = scrubString(event.message);
 
