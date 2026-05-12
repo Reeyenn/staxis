@@ -118,10 +118,21 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       notes: { properties_processed: results.length },
     });
   }
-  return NextResponse.json({
-    ok: true,
-    requestId,
-    properties_processed: results.length,
-    results,
-  });
+  // ── Outer ok reflects inner state (May 2026 audit pass-5) ───────────
+  // Previously the outer ok was always true regardless of per-property
+  // failures. The jq check in ml-cron.yml inspects .results[].status so
+  // it still catches inner errors, but a curl|jq pipeline reading just
+  // `.ok` would be lied to. Doctor's cron_heartbeats_fresh is the
+  // authoritative signal but only fires after 2× cadence. Aligning the
+  // HTTP response status + body with the actual outcome makes the
+  // failure visible immediately.
+  return NextResponse.json(
+    {
+      ok: !anyError,
+      requestId,
+      properties_processed: results.length,
+      results,
+    },
+    { status: anyError ? 502 : 200 },
+  );
 }

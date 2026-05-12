@@ -86,7 +86,17 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const results = [
     ...skipped,
     ...outcomes.map((o) => {
-      if (o.ok) return { property_id: o.input.id, status: 'ok', detail: o.value };
+      if (o.ok) {
+        // ── Inspect ML response status (May 2026 audit pass-5) ─────────
+        // Previously this hardcoded status:'ok' regardless of the ML
+        // service's actual response. An HTTP 500 with {error:'...'} or
+        // an HTTP 200 with {status:'error'} would still be reported as
+        // 'ok' here, masking real training failures. Now we propagate
+        // the ML service's own status field — same shape as ml-train-
+        // demand and ml-train-supply.
+        const mlStatus = (o.value as { status?: string }).status ?? 'ok';
+        return { property_id: o.input.id, status: mlStatus, detail: o.value };
+      }
       log.error('ml-train-inventory: ML service call failed', {
         requestId, property_id: o.input.id, err: o.error as Error,
       });
@@ -101,10 +111,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       notes: { properties_processed: results.length },
     });
   }
-  return NextResponse.json({
-    ok: true,
-    requestId,
-    properties_processed: results.length,
-    results,
-  });
+  // Outer ok reflects inner state — see ml-train-demand for full notes.
+  return NextResponse.json(
+    {
+      ok: !anyError,
+      requestId,
+      properties_processed: results.length,
+      results,
+    },
+    { status: anyError ? 502 : 200 },
+  );
 }

@@ -156,5 +156,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       notes: { properties_processed: results.length },
     });
   }
-  return NextResponse.json({ ok: true, requestId, results });
+  // Outer ok reflects inner state — see ml-train-demand for full notes.
+  return NextResponse.json(
+    { ok: !anyStageError, requestId, results },
+    { status: anyStageError ? 502 : 200 },
+  );
 }
