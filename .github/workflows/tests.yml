@@ -13,6 +13,14 @@ on:
   pull_request:
     branches: [main]
 
+# 2026-05-12 (Codex audit): pin permissions to the minimum needed.
+# The default GITHUB_TOKEN scope on PR runs depends on org/repo
+# settings; if defaults are permissive, an untrusted PR's code (run
+# via `npm ci` + `npm run build`) could exfiltrate a token with
+# write access. This job only needs to read the checked-out code.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest

@@ -12,6 +12,7 @@
  */
 
 import * as Sentry from '@sentry/nextjs';
+import { scrubSentryEvent } from '@/lib/sentry-scrub';
 
 Sentry.init({
   dsn: process.env.SENTRY_DSN,
@@ -29,6 +30,13 @@ Sentry.init({
   // Don't send PII (request bodies, cookies, headers) by default. Routes
   // that legitimately want this can opt in per-event via withScope.
   sendDefaultPii: false,
+
+  // 2026-05-12 (Codex audit): scrub custom error text / tags / contexts /
+  // breadcrumbs for PII (phones, emails, JWT/Bearer tokens, etc.) before
+  // ingestion. sendDefaultPii=false only handles the SDK's automatic
+  // capture; staff names and PMS payloads in custom errors slipped
+  // through. See src/lib/sentry-scrub.ts.
+  beforeSend: scrubSentryEvent,
 
   // Reduce log noise during deploys — Vercel rebuilds churn through
   // serverless containers and we don't need an init line per cold start.

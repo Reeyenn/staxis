@@ -12,8 +12,15 @@
 // touch the accounts row, the property, or anything else. Safe to run any
 // number of times.
 //
-// Usage:
-//   node scripts/reset-admin-password.js '<new-password>'
+// Usage (preferred — password from env, no shell-history leak):
+//   read -s -p "New password: " p; STAXIS_NEW_ADMIN_PASSWORD="$p" \
+//     node scripts/reset-admin-password.js; unset p
+//
+// 2026-05-12 (Codex audit): previously accepted the password as argv[2],
+// which leaks the secret into shell history (~/.bash_history,
+// ~/.zsh_history), `ps aux` listings, and any terminal recording.
+// Now we read from STAXIS_NEW_ADMIN_PASSWORD env var so the secret
+// never appears on a command line.
 //
 // Prereqs in .env.local:
 //   NEXT_PUBLIC_SUPABASE_URL=https://<proj>.supabase.co
@@ -45,12 +52,23 @@ const { createClient } = require('@supabase/supabase-js');
 })();
 
 const ADMIN_EMAIL = 'reeyen@staxis.local';
-const newPassword = process.argv[2];
+const newPassword = process.env.STAXIS_NEW_ADMIN_PASSWORD;
 
 if (!newPassword) {
   console.error(
-    '\n✗ Usage: node scripts/reset-admin-password.js \'<new-password>\'\n' +
-    '  Quote the password so the shell doesn\'t mangle special characters.\n'
+    '\n✗ Set STAXIS_NEW_ADMIN_PASSWORD in the environment, do not pass it as an argument.\n' +
+    '  Recommended (no shell-history leak):\n' +
+    '    read -s -p "New password: " p; STAXIS_NEW_ADMIN_PASSWORD="$p" \\\n' +
+    '      node scripts/reset-admin-password.js; unset p\n',
+  );
+  process.exit(1);
+}
+// Refuse to honour a legacy argv[2] usage — fail loudly with a pointer
+// so anyone with the old habit doesn't accidentally leak the secret.
+if (process.argv[2]) {
+  console.error(
+    '\n✗ Refusing to read the password from argv (it would land in shell history).\n' +
+    '  Set STAXIS_NEW_ADMIN_PASSWORD in the environment instead — see the usage block at the top of this file.\n',
   );
   process.exit(1);
 }
