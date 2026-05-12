@@ -311,13 +311,33 @@ export async function executeBrowserAction(
       }
 
       case 'type': {
-        const value = action.text;
-        let recorded: '$username' | '$password' | string = value;
-        if (value === creds.username) recorded = '$username';
-        if (value === creds.password) recorded = '$password';
+        // Codex audit pass-6 P1 — when Claude sends the placeholder
+        // string we pass it in the login goal, substitute the real
+        // credential locally before typing into the page. Real values
+        // never leave this process.
+        const requested = action.text;
+        const isUsernamePh = requested === '$username';
+        const isPasswordPh = requested === '$password';
+        const value = isUsernamePh
+          ? creds.username
+          : isPasswordPh
+            ? creds.password
+            : requested;
+        let recorded: '$username' | '$password' | string = isUsernamePh
+          ? '$username'
+          : isPasswordPh
+            ? '$password'
+            : requested;
+        if (!isUsernamePh && !isPasswordPh) {
+          // Defensive: even if Claude somehow knows the literal creds
+          // (echoed from a previous session), still record them as
+          // placeholders in the recipe.
+          if (value === creds.username) recorded = '$username';
+          if (value === creds.password) recorded = '$password';
+        }
         await page.keyboard.type(value);
         return {
-          output: `Typed ${value === creds.password ? '<password>' : value}`,
+          output: `Typed ${isPasswordPh || value === creds.password ? '<password>' : value}`,
           recordedStep: { kind: 'type_text', value: recorded },
         };
       }
@@ -383,8 +403,19 @@ export async function executeBrowserAction(
       }
 
       case 'form_input': {
+        // Codex audit pass-6 P1 — substitute credential placeholders
+        // locally before passing to the DOM input. Real values never
+        // leave this process.
+        const requested = action.value;
+        const isUsernamePh = requested === '$username';
+        const isPasswordPh = requested === '$password';
+        const realValue = isUsernamePh
+          ? creds.username
+          : isPasswordPh
+            ? creds.password
+            : requested;
         const refLit = JSON.stringify(action.ref);
-        const valueLit = JSON.stringify(action.value);
+        const valueLit = JSON.stringify(realValue);
         const result = await page.evaluate(`(${FORM_INPUT_SCRIPT})(${refLit}, ${valueLit})`);
         const r = result as { success?: boolean; message?: string } | null;
         if (!r || !r.success) {
@@ -393,21 +424,26 @@ export async function executeBrowserAction(
         // Resolve the ref again to capture a stable selector for replay.
         const info = await resolveRef(page, action.ref);
         const selector = info.success ? info.stableSelector : null;
-        const value = action.value;
         let recorded: '$username' | '$password' | string =
-          typeof value === 'string' ? value : String(value);
-        if (typeof value === 'string') {
-          if (value === creds.username) recorded = '$username';
-          if (value === creds.password) recorded = '$password';
+          isUsernamePh ? '$username'
+          : isPasswordPh ? '$password'
+          : typeof requested === 'string' ? requested : String(requested);
+        if (!isUsernamePh && !isPasswordPh && typeof realValue === 'string') {
+          if (realValue === creds.username) recorded = '$username';
+          if (realValue === creds.password) recorded = '$password';
         }
+        const displayValue = isPasswordPh || realValue === creds.password
+          ? '<password>'
+          : isUsernamePh ? '<username>'
+          : realValue;
         if (selector) {
           return {
-            output: `Set ${action.ref} to ${value === creds.password ? '<password>' : value}. Selector: ${selector}`,
+            output: `Set ${action.ref} to ${displayValue}. Selector: ${selector}`,
             recordedStep: { kind: 'fill', selector, value: recorded },
           };
         }
         return {
-          output: `Set ${action.ref} to ${value === creds.password ? '<password>' : value} (no stable selector — replay may need a re-map)`,
+          output: `Set ${action.ref} to ${displayValue} (no stable selector — replay may need a re-map)`,
         };
       }
 

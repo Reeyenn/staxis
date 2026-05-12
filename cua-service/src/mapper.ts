@@ -298,16 +298,25 @@ async function mapLogin(
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
 
+  // Codex audit pass-6 P1 — pass placeholder strings, not the real
+  // credentials. The browser tool substitutes them with the actual
+  // values at form_input / type execution time, so the username and
+  // password never enter the Claude conversation (and so don't end up
+  // in Anthropic API logs, message history files, or any future model-
+  // training capture).
   const goal =
-    `Log into this hotel PMS using:\n` +
-    `  username: "${creds.username}"\n` +
-    `  password: "${creds.password}"\n\n` +
+    `Log into this hotel PMS. The username and password are NOT shown ` +
+    `to you for security; pass these literal placeholder strings as the ` +
+    `value when calling form_input or type, and the browser tool will ` +
+    `substitute the real credentials before typing them into the page:\n` +
+    `  username placeholder: "$username"\n` +
+    `  password placeholder: "$password"\n\n` +
 
     `STEP-BY-STEP:\n` +
     `1. Call read_page with text="interactive" to see the form fields and ` +
     `their refs.\n` +
-    `2. Call form_input with the username field's ref and the username value.\n` +
-    `3. Call form_input with the password field's ref and the password value.\n` +
+    `2. Call form_input with the username field's ref and value="$username".\n` +
+    `3. Call form_input with the password field's ref and value="$password".\n` +
     `4. Click the submit button (form_input or left_click with the submit ref).\n` +
     `5. Wait for the next page (use wait if it's slow), then read_page again.\n` +
     `6. If you land on a property picker, click the FIRST property. If you ` +
