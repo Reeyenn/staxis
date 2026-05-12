@@ -37,7 +37,17 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
  */
 export function requireCronSecret(req: NextRequest): NextResponse | null {
   const secret = process.env.CRON_SECRET;
-  if (!secret) return null;  // dev mode — no secret configured
+  if (!secret) {
+    // Fail-closed in production. A missing CRON_SECRET on a prod deploy is
+    // config drift (env var dropped during a redeploy) — historically this
+    // would silently open every admin/cron endpoint. Refuse to serve until
+    // the var is restored; the failure surfaces in Sentry/logs.
+    if (process.env.NODE_ENV === 'production') {
+      console.error('[api-auth] CRON_SECRET unset in production — refusing request');
+      return NextResponse.json({ error: 'server misconfigured' }, { status: 500 });
+    }
+    return null;  // dev mode — no secret configured
+  }
   const auth = req.headers.get('authorization') ?? '';
   const expected = `Bearer ${secret}`;
   const authBuf = Buffer.from(auth);
@@ -120,6 +130,12 @@ export async function requireSessionOrCron(req: NextRequest): Promise<
 
   // Try cron-secret first (fast path, constant time).
   const cronSecret = process.env.CRON_SECRET;
+  // In production a missing CRON_SECRET means we can't accept the cron
+  // path at all — but session validation may still succeed below, so we
+  // just skip the cron check rather than 500.
+  if (!cronSecret && process.env.NODE_ENV === 'production') {
+    console.error('[api-auth] CRON_SECRET unset in production — cron path disabled');
+  }
   if (cronSecret) {
     const expected = `Bearer ${cronSecret}`;
     const authBuf = Buffer.from(auth);

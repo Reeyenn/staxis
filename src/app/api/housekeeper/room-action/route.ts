@@ -202,10 +202,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       return err('staff/property mismatch', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
     }
 
-    // ─── Room belongs to property check ─────────────────────────────────
+    // ─── Room belongs to property AND assigned to this staff ───────────
+    // 2026-05-12: previously this only checked room.property_id === pid.
+    // That meant any valid (pid, staffId) tuple could mutate ANY room in
+    // that property — including rooms assigned to other housekeepers.
+    // Staff UUIDs are listable via the public /api/staff-list endpoint,
+    // so the property + staffId pair isn't a strong capability on its
+    // own. The housekeeper's link only ever shows them their assigned
+    // rooms (via /api/housekeeper/rooms, which filters by
+    // assigned_to=staffId), so applying the same scoping on the write
+    // path closes the gap without breaking legitimate UI flows.
     const { data: room, error: roomErr } = await supabaseAdmin
       .from('rooms')
-      .select('id, property_id, started_at, completed_at, number, date')
+      .select('id, property_id, started_at, completed_at, number, date, assigned_to')
       .eq('id', roomId)
       .maybeSingle();
     if (roomErr || !room) {
@@ -213,6 +222,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
     if (room.property_id !== pid) {
       return err('room/property mismatch', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
+    }
+    if (room.assigned_to !== staffId) {
+      // Same response shape as room/property mismatch so we don't reveal
+      // which side of the pair was wrong to an enumerator.
+      return err('room not assigned to this staff', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
     }
 
     const now = new Date().toISOString();

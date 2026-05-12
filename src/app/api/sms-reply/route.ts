@@ -203,10 +203,13 @@ export async function POST(req: NextRequest) {
     // (potentially racking up charges and spoofing housekeeper replies).
     //
     // The April 16 bug-tracker run found this route was open. Adding it
-    // now via the official `twilio` SDK's `validateRequest`. We accept
-    // JSON requests without a signature because Twilio doesn't sign JSON
-    // SMS webhooks — only the inbound form-encoded ones, which is the
-    // path that matters here.
+    // now via the official `twilio` SDK's `validateRequest`.
+    //
+    // 2026-05-12: Codex audit flagged that JSON requests were accepted
+    // without ANY signature check. Twilio doesn't sign JSON SMS webhooks
+    // — so the JSON path was a free pass for anyone with the URL.
+    // Restrict JSON to non-production environments only (for ad-hoc dev
+    // testing); production traffic is form-encoded from Twilio.
     //
     // Fail-closed: if TWILIO_ACCOUNT_SID is set on this deploy (Twilio is
     // actually wired up) but TWILIO_AUTH_TOKEN is missing, the signature
@@ -216,6 +219,14 @@ export async function POST(req: NextRequest) {
     // there's no Twilio side to spoof.
     const signatureHeader = req.headers.get('x-twilio-signature');
     const isFormEncoded = !contentType.includes('application/json');
+    if (!isFormEncoded && process.env.NODE_ENV === 'production') {
+      await logHit({
+        stage: 'json_rejected_in_production',
+        contentType,
+        fromHeader: fromNumber ?? null,
+      });
+      return forbidden('json payloads not accepted in production');
+    }
     if (isFormEncoded) {
       const twilioWired = !!process.env.TWILIO_ACCOUNT_SID;
       const haveToken = !!process.env.TWILIO_AUTH_TOKEN;

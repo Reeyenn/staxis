@@ -65,38 +65,40 @@ export async function POST(req: NextRequest) {
     const staffName = sanitizeForSms(staffNameV.value!);
     const roomNumber = sanitizeForSms(roomNumV.value!);
     const lang = langV.value!;
-    const staffId = typeof rawStaffId === 'string' ? rawStaffId : null;
+
+    // ── Caller verification ───────────────────────────────────────────────
+    // 2026-05-12: previously staffId was OPTIONAL. With just a property id
+    // (which is not secret — it appears in URLs), anyone could trigger an
+    // SMS to the scheduling manager up to the rate-limit cap. The HK
+    // mobile page always includes staffId in the link, so requiring it
+    // only blocks abuse.
+    const staffIdV = validateUuid(rawStaffId, 'staffId');
+    if (staffIdV.error) {
+      return err(staffIdV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    }
+    const staffId = staffIdV.value!;
 
     // Rate limit: cap at 20 help requests per property per hour. A single
     // hotel will never legitimately need more.
     const limit = await checkAndIncrementRateLimit('help-request', pid);
     if (!limit.allowed) return rateLimitedResponse(limit.current, limit.cap, limit.retryAfterSec);
 
-    // ── Caller verification ───────────────────────────────────────────────
-    // The HK mobile page is a public link from SMS. To stop strangers
-    // spoofing requests for any (pid, name, room) tuple, the page passes
-    // staffId from its URL — verify it belongs to this property and is
-    // active. Mismatch silently no-ops so we don't leak existence.
-    if (staffId) {
-      const staffIdV = validateUuid(staffId, 'staffId');
-      if (staffIdV.error) {
-        return ok({ sent: 0, failed: 0, reason: 'unknown-staff' }, { requestId });
-      }
-      const { data: staffRow, error: staffErr } = await supabaseAdmin
-        .from('staff')
-        .select('id, property_id, is_active')
-        .eq('id', staffIdV.value)
-        .maybeSingle();
-      if (staffErr) {
-        console.error('[help-request] staff lookup error:', staffErr.message);
-        return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
-      }
-      if (!staffRow || staffRow.property_id !== pid) {
-        return ok({ sent: 0, failed: 0, reason: 'unknown-staff' }, { requestId });
-      }
-      if (staffRow.is_active === false) {
-        return ok({ sent: 0, failed: 0, reason: 'staff-inactive' }, { requestId });
-      }
+    // Verify the staffId belongs to this property and is active. Mismatch
+    // silently no-ops so we don't leak existence.
+    const { data: staffRow, error: staffErr } = await supabaseAdmin
+      .from('staff')
+      .select('id, property_id, is_active')
+      .eq('id', staffId)
+      .maybeSingle();
+    if (staffErr) {
+      console.error('[help-request] staff lookup error:', staffErr.message);
+      return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    }
+    if (!staffRow || staffRow.property_id !== pid) {
+      return ok({ sent: 0, failed: 0, reason: 'unknown-staff' }, { requestId });
+    }
+    if (staffRow.is_active === false) {
+      return ok({ sent: 0, failed: 0, reason: 'staff-inactive' }, { requestId });
     }
 
     // Fetch property name and scheduling manager in parallel.
