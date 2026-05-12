@@ -327,30 +327,68 @@ async function saveDraftRecipe(args: {
   learnedByPropertyId: string;
   notes?: string;
 }): Promise<{ id: string; version: number } | { error: string }> {
-  const { data: latest } = await supabase
-    .from('pms_recipes')
-    .select('version')
-    .eq('pms_type', args.pmsType)
-    .order('version', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  const nextVersion = ((latest?.version as number) ?? 0) + 1;
+  // Codex audit pass-6 P1 — the previous read-then-insert pattern raced
+  // when two concurrent jobs for the same PMS both saw version=N and
+  // both tried to insert version=N+1; the (pms_type, version, status)
+  // unique constraint would reject one of them. Now we retry on
+  // conflict, refetching the latest version each pass so we converge
+  // even under contention. Bounded retries — three concurrent mappings
+  // for the same PMS type is already pathological; failing after that
+  // surfaces real trouble.
+  const MAX_ATTEMPTS = 5;
+  let lastError: string | null = null;
 
-  const { data, error } = await supabase
-    .from('pms_recipes')
-    .insert({
-      pms_type: args.pmsType,
-      version: nextVersion,
-      recipe: args.recipe,
-      status: 'draft',
-      learned_by_property_id: args.learnedByPropertyId,
-      notes: args.notes ?? null,
-    })
-    .select('id, version')
-    .single();
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const { data: latest } = await supabase
+      .from('pms_recipes')
+      .select('version')
+      .eq('pms_type', args.pmsType)
+      .order('version', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const nextVersion = ((latest?.version as number) ?? 0) + 1;
 
-  if (error || !data) return { error: error?.message ?? 'unknown insert error' };
-  return { id: data.id as string, version: data.version as number };
+    const { data, error } = await supabase
+      .from('pms_recipes')
+      .insert({
+        pms_type: args.pmsType,
+        version: nextVersion,
+        recipe: args.recipe,
+        status: 'draft',
+        learned_by_property_id: args.learnedByPropertyId,
+        notes: args.notes ?? null,
+      })
+      .select('id, version')
+      .single();
+
+    if (data && !error) {
+      if (attempt > 0) {
+        log.info('saveDraftRecipe converged after retry', {
+          pmsType: args.pmsType,
+          attempts: attempt + 1,
+          version: data.version,
+        });
+      }
+      return { id: data.id as string, version: data.version as number };
+    }
+
+    lastError = error?.message ?? 'unknown insert error';
+    // Postgres unique-violation is code 23505. Supabase surfaces it as
+    // a string in error.code. Retry only on that — anything else is a
+    // real failure (RLS, schema, network).
+    const isUniqueViolation =
+      (error as { code?: string } | null)?.code === '23505' ||
+      /duplicate key|unique constraint/i.test(lastError);
+    if (!isUniqueViolation) {
+      return { error: lastError };
+    }
+    log.warn('saveDraftRecipe lost version race, retrying', {
+      pmsType: args.pmsType,
+      attemptedVersion: nextVersion,
+      attempt: attempt + 1,
+    });
+  }
+  return { error: `saveDraftRecipe gave up after ${MAX_ATTEMPTS} version-race retries: ${lastError}` };
 }
 
 // Every job-row write below is guarded by:
