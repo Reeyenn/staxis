@@ -196,35 +196,24 @@ export async function processSmsJobs(limit = 50): Promise<ProcessResult> {
   // to record on the row for support traceability — when sendSms is
   // upgraded to surface the Message resource, plumb the .sid through here.
   for (const job of rows) {
+    // 2026-05-12 (Codex audit fix): the send and the post-send DB write
+    // used to share one try block, so a transient Supabase hiccup AFTER
+    // a successful Twilio send would land in the catch and reschedule
+    // the row — next tick fired the same SMS again, leading to duplicate
+    // housekeeper texts. Now: send is one try block; the post-send write
+    // is a second one that CANNOT take the row back to 'queued'.
+    let sendError: unknown = null;
     try {
       await sendSms(job.to_phone, job.body);
-
-      const { error: updateErr } = await supabaseAdmin
-        .from('sms_jobs')
-        .update({
-          status: 'sent',
-          sent_at: new Date().toISOString(),
-          twilio_sid: null, // see comment above — sendSms doesn't return SID today
-          error_code: null,
-          error_message: null,
-          started_at: null,
-        })
-        .eq('id', job.id);
-      if (updateErr) throw updateErr;
-      result.sent++;
-      // Side-effect callback: if the job is tied to a shift_confirmations
-      // row (route enqueued it with metadata.shiftConfirmationToken), flip
-      // sms_sent → true on that row so the UI badges turn green.
-      await applyMetadataCallback(job.metadata, 'sent', null);
     } catch (err) {
-      // Categorize: terminal vs transient. Terminal errors get marked
-      // 'dead' immediately (e.g. invalid phone number — no retry will
-      // help). Everything else goes back to 'queued' with backoff and
-      // counts toward the attempt cap.
-      const errMsg = errToString(err);
-      const errCode = extractTwilioErrorCode(err);
-      const isTerminal = isTerminalTwilioError(errCode);
+      sendError = err;
+    }
 
+    if (sendError) {
+      // SMS was NOT sent. Original retry/dead categorization.
+      const errMsg = errToString(sendError);
+      const errCode = extractTwilioErrorCode(sendError);
+      const isTerminal = isTerminalTwilioError(errCode);
       const isFinalAttempt = job.attempts >= job.max_attempts;
       const nextStatus: 'dead' | 'queued' = (isTerminal || isFinalAttempt) ? 'dead' : 'queued';
       const backoffSec = computeBackoffSeconds(job.attempts);
@@ -253,6 +242,68 @@ export async function processSmsJobs(limit = 50): Promise<ProcessResult> {
       } else {
         result.retried++;
       }
+      continue;
+    }
+
+    // SMS sent successfully. From here we MUST move the row out of
+    // 'sending' or the stuck-job sweep (resetStuckSmsJobs) will requeue
+    // it in 5 min and cause a duplicate Twilio send.
+    const sentAt = new Date().toISOString();
+    let updateOk = false;
+    try {
+      const { error: updateErr } = await supabaseAdmin
+        .from('sms_jobs')
+        .update({
+          status: 'sent',
+          sent_at: sentAt,
+          twilio_sid: null, // sendSms doesn't return SID today; see comment above
+          error_code: null,
+          error_message: null,
+          started_at: null,
+        })
+        .eq('id', job.id);
+      if (!updateErr) updateOk = true;
+      else log.error('[sms-jobs] post-send update failed, falling back', {
+        jobId: job.id, msg: updateErr.message,
+      });
+    } catch (err) {
+      log.error('[sms-jobs] post-send update threw, falling back', {
+        jobId: job.id, msg: errToString(err),
+      });
+    }
+
+    if (!updateOk) {
+      // Last-ditch fallback: mark 'dead' so the sweep cannot requeue this
+      // row. The customer-facing status page will read 'dead' even though
+      // the SMS did arrive — acceptable trade vs. sending a duplicate.
+      try {
+        await supabaseAdmin
+          .from('sms_jobs')
+          .update({
+            status: 'dead',
+            sent_at: sentAt,
+            error_code: 'POST_SEND_DB_FAILURE',
+            error_message: 'SMS sent successfully via Twilio, but post-send DB update failed. Marked dead to prevent duplicate send on next sweep.',
+            started_at: null,
+          })
+          .eq('id', job.id);
+      } catch (err) {
+        // If even this fails, the watchdog sweep WILL requeue. Loud log.
+        log.error('[sms-jobs] CRITICAL: post-send dead fallback failed too — sweep may duplicate', {
+          jobId: job.id, pid: job.property_id, msg: errToString(err),
+        });
+      }
+    }
+
+    result.sent++;
+    // Side-effect callback: don't let a failing callback derail us — the
+    // SMS already went out and we've already moved the row out of sending.
+    try {
+      await applyMetadataCallback(job.metadata, 'sent', null);
+    } catch (cbErr) {
+      log.warn('[sms-jobs] metadata callback failed after send', {
+        jobId: job.id, msg: errToString(cbErr),
+      });
     }
   }
 

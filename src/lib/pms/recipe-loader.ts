@@ -111,20 +111,19 @@ export async function promoteRecipeToActive(recipeId: string): Promise<{ ok: tru
   if (row.status === 'active') return { ok: true };
   if (row.status === 'deprecated') return { error: 'cannot promote deprecated recipe' };
 
-  // Demote previous actives for this PMS.
-  const { error: demoteErr } = await supabaseAdmin
-    .from('pms_recipes')
-    .update({ status: 'deprecated' })
-    .eq('pms_type', row.pms_type)
-    .eq('status', 'active');
-  if (demoteErr) return { error: demoteErr.message };
-
-  // Promote this draft.
-  const { error: promoteErr } = await supabaseAdmin
-    .from('pms_recipes')
-    .update({ status: 'active' })
-    .eq('id', recipeId);
-  if (promoteErr) return { error: promoteErr.message };
+  // 2026-05-12 (Codex audit fix): previously did demote + promote as two
+  // separate updates. If the demote succeeded but the promote failed,
+  // the PMS would end up with ZERO active recipes — every subsequent
+  // loadActiveRecipe() returns null and that PMS silently stops
+  // onboarding new properties until manual repair. Use the atomic
+  // RPC (migration 0039_atomic_recipe_swap_and_job_claim.sql) which
+  // does both ops in a single plpgsql transaction; if the promote
+  // fails the demote rolls back.
+  const { error: rpcErr } = await supabaseAdmin.rpc('staxis_swap_active_recipe', {
+    p_new_recipe_id: recipeId,
+    p_pms_type: row.pms_type,
+  });
+  if (rpcErr) return { error: rpcErr.message };
 
   return { ok: true };
 }
