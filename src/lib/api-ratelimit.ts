@@ -45,6 +45,10 @@ export type RateLimitEndpoint =
   // property is generous headroom. A compromised session or buggy
   // retry loop hits the cap fast. May 2026 audit pass-5.
   | 'scan-invoice'
+  // Shelf photo counting — same Claude Vision pricing as scan-invoice.
+  // Originally shipped without a cap; Codex audit (pass-6) flagged it
+  // as the largest unbounded-spend exposure in the inventory surface.
+  | 'photo-count'
   // Public signup — keyed on a per-IP UUID (sha256(ip) → UUID shape).
   // No auth gate, creates auth.users + properties + Stripe customer +
   // bcrypt CPU work, so trivially abusable without a rate cap. (Pass-3
@@ -66,6 +70,10 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // legitimate use (Maria scanning a stack of weekly invoices) but
   // caps runaway loops fast.
   'scan-invoice':               50,
+  // Shelf photo counting — same per-call cost as scan-invoice; same cap.
+  // A staff member doing inventory rounds might fire 20-30 photos in a
+  // session; 50/hr per property covers that with headroom.
+  'photo-count':                50,
   // Maria might re-send shift confirmations 2-3 times if she tweaks the
   // schedule. 10/hour gives plenty of room without unlimited resend abuse.
   'send-shift-confirmations': 10,

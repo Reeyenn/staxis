@@ -16,6 +16,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { visionExtractJSON, VisionTruncatedError } from '@/lib/vision-extract';
 import { errToString } from '@/lib/utils';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -133,6 +134,17 @@ export async function POST(req: NextRequest) {
   }
   if (!Array.isArray(itemNames) || itemNames.length === 0) {
     return NextResponse.json({ ok: false, error: 'no_items_in_scope' }, { status: 400 });
+  }
+
+  // ── Rate limit (Codex audit pass-6) ────────────────────────────────
+  // Vision calls cost $0.003-0.01 per image. Auth-gated, so this is
+  // never anonymous spam — but a compromised session, a stuck retry
+  // loop, or a runaway client tab could fire hundreds of scans/hour
+  // with no cap. 50/hr per property mirrors scan-invoice and absorbs
+  // legitimate inventory rounds while killing runaway spend.
+  const rl = await checkAndIncrementRateLimit('photo-count', pid);
+  if (!rl.allowed) {
+    return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec) as NextResponse;
   }
 
   // ── Sanitize item names (May 2026 audit pass-4) ──────────────────
