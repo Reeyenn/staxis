@@ -1037,6 +1037,22 @@ async function checkWatchdogAlertPath(): Promise<Omit<Check, 'name' | 'durationM
       lastAlertedAt?: string | null;
     };
 
+    // ── Stale-state detection (May 2026 audit pass-6) ─────────────────
+    // alertSuppressedReason is a sticky flag — once set, the watchdog
+    // doesn't clear it on the next successful tick. If the underlying
+    // condition resolved 30+ minutes ago, the flag is misleading: the
+    // system isn't actually broken, the operator just hasn't seen the
+    // historical record yet. Treat the flag as `warn` (info-level)
+    // instead of `fail` (CI-blocking) once it's older than 30 min.
+    // Real ongoing outages still produce `fail` because the watchdog
+    // re-stamps the timestamp on each suppression event.
+    const STALE_SUPPRESSION_MIN = 30;
+    const isSuppressionStale = (suppressedAt: string | null | undefined): boolean => {
+      if (!suppressedAt) return false;
+      const ageMin = (Date.now() - new Date(suppressedAt).getTime()) / 60_000;
+      return ageMin > STALE_SUPPRESSION_MIN;
+    };
+
     // Vercel cron path: did it try to alert and fail?
     if (alertState.alertSuppressedReason === 'no_alert_phone_on_vercel') {
       return {
@@ -1046,16 +1062,22 @@ async function checkWatchdogAlertPath(): Promise<Omit<Check, 'name' | 'durationM
       };
     }
     if (alertState.alertSuppressedReason === 'sms_send_failed') {
+      const stale = isSuppressionStale(alertState.alertSuppressedAt);
       return {
-        status: 'fail',
-        detail: `Vercel cron's last alert attempt failed at the Twilio step: ${alertState.lastSmsError ?? 'unknown error'}`,
+        status: stale ? 'warn' : 'fail',
+        detail: stale
+          ? `Vercel cron had a Twilio-step failure ${Math.floor((Date.now() - new Date(alertState.alertSuppressedAt!).getTime()) / 60_000)}m ago (stale — will clear on next successful alert): ${alertState.lastSmsError ?? 'unknown error'}`
+          : `Vercel cron's last alert attempt failed at the Twilio step: ${alertState.lastSmsError ?? 'unknown error'}`,
         fix: 'Check TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM_NUMBER on Vercel. Also verify the recipient number is valid and not on Twilio\'s suppression list.',
       };
     }
     if (alertState.alertSuppressedReason) {
+      const stale = isSuppressionStale(alertState.alertSuppressedAt);
       return {
-        status: 'fail',
-        detail: `Vercel cron suppressed an alert for: ${alertState.alertSuppressedReason}`,
+        status: stale ? 'warn' : 'fail',
+        detail: stale
+          ? `Vercel cron had a suppression event ${Math.floor((Date.now() - new Date(alertState.alertSuppressedAt!).getTime()) / 60_000)}m ago (stale — will clear on next successful alert): ${alertState.alertSuppressedReason}`
+          : `Vercel cron suppressed an alert for: ${alertState.alertSuppressedReason}`,
         fix: 'Inspect scraper_status[alertState] in Supabase and the Vercel function logs.',
       };
     }
@@ -1083,9 +1105,12 @@ async function checkWatchdogAlertPath(): Promise<Omit<Check, 'name' | 'durationM
       };
     }
     if (watchdog.alertSuppressedReason) {
+      const stale = isSuppressionStale(watchdog.alertSuppressedAt);
       return {
-        status: 'fail',
-        detail: `Railway watchdog suppressed an alert for unexpected reason: ${watchdog.alertSuppressedReason}`,
+        status: stale ? 'warn' : 'fail',
+        detail: stale
+          ? `Railway watchdog had a suppression event ${Math.floor((Date.now() - new Date(watchdog.alertSuppressedAt!).getTime()) / 60_000)}m ago (stale — will clear on next successful alert): ${watchdog.alertSuppressedReason}`
+          : `Railway watchdog suppressed an alert for unexpected reason: ${watchdog.alertSuppressedReason}`,
         fix: 'Inspect scraper_status[vercel_watchdog] in Supabase and the Railway logs.',
       };
     }
@@ -1174,7 +1199,7 @@ async function checkCronSecretCrossPlatform(): Promise<Omit<Check, 'name' | 'dur
  *   - all applied → ok, with the count
  *   - extras in DB not in code → warn (someone applied a hand-rolled migration)
  */
-const EXPECTED_MIGRATIONS: ReadonlyArray<string> = [
+export const EXPECTED_MIGRATIONS: ReadonlyArray<string> = [
   '0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008',
   '0009', '0010', '0011', '0012', '0013', '0014', '0015', '0016',
   '0017', '0018', '0019', '0020', '0021', '0022', '0023', '0024',
@@ -1601,7 +1626,8 @@ async function checkCronHeartbeatsFresh(): Promise<Omit<Check, 'name' | 'duratio
       byName.set(r.cron_name, r.last_success_at);
     }
     const now = Date.now();
-    const stale: string[] = [];
+    const failed: string[] = [];  // hard-stale: >1.5× warn threshold → real problem
+    const warned: string[] = [];  // soft-stale: between tolerance and 1.5× → likely transient
     const missing: string[] = [];
     for (const c of EXPECTED_CRONS) {
       const last = byName.get(c.name);
@@ -1610,24 +1636,38 @@ async function checkCronHeartbeatsFresh(): Promise<Omit<Check, 'name' | 'duratio
         continue;
       }
       const ageHours = (now - new Date(last).getTime()) / (60 * 60 * 1000);
-      // GitHub Actions cron has documented skew of up to ~15 min on busy
-      // schedulers — a 5-min cron can land 5–20 min apart. The 2× cadence
-      // alone is tight for sub-hourly schedules (May 2026 audit pass-6
-      // caught this when the post-deploy smoke test started flaking).
-      // The flat 0.25h buffer absorbs skew without softening long-cadence
-      // checks: daily becomes 48.25h, weekly becomes 336.25h — both
-      // negligible relative to their cadence; 5-min becomes 25 min,
-      // hourly becomes 2.25h — comfortable for normal GH skew.
-      const tolerance = c.cadenceHours * 2 + GH_ACTIONS_SKEW_BUFFER_HOURS;
-      if (ageHours > tolerance) {
-        stale.push(`${c.name} (${ageHours.toFixed(1)}h old, expected < ${tolerance.toFixed(2)}h)`);
+      // ── Tiered staleness (May 2026 audit pass-6) ───────────────────
+      // Splitting into warn vs fail prevents the post-deploy smoke test
+      // from flaking when a cron is "between fires" (warn = transient)
+      // while still surfacing a real outage (fail). Warn-tier covers
+      // the half-window of cadence ± skew + first-cron-on-Vercel grace.
+      //
+      // Math by tier:
+      //   5-min cron:  warn-thresh 25 min,  fail-thresh 37.5 min
+      //   15-min cron: warn-thresh 45 min,  fail-thresh 67.5 min
+      //   hourly:      warn-thresh 2.25h,   fail-thresh 3.375h
+      //   daily:       warn-thresh 48.25h,  fail-thresh 72.375h
+      //   weekly:      warn-thresh 336.25h, fail-thresh 504.375h
+      const warnThreshold = c.cadenceHours * 2 + GH_ACTIONS_SKEW_BUFFER_HOURS;
+      const failThreshold = warnThreshold * 1.5;
+      if (ageHours > failThreshold) {
+        failed.push(`${c.name} (${ageHours.toFixed(1)}h old, fail threshold ${failThreshold.toFixed(2)}h)`);
+      } else if (ageHours > warnThreshold) {
+        warned.push(`${c.name} (${ageHours.toFixed(1)}h old, warn threshold ${warnThreshold.toFixed(2)}h)`);
       }
     }
-    if (stale.length > 0) {
+    if (failed.length > 0) {
       return {
         status: 'fail',
-        detail: `Stale cron heartbeats: ${stale.join('; ')}`,
-        fix: 'Open the matching GitHub Actions workflow at https://github.com/Reeyenn/staxis/actions and inspect the latest run. If the workflow itself is silently disabled, click "Enable workflow" and re-run. If runs are succeeding but the heartbeat is stale, the route is silent-erroring before the writeCronHeartbeat() call — check Vercel logs.',
+        detail: `Cron heartbeats badly stale (>1.5× normal tolerance — likely a real outage): ${failed.join('; ')}` +
+          (warned.length > 0 ? ` ALSO transient: ${warned.join('; ')}` : ''),
+        fix: 'Verify each cron route is reachable: curl -H "Authorization: Bearer $CRON_SECRET" https://getstaxis.com/api/cron/<name>. Check the route\'s Vercel logs for crashes before writeCronHeartbeat() is called. For Vercel native crons, inspect https://vercel.com/reeyenns-projects/staxis/crons.',
+      };
+    }
+    if (warned.length > 0) {
+      return {
+        status: 'warn',
+        detail: `Cron heartbeats slightly stale (likely just between fires): ${warned.join('; ')}`,
       };
     }
     if (missing.length > 0) {

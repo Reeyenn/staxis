@@ -123,18 +123,59 @@ jobs:
           echo "$response" | python3 -m json.tool || echo "$response"
           echo ""
 
-          # Top-level ok flag is the authoritative answer.
-          ok=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('ok', False))")
+          # ── Transient-failure retry (May 2026 audit pass-6) ─────────────
+          # Some doctor checks reflect state-of-the-moment that may resolve
+          # on its own within minutes:
+          #   - cron_heartbeats_fresh after a deploy that added a new
+          #     Vercel native cron (cron hasn't fired yet on first deploy)
+          #   - watchdog_alert_path while a stale flag is mid-clear
+          # The doctor returns 'warn' for these (instead of 'fail') when
+          # detectable, but edge cases still slip through. Retry up to 2
+          # times if every failing check is in TRANSIENT_CHECKS.
+          TRANSIENT_CHECKS="cron_heartbeats_fresh watchdog_alert_path ml_inventory_predictions_fresh ml_demand_predictions_fresh ml_supply_predictions_fresh scraper_pull_latency"
 
-          if [ "$ok" = "True" ]; then
-            # Count warnings to surface them in the log even when things pass.
-            warn_count=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('summary',{}).get('warn',0))")
-            echo "✓ All checks passed (${warn_count} warnings)."
-            exit 0
-          fi
+          retry=0
+          MAX_RETRIES=2
+          RETRY_SLEEP=300  # 5 min, matches Vercel-cron-first-fire cadence
 
-          # ok=false — grab the failing check names and their fix messages so
-          # Reeyen can read the GitHub email and know exactly what to do.
+          while [ $retry -le $MAX_RETRIES ]; do
+            # Top-level ok flag is the authoritative answer.
+            ok=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('ok', False))")
+            if [ "$ok" = "True" ]; then
+              warn_count=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('summary',{}).get('warn',0))")
+              echo "✓ All checks passed (${warn_count} warnings)."
+              exit 0
+            fi
+
+            # Check whether all failing entries are transient.
+            all_transient=$(echo "$response" | python3 -c "
+          import sys, json, os
+          transient = set(os.environ.get('TRANSIENT_CHECKS', '').split())
+          r = json.load(sys.stdin)
+          failing = [c['name'] for c in r.get('checks', []) if c.get('status') == 'fail']
+          if not failing:
+              print('false')
+          else:
+              print('true' if all(n in transient for n in failing) else 'false')
+          ")
+            export TRANSIENT_CHECKS
+
+            if [ "$all_transient" = "true" ] && [ $retry -lt $MAX_RETRIES ]; then
+              retry=$((retry + 1))
+              echo "── All failing checks are transient — waiting ${RETRY_SLEEP}s and retrying (attempt ${retry}/${MAX_RETRIES}) ──"
+              sleep $RETRY_SLEEP
+              http_code=$(curl --silent --show-error --max-time 30 \
+                -o /tmp/doctor-body.json -w "%{http_code}" \
+                -H "Authorization: Bearer ${CRON_SECRET:-}" "$URL" || echo "000")
+              if [ "$http_code" = "200" ] || [ "$http_code" = "503" ]; then
+                response=$(cat /tmp/doctor-body.json)
+              fi
+              continue
+            fi
+            break
+          done
+
+          # ok=false on the final attempt — grab the failing check names and fixes.
           echo ""
           echo "── FAILING CHECKS ──"
           echo "$response" | python3 -c "

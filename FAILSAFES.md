@@ -47,24 +47,47 @@ Does a preflight Postgres read at startup against `scraper_status`. `process.exi
 
 ---
 
-## 4. GitHub Actions workflows (`.github/workflows/`)
+## 4. Scheduler tiers — when to use what
+
+We deliberately split crons across two schedulers because they have different reliability profiles. Pick the right tier for the cadence.
+
+### Vercel native crons (`vercel.json`)
+**Use for:** cadence under 30 minutes, OR any cron where reliable timing matters operationally.
+
+| Path | Cadence | What it does |
+|---|---|---|
+| `/api/cron/process-sms-jobs` | every 5 min | Drains SMS jobs queue → Twilio |
+| `/api/cron/scraper-health` | every 15 min | Alerting watchdog for dead scrapers |
+| `/api/cron/expire-trials` | daily 09:00 UTC | Flips expired trial accounts |
+
+Vercel Pro guarantees per-minute precision. We moved `process-sms-jobs` and `scraper-health` here in May 2026 audit pass-6 after observing GitHub Actions throttle them by 7-17×.
+
+### GitHub Actions workflows (`.github/workflows/`)
+**Use for:** daily/weekly cadences where hour-scale precision is fine.
 
 | Workflow | Cadence | What it catches |
 |---|---|---|
 | `tests.yml` | Every push and PR | Broken tests |
 | `post-deploy-smoke-test.yml` | Every push to main | Broken deploy, missing/stale env vars |
 | `daily-drift-check.yml` | 8am Central daily | Credential drift between Vercel, Railway, Fly |
-| `scraper-health-cron.yml` | Every 15 min | Scraper process dead, CA errors, stale data |
-| `scraper-weekly-digest-cron.yml` | Saturdays 8am Central | Weekly scraper performance summary |
-| `sms-jobs-cron.yml`, `ml-cron.yml` | Per-feature | Background job processors |
+| `seal-daily-cron.yml` | Hourly | Per-property attendance marks + daily_logs |
+| `ml-cron.yml` | Multiple daily + weekly | ML training, inference, prior aggregation |
+| `ml-shadow-evaluate-cron.yml` | Daily 11:30 UTC | Shadow-model promotion/rejection pass |
+| `purge-old-error-logs-cron.yml` | Daily 09:30 UTC | error_logs retention sweep + api_limits cleanup |
+| `scraper-weekly-digest-cron.yml` | Sat 14:00 UTC | Weekly scraper performance summary |
+| `pull-jobs-cron.yml` | Disabled (workflow_dispatch only) | Future: drain Railway pull-jobs queue |
 
-Each workflow uses `CRON_SECRET` from GitHub repo secrets, prints the full response body, uses `--retry 2` for transient blips, and fails loudly so GitHub emails Reeyen.
+Each workflow uses `CRON_SECRET` from GitHub repo secrets, prints the full response body, uses `--retry 1` (was 2 before pass-6) for transient blips, and fails loudly so GitHub emails Reeyen.
 
 ### Rules for editing
 
-- Don't disable any of these "temporarily" — the daily drift check has caught real cross-platform credential drift more than once.
-- New cron endpoint? Add a workflow for it. Mirror the pattern in `scraper-health-cron.yml`.
-- Don't switch off `--retry 2`. Transient 502s shouldn't page Reeyen.
+- **Don't put a new sub-30-min cron on GitHub Actions.** GH publicly documents that tight cron schedules are best-effort; we've measured 7-17× delays. Use Vercel native instead.
+- **Don't disable any workflow "temporarily"** — the daily drift check has caught real cross-platform credential drift more than once.
+- **New cron endpoint?**
+  - Decide tier (Vercel vs GH). Sub-30-min → Vercel; daily/weekly → GH.
+  - Add the route's heartbeat to `EXPECTED_CRONS` in `src/app/api/admin/doctor/route.ts`.
+  - Add the schedule to `SCHEDULE_REGISTRY` in `src/lib/__tests__/cron-cadences.test.ts` — the test enforces alignment.
+- **Don't switch off `--retry 1` on workflow curls.** Transient 502s shouldn't fail the workflow.
 
 ---
 
