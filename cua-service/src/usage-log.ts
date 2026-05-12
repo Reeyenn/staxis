@@ -79,6 +79,34 @@ function computeCostMicros(usage: AnthropicUsage, model: string): number {
   return Math.round(total);
 }
 
+/**
+ * Sum cost_micros across all claude_usage_log rows for a given job.
+ * Used by the CUA mapper as a cumulative-cost circuit-breaker: each
+ * phase queries this before starting, and aborts the run if the job
+ * is already over budget. May 2026 audit pass-5: the existing
+ * per-phase token + wallclock budgets cap each phase at ~$2.40, but
+ * a 5-phase mapper run could compound to $12+ before any abort.
+ *
+ * Returns 0 on any error (fail-open — never block a job because the
+ * cost-lookup itself failed).
+ */
+export async function getJobCostMicros(jobId: string): Promise<number> {
+  try {
+    const { data, error } = await supabase
+      .from('claude_usage_log')
+      .select('cost_micros')
+      .eq('job_id', jobId);
+    if (error || !data) return 0;
+    let total = 0;
+    for (const row of data) {
+      total += Number((row as { cost_micros?: number }).cost_micros ?? 0);
+    }
+    return total;
+  } catch {
+    return 0;
+  }
+}
+
 export async function logClaudeUsage(usage: AnthropicUsage, context: LogContext): Promise<void> {
   try {
     const cost = computeCostMicros(usage, context.model);

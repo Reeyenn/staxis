@@ -24,7 +24,16 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { anthropic, BROWSER_TOOL, CLAUDE_MODEL, MAPPING_SYSTEM_PROMPT } from './anthropic-client.js';
 import { executeBrowserAction, type BrowserAction } from './browser-tool.js';
 import { log } from './log.js';
-import { logClaudeUsage } from './usage-log.js';
+import { logClaudeUsage, getJobCostMicros } from './usage-log.js';
+
+// ── Cumulative-cost circuit-breaker (May 2026 audit pass-5) ───────────
+// Each phase has its own token + wallclock budget (~$2.40 max per phase),
+// but a 5-phase mapper run could compound to $12+ if every phase burns
+// its budget. This cap aborts the whole job before that happens. $5
+// covers ~5 successful mappings at typical spend (~$0.30-0.80 each);
+// hitting it usually means the agent is stuck looping. Configurable via
+// CUA_JOB_COST_CAP_MICROS env (in micro-dollars; default 5_000_000 = $5).
+const JOB_COST_CAP_MICROS = Number(process.env.CUA_JOB_COST_CAP_MICROS) || 5_000_000;
 import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe } from './types.js';
 
 const MAX_AGENT_STEPS_LOGIN = 60;
@@ -98,10 +107,43 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
     const postLoginUrl = page.url();
     log.info('login mapped', { postLoginUrl, steps: loginResult.steps.steps.length });
 
+    // Cumulative-cost guard — see JOB_COST_CAP_MICROS comment for rationale.
+    // checkBudget queries claude_usage_log for spend so far on this job;
+    // returns null when under budget, an over-budget failure result when over.
+    // Skipped when jobId is null (one-off dev runs).
+    const checkBudget = async (): Promise<MapperResult | null> => {
+      if (!opts.jobId) return null;
+      const spentMicros = await getJobCostMicros(opts.jobId);
+      if (spentMicros >= JOB_COST_CAP_MICROS) {
+        log.warn('cua mapper aborting — cumulative cost cap hit', {
+          jobId: opts.jobId,
+          spentMicros,
+          capMicros: JOB_COST_CAP_MICROS,
+        });
+        return {
+          ok: false,
+          userMessage:
+            'This mapping run is taking longer than expected. We stopped it to keep costs in check — ' +
+            'please try again or contact support.',
+          detail: {
+            phase: 'mapper',
+            reason: 'cost_cap_exceeded',
+            spent_micros: spentMicros,
+            cap_micros: JOB_COST_CAP_MICROS,
+          },
+        };
+      }
+      return null;
+    };
+
     // ─── Phase 2: per-action mapping ───────────────────────────────────────
     const actions: Recipe['actions'] = {};
 
     opts.onProgress?.('Finding the daily housekeeping report…', 40);
+    {
+      const overBudget = await checkBudget();
+      if (overBudget) return overBudget;
+    }
     const housekeepingReport = await mapAction({
       page,
       actionName: 'getRoomStatus',
@@ -116,6 +158,10 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
     else log.warn('action mapping failed', { actionName: 'getRoomStatus', reason: housekeepingReport.reason, finalUrl: housekeepingReport.finalUrl });
 
     opts.onProgress?.('Finding today\'s arrivals…', 50);
+    {
+      const overBudget = await checkBudget();
+      if (overBudget) return overBudget;
+    }
     const arrivals = await mapAction({
       page,
       actionName: 'getArrivals',
@@ -130,6 +176,10 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
     else log.warn('action mapping failed', { actionName: 'getArrivals', reason: arrivals.reason, finalUrl: arrivals.finalUrl });
 
     opts.onProgress?.('Finding today\'s departures…', 55);
+    {
+      const overBudget = await checkBudget();
+      if (overBudget) return overBudget;
+    }
     const departures = await mapAction({
       page,
       actionName: 'getDepartures',
@@ -144,6 +194,10 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
     else log.warn('action mapping failed', { actionName: 'getDepartures', reason: departures.reason, finalUrl: departures.finalUrl });
 
     opts.onProgress?.('Finding the staff list…', 60);
+    {
+      const overBudget = await checkBudget();
+      if (overBudget) return overBudget;
+    }
     const staff = await mapAction({
       page,
       actionName: 'getStaffRoster',
