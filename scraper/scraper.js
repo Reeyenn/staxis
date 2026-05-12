@@ -955,11 +955,32 @@ async function run() {
       // log) instead of writing. The new owner picks up on its next
       // tick. Overlap window collapses from 60s to ~5s (next tick).
       const ourInstance = process.env.SCRAPER_INSTANCE_ID || 'default';
-      const { data: credRow } = await supabase
+      const { data: credRow, error: credErr } = await supabase
         .from('scraper_credentials')
         .select('scraper_instance, is_active')
         .eq('property_id', ACTIVE.propertyId)
         .maybeSingle();
+      // ── Fail-closed on DB error (May 2026 audit pass-3) ─────────────
+      // Previous version threw away credErr and fell through to "we
+      // own this property, proceed" — exactly the failure mode the
+      // recheck was meant to PREVENT. During a Supabase maintenance
+      // window or transient conn drop, two Railway instances would
+      // both believe they own the hotel and both write to its session
+      // cookie store. Choice Advantage invalidates one cookie and the
+      // other on subsequent ticks → pulls fail intermittently for
+      // ~5 minutes.
+      //
+      // Fail-closed: if the recheck read errors, skip the tick and
+      // log loudly. Worst case is one missed pull (5 min). The next
+      // tick retries the recheck.
+      if (credErr) {
+        log(
+          `Tick skipped: scraper_credentials read failed (${credErr.message}). ` +
+          `Failing closed to prevent overlap with another instance during ` +
+          `transient DB issues. Retry next tick.`,
+        );
+        return;
+      }
       // Only enforce when a creds row exists. The env-var fallback path
       // (no scraper_credentials row in DB) means this instance is the
       // only one polling — no ownership question to answer.
