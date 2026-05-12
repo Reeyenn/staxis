@@ -448,6 +448,33 @@ def _train_single_item(
     is_active = not is_shadow
     shadow_started_at = datetime.utcnow().isoformat() if is_shadow else None
 
+    # ── No-validation-set gate (May 2026 audit pass-3) ────────────────
+    # When the item has <5 training rows, X_test ends up empty and
+    # validation_mae defaults to 0.0 as a sentinel (see line 367).
+    # The next gate below checks validation_mae >= max(mean*1.0, 1.0)
+    # — 0 < 1.0 so the model passes unconditionally. A model with
+    # ZERO validation rows would pass the "this prediction is
+    # trustworthy" gate. Catch that case here first.
+    #
+    # Concrete failure mode: hotel #2 onboards. Maria adds 12
+    # inventory items. The first weekly training run sees 2-3 rows
+    # per item. All 12 items would have validation_mae=0 and pass
+    # this gate, producing confident-looking AI suggestions ("Coffee
+    # Pods: predicted 47 today") on essentially no signal.
+    #
+    # Bayesian cold-start path still works — those models build from
+    # cohort priors and don't need an internal validation set to be
+    # useful. But they shouldn't be MARKED as validated either;
+    # is_active=False keeps them serving via the cold-start prior
+    # without claiming "the per-property model has earned trust".
+    mae_reject_notes = None
+    if is_active and len(X_test) == 0:
+        is_active = False
+        mae_reject_notes = (
+            f"rejected_no_validation_set: only {len(X_train)} training rows "
+            f"(need ≥5 for an 80/20 split). Falling back to cold-start prior."
+        )
+
     # ── Max-MAE safety gate (P0-3, May 2026 audit) ────────────────────
     # Reject models whose validation_mae is at or above the mean observed
     # rate — those are no better than a constant "predict the mean"
@@ -467,7 +494,6 @@ def _train_single_item(
     # vs mean ~50, threshold 75 → passes). Tightened to 1.0×mean.
     # Shadow models skip this gate; the evaluate cron + promote path
     # re-checks before activation.
-    mae_reject_notes = None
     if (
         is_active
         and validation_mae is not None
