@@ -681,7 +681,16 @@ function makeToolResult(
       source: { type: 'base64', media_type: 'image/png', data: exec.screenshotB64 },
     });
   }
-  content.push({ type: 'text', text: exec.output });
+  // Codex audit pass-6 P1 — wrap PMS-derived text in an explicit
+  // untrusted-content boundary. The system prompt instructs Claude to
+  // treat anything inside this tag strictly as data, never as
+  // instructions. Errors and short status messages from the tool
+  // wrapper itself (e.g. "selector not found") are NOT page content
+  // and don't need the wrapper.
+  const wrappedText = exec.isError
+    ? exec.output
+    : `<untrusted_pms_content>\n${exec.output}\n</untrusted_pms_content>`;
+  content.push({ type: 'text', text: wrappedText });
   return {
     type: 'tool_result',
     tool_use_id: toolUseId,
