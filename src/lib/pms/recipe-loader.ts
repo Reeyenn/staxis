@@ -65,52 +65,30 @@ export async function saveDraftRecipe(args: {
   learnedByPropertyId: string;
   notes?: string;
 }): Promise<{ id: string; version: number } | { error: string }> {
-  // 2026-05-12 (Codex audit): two concurrent CUA mapping runs for the same
-  // pms_type both saw version N and tried to insert N+1, causing the
-  // pms_recipes_pms_type_version_key unique constraint (migration 0033) to
-  // reject one and lose its work. Retry-with-fresh-lookup on the
-  // unique-violation code (Postgres 23505) handles bounded contention
-  // without needing a sequence migration.
-  //
-  // Follow-up note: a proper atomic RPC (staxis_insert_draft_recipe with
-  // pg_advisory_xact_lock) is queued — needs a Supabase migration applied
-  // by the operator. Until then this retry loop is the safety net.
-  const MAX_ATTEMPTS = 5;
-  let lastErr: { message?: string } | null = null;
-  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-    const { data: latest } = await supabaseAdmin
-      .from('pms_recipes')
-      .select('version')
-      .eq('pms_type', args.pmsType)
-      .order('version', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+  // 2026-05-12 (Codex audit follow-up): atomic RPC replaces the previous
+  // SELECT max(version) → JS-increment → INSERT pattern. The RPC holds
+  // pg_advisory_xact_lock keyed on the pms_type and does the version
+  // compute + insert in one transaction — no more 23505 retries. See
+  // migration 0078_atomic_recipe_version.sql.
+  const { data, error } = await supabaseAdmin.rpc('staxis_insert_draft_recipe', {
+    p_pms_type: args.pmsType,
+    p_recipe: args.recipe as unknown as Record<string, unknown>,
+    p_learned_by_property_id: args.learnedByPropertyId,
+    p_notes: args.notes ?? null,
+  });
+  if (error) return { error: error.message ?? 'failed to save draft recipe' };
 
-    const nextVersion = ((latest?.version as number) ?? 0) + 1;
-
-    const { data, error } = await supabaseAdmin
-      .from('pms_recipes')
-      .insert({
-        pms_type: args.pmsType,
-        version: nextVersion,
-        recipe: args.recipe,
-        status: 'draft',
-        learned_by_property_id: args.learnedByPropertyId,
-        notes: args.notes ?? null,
-      })
-      .select('id, version')
-      .single();
-
-    if (!error && data) {
-      return { id: data.id as string, version: data.version as number };
-    }
-    // 23505 = unique_violation. Anything else: don't retry.
-    if (error && (error as { code?: string }).code !== '23505') {
-      return { error: error.message ?? 'failed to save draft recipe' };
-    }
-    lastErr = error;
+  // The RPC returns a single-row table with (id, version). Supabase's
+  // .rpc() resolves that to an array.
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row || typeof row !== 'object') {
+    return { error: 'staxis_insert_draft_recipe returned no row' };
   }
-  return { error: `failed to save draft recipe after ${MAX_ATTEMPTS} version collisions: ${lastErr?.message ?? 'unknown'}` };
+  const r = row as { id?: string; version?: number };
+  if (!r.id || typeof r.version !== 'number') {
+    return { error: 'staxis_insert_draft_recipe row missing id/version' };
+  }
+  return { id: r.id, version: r.version };
 }
 
 /**

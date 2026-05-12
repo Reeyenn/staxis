@@ -1217,6 +1217,8 @@ export const EXPECTED_MIGRATIONS: ReadonlyArray<string> = [
   '0070', '0071', '0072', '0073', '0074', '0075',
   // Bookkeeping backfill (May 2026 audit pass-6 — see migration header).
   '0076',
+  // Codex audit follow-up (2026-05-12): FK constraints + atomic recipe-version RPC.
+  '0077', '0078',
 ];
 async function checkAppliedMigrations(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {
