@@ -1,7 +1,7 @@
 """Rolling 14-day shadow MAE computation and auto-rollback."""
 import json
 from datetime import datetime, timedelta
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import psycopg2
@@ -9,7 +9,53 @@ from scipy import stats
 
 from src.advisory_lock import advisory_lock
 from src.config import get_settings
-from src.supabase_client import get_supabase_client
+from src.supabase_client import SupabaseServiceClient, get_supabase_client
+
+
+def _find_fallback_model(
+    client: SupabaseServiceClient,
+    property_id: str,
+    layer: str,
+    failed_model_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Find the best previously-active model to promote when auto-rollback
+    fires. We prefer the most recently-activated non-shadow run that hasn't
+    itself been auto-rolled-back, and that has a recorded validation MAE
+    (so we have at least some evidence it's not garbage).
+
+    Codex audit pass-6 P0 — auto-rollback used to deactivate the bad model
+    and stop there. The property would then have ZERO active models for
+    that layer and predictions would silently stop. Now we promote the
+    previous good run in the same lock window.
+
+    Returns the row to promote, or None if there's no candidate (in which
+    case the caller logs a high-priority alert — operators must manually
+    restore service).
+    """
+    candidates = client.fetch_many(
+        "model_runs",
+        filters={"property_id": property_id, "layer": layer, "is_shadow": False},
+        order_by="activated_at",
+        descending=True,
+        limit=20,
+    )
+    for row in candidates:
+        if row.get("id") == failed_model_id:
+            continue
+        # Skip prior auto-rolled-back runs — they've already been judged
+        # bad once and we shouldn't re-promote them.
+        if (row.get("deactivation_reason") or "").lower() == "auto_rollback":
+            continue
+        # Require a recorded validation MAE so we have at least one
+        # quality signal before flipping a property's active model.
+        if row.get("validation_mae") is None:
+            continue
+        # Activated_at must exist — never-activated draft runs aren't
+        # valid fallbacks.
+        if not row.get("activated_at"):
+            continue
+        return row
+    return None
 
 
 async def compute_rolling_shadow_mae(
@@ -189,7 +235,15 @@ async def check_auto_rollback(
                     )
                 )
 
-                # Deactivate the model.
+                # Find a fallback BEFORE we deactivate — if no candidate
+                # exists, we still deactivate (predictions on the bad
+                # model are worse than no predictions) but we surface a
+                # high-priority alert so operators can intervene.
+                fallback = _find_fallback_model(
+                    client, property_id, layer, active_model_id or "",
+                )
+
+                # Deactivate the bad model.
                 if active_model_id:
                     try:
                         client.update(
@@ -215,6 +269,76 @@ async def check_auto_rollback(
                                 }
                             )
                         )
+                        # If we couldn't even deactivate, don't try to
+                        # promote a fallback — the bad model is still
+                        # marked active and we'd have two active rows.
+                        return should_rollback
+
+                # Promote the fallback if we found one.
+                if fallback is not None:
+                    fallback_id = fallback["id"]
+                    try:
+                        client.update(
+                            "model_runs",
+                            {
+                                "is_active": True,
+                                "activated_at": datetime.utcnow().isoformat(),
+                                "activation_reason": "auto_rollback_restore",
+                            },
+                            {"id": fallback_id},
+                        )
+                        print(
+                            json.dumps(
+                                {
+                                    "level": "warning",
+                                    "event": "auto_rollback_fallback_promoted",
+                                    "property_id": property_id,
+                                    "layer": layer,
+                                    "deactivated_model_run_id": active_model_id,
+                                    "promoted_model_run_id": fallback_id,
+                                    "promoted_validation_mae": float(
+                                        fallback.get("validation_mae", 0)
+                                    ),
+                                    "ts": datetime.utcnow().isoformat(),
+                                }
+                            )
+                        )
+                    except Exception as promote_err:
+                        # Promotion failed → property is left without an
+                        # active model. Loud alert so operators can fix
+                        # manually before tomorrow's predictions.
+                        print(
+                            json.dumps(
+                                {
+                                    "level": "error",
+                                    "event": "auto_rollback_no_active_model",
+                                    "subevent": "promotion_failed",
+                                    "property_id": property_id,
+                                    "layer": layer,
+                                    "deactivated_model_run_id": active_model_id,
+                                    "attempted_promotion_run_id": fallback_id,
+                                    "err": repr(promote_err),
+                                    "ts": datetime.utcnow().isoformat(),
+                                }
+                            )
+                        )
+                else:
+                    # No safe fallback exists. Predictions for this
+                    # (property, layer) will stop until a human acts.
+                    # Loud structured log so monitoring can page.
+                    print(
+                        json.dumps(
+                            {
+                                "level": "error",
+                                "event": "auto_rollback_no_active_model",
+                                "subevent": "no_fallback_found",
+                                "property_id": property_id,
+                                "layer": layer,
+                                "deactivated_model_run_id": active_model_id,
+                                "ts": datetime.utcnow().isoformat(),
+                            }
+                        )
+                    )
         except Exception as lock_err:
             # Lock acquisition / connection failed — surface to operators
             # instead of silently skipping (previous version did `pass`).
