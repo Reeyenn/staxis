@@ -16,6 +16,14 @@ import Anthropic from '@anthropic-ai/sdk';
 // vision quality. Bumping the version requires a re-test of both prompts.
 const MODEL = 'claude-sonnet-4-6';
 
+// Per-request timeout. Vision calls typically complete in 3-8s; 30s is
+// generous and well under the route's 60s maxDuration so the Anthropic
+// SDK fails fast (and we surface a 503) rather than hanging Vercel's
+// function until the route timeout. May 2026 audit pass-5: the SDK
+// defaults to no timeout, so an Anthropic API hiccup could pin our
+// function memory for minutes at fleet scale.
+const VISION_REQUEST_TIMEOUT_MS = 30_000;
+
 /** Throws if ANTHROPIC_API_KEY is missing — caller catches and 500s the route. */
 function getClient(): Anthropic {
   const key = process.env.ANTHROPIC_API_KEY;
@@ -25,7 +33,7 @@ function getClient(): Anthropic {
       'Set in Vercel → Project Settings → Environment Variables and redeploy.',
     );
   }
-  return new Anthropic({ apiKey: key });
+  return new Anthropic({ apiKey: key, timeout: VISION_REQUEST_TIMEOUT_MS });
 }
 
 export interface VisionImage {
