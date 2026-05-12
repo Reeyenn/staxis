@@ -143,6 +143,13 @@ const checks: Array<[string, CheckFn]> = [
   // doctor fails if any expected cron is older than 2× its cadence.
   // See migration 0074 + src/lib/cron-heartbeat.ts.
   ['cron_heartbeats_fresh',          checkCronHeartbeatsFresh],
+  // Rate limiter probe — pairs with src/lib/api-ratelimit.ts. If the
+  // staxis_api_limit_hit RPC errors at request time, the limiter
+  // fails OPEN (production safety: a Postgres blip must not block
+  // shift SMS). Doctor surfaces this hidden state: if our probe
+  // round-trip fails here, we know the live SMS path is fail-opening
+  // every request. May 2026 audit pass-3 closure.
+  ['api_limits_writable',            checkApiLimitsWritable],
   // Billing config — fails LOUD on the half-configured state where some
   // Stripe vars are set and others aren't. Warns when none are set
   // (pre-launch trial-only mode). Fails when keys are clearly malformed.
@@ -1754,6 +1761,62 @@ async function checkSentryDsnShape(): Promise<Omit<Check, 'name' | 'durationMs'>
     status: 'ok',
     detail: 'Sentry fully configured (server + client DSNs valid)',
   };
+}
+
+/**
+ * api_limits_writable — probe the staxis_api_limit_hit RPC the rate
+ * limiter uses on every SMS-firing request.
+ *
+ * Why this matters: api-ratelimit.ts intentionally fails OPEN when the
+ * RPC errors. That's the right production-safety default — a Postgres
+ * connection blip should not block all shift-confirmation SMS. But
+ * fail-open is INVISIBLE: every SMS sends without rate-limit
+ * enforcement and nobody knows. At 1 hotel, that's an audit-log
+ * footnote. At 50 hotels during a Supabase maintenance window, that's
+ * a Twilio cost spike and potential sender-reputation damage from
+ * sustained spam-shape traffic.
+ *
+ * The probe: call the RPC with the sentinel zero-UUID pid and a
+ * dedicated 'doctor-probe' endpoint string. Each doctor invocation
+ * inserts/updates exactly one row in api_limits keyed on
+ * (00000000-…, 'doctor-probe', current_hour) — negligible noise that
+ * the staxis_api_limit_cleanup() function reaps after 48h. If the
+ * RPC errors, we know the rate limiter is currently fail-opening on
+ * every real request.
+ *
+ * Pairs with the log.error escalation in checkAndIncrementRateLimit:
+ * when the live limiter trips fail-open, Sentry gets an event AND
+ * this doctor check turns red the next time it runs.
+ */
+async function checkApiLimitsWritable(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const probePid = '00000000-0000-0000-0000-000000000000';
+  const probeEndpoint = 'doctor-probe';
+  const hourBucket = new Date().toISOString().slice(0, 13);
+  try {
+    const { data, error } = await supabaseAdmin.rpc('staxis_api_limit_hit', {
+      p_property_id: probePid,
+      p_endpoint: probeEndpoint,
+      p_hour_bucket: hourBucket,
+    });
+    if (error) {
+      return {
+        status: 'fail',
+        detail: `Rate-limit RPC errored: ${error.message}. Every SMS-firing request is currently failing open (no rate limit enforcement). Check Sentry for [ratelimit] error events.`,
+        fix: 'Confirm migration 0008_api_limits.sql is applied (the rpc + table). Verify Supabase service-role key has EXECUTE on staxis_api_limit_hit. Run: psql … -c "SELECT proname FROM pg_proc WHERE proname = \'staxis_api_limit_hit\';"',
+      };
+    }
+    const count = Number(data) || 0;
+    return {
+      status: 'ok',
+      detail: `Rate-limit RPC round-trip OK (probe count for this hour: ${count}).`,
+    };
+  } catch (err) {
+    return {
+      status: 'fail',
+      detail: `Rate-limit RPC probe threw: ${errToString(err)}. Live rate limiter is fail-opening on every SMS request.`,
+      fix: 'Check Supabase service-role connectivity, then verify migration 0008_api_limits.sql applied.',
+    };
+  }
 }
 
 export async function GET(req: NextRequest) {

@@ -17,6 +17,7 @@
 
 import { createHash } from 'crypto';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { log } from '@/lib/log';
 
 /** Endpoint identifier — keep these short and stable. */
 export type RateLimitEndpoint =
@@ -147,7 +148,20 @@ export async function checkAndIncrementRateLimit(
       p_hour_bucket: hourBucket,
     });
     if (error) {
-      console.warn(`[ratelimit] rpc failed (failing open): ${error.message}`);
+      // ── Fail-open visibility (May 2026 audit pass-3) ──────────────
+      // Production safety default: a Postgres hiccup must NOT block all
+      // SMS sends. But the old code was a console.warn — invisible in
+      // Vercel's log noise, completely undetected at fleet scale.
+      // Promoted to log.error so it lands in Sentry + the doctor's
+      // logging surface, with the endpoint + property tagged so
+      // dashboards can chart "how many fail-opens did the SMS pipeline
+      // eat today, on which routes". Paired with the doctor's new
+      // api_limits_writable check that probes the same RPC.
+      log.error('[ratelimit] rpc failed — FAILING OPEN', {
+        endpoint, pid, rpcError: error.message,
+        // Tag for Sentry dashboards (see src/lib/sentry.ts tag-lift).
+        route: `ratelimit:${endpoint}`,
+      });
       return { allowed: true };
     }
     const current = Number(data) || 0;
@@ -162,7 +176,11 @@ export async function checkAndIncrementRateLimit(
     }
     return { allowed: true };
   } catch (e) {
-    console.warn(`[ratelimit] threw (failing open): ${e instanceof Error ? e.message : String(e)}`);
+    log.error('[ratelimit] threw — FAILING OPEN', {
+      endpoint, pid,
+      err: e instanceof Error ? e : new Error(String(e)),
+      route: `ratelimit:${endpoint}`,
+    });
     return { allowed: true };
   }
 }
