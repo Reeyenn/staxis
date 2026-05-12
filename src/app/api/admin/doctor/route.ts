@@ -1561,10 +1561,16 @@ async function checkMlSupplyPredictionsFresh(): Promise<Omit<Check, 'name' | 'du
  * Otherwise the deploy itself would turn the doctor red until the next
  * tick — a brief window but enough to scare an operator.
  */
-const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; description: string }> = [
+// GitHub Actions cron skew constant — see checkCronHeartbeatsFresh for
+// the math. Exported so the cron-cadences drift test can sanity-check
+// us if we ever bump it: any future change here should be paired with
+// a deliberate decision about which cron tier needs more headroom.
+export const GH_ACTIONS_SKEW_BUFFER_HOURS = 0.25;
+
+export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; description: string }> = [
   // Tight cadences
   { name: 'scraper-health',          cadenceHours: 0.25, description: '15-min liveness watcher' },
-  { name: 'process-sms-jobs',        cadenceHours: 0.05, description: '3-min SMS jobs queue worker' },
+  { name: 'process-sms-jobs',        cadenceHours: 5 / 60, description: '5-min SMS jobs queue worker (GH min cron floor)' },
   { name: 'seal-daily',              cadenceHours: 1,    description: 'hourly per-property daily-seal' },
   // Daily
   { name: 'ml-run-inference',        cadenceHours: 24,   description: 'daily demand+supply+optimizer predictions' },
@@ -1602,8 +1608,17 @@ async function checkCronHeartbeatsFresh(): Promise<Omit<Check, 'name' | 'duratio
         continue;
       }
       const ageHours = (now - new Date(last).getTime()) / (60 * 60 * 1000);
-      if (ageHours > c.cadenceHours * 2) {
-        stale.push(`${c.name} (${ageHours.toFixed(1)}h old, expected < ${(c.cadenceHours * 2).toFixed(1)}h)`);
+      // GitHub Actions cron has documented skew of up to ~15 min on busy
+      // schedulers — a 5-min cron can land 5–20 min apart. The 2× cadence
+      // alone is tight for sub-hourly schedules (May 2026 audit pass-6
+      // caught this when the post-deploy smoke test started flaking).
+      // The flat 0.25h buffer absorbs skew without softening long-cadence
+      // checks: daily becomes 48.25h, weekly becomes 336.25h — both
+      // negligible relative to their cadence; 5-min becomes 25 min,
+      // hourly becomes 2.25h — comfortable for normal GH skew.
+      const tolerance = c.cadenceHours * 2 + GH_ACTIONS_SKEW_BUFFER_HOURS;
+      if (ageHours > tolerance) {
+        stale.push(`${c.name} (${ageHours.toFixed(1)}h old, expected < ${tolerance.toFixed(2)}h)`);
       }
     }
     if (stale.length > 0) {
