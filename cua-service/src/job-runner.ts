@@ -403,7 +403,12 @@ async function markFailed(
   userMessage: string,
   detail: Record<string, unknown>,
 ): Promise<void> {
-  await supabase
+  // 2026-05-12 (Codex audit): previously this dropped the Supabase
+  // update error on the floor. If the terminal write itself failed
+  // (RLS regression, schema drift, network hiccup), the job row would
+  // stay in 'running' / 'mapping' / 'extracting' with no persisted
+  // diagnostic — invisible to ops. Now we log so Sentry catches it.
+  const { error } = await supabase
     .from('onboarding_jobs')
     .update({
       status: 'failed',
@@ -415,4 +420,9 @@ async function markFailed(
     .eq('id', jobId)
     .eq('worker_id', workerId)
     .in('status', RUNNING_STATUSES);
+  if (error) {
+    log.error('markFailed: db write failed (job may stay stuck)', {
+      jobId, workerId, dbError: error.message, originalError: userMessage,
+    });
+  }
 }

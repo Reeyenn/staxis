@@ -440,10 +440,24 @@ async function mapLogin(
           },
         };
       }
+      // 2026-05-12 (Codex audit): scrub creds out of model text before
+      // returning. If Claude ever echoes the username/password (or login
+      // URL) back in an error message, the job-runner persists the
+      // detail blob to onboarding_jobs.error_detail — which means PMS
+      // creds would leak into the database. Replace tokens with
+      // placeholders here so the persisted error stays diagnostic
+      // without storing the secret.
+      const redact = (s: string): string => {
+        let out = s;
+        if (creds.username) out = out.split(creds.username).join('<username>');
+        if (creds.password) out = out.split(creds.password).join('<password>');
+        if (creds.loginUrl) out = out.split(creds.loginUrl).join('<loginUrl>');
+        return out;
+      };
       return {
         ok: false,
         userMessage: 'Could not log in. Please double-check your username and password.',
-        detail: { phase: 'login_mapping', finalText, parsed },
+        detail: { phase: 'login_mapping', finalText: redact(finalText), parsed },
       };
     }
 
