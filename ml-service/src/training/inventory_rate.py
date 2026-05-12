@@ -449,41 +449,34 @@ def _train_single_item(
     shadow_started_at = datetime.utcnow().isoformat() if is_shadow else None
 
     # ── Max-MAE safety gate (P0-3, May 2026 audit) ────────────────────
-    # A model with validation_mae higher than the mean observed rate has
-    # learned nothing — its predictions are worse than just guessing the
-    # average. Pre-audit, models like Coffee Pods (MAE 49.99, mean rate
-    # ~3) sat at is_active=true, auto_fill_enabled=false, but their
-    # predictions still surfaced in the UI as confident-looking numbers.
-    # Mario would over-order based on those.
+    # Reject models whose validation_mae is at or above the mean observed
+    # rate — those are no better than a constant "predict the mean"
+    # baseline and their per-day predictions look confidently wrong.
     #
-    # Threshold: validation_mae must be < max(mean_rate * 1.5, 0.5).
-    #   - mean_rate * 1.5 means "the model is meaningfully better than a
-    #     blind constant guess of the mean". 1.5 (not 1.0) gives some
-    #     slack for small training sets where MAE estimates are noisy.
-    #   - 0.5 absolute floor handles items with near-zero mean rates
-    #     (rarely used items) where the ratio metric is meaningless.
+    # Threshold: validation_mae must be < max(mean_rate * 1.0, 1.0).
+    #   - mean_rate * 1.0 = "model beats the constant-mean baseline".
+    #     A model EXACTLY at the mean's level (MAE = mean) is no
+    #     information; >= mean is worse than no information.
+    #   - 1.0 absolute floor handles items with near-zero mean rates
+    #     where the ratio metric is meaningless — even an "MAE of 1
+    #     per day" on a cleaning supply with mean usage 0.0007 is
+    #     clearly broken.
     #
-    # Shadow models skip this gate by design — they're being evaluated
-    # for promotion, the gate kicks in if/when they're promoted (the
-    # promote function will re-check).
-    #
-    # Rejected models go to is_active=false with notes=
-    # 'rejected_high_mae'. Inference reads is_active=true only, so a
-    # rejected model produces no prediction. The UI then shows "still
-    # learning" for that item — accurate and safe.
+    # The first audit (May 2026) shipped 1.5×mean threshold; in
+    # follow-up testing this still let Coffee Pods through (MAE 49.99
+    # vs mean ~50, threshold 75 → passes). Tightened to 1.0×mean.
+    # Shadow models skip this gate; the evaluate cron + promote path
+    # re-checks before activation.
     mae_reject_notes = None
     if (
         is_active
         and validation_mae is not None
-        and validation_mae > max(mean_observed_rate * 1.5, 0.5)
+        and validation_mae >= max(mean_observed_rate * 1.0, 1.0)
     ):
         is_active = False
-        # is_shadow stays whatever it was. A high-MAE shadow stays as
-        # shadow (the evaluate cron will still run, and even if it
-        # decides "promote", the promotion path here would re-reject).
         mae_reject_notes = (
-            f"rejected_high_mae: validation_mae={validation_mae:.4f} > "
-            f"threshold={max(mean_observed_rate * 1.5, 0.5):.4f} "
+            f"rejected_high_mae: validation_mae={validation_mae:.4f} >= "
+            f"threshold={max(mean_observed_rate * 1.0, 1.0):.4f} "
             f"(mean_rate={mean_observed_rate:.4f})"
         )
 
