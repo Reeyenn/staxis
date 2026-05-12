@@ -14,13 +14,14 @@ import { requireCronSecret } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { runWithConcurrency } from '@/lib/parallel';
+import { runWithConcurrency, applyShardFilter } from '@/lib/parallel';
 import { listMlShardUrls, resolveMlShardUrl } from '@/lib/ml-routing';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+// Bumped from 60 (Hobby cap) to 300 (Pro cap). Fleet-scale headroom.
+export const maxDuration = 300;
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
   const requestId = getOrMintRequestId(req);
@@ -36,14 +37,20 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
   const { data: properties, error } = await supabaseAdmin
     .from('properties')
-    .select('id, name');
+    .select('id, name')
+    .order('id');
   if (error) {
     log.error('ml-train-supply: properties read failed', { requestId, err: error as unknown as Error });
     return NextResponse.json({ ok: false, error: errToString(error) }, { status: 500 });
   }
 
+  // Sharding for fleet scale. See ml-train-demand for full notes.
+  const url = new URL(req.url);
+  const sharded = applyShardFilter(properties ?? [], url.searchParams);
+  log.info('ml-train-supply: start', { requestId, shardHeader: sharded.header });
+
   // Parallel fan-out (concurrency 5) — see ml-train-demand route header.
-  const outcomes = await runWithConcurrency(properties ?? [], async (property) => {
+  const outcomes = await runWithConcurrency(sharded.items, async (property) => {
     const mlServiceUrl = resolveMlShardUrl(property.id)!;
     const res = await fetch(`${mlServiceUrl.replace(/\/$/, '')}/train/supply`, {
       method: 'POST',

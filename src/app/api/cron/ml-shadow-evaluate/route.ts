@@ -38,7 +38,13 @@ import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+// Bumped from 60 (Hobby cap) to 300 (Pro cap). This route is lighter
+// than the training/inference routes (DB queries + comparisons, no
+// ML service calls) but at fleet scale 1000+ shadow rows × ~50ms
+// per evaluation can exceed 60s. No sharding param here — the
+// .limit(500) above already caps per-tick work; if we cross the
+// 300s threshold we'll dial limit down + run more frequently.
+export const maxDuration = 300;
 
 const SOAK_DAYS = 7;
 const MAE_TOLERANCE = 0.05; // shadow may be up to 5% worse than active to promote

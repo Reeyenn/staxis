@@ -34,6 +34,47 @@ export interface FanoutFailure<T> {
 export type FanoutOutcome<T, R> = FanoutResult<T, R> | FanoutFailure<T>;
 
 /**
+ * Pull (shard_offset, shard_count) from a request URL and return only
+ * the slice of items this shard should process.
+ *
+ * Why this exists: the ML cron routes loop across every property. At
+ * 50+ hotels with realistic ML latency we hit the Vercel function
+ * timeout (60-300s depending on plan). Sharding lets us dispatch
+ * multiple GitHub Actions jobs concurrently, each handling a slice.
+ *
+ * Cron workflow dispatches:
+ *   GET /api/cron/ml-run-inference?shard_offset=0&shard_count=4
+ *   GET /api/cron/ml-run-inference?shard_offset=1&shard_count=4
+ *   GET /api/cron/ml-run-inference?shard_offset=2&shard_count=4
+ *   GET /api/cron/ml-run-inference?shard_offset=3&shard_count=4
+ *
+ * Each invocation only sees properties.filter((_, i) => i % 4 === offset).
+ * Defaults to (0, 1) — no sharding, all properties to this shard. So
+ * adding sharding to the workflow doesn't require touching the route.
+ *
+ * Returns the filtered items + a header string for logs/responses.
+ */
+export function applyShardFilter<T>(
+  items: T[],
+  searchParams: URLSearchParams,
+): { items: T[]; shardOffset: number; shardCount: number; header: string } {
+  const rawOffset = parseInt(searchParams.get('shard_offset') ?? '0', 10);
+  const rawCount = parseInt(searchParams.get('shard_count') ?? '1', 10);
+  const shardCount = Number.isFinite(rawCount) && rawCount >= 1 && rawCount <= 64 ? rawCount : 1;
+  const shardOffset = Number.isFinite(rawOffset) && rawOffset >= 0 && rawOffset < shardCount ? rawOffset : 0;
+  if (shardCount === 1) {
+    return { items, shardOffset: 0, shardCount: 1, header: 'shard=1/1 (no sharding)' };
+  }
+  const filtered = items.filter((_, i) => i % shardCount === shardOffset);
+  return {
+    items: filtered,
+    shardOffset,
+    shardCount,
+    header: `shard=${shardOffset + 1}/${shardCount} (${filtered.length}/${items.length} properties)`,
+  };
+}
+
+/**
  * Run an async task over each item in `items` with at most `concurrency`
  * in flight at once. Returns one outcome per input in input order.
  *

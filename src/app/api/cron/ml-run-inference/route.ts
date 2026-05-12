@@ -20,13 +20,17 @@ import { requireCronSecret } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { runWithConcurrency } from '@/lib/parallel';
+import { runWithConcurrency, applyShardFilter } from '@/lib/parallel';
 import { listMlShardUrls, resolveMlShardUrl } from '@/lib/ml-routing';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+// Bumped from 60 (Hobby cap) to 300 (Pro cap) — we're on Pro and other
+// cron routes already use 90. At fleet scale, three sequential stages
+// per property × ~5s ML latency × concurrency 3 = ~250s wall-clock at
+// 50 hotels. shard_count param below splits past that threshold.
+export const maxDuration = 300;
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
   const requestId = getOrMintRequestId(req);
@@ -45,10 +49,19 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // not predict a Texas-timed date.
   const { data: properties, error } = await supabaseAdmin
     .from('properties')
-    .select('id, name, timezone');
+    .select('id, name, timezone')
+    .order('id');  // stable order so sharding is deterministic across calls
   if (error) {
     return NextResponse.json({ ok: false, error: errToString(error) }, { status: 500 });
   }
+
+  // Shard filter: workflow can dispatch N parallel jobs with
+  // ?shard_offset=K&shard_count=N to split the fanout. Defaults to no
+  // sharding (this instance handles every property).
+  const url = new URL(req.url);
+  const sharded = applyShardFilter(properties ?? [], url.searchParams);
+  const propertiesForThisShard = sharded.items;
+  log.info('ml-run-inference: start', { requestId, shardHeader: sharded.header });
 
   const tomorrowInTz = (tz: string): string => {
     // Compute tomorrow as YYYY-MM-DD in the given IANA TZ.
@@ -101,7 +114,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // memory-heavy stage and runs Monte Carlo simulation on Railway).
   // Intra-property: still sequential — optimizer depends on demand+supply
   // outputs being already written.
-  const outcomes = await runWithConcurrency(properties ?? [], async (property) => {
+  const outcomes = await runWithConcurrency(propertiesForThisShard, async (property) => {
     const propertyTz = (property.timezone as string | null) ?? 'America/Chicago';
     const targetDate = tomorrowInTz(propertyTz);
     const demandResult    = await callStage('demand',    property.id, propertyTz, targetDate);

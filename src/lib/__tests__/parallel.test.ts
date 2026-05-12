@@ -4,7 +4,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { runWithConcurrency } from '../parallel';
+import { runWithConcurrency, applyShardFilter } from '../parallel';
 
 describe('runWithConcurrency', () => {
   it('returns one outcome per input, in input order', async () => {
@@ -72,5 +72,79 @@ describe('runWithConcurrency', () => {
     const outcomes = await runWithConcurrency([1, 2, 3], async (n) => n, 0);
     assert.equal(outcomes.length, 3);
     for (const o of outcomes) assert.equal(o.ok, true);
+  });
+});
+
+describe('applyShardFilter', () => {
+  const props = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+
+  it('default (no params) returns all items, marked as shard 1/1', () => {
+    const result = applyShardFilter(props, new URLSearchParams());
+    assert.equal(result.items.length, 8);
+    assert.equal(result.shardCount, 1);
+    assert.equal(result.shardOffset, 0);
+    assert.match(result.header, /no sharding/);
+  });
+
+  it('shard_count=4 with offset=0 returns indices 0,4 (every 4th)', () => {
+    const result = applyShardFilter(
+      props,
+      new URLSearchParams('shard_offset=0&shard_count=4'),
+    );
+    assert.deepEqual(result.items, ['a', 'e']);
+    assert.equal(result.shardCount, 4);
+    assert.equal(result.shardOffset, 0);
+  });
+
+  it('shard_count=4 with offset=2 returns indices 2,6', () => {
+    const result = applyShardFilter(
+      props,
+      new URLSearchParams('shard_offset=2&shard_count=4'),
+    );
+    assert.deepEqual(result.items, ['c', 'g']);
+  });
+
+  it('all shards together cover every item exactly once', () => {
+    const seen = new Set<string>();
+    for (let i = 0; i < 4; i++) {
+      const result = applyShardFilter(
+        props,
+        new URLSearchParams(`shard_offset=${i}&shard_count=4`),
+      );
+      for (const item of result.items) {
+        assert.ok(!seen.has(item), `${item} appeared in two shards — partition broken`);
+        seen.add(item);
+      }
+    }
+    assert.equal(seen.size, props.length, 'every item must land in exactly one shard');
+  });
+
+  it('clamps invalid offset (>= count) to 0', () => {
+    const result = applyShardFilter(
+      props,
+      new URLSearchParams('shard_offset=10&shard_count=4'),
+    );
+    // offset >= count is invalid; falls back to 0
+    assert.equal(result.shardOffset, 0);
+    assert.deepEqual(result.items, ['a', 'e']);
+  });
+
+  it('clamps shard_count to [1, 64]', () => {
+    const tooLarge = applyShardFilter(
+      props,
+      new URLSearchParams('shard_count=999'),
+    );
+    assert.equal(tooLarge.shardCount, 1, 'shard_count > 64 clamps to 1 (no sharding)');
+    const zero = applyShardFilter(props, new URLSearchParams('shard_count=0'));
+    assert.equal(zero.shardCount, 1, 'shard_count < 1 clamps to 1');
+  });
+
+  it('handles empty input array under any shard config', () => {
+    const result = applyShardFilter<string>(
+      [],
+      new URLSearchParams('shard_offset=2&shard_count=4'),
+    );
+    assert.deepEqual(result.items, []);
+    assert.equal(result.shardCount, 4);
   });
 });

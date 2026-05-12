@@ -28,13 +28,14 @@ import { requireCronSecret } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { runWithConcurrency } from '@/lib/parallel';
+import { runWithConcurrency, applyShardFilter } from '@/lib/parallel';
 import { listMlShardUrls, resolveMlShardUrl } from '@/lib/ml-routing';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+// Bumped from 60 (Hobby cap) to 300 (Pro cap). Fleet-scale headroom.
+export const maxDuration = 300;
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
   const requestId = getOrMintRequestId(req);
@@ -52,20 +53,28 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     });
   }
 
-  // Pull all properties (currently 1; scales when Reeyen sells property #2).
+  // Pull all properties in stable order so sharding is deterministic.
   const { data: properties, error } = await supabaseAdmin
     .from('properties')
-    .select('id, name');
+    .select('id, name')
+    .order('id');
   if (error) {
     log.error('ml-train-demand: properties read failed', { requestId, err: error as unknown as Error });
     return NextResponse.json({ ok: false, error: errToString(error) }, { status: 500 });
   }
 
+  // Sharding for fleet scale: ?shard_offset=K&shard_count=N splits the
+  // property fanout across N parallel GH Actions jobs. Defaults to no
+  // sharding.
+  const url = new URL(req.url);
+  const sharded = applyShardFilter(properties ?? [], url.searchParams);
+  log.info('ml-train-demand: start', { requestId, shardHeader: sharded.header });
+
   // Parallel fan-out with a small concurrency cap. Training is CPU-bound on
   // the Railway ML side (XGBoost fit), so going wide-open isn't actually
   // faster and risks OOM on the small instance. Cap at 5 — gives ~5x
   // speedup vs the old sequential loop while keeping memory bounded.
-  const outcomes = await runWithConcurrency(properties ?? [], async (property) => {
+  const outcomes = await runWithConcurrency(sharded.items, async (property) => {
     const t0 = Date.now();
     // Resolve per-property so multi-shard deploys route to the right
     // Railway service. Falls back to ML_SERVICE_URL on single-shard.
