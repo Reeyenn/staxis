@@ -83,6 +83,33 @@ export async function POST(req: NextRequest) {
   if (new Date(row.expires_at).getTime() <= Date.now()) return err('Code has expired', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
   if (row.used_count >= row.max_uses) return err('Code has been used up', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
 
+  // ── Atomic CAS increment (May 2026 audit pass-4) ──────────────────────
+  // Old code did SELECT-then-UPDATE with the increment at the END after
+  // account creation. Two parallel signups with the same code (max_uses=1)
+  // could both pass the SELECT guard at line above, both create accounts,
+  // then both try to increment. Net effect: one valid code consumed twice;
+  // an unintended second user joins the hotel with a "used-up" invite.
+  //
+  // Fix: increment used_count atomically RIGHT NOW with optimistic-
+  // concurrency on the current used_count value. If another concurrent
+  // request beat us to the increment, our .eq('used_count', row.used_count)
+  // matches zero rows; we return 409 without creating an account. Auth
+  // creation happens AFTER the increment succeeds — and if auth creation
+  // fails, we decrement to release the slot.
+  const { data: cas, error: casErr } = await supabaseAdmin
+    .from('hotel_join_codes')
+    .update({ used_count: row.used_count + 1 })
+    .eq('id', row.id)
+    .eq('used_count', row.used_count)
+    .select('id')
+    .maybeSingle();
+  if (casErr || !cas) {
+    return err(
+      'Code is being used by another signup — refresh and try again',
+      { requestId, status: 409, code: ApiErrorCode.IdempotencyConflict },
+    );
+  }
+
   // Pick the role:
   //   - Legacy code with row.role set → use it (back-compat).
   //   - New-flow code (row.role null) → require role from the payload,
@@ -123,6 +150,22 @@ export async function POST(req: NextRequest) {
   // the regular /signin path also requires an OTP for untrusted browsers.
   // So email-ownership is still proven before the user gets in; the only
   // thing email_confirm:true changes is which Supabase template is sent.
+  // Helper: decrement used_count to release the slot we reserved above.
+  // Used when account creation fails — without it, a transient auth
+  // failure would permanently burn one slot of the join code.
+  const releaseSlot = async () => {
+    try {
+      await supabaseAdmin
+        .from('hotel_join_codes')
+        .update({ used_count: row.used_count })
+        .eq('id', row.id)
+        .eq('used_count', row.used_count + 1);
+    } catch {
+      // best-effort; the slot stays consumed for the rest of the hour
+      // bucket if this race-rare path also flakes
+    }
+  };
+
   const { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
     email: normalizedEmail,
     password,
@@ -131,6 +174,7 @@ export async function POST(req: NextRequest) {
   });
   if (authErr || !authData.user) {
     console.error('[use-join-code] createUser failed', authErr);
+    await releaseSlot();
     return err(authErr?.message ?? 'Failed to create account', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
@@ -145,13 +189,10 @@ export async function POST(req: NextRequest) {
   if (insErr) {
     console.error('[use-join-code] accounts insert failed', insErr);
     await supabaseAdmin.auth.admin.deleteUser(authData.user.id).catch(() => {});
+    await releaseSlot();
     return err('Failed to create account', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
-
-  await supabaseAdmin
-    .from('hotel_join_codes')
-    .update({ used_count: row.used_count + 1 })
-    .eq('id', row.id);
+  // Slot already incremented via the CAS at the top.
 
   await writeAudit({
     action: 'join_code.use',
