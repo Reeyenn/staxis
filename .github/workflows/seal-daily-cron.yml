@@ -1,0 +1,58 @@
+name: Seal Daily Cron
+
+# Hourly trigger for /api/cron/seal-daily. Each tick walks every active
+# property and, IF the property's local clock has crossed past 01:00,
+# seals yesterday's data:
+#
+#   1. Auto-marks attendance for any scheduled staff who has no manual
+#      mark, based on whether they completed cleaning_events that day.
+#      This unblocks demand/supply ML training (which filters on
+#      labels_complete = true — every scheduled staff has a mark).
+#
+#   2. Upserts a daily_logs row aggregating the day's plan_snapshot +
+#      cleaning_events totals (occupancy, rooms completed, total minutes).
+#
+# Why hourly: with hotels spread across timezones, a single fixed UTC time
+# only catches one timezone band. Hourly with idempotent upserts catches
+# every band and re-runs the same property are no-ops.
+#
+# Failure semantics: the cron route returns ok:false if ANY property
+# errored during sealing (per the "no more silent-success" pattern we
+# adopted in ml-cron.yml). The jq check below enforces it — a single
+# property failure turns this workflow red so we notice.
+
+on:
+  schedule:
+    - cron: '5 * * * *'   # 5 minutes past every hour
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  seal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Hit /api/cron/seal-daily
+        run: |
+          set -euo pipefail
+
+          RESPONSE=$(curl \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --max-time 120 \
+            --retry 2 \
+            --retry-delay 5 \
+            --retry-connrefused \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://getstaxis.com/api/cron/seal-daily")
+
+          echo "$RESPONSE" | tee /tmp/result.json
+
+          # Tight check: workflow turns red if outer ok is false OR any
+          # per-property result had an error. Same defensive pattern as
+          # ml-cron.yml (introduced May 2026 to close the silent-success
+          # bug class).
+          jq -e '.ok == true and (.errored // 0) == 0' /tmp/result.json

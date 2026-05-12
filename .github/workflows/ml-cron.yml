@@ -42,7 +42,36 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             "https://getstaxis.com/api/cron/ml-train-demand" | tee /tmp/result.json
           # Fail the job if the response indicates a problem
-          jq -e '.ok == true' /tmp/result.json
+          # Tighter check: outer ok must be true AND every per-property
+          # result must report a non-failing status. The naive ".ok ==
+          # true" check used to pass even when 100% of inner ML calls
+          # returned status=error or status=unknown — the outer envelope
+          # was just an aggregator. May 2026 audit: this silent-success
+          # bug had hidden a date-field Pydantic mismatch for weeks.
+          # The expression:
+          #   - .ok must be true
+          #   - .results (if present) must contain no entry with status
+          #     in {error, unknown}.
+          #   - top-level fields like .demand / .supply / .optimizer / .result
+          #     (used by run-inference + aggregate-priors) must not have
+          #     status=error either.
+          # If .results is absent (single-shot endpoints), only the outer
+          # checks apply.
+          jq -e '
+            (.ok == true) and
+            (
+              (.results // []) | map(
+                (.status // "ok") as $s | $s != "error" and $s != "unknown"
+              ) | all
+            ) and
+            (
+              (.results // []) | map(
+                ((.demand // {}).status // "ok") != "error" and
+                ((.supply // {}).status // "ok") != "error" and
+                ((.optimizer // {}).status // "ok") != "error"
+              ) | all
+            )
+          ' /tmp/result.json
 
   train-supply:
     if: github.event.schedule == '30 8 * * 0' || github.event_name == 'workflow_dispatch'
@@ -53,7 +82,36 @@ jobs:
           curl -fsS --retry 2 --retry-delay 5 \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             "https://getstaxis.com/api/cron/ml-train-supply" | tee /tmp/result.json
-          jq -e '.ok == true' /tmp/result.json
+          # Tighter check: outer ok must be true AND every per-property
+          # result must report a non-failing status. The naive ".ok ==
+          # true" check used to pass even when 100% of inner ML calls
+          # returned status=error or status=unknown — the outer envelope
+          # was just an aggregator. May 2026 audit: this silent-success
+          # bug had hidden a date-field Pydantic mismatch for weeks.
+          # The expression:
+          #   - .ok must be true
+          #   - .results (if present) must contain no entry with status
+          #     in {error, unknown}.
+          #   - top-level fields like .demand / .supply / .optimizer / .result
+          #     (used by run-inference + aggregate-priors) must not have
+          #     status=error either.
+          # If .results is absent (single-shot endpoints), only the outer
+          # checks apply.
+          jq -e '
+            (.ok == true) and
+            (
+              (.results // []) | map(
+                (.status // "ok") as $s | $s != "error" and $s != "unknown"
+              ) | all
+            ) and
+            (
+              (.results // []) | map(
+                ((.demand // {}).status // "ok") != "error" and
+                ((.supply // {}).status // "ok") != "error" and
+                ((.optimizer // {}).status // "ok") != "error"
+              ) | all
+            )
+          ' /tmp/result.json
 
   train-inventory:
     if: github.event.schedule == '0 9 * * 0' || github.event_name == 'workflow_dispatch'
@@ -64,7 +122,36 @@ jobs:
           curl -fsS --retry 2 --retry-delay 5 \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             "https://getstaxis.com/api/cron/ml-train-inventory" | tee /tmp/result.json
-          jq -e '.ok == true' /tmp/result.json
+          # Tighter check: outer ok must be true AND every per-property
+          # result must report a non-failing status. The naive ".ok ==
+          # true" check used to pass even when 100% of inner ML calls
+          # returned status=error or status=unknown — the outer envelope
+          # was just an aggregator. May 2026 audit: this silent-success
+          # bug had hidden a date-field Pydantic mismatch for weeks.
+          # The expression:
+          #   - .ok must be true
+          #   - .results (if present) must contain no entry with status
+          #     in {error, unknown}.
+          #   - top-level fields like .demand / .supply / .optimizer / .result
+          #     (used by run-inference + aggregate-priors) must not have
+          #     status=error either.
+          # If .results is absent (single-shot endpoints), only the outer
+          # checks apply.
+          jq -e '
+            (.ok == true) and
+            (
+              (.results // []) | map(
+                (.status // "ok") as $s | $s != "error" and $s != "unknown"
+              ) | all
+            ) and
+            (
+              (.results // []) | map(
+                ((.demand // {}).status // "ok") != "error" and
+                ((.supply // {}).status // "ok") != "error" and
+                ((.optimizer // {}).status // "ok") != "error"
+              ) | all
+            )
+          ' /tmp/result.json
 
   run-inference:
     if: github.event.schedule == '30 10 * * *' || github.event_name == 'workflow_dispatch'
@@ -75,7 +162,36 @@ jobs:
           curl -fsS --retry 2 --retry-delay 5 \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             "https://getstaxis.com/api/cron/ml-run-inference" | tee /tmp/result.json
-          jq -e '.ok == true' /tmp/result.json
+          # Tighter check: outer ok must be true AND every per-property
+          # result must report a non-failing status. The naive ".ok ==
+          # true" check used to pass even when 100% of inner ML calls
+          # returned status=error or status=unknown — the outer envelope
+          # was just an aggregator. May 2026 audit: this silent-success
+          # bug had hidden a date-field Pydantic mismatch for weeks.
+          # The expression:
+          #   - .ok must be true
+          #   - .results (if present) must contain no entry with status
+          #     in {error, unknown}.
+          #   - top-level fields like .demand / .supply / .optimizer / .result
+          #     (used by run-inference + aggregate-priors) must not have
+          #     status=error either.
+          # If .results is absent (single-shot endpoints), only the outer
+          # checks apply.
+          jq -e '
+            (.ok == true) and
+            (
+              (.results // []) | map(
+                (.status // "ok") as $s | $s != "error" and $s != "unknown"
+              ) | all
+            ) and
+            (
+              (.results // []) | map(
+                ((.demand // {}).status // "ok") != "error" and
+                ((.supply // {}).status // "ok") != "error" and
+                ((.optimizer // {}).status // "ok") != "error"
+              ) | all
+            )
+          ' /tmp/result.json
 
   predict-inventory:
     if: github.event.schedule == '0 11 * * *' || github.event_name == 'workflow_dispatch'
@@ -86,7 +202,36 @@ jobs:
           curl -fsS --retry 2 --retry-delay 5 \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             "https://getstaxis.com/api/cron/ml-predict-inventory" | tee /tmp/result.json
-          jq -e '.ok == true' /tmp/result.json
+          # Tighter check: outer ok must be true AND every per-property
+          # result must report a non-failing status. The naive ".ok ==
+          # true" check used to pass even when 100% of inner ML calls
+          # returned status=error or status=unknown — the outer envelope
+          # was just an aggregator. May 2026 audit: this silent-success
+          # bug had hidden a date-field Pydantic mismatch for weeks.
+          # The expression:
+          #   - .ok must be true
+          #   - .results (if present) must contain no entry with status
+          #     in {error, unknown}.
+          #   - top-level fields like .demand / .supply / .optimizer / .result
+          #     (used by run-inference + aggregate-priors) must not have
+          #     status=error either.
+          # If .results is absent (single-shot endpoints), only the outer
+          # checks apply.
+          jq -e '
+            (.ok == true) and
+            (
+              (.results // []) | map(
+                (.status // "ok") as $s | $s != "error" and $s != "unknown"
+              ) | all
+            ) and
+            (
+              (.results // []) | map(
+                ((.demand // {}).status // "ok") != "error" and
+                ((.supply // {}).status // "ok") != "error" and
+                ((.optimizer // {}).status // "ok") != "error"
+              ) | all
+            )
+          ' /tmp/result.json
 
   aggregate-priors:
     if: github.event.schedule == '0 12 * * *' || github.event_name == 'workflow_dispatch'
@@ -97,4 +242,33 @@ jobs:
           curl -fsS --retry 2 --retry-delay 5 \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             "https://getstaxis.com/api/cron/ml-aggregate-priors" | tee /tmp/result.json
-          jq -e '.ok == true' /tmp/result.json
+          # Tighter check: outer ok must be true AND every per-property
+          # result must report a non-failing status. The naive ".ok ==
+          # true" check used to pass even when 100% of inner ML calls
+          # returned status=error or status=unknown — the outer envelope
+          # was just an aggregator. May 2026 audit: this silent-success
+          # bug had hidden a date-field Pydantic mismatch for weeks.
+          # The expression:
+          #   - .ok must be true
+          #   - .results (if present) must contain no entry with status
+          #     in {error, unknown}.
+          #   - top-level fields like .demand / .supply / .optimizer / .result
+          #     (used by run-inference + aggregate-priors) must not have
+          #     status=error either.
+          # If .results is absent (single-shot endpoints), only the outer
+          # checks apply.
+          jq -e '
+            (.ok == true) and
+            (
+              (.results // []) | map(
+                (.status // "ok") as $s | $s != "error" and $s != "unknown"
+              ) | all
+            ) and
+            (
+              (.results // []) | map(
+                ((.demand // {}).status // "ok") != "error" and
+                ((.supply // {}).status // "ok") != "error" and
+                ((.optimizer // {}).status // "ok") != "error"
+              ) | all
+            )
+          ' /tmp/result.json

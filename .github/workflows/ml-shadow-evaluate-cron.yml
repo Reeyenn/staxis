@@ -46,9 +46,14 @@ jobs:
             -H "Authorization: Bearer ${CRON_SECRET:-}" \
             "$URL")
 
-          echo "Response: $RESPONSE"
+          echo "$RESPONSE" | tee /tmp/result.json
 
-          echo "$RESPONSE" | grep -q '"ok":true' || {
-            echo "::error::ml-shadow-evaluate returned ok:false or malformed JSON"
-            exit 1
-          }
+          # Tighter check (May 2026 audit): the route returns ok:true even
+          # when individual shadow evaluations errored — silent-success
+          # bug class. Fail the workflow when any per-shadow verdict is
+          # "error". 'promoted' and 'rejected' are both valid outcomes;
+          # only 'error' means we couldn't reach a verdict.
+          jq -e '
+            (.ok == true) and
+            ((.results // []) | map((.verdict // "ok") != "error") | all)
+          ' /tmp/result.json
