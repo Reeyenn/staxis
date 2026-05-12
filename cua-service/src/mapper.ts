@@ -79,6 +79,32 @@ interface MapperOptions {
   // For Claude API spend attribution. Both nullable so dev/test runs work.
   propertyId?: string | null;
   jobId?: string | null;
+  /**
+   * Optional abort signal — passed to every anthropic.beta.messages.create()
+   * call so the runJob timeout can actually cancel in-flight Claude requests
+   * instead of letting them run to completion past the deadline. Added
+   * 2026-05-12 after Codex audit flagged that timeouts only marked the DB
+   * failed without interrupting the runaway work.
+   */
+  signal?: AbortSignal;
+}
+
+/**
+ * Pre-call budget check. Each `mapAction()` step loop can fire 60-80
+ * Anthropic calls before mapPMS's between-phase guard runs again — a
+ * stuck phase could blow past CUA_JOB_COST_CAP_MICROS by several dollars.
+ * Codex audit 2026-05-12. Cheap (~50ms Supabase query) vs. each Anthropic
+ * call (~3-30s + cost), so it's worth running before every turn.
+ */
+async function isJobOverBudget(
+  jobId: string | null,
+): Promise<{ over: false } | { over: true; spentMicros: number; capMicros: number }> {
+  if (!jobId) return { over: false };
+  const spentMicros = await getJobCostMicros(jobId);
+  if (spentMicros >= JOB_COST_CAP_MICROS) {
+    return { over: true, spentMicros, capMicros: JOB_COST_CAP_MICROS };
+  }
+  return { over: false };
 }
 
 export type MapperResult =
@@ -99,6 +125,7 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
     const loginResult = await mapLogin(page, opts.credentials, {
       propertyId: opts.propertyId ?? null,
       jobId: opts.jobId ?? null,
+      signal: opts.signal,
     });
     if (!loginResult.ok) {
       return { ok: false, userMessage: loginResult.userMessage, detail: loginResult.detail };
@@ -153,6 +180,7 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
       credentials: opts.credentials,
       propertyId: opts.propertyId ?? null,
       jobId: opts.jobId ?? null,
+      signal: opts.signal,
     });
     if (housekeepingReport.ok) actions.getRoomStatus = housekeepingReport.action;
     else log.warn('action mapping failed', { actionName: 'getRoomStatus', reason: housekeepingReport.reason, finalUrl: housekeepingReport.finalUrl });
@@ -171,6 +199,7 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
       credentials: opts.credentials,
       propertyId: opts.propertyId ?? null,
       jobId: opts.jobId ?? null,
+      signal: opts.signal,
     });
     if (arrivals.ok) actions.getArrivals = arrivals.action;
     else log.warn('action mapping failed', { actionName: 'getArrivals', reason: arrivals.reason, finalUrl: arrivals.finalUrl });
@@ -189,6 +218,7 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
       credentials: opts.credentials,
       propertyId: opts.propertyId ?? null,
       jobId: opts.jobId ?? null,
+      signal: opts.signal,
     });
     if (departures.ok) actions.getDepartures = departures.action;
     else log.warn('action mapping failed', { actionName: 'getDepartures', reason: departures.reason, finalUrl: departures.finalUrl });
@@ -207,6 +237,7 @@ export async function mapPMS(opts: MapperOptions): Promise<MapperResult> {
       credentials: opts.credentials,
       propertyId: opts.propertyId ?? null,
       jobId: opts.jobId ?? null,
+      signal: opts.signal,
     });
     if (staff.ok) actions.getStaffRoster = staff.action;
     else log.warn('action mapping failed', { actionName: 'getStaffRoster', reason: staff.reason, finalUrl: staff.finalUrl });
@@ -258,7 +289,7 @@ interface LoginMapFailure {
 async function mapLogin(
   page: Page,
   creds: PMSCredentials,
-  ctx: { propertyId: string | null; jobId: string | null },
+  ctx: { propertyId: string | null; jobId: string | null; signal?: AbortSignal },
 ): Promise<LoginMapResult | LoginMapFailure> {
   await page.goto(creds.loginUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
   await page.waitForTimeout(1500);
@@ -317,6 +348,25 @@ async function mapLogin(
         detail: { phase: 'login_mapping', reason: 'wallclock_budget_exceeded' },
       };
     }
+    // Per-turn budget check — see isJobOverBudget() comment.
+    {
+      const budget = await isJobOverBudget(ctx.jobId);
+      if (budget.over) {
+        log.warn('login mapper aborting — cumulative cost cap hit', { jobId: ctx.jobId, ...budget });
+        return {
+          ok: false,
+          userMessage:
+            'This mapping run is taking longer than expected. We stopped it to keep costs in check — ' +
+            'please try again or contact support.',
+          detail: {
+            phase: 'login_mapping',
+            reason: 'cost_cap_exceeded',
+            spent_micros: budget.spentMicros,
+            cap_micros: budget.capMicros,
+          },
+        };
+      }
+    }
 
     // Beta-API call so we can attach `cache_control` to the system block.
     // The system prompt + tool definitions are stable across the entire
@@ -337,7 +387,7 @@ async function mapLogin(
       tools: [BROWSER_TOOL as unknown as Anthropic.Beta.Messages.BetaToolUnion],
       messages: truncateOldHistory(messages, HISTORY_KEEP_RECENT) as Anthropic.Beta.Messages.BetaMessageParam[],
       betas: ['prompt-caching-2024-07-31'],
-    });
+    }, ctx.signal ? { signal: ctx.signal } : undefined);
 
     totalInputTokens += response.usage?.input_tokens ?? 0;
     totalOutputTokens += response.usage?.output_tokens ?? 0;
@@ -438,6 +488,7 @@ async function mapAction(args: {
   credentials: PMSCredentials;
   propertyId: string | null;
   jobId: string | null;
+  signal?: AbortSignal;
 }): Promise<ActionMapSuccess | ActionMapFailure> {
   if (args.page.url() !== args.postLoginUrl) {
     await args.page.goto(args.postLoginUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {});
@@ -502,6 +553,16 @@ async function mapAction(args: {
     if (Date.now() - phaseStartedAt > PHASE_WALLCLOCK_BUDGET_MS) {
       return { ok: false, reason: 'wallclock budget exceeded', finalUrl: args.page.url() };
     }
+    // Per-turn budget check — see isJobOverBudget() comment.
+    {
+      const budget = await isJobOverBudget(args.jobId);
+      if (budget.over) {
+        log.warn('action mapper aborting — cumulative cost cap hit', {
+          jobId: args.jobId, actionName: args.actionName, ...budget,
+        });
+        return { ok: false, reason: 'cost cap hit', finalUrl: args.page.url() };
+      }
+    }
 
     // Beta-API call so we can attach `cache_control` to the system block.
     // The system prompt + tool definitions are stable across the entire
@@ -522,7 +583,7 @@ async function mapAction(args: {
       tools: [BROWSER_TOOL as unknown as Anthropic.Beta.Messages.BetaToolUnion],
       messages: truncateOldHistory(messages, HISTORY_KEEP_RECENT) as Anthropic.Beta.Messages.BetaMessageParam[],
       betas: ['prompt-caching-2024-07-31'],
-    });
+    }, args.signal ? { signal: args.signal } : undefined);
 
     totalInputTokens += response.usage?.input_tokens ?? 0;
 
@@ -650,7 +711,7 @@ function truncateOldHistory(
   const trimText = (text: string) => {
     if (text.length <= READ_PAGE_TRUNCATE_CHARS) return text;
     const head = text.slice(0, READ_PAGE_TRUNCATE_CHARS);
-    return `${head}\n\n[…truncated ${text.length - READ_PAGE_TRUNCATE_CHARS} chars — page is large; use \`find\` or \`execute_js\` for narrower searches]`;
+    return `${head}\n\n[…truncated ${text.length - READ_PAGE_TRUNCATE_CHARS} chars — page is large; use \`find\` for narrower searches]`;
   };
 
   const reversed = [...messages].reverse().map((msg) => {

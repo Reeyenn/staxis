@@ -54,8 +54,12 @@ export const BROWSER_TOOL_DESCRIPTION =
   `- scroll_to: Scroll an element (by ref) into view\n` +
   `- form_input: Set the value of a form input directly — pass {ref, value}\n` +
   `- find: Search for elements by text/intent (returns matching refs)\n` +
-  `- execute_js: Run JavaScript in the page (last expression's value is returned)\n` +
   `- wait: Wait N seconds for a slow page`;
+// 2026-05-12: `execute_js` was removed. A hostile PMS page could prompt-
+// inject the agent to run exfiltration JavaScript inside the authenticated
+// PMS session (read DOM, call fetch() to attacker-controlled endpoints).
+// Codex audit flagged this as a high-severity sandbox escape. Use
+// `find`, `read_page`, and `get_page_text` for any DOM exploration.
 
 export const BROWSER_TOOL_INPUT_SCHEMA = {
   type: 'object',
@@ -78,7 +82,6 @@ export const BROWSER_TOOL_INPUT_SCHEMA = {
         'get_page_text',
         'wait',
         'form_input',
-        'execute_js',
       ],
       description:
         'The action to perform. After navigate, always call read_page to get ' +
@@ -87,9 +90,8 @@ export const BROWSER_TOOL_INPUT_SCHEMA = {
     text: {
       type: 'string',
       description:
-        'Required for: navigate (URL), type (text), key (key combo), find (search query), ' +
-        'execute_js (JS code). Optional for read_page ("interactive" filter) or click ' +
-        '(modifier keys held during click).',
+        'Required for: navigate (URL), type (text), key (key combo), find (search query). ' +
+        'Optional for read_page ("interactive" filter) or click (modifier keys held during click).',
     },
     ref: {
       type: 'string',
@@ -157,8 +159,7 @@ export type BrowserAction =
   | { action: 'find'; text: string }
   | { action: 'get_page_text' }
   | { action: 'wait'; duration?: number }
-  | { action: 'form_input'; ref: string; value: string | number | boolean }
-  | { action: 'execute_js'; text: string };
+  | { action: 'form_input'; ref: string; value: string | number | boolean };
 
 export interface BrowserActionResult {
   /** Text to send back as the tool_result body. */
@@ -408,13 +409,6 @@ export async function executeBrowserAction(
         return {
           output: `Set ${action.ref} to ${value === creds.password ? '<password>' : value} (no stable selector — replay may need a re-map)`,
         };
-      }
-
-      case 'execute_js': {
-        // Wrap in async IIFE so the agent can hand us either expressions or
-        // statements. The string form of evaluate accepts top-level await.
-        const result = await page.evaluate(`(async () => { ${action.text} })()`);
-        return { output: typeof result === 'object' ? JSON.stringify(result) : String(result) };
       }
 
       default: {

@@ -41,18 +41,18 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
   // mark it failed and let the next iteration of pollLoop pick up new
   // work. Without this a single bad PMS could brick the worker.
   //
-  // Note: we await markFailed inside the handler so the DB write
-  // completes before the next poll cycle picks up new work. The
-  // outstanding async work (Playwright + Claude calls) keeps running
-  // until it naturally finishes — there's no clean way to interrupt
-  // them. The `timedOut` flag is checked at every phase boundary so
-  // we don't do useless saves after the deadline. The DB-level
-  // .in('status', RUNNING_STATUSES) guard on every write below means
-  // a late-arriving markComplete cannot overwrite this markFailed —
-  // first writer to a terminal state wins.
+  // 2026-05-12: Codex audit flagged that the timeout previously only
+  // wrote to the DB — the actual Playwright + Claude work kept running
+  // (and kept billing Anthropic) until it finished naturally. We now
+  // hold an AbortController and call `abort()` on timeout, threading
+  // its signal into mapPMS so anthropic.beta.messages.create() calls
+  // get cancelled immediately. Playwright work still finishes its
+  // current page op, but the expensive runaway path is closed.
+  const abortController = new AbortController();
   const timeout = setTimeout(async () => {
     timedOut = true;
     log.warn('job exceeded time limit', { jobId, limitMs: JOB_TIMEOUT_MS });
+    abortController.abort('job timeout');
     await markFailed(jobId, workerId, 'Job exceeded time limit', { kind: 'timeout', limitMs: JOB_TIMEOUT_MS });
   }, JOB_TIMEOUT_MS);
 
@@ -116,6 +116,7 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
         credentials,
         propertyId: job.property_id,
         jobId,
+        signal: abortController.signal,
         onProgress: (step, pct) => updateProgress(jobId, workerId, 'mapping', step, pct).catch((err) =>
           log.warn('progress update failed', {
             jobId,
