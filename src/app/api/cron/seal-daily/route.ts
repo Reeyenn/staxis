@@ -331,15 +331,21 @@ async function sealOne(
   // drift (e.g. a row deleted from attendance_marks would update the view
   // but not the daily_log copy). Leave daily_logs.actual_staff null; UIs
   // that want it read the view.
+  //
+  // Integer-typed columns get Math.round'd. plan_snapshots stores some
+  // counts as numeric (legacy) which can come back as floats with
+  // floating-point artifacts (e.g. 9.139999999999999). daily_logs uses
+  // integer columns for these — without the round, the insert fails
+  // with "invalid input syntax for type integer".
   const row: Record<string, unknown> = {
     property_id: p.id,
     date: targetDate,
-    occupied,
-    checkouts: plan ? Number(plan.checkouts) || 0 : null,
-    stayovers: plan ? Number(plan.stayovers) || 0 : null,
-    rooms_completed: roomsCompleted,
+    occupied: occupied !== null ? Math.round(occupied) : null,
+    checkouts: plan ? Math.round(Number(plan.checkouts) || 0) : null,
+    stayovers: plan ? Math.round(Number(plan.stayovers) || 0) : null,
+    rooms_completed: Math.round(roomsCompleted),
     avg_turnaround_minutes: avgTurnaround,
-    total_minutes: totalMinutes || null,
+    total_minutes: totalMinutes > 0 ? Math.round(totalMinutes) : null,
     recommended_staff: plan ? plan.recommended_hks : null,
   };
 
