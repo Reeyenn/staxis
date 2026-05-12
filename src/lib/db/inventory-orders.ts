@@ -32,11 +32,22 @@ export async function addInventoryOrder(
   if (error) { logErr('addInventoryOrder', error); throw error; }
 
   // Stamp the item with last_ordered_at so the UI can show "ordered 3 days ago".
+  //
+  // 2026-05-12 (Codex audit): previously this update's result was thrown
+  // away. If the stamp failed, the order ledger entry was fine but the
+  // reorder UI kept showing the item as "never ordered" with the old
+  // unit cost — silent inconsistency. Now we capture and log; we don't
+  // throw, because the order itself is durably saved and a stale stamp
+  // is a recoverable UI issue (not a blocking failure for the caller).
   if (order.itemId) {
     const stampRow: Record<string, unknown> = { last_ordered_at: new Date().toISOString() };
     if (order.vendorName) stampRow.vendor_name = order.vendorName;
     if (order.unitCost != null) stampRow.unit_cost = order.unitCost;
-    await supabase.from('inventory').update(stampRow).eq('id', order.itemId);
+    const { error: stampErr } = await supabase
+      .from('inventory').update(stampRow).eq('id', order.itemId);
+    if (stampErr) {
+      logErr('addInventoryOrder: stamp update failed (non-fatal)', stampErr);
+    }
   }
 
   return String(inserted.id);

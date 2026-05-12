@@ -84,17 +84,32 @@ export async function assignRoomDeepClean(
 ): Promise<void> {
   const today = new Date().toLocaleDateString('en-CA');
   // Preserve prior lastDeepClean if the row already exists.
-  const { data: existing } = await supabase
+  //
+  // 2026-05-12 (Codex audit): previously we ignored the read error.
+  // On a transient/RLS read failure `existing` came back null and the
+  // upsert wrote `last_deep_clean: ''`, silently wiping any prior
+  // history. Treat read failure as fatal (caller decides retry); only
+  // overwrite when we successfully observed "no prior row".
+  const { data: existing, error: readErr } = await supabase
     .from('deep_clean_records').select('last_deep_clean')
     .eq('property_id', pid).eq('room_number', roomNumber).maybeSingle();
-  const row = {
+  if (readErr) {
+    logErr('assignRoomDeepClean: read existing failed', readErr);
+    throw readErr;
+  }
+  const row: Record<string, unknown> = {
     property_id: pid,
     room_number: roomNumber,
-    last_deep_clean: (existing?.last_deep_clean as string) ?? '',
     cleaned_by_team: team,
     status: 'in_progress',
     assigned_at: today,
   };
+  // Only include last_deep_clean if we actually have one — never blank
+  // out the column from this code path. If the row doesn't exist yet,
+  // the upsert leaves last_deep_clean to its column default.
+  if (existing?.last_deep_clean) {
+    row.last_deep_clean = existing.last_deep_clean as string;
+  }
   const { error } = await supabase
     .from('deep_clean_records').upsert(row, { onConflict: 'property_id,room_number' });
   if (error) { logErr('assignRoomDeepClean', error); throw error; }

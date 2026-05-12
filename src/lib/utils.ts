@@ -121,9 +121,22 @@ export function timeAgo(date: Date | null | undefined): string {
   return `${days}d ago`;
 }
 
-/** Validate YYYY-MM-DD date string */
+/**
+ * Validate YYYY-MM-DD date string.
+ *
+ * 2026-05-12 (Codex audit): previously this only regex-checked the shape
+ * and let `new Date(s)` parse it. JavaScript silently normalises invalid
+ * calendar dates — `new Date('2026-02-31')` becomes March 3 — so impossible
+ * dates passed the !isNaN check and flowed into shift/event validators as
+ * "valid". Now we round-trip through the parsed Date and require the
+ * components to match the input exactly.
+ */
 export function isValidDateStr(s: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(new Date(s).getTime());
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const d = new Date(s + 'T00:00:00Z');
+  if (isNaN(d.getTime())) return false;
+  const round = `${d.getUTCFullYear().toString().padStart(4, '0')}-${(d.getUTCMonth() + 1).toString().padStart(2, '0')}-${d.getUTCDate().toString().padStart(2, '0')}`;
+  return round === s;
 }
 
 /**

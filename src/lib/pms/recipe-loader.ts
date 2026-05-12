@@ -65,34 +65,48 @@ export async function saveDraftRecipe(args: {
   learnedByPropertyId: string;
   notes?: string;
 }): Promise<{ id: string; version: number } | { error: string }> {
-  // Determine the next version: max(version)+1 across all rows for this PMS.
-  const { data: latest } = await supabaseAdmin
-    .from('pms_recipes')
-    .select('version')
-    .eq('pms_type', args.pmsType)
-    .order('version', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  // 2026-05-12 (Codex audit): two concurrent CUA mapping runs for the same
+  // pms_type both saw version N and tried to insert N+1, causing the
+  // pms_recipes_pms_type_version_key unique constraint (migration 0033) to
+  // reject one and lose its work. Retry-with-fresh-lookup on the
+  // unique-violation code (Postgres 23505) handles bounded contention
+  // without needing a sequence migration.
+  const MAX_ATTEMPTS = 5;
+  let lastErr: { message?: string } | null = null;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const { data: latest } = await supabaseAdmin
+      .from('pms_recipes')
+      .select('version')
+      .eq('pms_type', args.pmsType)
+      .order('version', { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-  const nextVersion = ((latest?.version as number) ?? 0) + 1;
+    const nextVersion = ((latest?.version as number) ?? 0) + 1;
 
-  const { data, error } = await supabaseAdmin
-    .from('pms_recipes')
-    .insert({
-      pms_type: args.pmsType,
-      version: nextVersion,
-      recipe: args.recipe,
-      status: 'draft',
-      learned_by_property_id: args.learnedByPropertyId,
-      notes: args.notes ?? null,
-    })
-    .select('id, version')
-    .single();
+    const { data, error } = await supabaseAdmin
+      .from('pms_recipes')
+      .insert({
+        pms_type: args.pmsType,
+        version: nextVersion,
+        recipe: args.recipe,
+        status: 'draft',
+        learned_by_property_id: args.learnedByPropertyId,
+        notes: args.notes ?? null,
+      })
+      .select('id, version')
+      .single();
 
-  if (error || !data) {
-    return { error: error?.message ?? 'failed to save draft recipe' };
+    if (!error && data) {
+      return { id: data.id as string, version: data.version as number };
+    }
+    // 23505 = unique_violation. Anything else: don't retry.
+    if (error && (error as { code?: string }).code !== '23505') {
+      return { error: error.message ?? 'failed to save draft recipe' };
+    }
+    lastErr = error;
   }
-  return { id: data.id as string, version: data.version as number };
+  return { error: `failed to save draft recipe after ${MAX_ATTEMPTS} version collisions: ${lastErr?.message ?? 'unknown'}` };
 }
 
 /**

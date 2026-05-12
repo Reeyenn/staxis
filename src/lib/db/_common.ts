@@ -81,11 +81,26 @@ export function subscribeTable<T>(
   shouldRefetch?: (payload: PostgresChangesPayload) => boolean,
 ): () => void {
   let active = true;
+  // 2026-05-12 (Codex audit): every realtime event fires its own doFetch
+  // with no sequencing. If fetch A starts, fetch B starts before A
+  // resolves, and A resolves AFTER B, we publish A's older snapshot on
+  // top of B's newer one — UIs briefly revert to stale state on rapid
+  // changes. Monotonic request ID guards against out-of-order publishes:
+  // any fetch whose ID is less than the latest published ID is silently
+  // discarded.
+  let requestSeq = 0;
+  let lastPublishedSeq = -1;
 
   const fire = () => {
     if (!active) return;
+    const myReq = ++requestSeq;
     doFetch()
-      .then(rows => { if (active) callback(rows); })
+      .then(rows => {
+        if (!active) return;
+        if (myReq <= lastPublishedSeq) return;  // a newer fetch already published
+        lastPublishedSeq = myReq;
+        callback(rows);
+      })
       .catch(err => logErr(`Listener error in ${channelName}`, err));
   };
 
