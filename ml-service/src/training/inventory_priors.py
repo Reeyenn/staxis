@@ -22,12 +22,8 @@ prior_strength column on inventory_rate_priors):
    50+ hotels            → strength=5.0  (strong — cohort dominates new-hotel
                                           day-1 prediction)
 """
-import json
-import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
-
-import pandas as pd
 
 from src.supabase_client import get_supabase_client
 
@@ -63,53 +59,109 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
                 "errors": [f"item_canonical_name_view fetch failed: {exc}"]}
     canonical_by_item = {r["item_id"]: r["item_canonical_name"] for r in canonical_rows or []}
 
-    # 3. Pull every count event (last 90 days; older counts are stale for rate aggregation)
+    # 3. Compute per-(property, item) median daily-usage rate via SQL.
+    #
+    # Codex audit pass-6 P1 — two issues fixed:
+    #
+    # (a) The previous version computed `usage = max(0, prev_stock -
+    #     curr_stock)`, ignoring orders/restocks and discards between
+    #     two consecutive counts. If 50 units were ordered in between,
+    #     real usage was ~50 + (prev - curr), not just (prev - curr).
+    #     For active items this systematically under-counted usage,
+    #     producing cohort priors that biased low.
+    #
+    # (b) The fetch was capped at limit=200000 with no pagination. Past
+    #     ~5-10 hotels with 90 days of history this would silently
+    #     truncate. Doing the aggregation in SQL also avoids pulling
+    #     every count event into Python memory.
+    #
+    # The CTE pairs each count with the next one (LEAD over counted_at),
+    # sums orders received and discards in the window, computes
+    # actual_usage, and returns one median-rate row per (property, item).
     since = (datetime.utcnow() - timedelta(days=90)).isoformat()
+    rates_query = f"""
+        with paired as (
+            select
+                c.property_id,
+                c.item_id,
+                c.counted_stock as prev_stock,
+                c.counted_at    as prev_at,
+                lead(c.counted_stock) over (
+                    partition by c.property_id, c.item_id
+                    order by c.counted_at
+                ) as curr_stock,
+                lead(c.counted_at) over (
+                    partition by c.property_id, c.item_id
+                    order by c.counted_at
+                ) as curr_at
+            from inventory_counts c
+            where c.counted_at >= '{since}'
+        ),
+        with_window as (
+            select
+                p.property_id,
+                p.item_id,
+                p.prev_stock,
+                p.curr_stock,
+                p.prev_at,
+                p.curr_at,
+                greatest(extract(epoch from (p.curr_at - p.prev_at)) / 86400.0, 0.5) as days,
+                coalesce((
+                    select sum(o.quantity)
+                    from inventory_orders o
+                    where o.property_id = p.property_id
+                      and o.item_id = p.item_id
+                      and o.received_at > p.prev_at
+                      and o.received_at <= p.curr_at
+                ), 0) as orders_in_window,
+                coalesce((
+                    select sum(d.quantity)
+                    from inventory_discards d
+                    where d.property_id = p.property_id
+                      and d.item_id = p.item_id
+                      and d.discarded_at > p.prev_at
+                      and d.discarded_at <= p.curr_at
+                ), 0) as discards_in_window
+            from paired p
+            where p.curr_at is not null
+              and p.prev_stock is not null
+              and p.curr_stock is not null
+        ),
+        per_pair as (
+            select
+                property_id,
+                item_id,
+                greatest(
+                    (prev_stock + orders_in_window - discards_in_window - curr_stock),
+                    0
+                ) / days as rate_per_day
+            from with_window
+            where days > 0
+        )
+        select
+            property_id,
+            item_id,
+            percentile_cont(0.5) within group (order by rate_per_day)::float8 as median_rate,
+            count(*)::int as n_pairs
+        from per_pair
+        group by property_id, item_id
+    """
+
     try:
-        all_counts_resp = client.client.table("inventory_counts")\
-            .select("property_id,item_id,counted_stock,counted_at")\
-            .gte("counted_at", since)\
-            .limit(200000)\
-            .execute()
-        all_counts = all_counts_resp.data or []
+        rate_rows = client.execute_sql(rates_query) or []
     except Exception as exc:
         return {"cohorts_updated": 0, "items_canonical": 0,
-                "errors": [f"inventory_counts fetch failed: {exc}"]}
+                "errors": [f"per-property rate aggregation failed: {exc}"]}
 
-    # 4. Compute per-property × per-item daily rate (consecutive count pairs)
-    #    Skip items with <2 counts.
-    per_property_item_rates: Dict[str, List[float]] = {}  # key = "property_id|canonical_name"
-    grouped: Dict[tuple, List[Dict[str, Any]]] = {}
-    for c in all_counts:
-        canonical = canonical_by_item.get(c.get("item_id"))
+    per_property_item_rates: Dict[str, List[float]] = {}
+    for row in rate_rows:
+        canonical = canonical_by_item.get(row.get("item_id"))
         if not canonical or canonical == "unknown":
             continue
-        key = (c["property_id"], canonical)
-        grouped.setdefault(key, []).append(c)
-
-    for (pid, canonical), counts in grouped.items():
-        # Sort by counted_at ascending
-        counts.sort(key=lambda r: r.get("counted_at") or "")
-        rates: List[float] = []
-        for i in range(1, len(counts)):
-            prev = counts[i - 1]
-            curr = counts[i]
-            try:
-                t_prev = pd.to_datetime(prev["counted_at"]).tz_localize(None)
-                t_curr = pd.to_datetime(curr["counted_at"]).tz_localize(None)
-            except Exception:
-                continue
-            days = max((t_curr - t_prev).total_seconds() / 86400.0, 0.5)
-            usage = max(0.0, float(prev.get("counted_stock") or 0) - float(curr.get("counted_stock") or 0))
-            rate = usage / days
-            rates.append(rate)
-        if rates:
-            # Median is robust to outliers vs mean
-            sorted_rates = sorted(rates)
-            mid = len(sorted_rates) // 2
-            median = (sorted_rates[mid] if len(sorted_rates) % 2 == 1
-                      else (sorted_rates[mid - 1] + sorted_rates[mid]) / 2.0)
-            per_property_item_rates[f"{pid}|{canonical}"] = [median]
+        median = row.get("median_rate")
+        if median is None:
+            continue
+        per_property_item_rates[f"{row['property_id']}|{canonical}"] = [float(median)]
 
     # 5. Aggregate by cohort_key + canonical_name
     #    cohort_key = "<brand>-<region>-<size_tier>" (lowercased, slug-ified)
