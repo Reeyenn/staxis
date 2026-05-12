@@ -142,8 +142,23 @@ async def optimize_headcount(
         completion_curves = []
         recommended_headcount = None  # decided below
 
-        for headcount in range(1, 11):
-            shift_cap = float(settings.shift_cap_minutes)
+        # Codex audit pass-6 P1 — search range used to be hard-coded
+        # range(1, 11). For a hotel with enough rooms to need 12+
+        # housekeepers we'd cap at 10 and silently return an
+        # under-recommended headcount. Now we compute a property-aware
+        # upper bound from the actual workload (sum of median-time
+        # estimates × 1.5 buffer) so larger properties get a real answer,
+        # while still bounding the loop to keep the function fast.
+        median_total_minutes = sum(
+            float(p.get("predicted_minutes_p50", 25)) for p in supply_preds
+        )
+        shift_cap = float(settings.shift_cap_minutes) or 1.0
+        max_headcount = max(
+            10,
+            min(50, int((median_total_minutes / shift_cap) * 1.5) + 1),
+        )
+
+        for headcount in range(1, max_headcount + 1):
             total_completed = 0
 
             for _ in range(settings.monte_carlo_draws):
@@ -178,8 +193,10 @@ async def optimize_headcount(
             if recommended_headcount is None and completion_prob >= target_prob:
                 recommended_headcount = headcount
 
-        # If no headcount in 1..10 meets the target, pick the highest curve point
-        # rather than silently defaulting to 5 (the previous default hid this case).
+        # If no headcount in the searched range meets the target, pick
+        # the highest curve point and flag the recommendation so the
+        # cockpit can surface "we couldn't find a headcount that meets
+        # 95% on-time — even at H=N you're at P=...".
         if recommended_headcount is None:
             recommended_headcount = max(completion_curves, key=lambda c: c["p"])["headcount"]
     else:
@@ -194,7 +211,15 @@ async def optimize_headcount(
         completion_curves = []
         recommended_headcount = None
 
-        for headcount in range(1, 11):
+        # Codex audit pass-6 P1 — same rationale as the L2 path: derive
+        # the search ceiling from the actual demand instead of a hard 10.
+        shift_cap_l1 = float(settings.shift_cap_minutes) or 1.0
+        max_headcount = max(
+            10,
+            min(50, int((max_demand / shift_cap_l1) * 1.5) + 1),
+        )
+
+        for headcount in range(1, max_headcount + 1):
             shift_capacity = headcount * settings.shift_cap_minutes
             total_completed = 0
 
@@ -221,6 +246,15 @@ async def optimize_headcount(
         (c["p"] for c in completion_curves if c["headcount"] == recommended_headcount),
         0.95,
     )
+    # Codex audit pass-6 P1 — flag when even the best searched headcount
+    # didn't satisfy the target. The cockpit can render "we couldn't find
+    # a headcount that meets 95% — at H=N you're at P=…" instead of
+    # silently returning a recommendation that under-promises.
+    target_met = achieved_p >= target_prob
+
+    # Bound the optimistic sensitivity scenario at the actual searched
+    # ceiling for this run rather than the old hard-coded 10.
+    sensitivity_ceiling = max(c["headcount"] for c in completion_curves)
 
     # Write optimizer_results
     optimizer_result = {
@@ -233,7 +267,8 @@ async def optimize_headcount(
         "assignment_plan": json.dumps({}),  # Simplified
         "sensitivity_analysis": json.dumps({
             "one_hk_sick": {"recommended": max(1, recommended_headcount - 1)},
-            "plus_5_checkouts": {"recommended": min(10, recommended_headcount + 1)},
+            "plus_5_checkouts": {"recommended": min(sensitivity_ceiling, recommended_headcount + 1)},
+            "target_met": target_met,
         }),
         "inputs_snapshot": json.dumps({
             "l1_model_run_id": demand.get("model_run_id"),

@@ -53,20 +53,33 @@ def advisory_lock(
     """
     lock_id = hash_property_layer(property_id, layer)
 
+    # Codex audit pass-6 P1 — the previous version put pg_advisory_unlock
+    # AFTER the yield with no try/finally. Any exception in the calling
+    # code would skip the unlock and leak the session-level lock until
+    # the connection closed. Now we wrap the yield in try/finally so the
+    # unlock fires on every exit path (normal return OR exception).
     with conn.cursor() as cur:
-        if blocking:
-            # pg_advisory_lock blocks until acquired
-            cur.execute("SELECT pg_advisory_lock(%s)", (lock_id,))
-            yield True
-            # Release on exit
-            cur.execute("SELECT pg_advisory_unlock(%s)", (lock_id,))
-        else:
-            # pg_try_advisory_lock returns immediately
-            cur.execute("SELECT pg_try_advisory_lock(%s)", (lock_id,))
-            acquired = cur.fetchone()[0]
-            yield acquired
-            # Release if we acquired it
+        acquired = False
+        try:
+            if blocking:
+                # pg_advisory_lock blocks until acquired
+                cur.execute("SELECT pg_advisory_lock(%s)", (lock_id,))
+                acquired = True
+                yield True
+            else:
+                # pg_try_advisory_lock returns immediately
+                cur.execute("SELECT pg_try_advisory_lock(%s)", (lock_id,))
+                acquired = bool(cur.fetchone()[0])
+                yield acquired
+        finally:
             if acquired:
-                cur.execute("SELECT pg_advisory_unlock(%s)", (lock_id,))
+                try:
+                    cur.execute("SELECT pg_advisory_unlock(%s)", (lock_id,))
+                except Exception:
+                    # Connection may already be in a broken state from
+                    # the original exception; suppress so we don't mask
+                    # the real error. The lock will be released when the
+                    # session ends regardless.
+                    pass
 
     conn.commit()
