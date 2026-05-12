@@ -93,9 +93,55 @@ function classifyStayover(arrivalStr, dateISO) {
  *                    Stay/C/O, Service, Housekeeper, Special Requests,
  *                    Arrival, Departure, Last Clean
  */
+// Expected CSV header columns from CA's Housekeeping Check-off List.
+// Order-sensitive — every downstream consumer reads positionally below.
+// If CA ever changes the export (column rename, reorder, or insert), we
+// MUST refuse the file rather than silently shifting values into wrong
+// fields. Flagged by Codex audit 2026-05-12: an unnoticed schema drift
+// would corrupt plan_snapshots with plausible-looking-but-wrong staffing
+// data that no alarm would catch.
+const EXPECTED_CSV_HEADERS = [
+  'Room', 'Type', 'People', 'Adults', 'Children',
+  'Status', 'Condition', 'Stay/C/O', 'Service',
+  'Housekeeper', 'Special Requests',
+  'Arrival', 'Departure', 'Last Clean',
+];
+
+function normaliseHeader(s) {
+  return String(s || '').replace(/^"+|"+$/g, '').trim().toLowerCase();
+}
+
+class CSVSchemaError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'CSVSchemaError';
+  }
+}
+
 function parseCSV(csvText) {
   const lines = csvText.trim().split('\n');
   if (lines.length < 2) return [];
+
+  // ── Schema guard ──────────────────────────────────────────────────────
+  // Validate the header row matches EXPECTED_CSV_HEADERS exactly (by name
+  // and order). Throws on mismatch so the caller (scraper.js) treats the
+  // pull as failed instead of writing wrong data to plan_snapshots.
+  const headerFields = parseCSVLine(lines[0]).map(normaliseHeader);
+  const expectedNorm = EXPECTED_CSV_HEADERS.map(normaliseHeader);
+  if (headerFields.length < expectedNorm.length) {
+    throw new CSVSchemaError(
+      `CSV header has ${headerFields.length} columns, expected ${expectedNorm.length}. ` +
+      `Got: [${headerFields.join(', ')}]`,
+    );
+  }
+  for (let c = 0; c < expectedNorm.length; c++) {
+    if (headerFields[c] !== expectedNorm[c]) {
+      throw new CSVSchemaError(
+        `CSV header mismatch at column ${c}: expected "${EXPECTED_CSV_HEADERS[c]}", got "${headerFields[c]}". ` +
+        `Full header: [${headerFields.join(', ')}]`,
+      );
+    }
+  }
 
   const rooms = [];
   // Skip header row (line 0)

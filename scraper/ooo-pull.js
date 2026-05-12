@@ -139,9 +139,18 @@ async function fetchOOOWorkOrders(page, log) {
  *   - Never touch rows with source !== 'ca_ooo'.
  */
 async function reconcileOOO(supabase, config, ooo, log) {
-  // 1) Load all ca_ooo rows for this property. The list is tiny (typically
-  //    <10), so we pull them all and filter in memory to avoid a second
-  //    round-trip. Only OPEN statuses are candidates for auto-resolve.
+  // 1) Load ALL ca_ooo rows for this property — open AND resolved. The list
+  //    is tiny (typically <10), so we pull them all and filter in memory.
+  //
+  //    2026-05-12: Codex audit flagged a duplicate-insert race. Previously
+  //    we only loaded OPEN rows here; if a CA work order had been resolved
+  //    locally (auto-resolve fires when CA drops it from their list) and
+  //    then re-appeared on CA, the lookup would miss the existing resolved
+  //    row and `.insert()` a fresh duplicate. By loading every ca_ooo row
+  //    we can:
+  //      - update open rows in place (unchanged behavior)
+  //      - REOPEN previously-resolved rows when CA lists them again
+  //      - only insert if there's no prior row for this ca_work_order_number
   const OPEN_STATUSES = new Set(['submitted', 'assigned', 'in_progress']);
 
   const { data: existing, error: fetchErr } = await supabase
@@ -151,16 +160,20 @@ async function reconcileOOO(supabase, config, ooo, log) {
     .eq('source', 'ca_ooo');
   if (fetchErr) throw fetchErr;
 
-  const openByCaNumber = new Map();
+  const existingByCaNumber = new Map();
+  const openByCaNumber = new Map();  // subset of existing — only open rows
   for (const row of (existing ?? [])) {
     if (!row.ca_work_order_number) continue;
-    if (!OPEN_STATUSES.has(row.status)) continue;
-    openByCaNumber.set(String(row.ca_work_order_number), { id: row.id });
+    const key = String(row.ca_work_order_number);
+    existingByCaNumber.set(key, { id: row.id, status: row.status });
+    if (OPEN_STATUSES.has(row.status)) {
+      openByCaNumber.set(key, { id: row.id });
+    }
   }
 
   // 2) Walk the CA list, upsert each one.
   const caKeys = new Set();
-  let created = 0, updated = 0;
+  let created = 0, updated = 0, reopened = 0;
 
   for (const w of ooo) {
     const caKey = String(w.workOrderNumber || '');
@@ -181,8 +194,8 @@ async function reconcileOOO(supabase, config, ooo, log) {
       submitted_by_name:    w.openingClerk || 'Choice Advantage',
     };
 
-    const open = openByCaNumber.get(caKey);
-    if (open) {
+    const existingRow = existingByCaNumber.get(caKey);
+    if (existingRow && OPEN_STATUSES.has(existingRow.status)) {
       // Update in place — don't bump created_at, don't touch severity if the
       // manager upgraded it manually. Actually we overwrite severity back to
       // medium on purpose: the source of truth for CA-driven tickets is CA.
@@ -192,11 +205,22 @@ async function reconcileOOO(supabase, config, ooo, log) {
       const { error: updErr } = await supabase
         .from('work_orders')
         .update(payload)
-        .eq('id', open.id);
+        .eq('id', existingRow.id);
       if (updErr) throw updErr;
       updated++;
+    } else if (existingRow) {
+      // Previously resolved, now back on CA's list — reopen the original
+      // row rather than inserting a duplicate. Setting resolved_at=null
+      // and status back to submitted preserves history (created_at) while
+      // marking it active again.
+      const { error: reopenErr } = await supabase
+        .from('work_orders')
+        .update({ ...payload, status: 'submitted', resolved_at: null })
+        .eq('id', existingRow.id);
+      if (reopenErr) throw reopenErr;
+      reopened++;
     } else {
-      // New row — set status submitted; created_at default fires.
+      // No prior row at all — fresh insert.
       const { error: insErr } = await supabase
         .from('work_orders')
         .insert({ ...payload, status: 'submitted' });

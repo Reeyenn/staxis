@@ -177,6 +177,42 @@ function die(step, err) {
   console.log(`Mode:   ${RESET ? 'RESET then seed' : 'seed (idempotent)'}\n`);
 
   // ── Step 0 (optional): reset ────────────────────────────────────────────
+  //
+  // 2026-05-12: Codex audit flagged that --reset had zero confirmation —
+  // a wrong .env.local could wipe the live hotel's data in one keystroke.
+  // Two guards now:
+  //
+  //   1. --reset always requires --confirm-reset <admin-email> matching
+  //      the admin email below. Typing the target out loud forces a beat
+  //      of attention before destruction.
+  //
+  //   2. If SUPA_URL points at the known production Supabase project,
+  //      ALSO require STAXIS_ALLOW_PROD_RESET=true on the environment.
+  //      Two locks for the live target.
+  if (RESET) {
+    const confirmIdx = process.argv.indexOf('--confirm-reset');
+    const confirmArg = confirmIdx >= 0 ? (process.argv[confirmIdx + 1] || '') : '';
+    if (confirmArg !== ADMIN.email) {
+      console.error(
+        '\n✗ --reset is destructive and requires --confirm-reset <admin-email>.\n' +
+        `  Run: node scripts/seed-supabase.js --reset --confirm-reset ${ADMIN.email}\n`,
+      );
+      process.exit(1);
+    }
+    // Live Comfort Suites Beaumont Supabase project ID — anything pointing
+    // here is the customer database. Keep this in sync with CLAUDE.md if
+    // the project is ever migrated.
+    const PROD_SUPABASE_MARKER = 'xjoyasymmdejpmnzbjqu';
+    if (SUPA_URL.includes(PROD_SUPABASE_MARKER) && process.env.STAXIS_ALLOW_PROD_RESET !== 'true') {
+      console.error(
+        `\n✗ Refusing to --reset against the production Supabase URL (${PROD_SUPABASE_MARKER}).\n` +
+        '  This would wipe live hotel data. If you really mean it:\n' +
+        `    STAXIS_ALLOW_PROD_RESET=true node scripts/seed-supabase.js --reset --confirm-reset ${ADMIN.email}\n`,
+      );
+      process.exit(1);
+    }
+    console.log('⚠️  RESET CONFIRMED — proceeding to delete admin + property + cascade.\n');
+  }
   if (RESET) {
     log('reset', 'looking up existing admin by email…');
     const { data: existingUsers, error: listErr } = await supa.auth.admin.listUsers();
