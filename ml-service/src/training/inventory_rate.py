@@ -448,6 +448,45 @@ def _train_single_item(
     is_active = not is_shadow
     shadow_started_at = datetime.utcnow().isoformat() if is_shadow else None
 
+    # ── Max-MAE safety gate (P0-3, May 2026 audit) ────────────────────
+    # A model with validation_mae higher than the mean observed rate has
+    # learned nothing — its predictions are worse than just guessing the
+    # average. Pre-audit, models like Coffee Pods (MAE 49.99, mean rate
+    # ~3) sat at is_active=true, auto_fill_enabled=false, but their
+    # predictions still surfaced in the UI as confident-looking numbers.
+    # Mario would over-order based on those.
+    #
+    # Threshold: validation_mae must be < max(mean_rate * 1.5, 0.5).
+    #   - mean_rate * 1.5 means "the model is meaningfully better than a
+    #     blind constant guess of the mean". 1.5 (not 1.0) gives some
+    #     slack for small training sets where MAE estimates are noisy.
+    #   - 0.5 absolute floor handles items with near-zero mean rates
+    #     (rarely used items) where the ratio metric is meaningless.
+    #
+    # Shadow models skip this gate by design — they're being evaluated
+    # for promotion, the gate kicks in if/when they're promoted (the
+    # promote function will re-check).
+    #
+    # Rejected models go to is_active=false with notes=
+    # 'rejected_high_mae'. Inference reads is_active=true only, so a
+    # rejected model produces no prediction. The UI then shows "still
+    # learning" for that item — accurate and safe.
+    mae_reject_notes = None
+    if (
+        is_active
+        and validation_mae is not None
+        and validation_mae > max(mean_observed_rate * 1.5, 0.5)
+    ):
+        is_active = False
+        # is_shadow stays whatever it was. A high-MAE shadow stays as
+        # shadow (the evaluate cron will still run, and even if it
+        # decides "promote", the promotion path here would re-reject).
+        mae_reject_notes = (
+            f"rejected_high_mae: validation_mae={validation_mae:.4f} > "
+            f"threshold={max(mean_observed_rate * 1.5, 0.5):.4f} "
+            f"(mean_rate={mean_observed_rate:.4f})"
+        )
+
     # Posterior params for Bayesian models (so inference can rebuild without the model file)
     posterior_params = None
     if algorithm == "bayesian":
@@ -517,6 +556,7 @@ def _train_single_item(
         "posterior_params": json.dumps(posterior_params) if posterior_params else None,
         "hyperparameters": json.dumps({"prior_rate_used": prior_rate, "cohort_key": cohort_key,
                                        **(model.get_config() if hasattr(model, "get_config") else {})}),
+        "notes": mae_reject_notes,
     })
 
     return {
