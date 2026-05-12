@@ -13,7 +13,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { visionExtractJSON, VisionTruncatedError, VisionImageInvalidError } from '@/lib/vision-extract';
+import { visionExtractJSON, VisionTruncatedError, VisionImageInvalidError, VisionSchemaError } from '@/lib/vision-extract';
 import { errToString } from '@/lib/utils';
 import { log } from '@/lib/log';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
@@ -167,6 +167,20 @@ export async function POST(req: NextRequest) {
     const result = await visionExtractJSON<PhotoCountResult>(
       { data: imageBase64, mediaType: mediaType as VisionMediaType },
       buildPrompt(safeItemNames.slice(0, 200)), // cap input to keep token use bounded
+      // Codex audit pass-6 P1 — runtime shape check before we read
+      // result.counts. Rejects null/array/missing-field at this layer
+      // so a malformed-but-valid-JSON response produces a 422, not a
+      // server crash.
+      (raw): PhotoCountResult => {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+          throw new VisionSchemaError('expected an object at top level');
+        }
+        const obj = raw as Record<string, unknown>;
+        if (!Array.isArray(obj.counts)) {
+          throw new VisionSchemaError('missing or non-array "counts" field');
+        }
+        return { counts: obj.counts as PhotoCountResult['counts'] };
+      },
     );
 
     const allowedNames = new Set(safeItemNames);
@@ -208,6 +222,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { ok: false, error: 'invalid_image', detail: e.message },
         { status: 400 },
+      );
+    }
+    if (e instanceof VisionSchemaError) {
+      log.warn('[photo-count] vision JSON failed schema validation', {
+        reason: e.reason, pid,
+      });
+      return NextResponse.json(
+        { ok: false, error: 'photo_count_invalid_shape' },
+        { status: 422 },
       );
     }
     const msg = errToString(e);

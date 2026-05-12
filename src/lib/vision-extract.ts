@@ -217,31 +217,61 @@ export async function visionExtractText(
 }
 
 /**
+ * Sentinel error subclass thrown when the model returned valid JSON but
+ * the shape did not pass the caller's runtime validator. Routes catch
+ * this to return a 422 with a stable error code; the offending model
+ * output is logged server-side, never sent to the client.
+ */
+export class VisionSchemaError extends Error {
+  constructor(public readonly reason: string) {
+    super(`Vision JSON failed schema validation: ${reason}`);
+    this.name = 'VisionSchemaError';
+  }
+}
+
+/**
  * Same as above but pulls a JSON object out of the response. Tolerates
  * common Claude output patterns:
  *   - bare JSON
  *   - JSON wrapped in ```json ... ``` fences
  *   - JSON inside any other prose (extracts first balanced { ... } block)
+ *
+ * Codex audit pass-6 P1 — the previous version cast the parsed value
+ * straight to `T` with no runtime check. Malformed-but-syntactically-
+ * valid output (a JSON `null`, an array where an object was expected,
+ * a missing required field) would either crash downstream code or
+ * silently pass garbage. Callers can now pass `validate` to assert
+ * the shape; the validator either returns the typed value or throws
+ * VisionSchemaError. Backwards-compatible: omit `validate` to get the
+ * old unchecked-cast behavior (deprecated for new callers).
  */
 export async function visionExtractJSON<T>(
   image: VisionImage,
   prompt: string,
+  validate?: (raw: unknown) => T,
 ): Promise<T> {
   const text = await visionExtractText(image, prompt);
 
+  const validated = (raw: unknown): T => {
+    if (validate) return validate(raw);
+    return raw as T;
+  };
+
   // Try direct parse first — fastest path when the model behaves.
   try {
-    return JSON.parse(text) as T;
-  } catch {
-    /* fall through */
+    return validated(JSON.parse(text));
+  } catch (err) {
+    if (err instanceof VisionSchemaError) throw err;
+    /* fall through to fence / brace recovery */
   }
 
   // Strip ```json ... ``` fences.
   const fence = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
   if (fence) {
     try {
-      return JSON.parse(fence[1]) as T;
-    } catch {
+      return validated(JSON.parse(fence[1]));
+    } catch (err) {
+      if (err instanceof VisionSchemaError) throw err;
       /* fall through */
     }
   }
@@ -251,8 +281,9 @@ export async function visionExtractJSON<T>(
   const end = text.lastIndexOf('}');
   if (start !== -1 && end !== -1 && end > start) {
     try {
-      return JSON.parse(text.slice(start, end + 1)) as T;
-    } catch {
+      return validated(JSON.parse(text.slice(start, end + 1)));
+    } catch (err) {
+      if (err instanceof VisionSchemaError) throw err;
       /* fall through */
     }
   }

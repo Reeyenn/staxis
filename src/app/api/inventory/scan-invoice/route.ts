@@ -14,7 +14,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { visionExtractJSON, VisionTruncatedError, VisionImageInvalidError } from '@/lib/vision-extract';
+import { visionExtractJSON, VisionTruncatedError, VisionImageInvalidError, VisionSchemaError } from '@/lib/vision-extract';
 import { errToString } from '@/lib/utils';
 import { log } from '@/lib/log';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
@@ -129,6 +129,25 @@ export async function POST(req: NextRequest) {
     const result = await visionExtractJSON<ExtractedInvoice>(
       { data: imageBase64, mediaType: mediaType as VisionMediaType },
       PROMPT,
+      // Codex audit pass-6 P1 — validate the model's JSON shape before
+      // touching downstream logic. Reject null, arrays, primitives, and
+      // missing-items here so a malformed-but-valid-JSON response
+      // produces a controlled 422 instead of a crash on result.items.
+      (raw): ExtractedInvoice => {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+          throw new VisionSchemaError('expected an object at top level');
+        }
+        const obj = raw as Record<string, unknown>;
+        if (!Array.isArray(obj.items)) {
+          throw new VisionSchemaError('missing or non-array "items" field');
+        }
+        return {
+          vendor_name: typeof obj.vendor_name === 'string' ? obj.vendor_name : null,
+          invoice_date: typeof obj.invoice_date === 'string' ? obj.invoice_date : null,
+          invoice_number: typeof obj.invoice_number === 'string' ? obj.invoice_number : null,
+          items: obj.items as ExtractedInvoice['items'],
+        };
+      },
     );
 
     // Defensive normalization — coerce numbers, drop malformed rows. NaN
@@ -193,6 +212,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { ok: false, error: 'invalid_image', detail: e.message },
         { status: 400 },
+      );
+    }
+    // Schema-validation failure — model returned JSON that didn't match
+    // the expected ExtractedInvoice shape. Stable, content-free 422.
+    if (e instanceof VisionSchemaError) {
+      log.warn('[scan-invoice] vision JSON failed schema validation', {
+        reason: e.reason, pid,
+      });
+      return NextResponse.json(
+        { ok: false, error: 'invoice_extract_invalid_shape' },
+        { status: 422 },
       );
     }
     const msg = errToString(e);
