@@ -33,7 +33,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireCronSecret } from '@/lib/api-auth';
+import { requireAdminOrCron } from '@/lib/admin-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
@@ -69,8 +69,12 @@ interface SealOutcome {
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
   const requestId = getOrMintRequestId(req);
-  const unauth = requireCronSecret(req);
-  if (unauth) return unauth;
+  // Admin OR cron — production cron uses CRON_SECRET; one-shot backfill
+  // from an admin's browser session uses the admin path (the route is
+  // idempotent and the worst case is "admin re-runs an already-sealed
+  // date" which is a no-op via the upserts).
+  const auth = await requireAdminOrCron(req);
+  if (!auth.ok) return auth.response;
 
   // Optional ?date=YYYY-MM-DD param for backfill. When present, we seal
   // that exact date for every property (skipping the local-time gate)
