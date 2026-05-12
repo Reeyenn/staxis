@@ -59,8 +59,34 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     });
     const json = await res.json().catch(() => ({ error: 'non_json_response', http: res.status }));
     log.info('ml-aggregate-priors: result', { requestId, mlStatus: res.status, json });
-    await writeCronHeartbeat('ml-aggregate-priors', { requestId });
-    return NextResponse.json({ ok: true, requestId, result: json });
+
+    // ─── Silent-success guard (May 2026 audit pass-3) ────────────────────
+    // The previous version unconditionally wrote the heartbeat and
+    // returned ok:true regardless of res.status or json.status. That
+    // exactly reproduces the silent-failure bug class the heartbeats
+    // were supposed to close: ML service returns HTTP 500 with
+    // {error: "..."} → heartbeat written → doctor's
+    // cron_heartbeats_fresh check sees green → operator never knows
+    // cohort priors stopped refreshing.
+    //
+    // Only write the heartbeat if the ML service actually agreed it
+    // succeeded. Both signals matter: HTTP-level (res.ok) AND
+    // application-level (json.status !== "error"). If either says
+    // "broken", we DON'T touch the heartbeat — the doctor's freshness
+    // check will fire after 2× cadence.
+    const mlStatus = (json as { status?: string; error?: string }).status ?? 'ok';
+    const mlSucceeded = res.ok && mlStatus !== 'error' && !(json as { error?: string }).error;
+    if (mlSucceeded) {
+      await writeCronHeartbeat('ml-aggregate-priors', { requestId, notes: { mlStatus } });
+    } else {
+      log.error('ml-aggregate-priors: ML service reported failure — heartbeat NOT written', {
+        requestId, httpStatus: res.status, mlStatus, json,
+      });
+    }
+    return NextResponse.json(
+      { ok: mlSucceeded, requestId, result: json },
+      { status: mlSucceeded ? 200 : 502 },
+    );
   } catch (e) {
     log.error('ml-aggregate-priors: ML service call failed', { requestId, err: e as Error });
     return NextResponse.json({ ok: false, error: errToString(e), requestId }, { status: 502 });
