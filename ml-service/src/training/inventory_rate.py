@@ -547,9 +547,24 @@ def _train_single_item(
             }).eq("property_id", property_id).eq("layer", "inventory_rate") \
               .eq("item_id", item_id).eq("is_shadow", True) \
               .is_("shadow_promoted_at", "null").execute()
-    except Exception:
+    except Exception as e:
         # Best-effort; partial-unique-index will reject the new insert if needed.
-        pass
+        # But log loudly — May 2026 audit pass-5 found this exception was
+        # silently swallowed. If deactivation fails (DB lock contention,
+        # transient connection drop), the subsequent insert collides
+        # with the partial unique index and the model_run is never
+        # written. Operator sees "training succeeded" in logs while the
+        # row was actually lost. Structured-print so Railway/Sentry
+        # ingest can index it (matches the advisory_lock pattern).
+        print(json.dumps({
+            "evt": "model_run_deactivate_failed",
+            "layer": "inventory_rate",
+            "property_id": property_id,
+            "item_id": item_id,
+            "is_active": is_active,
+            "is_shadow": is_shadow,
+            "error": str(e),
+        }))
 
     model_run = client.insert("model_runs", {
         "property_id": property_id,
