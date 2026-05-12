@@ -492,11 +492,32 @@ export function InspectionsView() {
               <h4 style={{ fontFamily: "'Inter', sans-serif", fontSize: '16px', fontWeight: 600, color: '#1b1c19', marginBottom: '8px' }}>
                 {lang === 'es' ? 'Recomendación del Conserje' : 'Concierge Recommendation'}
               </h4>
-              <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '15px', color: '#454652', lineHeight: 1.7, margin: 0 }}
-                dangerouslySetInnerHTML={{
-                  __html: aiRecommendation.replace(/\*\*(.*?)\*\*/g, '<span style="font-family: \'JetBrains Mono\', monospace; color: #364262; font-weight: 600;">$1</span>'),
-                }}
-              />
+              {/*
+                2026-05-12 (Codex audit fix): previously rendered with
+                dangerouslySetInnerHTML, which let user-controlled
+                inspection names (interpolated into aiRecommendation
+                via "**${first.name}**") inject arbitrary HTML — any
+                authenticated user with edit access to inspections
+                could XSS other staff viewing the same property's
+                concierge panel. Now we tokenize on "**...**" and
+                emit React elements; the inspection name becomes text
+                content of a <span>, so React handles the escaping.
+              */}
+              <p style={{ fontFamily: "'Inter', sans-serif", fontSize: '15px', color: '#454652', lineHeight: 1.7, margin: 0 }}>
+                {aiRecommendation.split(/(\*\*[^*]+\*\*)/g).map((part, i) => {
+                  if (part.startsWith('**') && part.endsWith('**')) {
+                    return (
+                      <span
+                        key={i}
+                        style={{ fontFamily: "'JetBrains Mono', monospace", color: '#364262', fontWeight: 600 }}
+                      >
+                        {part.slice(2, -2)}
+                      </span>
+                    );
+                  }
+                  return <React.Fragment key={i}>{part}</React.Fragment>;
+                })}
+              </p>
               <div style={{ display: 'flex', gap: '12px', marginTop: '20px' }}>
                 <button style={{
                   background: '#006565', color: '#82e2e1', padding: '8px 20px', borderRadius: '9999px',
