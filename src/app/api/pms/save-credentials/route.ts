@@ -75,13 +75,41 @@ export async function POST(req: NextRequest) {
     return err(passV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  // Sanity check the URL is http(s)
+  // Sanity check the URL is http(s) AND not pointing at an internal target.
+  // 2026-05-12 (Codex audit): previously we only checked the protocol.
+  // A property owner could save an internal URL (private RFC1918 address,
+  // localhost, AWS metadata 169.254.169.254, etc.) — the scraper/CUA
+  // worker would happily navigate there, exposing internal services or
+  // (worst case) leaking metadata-service IAM credentials. Block the
+  // obviously-dangerous targets here at write time.
   try {
     const u = new URL(urlV.value!);
     if (u.protocol !== 'http:' && u.protocol !== 'https:') {
       return err('loginUrl must be http(s)', {
         requestId, status: 400, code: ApiErrorCode.ValidationFailed,
       });
+    }
+    const host = u.hostname.toLowerCase();
+    // Hostnames that look like internal targets — block them. Doesn't
+    // protect against DNS rebinding (would need post-resolve checks at
+    // fetch time too), but stops the trivial "type 169.254.169.254 into
+    // the form" attack.
+    const blocked =
+      host === 'localhost' || host.endsWith('.localhost') ||
+      host === '0.0.0.0' || host === '::' || host === '::1' ||
+      /^127\./.test(host) ||                       // IPv4 loopback
+      /^10\./.test(host) ||                        // private
+      /^192\.168\./.test(host) ||                  // private
+      /^172\.(1[6-9]|2[0-9]|3[01])\./.test(host) || // private
+      /^169\.254\./.test(host) ||                  // link-local incl. metadata
+      /^\[?fe80:/i.test(host) ||                   // IPv6 link-local
+      /^\[?fc[0-9a-f]{2}:/i.test(host) ||          // IPv6 ULA
+      /^\[?fd[0-9a-f]{2}:/i.test(host);            // IPv6 ULA
+    if (blocked) {
+      return err(
+        'loginUrl points at an internal address (localhost / private / link-local) — refuse to save.',
+        { requestId, status: 400, code: ApiErrorCode.ValidationFailed },
+      );
     }
   } catch {
     return err('loginUrl is not a valid URL', {

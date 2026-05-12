@@ -328,7 +328,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         })
         .eq('id', roomId);
       if (roomUpdErr) {
-        return err(errToString(roomUpdErr), { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
+        // Don't leak raw DB error text (column names, constraint names, schema
+        // hints) to a public-link caller. Log internally; respond generically.
+        log.error('room-action: room update failed (finish)', { requestId, pid, staffId, err: errToString(roomUpdErr) });
+        return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
       }
 
       // Audit log + ML feature snapshot — only for checkout/stayover, never
@@ -440,7 +443,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         .update({ status: 'dirty', started_at: null, completed_at: null })
         .eq('id', roomId);
       if (roomResetErr) {
-        return err(errToString(roomResetErr), {
+        log.error('room-action: room update failed (reset)', { requestId, pid, staffId, err: errToString(roomResetErr) });
+        return err('Internal server error', {
           requestId, status: 500, code: ApiErrorCode.InternalError, headers,
         });
       }
@@ -489,7 +493,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         .update({ is_dnd: true, dnd_note: body.dndNote ?? null })
         .eq('id', roomId);
       if (dndOnErr) {
-        return err(errToString(dndOnErr), { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
+        log.error('room-action: room update failed (dnd_on)', { requestId, pid, staffId, err: errToString(dndOnErr) });
+        return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
       }
       return ok({ action: 'dnd_on' }, { requestId, headers });
     }
@@ -501,7 +506,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         .update({ is_dnd: false, dnd_note: null })
         .eq('id', roomId);
       if (dndOffErr) {
-        return err(errToString(dndOffErr), { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
+        log.error('room-action: room update failed (dnd_off)', { requestId, pid, staffId, err: errToString(dndOffErr) });
+        return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
       }
       return ok({ action: 'dnd_off' }, { requestId, headers });
     }
@@ -517,7 +523,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         .update({ help_requested: true })
         .eq('id', roomId);
       if (helpErr) {
-        return err(errToString(helpErr), { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
+        log.error('room-action: room update failed (help)', { requestId, pid, staffId, err: errToString(helpErr) });
+        return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
       }
       return ok({ action: 'help' }, { requestId, headers });
     }
@@ -532,14 +539,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         .update({ issue_note: note || null })
         .eq('id', roomId);
       if (issueErr) {
-        return err(errToString(issueErr), { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
+        log.error('room-action: room update failed (issue)', { requestId, pid, staffId, err: errToString(issueErr) });
+        return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
       }
       return ok({ action: 'issue' }, { requestId, headers });
     }
 
     return err('unhandled action', { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
   } catch (caughtErr) {
-    return err(errToString(caughtErr), {
+    log.error('room-action: unexpected error', { requestId, err: errToString(caughtErr) });
+    return err('Internal server error', {
       requestId, status: 500, code: ApiErrorCode.InternalError, headers,
     });
   }

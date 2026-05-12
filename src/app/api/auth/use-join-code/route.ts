@@ -19,6 +19,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { writeAudit } from '@/lib/audit';
+import { checkAndIncrementRateLimit, rateLimitedResponse, ipToRateLimitKey } from '@/lib/api-ratelimit';
 import type { AppRole } from '@/lib/roles';
 
 export const runtime = 'nodejs';
@@ -50,6 +51,21 @@ function normalizePhone(p: string | undefined | null): string | null {
 
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
+
+  // ── Rate limit (Codex audit 2026-05-12) ────────────────────────────────
+  // This route is public and creates auth.users — without a cap, a bot can
+  // brute-force low-entropy join codes or just hammer the create-user
+  // path. 10/hour per source IP covers any legitimate human while
+  // shutting down bot abuse.
+  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
+    || req.headers.get('x-real-ip')?.trim()
+    || '';
+  const ipKey = ipToRateLimitKey(ip);
+  const rl = await checkAndIncrementRateLimit('auth-use-join-code', ipKey);
+  if (!rl.allowed) {
+    return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
+  }
+
   const body = await req.json() as {
     code?: string;
     email?: string;

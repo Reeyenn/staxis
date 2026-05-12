@@ -14,6 +14,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { writeAudit } from '@/lib/audit';
+import { checkAndIncrementRateLimit, rateLimitedResponse, ipToRateLimitKey } from '@/lib/api-ratelimit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -27,6 +28,21 @@ function deriveUsername(email: string): string {
 
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
+
+  // ── Rate limit (Codex audit 2026-05-12) ────────────────────────────────
+  // Public endpoint that hashes attacker-supplied tokens and creates
+  // auth.users on hit. Without a cap an attacker could spray candidate
+  // tokens to enumerate live invites. 10/hour per source IP allows the
+  // legitimate one-shot accept flow with retry headroom.
+  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
+    || req.headers.get('x-real-ip')?.trim()
+    || '';
+  const ipKey = ipToRateLimitKey(ip);
+  const rl = await checkAndIncrementRateLimit('auth-accept-invite', ipKey);
+  if (!rl.allowed) {
+    return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
+  }
+
   const body = await req.json() as { token?: string; displayName?: string; password?: string; username?: string };
   const { token, displayName, password } = body;
   if (!token || !displayName || !password) {

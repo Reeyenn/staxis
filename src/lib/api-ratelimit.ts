@@ -53,7 +53,13 @@ export type RateLimitEndpoint =
   // No auth gate, creates auth.users + properties + Stripe customer +
   // bcrypt CPU work, so trivially abusable without a rate cap. (Pass-3
   // fix — H6.)
-  | 'signup-ip';
+  | 'signup-ip'
+  // Public join-code signup and invite acceptance — IP-keyed. Both
+  // create auth.users without any prior auth gate and do bcrypt CPU
+  // work; codes/tokens are low-entropy enough that brute-force or
+  // token-spray attacks matter. (Codex audit 2026-05-12.)
+  | 'auth-use-join-code'
+  | 'auth-accept-invite';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -98,6 +104,12 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // already a customer-support situation, not a happy path. Anything
   // higher is bot/abuse and should 429.
   'signup-ip':                  5,
+  // Public join-code signup — 10/hour per source IP. Same logic as
+  // 'signup-ip' (real signups are rare, anything higher is abuse).
+  'auth-use-join-code':         10,
+  // Invite acceptance — 10/hour per source IP. One-shot per token in
+  // normal use; the cap exists to bound token-spray brute force.
+  'auth-accept-invite':         10,
 };
 
 /**
