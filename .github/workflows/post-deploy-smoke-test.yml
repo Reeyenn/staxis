@@ -72,8 +72,15 @@ jobs:
 
           # Vercel deploys finish in 60–180s typically. Give them up to 5
           # min (20 tries * 15s) before we start failing loudly. During
-          # that window, HTTP errors from Vercel (502/503) are EXPECTED
-          # as the new deploy is spinning up, so we don't fail on them.
+          # that window we will see TWO kinds of "ready-looking" responses:
+          #   1. HTTP 200/503 from the OLD deploy that's still serving
+          #      traffic until Vercel's atomic rotation completes.
+          #   2. HTTP 200/503 from the NEW deploy after rotation.
+          # The OLD-deploy response is indistinguishable at the HTTP layer.
+          # Doctor exposes `commitSha` (from VERCEL_GIT_COMMIT_SHA) at the
+          # top level of its JSON so this workflow can tell which deploy
+          # it's actually talking to. We only accept the response when
+          # commitSha matches the pushed commit.
           MAX_ATTEMPTS=20
           SLEEP_BETWEEN=15
           attempt=0
@@ -100,8 +107,21 @@ jobs:
             # 503 = doctor ran but one or more checks failed — we STILL want
             #       to see the body so we know which check broke.
             if [ "$http_code" = "200" ] || [ "$http_code" = "503" ]; then
-              response=$(cat /tmp/doctor-body.json)
-              break
+              # Pull commitSha out of the response. If the field is missing
+              # (older doctor builds), treat it as "old deploy" and keep
+              # polling — the new deploy will eventually rotate in.
+              serving_sha=$(python3 -c "import sys,json; print(json.load(open('/tmp/doctor-body.json')).get('commitSha','') or '')" 2>/dev/null || echo "")
+              if [ "$serving_sha" = "$COMMIT_SHA" ]; then
+                echo "✓ Deploy rotated — doctor is serving the new commit."
+                response=$(cat /tmp/doctor-body.json)
+                break
+              elif [ -n "$serving_sha" ]; then
+                echo "Doctor is still serving older deploy (serving=${serving_sha:0:8}, expected=${COMMIT_SHA:0:8}). Waiting ${SLEEP_BETWEEN}s..."
+              else
+                echo "Doctor response has no commitSha field — either older code without SHA-exposure or VERCEL_GIT_COMMIT_SHA env var missing. Waiting ${SLEEP_BETWEEN}s..."
+              fi
+              sleep $SLEEP_BETWEEN
+              continue
             fi
 
             # 401 = CRON_SECRET drift between this workflow's secret and
@@ -122,7 +142,7 @@ jobs:
           done
 
           if [ -z "$response" ]; then
-            echo "::error::Vercel /api/admin/doctor never returned a usable response after $((MAX_ATTEMPTS * SLEEP_BETWEEN))s. Deploy may be stuck — check https://vercel.com/reeyenns-projects/staxis/deployments"
+            echo "::error::Vercel /api/admin/doctor never served commit ${COMMIT_SHA} after $((MAX_ATTEMPTS * SLEEP_BETWEEN))s. Deploy may be stuck or rolled back — check https://vercel.com/reeyenns-projects/staxis/deployments"
             exit 1
           fi
 

@@ -85,6 +85,14 @@ type DoctorReport = {
   timestamp: string;
   vercelRegion?: string;
   vercelEnv?: string;
+  /**
+   * Commit SHA of the currently-running deploy. Pulled from
+   * VERCEL_GIT_COMMIT_SHA (set automatically on every Vercel deploy).
+   * The post-deploy smoke test reads this to confirm it's hitting the
+   * NEW deploy rather than the OLD one still serving traffic during
+   * Vercel's rotation window (~30–90s after push).
+   */
+  commitSha?: string;
   /** Top-level summary counts so grep/jq can decide without parsing checks[]. */
   summary: {
     total: number;
@@ -1771,6 +1779,7 @@ async function runAllChecks(): Promise<DoctorReport> {
     timestamp: new Date(startedAt).toISOString(),
     vercelRegion: process.env.VERCEL_REGION,
     vercelEnv:    process.env.VERCEL_ENV,
+    commitSha:    process.env.VERCEL_GIT_COMMIT_SHA,
     summary,
     checks: results,
   };
