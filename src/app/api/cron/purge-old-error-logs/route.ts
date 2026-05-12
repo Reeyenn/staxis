@@ -57,12 +57,38 @@ export async function GET(req: NextRequest) {
   }
 
   const purgedCount = (deleted ?? []).length;
+
+  // ── api_limits janitor (May 2026 audit pass-4) ─────────────────────
+  // staxis_api_limit_cleanup() drops rows with hour_bucket > 48h old.
+  // The doctor's api_limits_writable probe writes one row every 5 min
+  // (288/day), so without periodic cleanup the table accumulates the
+  // probe rows + any real rate-limit rows from SMS-firing endpoints.
+  // The cleanup function existed since migration 0008 but nothing
+  // ever called it. Wiring it into this daily janitor cron keeps the
+  // table small without spinning up a separate workflow.
+  let apiLimitsPurged: number | null = null;
+  try {
+    const { data: cleanupCount, error: cleanupErr } = await supabaseAdmin.rpc(
+      'staxis_api_limit_cleanup',
+    );
+    if (cleanupErr) {
+      // Don't fail the cron — error_logs purge already succeeded.
+      // The next tick will retry the api_limits cleanup.
+      apiLimitsPurged = null;
+    } else {
+      apiLimitsPurged = Number(cleanupCount) || 0;
+    }
+  } catch {
+    apiLimitsPurged = null;
+  }
+
   await writeCronHeartbeat('purge-old-error-logs', {
     requestId,
-    notes: { purged: purgedCount },
+    notes: { purged: purgedCount, api_limits_purged: apiLimitsPurged },
   });
   return ok({
     purged: purgedCount,
+    api_limits_purged: apiLimitsPurged,
     cutoff,
     retentionHours: RETENTION_HOURS,
   }, { requestId });
