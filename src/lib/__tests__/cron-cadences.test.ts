@@ -53,9 +53,13 @@ const SCHEDULE_REGISTRY: ReadonlyArray<{
   source: ScheduleSource;
   cronExpr: string;
 }> = [
-  // Tight cadences (sub-hourly) — GH Actions
-  { heartbeatName: 'process-sms-jobs',      source: { kind: 'github', workflowFile: 'sms-jobs-cron.yml' },           cronExpr: '*/5 * * * *' },
-  { heartbeatName: 'scraper-health',        source: { kind: 'github', workflowFile: 'scraper-health-cron.yml' },     cronExpr: '*/15 * * * *' },
+  // Tight cadences (sub-hourly) — Vercel native cron (May 2026 audit
+  // pass-6: moved from GH Actions, which was silently throttling these
+  // to 60-200 min intervals). Vercel Pro supports per-minute precision.
+  { heartbeatName: 'process-sms-jobs',      source: { kind: 'vercel' },                                              cronExpr: '*/5 * * * *' },
+  { heartbeatName: 'scraper-health',        source: { kind: 'vercel' },                                              cronExpr: '*/15 * * * *' },
+  // seal-daily stays on GH Actions — hourly cadence is well within
+  // GH's reliable range.
   { heartbeatName: 'seal-daily',            source: { kind: 'github', workflowFile: 'seal-daily-cron.yml' },         cronExpr: '5 * * * *' },
   // Daily — most live in ml-cron.yml's multi-cron list
   { heartbeatName: 'ml-run-inference',      source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '30 10 * * *' },

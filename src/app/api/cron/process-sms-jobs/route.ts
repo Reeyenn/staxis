@@ -25,6 +25,11 @@ import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+// Explicit cap (May 2026 audit pass-6). Vercel Pro default would be 300s
+// but pinning here is defensive against future runtime upgrades AND
+// documents the expected upper bound: TICK_LIMIT × per-job Twilio
+// latency ≈ 50 × ~1s = ~50s, with headroom for slow Twilio calls.
+export const maxDuration = 60;
 
 // Hard cap on how many jobs one tick will process. Prevents a backlog
 // from blowing the 30s function limit if Twilio is slow. Tune up if we

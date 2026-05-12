@@ -1190,6 +1190,8 @@ const EXPECTED_MIGRATIONS: ReadonlyArray<string> = [
   '0064', '0065', '0066', '0067', '0068', '0069',
   // Tier 2/3 ML and fleet ops:
   '0070', '0071', '0072', '0073', '0074', '0075',
+  // Bookkeeping backfill (May 2026 audit pass-6 — see migration header).
+  '0076',
 ];
 async function checkAppliedMigrations(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {
@@ -1569,8 +1571,8 @@ export const GH_ACTIONS_SKEW_BUFFER_HOURS = 0.25;
 
 export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; description: string }> = [
   // Tight cadences
-  { name: 'scraper-health',          cadenceHours: 0.25, description: '15-min liveness watcher' },
-  { name: 'process-sms-jobs',        cadenceHours: 5 / 60, description: '5-min SMS jobs queue worker (GH min cron floor)' },
+  { name: 'scraper-health',          cadenceHours: 0.25, description: '15-min liveness watcher (Vercel native cron)' },
+  { name: 'process-sms-jobs',        cadenceHours: 5 / 60, description: '5-min SMS jobs queue worker (Vercel native cron)' },
   { name: 'seal-daily',              cadenceHours: 1,    description: 'hourly per-property daily-seal' },
   // Daily
   { name: 'ml-run-inference',        cadenceHours: 24,   description: 'daily demand+supply+optimizer predictions' },
