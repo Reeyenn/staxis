@@ -39,6 +39,14 @@ const ERROR_CODES = Object.freeze({
   CSV_DOWNLOAD_FAILED: 'csv_download_failed', // download started but never delivered content (no event, no popup, no inline)
   CSV_BAD_CONTENT:     'csv_bad_content',     // download received but doesn't look like a CSV (login HTML, etc.)
   CSV_VALIDATION_FAILED: 'csv_validation_failed', // CSV parsed but the snapshot is degenerate (zero rooms, NaN totals)
+  // Codex audit 2026-05-12: header row doesn't match the expected CA columns.
+  // Distinct from CSV_BAD_CONTENT (which is "this isn't a CSV at all") and
+  // CSV_VALIDATION_FAILED (which is "parsed but the numbers are wrong"):
+  // schema_drift means CA changed their report's column layout and we
+  // refused to parse rather than silently shifting values into wrong fields.
+  // Operator action: re-run the recipe-runner or update EXPECTED_CSV_HEADERS
+  // in scraper/csv-scraper.js to match CA's new export.
+  CSV_SCHEMA_DRIFT:    'csv_schema_drift',
 
   // Catch-all
   UNKNOWN:            'unknown',

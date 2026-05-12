@@ -71,6 +71,10 @@ export async function saveDraftRecipe(args: {
   // reject one and lose its work. Retry-with-fresh-lookup on the
   // unique-violation code (Postgres 23505) handles bounded contention
   // without needing a sequence migration.
+  //
+  // Follow-up note: a proper atomic RPC (staxis_insert_draft_recipe with
+  // pg_advisory_xact_lock) is queued — needs a Supabase migration applied
+  // by the operator. Until then this retry loop is the safety net.
   const MAX_ATTEMPTS = 5;
   let lastErr: { message?: string } | null = null;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {

@@ -21,7 +21,14 @@
 // beforeSendTransaction).
 import type { ErrorEvent, EventHint } from '@sentry/nextjs';
 
-const PHONE_RX = /\+?1?[\s.-]?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/g;
+// 2026-05-12 (Codex audit follow-up): tightened PHONE_RX to reduce
+// false-positive redaction of legitimate 10-digit IDs (order numbers,
+// reference codes, etc.) that match an unformatted 3-3-4 pattern. Now
+// requires EITHER an explicit "+1" prefix (E.164) OR at least one
+// separator inside the digit groups. Trade-off: a bare "4155551234"
+// no longer redacts, but the app's own logs always format phones with
+// dashes (UI) or +1 prefix (Twilio).
+const PHONE_RX = /(?:\+1\d{10}|\+1[\s.-]?\d{3}[\s.-]?\d{3}[\s.-]?\d{4}|\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4})/g;
 const EMAIL_RX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
 const BEARER_RX = /(Authorization:\s*Bearer\s+)\S+/gi;
 const COOKIE_RX = /(Cookie:\s*)[^\n]+/gi;

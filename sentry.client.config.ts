@@ -9,7 +9,7 @@
  */
 
 import * as Sentry from '@sentry/nextjs';
-import { scrubSentryEvent } from '@/lib/sentry-scrub';
+import { scrubSentryEvent, scrubString } from '@/lib/sentry-scrub';
 
 Sentry.init({
   dsn: process.env.NEXT_PUBLIC_SENTRY_DSN || process.env.SENTRY_DSN,
@@ -36,6 +36,11 @@ Sentry.init({
   // and shift IDs. The shared scrubber below redacts those before
   // ingestion so the Sentry project is GDPR/CCPA-safer by default.
   beforeSend: scrubSentryEvent,
+  // 2026-05-12 (Codex audit follow-up): use the SHARED scrubString from
+  // sentry-scrub.ts so breadcrumbs and events scrub against the same set
+  // of patterns. Previously the breadcrumb hook used a 3-pattern inline
+  // scrubber while events used the 7-pattern shared one, which let JWTs
+  // and Twilio SIDs slip past the breadcrumb path.
   beforeBreadcrumb: (crumb) => {
     if (!crumb) return crumb;
     if (crumb.message) {
@@ -50,14 +55,3 @@ Sentry.init({
     return crumb;
   },
 });
-
-// Local import-free scrubber for the breadcrumb hook (avoids circular).
-function scrubString(s: string): string {
-  return s
-    // E.164 / 10-digit US phones
-    .replace(/\+?1?[\s.-]?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/g, '<phone>')
-    // emails
-    .replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, '<email>')
-    // Authorization headers
-    .replace(/(Authorization:\s*Bearer\s+)\S+/gi, '$1<redacted>');
-}

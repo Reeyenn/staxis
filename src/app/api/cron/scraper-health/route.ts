@@ -82,7 +82,8 @@ type AlertCondition =
   | 'ca_unreachable'
   | 'unknown_error'
   | 'stale_no_error'
-  | 'csv_pull_failing';   // morning/evening CSV pull errored (Playwright selector miss, timeout, etc.)
+  | 'csv_pull_failing'    // morning/evening CSV pull errored (Playwright selector miss, timeout, etc.)
+  | 'csv_schema_drift';   // CA changed the Housekeeping Check-off List columns — Codex audit 2026-05-12
 
 function alertMessage(cond: AlertCondition, ctx: AlertContext): string {
   const last = ctx.pulledAtStr ? ` (last good numbers ${ctx.pulledAtStr})` : '';
@@ -110,6 +111,8 @@ function alertMessage(cond: AlertCondition, ctx: AlertContext): string {
       return `Staxis scraper: PMS numbers haven't refreshed in ${ctx.pulledAtMinutesAgo ?? '?'} min but no error reported. Scraper may be hung. Check Railway.`;
     case 'csv_pull_failing':
       return `Staxis scraper: CSV pull failing (${ctx.csvPullType ?? '?'}). Last good ${ctx.pulledAtStr ?? 'unknown'}. Error: "${(ctx.errorMessage ?? '').slice(0, 120)}". Check Railway logs and Choice Advantage page layout.`;
+    case 'csv_schema_drift':
+      return `Staxis scraper: Choice Advantage changed the Housekeeping Check-off List columns. We refused to parse rather than save wrong data. Update EXPECTED_CSV_HEADERS in scraper/csv-scraper.js to match CA's new export. Error: "${(ctx.errorMessage ?? '').slice(0, 120)}"`;
   }
 }
 
@@ -130,6 +133,7 @@ function mapErrorToCondition(code: string | null): AlertCondition | null {
     case 'session_expired':    return 'session_expired_stuck';
     case 'timeout':            return 'timeout_persistent';
     case 'ca_unreachable':     return 'ca_unreachable';
+    case 'csv_schema_drift':   return 'csv_schema_drift';
     case 'unknown':            return 'unknown_error';
     default: return null;
   }
