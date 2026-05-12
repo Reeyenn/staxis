@@ -148,17 +148,11 @@ jobs:
             fi
 
             # Check whether all failing entries are transient.
-            all_transient=$(echo "$response" | python3 -c "
-          import sys, json, os
-          transient = set(os.environ.get('TRANSIENT_CHECKS', '').split())
-          r = json.load(sys.stdin)
-          failing = [c['name'] for c in r.get('checks', []) if c.get('status') == 'fail']
-          if not failing:
-              print('false')
-          else:
-              print('true' if all(n in transient for n in failing) else 'false')
-          ")
+            # One-liner Python to avoid the YAML-indent vs Python-indent
+            # trap — multi-line python3 -c "..." with leading whitespace
+            # confuses Python's parser (May 2026 audit pass-6 lesson).
             export TRANSIENT_CHECKS
+            all_transient=$(echo "$response" | python3 -c "import sys,json,os; t=set(os.environ.get('TRANSIENT_CHECKS','').split()); r=json.load(sys.stdin); f=[c['name'] for c in r.get('checks',[]) if c.get('status')=='fail']; print('true' if (f and all(n in t for n in f)) else 'false')")
 
             if [ "$all_transient" = "true" ] && [ $retry -lt $MAX_RETRIES ]; then
               retry=$((retry + 1))
