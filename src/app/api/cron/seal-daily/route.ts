@@ -245,45 +245,57 @@ async function sealOne(
   if (marksErr) throw marksErr;
   const alreadyMarked = new Set(((existingMarks ?? []) as { staff_id: string }[]).map((m) => m.staff_id));
 
-  // For each crew member without a mark, count their cleaning_events that
-  // day. attended=true if ≥1 completed_at fell on the local date; else
-  // false. We use the property's tz for the date boundary so a hotel in
-  // EST doesn't accidentally pull events from the wrong UTC day.
-  const toMark = crew.filter((staffId) => !alreadyMarked.has(staffId));
+  // Pull this date's cleaning_events ONCE — we use it for both the
+  // attended-yes/no signal AND (if no schedule_assignments row exists)
+  // as the source for the implicit crew set. See fallback below.
+  const { data: events, error: evErr } = await supabaseAdmin
+    .from('cleaning_events')
+    .select('staff_id')
+    .eq('property_id', p.id)
+    .eq('date', targetDate)
+    .not('completed_at', 'is', null);
+  if (evErr) throw evErr;
+  const staffWithEvents = new Set(
+    ((events ?? []) as { staff_id: string }[])
+      .map((e) => e.staff_id)
+      .filter((s): s is string => !!s),
+  );
+
+  // ── Implicit-crew fallback (May 2026 audit pass-5) ─────────────────
+  // Previously: if schedule_assignments.crew was empty (hotel hasn't
+  // adopted the schedule feature yet, or PMS schedule pull hasn't
+  // landed), zero attendance marks were written, labels_complete
+  // stayed false forever, and demand training reported insufficient_
+  // data permanently. Now: if a real schedule exists, use it; if not,
+  // derive the crew from staff who actually completed cleanings.
+  // Their attended=true is implicit (they did the work; they showed
+  // up). This unblocks training for paper-schedule hotels.
+  const effectiveCrew = crew.length > 0 ? crew : Array.from(staffWithEvents);
+
+  // For each crew member without an existing mark, infer attended.
+  const toMark = effectiveCrew.filter((staffId) => !alreadyMarked.has(staffId));
   let attendedCount = 0;
   let noShowCount = 0;
   if (toMark.length > 0) {
-    // Query cleaning_events for this property on this date. We use the
-    // event's own `date` column (which is already the local operational
-    // date stored by the housekeeper write path).
-    const { data: events, error: evErr } = await supabaseAdmin
-      .from('cleaning_events')
-      .select('staff_id')
-      .eq('property_id', p.id)
-      .eq('date', targetDate)
-      .not('completed_at', 'is', null);
-    if (evErr) throw evErr;
-    const staffWithEvents = new Set(((events ?? []) as { staff_id: string }[]).map((e) => e.staff_id));
-
     const rowsToInsert = toMark.map((staffId) => ({
       property_id: p.id,
       date: targetDate,
       staff_id: staffId,
       attended: staffWithEvents.has(staffId),
       marked_by: null,
-      notes: 'auto-marked by seal-daily cron',
+      notes: crew.length > 0
+        ? 'auto-marked by seal-daily cron'
+        : 'auto-marked by seal-daily cron (no schedule — crew derived from cleaning_events)',
     }));
     rowsToInsert.forEach((r) => {
       if (r.attended) attendedCount++;
       else noShowCount++;
     });
 
-    if (rowsToInsert.length > 0) {
-      const { error: insErr } = await supabaseAdmin
-        .from('attendance_marks')
-        .insert(rowsToInsert);
-      if (insErr) throw insErr;
-    }
+    const { error: insErr } = await supabaseAdmin
+      .from('attendance_marks')
+      .insert(rowsToInsert);
+    if (insErr) throw insErr;
   }
 
   // ─── 2. Seal daily_logs ──────────────────────────────────────────────
