@@ -52,6 +52,41 @@ export type ExtractionResult =
 
 const VIEWPORT = { width: 1280, height: 800 };
 
+/**
+ * Thrown by runActionAsTable when (a) a recipe step throws (selector
+ * missing, navigation timeout, parser error) or (b) a required action
+ * returns zero rows (recipe stale — selector matches nothing). The
+ * job-runner converts these into onboarding_jobs.error so the GM sees
+ * "we hit a snag pulling X" instead of silently empty data.
+ *
+ * Codex audit pass-6 P0 — runActionAsTable used to swallow both cases
+ * and return []. The hotel manager would open the app, see zero
+ * arrivals, and have no idea our system silently failed.
+ */
+class RecipeActionFailedError extends Error {
+  constructor(
+    public readonly actionName: string,
+    public readonly reason: string,
+    public readonly underlying?: string,
+  ) {
+    super(`Action "${actionName}" failed: ${reason}`);
+    this.name = 'RecipeActionFailedError';
+  }
+}
+
+/**
+ * Required actions MUST return at least one row — a hotel always has
+ * rooms, staff, and a non-empty room-status snapshot. Optional actions
+ * may legitimately return zero rows (e.g. arrivals on a slow Sunday)
+ * and we don't fail the job for those.
+ */
+const REQUIRED_ACTIONS: ReadonlySet<string> = new Set([
+  'getRoomLayout',
+  'getStaffRoster',
+  'getRoomStatus',
+  'getHistoricalOccupancy',
+]);
+
 export async function runRecipeExtraction(opts: RunOptions): Promise<ExtractionResult> {
   let browser: Browser | null = null;
 
@@ -88,31 +123,31 @@ export async function runRecipeExtraction(opts: RunOptions): Promise<ExtractionR
     if (opts.recipe.actions.getRoomLayout) {
       opts.onProgress?.('Pulling room list…', 72);
       data.rooms = await runActionAsTable<PMSRoomDescriptor>(
-        page, opts.recipe.actions.getRoomLayout, opts.credentials,
+        page, 'getRoomLayout', opts.recipe.actions.getRoomLayout, opts.credentials,
       );
     }
     if (opts.recipe.actions.getStaffRoster) {
       opts.onProgress?.('Pulling staff roster…', 78);
       data.staff = await runActionAsTable<PMSStaffMember>(
-        page, opts.recipe.actions.getStaffRoster, opts.credentials,
+        page, 'getStaffRoster', opts.recipe.actions.getStaffRoster, opts.credentials,
       );
     }
     if (opts.recipe.actions.getArrivals) {
       opts.onProgress?.('Pulling today\'s arrivals…', 82);
       data.arrivalsToday = await runActionAsTable<PMSArrival>(
-        page, opts.recipe.actions.getArrivals, opts.credentials,
+        page, 'getArrivals', opts.recipe.actions.getArrivals, opts.credentials,
       );
     }
     if (opts.recipe.actions.getDepartures) {
       opts.onProgress?.('Pulling today\'s departures…', 85);
       data.departuresToday = await runActionAsTable<PMSDeparture>(
-        page, opts.recipe.actions.getDepartures, opts.credentials,
+        page, 'getDepartures', opts.recipe.actions.getDepartures, opts.credentials,
       );
     }
     if (opts.recipe.actions.getRoomStatus) {
       opts.onProgress?.('Pulling room status…', 88);
       data.roomStatus = await runActionAsTable<PMSRoomStatus>(
-        page, opts.recipe.actions.getRoomStatus, opts.credentials,
+        page, 'getRoomStatus', opts.recipe.actions.getRoomStatus, opts.credentials,
       );
     }
     if (opts.recipe.actions.getHistoricalOccupancy) {
@@ -120,12 +155,36 @@ export async function runRecipeExtraction(opts: RunOptions): Promise<ExtractionR
       // History rows: { date, occupied, totalRooms }
       type HistoryRow = { date: string; occupied: number; totalRooms: number };
       data.history = await runActionAsTable<HistoryRow>(
-        page, opts.recipe.actions.getHistoricalOccupancy, opts.credentials,
+        page, 'getHistoricalOccupancy', opts.recipe.actions.getHistoricalOccupancy, opts.credentials,
       );
     }
 
     return { ok: true, data };
   } catch (err) {
+    // Codex audit pass-6 P0 — distinguish a structured action failure
+    // (recipe broke on action X, returned zero rows or threw) from a
+    // generic runner crash. The structured case names the specific
+    // action so the GM-facing message can say "we couldn't pull
+    // arrivals" instead of "something went wrong."
+    if (err instanceof RecipeActionFailedError) {
+      log.error('recipe action failed', {
+        actionName: err.actionName,
+        reason: err.reason,
+        underlying: err.underlying,
+      });
+      return {
+        ok: false,
+        userMessage:
+          `We couldn't pull ${humanizeAction(err.actionName)} from your PMS — ` +
+          `the page layout may have changed. We'll re-map and try again.`,
+        detail: {
+          phase: 'recipe_runner',
+          action: err.actionName,
+          reason: err.reason,
+          underlying: err.underlying,
+        },
+      };
+    }
     const e = err as Error;
     log.error('recipe-runner crashed', { err: e.message });
     return {
@@ -135,6 +194,18 @@ export async function runRecipeExtraction(opts: RunOptions): Promise<ExtractionR
     };
   } finally {
     if (browser) await browser.close().catch(() => {});
+  }
+}
+
+function humanizeAction(actionName: string): string {
+  switch (actionName) {
+    case 'getRoomLayout':         return 'the room list';
+    case 'getStaffRoster':        return 'the staff roster';
+    case 'getArrivals':           return "today's arrivals";
+    case 'getDepartures':         return "today's departures";
+    case 'getRoomStatus':         return 'room status';
+    case 'getHistoricalOccupancy':return 'occupancy history';
+    default:                      return actionName;
   }
 }
 
@@ -217,21 +288,32 @@ async function runLogin(
 
 async function runActionAsTable<T>(
   page: Page,
+  actionName: string,
   action: ActionRecipe,
   creds: PMSCredentials,
 ): Promise<T[]> {
+  // Codex audit pass-6 P0 — old behavior was: catch any error, log a
+  // warn, return []. The job marked as success with empty data and
+  // the GM had no way to know the recipe broke. This rewrite throws
+  // a structured RecipeActionFailedError that the top-level runner
+  // converts into a real failure result. Required actions also throw
+  // when the table comes back empty (stale rowSelector), since a
+  // hotel can't actually have zero rooms or zero staff.
+  let rows: unknown[];
   try {
     for (const step of action.steps) {
       await runStep(page, step, creds);
     }
 
     if (action.parse.mode !== 'table') {
-      log.warn('non-table parse mode not yet supported', { mode: action.parse.mode });
-      return [];
+      throw new RecipeActionFailedError(
+        actionName,
+        `unsupported parse mode "${action.parse.mode}" — recipe needs re-mapping`,
+      );
     }
 
     const hint = action.parse.hint;
-    const rows = await page.$$eval(
+    rows = await page.$$eval(
       hint.rowSelector,
       (els: Element[], columns: Record<string, string>) => {
         return els.map((el: Element) => {
@@ -246,10 +328,28 @@ async function runActionAsTable<T>(
       },
       hint.columns,
     );
-
-    return rows as unknown as T[];
   } catch (err) {
-    log.warn('table action failed', { err: (err as Error).message });
-    return [];
+    // Re-throw our own typed error untouched; wrap anything else.
+    if (err instanceof RecipeActionFailedError) throw err;
+    throw new RecipeActionFailedError(
+      actionName,
+      'recipe step or selector failed at runtime',
+      (err as Error).message,
+    );
   }
+
+  // Required actions can't legitimately be empty. A zero-row return
+  // here means the recipe's rowSelector is stale (PMS UI changed and
+  // the selector now matches nothing). Fail explicitly so the runner
+  // surfaces the issue and triggers a re-map; a hotel can't actually
+  // have zero rooms or zero staff. Optional actions (arrivals,
+  // departures) may legitimately be 0 on a slow day — those pass.
+  if (rows.length === 0 && REQUIRED_ACTIONS.has(actionName)) {
+    throw new RecipeActionFailedError(
+      actionName,
+      'rowSelector matched zero rows — recipe likely stale (PMS UI may have changed)',
+    );
+  }
+
+  return rows as T[];
 }

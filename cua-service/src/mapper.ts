@@ -352,7 +352,7 @@ async function mapLogin(
     {
       const budget = await isJobOverBudget(ctx.jobId);
       if (budget.over) {
-        log.warn('login mapper aborting — cumulative cost cap hit', { jobId: ctx.jobId, ...budget });
+        log.warn('login mapper aborting — cumulative cost cap hit', { jobId: ctx.jobId ?? undefined, ...budget });
         return {
           ok: false,
           userMessage:
@@ -572,7 +572,7 @@ async function mapAction(args: {
       const budget = await isJobOverBudget(args.jobId);
       if (budget.over) {
         log.warn('action mapper aborting — cumulative cost cap hit', {
-          jobId: args.jobId, actionName: args.actionName, ...budget,
+          jobId: args.jobId ?? undefined, actionName: args.actionName, ...budget,
         });
         return { ok: false, reason: 'cost cap hit', finalUrl: args.page.url() };
       }
