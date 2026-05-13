@@ -214,7 +214,15 @@ export function ScheduleTab() {
   }, [persist]);
 
   // ── Handlers ──────────────────────────────────────────────────────────
+  // Once-loaded gate: assignment-mutating handlers are disabled (and
+  // refuse to fire) until the saved doc for the current date has
+  // finished hydrating. Without this, a click on Auto-assign or Reset
+  // immediately after switching dates can be silently overwritten by
+  // the in-flight subscription callback that arrives a moment later.
+  const ready = hydratedDate.current === shiftDate;
+
   const handleAutoAssign = () => {
+    if (!ready) return;
     // Pass the SAME shift cap the UI uses for capacity bars / recommended-HK
     // math. Hardcoding 420 here while the UI reads activeProperty.shiftMinutes
     // would produce bars that disagree with what the algorithm actually
@@ -233,6 +241,7 @@ export function ScheduleTab() {
   };
 
   const handleReset = () => {
+    if (!ready) return;
     setAssignments({});
     flashToast(lang === 'es' ? 'Asignaciones reseteadas' : 'Assignments reset');
   };
@@ -293,6 +302,12 @@ export function ScheduleTab() {
     setToast(msg);
     toastTimer.current = setTimeout(() => setToast(null), 4000);
   };
+
+  // Clear any pending toast timer on unmount so a delayed setToast(null)
+  // can't fire after the component is gone (React warns + leaks state).
+  useEffect(() => () => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+  }, []);
 
   // Shift back/forward controls — date stepper
   const today = useMemo(() => new Date().toLocaleDateString('en-CA'), []);
@@ -568,10 +583,10 @@ export function ScheduleTab() {
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <Btn variant="ghost" size="md" onClick={handleReset}>
+          <Btn variant="ghost" size="md" onClick={handleReset} disabled={!ready}>
             {lang === 'es' ? 'Resetear todo' : 'Reset all'}
           </Btn>
-          <Btn variant="primary" size="md" onClick={handleAutoAssign} disabled={activeCrew.length === 0}>
+          <Btn variant="primary" size="md" onClick={handleAutoAssign} disabled={!ready || activeCrew.length === 0}>
             ↻ {lang === 'es' ? 'Auto-asignar' : 'Auto-assign'} {assignableRooms.length} {lang === 'es' ? 'cuartos' : 'rooms'}
           </Btn>
           <Btn variant="sage" size="md" onClick={handleSend} disabled={sending || activeCrew.length === 0}>

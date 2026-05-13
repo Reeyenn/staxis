@@ -60,6 +60,9 @@ export function DeepCleanTab() {
   const [showCadence, setShowCadence] = useState(false);
   const [cadenceDraft, setCadenceDraft] = useState<number>(28);
   const [savingCadence, setSavingCadence] = useState(false);
+  // Tracks the bulk-schedule promise so rapid clicks on "Schedule N deep
+  // cleans" can't fire the same writes 3× before optimistic state updates.
+  const [bulkScheduling, setBulkScheduling] = useState(false);
   // `loaded` flips true after the first records-fetch resolves so the
   // empty list doesn't flash "Nothing overdue" while still loading.
   const [loaded, setLoaded] = useState(false);
@@ -68,9 +71,25 @@ export function DeepCleanTab() {
   const uid = user?.uid ?? '';
   const pid = activePropertyId ?? '';
 
-  // Pinned per-mount today; component re-mounts on day rollover via the
-  // route key, so no need to track midnight transitions inside state.
-  const today = useMemo(() => new Date(), []);
+  // `today` reactively rebuilds when todayStrReactive flips at midnight,
+  // so a tab left open overnight doesn't quietly compute days-since-clean
+  // off yesterday's date. Identity stability still matters for downstream
+  // useMemos — keying off the string means it only changes once per day.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: midnight rollover trigger
+  const today = useMemo(() => new Date(), [todayStrReactive]);
+
+  // Parse a YYYY-MM-DD string as a *local* date (midnight in the user's
+  // timezone) instead of UTC midnight. `new Date('2026-05-12')` parses
+  // as UTC, so the manager in CDT sees it as 2026-05-11 19:00 — and the
+  // recent-log row displays "May 11" for a clean that actually happened
+  // May 12. This helper anchors the date in the local zone so labels and
+  // days-since math agree.
+  const parseLocalDate = (ymd: string | null | undefined): Date | null => {
+    if (!ymd) return null;
+    const parts = ymd.split('-').map(Number);
+    if (parts.length !== 3 || parts.some(n => Number.isNaN(n))) return null;
+    return new Date(parts[0], parts[1] - 1, parts[2]);
+  };
 
   const allRoomNumbers = useMemo(() => {
     const inv = activeProperty?.roomInventory ?? [];
@@ -109,10 +128,19 @@ export function DeepCleanTab() {
     }
   }, [uid, pid, lang]);
 
-  // Load config + records on mount + subscribe to today's rooms for DND math.
+  // Load config + records on mount/property-change + subscribe to today's
+  // rooms for DND math. Resets local state immediately when uid/pid
+  // changes so a slow response from the previous property can't paint
+  // its data over the new one (and the loading skeleton shows again
+  // during the gap).
   useEffect(() => {
     if (!uid || !pid) return;
+    setLoaded(false);
+    setRecords({});
+    setConfigState(null);
+    let cancelled = false;
     getDeepCleanConfig(uid, pid).then(c => {
+      if (cancelled) return;
       setConfigState(c);
       if (c?.frequencyDays) setCadenceDraft(c.frequencyDays);
     }).catch(err => {
@@ -121,7 +149,8 @@ export function DeepCleanTab() {
       // toast — the records-fetch toast already signals if the DB is down.
     });
     refreshRecords();
-    return subscribeToRooms(uid, pid, todayStrReactive, setTodayRooms);
+    const unsub = subscribeToRooms(uid, pid, todayStrReactive, setTodayRooms);
+    return () => { cancelled = true; unsub(); };
   }, [uid, pid, todayStrReactive, refreshRecords]);
 
   // Refresh on tab-visibility change (manager comes back from another tab)
@@ -163,7 +192,14 @@ export function DeepCleanTab() {
         inProgress: rec?.status === 'in_progress',
       };
     }
-    const last = new Date(rec.lastDeepClean);
+    const last = parseLocalDate(rec.lastDeepClean);
+    if (!last) {
+      return {
+        number: num, daysSince: Infinity, parDays,
+        lastCleaned: null, cleanedBy: null, status: 'never' as const,
+        inProgress: rec.status === 'in_progress',
+      };
+    }
     const daysSince = Math.floor((today.getTime() - last.getTime()) / 86_400_000);
     const ratio = daysSince / parDays;
     let status: RowStatus = 'fresh';
@@ -251,6 +287,10 @@ export function DeepCleanTab() {
       flashToast(lang === 'es' ? 'Cadencia guardada' : 'Cadence saved');
     } catch (err) {
       console.error('[DeepCleanTab] save cadence failed:', err);
+      flashToast(
+        lang === 'es' ? 'No se pudo guardar la cadencia' : 'Could not save cadence',
+        'error',
+      );
     } finally {
       setSavingCadence(false);
     }
@@ -350,12 +390,21 @@ export function DeepCleanTab() {
             <Btn
               variant="primary"
               size="md"
-              onClick={() => {
-                const queue = overdue.slice(0, fits);
-                Promise.all(queue.map(r => handleSchedule(r.number)));
+              disabled={bulkScheduling}
+              onClick={async () => {
+                if (bulkScheduling) return;
+                setBulkScheduling(true);
+                try {
+                  const queue = overdue.slice(0, fits);
+                  await Promise.all(queue.map(r => handleSchedule(r.number)));
+                } finally {
+                  setBulkScheduling(false);
+                }
               }}
             >
-              {lang === 'es' ? 'Programar' : 'Schedule'} {fits} {lang === 'es' ? 'profunda(s)' : 'deep clean' + (fits === 1 ? '' : 's')} →
+              {bulkScheduling
+                ? (lang === 'es' ? 'Programando…' : 'Scheduling…')
+                : <>{lang === 'es' ? 'Programar' : 'Schedule'} {fits} {lang === 'es' ? 'profunda(s)' : 'deep clean' + (fits === 1 ? '' : 's')} →</>}
             </Btn>
           )}
         </div>
@@ -469,7 +518,10 @@ export function DeepCleanTab() {
               gap: 10, padding: '14px 0', borderBottom: `1px solid ${T.ruleSoft}`, alignItems: 'center',
             }}>
               <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.ink2 }}>
-                {rc.lastDeepClean ? format(new Date(rc.lastDeepClean), 'MMM d') : '—'}
+                {(() => {
+                  const d = parseLocalDate(rc.lastDeepClean);
+                  return d ? format(d, 'MMM d') : '—';
+                })()}
               </span>
               <span style={{
                 fontFamily: FONT_SERIF, fontSize: 20, color: T.ink, fontStyle: 'italic',

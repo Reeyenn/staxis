@@ -13,7 +13,7 @@
 // room has helpRequested = true, the popup is replaced by the backup
 // picker (same flow as before, just re-skinned to Snow).
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -49,6 +49,10 @@ export function RoomsTab() {
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  // Single tracked timer so a slow toast can't get hidden by a faster one
+  // landing right after, and so an unmounted component can't race-fire
+  // setToastMessage(null). Cleared on unmount via the effect below.
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [toastKind, setToastKind] = useState<'success' | 'error'>('success');
   const [actionRoom, setActionRoom] = useState<Room | null>(null);
   const [backupRoom, setBackupRoom] = useState<Room | null>(null);
@@ -174,9 +178,16 @@ export function RoomsTab() {
       setToastMessage(lang === 'es' ? 'Error al conectar con PMS' : 'PMS connection error');
     } finally {
       setPopulating(false);
-      setTimeout(() => setToastMessage(null), 3000);
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+      toastTimer.current = setTimeout(() => setToastMessage(null), 3000);
     }
   }, [user, activePropertyId, populating, today, lang]);
+
+  // Clean up the toast timer on unmount so a delayed setToastMessage(null)
+  // can't fire after the component is gone (causes a React warning + leaks).
+  useEffect(() => () => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+  }, []);
 
   // Cycle a room's status: dirty → in_progress → clean → dirty. Phantom
   // rooms are materialized into a real DB row on first click.
@@ -212,15 +223,18 @@ export function RoomsTab() {
     setActionRoom(null);
   };
 
-  // Assign a backup housekeeper to a room that hit "help requested" and
-  // text them via /api/notify-backup. Same flow as before.
-  const handleSendBackup = async (room: Room, backupStaffId: string, backupStaffName: string) => {
+  // Assign a backup housekeeper to a room that hit "help requested".
+  //   1. Send the SMS first so we know whether it actually went out.
+  //   2. Only clear `helpRequested` if the SMS succeeded — otherwise the
+  //      HELP badge stays on the room as the obvious retry cue (and we
+  //      surface a warm toast so the manager knows the text didn't land).
+  //   3. Pass the *backup housekeeper's own* language to the API so a
+  //      Spanish-speaking housekeeper gets a Spanish text, not the UI's
+  //      current language. (Hardcoded 'en' was wrong even when the UI
+  //      was in Spanish.)
+  const handleSendBackup = async (room: Room, backupStaff: StaffMember) => {
     if (!user || !activePropertyId) return;
     if (!navigator.onLine) recordOfflineAction();
-    await updateRoom(user.uid, activePropertyId, room.id, {
-      helpRequested: false,
-      issueNote: `Backup sent: ${backupStaffName} at ${new Date().toLocaleTimeString()}`,
-    });
     let smsFailed = false;
     try {
       const res = await fetchWithAuth('/api/notify-backup', {
@@ -228,31 +242,38 @@ export function RoomsTab() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           uid: user.uid, pid: activePropertyId,
-          backupStaffId, roomNumber: room.number, language: 'en',
+          backupStaffId: backupStaff.id,
+          roomNumber: room.number,
+          language: backupStaff.language ?? 'en',
         }),
       });
       if (!res.ok) smsFailed = true;
     } catch {
-      // Network error or fetch threw — surface the failure so the
-      // manager doesn't trust a "sent ✓" toast when the housekeeper's
-      // phone is silent. We've already cleared helpRequested above (so
-      // the room doesn't keep flashing HELP), but the toast tells the
-      // truth so they can re-send or call manually.
       smsFailed = true;
     }
+    if (!smsFailed) {
+      // SMS confirmed — safe to clear the HELP badge. Without this
+      // ordering, a network failure left the room un-flagged AND the
+      // backup uninformed — invisible to the manager until they noticed.
+      await updateRoom(user.uid, activePropertyId, room.id, {
+        helpRequested: false,
+        issueNote: `Backup sent: ${backupStaff.name} at ${new Date().toLocaleTimeString()}`,
+      });
+    }
     setBackupRoom(null);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
     if (smsFailed) {
       setToastKind('error');
       setToastMessage(lang === 'es'
-        ? `${backupStaffName} no recibió el aviso — intenta de nuevo`
-        : `${backupStaffName} not notified — try again`);
+        ? `${backupStaff.name} no recibió el aviso — intenta de nuevo`
+        : `${backupStaff.name} not notified — try again`);
     } else {
       setToastKind('success');
       setToastMessage(lang === 'es'
-        ? `${backupStaffName} enviado a ${room.number}`
-        : `${backupStaffName} sent to Room ${room.number}`);
+        ? `${backupStaff.name} enviado a ${room.number}`
+        : `${backupStaff.name} sent to Room ${room.number}`);
     }
-    setTimeout(() => setToastMessage(null), 3500);
+    toastTimer.current = setTimeout(() => setToastMessage(null), 3500);
   };
 
   // Group rooms by floor → reversed so the top floor renders first
@@ -620,7 +641,7 @@ export function RoomsTab() {
                 .map(s => (
                 <button
                   key={s.id}
-                  onClick={() => handleSendBackup(backupRoom, s.id, s.name)}
+                  onClick={() => handleSendBackup(backupRoom, s)}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 12,
                     padding: '10px 14px', borderRadius: 12,

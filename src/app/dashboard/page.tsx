@@ -154,21 +154,40 @@ export default function DashboardPage() {
     const items: Item[] = [];
     const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
+    // Safely coerce a createdAt value that could be: a real Date, a
+    // Firestore-style Timestamp object with .toDate(), an ISO string
+    // (Supabase's normal shape), or null. Returns null when we can't
+    // get a valid Date — the caller decides whether to drop the item or
+    // surface it with a placeholder. The previous code had two subtly
+    // different versions per branch — handoffs handled ISO strings,
+    // openOrders fell back to `new Date()` (== "right now") which made
+    // older rows appear current and broke sort order.
+    const safeDate = (raw: unknown): Date | null => {
+      if (!raw) return null;
+      if (raw instanceof Date) return isNaN(raw.getTime()) ? null : raw;
+      if (typeof raw === 'object' && 'toDate' in raw && typeof (raw as { toDate?: unknown }).toDate === 'function') {
+        const d = (raw as { toDate: () => Date }).toDate();
+        return isNaN(d.getTime()) ? null : d;
+      }
+      if (typeof raw === 'string' || typeof raw === 'number') {
+        const d = new Date(raw);
+        return isNaN(d.getTime()) ? null : d;
+      }
+      return null;
+    };
+
     handoffs.forEach(h => {
-      if (!h.createdAt) return;
-      const d = h.createdAt instanceof Date
-        ? h.createdAt
-        : (h.createdAt as { toDate?: () => Date }).toDate?.() || new Date(h.createdAt as string);
-      if (d < cutoff) return;
+      const d = safeDate(h.createdAt);
+      if (!d || d < cutoff) return;
       items.push({ id: `h-${h.id}`, time: d, tone: 'sage', text: `${h.shiftType}: ${h.notes}` });
     });
 
     openOrders.forEach(o => {
-      // o.createdAt can be Date | Firestore Timestamp | null; the nested
-      // optional-chain handles all three without TypeScript narrowing
-      // through the union, so we route through `unknown` to silence TS2352.
-      const ts = o.createdAt as unknown as { toDate?: () => Date } | Date | null;
-      const d = ts instanceof Date ? ts : ts?.toDate?.() || new Date();
+      const d = safeDate(o.createdAt);
+      // Drop the item entirely if we can't pin a real timestamp on it —
+      // ranking it as "right now" caused old work orders to crowd out
+      // genuinely fresh handoffs in the briefing.
+      if (!d) return;
       const tone: 'warm' | 'caramel' = o.severity === 'urgent' ? 'warm' : 'caramel';
       items.push({ id: `wo-${o.id}`, time: d, tone, text: `Rm ${o.roomNumber}: ${o.description}` });
     });

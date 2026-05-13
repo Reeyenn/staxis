@@ -43,6 +43,17 @@ function fmtDec(mins: number | null | undefined): string {
   return `${mins.toFixed(1)}m`;
 }
 
+// Parse YYYY-MM-DD as a *local* midnight date instead of UTC. Without
+// this, `new Date('2026-05-12')` lands at UTC midnight, which renders
+// as "May 11" for any timezone west of UTC — flagged events from "today"
+// would display as yesterday.
+function parseLocalDate(ymd: string | null | undefined): Date | null {
+  if (!ymd) return null;
+  const parts = ymd.split('-').map(Number);
+  if (parts.length !== 3 || parts.some(n => Number.isNaN(n))) return null;
+  return new Date(parts[0], parts[1] - 1, parts[2]);
+}
+
 interface StaffStats {
   staffId: string;
   name: string;
@@ -218,7 +229,22 @@ export function PerformanceTab() {
     { k: '1yr',  l: lang === 'es' ? '1 año'    : '1 year' },
   ];
 
-  // CSV export — kept from the previous version.
+  // CSV export — coerces startedAt/completedAt safely. The CleaningEvent
+  // type narrows to Date in TS, but Supabase row mappers occasionally
+  // forward an ISO string through (especially for legacy rows that
+  // bypassed the mapper); calling .toISOString() on a string blows up
+  // mid-export. The helper accepts both.
+  const toIso = (v: unknown): string => {
+    if (v instanceof Date) return v.toISOString();
+    if (typeof v === 'string') {
+      const d = new Date(v);
+      return isNaN(d.getTime()) ? '' : d.toISOString();
+    }
+    if (typeof v === 'object' && v !== null && 'toDate' in v && typeof (v as { toDate?: unknown }).toDate === 'function') {
+      return (v as { toDate: () => Date }).toDate().toISOString();
+    }
+    return '';
+  };
   const handleExport = useCallback(() => {
     if (events.length === 0) return;
     const fromDate = view === 'live' ? today : format(subDays(new Date(), VIEW_DAYS[view] - 1), 'yyyy-MM-dd');
@@ -228,7 +254,7 @@ export function PerformanceTab() {
       e.date, e.roomNumber, e.roomType,
       e.stayoverDay === 1 ? 'S1' : e.stayoverDay === 2 ? 'S2' : (e.roomType === 'checkout' ? 'CO' : ''),
       e.staffName,
-      e.startedAt.toISOString(), e.completedAt.toISOString(),
+      toIso(e.startedAt), toIso(e.completedAt),
       e.durationMinutes.toFixed(2),
       e.status,
     ]);
@@ -402,7 +428,10 @@ export function PerformanceTab() {
                   gap: 14, alignItems: 'center',
                 }}>
                   <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink3 }}>
-                    {format(new Date(f.date), 'MMM d')}
+                    {(() => {
+                      const d = parseLocalDate(f.date);
+                      return d ? format(d, 'MMM d') : f.date;
+                    })()}
                   </span>
                   <span style={{
                     fontFamily: FONT_SERIF, fontSize: 20, color: T.ink, fontStyle: 'italic',

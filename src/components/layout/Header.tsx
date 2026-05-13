@@ -50,8 +50,10 @@ export function Header() {
   const isAdmin = user?.role === 'admin';
   const navLinks = [
     ...baseNavLinks,
+    // ML stays "ML" in both locales — it's a proper noun the team uses
+    // verbatim. Only "Admin" → "Administración" needs the swap.
     ...(isAdmin ? [{ href: '/admin/ml', label: 'ML' }] : []),
-    ...(isAdmin ? [{ href: '/admin/properties', label: 'Admin' }] : []),
+    ...(isAdmin ? [{ href: '/admin/properties', label: lang === 'es' ? 'Admin.' : 'Admin' }] : []),
   ];
 
   const handleSwitchProperty = (id: string) => {
@@ -137,7 +139,7 @@ export function Header() {
               transition: 'background 0.15s',
             }}
             onClick={() => {}}
-            aria-label="Notifications"
+            aria-label={lang === 'es' ? 'Notificaciones' : 'Notifications'}
           >
             <Bell size={18} color={ink2} />
           </button>
@@ -170,7 +172,7 @@ export function Header() {
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               transition: 'background 0.15s',
             }}
-            aria-label="Settings"
+            aria-label={lang === 'es' ? 'Configuración' : 'Settings'}
           >
             <Settings size={18} color={ink2} />
           </button>
@@ -188,7 +190,7 @@ export function Header() {
                   color: ink, fontWeight: 600, fontSize: '13px', flexShrink: 0,
                   fontFamily: sansFont,
                 }}
-                aria-label="User menu"
+                aria-label={lang === 'es' ? 'Menú de usuario' : 'User menu'}
               >
                 {(user.displayName?.[0] ?? user.username?.[0] ?? 'U').toUpperCase()}
               </button>
