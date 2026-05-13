@@ -203,14 +203,9 @@ export default function DashboardPage() {
   const mtCost    = Math.round(1 * wage * 8);
   const totalCost = fdCost + hkCost + mtCost;
 
-  // Date + greeting strings (only the greeting word and weekday change for
-  // Spanish — the rest is locale-formatted).
-  const greeting = (() => {
-    const h = new Date().getHours();
-    if (lang === 'es') return h < 12 ? 'Buenos días' : h < 18 ? 'Buenas tardes' : 'Buenas noches';
-    return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
-  })();
-  const firstName = (user?.displayName ?? user?.username ?? '').split(' ')[0];
+  // Date string — locale-aware, full weekday + month. Lives at the top
+  // of the right-side stat list now (the greeting strip was dropped to
+  // pull the page up vertically).
   const dateLine = new Date().toLocaleDateString(lang === 'es' ? 'es-MX' : 'en-US', {
     weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
   });
@@ -326,37 +321,19 @@ export default function DashboardPage() {
         padding: '32px 48px',
       }}>
 
-        {/* greeting strip ─────────────────────────────────────────── */}
-        <div style={{
-          display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
-          marginBottom: '36px', flexWrap: 'wrap', gap: '8px',
-        }}>
-          <span style={{
-            fontFamily: FONT_MONO, fontSize: '10px', color: C.ink3,
-            letterSpacing: '0.18em', textTransform: 'uppercase',
-          }}>
-            {dateLine}
-          </span>
-          <span style={{
-            fontFamily: FONT_MONO, fontSize: '10px', color: C.ink3,
-            letterSpacing: '0.18em', textTransform: 'uppercase',
-          }}>
-            {greeting}{firstName ? `, ${firstName}` : ''}
-          </span>
-        </div>
-
-        {/* hero row — focal occupancy + stat list ─────────────────── */}
+        {/* hero row — focal occupancy + stat list ───────────────────
+            The greeting strip is gone; the date now lives at the top of
+            the right-side stat list (see below) so it's all one tighter
+            block. Top spacing trimmed (was marginBottom 48; now 24) so
+            the divider sits closer to the hero and the page reads less
+            spacey. */}
         <div style={{
           display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: '48px',
-          marginBottom: '48px', alignItems: 'start',
+          marginBottom: '24px', alignItems: 'start',
         }}>
-          {/* LEFT: focal occupancy — content right-aligned within the
-              wider 1.5fr column so the giant 82% sits closer to the
-              middle of the page instead of glued to the far left. The
-              inner content stays left-justified relative to its own
-              max-width box, so labels / subhead / buttons all align to
-              the same vertical edge. */}
-          <div style={{ maxWidth: 600, marginLeft: 'auto', width: '100%' }}>
+          {/* LEFT: focal occupancy. Reverted the centering hack — the
+              giant 82% sits in its natural left position again. */}
+          <div>
             <span style={{
               fontFamily: FONT_MONO, fontSize: '13px', color: C.ink2,
               letterSpacing: '0.16em', textTransform: 'uppercase', fontWeight: 500,
@@ -421,8 +398,21 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* RIGHT: stat list */}
+          {/* RIGHT: stat list — now leads with the date (right-aligned),
+              which used to live in the dropped greeting strip. Slight
+              right-side breathing room (paddingRight 4) so the text
+              doesn't crash the column edge. */}
           <div style={{ display: 'flex', flexDirection: 'column' }}>
+            <div style={{
+              textAlign: 'right', paddingRight: 4, paddingBottom: 12,
+            }}>
+              <span style={{
+                fontFamily: FONT_MONO, fontSize: '10px', color: C.ink3,
+                letterSpacing: '0.18em', textTransform: 'uppercase',
+              }}>
+                {dateLine}
+              </span>
+            </div>
             {stats.map((row, i) => (
               <div key={row.label} style={{
                 padding: '18px 0',
@@ -459,7 +449,7 @@ export default function DashboardPage() {
         {/* lower band — Guests / Revenue / Briefing ─────────────── */}
         <div style={{
           display: 'grid', gridTemplateColumns: '1fr 1fr 1.4fr', gap: '32px',
-          paddingTop: '32px', borderTop: `1px solid ${C.rule}`,
+          paddingTop: '20px', borderTop: `1px solid ${C.rule}`,
         }}>
           {/* Guests */}
           <div>
