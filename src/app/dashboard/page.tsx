@@ -350,8 +350,13 @@ export default function DashboardPage() {
           display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: '48px',
           marginBottom: '48px', alignItems: 'start',
         }}>
-          {/* LEFT: focal occupancy */}
-          <div>
+          {/* LEFT: focal occupancy — content right-aligned within the
+              wider 1.5fr column so the giant 82% sits closer to the
+              middle of the page instead of glued to the far left. The
+              inner content stays left-justified relative to its own
+              max-width box, so labels / subhead / buttons all align to
+              the same vertical edge. */}
+          <div style={{ maxWidth: 600, marginLeft: 'auto', width: '100%' }}>
             <span style={{
               fontFamily: FONT_MONO, fontSize: '13px', color: C.ink2,
               letterSpacing: '0.16em', textTransform: 'uppercase', fontWeight: 500,
