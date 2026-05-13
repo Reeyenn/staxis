@@ -1265,7 +1265,7 @@ export const EXPECTED_MIGRATIONS: ReadonlyArray<string> = [
   '0090', '0091', '0092', '0093', '0094',
   '0095', '0096', '0097', '0098', '0099',
   '0100', '0101', '0102', '0103', '0104',
-  '0105', '0106',
+  '0105', '0106', '0107',
 ];
 async function checkAppliedMigrations(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {
@@ -1864,8 +1864,14 @@ async function checkInventoryAutoFillShape(): Promise<Omit<Check, 'name' | 'dura
     const items = await getInventoryAutoFillMap(
       propertyId,
       'always-on',
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      supabaseAdmin as unknown as any,
+      // The cast goes through `unknown` because the function's parameter
+      // type is a minimal AutoFillReadClient interface that doesn't
+      // structurally match supabaseAdmin's full SupabaseClient builder
+      // chain (only the methods actually called need to exist). No
+      // eslint-disable needed — this repo's flat config doesn't load
+      // @typescript-eslint/no-explicit-any as a rule (verified in
+      // eslint.config.js).
+      supabaseAdmin as unknown as Parameters<typeof getInventoryAutoFillMap>[2],
     );
     if (!Array.isArray(items)) {
       return {
