@@ -1,0 +1,66 @@
+# Nightly ML smoke test — Phase 4 (2026-05-13)
+#
+# Why this exists:
+#   Doctor catches env/auth/freshness regressions. Unit tests catch
+#   per-module logic regressions. Neither catches "the chain still
+#   types but the cockpit response shape silently dropped a Phase 1
+#   field." This smoke runs scripts/ml-smoke-test.ts against the live
+#   prod API once a night and shape-checks the contracts we locked in.
+#
+# Required GitHub Secrets:
+#   CRON_SECRET             — Bearer for /api/admin/doctor
+#   SMOKE_PROPERTY_ID       — UUID of a designated read-only property
+#   SUPABASE_URL            — for the property_misconfigured events read
+#   SUPABASE_SERVICE_ROLE   — service role key
+
+name: ML smoke (nightly)
+
+on:
+  schedule:
+    # 02:00 UTC daily (~9pm Central). After all daily ML crons have run.
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write   # so we can open an issue on failure
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install minimal deps for the smoke script
+        run: |
+          # tsx runs .ts directly without a build step; @supabase/supabase-js
+          # is the only runtime dep the smoke script needs that isn't stdlib.
+          npm install --no-save tsx @supabase/supabase-js
+      - name: Run smoke
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          SMOKE_PROPERTY_ID: ${{ secrets.SMOKE_PROPERTY_ID }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE }}
+          SMOKE_BASE_URL: https://getstaxis.com
+        run: npx tsx scripts/ml-smoke-test.ts
+      - name: Open issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `ML smoke failed at ${new Date().toISOString().slice(0, 10)}`;
+            const body = `The nightly ML smoke test failed. Check the workflow run for details:\n\n` +
+                         `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n\n` +
+                         `This usually means a Phase 1+2+3 invariant was broken — likely a response-shape regression.`;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['ml', 'smoke-failure'],
+            });

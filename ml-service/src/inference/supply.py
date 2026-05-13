@@ -8,19 +8,20 @@ import numpy as np
 import pandas as pd
 
 from src.config import get_settings
+from src.errors import PropertyMisconfiguredError, require_property_timezone
 from src.features.supply_matrix import build_supply_features
 from src.supabase_client import get_supabase_client
 
 
-DEFAULT_PROPERTY_TIMEZONE = "America/Chicago"
+# Phase 3.5 (2026-05-13): the America/Chicago fallback is gone — see
+# inference/demand.py for the rationale and the validator contract.
 
 
-def _tomorrow_in_property_tz(tz_name: str = DEFAULT_PROPERTY_TIMEZONE) -> date:
+def _tomorrow_in_property_tz(tz_name: str) -> date:
     """Tomorrow as seen by a property in `tz_name` (matches demand.py).
 
-    Pass `properties.timezone` explicitly so a Florida hotel doesn't roll
-    "tomorrow" at the wrong UTC hour. Defaults to the Texas property TZ
-    for back-compat with single-property callers.
+    Caller must pass a validated IANA timezone — `require_property_timezone`
+    enforces this at the entry to the inference function.
     """
     try:
         from zoneinfo import ZoneInfo
@@ -100,9 +101,23 @@ async def predict_supply(
     client = get_supabase_client()
 
     if prediction_date is None:
-        prediction_date = _tomorrow_in_property_tz(
-            property_timezone or DEFAULT_PROPERTY_TIMEZONE
-        )
+        # Phase 3.5: require timezone — log + skip if missing.
+        try:
+            tz_name = require_property_timezone(property_timezone, property_id)
+        except PropertyMisconfiguredError as exc:
+            print(json.dumps({
+                "evt": "property_misconfigured",
+                "layer": "supply",
+                "property_id": exc.property_id,
+                "field": exc.field,
+                "value": str(exc.bad_value),
+            }))
+            return {
+                "error": f"property_misconfigured: {exc.field}={exc.bad_value!r}",
+                "property_id": property_id,
+                "date": None,
+            }
+        prediction_date = _tomorrow_in_property_tz(tz_name)
 
     # Find active supply model
     active_models = client.fetch_many(

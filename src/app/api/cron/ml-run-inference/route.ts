@@ -159,10 +159,30 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     r.supply?.status === 'error' ||
     r.optimizer?.status === 'error',
   );
+  // Phase 3.4 (2026-05-13): mark the heartbeat 'degraded' when any stage
+  // returned 'skipped' — currently the optimizer is paused (line 131),
+  // but the same logic catches a future ML-service URL misconfig that
+  // returns skipped silently. The doctor surfaces a yellow banner when
+  // a cron stays 'degraded' for >24h; pages remain reserved for actually
+  // missing heartbeats (the freshness check).
+  const anyStageSkipped = results.some((r) =>
+    r.demand?.status === 'skipped' ||
+    r.supply?.status === 'skipped' ||
+    r.optimizer?.status === 'skipped',
+  );
+  const propertiesSkipped = results.filter((r) =>
+    r.demand?.status === 'skipped' ||
+    r.supply?.status === 'skipped' ||
+    r.optimizer?.status === 'skipped',
+  ).length;
   if (!anyStageError) {
     await writeCronHeartbeat('ml-run-inference', {
       requestId,
-      notes: { properties_processed: results.length },
+      status: anyStageSkipped ? 'degraded' : 'ok',
+      notes: {
+        properties_processed: results.length,
+        properties_skipped: propertiesSkipped,
+      },
     });
   }
   // Outer ok reflects inner state — see ml-train-demand for full notes.

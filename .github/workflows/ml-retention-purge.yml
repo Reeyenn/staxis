@@ -1,0 +1,61 @@
+# ML retention purge — GitHub Actions cron
+#
+# Daily purge for high-volume ML observation tables (prediction_log,
+# inventory_rate_prediction_history, app_events, agent_costs). Retention
+# windows are declared in migration 0103 and enforced by the route's
+# RETENTION array. Runs after the daily ML inference + auto-rollback
+# evaluators so we never delete a row those readers still need.
+#
+# Required GitHub Secrets:
+#   CRON_SECRET — same value as in Vercel env. Bearer auth.
+#
+# Phase 3.6 (2026-05-13).
+
+name: ML retention purge
+
+on:
+  schedule:
+    # 08:00 UTC daily (~3:00am Central). After:
+    #   • ml-run-inference (cron at 06:00 UTC)
+    #   • ml-shadow-evaluate (cron at 07:00 UTC)
+    # before any cockpit refresh runs in business hours.
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Purge expired ML rows
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+
+          URL="https://getstaxis.com/api/cron/ml-retention-purge"
+
+          RESPONSE=$(curl \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --max-time 90 \
+            --retry 2 \
+            --retry-delay 10 \
+            --retry-connrefused \
+            -H "Authorization: Bearer ${CRON_SECRET:-}" \
+            "$URL")
+
+          echo "Response: $RESPONSE"
+
+          # 207 (multi-status) means at least one table failed — heartbeat
+          # is degraded and the doctor will surface it. Don't fail the
+          # workflow in that case; the per-table errors are inside the
+          # response and the doctor is the right surface for them.
+          echo "$RESPONSE" | grep -q '"ok":true\|"ok":false' || {
+            echo "::error::ml-retention-purge returned malformed JSON"
+            exit 1
+          }

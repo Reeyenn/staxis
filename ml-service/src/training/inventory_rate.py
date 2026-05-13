@@ -34,6 +34,7 @@ import psycopg2
 
 from src.advisory_lock import advisory_lock
 from src.config import get_settings
+from src.errors import PropertyMisconfiguredError, require_total_rooms
 from src.layers.bayesian_regression import BayesianRegression
 from src.layers.xgboost_quantile import XGBoostQuantile, XGBOOST_INFERENCE_READY
 from src.supabase_client import get_supabase_client
@@ -124,6 +125,25 @@ async def train_inventory_rate_model(
                 return _do_train()
         else:
             return _do_train()
+    except PropertyMisconfiguredError as exc:
+        # Phase 3.3/3.5 boundary: log + return structured error so the TS
+        # cron sees an HTTP 200 with `error` set and moves to the next
+        # property. One misconfigured row never blocks the fleet.
+        print(json.dumps({
+            "evt": "property_misconfigured",
+            "layer": "inventory_rate",
+            "property_id": exc.property_id,
+            "field": exc.field,
+            "value": str(exc.bad_value),
+        }))
+        return {
+            "items_trained": 0,
+            "items_skipped_insufficient_data": 0,
+            "items_with_active_model": 0,
+            "items_with_auto_fill": 0,
+            "errors": [],
+            "error": f"property_misconfigured: {exc.field}={exc.bad_value!r}",
+        }
     finally:
         if lock_conn is not None:
             try:
@@ -159,6 +179,13 @@ def _train_inventory_inner(
 
     # Property metadata for cohort-prior lookup
     prop = client.fetch_one("properties", filters={"id": property_id})
+
+    # Phase 3.3 (2026-05-13): fail fast on misconfigured properties so the
+    # outer cron boundary can log + skip the whole property instead of
+    # logging the same `total_rooms` error once per item. Inference reads
+    # the same field; catching here keeps the surface area tight.
+    require_total_rooms(prop, property_id)
+
     cohort_key = _build_cohort_key(prop) if prop else "global"
 
     items_trained = 0
@@ -276,15 +303,27 @@ def _train_single_item(
                 "events": len(counts)}
 
     # Pull orders + discards for this item to compute net consumption between counts.
+    # Phase 3.9 (2026-05-13): the prior `limit=2000` had no order_by, so
+    # PostgREST returned rows in arbitrary (likely insertion) order. A
+    # high-volume property with >2000 orders for a single item would
+    # silently lose learning past the truncation point — and the
+    # truncated rows could be either oldest or newest depending on
+    # internal PG state. Order by the activity timestamp newest-first
+    # and bump the ceiling to 10000 (covers ~5 years of daily orders
+    # per item before truncation kicks in).
     orders = client.fetch_many(
         "inventory_orders",
         filters={"property_id": property_id, "item_id": item_id},
-        limit=2000,
+        order_by="received_at",
+        descending=True,
+        limit=10000,
     )
     discards = client.fetch_many(
         "inventory_discards",
         filters={"property_id": property_id, "item_id": item_id},
-        limit=2000,
+        order_by="discarded_at",
+        descending=True,
+        limit=10000,
     )
 
     # Pull daily_logs for occupancy features (most-recent 365 days; small).
@@ -351,7 +390,10 @@ def _train_single_item(
         # Inject the cohort prior as the intercept's mu_0. Scale by the
         # property's total room count: a 200-room hotel uses ~3x as much
         # shampoo as a 60-room hotel at the same per-room rate.
-        room_count = int(property_meta.get("total_rooms") or 60)
+        # Phase 3.3 (2026-05-13): require_total_rooms raises
+        # PropertyMisconfiguredError instead of silently falling back to
+        # 60 — the cron boundary catches + logs the skip.
+        room_count = require_total_rooms(property_meta, property_id)
         _seed_bayesian_intercept(model, prior_rate, room_count)
         model_version = f"inventory-bayesian-v1-{item_id}-{datetime.utcnow().isoformat()}"
         algorithm = "bayesian"
@@ -809,7 +851,9 @@ def _create_cold_start_model_run(
     events on next weekly retrain), it supersedes this row.
     """
     item_id = item["id"]
-    room_count = int(property_meta.get("total_rooms") or 60)
+    # Phase 3.3 (2026-05-13): raise instead of silent 60-room fallback;
+    # the outer cron boundary turns this into a logged skip event.
+    room_count = require_total_rooms(property_meta, property_id)
     posterior_params = {
         "cohort_prior_rate": prior_rate,           # per-room per-day
         "cohort_prior_strength": prior_strength,

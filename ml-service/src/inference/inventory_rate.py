@@ -16,10 +16,11 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 
-DEFAULT_PROPERTY_TIMEZONE = "America/Chicago"
+# Phase 3.5 (2026-05-13): America/Chicago default removed — caller must
+# pass the property's timezone; see inference/demand.py for context.
 
 
-def _tomorrow_in_property_tz(tz_name: str = DEFAULT_PROPERTY_TIMEZONE) -> date:
+def _tomorrow_in_property_tz(tz_name: str) -> date:
     """Property-local tomorrow (matches demand/supply/optimizer)."""
     try:
         from zoneinfo import ZoneInfo
@@ -34,6 +35,7 @@ import pandas as pd
 from scipy import stats
 
 from src.config import get_settings
+from src.errors import PropertyMisconfiguredError, require_property_timezone
 from src.supabase_client import get_supabase_client
 
 
@@ -56,10 +58,10 @@ async def predict_inventory_rates(
         property_id: Property UUID.
         target_date: The operational date these predictions are FOR. Defaults
             to tomorrow in the property's local timezone.
-        property_timezone: IANA timezone (e.g. "America/New_York"). When
-            omitted the function falls back to the host's date — fine for
-            single-property (Texas) deploys but wrong for east/west-coast
-            hotels around midnight UTC.
+        property_timezone: IANA timezone (e.g. "America/New_York"). REQUIRED
+            when target_date is None — Phase 3.5 dropped the
+            America/Chicago fallback; missing timezone raises
+            PropertyMisconfiguredError which the cron logs + skips.
 
     Returns:
         Summary: {predicted, skipped_no_active_model, errors}.
@@ -72,9 +74,24 @@ async def predict_inventory_rates(
     client = get_supabase_client()
 
     if target_date is None:
-        target_date = _tomorrow_in_property_tz(
-            property_timezone or DEFAULT_PROPERTY_TIMEZONE
-        )
+        # Phase 3.5: require timezone — log + skip if missing.
+        try:
+            tz_name = require_property_timezone(property_timezone, property_id)
+        except PropertyMisconfiguredError as exc:
+            print(json.dumps({
+                "evt": "property_misconfigured",
+                "layer": "inventory_rate",
+                "property_id": exc.property_id,
+                "field": exc.field,
+                "value": str(exc.bad_value),
+            }))
+            return {
+                "predicted": 0,
+                "skipped_no_active_model": 0,
+                "errors": [],
+                "error": f"property_misconfigured: {exc.field}={exc.bad_value!r}",
+            }
+        target_date = _tomorrow_in_property_tz(tz_name)
     target_date_iso = target_date.isoformat()
 
     # Find every active inventory_rate model_runs row for this property

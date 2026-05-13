@@ -25,6 +25,16 @@ import { log } from '@/lib/log';
 export interface CronHeartbeatExtras {
   requestId?: string;
   notes?: Record<string, unknown>;
+  /**
+   * Phase 3.4 (2026-05-13): 'degraded' means "the cron ran end-to-end
+   * but at least one stage was skipped or returned a soft error" —
+   * e.g. ml-run-inference's optimizer stage is paused, or
+   * ml-retention-purge hit the per-table anomaly ceiling. The doctor
+   * surfaces a yellow banner when a cron has been degraded for >24h;
+   * pages only on missing heartbeats (the existing freshness check).
+   * Folded into notes._status so no schema column needs to be added.
+   */
+  status?: 'ok' | 'degraded';
 }
 
 /**
@@ -44,7 +54,7 @@ export async function writeCronHeartbeat(
           cron_name: cronName,
           last_success_at: new Date().toISOString(),
           last_request_id: extras.requestId ?? null,
-          notes: extras.notes ?? {},
+          notes: { ...(extras.notes ?? {}), _status: extras.status ?? 'ok' },
         },
         { onConflict: 'cron_name' },
       );

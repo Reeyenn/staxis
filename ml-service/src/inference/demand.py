@@ -8,19 +8,20 @@ import numpy as np
 import pandas as pd
 
 from src.config import get_settings
+from src.errors import PropertyMisconfiguredError, require_property_timezone
 from src.supabase_client import get_supabase_client
 
 
-# Default property timezone — Comfort Suites is in Houston (Central Time).
-# Callers should pass `property_timezone` explicitly so a Florida hotel on
-# America/New_York doesn't predict for the wrong day across the 18:00–06:00
-# UTC window. This default is the last-resort fallback if the caller
-# omits it (matches the legacy single-property behavior).
-DEFAULT_PROPERTY_TIMEZONE = "America/Chicago"
-PROPERTY_TZ_OFFSET_HOURS = -6  # CST (UTC-6); fallback if zoneinfo missing.
+# Phase 3.5 (2026-05-13): the `DEFAULT_PROPERTY_TIMEZONE = "America/Chicago"`
+# fallback was Beaumont-shaped and silently rolled "tomorrow" at the
+# wrong UTC hour for any property east or west of Texas. Callers must
+# now pass `properties.timezone`. If missing, the validation helper
+# raises PropertyMisconfiguredError which the cron boundary catches +
+# logs as a skipped property.
+PROPERTY_TZ_OFFSET_HOURS = -6  # used only as a defensive zoneinfo fallback.
 
 
-def _tomorrow_in_property_tz(tz_name: str = DEFAULT_PROPERTY_TIMEZONE) -> date:
+def _tomorrow_in_property_tz(tz_name: str) -> date:
     """Return the property's local 'tomorrow' as a date.
 
     Computing this in UTC silently rolls past the date boundary in the
@@ -58,10 +59,10 @@ async def predict_demand(
     Args:
         property_id: Property UUID
         prediction_date: Date to predict for (defaults to tomorrow in property TZ)
-        property_timezone: IANA timezone for the property
-            (e.g. "America/New_York"). Defaults to DEFAULT_PROPERTY_TIMEZONE
-            when omitted — caller should pass `properties.timezone` for
-            non-Texas hotels so "tomorrow" rolls at the right hour.
+        property_timezone: IANA timezone (e.g. "America/New_York"). REQUIRED
+            when prediction_date is None — Phase 3.5 (2026-05-13) dropped
+            the America/Chicago fallback; missing timezone raises
+            PropertyMisconfiguredError which the cron logs + skips.
 
     Returns:
         Dictionary with predictions
@@ -74,9 +75,25 @@ async def predict_demand(
     client = get_supabase_client()
 
     if prediction_date is None:
-        prediction_date = _tomorrow_in_property_tz(
-            property_timezone or DEFAULT_PROPERTY_TIMEZONE
-        )
+        # Phase 3.5: require timezone when we have to compute "tomorrow"
+        # ourselves. PropertyMisconfiguredError → log + structured error
+        # so the TS cron skips this property without crashing the batch.
+        try:
+            tz_name = require_property_timezone(property_timezone, property_id)
+        except PropertyMisconfiguredError as exc:
+            print(json.dumps({
+                "evt": "property_misconfigured",
+                "layer": "demand",
+                "property_id": exc.property_id,
+                "field": exc.field,
+                "value": str(exc.bad_value),
+            }))
+            return {
+                "error": f"property_misconfigured: {exc.field}={exc.bad_value!r}",
+                "property_id": property_id,
+                "date": None,
+            }
+        prediction_date = _tomorrow_in_property_tz(tz_name)
 
     # Find active demand model
     active_models = client.fetch_many(

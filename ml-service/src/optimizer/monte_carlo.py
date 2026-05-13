@@ -10,10 +10,12 @@ import numpy as np
 import pandas as pd
 
 from src.config import get_settings
+from src.errors import PropertyMisconfiguredError, require_property_timezone
 from src.supabase_client import get_supabase_client
 
 
-DEFAULT_PROPERTY_TIMEZONE = "America/Chicago"
+# Phase 3.5 (2026-05-13): America/Chicago default removed; the optimizer
+# requires the property's IANA timezone via the validator.
 
 
 # ─── Deterministic RNG helpers ─────────────────────────────────────────────
@@ -104,7 +106,7 @@ def _invert_quantile_cdf(quantiles: Dict[float, float], u: float) -> float:
     return vs[-1]  # unreachable
 
 
-def _tomorrow_in_property_tz(tz_name: str = DEFAULT_PROPERTY_TIMEZONE) -> date:
+def _tomorrow_in_property_tz(tz_name: str) -> date:
     """Tomorrow as seen by a property in `tz_name` (matches demand.py).
 
     Pass `properties.timezone` so the optimizer's "tomorrow" matches when
@@ -154,14 +156,42 @@ async def optimize_headcount(
     client = get_supabase_client()
 
     if prediction_date is None:
-        prediction_date = _tomorrow_in_property_tz(
-            property_timezone or DEFAULT_PROPERTY_TIMEZONE
-        )
+        # Phase 3.5: require timezone — log + skip if missing.
+        try:
+            tz_name = require_property_timezone(property_timezone, property_id)
+        except PropertyMisconfiguredError as exc:
+            print(json.dumps({
+                "evt": "property_misconfigured",
+                "layer": "optimizer",
+                "property_id": exc.property_id,
+                "field": exc.field,
+                "value": str(exc.bad_value),
+            }))
+            return {
+                "error": f"property_misconfigured: {exc.field}={exc.bad_value!r}",
+                "property_id": property_id,
+                "date": None,
+            }
+        prediction_date = _tomorrow_in_property_tz(tz_name)
 
     # Seed RNG deterministically from (property_id, date) so this run is
     # reproducible. Codex adversarial review 2026-05-13 (M-C2). All sampling
     # below uses `rng`, NEVER bare np.random.uniform.
     rng = np.random.default_rng(_deterministic_seed(property_id, prediction_date))
+
+    # Phase 3.1 (2026-05-13): per-property shift cap. The hardcoded
+    # settings.shift_cap_minutes (420 = 7h) was Beaumont-shaped; the
+    # properties table already has `shift_minutes` and nothing was
+    # reading it. Bigger hotels with longer shifts were getting
+    # under-recommended headcount; smaller hotels with shorter shifts
+    # were getting over-recommended. Fall back to settings only when
+    # the property row is missing the field (legacy seeds).
+    prop_row = client.fetch_one("properties", filters={"id": property_id})
+    shift_cap_minutes = int(
+        (prop_row or {}).get("shift_minutes") or settings.shift_cap_minutes
+    )
+    if shift_cap_minutes <= 0:
+        shift_cap_minutes = int(settings.shift_cap_minutes)
 
     # Fetch active L1 + L2 predictions
     demand_preds = client.fetch_many(
@@ -247,7 +277,7 @@ async def optimize_headcount(
         median_total_minutes = sum(
             float(p.get("predicted_minutes_p50", 25)) for p in supply_preds
         )
-        shift_cap = float(settings.shift_cap_minutes) or 1.0
+        shift_cap = float(shift_cap_minutes) or 1.0
         max_headcount = max(
             10,
             min(50, int((median_total_minutes / shift_cap) * 1.5) + 1),
@@ -338,7 +368,7 @@ async def optimize_headcount(
 
         # Codex audit pass-6 P1 — same rationale as the L2 path: derive
         # the search ceiling from the actual demand instead of a hard 10.
-        shift_cap_l1 = float(settings.shift_cap_minutes) or 1.0
+        shift_cap_l1 = float(shift_cap_minutes) or 1.0
         max_headcount = max(
             10,
             min(50, int((max_demand / shift_cap_l1) * 1.5) + 1),
@@ -352,7 +382,7 @@ async def optimize_headcount(
         )
 
         for headcount in range(1, max_headcount + 1):
-            shift_capacity = headcount * settings.shift_cap_minutes
+            shift_capacity = headcount * shift_cap_minutes
             # Same sampled_demands across every H → CRN.
             total_completed = int((sampled_demands <= shift_capacity).sum())
 

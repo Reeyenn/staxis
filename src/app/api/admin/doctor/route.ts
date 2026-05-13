@@ -1638,6 +1638,7 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'ml-predict-inventory',    cadenceHours: 24,   description: 'daily inventory predictions for tomorrow' },
   { name: 'ml-aggregate-priors',     cadenceHours: 24,   description: 'daily cross-fleet cohort prior aggregation' },
   { name: 'ml-shadow-evaluate',      cadenceHours: 24,   description: 'daily shadow-model promote/reject pass' },
+  { name: 'ml-retention-purge',      cadenceHours: 24,   description: 'daily prediction_log/app_events retention purge (Phase 3.6)' },
   { name: 'purge-old-error-logs',    cadenceHours: 24,   description: 'daily error_logs retention sweep' },
   { name: 'expire-trials',           cadenceHours: 24,   description: 'daily trial-expiration flip' },
   // Weekly
@@ -1651,25 +1652,39 @@ async function checkCronHeartbeatsFresh(): Promise<Omit<Check, 'name' | 'duratio
   try {
     const { data: rows, error } = await supabaseAdmin
       .from('cron_heartbeats')
-      .select('cron_name, last_success_at');
+      .select('cron_name, last_success_at, notes');
     if (error) {
       return { status: 'warn', detail: `cron_heartbeats read failed: ${errToString(error)}` };
     }
-    const byName = new Map<string, string>();
-    for (const r of (rows ?? []) as Array<{ cron_name: string; last_success_at: string }>) {
-      byName.set(r.cron_name, r.last_success_at);
+    const byName = new Map<string, { last: string; notes: Record<string, unknown> }>();
+    for (const r of (rows ?? []) as Array<{ cron_name: string; last_success_at: string; notes: Record<string, unknown> | null }>) {
+      byName.set(r.cron_name, { last: r.last_success_at, notes: r.notes ?? {} });
     }
     const now = Date.now();
     const failed: string[] = [];  // hard-stale: >1.5× warn threshold → real problem
     const warned: string[] = [];  // soft-stale: between tolerance and 1.5× → likely transient
     const missing: string[] = [];
+    // Phase 3.4: a cron that's writing heartbeats but tagged 'degraded'
+    // for >24h surfaces here as a soft warning. Distinct from staleness:
+    // the cron IS running, it's just shipping with stages skipped.
+    const degraded: string[] = [];
     for (const c of EXPECTED_CRONS) {
-      const last = byName.get(c.name);
-      if (!last) {
+      const entry = byName.get(c.name);
+      if (!entry) {
         missing.push(c.name);
         continue;
       }
+      const last = entry.last;
+      const status = (entry.notes?._status as string | undefined) ?? 'ok';
       const ageHours = (now - new Date(last).getTime()) / (60 * 60 * 1000);
+      if (status === 'degraded' && ageHours <= 24) {
+        // Not flagging within the single-tick freshness window — one
+        // degraded heartbeat could be a transient stage skip. After 24h
+        // the cron has ticked at least once at daily cadence and the
+        // degradation is persistent.
+      } else if (status === 'degraded') {
+        degraded.push(`${c.name} (degraded for ${ageHours.toFixed(1)}h)`);
+      }
       // ── Tiered staleness (May 2026 audit pass-6) ───────────────────
       // Splitting into warn vs fail prevents the post-deploy smoke test
       // from flaking when a cron is "between fires" (warn = transient)
@@ -1710,6 +1725,15 @@ async function checkCronHeartbeatsFresh(): Promise<Omit<Check, 'name' | 'duratio
       return {
         status: 'warn',
         detail: `Heartbeats not yet written for: ${missing.join(', ')}. Will resolve after each cron's next tick.`,
+      };
+    }
+    if (degraded.length > 0) {
+      // Phase 3.4: degradation is awareness-not-paging. A skipped-stage
+      // cron still ran end-to-end; the operator should know why but
+      // production isn't broken. Surface as warn, never fail.
+      return {
+        status: 'warn',
+        detail: `Cron heartbeats degraded (cron is running but at least one stage was skipped): ${degraded.join('; ')}. Inspect the cron's notes._status and properties_skipped fields.`,
       };
     }
     return {

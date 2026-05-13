@@ -88,11 +88,11 @@ class PredictDemandRequest(BaseModel):
 
     property_id: str
     date: Optional[DateType] = None
-    # IANA timezone for the property (e.g. "America/New_York"). When omitted
-    # the inference function falls back to America/Chicago — fine for the
-    # current single-property deploy, wrong for non-Texas hotels because
-    # "tomorrow" rolls at the wrong UTC hour. Vercel callers should send
-    # `properties.timezone`.
+    # IANA timezone for the property (e.g. "America/New_York"). REQUIRED
+    # when `date` is omitted (the inference function uses it to compute
+    # the property-local "tomorrow"). Phase 3.5 (2026-05-13): the
+    # America/Chicago fallback was removed; missing timezone is now a
+    # PropertyMisconfiguredError that the cron treats as a skipped property.
     property_timezone: Optional[str] = None
 
     @field_validator("property_id")

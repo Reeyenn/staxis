@@ -25,7 +25,14 @@ class Settings(BaseSettings):
     # Model training thresholds
     training_row_count_min: int = 200
     training_row_count_activation: int = 500
+    # DEPRECATED — kept for one release for backward-compat. Phase 3.2
+    # (2026-05-13) replaced the absolute-minutes gate with a size-relative
+    # ratio (validation_mae_ratio_threshold) so the threshold scales with
+    # property size: at 60 rooms 5min was sensible; at 200 rooms it was
+    # 0.08% of mean prediction (implausible, model never activated).
     validation_mae_threshold: float = 5.0
+    validation_mae_ratio_threshold: float = 0.10  # validation_mae / mean_predicted must be below this
+    validation_mae_floor: float = 1.0             # absolute floor so trivial demands don't auto-activate
     baseline_beat_pct_threshold: float = 0.20
     consecutive_passing_runs_required: int = 2
 

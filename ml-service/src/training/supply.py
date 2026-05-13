@@ -188,14 +188,27 @@ def _train_supply_inner(
     else:
         beats_baseline_pct = 0.0
 
-    # Check gates
+    # Phase 3.2 (2026-05-13): size-relative MAE gate. The prior absolute
+    # 10-min threshold was Beaumont-shaped; a 30-room hotel needs MAE 5
+    # (0.5% relative — achievable), a 200-room hotel makes the absolute
+    # number meaningless. Gate on ratio with a floor so trivial values
+    # don't auto-pass.
+    mean_predicted_pos = float(np.mean(np.abs(pred_test))) or 1.0
+    mae_ratio = validation_mae / max(mean_predicted_pos, settings.validation_mae_floor)
+
+    # Check gates. Supply still uses a lower baseline-beat bar (0.05) than
+    # demand (0.20) because per-room cleaning-time variance is inherently
+    # noisier than per-day total demand variance.
     passes_gates = (
         len(df) >= settings.training_row_count_activation
-        and validation_mae < 10.0  # Relaxed threshold for supply (minutes/room)
-        and beats_baseline_pct >= 0.05  # Lower bar for supply
+        and mae_ratio < settings.validation_mae_ratio_threshold
+        and beats_baseline_pct >= 0.05
     )
 
-    # Check consecutive passing runs: look at last 5 runs, count backwards
+    # Check consecutive passing runs: look at last 5 runs, count backwards.
+    # Phase 3.2: prior_passes drops the validation_mae absolute check —
+    # threshold semantics changed; beats_baseline + row count carry the
+    # "did the prior gate pass" signal.
     recent_runs = client.fetch_many(
         "model_runs",
         filters={"property_id": property_id, "layer": "supply"},
@@ -210,7 +223,6 @@ def _train_supply_inner(
         # Check if this prior run passed gates
         prior_passes = (
             prior_run.get("beats_baseline_pct", 0) >= 0.05
-            and prior_run.get("validation_mae", float("inf")) < 10.0
             and prior_run.get("training_row_count", 0) >= settings.training_row_count_activation
         )
         if prior_passes and consecutive_passes > 0:

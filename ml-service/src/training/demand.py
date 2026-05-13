@@ -248,14 +248,25 @@ def _train_demand_inner(
     else:
         beats_baseline_pct = 0.0
 
+    # Phase 3.2 (2026-05-13): size-relative MAE gate. The prior absolute
+    # 5-min threshold was Beaumont-shaped — at 200 rooms (6000 min/day
+    # mean demand) 5 min is 0.08% relative, never achievable, model
+    # never activated. Now we gate on validation_mae / mean_predicted <
+    # 10% with an absolute floor so trivial-demand days don't auto-pass.
+    mean_predicted_pos = float(np.mean(np.abs(pred_test))) or 1.0
+    mae_ratio = validation_mae / max(mean_predicted_pos, settings.validation_mae_floor)
+
     # Check activation gates
     passes_gates = (
         len(df) >= settings.training_row_count_activation
-        and validation_mae < settings.validation_mae_threshold
+        and mae_ratio < settings.validation_mae_ratio_threshold
         and beats_baseline_pct >= settings.baseline_beat_pct_threshold
     )
 
-    # Check consecutive passing runs: look at last 5 runs, count backwards
+    # Check consecutive passing runs: look at last 5 runs, count backwards.
+    # Phase 3.2: prior_passes drops the validation_mae absolute check
+    # because the threshold semantics changed; beats_baseline + row count
+    # are still the right "did the prior gate pass" signal for consecutives.
     recent_runs = client.fetch_many(
         "model_runs",
         filters={"property_id": property_id, "layer": "demand"},
@@ -270,7 +281,6 @@ def _train_demand_inner(
         # Check if this prior run passed gates
         prior_passes = (
             prior_run.get("beats_baseline_pct", 0) >= settings.baseline_beat_pct_threshold
-            and prior_run.get("validation_mae", float("inf")) < settings.validation_mae_threshold
             and prior_run.get("training_row_count", 0) >= settings.training_row_count_activation
         )
         if prior_passes and consecutive_passes > 0:
