@@ -3,20 +3,28 @@
 // Clicky walkthrough) call this with a user message and get back a streamed
 // SSE response with the model's tokens, tool calls, and final result.
 //
-// Request body:
-//   {
-//     conversationId?: string  // omit to start a new conversation
-//     propertyId: string       // which property the user is operating on
-//     message: string          // the user's input
-//   }
+// Codex adversarial review fixes (2026-05-13) wired in here:
 //
-// Response: text/event-stream with these event types (data is JSON):
-//   {"type": "conversation_id", "id": "..."}             — sent immediately
-//   {"type": "text_delta", "delta": "..."}               — streaming text from model
-//   {"type": "tool_call_started", "call": {...}}         — model is calling a tool
-//   {"type": "tool_call_finished", "call":..., "result":..., "isError":...} — tool returned
-//   {"type": "done", "usage": {...}, "finalText": "..."} — finished
-//   {"type": "error", "message": "..."}                  — fatal error
+//   - Fix #1: cost-cap atomicity. `reserveCostBudget` does the cap check
+//     and inserts a reservation row in a single Postgres transaction
+//     under an advisory lock. `finalizeCostReservation` reconciles to
+//     actual spend; `cancelCostReservation` releases the hold on abort.
+//
+//   - Fix #2: atomic assistant-turn persistence. `recordAssistantTurn`
+//     now THROWS on RPC failure. We catch in the stream's try/catch,
+//     send an error event, cancel the reservation, and close — we do
+//     NOT continue into tool execution because the assistant tool_use
+//     blocks aren't safely on disk.
+//
+//   - Fix #3: dangling tool_use cleanup. The route tracks in-flight
+//     tool_call ids in a Set; in the stream's finally, any id still
+//     in the set gets a synthetic error tool_result row inserted so
+//     the next replay isn't broken. Same path handles client disconnect
+//     (req.signal.aborted).
+//
+//   - Fix #4: housekeeper identity. `staff.id` is resolved from
+//     `staff.auth_user_id = userCtx.uid` and passed into ToolContext.
+//     Housekeeper-scoped queries use this, NOT `accountId`.
 
 import type { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
@@ -34,7 +42,11 @@ import {
   recordAssistantTurn,
   recordToolResult,
 } from '@/lib/agent/memory';
-import { checkCostCaps, recordCost } from '@/lib/agent/cost-controls';
+import {
+  reserveCostBudget,
+  finalizeCostReservation,
+  cancelCostReservation,
+} from '@/lib/agent/cost-controls';
 // Side-effect import — registers all tools against the catalog.
 import '@/lib/agent/tools/index';
 
@@ -95,67 +107,98 @@ export async function POST(req: NextRequest): Promise<Response> {
     propertyAccess: (account.property_access as string[]) ?? [],
   };
 
-  // ── Cost + rate-limit caps ────────────────────────────────────────────
-  // Block the request BEFORE we burn LLM tokens if any cap is hit.
-  const capCheck = await checkCostCaps({
+  // ── Resolve staff.id for floor-level roles ───────────────────────────
+  // `rooms.assigned_to` references `staff.id`, not `accounts.id` — Codex
+  // review fix #4. Look it up by `staff.auth_user_id = user.uid` (only
+  // relevant for housekeeping / maintenance roles; managers + owners
+  // typically don't have a staff row and don't need scoping).
+  let staffId: string | null = null;
+  if (userCtx.role === 'housekeeping' || userCtx.role === 'maintenance') {
+    const { data: staffRow } = await supabaseAdmin
+      .from('staff')
+      .select('id')
+      .eq('auth_user_id', userCtx.uid)
+      .eq('property_id', body.propertyId)
+      .maybeSingle();
+    staffId = (staffRow?.id as string) ?? null;
+  }
+
+  // ── Cost reservation (Codex review fix #1) ────────────────────────────
+  // Atomic: cap check + reservation insert happen under an advisory lock
+  // keyed on user_id. Concurrent requests for the same user serialize.
+  const reservation = await reserveCostBudget({
     userId: userCtx.accountId,
     propertyId: body.propertyId,
   });
-  if (!capCheck.ok) {
+  if (!reservation.ok) {
     return Response.json(
-      { ok: false, error: capCheck.message, code: capCheck.reason, requestId },
+      { ok: false, error: reservation.message, code: reservation.reason, requestId },
       { status: 429 },
     );
   }
+  const reservationId = reservation.reservationId;
 
   // ── Load or create the conversation ───────────────────────────────────
   let conversationId = body.conversationId;
   let history: AgentMessage[] = [];
-  if (conversationId) {
-    const convo = await loadConversation(conversationId, userCtx.accountId);
-    if (!convo) {
-      return Response.json({ ok: false, error: 'conversation not found or not yours', requestId }, { status: 404 });
+  try {
+    if (conversationId) {
+      const convo = await loadConversation(conversationId, userCtx.accountId);
+      if (!convo) {
+        await cancelCostReservation(reservationId);
+        return Response.json({ ok: false, error: 'conversation not found or not yours', requestId }, { status: 404 });
+      }
+      if (convo.propertyId !== body.propertyId) {
+        await cancelCostReservation(reservationId);
+        return Response.json({ ok: false, error: 'conversation is scoped to a different property', requestId }, { status: 400 });
+      }
+      history = convo.messages;
+    } else {
+      conversationId = await createConversation({
+        userAccountId: userCtx.accountId,
+        propertyId: body.propertyId,
+        role: userCtx.role,
+        promptVersion: PROMPT_VERSION,
+        title: body.message.trim().slice(0, 120),
+      });
+      history = [];
     }
-    if (convo.propertyId !== body.propertyId) {
-      return Response.json({ ok: false, error: 'conversation is scoped to a different property', requestId }, { status: 400 });
-    }
-    history = convo.messages;
-  } else {
-    conversationId = await createConversation({
-      userAccountId: userCtx.accountId,
-      propertyId: body.propertyId,
-      role: userCtx.role,
-      promptVersion: PROMPT_VERSION,
-      // Title is set on the first user message — auto-derived from the prompt.
-      title: body.message.trim().slice(0, 120),
-    });
-    history = [];
+    await recordUserTurn(conversationId, body.message);
+  } catch (e) {
+    await cancelCostReservation(reservationId);
+    return Response.json(
+      { ok: false, error: 'failed to prepare conversation', requestId, details: e instanceof Error ? e.message : String(e) },
+      { status: 500 },
+    );
   }
 
-  // Persist the user turn before streaming (so a network failure mid-stream
-  // doesn't lose the question).
-  await recordUserTurn(conversationId, body.message);
-
   // ── Build the context for this turn ──────────────────────────────────
-  const staffIdForSnapshot = userCtx.role === 'housekeeping' ? userCtx.accountId : null;
-  const snapshot = await buildHotelSnapshot(body.propertyId, userCtx.role, staffIdForSnapshot);
+  const snapshot = await buildHotelSnapshot(body.propertyId, userCtx.role, staffId);
   const systemPrompt = buildSystemPrompt(userCtx.role, snapshot);
   const tools = getToolsForRole(userCtx.role);
 
   // ── Stream the agent response via SSE ────────────────────────────────
   const encoder = new TextEncoder();
-  // Final usage from the done event, persisted to the LAST assistant text message.
   let finalUsage: UsageReport | null = null;
   let lastDoneText = '';
+  // In-flight tool_call ids whose tool_result hasn't been persisted yet.
+  // On stream abort or crash, we drain this set into synthetic error rows
+  // so the next replay isn't broken by dangling tool_use blocks.
+  const pendingToolCallIds = new Set<string>();
+
+  const finalConversationId = conversationId;
 
   const stream = new ReadableStream({
     async start(controller) {
       const send = (obj: unknown) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
+        } catch {
+          // Controller closed (client disconnected). The finally block will clean up.
+        }
       };
 
-      // Send the conversation id immediately so the client can track it.
-      send({ type: 'conversation_id', id: conversationId });
+      send({ type: 'conversation_id', id: finalConversationId });
 
       try {
         const iter = streamAgent({
@@ -166,6 +209,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           toolContext: {
             user: userCtx,
             propertyId: body.propertyId,
+            staffId,
             requestId,
           },
         });
@@ -179,12 +223,12 @@ export async function POST(req: NextRequest): Promise<Response> {
           }
 
           if (event.type === 'assistant_turn') {
-            // Mid-conversation iteration: persist text + tool_use blocks NOW
-            // so subsequent tool_results land AFTER them in the DB. Replay
-            // depends on this ordering — Claude rejects tool_results that
-            // come before their matching tool_use in the message history.
+            // Codex fix #2: throw on failure rather than continuing.
+            // recordAssistantTurn uses an atomic RPC; if it fails, the
+            // assistant text + tool_use rows aren't safely on disk and
+            // running the tools would leave orphan tool_result rows.
             await recordAssistantTurn(
-              conversationId!,
+              finalConversationId,
               event.text,
               event.toolCalls.length ? event.toolCalls : undefined,
               {
@@ -193,15 +237,17 @@ export async function POST(req: NextRequest): Promise<Response> {
                 modelUsed: event.usage.model,
                 costUsd: event.usage.costUsd,
               },
-            ).catch(err => {
-              console.error('[agent/command] failed to persist assistant turn', err);
-            });
+            );
+            // Register every tool_call id from this iteration as in-flight.
+            // They'll be cleared as their results stream in.
+            for (const call of event.toolCalls) {
+              pendingToolCallIds.add(call.id);
+            }
           } else if (event.type === 'tool_call_finished') {
-            // Persist tool result row immediately so the order matches the
-            // assistant turn we just saved.
-            await recordToolResult(conversationId!, event.call.id, event.result).catch(err => {
+            await recordToolResult(finalConversationId, event.call.id, event.result).catch(err => {
               console.error('[agent/command] failed to persist tool result', err);
             });
+            pendingToolCallIds.delete(event.call.id);
           } else if (event.type === 'done') {
             finalUsage = event.usage;
             lastDoneText = event.finalText;
@@ -212,7 +258,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         // (those got saved via assistant_turn events above).
         if (lastDoneText) {
           await recordAssistantTurn(
-            conversationId!,
+            finalConversationId,
             lastDoneText,
             undefined,
             {
@@ -221,32 +267,52 @@ export async function POST(req: NextRequest): Promise<Response> {
               modelUsed: finalUsage?.model ?? 'sonnet',
               costUsd: finalUsage?.costUsd ?? 0,
             },
-          ).catch(err => {
-            console.error('[agent/command] failed to persist final assistant turn', err);
-          });
+          );
+        }
+      } catch (err) {
+        // Includes errors thrown from recordAssistantTurn (Fix #2). The
+        // finally block handles cleanup of the cost reservation + any
+        // dangling tool_use rows.
+        send({ type: 'error', message: err instanceof Error ? err.message : String(err) });
+      } finally {
+        // ── Fix #3 cleanup: synthesize tool_result rows for any tool_use
+        // that didn't get a matching result before the stream ended. This
+        // keeps the conversation history valid for the next replay. ──
+        if (pendingToolCallIds.size > 0) {
+          await Promise.allSettled(
+            Array.from(pendingToolCallIds).map(toolCallId =>
+              recordToolResult(finalConversationId, toolCallId, {
+                ok: false,
+                error: 'aborted — tool result was not captured before the stream ended',
+              }).catch(err => {
+                console.error('[agent/command] failed to insert synthetic abort result', err);
+              }),
+            ),
+          );
         }
 
-        // Record this request to the agent_costs ledger so future cap
-        // checks see it. Includes ALL tokens used across tool-call iterations.
+        // ── Fix #1 cleanup: reconcile the cost reservation. If the stream
+        // completed and gave us a usage report, finalize to actual spend.
+        // Otherwise cancel (release the budget hold). ──
         if (finalUsage) {
-          await recordCost({
-            userId: userCtx.accountId,
-            propertyId: body.propertyId,
-            conversationId,
+          await finalizeCostReservation({
+            reservationId,
+            conversationId: finalConversationId,
+            actualUsd: finalUsage.costUsd,
             model: finalUsage.model,
             tokensIn: finalUsage.inputTokens,
             tokensOut: finalUsage.outputTokens,
             cachedInputTokens: finalUsage.cachedInputTokens,
-            costUsd: finalUsage.costUsd,
-            kind: 'request',
-          }).catch(err => {
-            console.error('[agent/command] failed to record cost', err);
           });
+        } else {
+          await cancelCostReservation(reservationId);
         }
-      } catch (err) {
-        send({ type: 'error', message: err instanceof Error ? err.message : String(err) });
-      } finally {
-        controller.close();
+
+        try {
+          controller.close();
+        } catch {
+          // Already closed (e.g. client disconnected first). Ignore.
+        }
       }
     },
   });
@@ -256,7 +322,6 @@ export async function POST(req: NextRequest): Promise<Response> {
       'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': 'no-cache, no-transform',
       'x-request-id': requestId,
-      // Disable proxy buffering so the client sees tokens as they arrive.
       'x-accel-buffering': 'no',
     },
   });

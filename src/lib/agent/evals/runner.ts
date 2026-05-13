@@ -12,7 +12,7 @@ import { streamAgent, type RunAgentOpts, type AgentEvent } from '@/lib/agent/llm
 import { getToolsForRole } from '@/lib/agent/tools';
 import { buildHotelSnapshot } from '@/lib/agent/context';
 import { buildSystemPrompt } from '@/lib/agent/prompts';
-import { recordCost } from '@/lib/agent/cost-controls';
+import { recordNonRequestCost } from '@/lib/agent/cost-controls';
 import { EVAL_CASES, type EvalCase } from './test-bank';
 import '@/lib/agent/tools/index';
 
@@ -63,6 +63,7 @@ export async function runOneEval(
         propertyAccess: [opts.propertyId],
       },
       propertyId: opts.propertyId,
+      staffId: null, // evals run as admin context; housekeeper-only checks fall through cleanly
       requestId: `eval-${evalCase.name}-${Date.now()}`,
     },
   };
@@ -94,7 +95,7 @@ export async function runOneEval(
   // log the error but not throw. For local CLI runs we can opt out via
   // STAXIS_EVAL_SKIP_COST=1.
   if (!process.env.STAXIS_EVAL_SKIP_COST) {
-    await recordCost({
+    await recordNonRequestCost({
       userId: opts.userId,
       propertyId: opts.propertyId,
       conversationId: null,

@@ -15,11 +15,16 @@ registerTool<Record<string, never>>({
   inputSchema: { type: 'object', properties: {} },
   allowedRoles: ['housekeeping', 'maintenance'],
   handler: async (_, ctx): Promise<ToolResult> => {
+    // `rooms.assigned_to` is a `staff.id` — must use ctx.staffId, NOT
+    // ctx.user.accountId (different tables). Codex review fix #4, 2026-05-13.
+    if (!ctx.staffId) {
+      return { ok: false, error: 'Your account isn\'t linked to a staff record on this property. Ask the manager to link it before using the chat.' };
+    }
     const { data, error } = await supabaseAdmin
       .from('rooms')
       .select('number, status, is_dnd, issue_note, help_requested, type')
       .eq('property_id', ctx.propertyId)
-      .eq('assigned_to', ctx.user.accountId)
+      .eq('assigned_to', ctx.staffId)
       .order('number');
     if (error) return { ok: false, error: 'Failed to fetch assigned rooms.' };
 
@@ -49,11 +54,15 @@ registerTool<Record<string, never>>({
   inputSchema: { type: 'object', properties: {} },
   allowedRoles: ['housekeeping'],
   handler: async (_, ctx): Promise<ToolResult> => {
+    // Codex review fix #4 — see list_my_rooms above.
+    if (!ctx.staffId) {
+      return { ok: false, error: 'Your account isn\'t linked to a staff record on this property. Ask the manager to link it before using the chat.' };
+    }
     const { data, error } = await supabaseAdmin
       .from('rooms')
       .select('number, status, is_dnd, type')
       .eq('property_id', ctx.propertyId)
-      .eq('assigned_to', ctx.user.accountId)
+      .eq('assigned_to', ctx.staffId)
       .in('status', ['dirty', 'in_progress'])
       .eq('is_dnd', false)
       .order('number')

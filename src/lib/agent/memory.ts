@@ -240,32 +240,40 @@ export function recordUserTurn(conversationId: string, content: string): Promise
   return appendMessage({ conversationId, role: 'user', content });
 }
 
-/** Helper: write an assistant turn (text + optional tool calls). */
+/** Helper: write an assistant turn (text + optional tool calls) atomically.
+ *
+ * Codex review fix #2 (2026-05-13): the previous implementation did
+ * sequential `appendMessage` calls — if the text row succeeded but a
+ * tool_use row failed, the conversation got orphan tool_results on the
+ * next iteration. Now we call `staxis_record_assistant_turn` which writes
+ * all rows in a single transaction. Throws on failure (no swallow) — the
+ * caller MUST abort the stream and cancel the cost reservation if this
+ * throws, otherwise tool_result rows will be persisted without their
+ * matching tool_use and the conversation is corrupted.
+ */
 export async function recordAssistantTurn(
   conversationId: string,
   text: string,
   toolCalls: AgentToolCall[] | undefined,
   telemetry: { tokensIn: number; tokensOut: number; modelUsed: ModelTier; costUsd: number },
 ): Promise<void> {
-  if (text) {
-    await appendMessage({
-      conversationId,
-      role: 'assistant',
-      content: text,
-      tokensIn: telemetry.tokensIn,
-      tokensOut: telemetry.tokensOut,
-      modelUsed: telemetry.modelUsed,
-      costUsd: telemetry.costUsd,
-    });
-  }
-  for (const call of toolCalls ?? []) {
-    await appendMessage({
-      conversationId,
-      role: 'assistant',
-      toolCallId: call.id,
-      toolName: call.name,
-      toolArgs: call.args,
-    });
+  const { error } = await supabaseAdmin.rpc('staxis_record_assistant_turn', {
+    p_conversation_id: conversationId,
+    p_text: text ?? '',
+    p_tool_calls: (toolCalls ?? []).map(c => ({
+      id: c.id,
+      name: c.name,
+      args: c.args ?? {},
+    })),
+    p_tokens_in: telemetry.tokensIn,
+    p_tokens_out: telemetry.tokensOut,
+    p_model: telemetry.modelUsed,
+    p_cost_usd: telemetry.costUsd,
+  });
+  if (error) {
+    // Throw — caller is expected to catch, cancel the cost reservation,
+    // and abort the stream rather than continuing into tool execution.
+    throw new Error(`recordAssistantTurn failed: ${error.message}`);
   }
 }
 

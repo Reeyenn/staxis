@@ -33,9 +33,16 @@ registerTool<{ roomNumber: string }>({
     const room = await findRoomByNumber(ctx.propertyId, roomNumber);
     if (!room) return { ok: false, error: `Room ${roomNumber} not found in this property.` };
 
-    // For housekeepers, also enforce that the room is assigned to them (matches the public-link route's policy).
-    if (ctx.user.role === 'housekeeping' && room.assigned_to && room.assigned_to !== ctx.user.accountId) {
-      return { ok: false, error: `Room ${roomNumber} is assigned to a different housekeeper.` };
+    // Housekeeper-scope enforcement: only the assigned housekeeper can
+    // mark their own rooms clean. `rooms.assigned_to` is a `staff.id`
+    // (not `accounts.id`) — fixed in Codex review 2026-05-13.
+    if (ctx.user.role === 'housekeeping') {
+      if (!ctx.staffId) {
+        return { ok: false, error: 'Your account isn\'t linked to a staff record on this property. Ask the manager to link it before using the chat.' };
+      }
+      if (room.assigned_to && room.assigned_to !== ctx.staffId) {
+        return { ok: false, error: `Room ${roomNumber} is assigned to a different housekeeper.` };
+      }
     }
 
     const now = new Date().toISOString();

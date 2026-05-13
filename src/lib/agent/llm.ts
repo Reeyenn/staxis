@@ -168,6 +168,14 @@ type ClaudeContent = Anthropic.Messages.ContentBlockParam;
  * message, not separate adjacent user messages. We coalesce consecutive
  * tool entries here so a turn with N tool calls produces exactly one
  * user message containing N tool_result blocks.
+ *
+ * Codex review fix #3 Layer B (2026-05-13): also repairs DANGLING tool_use
+ * blocks — assistant tool_uses with no matching tool_result in the history.
+ * This happens when a previous request crashed/aborted before its tool
+ * results landed. We inject synthetic error tool_results for each unmatched
+ * id so the replay still validates. Layer A (cleanup-on-abort in the route)
+ * is the primary defense; Layer B exists for the cases where Layer A itself
+ * fails (process crash, OOM, etc.).
  */
 function toClaudeMessages(history: AgentMessage[], newUser: string): ClaudeMessage[] {
   const out: ClaudeMessage[] = [];
@@ -179,6 +187,27 @@ function toClaudeMessages(history: AgentMessage[], newUser: string): ClaudeMessa
       toolResultBuffer = [];
     }
   };
+
+  // Walk the history once and collect the tool_use ids that are followed
+  // (eventually, before the next non-tool message) by a matching tool_result.
+  // Anything in tool_use that's not in this set is dangling and gets a
+  // synthetic result injected at the right spot below.
+  const matchedToolUseIds = new Set<string>();
+  {
+    const knownToolResultIds = new Set<string>();
+    for (const m of history) {
+      if (m.role === 'tool' && m.toolCallId) {
+        knownToolResultIds.add(m.toolCallId);
+      }
+    }
+    for (const m of history) {
+      if (m.role === 'assistant' && m.toolCalls) {
+        for (const tc of m.toolCalls) {
+          if (knownToolResultIds.has(tc.id)) matchedToolUseIds.add(tc.id);
+        }
+      }
+    }
+  }
 
   for (const m of history) {
     if (m.role === 'user') {
@@ -194,6 +223,24 @@ function toClaudeMessages(history: AgentMessage[], newUser: string): ClaudeMessa
         }
       }
       out.push({ role: 'assistant', content: blocks });
+
+      // If any tool_use in this assistant turn lacks a tool_result later
+      // in the history, synthesize an error result for it RIGHT NOW so
+      // Claude's "tool_use must be immediately followed by tool_result"
+      // rule is satisfied. The dangling tools become "aborted" errors —
+      // honest about what happened.
+      if (m.toolCalls) {
+        for (const tc of m.toolCalls) {
+          if (!matchedToolUseIds.has(tc.id)) {
+            toolResultBuffer.push({
+              type: 'tool_result',
+              tool_use_id: tc.id,
+              content: 'Tool result was not captured (request was aborted or crashed before completion).',
+              is_error: true,
+            });
+          }
+        }
+      }
     } else if (m.role === 'tool') {
       toolResultBuffer.push({
         type: 'tool_result',

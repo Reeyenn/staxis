@@ -28,6 +28,12 @@ export interface ToolContext {
   };
   /** Property the conversation is scoped to. */
   propertyId: string;
+  /** The caller's `staff.id` on this property — resolved at the route
+   *  boundary from `staff.auth_user_id = user.uid`. Null when the
+   *  account isn't linked to a staff row (e.g. an admin/owner who isn't
+   *  on the floor). Tools that filter by `rooms.assigned_to` MUST use
+   *  this, NOT `user.accountId` (they're different tables). */
+  staffId: string | null;
   /** Request correlation id (echoed through to logs + API responses). */
   requestId: string;
 }
