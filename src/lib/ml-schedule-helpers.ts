@@ -62,13 +62,18 @@ export async function getActiveOptimizerForTomorrow(
     if (error) throw error;
     if (!data) return null;
 
+    // completion_probability_curve is stored as JSONB; Supabase types it
+    // as `unknown`. Narrow to a permissive row shape before mapping so a
+    // schema drift doesn't blow up with a runtime TypeError — defaults
+    // protect the consumer (the UI confidence tooltip).
+    const rawCurve = (data.completion_probability_curve ?? []) as unknown;
+    const curveRows: Array<{ headcount?: unknown; p?: unknown }> =
+      Array.isArray(rawCurve) ? (rawCurve as Array<{ headcount?: unknown; p?: unknown }>) : [];
     return {
       recommendedHeadcount: data.recommended_headcount as number,
-      completionProbabilityCurve: (
-        (data.completion_probability_curve as any[]) ?? []
-      ).map((row: any) => ({
-        headcount: row.headcount ?? 0,
-        p: row.p ?? 0,
+      completionProbabilityCurve: curveRows.map(row => ({
+        headcount: typeof row.headcount === 'number' ? row.headcount : 0,
+        p: typeof row.p === 'number' ? row.p : 0,
       })),
     };
   } catch (err) {
