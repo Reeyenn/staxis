@@ -1257,12 +1257,15 @@ export const EXPECTED_MIGRATIONS: ReadonlyArray<string> = [
   // 0103 ML retention policies (parallel chat).
   // 0104 ML fleet indexes (parallel chat).
   // 0105 L4: conversation archival + auto-summarization schema.
+  // 0106 Round-10 follow-ups: F1+F2+F6 apply-summary rewrite, F5
+  //  staxis_activate_prompt, F7 summary_xor CHECK, F4d active-row
+  //  prompt content update.
   '0079', '0080', '0081', '0082', '0083',
   '0084', '0085', '0086', '0087', '0088', '0089',
   '0090', '0091', '0092', '0093', '0094',
   '0095', '0096', '0097', '0098', '0099',
   '0100', '0101', '0102', '0103', '0104',
-  '0105',
+  '0105', '0106',
 ];
 async function checkAppliedMigrations(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {

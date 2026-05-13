@@ -1,8 +1,18 @@
 // ─── Admin API: activate a prompt version ────────────────────────────────
 // POST /api/admin/agent/prompts/[id]/activate
-// Atomically flips this row to is_active=true and every OTHER row with
-// the same role to is_active=false. Cache invalidated immediately on
-// this instance; other Vercel instances pick up within 30s TTL.
+//
+// Round-10 F5 (2026-05-13): swapped two-update flow for a single-RPC
+// flow. The old path ran deactivate-others + activate-this as two
+// separate supabase-js calls; for the ~50-200ms between them, ZERO
+// rows were active for that role. A concurrent chat request landing
+// on a cache-cold instance read empty + fell through to fallback
+// constants — so an operator-triggered activate temporarily made
+// users see the OLD code-baked prompt. staxis_activate_prompt runs
+// both UPDATEs inside one transaction; READ COMMITTED readers see
+// only BEFORE or only AFTER, never the in-between zero-active state.
+//
+// Cache invalidated immediately on this instance; other Vercel
+// instances pick up within 30s TTL (acceptable per L2 design).
 
 import type { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
@@ -36,32 +46,14 @@ export async function POST(
     return err('prompt not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
 
-  // Deactivate all OTHER rows for this role, then activate this one.
-  // Done in two updates rather than one transaction because supabase-js
-  // doesn't expose explicit txn control. The partial unique index on
-  // (role) WHERE is_active=true prevents two rows from being active
-  // simultaneously — if the deactivate fails, the second update will
-  // throw at the constraint. Acceptable for a one-row-at-a-time admin
-  // action; not used for high-frequency flips.
-  const { error: deactErr } = await supabaseAdmin
-    .from('agent_prompts')
-    .update({ is_active: false })
-    .eq('role', (target as { role: string }).role)
-    .neq('id', id);
+  // Atomic activate — see header for rationale.
+  const { error: rpcErr } = await supabaseAdmin.rpc('staxis_activate_prompt', {
+    p_id: id,
+    p_role: (target as { role: string }).role,
+  });
 
-  if (deactErr) {
-    return err(`failed to deactivate prior versions: ${deactErr.message}`, {
-      requestId, status: 500, code: ApiErrorCode.InternalError,
-    });
-  }
-
-  const { error: actErr } = await supabaseAdmin
-    .from('agent_prompts')
-    .update({ is_active: true })
-    .eq('id', id);
-
-  if (actErr) {
-    return err(`failed to activate: ${actErr.message}`, {
+  if (rpcErr) {
+    return err(`failed to activate: ${rpcErr.message}`, {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
   }
