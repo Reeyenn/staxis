@@ -80,6 +80,12 @@ export async function getActiveOptimizerForTomorrow(
 /**
  * Fetch the active demand prediction for tomorrow (confidence range).
  * Returns p80/p95 headcount boundaries for Maria's confidence tooltip.
+ *
+ * Codex post-merge review 2026-05-13 (Phase 2.2 + 2.4): no current
+ * consumer in src/. Kept (rather than deleted) because the matching
+ * Python writer was just added in inference/demand.py — the ScheduleTab
+ * "p80 confidence band" UI is the natural next consumer. If still
+ * uncalled in 6 months, delete.
  */
 export async function getActiveDemandForTomorrow(
   propertyId: string,
@@ -110,42 +116,20 @@ export async function getActiveDemandForTomorrow(
   }
 }
 
-/**
- * Fetch the active model run info for the ML pill tooltip.
- * Returns trained_at and validation_mae for "last trained {date}, MAE {N} min".
- */
-export async function getActiveModelRunInfo(
-  propertyId: string,
-): Promise<{
-  trainedAt: Date;
-  validationMae: number | null;
-} | null> {
-  try {
-    const { data, error } = await supabase
-      .from('model_runs')
-      .select('trained_at, validation_mae')
-      .eq('property_id', propertyId)
-      .eq('is_active', true)
-      .order('trained_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (error) throw error;
-    if (!data) return null;
-
-    return {
-      trainedAt: new Date(data.trained_at as string),
-      validationMae: data.validation_mae ? Number(data.validation_mae) : null,
-    };
-  } catch (err) {
-    logErr('getActiveModelRunInfo', err);
-    return null;
-  }
-}
+// Codex post-merge review 2026-05-13 (Phase 2.2): `getActiveModelRunInfo`
+// and `getActiveSupplyPredictionsForTomorrow` were P6 ScheduleTab
+// scaffolding that never landed. Both had zero callers in src/. Deleted
+// to avoid load-bearing-dead-code drift. Git history preserves the
+// implementation if someone needs it back; the right re-introduction
+// point is when the ScheduleTab UI actually wires the consumer.
 
 /**
  * Fetch supply predictions for tomorrow as a Map of "${roomNumber}:${staffId}" → predicted_minutes_p50.
  * Used to override static room-minute estimates in autoAssign.
+ *
+ * NOTE (2026-05-13): currently unused. Kept because autoAssignRooms is
+ * the natural consumer once supply-prediction-overrides land in
+ * ScheduleTab. Delete if still uncalled in 6 months.
  */
 export async function getActiveSupplyPredictionsForTomorrow(
   propertyId: string,

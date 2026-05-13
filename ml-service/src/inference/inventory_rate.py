@@ -91,15 +91,39 @@ async def predict_inventory_rates(
             "note": "no active inventory_rate models for this property",
         }
 
-    # Pull occupancy forecast / current avg for the feature
-    daily_logs = client.fetch_many(
-        "daily_logs",
-        filters={"property_id": property_id},
-        order_by="date",  # daily_logs.date (was incorrectly "log_date" — fixed in Tier 2 triple-check)
-        descending=True,
-        limit=14,
+    # Codex post-merge review 2026-05-13 (C-2 + C-3): use tomorrow's
+    # projected occupancy from the PMS plan snapshot, NOT the historic
+    # 14-day mean. The Bayesian model was trained as
+    # `daily_rate = a + b × occupancy_pct` so serving it the historic mean
+    # at inference time queries the model at the wrong x. On peak weekends
+    # the predicted daily rate was 30-40% too low, days_until_out was
+    # 2-3× over-stated, and reorders fired late.
+    #
+    # Same data source the housekeeping optimizer reads for "tomorrow's
+    # workload" — identical staleness profile + trust boundary.
+    plan_snap = client.fetch_one(
+        "plan_snapshots",
+        filters={"property_id": property_id, "date": target_date_iso},
     )
-    occ_pct = _recent_avg_occupancy(daily_logs)
+    occ_pct = _occupancy_for_target_date(plan_snap)
+    if occ_pct is None:
+        # Fall back to historic mean for cold-start hotels (no PMS
+        # snapshot yet) or PMS-outage days. Log the fallback so the
+        # doctor can flag it if it becomes routine.
+        print(json.dumps({
+            "evt": "occupancy_source_fallback",
+            "property_id": property_id,
+            "target_date": target_date_iso,
+            "reason": "no_plan_snapshot",
+        }))
+        daily_logs = client.fetch_many(
+            "daily_logs",
+            filters={"property_id": property_id},
+            order_by="date",
+            descending=True,
+            limit=14,
+        )
+        occ_pct = _recent_avg_occupancy(daily_logs)
 
     predicted = 0
     skipped_no_active = 0
@@ -150,6 +174,32 @@ def _recent_avg_occupancy(daily_logs: List[Dict[str, Any]]) -> float:
             except (ValueError, TypeError):
                 continue
     return sum(vals) / len(vals) if vals else 50.0
+
+
+def _occupancy_for_target_date(plan: Optional[Dict[str, Any]]) -> Optional[float]:
+    """Occupancy % for the target date, derived from a plan_snapshots row.
+
+    Codex post-merge review 2026-05-13 (C-2 + C-3): the Bayesian inventory
+    model learns `daily_rate = a + b × occupancy_pct`. Serving the model
+    the rolling 14-day historic mean at inference time queries the wrong
+    x for tomorrow's prediction. Pulling from plan_snapshots gives us the
+    PMS-projected occupancy for the same date the prediction is FOR.
+
+    Returns None when the snapshot is missing or unusable (cold-start
+    hotels, PMS-outage days). Caller falls back to the historic mean
+    and logs the fallback so we can monitor it.
+    """
+    if not plan:
+        return None
+    try:
+        total = int(plan.get("total_rooms") or 0)
+        if total <= 0:
+            return None
+        stayovers = int(plan.get("stayovers") or 0)
+        arrivals = int(plan.get("arrivals") or 0)
+        return max(0.0, min(100.0, 100.0 * (stayovers + arrivals) / total))
+    except (TypeError, ValueError):
+        return None
 
 
 def _predict_single_item(
@@ -342,12 +392,26 @@ def _compute_predicted_current_stock(
     days_since = max((now - last_at).total_seconds() / 86400.0, 0.0)
 
     # Sum orders + discards between last count and now
+    #
+    # Codex post-merge review 2026-05-13:
+    #   C-1: switched orders filter from `ordered_at` (nullable — "PO placed
+    #        time, often unknown") to `received_at` (NOT NULL DEFAULT now()
+    #        per migration 0026:96). The training path was fixed at
+    #        training/inventory_rate.py:657 (N1); this inference path was
+    #        missed. Auto-fill predicted_current_stock was silently
+    #        under-counting every order with no recorded ordered_at —
+    #        biasing Maria toward over-counting / over-ordering.
+    #   2.1: switched discards filter from `created_at` to `discarded_at`
+    #        for consistency with view 0096 + trainer + cohort SQL. Both
+    #        columns are NOT NULL DEFAULT now() so the change is
+    #        semantically safe today, but matters the moment someone
+    #        backdates a discard.
     last_at_iso = last_at.isoformat()
     try:
         orders_resp = client.client.table("inventory_orders")\
             .select("quantity")\
             .eq("property_id", property_id).eq("item_id", item_id)\
-            .gt("ordered_at", last_at_iso).execute()
+            .gt("received_at", last_at_iso).execute()
         orders_sum = sum(float(r.get("quantity") or 0) for r in (orders_resp.data or []))
     except Exception:
         orders_sum = 0.0
@@ -355,7 +419,7 @@ def _compute_predicted_current_stock(
         discards_resp = client.client.table("inventory_discards")\
             .select("quantity")\
             .eq("property_id", property_id).eq("item_id", item_id)\
-            .gt("created_at", last_at_iso).execute()
+            .gt("discarded_at", last_at_iso).execute()
         discards_sum = sum(float(r.get("quantity") or 0) for r in (discards_resp.data or []))
     except Exception:
         discards_sum = 0.0

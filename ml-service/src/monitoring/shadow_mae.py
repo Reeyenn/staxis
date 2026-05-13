@@ -58,6 +58,23 @@ def _find_fallback_model(
     return None
 
 
+# *** DEAD CODE NOTICE (Codex post-merge review 2026-05-13, Phase 2.3) ***
+# The two functions below (`compute_rolling_shadow_mae` and
+# `check_auto_rollback`) have ZERO callers in any cron, route, or task.
+# The auto-rollback subsystem is fully built but not wired. Recent fixes
+# (M-C1 database_url at line ~266, H-4 Wilcoxon n>=10 at line ~187) keep
+# them CORRECT, just unused. Wiring requires:
+#   1. A new cron route src/app/api/cron/ml-auto-rollback-check/route.ts
+#      that iterates active models per property and calls
+#      `check_auto_rollback`.
+#   2. BH-FDR correction across the fleet (H-4 step 2 backlog item) to
+#      keep false-rollback rate manageable at fleet scale.
+#   3. Operator alerts when a rollback fires.
+# Each of those is its own multi-day project. Until they land, these
+# functions stay correct-but-unused. DO NOT DELETE — they are the
+# executable spec for what auto-rollback should do.
+
+
 async def compute_rolling_shadow_mae(
     property_id: str,
     layer: str,
@@ -177,7 +194,16 @@ async def compute_rolling_shadow_mae(
             paired_active.append(bucket["active"])
             paired_baseline.append(bucket["comparator"])
 
-    if len(paired_active) < 5:
+    # Codex post-merge review 2026-05-13 (H-4): bumped from n=5 to n=10.
+    # At n=5 the Wilcoxon signed-rank one-sided minimum achievable p-value
+    # is 1/32 ≈ 0.031 — already below the 0.05 trigger at line 229. A
+    # single unlucky 5-of-5 comparison favoring "active is worse" would
+    # fire a rollback regardless of effect size. n>=10 gives the test a
+    # minimum p ~0.001 and makes the alpha=0.05 boundary meaningful.
+    # Step 2 (BH-FDR across the cron pass) tracked as backlog — requires
+    # pivoting the cron loop, defer until shadow-evaluate has real
+    # fleet-scale traffic.
+    if len(paired_active) < 10:
         # Not enough paired days yet to make a confident call.
         return None
 

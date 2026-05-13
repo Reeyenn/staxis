@@ -205,3 +205,29 @@ def test_bayesian_inference_rejects_feature_shape_mismatch():
     }
     with pytest.raises(ValueError, match="Bayesian feature shape mismatch"):
         _predict_bayesian_quantiles(params_short, occ_pct=70.0)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Codex post-merge review 2026-05-13 (H-4): Wilcoxon signed-rank n-floor
+# was 5; minimum achievable p-value at n=5 is 1/32 ≈ 0.031, already below
+# the 0.05 trigger. A single 5-of-5 unlucky comparison would fire false
+# rollback. Bumped to n=10 (min p ~0.001).
+# ────────────────────────────────────────────────────────────────────────────
+def test_wilcoxon_floor_is_n10_not_n5():
+    """The shadow-MAE Wilcoxon test must require n>=10 paired observations.
+
+    This locks in H-4 step 1. Replaying with n=9 must return None
+    (insufficient data); n=10 must run the test.
+    """
+    from src.monitoring.shadow_mae import compute_rolling_shadow_mae
+    import inspect
+    src = inspect.getsource(compute_rolling_shadow_mae)
+    # The function module-level cutoff is parametric; assert the literal
+    # 10 appears AND no `< 5` line is left from the prior version.
+    assert "len(paired_active) < 10" in src, (
+        "Wilcoxon floor must require n>=10 — the source no longer "
+        "contains the `< 10` guard. H-4 regression."
+    )
+    assert "len(paired_active) < 5\n" not in src, (
+        "Old `len(paired_active) < 5` guard still present — H-4 fix reverted."
+    )

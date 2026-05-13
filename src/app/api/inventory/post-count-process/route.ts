@@ -162,12 +162,17 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       const tNewer = new Date(newer.counted_at).getTime();
       const tOlder = new Date(older.counted_at).getTime();
       const days = Math.max((tNewer - tOlder) / 86400000, 0.5);
-      // Prefer the view's accounting-aware rate; fall back to the legacy
-      // formula only if the view has no row for this pair (shouldn't
-      // happen in practice but defensive).
-      const observed = observedByNewerCountId.has(newer.id)
-        ? observedByNewerCountId.get(newer.id) as number
-        : Math.max(0, (Number(older.counted_stock) - Number(newer.counted_stock)) / days);
+      // Codex post-merge review 2026-05-13 (M-2b): if the v2 view
+      // (migration 0096) rejected this pair (day-1 floor, missing-data
+      // filter, etc.), DON'T fabricate an observation via the legacy
+      // (older - newer) / days formula — that formula ignores orders +
+      // discards and pollutes shadow MAE precisely when the data is
+      // dirty enough that the view refused to compute. Honest "no
+      // observation" beats a systematically wrong one.
+      if (!observedByNewerCountId.has(newer.id)) {
+        continue;
+      }
+      const observed = observedByNewerCountId.get(newer.id) as number;
       const pred = predByItem.get(itemId);
       if (!pred) continue;
       observations.push({

@@ -536,6 +536,15 @@ export async function getInventoryRollingMAE(
 export interface AutoFillItem {
   itemId: string;
   predictedCurrentStock: number;
+  /** Lower bound of the decayed stock band (faster-burn p75 rate × hours).
+   *  Codex post-merge review 2026-05-13 (M-5/M-6): the point estimate
+   *  alone hides uncertainty that grows with time-since-prediction. UI
+   *  can render `predictedCurrentStockLow..predictedCurrentStockHigh`
+   *  as a confidence band that widens as the prediction ages. Omitted
+   *  for back-compat when the prediction row has no p25/p75 columns. */
+  predictedCurrentStockLow?: number;
+  /** Upper bound of the decayed stock band (slower-burn p25 rate × hours). */
+  predictedCurrentStockHigh?: number;
   algorithm: string | null;
   graduated: boolean;            // true = passed all 3 graduation gates
 }
@@ -558,7 +567,7 @@ export async function getInventoryAutoFillMap(
 
   const { data: predData, error: predErr } = await supabase
     .from('inventory_rate_predictions')
-    .select('item_id,predicted_current_stock,predicted_daily_rate,model_run_id,predicted_at')
+    .select('item_id,predicted_current_stock,predicted_daily_rate,predicted_daily_rate_p25,predicted_daily_rate_p75,model_run_id,predicted_at')
     .eq('property_id', pid)
     .gte('predicted_at', sinceIso)
     .order('predicted_at', { ascending: false })
@@ -615,13 +624,28 @@ export async function getInventoryAutoFillMap(
     if (hoursSince > HOURS_DECAY_HARD_CAP) {
       continue;
     }
-    const dailyRate = p.predicted_daily_rate !== null && p.predicted_daily_rate !== undefined
-      ? Number(p.predicted_daily_rate)
-      : 0;
-    const decayed = Math.max(0, predStock - (dailyRate * hoursSince) / 24);
+    // Codex post-merge review 2026-05-13 (M-5/M-6): decay all three rate
+    // quantiles so the UI can render a confidence band, not just the
+    // point estimate. Faster burn (p75) → lower stock left = decayedLow.
+    // Slower burn (p25) → higher stock left = decayedHigh. The band
+    // widens with hoursSince (an old prediction has more uncertainty).
+    // Falls back to the p50 rate when p25/p75 columns are null (legacy
+    // predictions before quantile columns landed).
+    const decayHours = hoursSince / 24;
+    const rateP50 = p.predicted_daily_rate !== null && p.predicted_daily_rate !== undefined
+      ? Number(p.predicted_daily_rate) : 0;
+    const rateP25 = p.predicted_daily_rate_p25 !== null && p.predicted_daily_rate_p25 !== undefined
+      ? Number(p.predicted_daily_rate_p25) : rateP50;
+    const rateP75 = p.predicted_daily_rate_p75 !== null && p.predicted_daily_rate_p75 !== undefined
+      ? Number(p.predicted_daily_rate_p75) : rateP50;
+    const decayed     = Math.max(0, predStock - rateP50 * decayHours);
+    const decayedHigh = Math.max(0, predStock - rateP25 * decayHours);  // slow burn → more left
+    const decayedLow  = Math.max(0, predStock - rateP75 * decayHours);  // fast burn → less left
 
     out.push({
       itemId,
+      predictedCurrentStockLow:  decayedLow,
+      predictedCurrentStockHigh: decayedHigh,
       predictedCurrentStock: decayed,
       algorithm: typeof run.algorithm === 'string' ? run.algorithm : null,
       graduated,
@@ -815,4 +839,37 @@ export async function getInventoryAiStatus(pid: string): Promise<InventoryAiStat
     currentMaeRatio,
     lastInferenceAt: predRes.data?.predicted_at ?? null,
   };
+}
+
+/** Read `truncated_at_cap` from optimizer_results.sensitivity_analysis.
+ *
+ * Codex post-merge review 2026-05-13 (M-4): the optimizer flag is written
+ * by `optimize_headcount` in ml-service/src/optimizer/monte_carlo.py:404
+ * when the H search loop hit its ceiling without satisfying target_prob.
+ * Cockpit should surface a banner when true ("we couldn't find a
+ * headcount that meets 95% on-time at H=N"). The optimizer cron is
+ * paused as of 2026-05-13 — this reader is wired now so when the cron
+ * is re-enabled the field doesn't go dark.
+ *
+ * Returns false on missing row, malformed JSON, or absent field.
+ */
+export async function getOptimizerTruncationFlag(
+  pid: string,
+  date: string,
+): Promise<boolean> {
+  const { data } = await supabase
+    .from('optimizer_results')
+    .select('sensitivity_analysis')
+    .eq('property_id', pid)
+    .eq('date', date)
+    .maybeSingle();
+  if (!data) return false;
+  try {
+    const sens = typeof data.sensitivity_analysis === 'string'
+      ? JSON.parse(data.sensitivity_analysis)
+      : data.sensitivity_analysis;
+    return Boolean(sens?.truncated_at_cap);
+  } catch {
+    return false;
+  }
 }

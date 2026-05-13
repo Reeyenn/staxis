@@ -28,12 +28,22 @@ DEFAULT_PROPERTY_TIMEZONE = "America/Chicago"
 #   - Different days get independent samples (no cross-day leakage).
 #   - Different properties on the same day are independent.
 
-def _deterministic_seed(property_id: str, prediction_date: date) -> int:
-    """Stable 32-bit seed derived from (property_id, prediction_date)."""
+def _deterministic_seed(property_id: str, prediction_date: date) -> np.random.SeedSequence:
+    """Stable 128-bit SeedSequence from (property_id, prediction_date).
+
+    np.random.default_rng accepts a SeedSequence directly. Codex post-merge
+    review 2026-05-13 (H-3): the prior implementation modded the digest by
+    2^32, throwing away 96 bits. Fleet-scale (property × date) birthday
+    paradox: P(any collision) crosses 50% at ~77k unique seeds — we'd
+    reach that in ~4 years at 50 properties. Two distinct inputs sharing
+    a 32-bit seed produce identical Monte Carlo draws (silent correlation,
+    breaks the audit-independence claim in the docstring above).
+    The full 128-bit digest essentially eliminates collisions.
+    """
     digest = hashlib.md5(
         f"{property_id}:{prediction_date.isoformat()}".encode("utf-8")
     ).hexdigest()
-    return int(digest[:16], 16) % (2**32)
+    return np.random.SeedSequence(int(digest, 16))
 
 
 def _invert_quantile_cdf(quantiles: Dict[float, float], u: float) -> float:
@@ -67,13 +77,21 @@ def _invert_quantile_cdf(quantiles: Dict[float, float], u: float) -> float:
             return max(min_v, extrapolated)
         return vs[0]
 
-    # Above the largest known quantile: extrapolate using the last segment,
-    # clamped at the ceiling.
+    # Above the largest known quantile: extrapolate using the last segment.
+    # Codex post-merge review 2026-05-13 (H-2): no upper clamp. Previously
+    # this returned `min(max_v, extrapolated)` — the extrapolation slope
+    # was computed and then immediately discarded by the clamp, so EVERY
+    # u in (q_max, 1.0] returned exactly max_v. For right-skewed cleaning
+    # times that's ~10% of optimizer draws collapsing to p90 with no mass
+    # beyond, biasing the makespan distribution low and under-recommending
+    # headcount on long-tail-heavy days. The symmetric LOWER-tail
+    # extrapolation already runs unclamped (line 67); the upper should too.
+    # The slope of the last known segment is the best-information estimate
+    # for the unobserved tail.
     if u >= qs[-1]:
         if len(sorted_pairs) >= 2 and qs[-1] != qs[-2]:
             slope = (vs[-1] - vs[-2]) / (qs[-1] - qs[-2])
-            extrapolated = vs[-1] + slope * (u - qs[-1])
-            return min(max_v, extrapolated)
+            return vs[-1] + slope * (u - qs[-1])
         return vs[-1]
 
     # Interior: piecewise-linear between the two adjacent known quantiles.
@@ -384,6 +402,12 @@ async def optimize_headcount(
             "target_met": target_met,
             # Codex post-merge F4b: surface explicitly when no H in the
             # searched range met target_prob, so the cockpit can render
+            # a "no satisfying headcount found" banner instead of treating
+            # the returned value as a confident recommendation. Read on
+            # the TS side via `getOptimizerTruncationFlag` in
+            # src/lib/db/ml-inventory-cockpit.ts. The optimizer cron is
+            # paused as of 2026-05-13; the reader is wired now so when
+            # the cron is re-enabled the field doesn't go dark.
             # "we couldn't find a satisfying headcount" instead of treating
             # the returned value as a confident recommendation.
             "truncated_at_cap": truncated_at_cap,

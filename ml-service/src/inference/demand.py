@@ -168,7 +168,12 @@ async def predict_demand(
 
     # Load and run model based on algorithm
     algorithm = model_run.get("algorithm", "bayesian")
-    quantiles = [0.1, 0.25, 0.5, 0.75, 0.9, 0.95]
+    # Codex post-merge review 2026-05-13 (Phase 2.4): added 0.8 so we can
+    # write `predicted_headcount_p80` for the Schedule tab consumer that
+    # was silently getting null. The training-side Bayesian/XGBoost
+    # quantile models can be evaluated at any q in (0, 1); 0.8 was simply
+    # missing from this list.
+    quantiles = [0.1, 0.25, 0.5, 0.75, 0.8, 0.9, 0.95]
     predictions = None
 
     if algorithm == "bayesian":
@@ -270,10 +275,18 @@ async def predict_demand(
         "predicted_minutes_p25": float(predictions[0.25][0]),
         "predicted_minutes_p50": float(predictions[0.5][0]),
         "predicted_minutes_p75": float(predictions[0.75][0]),
+        "predicted_minutes_p80": float(predictions[0.8][0]),
         "predicted_minutes_p90": float(predictions[0.9][0]),
         "predicted_minutes_p95": float(predictions[0.95][0]),
         "predicted_headcount_p50": float(
             np.ceil(predictions[0.5][0] / settings.shift_cap_minutes)
+        ),
+        # Codex post-merge review 2026-05-13 (Phase 2.4): the Schedule tab
+        # at src/lib/ml-schedule-helpers.ts:78 reads predicted_headcount_p80
+        # for the confidence band but inference wasn't writing it →
+        # silent null. Now written alongside p50 + p95.
+        "predicted_headcount_p80": float(
+            np.ceil(predictions[0.8][0] / settings.shift_cap_minutes)
         ),
         "predicted_headcount_p95": float(
             np.ceil(predictions[0.95][0] / settings.shift_cap_minutes)
