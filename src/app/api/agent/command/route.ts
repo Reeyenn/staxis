@@ -38,7 +38,7 @@
 import type { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
-import { getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId, log } from '@/lib/log';
 
 import { streamAgent, type AgentMessage, type UsageReport } from '@/lib/agent/llm';
 import { getToolsForRole } from '@/lib/agent/tools';
@@ -202,6 +202,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       await recordUserTurn(conversationId, body.message);
     }
   } catch (e) {
+    log.error('[agent/command] failed to prepare conversation', { requestId, reservationId, e });
     await cancelCostReservation(reservationId);
     return Response.json(
       { ok: false, error: 'failed to prepare conversation', requestId, details: e instanceof Error ? e.message : String(e) },
@@ -292,7 +293,9 @@ export async function POST(req: NextRequest): Promise<Response> {
             }
           } else if (event.type === 'tool_call_finished') {
             await recordToolResult(finalConversationId, event.call.id, event.result).catch(err => {
-              console.error('[agent/command] failed to persist tool result', err);
+              log.error('[agent/command] failed to persist tool result', {
+                requestId, conversationId: finalConversationId, callId: event.call.id, err,
+              });
             });
             pendingToolCallIds.delete(event.call.id);
             send(event);
@@ -342,6 +345,9 @@ export async function POST(req: NextRequest): Promise<Response> {
         // Includes errors thrown from recordAssistantTurn (Fix #2). The
         // finally block handles cleanup of the cost reservation + any
         // dangling tool_use rows.
+        log.error('[agent/command] stream loop threw', {
+          requestId, conversationId: finalConversationId, reservationId, err,
+        });
         send({ type: 'error', message: err instanceof Error ? err.message : String(err) });
       } finally {
         // ── Fix #3 cleanup: synthesize tool_result rows for any tool_use
@@ -361,7 +367,9 @@ export async function POST(req: NextRequest): Promise<Response> {
                 ok: false,
                 error: 'aborted — tool result was not captured before the stream ended',
               }).catch(err => {
-                console.error('[agent/command] failed to insert synthetic abort result', err);
+                log.error('[agent/command] failed to insert synthetic abort result', {
+                  requestId, conversationId: finalConversationId, err,
+                });
               }),
             ),
           );
@@ -395,9 +403,13 @@ export async function POST(req: NextRequest): Promise<Response> {
               propertyId: body.propertyId,
             });
           } catch (finalizeErr) {
-            console.error('[agent/command] finalize failed after retries; cancelling to release budget hold (audit row written)', finalizeErr);
+            log.error('[agent/command] finalize failed after retries; cancelling to release budget hold (audit row written)', {
+              requestId, conversationId: finalConversationId, reservationId, finalizeErr,
+            });
             await cancelCostReservation(reservationId).catch(cancelErr => {
-              console.error('[agent/command] cancel also failed; reservation will be stranded', cancelErr);
+              log.error('[agent/command] cancel also failed; reservation will be stranded', {
+                requestId, conversationId: finalConversationId, reservationId, cancelErr,
+              });
             });
           }
         } else {

@@ -24,7 +24,7 @@ import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireCronSecret } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId, log } from '@/lib/log';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 
 export const runtime = 'nodejs';
@@ -74,11 +74,15 @@ export async function GET(req: NextRequest) {
     if (cleanupErr) {
       // Don't fail the cron — error_logs purge already succeeded.
       // The next tick will retry the api_limits cleanup.
+      log.error('[cron/purge-old-error-logs] api_limits cleanup RPC errored', {
+        requestId, cleanupErr,
+      });
       apiLimitsPurged = null;
     } else {
       apiLimitsPurged = Number(cleanupCount) || 0;
     }
-  } catch {
+  } catch (e) {
+    log.error('[cron/purge-old-error-logs] api_limits cleanup threw', { requestId, e });
     apiLimitsPurged = null;
   }
 

@@ -6,7 +6,7 @@ import type { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId, log } from '@/lib/log';
 import { listConversations } from '@/lib/agent/memory';
 
 export const runtime = 'nodejs';
@@ -30,6 +30,7 @@ export async function GET(req: NextRequest): Promise<Response> {
     const conversations = await listConversations(account.id as string);
     return ok({ conversations }, { requestId });
   } catch (e) {
+    log.error('[agent/conversations] failed to list', { requestId, e });
     return err('failed to list conversations', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
       details: e instanceof Error ? e.message : String(e),

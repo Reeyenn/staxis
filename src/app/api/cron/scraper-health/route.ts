@@ -44,6 +44,7 @@ import { supabaseAdmin, verifySupabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
+import { log } from '@/lib/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -302,7 +303,7 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
           `Staxis scraper: recovered. PMS numbers are flowing again${ctx.pulledAtStr ? ` (last pull ${ctx.pulledAtStr})` : ''}.`
         );
       } catch (err) {
-        console.error('[scraper-health] recovery SMS failed', errToString(err));
+        log.error('[scraper-health] recovery SMS failed', { err });
       }
     }
     await mergeStatus('alertState', {
@@ -372,7 +373,7 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
       smsSent = true;
     } catch (err) {
       smsError = errToString(err);
-      console.error('[scraper-health] SMS send failed', smsError);
+      log.error('[scraper-health] SMS send failed', { err });
       suppressedReason = 'sms_send_failed';
     }
   } else {
@@ -415,7 +416,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: true, ...result });
   } catch (err) {
     const msg = errToString(err);
-    console.error('[scraper-health] handler threw', msg);
+    log.error('[scraper-health] handler threw', { err });
     return NextResponse.json(
       { ok: false, error: msg },
       { status: 500 }

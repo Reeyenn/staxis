@@ -6,7 +6,7 @@ import type { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId, log } from '@/lib/log';
 import { COST_LIMITS } from '@/lib/agent/cost-controls';
 
 export const runtime = 'nodejs';
@@ -222,6 +222,7 @@ export async function GET(req: NextRequest): Promise<Response> {
 
     return ok(payload, { requestId });
   } catch (e) {
+    log.error('[agent/metrics] failed to load metrics', { requestId, e });
     return err('failed to load metrics', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
       details: e instanceof Error ? e.message : String(e),

@@ -5,7 +5,7 @@ import type { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId, log } from '@/lib/log';
 import { loadConversation, deleteConversation } from '@/lib/agent/memory';
 
 export const runtime = 'nodejs';
@@ -36,6 +36,7 @@ export async function GET(
     }
     return ok({ conversation: convo }, { requestId });
   } catch (e) {
+    log.error('[agent/conversations/get] failed to load', { requestId, id, e });
     return err('failed to load conversation', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
       details: e instanceof Error ? e.message : String(e),
@@ -70,6 +71,7 @@ export async function DELETE(
     }
     return ok({ deleted: true }, { requestId });
   } catch (e) {
+    log.error('[agent/conversations/delete] failed', { requestId, id, e });
     return err('failed to delete conversation', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
       details: e instanceof Error ? e.message : String(e),
