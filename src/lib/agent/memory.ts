@@ -250,12 +250,24 @@ export function recordUserTurn(conversationId: string, content: string): Promise
  * caller MUST abort the stream and cancel the cost reservation if this
  * throws, otherwise tool_result rows will be persisted without their
  * matching tool_use and the conversation is corrupted.
+ *
+ * Defense-in-depth backlog cleanup, 2026-05-13: `modelId` (exact Anthropic
+ * snapshot ID, e.g. 'claude-sonnet-4-6-20260427') is now persisted on
+ * the assistant text row so individual turns can be correlated to model
+ * snapshot releases — closes the audit-trail gap where agent_costs had
+ * model_id but agent_messages only had the tier.
  */
 export async function recordAssistantTurn(
   conversationId: string,
   text: string,
   toolCalls: AgentToolCall[] | undefined,
-  telemetry: { tokensIn: number; tokensOut: number; modelUsed: ModelTier; costUsd: number },
+  telemetry: {
+    tokensIn: number;
+    tokensOut: number;
+    modelUsed: ModelTier;
+    modelId: string | null;
+    costUsd: number;
+  },
 ): Promise<void> {
   const { error } = await supabaseAdmin.rpc('staxis_record_assistant_turn', {
     p_conversation_id: conversationId,
@@ -268,6 +280,7 @@ export async function recordAssistantTurn(
     p_tokens_in: telemetry.tokensIn,
     p_tokens_out: telemetry.tokensOut,
     p_model: telemetry.modelUsed,
+    p_model_id: telemetry.modelId,
     p_cost_usd: telemetry.costUsd,
   });
   if (error) {

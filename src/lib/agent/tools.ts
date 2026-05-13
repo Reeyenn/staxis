@@ -102,6 +102,14 @@ export function getToolsForRole(role: AppRole): ToolDefinition[] {
  * Execute a tool by name. Centralizes the role check so a misbehaving tool
  * handler can't accidentally bypass it. Returns a structured ToolResult that
  * the agent loop feeds back to Claude as a tool_result message.
+ *
+ * Defense-in-depth backlog cleanup, 2026-05-13: also re-checks that the
+ * user's propertyAccess array still includes ctx.propertyId. The route
+ * boundary's userHasPropertyAccess gate runs once at request start; if
+ * access is revoked in a concurrent admin action while the agent loop
+ * is still iterating (rare but real for tool-heavy turns), this re-check
+ * stops further tool execution mid-flight rather than relying on every
+ * individual tool handler to filter by propertyId.
  */
 export async function executeTool(
   name: string,
@@ -116,6 +124,21 @@ export async function executeTool(
     return {
       ok: false,
       error: `Your role (${ctx.user.role}) is not allowed to use ${name}. Explain to the user that this action requires a different role.`,
+    };
+  }
+  // Admins + owners can access any property the access-control system
+  // grants them via userHasPropertyAccess at the route boundary;
+  // propertyAccess on the account row is the canonical list for floor
+  // and management roles. Admins keep their full-property scope via the
+  // route-boundary check.
+  if (
+    ctx.user.role !== 'admin' &&
+    ctx.user.role !== 'owner' &&
+    !ctx.user.propertyAccess.includes(ctx.propertyId)
+  ) {
+    return {
+      ok: false,
+      error: 'Property access for this conversation was revoked. The user must restart the conversation from a property they currently have access to.',
     };
   }
   try {

@@ -93,6 +93,25 @@ function truncateToolResultContent(content: string): string {
   );
 }
 
+// Defensive JSON serialization for tool results. Two failure modes
+// JSON.stringify throws on synchronously:
+//   1. BigInt values (no built-in conversion — replacer converts to string)
+//   2. Circular references (no replacer can fix — catch and emit a marker)
+//
+// Without this guard a tool returning either kind would crash the iteration
+// loop and the route would see an error event instead of a tool_result row,
+// orphaning the assistant's tool_use on next replay. Defense-in-depth
+// backlog cleanup, 2026-05-13.
+function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value, (_key, val) =>
+      typeof val === 'bigint' ? val.toString() : val,
+    );
+  } catch (err) {
+    return `[tool result serialization failed: ${err instanceof Error ? err.message : String(err)}]`;
+  }
+}
+
 // Escape XML/HTML metacharacters so a tool returning literal "</tool-result>"
 // inside its data can't close the trust-marker tag and inject "trusted"
 // instructions into the prompt. Codex round-6 R4, 2026-05-13.
@@ -308,10 +327,28 @@ function toClaudeMessages(history: AgentMessage[], newUser: string): ClaudeMessa
 
     // Otherwise, consume the contiguous `tool` rows that follow as the
     // matching tool_result block. Stop at the first non-tool row.
+    //
+    // Defense-in-depth backlog cleanup, 2026-05-13: if the same
+    // tool_call_id appears twice in the adjacent block (a corrupt DB
+    // state, e.g. a sweeper-cleanup race that double-inserted a synthetic
+    // result), the prior `.set` overwrite pattern silently kept the
+    // second row. We now keep the FIRST row (chronologically earliest)
+    // and log a warning so the operator sees the corruption. The DB
+    // partial unique index added in migration 0094 prevents new
+    // duplicates from being inserted in the first place.
     const adjacentResults = new Map<string, AgentMessage & { role: 'tool' }>();
     while (i < history.length && history[i].role === 'tool') {
       const tm = history[i] as AgentMessage & { role: 'tool' };
-      if (tm.toolCallId) adjacentResults.set(tm.toolCallId, tm);
+      if (tm.toolCallId) {
+        if (adjacentResults.has(tm.toolCallId)) {
+          console.warn(
+            '[agent/llm] duplicate tool_call_id in adjacent block; keeping first',
+            { toolCallId: tm.toolCallId },
+          );
+        } else {
+          adjacentResults.set(tm.toolCallId, tm);
+        }
+      }
       i++;
     }
 
@@ -324,7 +361,7 @@ function toClaudeMessages(history: AgentMessage[], newUser: string): ClaudeMessa
         return {
           type: 'tool_result' as const,
           tool_use_id: id,
-          content: typeof tm.result === 'string' ? tm.result : JSON.stringify(tm.result),
+          content: typeof tm.result === 'string' ? tm.result : safeStringify(tm.result),
           is_error: tm.isError ?? false,
         };
       }
@@ -493,7 +530,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       const rawContent = result.ok
         ? typeof result.data === 'string'
           ? result.data
-          : JSON.stringify(result.data ?? null)
+          : safeStringify(result.data ?? null)
         : (result.error ?? 'Tool failed without a message');
       toolResultBlocks.push({
         type: 'tool_result',
@@ -732,7 +769,7 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
         const rawContent = result.ok
           ? typeof result.data === 'string'
             ? result.data
-            : JSON.stringify(result.data ?? null)
+            : safeStringify(result.data ?? null)
           : (result.error ?? 'Tool failed without a message');
         toolResultBlocks.push({
           type: 'tool_result',

@@ -279,6 +279,7 @@ export async function POST(req: NextRequest): Promise<Response> {
                 tokensIn: event.usage.inputTokens,
                 tokensOut: event.usage.outputTokens,
                 modelUsed: event.usage.model,
+                modelId: event.usage.modelId,
                 costUsd: event.usage.costUsd,
               },
             );
@@ -323,6 +324,7 @@ export async function POST(req: NextRequest): Promise<Response> {
               tokensIn: finalUsage?.inputTokens ?? 0,
               tokensOut: finalUsage?.outputTokens ?? 0,
               modelUsed: finalUsage?.model ?? 'sonnet',
+              modelId: finalUsage?.modelId ?? null,
               costUsd: finalUsage?.costUsd ?? 0,
             },
           );
