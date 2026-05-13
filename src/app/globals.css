@@ -412,3 +412,195 @@ body {
   .btn { min-height: 40px; }
 }
 
+/* ── Safe area helpers ──────────────────────────────────────────────────────── */
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
+
+/* ── Housekeeping mobile fixes ─────────────────────────────────────────────── */
+
+/* Hide header date on small screens, shrink property selector */
+@media (max-width: 600px) {
+  .header-date { display: none !important; }
+  .header-property-btn { max-width: 180px !important; font-size: 12px !important; }
+}
+
+/* Tab bar: smaller text on mobile */
+@media (max-width: 480px) {
+  .hk-tab-btn { font-size: 11px !important; padding: 8px 4px !important; }
+}
+
+/* Room legend: wrap to 2x2 grid on mobile */
+@media (max-width: 480px) {
+  .room-legend {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr !important;
+    gap: 6px !important;
+  }
+  .room-legend > span { justify-content: center; }
+}
+
+/* Public area cards: 2 columns on mobile */
+@media (max-width: 480px) {
+  .pa-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+}
+
+/* Staffing prediction pills: stack vertically on very small screens */
+@media (max-width: 380px) {
+  .prediction-pills {
+    flex-direction: column !important;
+    align-items: center !important;
+  }
+}
+
+/* ── Mobile responsive utilities (390px target) ──────────────────────────── */
+
+/* Dashboard: hero cards stack to 1 col on mobile */
+@media (max-width: 600px) {
+  .dash-hero-grid {
+    grid-template-columns: 1fr !important;
+    gap: 8px !important;
+  }
+  .dash-hero-grid .card {
+    padding: 14px 16px !important;
+  }
+  /* Dashboard: 4-column details → 2 columns on mobile */
+  .dash-details-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 0 !important;
+  }
+  .dash-details-grid > div {
+    padding: 12px !important;
+    border-left: none !important;
+  }
+  .dash-details-grid > div:nth-child(odd) {
+    border-right: 1px solid var(--border) !important;
+  }
+  .dash-details-grid > div:nth-child(n+3) {
+    border-top: 1px solid var(--border) !important;
+  }
+  /* Dashboard page padding */
+  .dash-page-content {
+    padding: 16px 14px 20px !important;
+    gap: 14px !important;
+  }
+}
+
+/* Inventory: single column on mobile */
+@media (max-width: 600px) {
+  .inv-grid {
+    grid-template-columns: 1fr !important;
+  }
+  .inv-grid > div {
+    border-right: none !important;
+  }
+  /* Inventory CTA: stack vertically on mobile */
+  .inv-cta {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 12px !important;
+    padding: 16px !important;
+    width: 100% !important;
+    display: flex !important;
+  }
+  .inv-cta button {
+    width: 100% !important;
+    justify-content: center !important;
+  }
+}
+
+/* Staff: stat cards responsive */
+@media (max-width: 600px) {
+  .staff-stats-grid {
+    gap: 8px !important;
+  }
+  .staff-stats-grid .stat-number {
+    font-size: 24px !important;
+  }
+  .staff-list-row {
+    flex-wrap: wrap !important;
+    gap: 6px !important;
+    padding: 10px 12px !important;
+  }
+  .staff-list-buttons {
+    padding: 5px 8px !important;
+    font-size: 11px !important;
+  }
+}
+
+/* Inspections: larger touch targets */
+@media (max-width: 600px) {
+  .inspection-row {
+    padding: 14px 12px !important;
+    min-height: 64px !important;
+  }
+  .inspection-row .set-date-btn {
+    min-height: 36px !important;
+    padding: 6px 12px !important;
+  }
+}
+
+/* ── Schedule crew cards: stack vertically on mobile ── */
+@media (max-width: 600px) {
+  .sched-crew-row {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 8px !important;
+    padding: 12px !important;
+  }
+  .sched-crew-info {
+    flex-direction: row !important;
+    align-items: center !important;
+    gap: 8px !important;
+    flex-wrap: wrap !important;
+  }
+  .sched-crew-name {
+    width: auto !important;
+    flex-shrink: 1 !important;
+    min-width: 0 !important;
+  }
+  .sched-crew-stats {
+    width: auto !important;
+    grid-template-columns: auto auto !important;
+    gap: 2px 10px !important;
+    font-size: 11px !important;
+  }
+  .sched-crew-pills {
+    flex: none !important;
+    width: 100% !important;
+  }
+}
+
+/* ── Horizontal pill scrollers: clean scroll on mobile ── */
+.inv-filters::-webkit-scrollbar,
+.scroll-pills::-webkit-scrollbar {
+  display: none;
+}
+.inv-filters > button,
+.scroll-pills > button,
+.scroll-pills > * {
+  flex-shrink: 0 !important;
+}
+@media (max-width: 600px) {
+  .inv-filters {
+    margin-left: -14px !important;
+    margin-right: -14px !important;
+    padding-left: 14px !important;
+    padding-right: 14px !important;
+    width: calc(100% + 28px) !important;
+  }
+}
+
+/* ── Agent layer animations ──────────────────────────────────────────── */
+@keyframes staxis-pulse {
+  0%, 80%, 100% { opacity: 0.2; transform: scale(0.85); }
+  40% { opacity: 1; transform: scale(1); }
+}
+@keyframes staxis-slide-in {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@keyframes staxis-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}

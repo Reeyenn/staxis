@@ -34,6 +34,7 @@ import {
   recordAssistantTurn,
   recordToolResult,
 } from '@/lib/agent/memory';
+import { checkCostCaps, recordCost } from '@/lib/agent/cost-controls';
 // Side-effect import — registers all tools against the catalog.
 import '@/lib/agent/tools/index';
 
@@ -93,6 +94,19 @@ export async function POST(req: NextRequest): Promise<Response> {
     role: (account.role as AppRole) ?? 'staff',
     propertyAccess: (account.property_access as string[]) ?? [],
   };
+
+  // ── Cost + rate-limit caps ────────────────────────────────────────────
+  // Block the request BEFORE we burn LLM tokens if any cap is hit.
+  const capCheck = await checkCostCaps({
+    userId: userCtx.accountId,
+    propertyId: body.propertyId,
+  });
+  if (!capCheck.ok) {
+    return Response.json(
+      { ok: false, error: capCheck.message, code: capCheck.reason, requestId },
+      { status: 429 },
+    );
+  }
 
   // ── Load or create the conversation ───────────────────────────────────
   let conversationId = body.conversationId;
@@ -209,6 +223,24 @@ export async function POST(req: NextRequest): Promise<Response> {
             },
           ).catch(err => {
             console.error('[agent/command] failed to persist final assistant turn', err);
+          });
+        }
+
+        // Record this request to the agent_costs ledger so future cap
+        // checks see it. Includes ALL tokens used across tool-call iterations.
+        if (finalUsage) {
+          await recordCost({
+            userId: userCtx.accountId,
+            propertyId: body.propertyId,
+            conversationId,
+            model: finalUsage.model,
+            tokensIn: finalUsage.inputTokens,
+            tokensOut: finalUsage.outputTokens,
+            cachedInputTokens: finalUsage.cachedInputTokens,
+            costUsd: finalUsage.costUsd,
+            kind: 'request',
+          }).catch(err => {
+            console.error('[agent/command] failed to record cost', err);
           });
         }
       } catch (err) {

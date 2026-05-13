@@ -4,6 +4,7 @@ import React, { useEffect } from 'react';
 import { Header } from './Header';
 import { ActivityTracker } from './ActivityTracker';
 import { FeedbackButton } from './FeedbackButton';
+import { FloatingChatButton } from '@/components/agent/FloatingChatButton';
 import { useLang } from '@/contexts/LanguageContext';
 import { useSyncContext } from '@/contexts/SyncContext';
 import { t } from '@/lib/translations';
@@ -78,6 +79,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         {children}
       </main>
       <FeedbackButton />
+      <FloatingChatButton />
     </div>
   );
 }

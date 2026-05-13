@@ -1,375 +1,361 @@
 'use client';
 
-// ─── Minimal /chat test surface ───────────────────────────────────────────
-// Functional bare-bones UI for testing the agent layer end-to-end. This is
-// the "developer harness" — Reeyen explicitly said don't worry about UI;
-// Claude Design replaces this with the polished chat surface later.
+// ─── /chat — polished full-page chat surface ──────────────────────────────
+// Snow design system: paper-white canvas, sage/caramel accents, Geist +
+// Instrument Serif fonts. Conversation history sidebar on the left,
+// messages in the center, input pinned to bottom.
 //
-// What it does:
-//   - Text input + send to /api/agent/command
-//   - Streams SSE response and renders deltas as they arrive
-//   - Lists past conversations in a sidebar (click to load)
-//   - "New chat" button starts a fresh conversation
-//   - Shows tool calls inline so we can see what the agent is doing
+// Built as the "deep session" surface. The FloatingChatButton handles
+// quick asks from any other page; this is for sustained sessions where
+// the user wants room for charts/tables/history.
+//
+// Claude Design will refine the visual treatment later — the structure
+// is the lasting part.
 
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
+import { Plus, Send, Trash2 } from 'lucide-react';
+import { MessageList } from '@/components/agent/MessageList';
+import { useAgentChat } from '@/components/agent/useAgentChat';
 import { fetchWithAuth } from '@/lib/api-fetch';
 
-interface DisplayMessage {
-  role: 'user' | 'assistant' | 'tool' | 'system';
-  text: string;
-  toolName?: string;
-  toolArgs?: Record<string, unknown>;
-  toolResult?: unknown;
-  isError?: boolean;
-}
+const C = {
+  bg:       'var(--snow-bg, #FFFFFF)',
+  ink:      'var(--snow-ink, #1F231C)',
+  ink2:     'var(--snow-ink2, #5C625C)',
+  ink3:     'var(--snow-ink3, #A6ABA6)',
+  rule:     'var(--snow-rule, rgba(31, 35, 28, 0.08))',
+  ruleSoft: 'var(--snow-rule-soft, rgba(31, 35, 28, 0.04))',
+  sage:     'var(--snow-sage, #9EB7A6)',
+  sageDeep: 'var(--snow-sage-deep, #5C7A60)',
+};
 
-interface ConversationListItem {
-  id: string;
-  title: string | null;
-  updated_at: string;
-}
+const FONT_SANS  = "var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif";
+const FONT_MONO  = "var(--font-geist-mono), ui-monospace, monospace";
+const FONT_SERIF = "var(--font-instrument-serif), 'Times New Roman', Georgia, serif";
 
 export default function ChatPage() {
   const { user, loading: authLoading } = useAuth();
   const { activePropertyId, loading: propertyLoading } = useProperty();
+  const {
+    messages,
+    conversations,
+    conversationId,
+    streaming,
+    error,
+    sendMessage,
+    startNew,
+    loadConversation,
+    reloadConversations,
+  } = useAgentChat({ propertyId: activePropertyId, active: true });
 
-  const [conversations, setConversations] = useState<ConversationListItem[]>([]);
-  const [conversationId, setConversationId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [input, setInput] = useState('');
-  const [streaming, setStreaming] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to bottom whenever messages change.
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages]);
+  }, [messages, streaming]);
 
-  // Load conversation list on mount.
-  useEffect(() => {
-    if (!user) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetchWithAuth('/api/agent/conversations');
-        if (!res.ok) return;
-        const body = await res.json();
-        if (cancelled) return;
-        const list = (body.data?.conversations ?? []).map((c: { id: string; title: string | null; updatedAt: string }) => ({
-          id: c.id,
-          title: c.title,
-          updated_at: c.updatedAt,
-        }));
-        setConversations(list);
-      } catch (e) {
-        console.error('failed to load conversations', e);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [user]);
-
-  // Load a specific conversation when the user clicks one in the sidebar.
-  const loadConversation = async (id: string) => {
-    setError(null);
-    try {
-      const res = await fetchWithAuth(`/api/agent/conversations/${id}`);
-      if (!res.ok) {
-        setError(`Failed to load conversation: ${res.status}`);
-        return;
-      }
-      const body = await res.json();
-      const convo = body.data?.conversation;
-      if (!convo) return;
-      const display: DisplayMessage[] = [];
-      for (const m of convo.messages ?? []) {
-        if (m.role === 'user') display.push({ role: 'user', text: m.content });
-        else if (m.role === 'assistant') {
-          if (m.content) display.push({ role: 'assistant', text: m.content });
-          for (const tc of m.toolCalls ?? []) {
-            display.push({
-              role: 'assistant',
-              text: '',
-              toolName: tc.name,
-              toolArgs: tc.args,
-            });
-          }
-        } else if (m.role === 'tool') {
-          display.push({
-            role: 'tool',
-            text: '',
-            toolResult: m.result,
-          });
-        }
-      }
-      setMessages(display);
-      setConversationId(id);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  };
-
-  const startNewChat = () => {
-    setConversationId(null);
-    setMessages([]);
-    setError(null);
-  };
-
-  const sendMessage = async () => {
-    if (!input.trim() || streaming || !activePropertyId) return;
-    const message = input.trim();
+  const handleSend = async () => {
+    if (!input.trim() || streaming) return;
+    const text = input.trim();
     setInput('');
-    setError(null);
-    setStreaming(true);
+    await sendMessage(text);
+  };
 
-    setMessages(prev => [...prev, { role: 'user', text: message }]);
-
-    try {
-      const res = await fetchWithAuth('/api/agent/command', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          conversationId,
-          propertyId: activePropertyId,
-          message,
-        }),
-      });
-      if (!res.ok || !res.body) {
-        setError(`Request failed: ${res.status}`);
-        setStreaming(false);
-        return;
-      }
-
-      // We add an empty assistant message to append text deltas into.
-      let assistantIndex = -1;
-      setMessages(prev => {
-        assistantIndex = prev.length;
-        return [...prev, { role: 'assistant', text: '' }];
-      });
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-
-        // SSE format: events separated by blank line. Each event has data: <json>
-        const events = buf.split('\n\n');
-        buf = events.pop() ?? '';
-        for (const ev of events) {
-          const line = ev.split('\n').find(l => l.startsWith('data:'));
-          if (!line) continue;
-          let payload: { type: string; [k: string]: unknown };
-          try {
-            payload = JSON.parse(line.slice(5).trim());
-          } catch {
-            continue;
-          }
-
-          if (payload.type === 'conversation_id') {
-            const id = payload.id as string;
-            setConversationId(id);
-            // Refresh sidebar to include the new convo.
-            fetchWithAuth('/api/agent/conversations').then(async r => {
-              if (!r.ok) return;
-              const b = await r.json();
-              const list = (b.data?.conversations ?? []).map((c: { id: string; title: string | null; updatedAt: string }) => ({
-                id: c.id, title: c.title, updated_at: c.updatedAt,
-              }));
-              setConversations(list);
-            }).catch(() => {});
-          } else if (payload.type === 'text_delta') {
-            const delta = payload.delta as string;
-            setMessages(prev => {
-              const next = [...prev];
-              if (assistantIndex >= 0 && next[assistantIndex]?.role === 'assistant') {
-                next[assistantIndex] = {
-                  ...next[assistantIndex],
-                  text: next[assistantIndex].text + delta,
-                };
-              }
-              return next;
-            });
-          } else if (payload.type === 'tool_call_started') {
-            const call = payload.call as { name: string; args: Record<string, unknown> };
-            setMessages(prev => [
-              ...prev,
-              { role: 'assistant', text: '', toolName: call.name, toolArgs: call.args },
-            ]);
-            // Reset assistant index so subsequent text deltas append to a new bubble.
-            setMessages(prev => {
-              assistantIndex = -1;
-              return prev;
-            });
-          } else if (payload.type === 'tool_call_finished') {
-            setMessages(prev => [
-              ...prev,
-              { role: 'tool', text: '', toolResult: payload.result, isError: payload.isError as boolean },
-            ]);
-            // Start a new assistant bubble for the post-tool text.
-            setMessages(prev => {
-              assistantIndex = prev.length;
-              return [...prev, { role: 'assistant', text: '' }];
-            });
-          } else if (payload.type === 'error') {
-            setError(String(payload.message));
-          }
-        }
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setStreaming(false);
+  const handleDelete = async (id: string) => {
+    if (!confirm('Delete this conversation? This cannot be undone.')) return;
+    const res = await fetchWithAuth(`/api/agent/conversations/${id}`, { method: 'DELETE' });
+    if (res.ok) {
+      if (id === conversationId) startNew();
+      void reloadConversations();
     }
   };
 
   if (authLoading || propertyLoading) {
-    return <div style={{ padding: 20 }}>Loading…</div>;
+    return (
+      <div style={{
+        minHeight: '60vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: C.bg, color: C.ink3, fontFamily: FONT_SANS, fontSize: 14,
+      }}>
+        Loading…
+      </div>
+    );
   }
   if (!user) {
-    return <div style={{ padding: 20 }}>Please sign in to use the chat.</div>;
+    return (
+      <div style={{
+        minHeight: '60vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: C.bg, color: C.ink, fontFamily: FONT_SANS, fontSize: 14,
+      }}>
+        Please sign in to use the chat.
+      </div>
+    );
   }
   if (!activePropertyId) {
-    return <div style={{ padding: 20 }}>Select a property to start chatting.</div>;
+    return (
+      <div style={{
+        minHeight: '60vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: C.bg, color: C.ink, fontFamily: FONT_SANS, fontSize: 14,
+      }}>
+        Select a property to start chatting.
+      </div>
+    );
   }
 
   return (
-    <div style={{ display: 'flex', height: '100vh', fontFamily: 'monospace', fontSize: 14 }}>
-      {/* Sidebar: conversation list */}
-      <aside
-        style={{
-          width: 260,
-          borderRight: '1px solid #ddd',
-          padding: 12,
-          overflowY: 'auto',
-          background: '#fafafa',
-        }}
-      >
-        <button
-          onClick={startNewChat}
-          style={{
-            width: '100%',
-            padding: 8,
-            marginBottom: 12,
-            cursor: 'pointer',
-            background: '#000',
-            color: '#fff',
-            border: 'none',
-            borderRadius: 4,
-          }}
-        >
-          + New chat
-        </button>
-        <div style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>Recent</div>
-        {conversations.length === 0 && (
-          <div style={{ color: '#999', fontSize: 12 }}>No conversations yet.</div>
-        )}
-        {conversations.map(c => (
-          <div
-            key={c.id}
-            onClick={() => loadConversation(c.id)}
-            style={{
-              padding: 6,
-              marginBottom: 4,
-              cursor: 'pointer',
-              background: c.id === conversationId ? '#e8e8ff' : 'transparent',
-              borderRadius: 4,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              fontSize: 12,
-            }}
-            title={c.title ?? '(untitled)'}
-          >
-            {c.title ?? '(untitled)'}
+    <div style={{
+      height: 'calc(100vh - 64px)',
+      display: 'flex',
+      background: C.bg,
+      borderTop: `1px solid ${C.rule}`,
+    }}>
+      {/* ── Sidebar ── */}
+      <aside style={{
+        width: 280,
+        borderRight: `1px solid ${C.rule}`,
+        display: 'flex',
+        flexDirection: 'column',
+        flexShrink: 0,
+      }}>
+        <div style={{ padding: '20px 20px 12px' }}>
+          <div style={{
+            fontFamily: FONT_SERIF,
+            fontSize: 28,
+            lineHeight: 1,
+            color: C.ink,
+            letterSpacing: '-0.01em',
+          }}>
+            Staxis
           </div>
-        ))}
-      </aside>
-
-      {/* Main chat area */}
-      <main style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: 12, borderBottom: '1px solid #ddd', fontSize: 12, color: '#666' }}>
-          Staxis chat — role: {user.role} — property: {activePropertyId}
+          <div style={{
+            marginTop: 4,
+            fontFamily: FONT_MONO,
+            fontSize: 10,
+            textTransform: 'uppercase',
+            letterSpacing: '0.08em',
+            color: C.ink3,
+          }}>
+            Chat
+          </div>
         </div>
-        <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
-          {messages.length === 0 && (
-            <div style={{ color: '#999', fontStyle: 'italic' }}>
-              Type something to start. Try &quot;what&apos;s today&apos;s status&quot; or &quot;mark room 102 clean&quot;.
+
+        <div style={{ padding: '0 12px 12px' }}>
+          <button
+            onClick={startNew}
+            style={{
+              width: '100%',
+              padding: '10px 12px',
+              fontFamily: FONT_SANS,
+              fontSize: 13,
+              fontWeight: 500,
+              color: 'white',
+              background: C.ink,
+              border: 'none',
+              borderRadius: 8,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 6,
+            }}
+          >
+            <Plus size={14} strokeWidth={2.5} /> New conversation
+          </button>
+        </div>
+
+        <div style={{
+          fontFamily: FONT_MONO,
+          fontSize: 10,
+          textTransform: 'uppercase',
+          letterSpacing: '0.08em',
+          color: C.ink3,
+          padding: '4px 20px 8px',
+        }}>
+          Recent
+        </div>
+
+        <div style={{ flex: 1, overflowY: 'auto', padding: '0 8px 16px' }}>
+          {conversations.length === 0 && (
+            <div style={{
+              padding: '8px 12px',
+              color: C.ink3,
+              fontFamily: FONT_SANS,
+              fontSize: 13,
+            }}>
+              No conversations yet.
             </div>
           )}
-          {messages.map((m, i) => (
-            <div key={i} style={{ marginBottom: 12 }}>
-              {m.role === 'user' && (
-                <div>
-                  <strong>You:</strong> {m.text}
-                </div>
-              )}
-              {m.role === 'assistant' && m.text && (
-                <div>
-                  <strong>Staxis:</strong> {m.text}
-                </div>
-              )}
-              {m.role === 'assistant' && m.toolName && (
-                <div style={{ color: '#666', fontSize: 12 }}>
-                  → calling tool <code>{m.toolName}</code>(
-                  {Object.entries(m.toolArgs ?? {}).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(', ')})
-                </div>
-              )}
-              {m.role === 'tool' && (
-                <div style={{ color: m.isError ? '#c00' : '#080', fontSize: 12 }}>
-                  ← tool result: {JSON.stringify(m.toolResult)}
-                </div>
-              )}
+          {conversations.map(c => (
+            <div
+              key={c.id}
+              onClick={() => loadConversation(c.id)}
+              onMouseEnter={(e) => {
+                if (c.id !== conversationId) e.currentTarget.style.background = C.ruleSoft;
+              }}
+              onMouseLeave={(e) => {
+                if (c.id !== conversationId) e.currentTarget.style.background = 'transparent';
+              }}
+              style={{
+                position: 'relative',
+                padding: '8px 32px 8px 12px',
+                marginBottom: 2,
+                cursor: 'pointer',
+                borderRadius: 6,
+                fontFamily: FONT_SANS,
+                fontSize: 13,
+                color: c.id === conversationId ? C.ink : C.ink2,
+                background: c.id === conversationId ? C.ruleSoft : 'transparent',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                lineHeight: 1.4,
+              }}
+              title={c.title ?? '(untitled)'}
+            >
+              {c.title ?? '(untitled)'}
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void handleDelete(c.id);
+                }}
+                aria-label="Delete"
+                style={{
+                  position: 'absolute',
+                  right: 6,
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  background: 'transparent',
+                  border: 'none',
+                  cursor: 'pointer',
+                  color: C.ink3,
+                  padding: 4,
+                  borderRadius: 4,
+                  display: 'flex',
+                  alignItems: 'center',
+                  opacity: 0.7,
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--snow-warm, #B85C3D)'; e.currentTarget.style.opacity = '1'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = C.ink3; e.currentTarget.style.opacity = '0.7'; }}
+              >
+                <Trash2 size={12} />
+              </button>
             </div>
           ))}
-          {streaming && <div style={{ color: '#999', fontSize: 12 }}>…</div>}
-          {error && <div style={{ color: '#c00', marginTop: 8 }}>Error: {error}</div>}
         </div>
-        <div style={{ borderTop: '1px solid #ddd', padding: 12, display: 'flex', gap: 8 }}>
-          <input
-            type="text"
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-              }
-            }}
-            placeholder="Type a message…"
-            disabled={streaming}
-            style={{
-              flex: 1,
-              padding: 8,
-              border: '1px solid #ccc',
-              borderRadius: 4,
-              fontFamily: 'inherit',
-              fontSize: 14,
-            }}
-          />
-          <button
-            onClick={sendMessage}
-            disabled={streaming || !input.trim()}
-            style={{
-              padding: '8px 16px',
-              cursor: streaming || !input.trim() ? 'default' : 'pointer',
-              opacity: streaming || !input.trim() ? 0.5 : 1,
-              background: '#000',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 4,
-            }}
-          >
-            Send
-          </button>
+
+        <div style={{
+          borderTop: `1px solid ${C.rule}`,
+          padding: '10px 20px',
+          fontFamily: FONT_MONO,
+          fontSize: 10,
+          color: C.ink3,
+          textTransform: 'uppercase',
+          letterSpacing: '0.06em',
+        }}>
+          Role: {user.role}
+        </div>
+      </aside>
+
+      {/* ── Main chat area ── */}
+      <main style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+        <div
+          ref={scrollRef}
+          style={{ flex: 1, overflowY: 'auto', scrollBehavior: 'smooth' }}
+        >
+          <div style={{ maxWidth: 760, margin: '0 auto', padding: '0 24px' }}>
+            <MessageList messages={messages} streaming={streaming} />
+            {error && (
+              <div style={{
+                margin: '8px 0 16px',
+                padding: '10px 14px',
+                background: 'rgba(184, 92, 61, 0.08)',
+                border: '1px solid rgba(184, 92, 61, 0.20)',
+                borderRadius: 8,
+                color: 'var(--snow-warm, #B85C3D)',
+                fontFamily: FONT_SANS,
+                fontSize: 13,
+              }}>
+                {error}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ── Composer ── */}
+        <div style={{
+          borderTop: `1px solid ${C.rule}`,
+          padding: '14px 24px 20px',
+          background: C.bg,
+        }}>
+          <div style={{ maxWidth: 760, margin: '0 auto', position: 'relative' }}>
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  void handleSend();
+                }
+              }}
+              placeholder="Ask Staxis…"
+              disabled={streaming}
+              rows={1}
+              style={{
+                width: '100%',
+                resize: 'none',
+                padding: '14px 50px 14px 16px',
+                fontFamily: FONT_SANS,
+                fontSize: 14,
+                lineHeight: 1.5,
+                color: C.ink,
+                background: C.bg,
+                border: `1px solid ${C.rule}`,
+                borderRadius: 12,
+                outline: 'none',
+                minHeight: 48,
+                maxHeight: 200,
+              }}
+              onFocus={(e) => { e.currentTarget.style.borderColor = C.sageDeep; }}
+              onBlur={(e) => { e.currentTarget.style.borderColor = C.rule; }}
+            />
+            <button
+              onClick={handleSend}
+              disabled={streaming || !input.trim()}
+              aria-label="Send"
+              style={{
+                position: 'absolute',
+                right: 10,
+                bottom: 10,
+                width: 30, height: 30,
+                borderRadius: 8,
+                border: 'none',
+                cursor: streaming || !input.trim() ? 'default' : 'pointer',
+                background: streaming || !input.trim() ? C.rule : C.ink,
+                color: streaming || !input.trim() ? C.ink3 : 'white',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'background 0.12s ease',
+              }}
+            >
+              <Send size={14} strokeWidth={2.5} />
+            </button>
+          </div>
+          <div style={{
+            maxWidth: 760,
+            margin: '8px auto 0',
+            fontFamily: FONT_MONO,
+            fontSize: 10,
+            color: C.ink3,
+            textAlign: 'center',
+            letterSpacing: '0.04em',
+          }}>
+            Press Enter to send · Shift+Enter for new line
+          </div>
         </div>
       </main>
     </div>
