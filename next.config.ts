@@ -185,8 +185,12 @@ export default withSentryConfig(nextConfig, {
     deleteSourcemapsAfterUpload: true,
   },
 
-  // Disable Sentry's automatic transaction tracing instrumentation —
-  // we already configure tracesSampleRate explicitly in
-  // sentry.server.config.ts / sentry.client.config.ts.
-  disableLogger: true,
+  // Tree-shake Sentry SDK debug-logger statements out of the bundle.
+  // The older `disableLogger: true` option is @deprecated as of the
+  // @sentry/nextjs version we're on; the replacement lives at
+  // `webpack.treeshake.removeDebugLogging` (verified via the types
+  // in node_modules/@sentry/nextjs/build/types/config/types.d.ts).
+  // Same effect at build time — does not affect Sentry Logs themselves,
+  // only internal SDK debug logging.
+  webpack: { treeshake: { removeDebugLogging: true } },
 });
