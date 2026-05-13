@@ -196,6 +196,13 @@ registerTool<{ roomNumber?: string; message?: string }>({
   allowedRoles: ['admin', 'owner', 'general_manager', 'housekeeping', 'front_desk', 'maintenance'],
   mutates: true,
   handler: async ({ roomNumber, message }, ctx): Promise<ToolResult> => {
+    // Codex adversarial review 2026-05-13 (A-C2 length cap): the schema
+    // doesn't bound `message`. A model hallucinating "summarize the whole
+    // chat into the help message" could blow past Twilio limits or DB
+    // payload sizes via this path. 200 chars is enough for "broken TV in
+    // 410, guest waiting" while preventing free-text injection at scale.
+    const trimmedMessage = message ? String(message).slice(0, 200) : null;
+
     // For housekeepers/maintenance, scope by staffId. Managers can flag
     // help on any room (operational override).
     let roomFlagged: string | null = null;
@@ -216,7 +223,7 @@ registerTool<{ roomNumber?: string; message?: string }>({
     // previous version inserted with user_id=requester, which hid the
     // nudge from every manager via RLS.
     const recipients = await getNudgeRecipients(ctx.propertyId);
-    const summary = `${ctx.user.displayName} requested help${roomFlagged ? ` for room ${roomFlagged}` : ''}${message ? `: ${message}` : ''}`;
+    const summary = `${ctx.user.displayName} requested help${roomFlagged ? ` for room ${roomFlagged}` : ''}${trimmedMessage ? `: ${trimmedMessage}` : ''}`;
 
     if (recipients.length === 0) {
       // No manager / owner is linked to this property — surface that to the
@@ -251,7 +258,7 @@ registerTool<{ roomNumber?: string; message?: string }>({
           requester_id: ctx.user.accountId,
           requester_name: ctx.user.displayName,
           room_number: roomFlagged,
-          message: message ?? null,
+          message: trimmedMessage,
         },
         dedupe_key: `help:${managerAccountId}:${ctx.user.accountId}:${roomFlagged ?? 'general'}`,
       });

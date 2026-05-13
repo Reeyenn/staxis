@@ -142,13 +142,31 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
       const shadowMae = shadow.validation_mae;
       const activeMae = active.validation_mae;
-      // If either MAE is missing (very early-stage models), promote — we
-      // can't make a confidence-based decision and the shadow is at least
-      // as recent as the active. Bias toward fresher data.
-      const promote =
-        shadowMae === null || activeMae === null
-          ? true
-          : shadowMae <= activeMae * (1 + MAE_TOLERANCE);
+      // Codex adversarial review 2026-05-13 (I-C6): the prior version
+      // promoted on null MAE ("can't make a confidence-based decision,
+      // bias toward fresher data"). But a null MAE often signals that
+      // validation FAILED (insufficient holdout, NaN inputs, etc.) —
+      // promoting an unvalidated shadow over a validated active model
+      // is exactly the silent regression that shadow mode exists to
+      // prevent. Fail closed instead: skip promotion, log loudly, leave
+      // the shadow in place for the next cron tick.
+      if (shadowMae === null || activeMae === null) {
+        log.warn('ml-shadow-evaluate: skipping promotion on null MAE', {
+          requestId,
+          shadow_run_id: shadow.id,
+          active_run_id: active.id,
+          shadow_mae: shadowMae,
+          active_mae: activeMae,
+        });
+        results.push({
+          shadow_run_id: shadow.id, layer: shadow.layer, item_id: shadow.item_id,
+          verdict: 'rejected',
+          detail: { reason: 'null_mae', shadowMae, activeMae },
+        });
+        continue;
+      }
+
+      const promote = shadowMae <= activeMae * (1 + MAE_TOLERANCE);
 
       if (promote) {
         await promoteShadow(shadow.id, active.id);
@@ -162,7 +180,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         results.push({
           shadow_run_id: shadow.id, layer: shadow.layer, item_id: shadow.item_id,
           verdict: 'rejected',
-          detail: { shadowMae, activeMae, ratio: activeMae ? shadowMae! / activeMae : null },
+          detail: { shadowMae, activeMae, ratio: shadowMae / activeMae },
         });
       }
     } catch (err) {

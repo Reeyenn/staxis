@@ -238,15 +238,19 @@ export function autoAssignRooms(
 
   // Schedule-priority gate. The Staff Priority modal lets Mario mark each
   // housekeeper as 'priority' (auto-pick first), 'normal' (default), or
-  // 'excluded' (never auto-pick). The schedule auto-selector already
-  // honors this — but if Mario manually adds an Excluded housekeeper to
-  // today's crew via the Add Staff button, we still want auto-assign to
-  // refuse to pile rooms on them. So we re-filter here as a safety net.
-  // Within the remaining pool, 'priority' staff fill first (toward the
-  // shift cap), then 'normal' staff pick up the spillover.
-  const available = staff.filter(s =>
-    s.scheduledToday && s.schedulePriority !== 'excluded',
-  );
+  // 'excluded' (never auto-pick). Within the pool, 'priority' staff fill
+  // first (toward the shift cap), then 'normal' staff pick up the spillover.
+  //
+  // Codex adversarial review 2026-05-13 (I-C4): the prior version
+  // ALSO filtered by `s.scheduledToday` here, but the caller in
+  // ScheduleTab passes `activeCrew` (derived from crewIds) regardless
+  // of `scheduledToday`. A manager who added Cindy via the off-crew
+  // chip got her dropped silently — toast said "Rooms auto-assigned"
+  // while Cindy ended up with 0 rooms.
+  // Policy fix: the CALLER is responsible for passing in the staff that
+  // should be considered. We only filter for `excluded` here (which is
+  // a per-staff flag, not a per-day scheduling decision).
+  const available = staff.filter(s => s.schedulePriority !== 'excluded');
   if (available.length === 0) return {};
 
   const priorityStaff = available.filter(s => s.schedulePriority === 'priority');

@@ -1133,11 +1133,29 @@ function CountMode({
       // Map detections to known items + capture the input value at the time
       // the photo was processed (so the review modal can show "Currently: N"
       // even if the user is mid-edit on another row).
+      //
+      // Codex adversarial review 2026-05-13 (I-C5): the prior code did
+      // `items.find(i => i.name === c.item_name)` with no UNIQUE constraint
+      // on (property_id, name), so two items called "Bath Towels" silently
+      // matched whichever Postgres returned first. Migration 0088 adds a
+      // case-insensitive unique index, but we still defend against ambiguity
+      // here: case-insensitive match, and if MORE than one item matches,
+      // skip the auto-apply for that detection and surface a soft warning.
       const detections: PhotoDetection[] = [];
+      const ambiguousNames: string[] = [];
       for (const c of apiCounts) {
-        const item = items.find(i => i.name === c.item_name);
-        if (!item) continue;
-        const currentInput = parseInt(counts[item.id] ?? '0') || 0;
+        const targetName = (c.item_name ?? '').toLowerCase();
+        if (!targetName) continue;
+        const matches = items.filter(i => (i.name ?? '').toLowerCase() === targetName);
+        if (matches.length === 0) continue;
+        if (matches.length > 1) {
+          ambiguousNames.push(c.item_name);
+          continue;
+        }
+        const item = matches[0];
+        // Codex adversarial review 2026-05-13 (I-C7): clamp at 0 (DB CHECK
+        // in migration 0082 is the floor, this is the read-side guard).
+        const currentInput = Math.max(0, parseInt(counts[item.id] ?? '0') || 0);
         detections.push({
           itemId: item.id,
           itemName: item.name,
@@ -1146,6 +1164,14 @@ function CountMode({
           confidence: c.confidence,
           currentInput,
         });
+      }
+      if (ambiguousNames.length > 0) {
+        // Soft signal — the rest of the detections still apply.
+        setPhotoError(
+          lang === 'es'
+            ? `Hay nombres duplicados: ${ambiguousNames.join(', ')}. Cuenta esos manualmente.`
+            : `Duplicate item names found: ${ambiguousNames.join(', ')}. Count those manually.`,
+        );
       }
 
       // Sort by confidence (high first) so the user reviews the most-trusted
@@ -1190,7 +1216,8 @@ function CountMode({
       const finalCounts: Record<string, number> = {};
       await Promise.all(
         sorted.map(item => {
-          const val = parseInt(counts[item.id] ?? '0') || 0;
+          // Clamp at 0 — DB CHECK (migration 0082) would reject negatives anyway.
+          const val = Math.max(0, parseInt(counts[item.id] ?? '0') || 0);
           finalCounts[item.id] = val;
           if (val !== item.currentStock) {
             return updateInventoryItem(uid, pid, item.id, { currentStock: val });
@@ -1205,7 +1232,7 @@ function CountMode({
   };
 
   const changedCount = sorted.filter(item => {
-    const val = parseInt(counts[item.id] ?? '0') || 0;
+    const val = Math.max(0, parseInt(counts[item.id] ?? '0') || 0);
     return val !== item.currentStock;
   }).length;
 
@@ -1333,7 +1360,7 @@ function CountMode({
           </div>
 
           {sorted.map((item, idx) => {
-            const val = parseInt(counts[item.id] ?? '0') || 0;
+            const val = Math.max(0, parseInt(counts[item.id] ?? '0') || 0);
             const status = stockStatus(val, item.parLevel, item.reorderAt);
             const initial = initialValuesRef.current[item.id];
             const changed = initial != null && counts[item.id] !== initial;
@@ -1362,7 +1389,13 @@ function CountMode({
                     min="0"
                     value={counts[item.id] ?? '0'}
                     onChange={e => {
-                      setCounts(prev => ({ ...prev, [item.id]: e.target.value }));
+                      // Codex adversarial review 2026-05-13 (I-C7): clamp at
+                      // 0. HTML min="0" is a UI hint only, not enforced when
+                      // JS reads e.target.value. DB CHECK (migration 0082)
+                      // is the floor; this is the keystroke-level guard.
+                      const raw = e.target.value;
+                      const sanitized = raw === '' ? '' : String(Math.max(0, parseInt(raw, 10) || 0));
+                      setCounts(prev => ({ ...prev, [item.id]: sanitized }));
                       // Manual edit clears the AI badge for this row.
                       setAiFilled(prev => {
                         if (!prev[item.id]) return prev;

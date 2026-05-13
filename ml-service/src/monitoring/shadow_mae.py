@@ -261,14 +261,28 @@ async def check_auto_rollback(
         active_model_id = active_models[0]["id"] if active_models else None
 
         # Acquire advisory lock so concurrent workers don't double-deactivate.
+        # Codex adversarial review 2026-05-13 (M-C1): the previous version
+        # parsed settings.supabase_url (HTTPS, port 443, PostgREST gateway)
+        # as if it were a Postgres host. Every connect failed silently and
+        # auto-rollback never actually fired in production. Use the same
+        # database_url the training modules use for their advisory locks.
+        if not settings.database_url:
+            print(
+                json.dumps(
+                    {
+                        "level": "error",
+                        "event": "auto_rollback_no_database_url",
+                        "property_id": property_id,
+                        "layer": layer,
+                        "ts": datetime.utcnow().isoformat(),
+                        "remediation": "Set DATABASE_URL (or SUPABASE_DB_URL) in the ML service env.",
+                    }
+                )
+            )
+            return should_rollback
         conn = None
         try:
-            conn = psycopg2.connect(
-                host=settings.supabase_url.split("://")[1].split("/")[0],
-                database="postgres",
-                user="postgres",
-                password=settings.supabase_service_role_key,
-            )
+            conn = psycopg2.connect(settings.database_url)
             with advisory_lock(conn, property_id, layer, blocking=False) as acquired:
                 if not acquired:
                     # Another worker is handling this rollback; skip silently.

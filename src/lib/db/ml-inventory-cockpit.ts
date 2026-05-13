@@ -12,6 +12,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { supabase, logErr } from './_common';
+import { ML_PREDICTION_FRESHNESS_DAYS } from '../inventory-predictions';
 
 export interface InventoryDataFuelStats {
   totalCounts: number;
@@ -545,11 +546,21 @@ export async function getInventoryAutoFillMap(
 ): Promise<AutoFillItem[]> {
   if (mode === 'off') return [];
 
-  // Fetch most-recent prediction per item
+  // Codex adversarial review 2026-05-13:
+  //   (I-C2) Apply freshness gate — match the 7-day window used by
+  //          fetchMlPredictedRates so a stale cron doesn't surface
+  //          60-day-old predictions as "high confidence".
+  //   (I-C1) Also fetch predicted_daily_rate + predicted_at so we can
+  //          time-decay the auto-fill value (predicted_current_stock
+  //          is snapshot-at-cron, not snapshot-at-now).
+  const sinceMs = Date.now() - ML_PREDICTION_FRESHNESS_DAYS * 86400_000;
+  const sinceIso = new Date(sinceMs).toISOString();
+
   const { data: predData, error: predErr } = await supabase
     .from('inventory_rate_predictions')
-    .select('item_id,predicted_current_stock,model_run_id,predicted_at')
+    .select('item_id,predicted_current_stock,predicted_daily_rate,model_run_id,predicted_at')
     .eq('property_id', pid)
+    .gte('predicted_at', sinceIso)
     .order('predicted_at', { ascending: false })
     .limit(2000);
   if (predErr) {
@@ -575,6 +586,7 @@ export async function getInventoryAutoFillMap(
   const runById = new Map<string, Record<string, unknown>>();
   for (const r of runsData ?? []) runById.set(r.id, r as Record<string, unknown>);
 
+  const nowMs = Date.now();
   const out: AutoFillItem[] = [];
   for (const [itemId, p] of latestByItem.entries()) {
     const run = runById.get(String(p.model_run_id));
@@ -586,9 +598,20 @@ export async function getInventoryAutoFillMap(
       ? Number(p.predicted_current_stock)
       : null;
     if (predStock === null) continue;
+
+    // Time-decay since prediction. predicted_daily_rate is property-level
+    // total per-day consumption (see ml-service/src/inference/inventory_rate.py).
+    // Subtract `rate * hours_since / 24` from the snapshot value, clamp at 0.
+    const predictedAt = typeof p.predicted_at === 'string' ? new Date(p.predicted_at).getTime() : nowMs;
+    const hoursSince = Math.max(0, (nowMs - predictedAt) / 3_600_000);
+    const dailyRate = p.predicted_daily_rate !== null && p.predicted_daily_rate !== undefined
+      ? Number(p.predicted_daily_rate)
+      : 0;
+    const decayed = Math.max(0, predStock - (dailyRate * hoursSince) / 24);
+
     out.push({
       itemId,
-      predictedCurrentStock: predStock,
+      predictedCurrentStock: decayed,
       algorithm: typeof run.algorithm === 'string' ? run.algorithm : null,
       graduated,
     });

@@ -22,8 +22,11 @@ prior_strength column on inventory_rate_priors):
    50+ hotels            → strength=5.0  (strong — cohort dominates new-hotel
                                           day-1 prediction)
 """
+import json
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+
+import numpy as np
 
 from src.supabase_client import get_supabase_client
 
@@ -204,6 +207,7 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
     #        signal beats a hardcoded benchmark.
     cohorts_updated = 0
     cohorts_skipped_low_n = 0
+    cohorts_with_outliers_clipped = 0
     errors: List[str] = []
     for (cohort_key, canonical), rates in cohort_buckets.items():
         if not rates:
@@ -212,11 +216,46 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
         if cohort_key == "global" and n_hotels < 5:
             cohorts_skipped_low_n += 1
             continue
-        # Median across the (median-rate-per-hotel) values
-        sorted_rates = sorted(rates)
-        mid = len(sorted_rates) // 2
-        cohort_median = (sorted_rates[mid] if len(sorted_rates) % 2 == 1
-                         else (sorted_rates[mid - 1] + sorted_rates[mid]) / 2.0)
+
+        # Codex adversarial review 2026-05-13 (M-C5): the prior implementation
+        # took a raw median across per-hotel rates with NO outlier defense.
+        # One rogue hotel logging 50,000 of an item per day skewed the global
+        # prior, and every NEW hotel's day-1 prediction inherited that
+        # poisoned value. We now apply IQR clipping (Tukey fences) before
+        # taking the median:
+        #   q1, q3 = 25th, 75th percentile
+        #   iqr = q3 - q1
+        #   keep rates in [q1 - 1.5*iqr, q3 + 1.5*iqr]
+        # We need at least 4 contributors before clipping makes sense
+        # (otherwise IQR is meaningless). Below 4, fall back to raw median.
+        rates_arr = np.asarray(rates, dtype=float)
+        if len(rates_arr) >= 4:
+            q1 = float(np.percentile(rates_arr, 25))
+            q3 = float(np.percentile(rates_arr, 75))
+            iqr = q3 - q1
+            lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+            mask = (rates_arr >= lo) & (rates_arr <= hi)
+            n_clipped = int((~mask).sum())
+            clipped = rates_arr[mask] if mask.any() else rates_arr
+            if n_clipped > 0:
+                cohorts_with_outliers_clipped += 1
+                print(json.dumps({
+                    "level": "info",
+                    "event": "cohort_prior_outliers_clipped",
+                    "cohort_key": cohort_key,
+                    "canonical": canonical,
+                    "n_input": int(len(rates_arr)),
+                    "n_clipped": n_clipped,
+                    "iqr_lo": lo,
+                    "iqr_hi": hi,
+                    "ts": datetime.utcnow().isoformat(),
+                }))
+            cohort_median = float(np.median(clipped))
+        else:
+            sorted_rates = sorted(rates)
+            mid = len(sorted_rates) // 2
+            cohort_median = (sorted_rates[mid] if len(sorted_rates) % 2 == 1
+                             else (sorted_rates[mid - 1] + sorted_rates[mid]) / 2.0)
         try:
             client.client.table("inventory_rate_priors").upsert({
                 "cohort_key": cohort_key,
@@ -234,6 +273,7 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
     return {
         "cohorts_updated": cohorts_updated,
         "items_canonical": len(set(c[1] for c in cohort_buckets.keys())),
+        "cohorts_with_outliers_clipped": cohorts_with_outliers_clipped,
         "errors": errors,
         "note": (
             f"skipped {cohorts_skipped_low_n} global rows with n_hotels<5 "

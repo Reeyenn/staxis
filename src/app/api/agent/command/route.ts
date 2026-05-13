@@ -82,6 +82,17 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!body.propertyId) {
     return Response.json({ ok: false, error: 'propertyId is required', requestId }, { status: 400 });
   }
+  // Codex adversarial review 2026-05-13 (A-C2 length cap): refuse messages
+  // that would inflate the prompt (and therefore cost). 4000 chars is well
+  // above any legitimate housekeeping/manager turn but well below the
+  // multi-MB DOS surface that an unbounded body left open.
+  const MAX_USER_MESSAGE_CHARS = 4000;
+  if (body.message.length > MAX_USER_MESSAGE_CHARS) {
+    return Response.json(
+      { ok: false, error: `message exceeds ${MAX_USER_MESSAGE_CHARS} chars`, requestId },
+      { status: 413 },
+    );
+  }
 
   const hasAccess = await userHasPropertyAccess(auth.userId, body.propertyId);
   if (!hasAccess) {
@@ -139,10 +150,23 @@ export async function POST(req: NextRequest): Promise<Response> {
   const reservationId = reservation.reservationId;
 
   // ── Load or create the conversation ───────────────────────────────────
+  // Codex adversarial review 2026-05-13 (A-C4): wrap the load+writeUserTurn
+  // prep window inside a per-conversation advisory lock so two browser tabs
+  // cannot interleave writes. The lock auto-releases when the supabase RPC
+  // call completes (pg_advisory_xact_lock holds for the implicit txn). We
+  // only protect the prep window, NOT the SSE stream — the stream's
+  // atomicity is already covered by recordAssistantTurn's RPC.
   let conversationId = body.conversationId;
   let history: AgentMessage[] = [];
   try {
     if (conversationId) {
+      try {
+        await supabaseAdmin.rpc('staxis_lock_conversation', {
+          p_conversation_id: conversationId,
+        });
+      } catch (lockErr) {
+        console.error('[agent/command] conversation lock RPC failed (proceeding)', lockErr);
+      }
       const convo = await loadConversation(conversationId, userCtx.accountId);
       if (!convo) {
         await cancelCostReservation(reservationId);
@@ -206,6 +230,11 @@ export async function POST(req: NextRequest): Promise<Response> {
           history,
           newUserMessage: body.message,
           tools,
+          // Codex adversarial review 2026-05-13 (A-C3): forward the request
+          // abort signal into the agent loop so client disconnects stop
+          // burning Anthropic tokens. The streamAgent internals check
+          // signal.aborted between iterations and between tool calls.
+          abortSignal: req.signal,
           toolContext: {
             user: userCtx,
             propertyId: body.propertyId,
@@ -253,6 +282,13 @@ export async function POST(req: NextRequest): Promise<Response> {
           } else if (event.type === 'done') {
             finalUsage = event.usage;
             lastDoneText = event.finalText;
+          } else if (event.type === 'error' && event.usage) {
+            // Codex adversarial review 2026-05-13 (A-C7): error events that
+            // carry usage represent runaway tool loops or aborts that
+            // really spent tokens at Anthropic. Promote that usage so the
+            // finally block finalizes (charges the cap) instead of
+            // canceling the reservation.
+            finalUsage = event.usage;
           }
         }
 

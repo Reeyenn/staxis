@@ -53,6 +53,15 @@ export async function runOneEval(
     history: [],
     newUserMessage: evalCase.input,
     tools,
+    // Codex adversarial review 2026-05-13 (A-H11): the prior runner called
+    // streamAgent which executes real tools — mark_room_clean would flip
+    // room 302 in whatever STAXIS_EVAL_PROPERTY_ID pointed at, costs
+    // charged to a real user_id. dryRun returns synthetic-success
+    // tool_results so the model produces realistic final text without
+    // mutating the DB. Refusal-correctness checks (DESTRUCTIVE_TOOLS list
+    // in this file) still work because we still see the tool_call_started
+    // events.
+    dryRun: true,
     toolContext: {
       user: {
         uid: opts.userId,

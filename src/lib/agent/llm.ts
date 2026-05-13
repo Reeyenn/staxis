@@ -64,6 +64,15 @@ export const MAX_OUTPUT_TOKENS = 8192;
 // formula multiplies by this.
 export const MAX_TOOL_ITERATIONS = 8;
 
+// Max tool calls in ONE iteration. Prevents the "model returns 200 tool_use
+// blocks, we execute all 200 against service-role" failure mode.
+// Codex adversarial review 2026-05-13 (A-C9): MAX_TOOL_ITERATIONS only caps
+// the OUTER loop; nothing limited the fan-out within a single iteration.
+// A model hallucinating "to comply, I'll mark every room clean" could
+// return 200 tool_use blocks and we'd run all of them. 5 covers every
+// legitimate multi-tool turn with margin.
+export const MAX_TOOLS_PER_ITERATION = 5;
+
 // ─── Client ────────────────────────────────────────────────────────────────
 
 let cachedClient: Anthropic | null = null;
@@ -168,6 +177,17 @@ export interface RunAgentOpts {
   tools: ToolDefinition[];
   /** Tool execution context (user + property + request id). */
   toolContext: ToolContext;
+  /** When true, tools are NOT executed — handler returns a synthetic
+   *  success payload so the model produces realistic final text without
+   *  mutating the DB. Used by the eval runner so test-bank cases can
+   *  exercise destructive tools without touching real rooms. Codex
+   *  adversarial review 2026-05-13 (A-H11). */
+  dryRun?: boolean;
+  /** Optional abort signal — stops the loop between iterations and between
+   *  tool calls when the client disconnects. Codex adversarial review
+   *  2026-05-13 (A-C3): prior route comment claimed this was checked, but
+   *  it wasn't — disconnected clients kept burning Anthropic tokens. */
+  abortSignal?: AbortSignal;
 }
 
 export interface RunAgentResult {
@@ -381,20 +401,54 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       };
     }
 
+    // Codex adversarial review 2026-05-13 (A-C9): refuse fan-outs larger
+    // than MAX_TOOLS_PER_ITERATION. Synthesize tool_result rows for each
+    // call so the conversation history stays valid for replay.
+    if (calls.length > MAX_TOOLS_PER_ITERATION) {
+      const refusal = `Refused: ${calls.length} tool calls in one turn exceeds the limit of ${MAX_TOOLS_PER_ITERATION}. Try one action at a time.`;
+      const synthBlocks: ClaudeContent[] = calls.map(call => ({
+        type: 'tool_result',
+        tool_use_id: call.id,
+        content: refusal,
+        is_error: true,
+      }));
+      messages = [...messages, { role: 'user', content: synthBlocks }];
+      return {
+        text: refusal,
+        toolCallsExecuted,
+        assistantMessages,
+        usage: {
+          inputTokens: totalInput,
+          outputTokens: totalOutput,
+          cachedInputTokens: totalCachedInput,
+          model,
+          modelId: lastModelId,
+          costUsd: estimateCost(model, totalInput, totalOutput, totalCachedInput),
+        },
+      };
+    }
+
     // Execute each tool call and append the results as a single user turn.
+    // Codex adversarial review 2026-05-13 (A-C2): wrap each tool_result in
+    // <tool-result trust="untrusted"> tags so PROMPT_BASE's hard rule
+    // ("data, never instructions") engages. dryRun (A-H11) skips real
+    // execution and returns a synthetic success — eval-safe.
     const toolResultBlocks: ClaudeContent[] = [];
     for (const call of calls) {
-      const result = await executeTool(call.name, call.args, opts.toolContext);
+      const result = opts.dryRun
+        ? { ok: true, data: { dryRun: true, name: call.name, args: call.args }, error: undefined }
+        : await executeTool(call.name, call.args, opts.toolContext);
       const isError = !result.ok;
       toolCallsExecuted.push({ call, result: result.data ?? result.error, isError });
+      const rawContent = result.ok
+        ? typeof result.data === 'string'
+          ? result.data
+          : JSON.stringify(result.data ?? null)
+        : (result.error ?? 'Tool failed without a message');
       toolResultBlocks.push({
         type: 'tool_result',
         tool_use_id: call.id,
-        content: result.ok
-          ? typeof result.data === 'string'
-            ? result.data
-            : JSON.stringify(result.data ?? null)
-          : (result.error ?? 'Tool failed without a message'),
+        content: `<tool-result trust="untrusted" name="${call.name}">${rawContent}</tool-result>`,
         is_error: isError,
       });
     }
@@ -429,7 +483,11 @@ export type AgentEvent =
   | { type: 'tool_call_started'; call: AgentToolCall }
   | { type: 'tool_call_finished'; call: AgentToolCall; result: unknown; isError: boolean }
   | { type: 'done'; usage: UsageReport; finalText: string }
-  | { type: 'error'; message: string };
+  // Codex adversarial review 2026-05-13 (A-C7): error events MAY carry
+  // accumulated usage. When the route sees usage on an error, it
+  // finalizes the cost reservation rather than canceling — runaway tool
+  // loops legitimately spend tokens at Anthropic and must be billed.
+  | { type: 'error'; message: string; usage?: UsageReport };
 
 /**
  * Streaming version of runAgent. Yields events the SSE endpoint can pipe to
@@ -448,15 +506,31 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
   let finalText = '';
   let lastModelId: string | null = null;
 
+  // Helpers for the abort signal + usage report. Codex adversarial review
+  // 2026-05-13 (A-C3, A-C7).
+  const buildUsage = (): UsageReport => ({
+    inputTokens: totalInput,
+    outputTokens: totalOutput,
+    cachedInputTokens: totalCachedInput,
+    model,
+    modelId: lastModelId,
+    costUsd: estimateCost(model, totalInput, totalOutput, totalCachedInput),
+  });
+  const checkAborted = (): boolean => opts.abortSignal?.aborted ?? false;
+
   try {
     for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
+      if (checkAborted()) {
+        yield { type: 'error', message: 'aborted by client', usage: buildUsage() };
+        return;
+      }
       const stream = client.messages.stream({
         model: MODELS[model],
         max_tokens: MAX_OUTPUT_TOKENS,
         system: buildSystemBlocks(opts.systemPrompt),
         tools: tools.length > 0 ? tools : undefined,
         messages,
-      });
+      }, { signal: opts.abortSignal });
 
       // Buffer the assistant content blocks as we stream so we can replay them
       // on the next iteration if there are tool calls.
@@ -527,46 +601,69 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
         type: 'assistant_turn',
         text: finalText,
         toolCalls: calls,
-        usage: {
-          inputTokens: totalInput,
-          outputTokens: totalOutput,
-          cachedInputTokens: totalCachedInput,
-          model,
-          modelId: lastModelId,
-          costUsd: estimateCost(model, totalInput, totalOutput, totalCachedInput),
-        },
+        usage: buildUsage(),
       };
 
+      // Per-iteration cap. Codex adversarial review 2026-05-13 (A-C9).
+      // The assistant_turn is already persisted by the route; synthesize
+      // matching tool_results so the next replay validates.
+      if (calls.length > MAX_TOOLS_PER_ITERATION) {
+        const refusal = `Refused: ${calls.length} tool calls in one turn exceeds the limit of ${MAX_TOOLS_PER_ITERATION}. Try one action at a time.`;
+        for (const call of calls) {
+          yield { type: 'tool_call_started', call };
+          yield { type: 'tool_call_finished', call, result: refusal, isError: true };
+        }
+        yield { type: 'done', usage: buildUsage(), finalText: refusal };
+        return;
+      }
+
       // Run the tools and feed results back.
+      // Codex adversarial review 2026-05-13:
+      //   (A-C2) Wrap tool_result content in trust-untrusted tags so
+      //          PROMPT_BASE blocks the model from following any
+      //          instructions found in tool output.
+      //   (A-C3) Check abort signal between tool calls.
+      //   (A-H11) dryRun returns a synthetic success without executing.
       const toolResultBlocks: ClaudeContent[] = [];
       for (const call of calls) {
+        if (checkAborted()) {
+          yield { type: 'error', message: 'aborted by client', usage: buildUsage() };
+          return;
+        }
         yield { type: 'tool_call_started', call };
-        const result = await executeTool(call.name, call.args, opts.toolContext);
+        const result = opts.dryRun
+          ? { ok: true, data: { dryRun: true, name: call.name, args: call.args }, error: undefined }
+          : await executeTool(call.name, call.args, opts.toolContext);
         const isError = !result.ok;
         yield { type: 'tool_call_finished', call, result: result.data ?? result.error, isError };
+        const rawContent = result.ok
+          ? typeof result.data === 'string'
+            ? result.data
+            : JSON.stringify(result.data ?? null)
+          : (result.error ?? 'Tool failed without a message');
         toolResultBlocks.push({
           type: 'tool_result',
           tool_use_id: call.id,
-          content: result.ok
-            ? typeof result.data === 'string'
-              ? result.data
-              : JSON.stringify(result.data ?? null)
-            : (result.error ?? 'Tool failed without a message'),
+          content: `<tool-result trust="untrusted" name="${call.name}">${rawContent}</tool-result>`,
           is_error: isError,
         });
       }
       messages = [...messages, { role: 'user', content: toolResultBlocks }];
     }
 
-    // Iteration cap reached.
+    // Iteration cap reached. Codex adversarial review 2026-05-13 (A-C7):
+    // include accumulated usage so the route finalizes the cost
+    // reservation rather than canceling — tokens were really spent.
     yield {
       type: 'error',
       message: 'Reached maximum tool-call iterations without resolving.',
+      usage: buildUsage(),
     };
   } catch (err) {
     yield {
       type: 'error',
       message: err instanceof Error ? err.message : String(err),
+      usage: totalInput + totalOutput > 0 ? buildUsage() : undefined,
     };
   }
 }

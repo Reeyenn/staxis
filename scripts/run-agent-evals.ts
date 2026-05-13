@@ -1,12 +1,14 @@
 #!/usr/bin/env tsx
 // ─── CLI entry point for the agent eval bank ─────────────────────────────
 // Usage:
-//   npm run agent:evals                       # run everything
-//   npm run agent:evals -- --filter=spanish   # subset (matches name or category)
-//   STAXIS_EVAL_PROPERTY_ID=<uuid> npm run agent:evals
+//   STAXIS_EVAL_PROPERTY_ID=<uuid> npm run agent:evals                # run everything
+//   STAXIS_EVAL_PROPERTY_ID=<uuid> npm run agent:evals -- --filter=spanish
 //
-// Picks a property + user to run as. By default uses the first property the
-// service-role client can see; pass STAXIS_EVAL_PROPERTY_ID to pin one.
+// STAXIS_EVAL_PROPERTY_ID is REQUIRED. Codex adversarial review 2026-05-13
+// (A-H11) flagged that the prior "first property" fallback could point evals
+// at production data when the env var was missing. Tools are dry-run by
+// default in the runner (see runner.ts dryRun), but property choice should
+// also be explicit.
 
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
@@ -21,13 +23,9 @@ async function main(): Promise<void> {
   }
   const supabase = createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
 
-  let propertyId = process.env.STAXIS_EVAL_PROPERTY_ID;
+  const propertyId = process.env.STAXIS_EVAL_PROPERTY_ID;
   if (!propertyId) {
-    const { data } = await supabase.from('properties').select('id').limit(1).maybeSingle();
-    propertyId = data?.id as string | undefined;
-  }
-  if (!propertyId) {
-    console.error('No property found. Set STAXIS_EVAL_PROPERTY_ID or create a property first.');
+    console.error('STAXIS_EVAL_PROPERTY_ID is required. Set it to a sandbox property\'s UUID.');
     process.exit(1);
   }
 
