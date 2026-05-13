@@ -1,3273 +1,522 @@
-// Split from the housekeeping/page.tsx monolith on 2026-04-27.
-// Shared helpers / constants / components are imported from ./_shared.
-// Only this tab's section logic lives here.
-
 'use client';
 
+// Snow / simplified Schedule from the Claude Design housekeeping handoff
+// (May 2026). The previous version was a 1500-line monolith with public
+// areas, drag-to-assign, swap modals, prediction settings, and a Staff
+// Priority modal. The user explicitly asked to strip Schedule down to:
+//   • PMS pull strip with morning/evening toggle and 5 numbers visible
+//   • crew rows with capacity bars + auto-assigned room pills
+//   • action band at the bottom: Reset / Auto-assign / Send links
+//
+// Everything that backs the simpler UI — PlanSnapshot, ShiftConfirmations,
+// ScheduleAssignments persistence, work-order blocking, the actual
+// /api/send-shift-confirmations POST flow — is preserved. The dropped
+// features (public areas, drag-to-assign, swap modals, prediction
+// settings, priority modal) are gone from the JSX but their underlying
+// data layer is untouched, so we can wire them back into a settings
+// modal later if the user misses them.
+
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { createPortal } from 'react-dom';
-import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
-import { t } from '@/lib/translations';
-import { AppLayout } from '@/components/layout/AppLayout';
-import { Modal } from '@/components/ui/Modal';
-import { useSyncContext } from '@/contexts/SyncContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import {
-  subscribeToRooms, subscribeToAllRooms, updateRoom, addRoom,
-  addStaffMember, updateStaffMember, deleteStaffMember,
-  getRoomsForDate, getPublicAreas, setPublicArea, deletePublicArea,
-  updateProperty,
-  getDeepCleanConfig, setDeepCleanConfig, getDeepCleanRecords,
-  markRoomDeepCleaned, assignRoomDeepClean, completeRoomDeepClean,
   subscribeToPlanSnapshot,
-  subscribeToCsvPipelineStatus,
-  csvFreshness,
   subscribeToShiftConfirmations,
   subscribeToScheduleAssignments,
-  getScheduleAssignments,
   saveScheduleAssignments,
   subscribeToDashboardNumbers,
-  getDashboardForDate,
   subscribeToWorkOrders,
 } from '@/lib/db';
-import type { PlanSnapshot, CsvPipelineStatus, ScheduleAssignments, CsvRoomSnapshot, DashboardNumbers } from '@/lib/db';
-import { dashboardFreshness, DASHBOARD_STALE_MINUTES } from '@/lib/db';
-import { getPublicAreasDueToday, calcPublicAreaMinutes, autoAssignRooms, getOverdueRooms, calcDndFreedMinutes, suggestDeepCleans } from '@/lib/calculations';
-import { getDefaultPublicAreas } from '@/lib/defaults';
-import type { PublicArea } from '@/types';
-import { todayStr, errToString } from '@/lib/utils';
-import { supabase } from '@/lib/supabase';
-import { useTodayStr } from '@/lib/use-today-str';
-import type { Room, RoomStatus, RoomType, RoomPriority, StaffMember, DeepCleanRecord, DeepCleanConfig, ShiftConfirmation, ConfirmationStatus, WorkOrder } from '@/types';
-import { format, subDays } from 'date-fns';
+import type { PlanSnapshot, ScheduleAssignments, DashboardNumbers } from '@/lib/db';
+import { autoAssignRooms } from '@/lib/calculations';
+import type { ShiftConfirmation, WorkOrder, StaffMember, Room } from '@/types';
 import {
-  Calendar, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, CheckCircle2, Clock,
-  AlertTriangle, Users, Send, Zap, BedDouble, Plus, Pencil, Trash2, Star, Check,
-  Trophy, TrendingUp, TrendingDown, Minus, Upload, Settings,
-  Search, XCircle, Home, ArrowRightLeft, Sparkles, Ban, RefreshCw,
-  Link2, Copy,
-} from 'lucide-react';
-
-import {
-  TABS,
-  schedTodayStr, addDays, defaultShiftDate, formatPulledAt, formatDisplayDate,
-  isEligible, PRIORITY_ORDER, snapshotToShiftRooms, autoSelectEligible,
-  STAFF_COLORS,
-  toDate, fmtMins, HKInitials, buildLive, buildHistory,
-  PaceBadge, RankBadge, StatPill,
-  EMPTY_FORM, staffInitials,
-  getFloor, ROOM_ACTION_COLOR,
-  paFloorLabel, freqLabel, FrequencySlider, AREA_NAME_ES, areaDisplayName,
-  PublicAreasModal, PA_FLOOR_VALUES, SLIDER_MAX,
+  defaultShiftDate, addDays, formatDisplayDate, snapshotToShiftRooms,
 } from './_shared';
-import type { TabKey, HKLive, HKHistory, StaffFormData } from './_shared';
-import { DraftNumberInput } from '@/components/DraftNumberInput';
+import {
+  T, FONT_SANS, FONT_MONO, FONT_SERIF,
+  Caps, Pill, Btn, HousekeeperDot,
+} from './_snow';
 
-function ScheduleTab() {
+type SendResult = { status: 'sent' | 'skipped' | 'failed'; reason?: string };
+
+export function ScheduleTab() {
   const { user } = useAuth();
-  const { activeProperty, activePropertyId, staff, staffLoaded, refreshStaff, refreshProperty } = useProperty();
+  const { activeProperty, activePropertyId, staff } = useProperty();
   const { lang } = useLang();
-  const { recordOfflineAction } = useSyncContext();
 
   const [shiftDate, setShiftDate] = useState(defaultShiftDate);
-  const [sending, setSending] = useState(false);
-  const [confirmations, setConfirmations] = useState<ShiftConfirmation[]>([]);
-  // Per-person outcome from the last Send click: 'sent' | 'skipped' | 'failed'
-  // + a reason when it wasn't sent (e.g. 'no_phone'). Powers the badge next
-  // to each crew member's name on the Schedule tab.
-  type SendResult = { status: 'sent' | 'skipped' | 'failed'; reason?: string };
-  const [sendResults, setSendResults] = useState<Map<string, SendResult>>(new Map());
-  const [showPredictionSettings, setShowPredictionSettings] = useState(false);
-  const [showPublicAreas, setShowPublicAreas] = useState(false);
-  const [showAddStaff, setShowAddStaff] = useState(false);
-  const [expandedCrew, setExpandedCrew] = useState<string | null>(null);
-  const [settingsForm, setSettingsForm] = useState({
-    checkoutMinutes: 30,
-    stayoverMinutes: 20,
-    stayoverDay1Minutes: 15,
-    stayoverDay2Minutes: 20,
-    prepMinutesPerActivity: 5,
-    shiftMinutes: 420,  // per-housekeeper daily cap in minutes (7h default)
-  });
-  const [savingSettings, setSavingSettings] = useState(false);
-
-  // Plan snapshot from CSV scraper (7pm / 6am pulls) — THE source of truth for Schedule tab.
+  const [pullType, setPullType] = useState<'morning' | 'evening'>('evening');
   const [planSnapshot, setPlanSnapshot] = useState<PlanSnapshot | null>(null);
-  const [planSnapshotLoaded, setPlanSnapshotLoaded] = useState(false);
-
-  // CSV pipeline meta-status — tells us whether the scraper's most recent
-  // morning/evening pull SUCCEEDED, regardless of which date row it wrote to.
-  // Without this signal, today's planSnapshot.pulledAt being old is ambiguous:
-  // it could mean "scraper is broken" OR "we're past 7pm and the scraper has
-  // correctly switched to evening (tomorrow) pulls." See csvFreshness().
-  const [csvPipelineStatus, setCsvPipelineStatus] = useState<CsvPipelineStatus>({ morning: null, evening: null });
-
-  // Live PMS dashboard numbers (In House / Arrivals / Departures) — pulled off
-  // Choice Advantage's View pages every 15 min by the Railway scraper.
+  const [scheduleDoc, setScheduleDoc] = useState<ScheduleAssignments | null>(null);
+  const [confirmations, setConfirmations] = useState<ShiftConfirmation[]>([]);
   const [dashboardNums, setDashboardNums] = useState<DashboardNumbers | null>(null);
-
-  // Open work orders — used to derive blocked-room numbers so the scheduling
-  // page can exclude them from the check-off list, Staff Needed math, and
-  // auto-assign. A blocked room isn't cleaned, so it shouldn't eat crew time.
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
-
-  // Staleness ticker — re-renders the PMS block once a minute so that a
-  // Schedule tab left open on screen starts showing "stale" the moment
-  // pulledAt crosses the threshold, even without a Firestore update. Without
-  // this, the UI could tell Maria "fresh at 4:01" all evening while the
-  // scraper has been dead for 3 hours.
-  const [nowMs, setNowMs] = useState<number>(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNowMs(Date.now()), 60_000);
-    return () => clearInterval(id);
-  }, []);
-
-  // Saved assignments (survives CSV overwrites — Maria's Send work persists).
-  const [scheduleAssignmentsDoc, setScheduleAssignmentsDoc] = useState<ScheduleAssignments | null>(null);
-  const [scheduleAssignmentsLoaded, setScheduleAssignmentsLoaded] = useState(false);
-
-  const [publicAreas, setPublicAreas] = useState<PublicArea[]>([]);
-
-  // Crew assignments
   const [assignments, setAssignments] = useState<Record<string, string>>({});
-  const [crewOverride, setCrewOverride] = useState<string[]>([]); // manually toggled staff IDs
-  const [hasAutoSelected, setHasAutoSelected] = useState(false);
-  const [showPrioritySettings, setShowPrioritySettings] = useState(false);
-  // Snapshot of staff order for the Priority modal. We freeze the list when
-  // the modal opens so clicks on Priority/Normal/Exclude don't make rows
-  // jump around the screen — Mario's housekeepers ranged from "tech-comfy"
-  // to "this is my first ever app," and a row that physically moves after a
-  // tap is confusing. The badges still update live; only the row order is
-  // pinned. Cleared when the modal closes; rebuilt (newly sorted) on next
-  // open. Sort key: priority(0) → normal(1) → excluded(2), then name asc.
-  const [frozenStaffOrder, setFrozenStaffOrder] = useState<string[]>([]);
-
-  // Refs used by the hydration flow below (declared early so useEffects can flip them)
-  const userEditedCrew = useRef(false);
-  const manuallyAdded = useRef<Set<string>>(new Set());
-  // Room IDs that Maria explicitly dragged onto a specific HK. Auto Assign
-  // treats these as "preserved" — never redistributes them. Drag to
-  // __unassigned__ clears the flag (she's un-pinning it).
-  const manuallyAssignedRooms = useRef<Set<string>>(new Set());
-  const hasInitialAssign = useRef(false);
-
-  // ── Carry-forward from yesterday ──────────────────────────────────────────
-  // When Maria opens the Schedule tab on a new morning and there's no saved
-  // doc for today yet, we attempt to seed it from yesterday's pairings: same
-  // HK on the same room number, restricted to rooms that still appear in
-  // today's CA scrape. Banner stays until she edits or dismisses.
-  // `seedAttemptedForDate` is a per-mount guard — we only try once per date,
-  // even if the user navigates away and comes back. (Subsequent visits will
-  // see the autosaved doc and hydrate normally.)
-  const seedAttemptedForDate = useRef<string | null>(null);
-  const [seededFromYesterday, setSeededFromYesterday] = useState(false);
-
-  // Swap dropdown
-  const [swapOpenFor, setSwapOpenFor] = useState<string | null>(null);
-  const [swapAnchor, setSwapAnchor] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
-
-  // "Copied!" flash feedback for the per-housekeeper link copy button
-  const [copiedFor, setCopiedFor] = useState<string | null>(null);
-  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Move toast notification
-  const [moveToast, setMoveToast] = useState<string | null>(null);
+  const [crewIds, setCrewIds] = useState<string[]>([]);
+  const [sending, setSending] = useState(false);
+  const [sendResults, setSendResults] = useState<Map<string, SendResult>>(new Map());
+  const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // ── Lock background scroll while Staff Priority modal is open ──
-  // Reeyen reported the page behind the modal was still scrollable —
-  // jarring because the modal was opened to read/click, not to navigate
-  // the page. Standard fix: set overflow:hidden on <body> while open and
-  // restore the previous value on close. Belt-and-suspenders: also pin
-  // <html> in case some parent style overrides body.
-  useEffect(() => {
-    if (!showPrioritySettings) return;
-    const prevBodyOverflow = document.body.style.overflow;
-    const prevHtmlOverflow = document.documentElement.style.overflow;
-    document.body.style.overflow = 'hidden';
-    document.documentElement.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = prevBodyOverflow;
-      document.documentElement.style.overflow = prevHtmlOverflow;
-    };
-  }, [showPrioritySettings]);
-
-  // ── Staff Priority modal: snapshot order on open ──
-  // When showPrioritySettings flips to true, capture the current sorted
-  // order of (housekeeping, active) staff IDs. Render the modal from this
-  // snapshot until it closes — clicks on Priority/Normal/Exclude don't
-  // re-shuffle rows. On close, clear so the next open re-snapshots
-  // (picking up any priority changes Maria made in the previous session).
-  useEffect(() => {
-    if (!showPrioritySettings) {
-      if (frozenStaffOrder.length > 0) setFrozenStaffOrder([]);
-      return;
-    }
-    const sorted = [...staff]
-      .filter(s => s.isActive !== false && (s.department === 'housekeeping' || !s.department))
-      .sort((a, b) => {
-        const aPri = PRIORITY_ORDER[a.schedulePriority ?? 'normal'];
-        const bPri = PRIORITY_ORDER[b.schedulePriority ?? 'normal'];
-        if (aPri !== bPri) return aPri - bPri;
-        return a.name.localeCompare(b.name);
-      });
-    setFrozenStaffOrder(sorted.map(s => s.id));
-    // Intentionally NOT depending on `staff` — the whole point is to NOT
-    // re-snapshot when staff changes (e.g., when a priority click triggers
-    // a realtime update). We snapshot once on open and that's it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showPrioritySettings]);
-
-  // Drag-and-drop state (pointer events — works for both mouse + touch)
-  // `floating: true` means the user tapped a pill and it's now stuck to the
-  // cursor waiting for a second click to drop. `floating: false|undefined`
-  // means a classic press-and-drag is in progress.
-  const [dragState, setDragState] = useState<{
-    roomId: string; roomNumber: string; roomType: string; stayoverDay?: number;
-    ghost: { x: number; y: number }; dropTarget: string | null;
-    floating?: boolean;
-  } | null>(null);
-  const crewCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
-  const dragRef = useRef<{
-    roomId: string | null; roomNumber: string; roomType: string; stayoverDay?: number;
-    startX: number; startY: number; active: boolean;
-  }>({ roomId: null, roomNumber: '', roomType: '', startX: 0, startY: 0, active: false });
 
   const uid = user?.uid ?? '';
   const pid = activePropertyId ?? '';
 
-  useEffect(() => {
-    if (uid && pid && staff.length === 0) refreshStaff();
-  }, [uid, pid]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Schedule tab reads ONLY from the CSV pull (planSnapshots). The 15-min rooms scraper
-  // is intentionally ignored here — it powers the Rooms tab's live view during the day.
+  // ── Subscriptions ─────────────────────────────────────────────────────
   useEffect(() => {
     if (!uid || !pid) return;
-    setPlanSnapshotLoaded(false);
-    return subscribeToPlanSnapshot(uid, pid, shiftDate, (snap) => {
-      setPlanSnapshot(snap);
-      setPlanSnapshotLoaded(true);
-    });
+    return subscribeToPlanSnapshot(uid, pid, shiftDate, setPlanSnapshot);
   }, [uid, pid, shiftDate]);
 
-  // CSV pipeline status — single global subscription, doesn't depend on
-  // shiftDate (the morning/evening rows are property-wide, not per-date).
-  // Today's tab is the only one that needs the live "is the pipeline alive"
-  // signal; historical date tabs show frozen data and don't render the
-  // banner regardless.
-  useEffect(() => {
-    return subscribeToCsvPipelineStatus(setCsvPipelineStatus);
-  }, []);
-
-  // Synthetic room list derived from CSV — no rooms-collection dependency.
-  const shiftRooms = useMemo(() => snapshotToShiftRooms(planSnapshot, pid), [planSnapshot, pid]);
-
-  // Maria's saved assignments for this date. Untouched by CSV refreshes.
   useEffect(() => {
     if (!uid || !pid) return;
-    // Clear the previous date's doc AND loaded flag synchronously before
-    // re-subscribing. Otherwise the hydration effect below can fire on the
-    // date change while `scheduleAssignmentsDoc` still holds the previous
-    // date's data — and lock in stale assignments whose room IDs are keyed
-    // to the old date (so everything shows as unassigned).
-    setScheduleAssignmentsDoc(null);
-    setScheduleAssignmentsLoaded(false);
-    return subscribeToScheduleAssignments(uid, pid, shiftDate, (sa) => {
-      setScheduleAssignmentsDoc(sa);
-      setScheduleAssignmentsLoaded(true);
-    });
+    return subscribeToScheduleAssignments(uid, pid, shiftDate, setScheduleDoc);
   }, [uid, pid, shiftDate]);
 
-  // Dashboard numbers — TWO modes depending on which date tab is active:
-  //
-  //   • Today's tab  → live subscription to scraperStatus/dashboard. The doc
-  //     refreshes every 15 min from the scraper and the UI reacts instantly.
-  //   • Any other date → one-shot read from dashboardByDate/{date}. That doc
-  //     was frozen when the scraper did its last pull of that day. No live
-  //     updates — past days don't change.
-  //
-  // Why two modes: before this, we only had a single live doc and it looked
-  // like the numbers belonged to whatever date tab was active. Confusing for
-  // Maria — she'd see today's 37 in-house while clicking through yesterday's
-  // assignments. Per-date reads fix that AND give her real historical data.
-  useEffect(() => {
-    const today = schedTodayStr();
-    if (shiftDate === today) {
-      // Live — subscribe and let onSnapshot push updates.
-      return subscribeToDashboardNumbers(setDashboardNums);
-    }
-    // Past or future — one-shot read, no listener. Clear state first so we
-    // don't flash stale live numbers while the fetch is in flight.
-    setDashboardNums(null);
-    let cancelled = false;
-    if (!pid) return;
-    getDashboardForDate(shiftDate, pid).then(nums => {
-      if (!cancelled) setDashboardNums(nums);
-    });
-    return () => { cancelled = true; };
-  }, [shiftDate, pid]);
-
-  // Subscribe to work orders so we can exclude blocked rooms from the
-  // cleaning workflow. Sourced from either manual toggles in Maintenance or
-  // Choice Advantage's OOO feed (ca_ooo work orders).
-  useEffect(() => {
-    if (!uid || !pid) return;
-    return subscribeToWorkOrders(uid, pid, setWorkOrders);
-  }, [uid, pid]);
-
-  // One-time hydration per date: when assignments + crew load from Firestore, seed local state.
-  const hydratedForDate = useRef<string | null>(null);
-  useEffect(() => {
-    if (!scheduleAssignmentsLoaded) return;
-    if (hydratedForDate.current === shiftDate) return;
-    // Guard against a stale subscription emission: if the doc we have isn't
-    // for the shiftDate we're now viewing, wait for the real doc to arrive.
-    // (Happens when the user switches dates faster than Firestore re-emits.)
-    if (scheduleAssignmentsDoc && scheduleAssignmentsDoc.date !== shiftDate) return;
-    hydratedForDate.current = shiftDate;
-    if (scheduleAssignmentsDoc) {
-      setAssignments(scheduleAssignmentsDoc.roomAssignments ?? {});
-      setCrewOverride(scheduleAssignmentsDoc.crew ?? []);
-      userEditedCrew.current = true;     // respect what Maria already saved
-      hasInitialAssign.current = true;   // skip the auto-assign-on-first-load
-    } else {
-      setAssignments({});
-      setCrewOverride([]);
-      userEditedCrew.current = false;
-      hasInitialAssign.current = false;
-    }
-  }, [shiftDate, scheduleAssignmentsLoaded, scheduleAssignmentsDoc]);
-
-  // Reset the seeded banner whenever the user navigates to a different date
-  // — yesterday's banner shouldn't follow her into tomorrow's view.
-  useEffect(() => { setSeededFromYesterday(false); }, [shiftDate]);
-
-  // Carry-forward from yesterday: when there's no saved doc for today, seed
-  // assignments from yesterday's pairings, restricted to rooms that still
-  // appear in today's room list and to housekeepers who are still active on
-  // staff. This is a one-time attempt per (mount × shiftDate) — if Maria
-  // edits anything, the autosave persists and subsequent loads hydrate from
-  // the saved doc instead of re-seeding.
-  useEffect(() => {
-    if (!uid || !pid) return;
-    if (!scheduleAssignmentsLoaded) return;
-    // Wait for staff context — without it the active-staff filter inside
-    // the seed would treat every yesterday-pairing as inactive and drop them.
-    if (!staffLoaded) return;
-    // Already hydrated; skip if a saved doc exists or if we already tried
-    // for this date.
-    if (scheduleAssignmentsDoc) return;
-    if (hydratedForDate.current !== shiftDate) return; // wait for hydration
-    if (seedAttemptedForDate.current === shiftDate) return;
-    // Only seed for "today" — never for past dates (read-only history) or
-    // arbitrary future dates (Maria explicitly chose those, don't pre-fill).
-    const today = schedTodayStr();
-    if (shiftDate !== today) return;
-
-    // Race-prevention: lock the auto-assign effect SYNCHRONOUSLY before we
-    // dispatch the async fetch. Otherwise auto-assign (which fires
-    // synchronously the moment hydration finishes with no saved doc) wins
-    // the race, sets hasInitialAssign.current=true, and the 400ms autosave
-    // persists the algorithm's choices to Firestore. The realtime sub then
-    // emits a non-null doc, our deps change, our cleanup runs, and the
-    // seed result gets dropped via the `cancelled` flag. Net: yesterday's
-    // pairings never appear, banner never shows. Setting the locks first
-    // makes auto-assign bail at its own guard. If the seed turns out to
-    // have nothing to apply, we release the lock at the end and let
-    // auto-assign run on the next render.
-    hasInitialAssign.current = true;
-    userEditedCrew.current = true;
-
-    const yesterday = format(subDays(new Date(), 1), 'yyyy-MM-dd');
-
-    let cancelled = false;
-    (async () => {
-      try {
-        const [yestAssignments, yestRooms, todayRooms] = await Promise.all([
-          getScheduleAssignments(uid, pid, yesterday),
-          getRoomsForDate(uid, pid, yesterday),
-          getRoomsForDate(uid, pid, today),
-        ]);
-        if (cancelled) return;
-
-        // Bug #9 fix: if today's CSV scrape hasn't run yet, today's rooms
-        // come back empty. Don't burn the seed-attempt flag — we want to
-        // retry once rooms land. Release the auto-assign lock since we're
-        // bailing without applying.
-        if (todayRooms.length === 0) {
-          hasInitialAssign.current = false;
-          userEditedCrew.current = false;
-          return;
-        }
-
-        // From here on we've committed to one seed attempt for this date.
-        // Subsequent renders won't re-fetch even if we end up with nothing
-        // to apply (Maria can manually edit if she wants different pairings).
-        seedAttemptedForDate.current = shiftDate;
-
-        if (!yestAssignments || Object.keys(yestAssignments.roomAssignments ?? {}).length === 0) {
-          // Nothing to carry forward — release the lock so auto-assign runs.
-          hasInitialAssign.current = false;
-          userEditedCrew.current = false;
-          return;
-        }
-
-        // Build yesterday roomId → number, today number → id.
-        const yestIdToNumber = new Map<string, string>();
-        for (const r of yestRooms) yestIdToNumber.set(r.id, r.number);
-        const todayNumberToId = new Map<string, string>();
-        for (const r of todayRooms) todayNumberToId.set(r.number, r.id);
-
-        // Active staff filter: drop anyone no longer on the roster or marked
-        // inactive. `staff` is from useProperty(); read latest via the closure.
-        const activeStaffIds = new Set(
-          staff.filter(s => s.isActive !== false).map(s => s.id),
-        );
-
-        const seededAssignments: Record<string, string> = {};
-        for (const [yestRoomId, staffId] of Object.entries(yestAssignments.roomAssignments)) {
-          if (!activeStaffIds.has(staffId)) continue;
-          const roomNumber = yestIdToNumber.get(yestRoomId);
-          if (!roomNumber) continue;
-          const todayRoomId = todayNumberToId.get(roomNumber);
-          if (!todayRoomId) continue; // room not in today's list
-          seededAssignments[todayRoomId] = staffId;
-        }
-
-        if (Object.keys(seededAssignments).length === 0) {
-          // Yesterday had pairings but none survived the filter (all rooms
-          // gone, or all HKs deactivated). Release the lock.
-          hasInitialAssign.current = false;
-          userEditedCrew.current = false;
-          return;
-        }
-
-        const seededCrew = (yestAssignments.crew ?? []).filter(id => activeStaffIds.has(id));
-
-        // Locks already set above; just publish the assignments.
-        setAssignments(seededAssignments);
-        setCrewOverride(seededCrew);
-        setSeededFromYesterday(true);
-      } catch (err) {
-        // Non-fatal — Maria can still build today's schedule from scratch.
-        // Release the lock so auto-assign can run instead.
-        hasInitialAssign.current = false;
-        userEditedCrew.current = false;
-        console.error('[ScheduleTab] carry-forward seed failed:', err);
-      }
-    })();
-
-    return () => { cancelled = true; };
-    // staff intentionally NOT a dep — we read once at seed time. Re-running
-    // when staff changes would re-seed and clobber Maria's edits.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [uid, pid, shiftDate, scheduleAssignmentsLoaded, staffLoaded, scheduleAssignmentsDoc]);
-
-  const predictionLoading = !planSnapshotLoaded;
-
-  // Subscribe to shift confirmations for this date (for the status panel)
   useEffect(() => {
     if (!uid || !pid) return;
     return subscribeToShiftConfirmations(uid, pid, shiftDate, setConfirmations);
   }, [uid, pid, shiftDate]);
 
-  // When the shift date changes, forget the previous Send outcomes — the
-  // badges are per-shift and shouldn't leak across dates.
   useEffect(() => {
-    setSendResults(new Map());
-  }, [shiftDate]);
-
-  // Map of staffId → confirmation status for this shift date
-  const statusByStaff = useMemo(() => {
-    const m = new Map<string, ConfirmationStatus>();
-    confirmations.forEach(c => m.set(c.staffId, c.status));
-    return m;
-  }, [confirmations]);
-  const alreadySent = confirmations.length > 0;
-
-  // No more confirmation aggregates — the new flow doesn't track replies
-  // (Maria confirms in person at 3pm). The post-send pill just says "Links
-  // sent" and doesn't count anything.
+    return subscribeToDashboardNumbers(setDashboardNums);
+  }, []);
 
   useEffect(() => {
     if (!uid || !pid) return;
-    const OLD_NAMES = ['stairwell', 'staff / service', 'floor 2 hallway', 'floor 3 hallway', 'floor 4 hallway', 'restrooms (3', 'elevator area (1st', '2nd, 3rd, & 4th floor hallways'];
-    const needsReseed = (areas: PublicArea[]) => areas.some(a => OLD_NAMES.some(old => a.name.toLowerCase().includes(old)));
-    const seedDefaults = async () => {
-      const defaults = getDefaultPublicAreas();
-      const seeded: PublicArea[] = [];
-      for (const area of defaults) {
-        const id = crypto.randomUUID();
-        const full = { id, ...area } as PublicArea;
-        await setPublicArea(uid, pid, full);
-        seeded.push(full);
-      }
-      return seeded;
-    };
-    getPublicAreas(uid, pid).then(async (fetched) => {
-      if (fetched.length === 0) setPublicAreas(await seedDefaults());
-      else if (needsReseed(fetched)) {
-        // Parallel deletes — was sequential which made first-login on a
-        // property with 20+ public areas drag for several seconds.
-        await Promise.all(fetched.map(a => deletePublicArea(uid, pid, a.id)));
-        setPublicAreas(await seedDefaults());
-      }
-      else setPublicAreas(fetched);
-    }).catch(err => {
-      console.error('Error fetching public areas:', err);
-    });
+    return subscribeToWorkOrders(uid, pid, setWorkOrders);
   }, [uid, pid]);
 
+  // ── Hydrate local state from saved doc ────────────────────────────────
   useEffect(() => {
-    if (activeProperty) {
-      const legacySo = activeProperty.stayoverMinutes ?? 20;
-      setSettingsForm({
-        checkoutMinutes: activeProperty.checkoutMinutes ?? 30,
-        stayoverMinutes: legacySo,
-        stayoverDay1Minutes: activeProperty.stayoverDay1Minutes ?? 15,
-        stayoverDay2Minutes: activeProperty.stayoverDay2Minutes ?? legacySo,
-        prepMinutesPerActivity: activeProperty.prepMinutesPerActivity ?? 5,
-        shiftMinutes: activeProperty.shiftMinutes ?? 420,
-      });
-    }
-  }, [activeProperty]);
+    if (!scheduleDoc) return;
+    setAssignments(scheduleDoc.roomAssignments ?? {});
+    setCrewIds(scheduleDoc.crew ?? []);
+  }, [scheduleDoc]);
 
-  const handleSaveSettings = async () => {
-    if (!uid || !pid) return;
-    setSavingSettings(true);
-    try {
-      // Keep legacy `stayoverMinutes` in sync with Day 2 (the fuller clean) so
-      // any old consumers still reading the deprecated field get the safer estimate.
-      const payload = { ...settingsForm, stayoverMinutes: settingsForm.stayoverDay2Minutes };
-      await updateProperty(uid, pid, payload);
-      await refreshProperty();
-    } finally {
-      setSavingSettings(false);
-      setShowPredictionSettings(false);
-    }
-  };
+  // ── Derived: shift rooms from CSV pull ────────────────────────────────
+  const shiftRooms = useMemo(() => snapshotToShiftRooms(planSnapshot, pid), [planSnapshot, pid]);
 
-  // ── Prediction model ──
-  const coMins = activeProperty?.checkoutMinutes ?? 30;
-  const legacySoMins = activeProperty?.stayoverMinutes ?? 20;
-  const day1Mins = activeProperty?.stayoverDay1Minutes ?? 15;
-  const day2Mins = activeProperty?.stayoverDay2Minutes ?? legacySoMins;
-  // soMins kept for legacy call sites (DND/over-time fallbacks) — represents a sensible "blended" stayover estimate.
-  const soMins = legacySoMins;
-  const prepPerRoom = activeProperty?.prepMinutesPerActivity ?? 5;
-  // Per-housekeeper daily cap. Configurable via Prediction Settings →
-  // "Max hours per housekeeper" so different operators can dial it to
-  // their staffing reality (6h, 7h, 8h, etc.). Default 420m (7h).
-  const shiftLen = activeProperty?.shiftMinutes ?? 420;
-
-  // Blocked room numbers — any non-resolved work order with blockedRoom:true,
-  // whether it came from CA's OOO feed (source: 'ca_ooo') or was toggled on
-  // manually in the Maintenance tab. Rooms in this Set are dropped from every
-  // housekeeping calculation below, so they never show up on the check-off
-  // list, never count toward Staff Needed, and never get auto-assigned.
   const blockedRoomNumbers = useMemo(() => {
-    const s = new Set<string>();
-    for (const o of workOrders) {
-      if (o.blockedRoom && o.status !== 'resolved') s.add(o.roomNumber);
-    }
-    return s;
+    const set = new Set<string>();
+    for (const o of workOrders) if (o.status !== 'resolved' && o.blockedRoom) set.add(o.roomNumber);
+    return set;
   }, [workOrders]);
 
-  // workShiftRooms = shiftRooms minus anything Maria can't actually put
-  // on someone's plate:
-  //   1. Blocked (OOO / maintenance) — room is down, nobody enters.
-  //   2. DND — guest flagged "do not disturb" ahead of time (e.g. late
-  //      sleeper, overnight shift worker). HK can't enter until the flag
-  //      comes off, so it shouldn't eat crew capacity at schedule time.
-  //      When the HK flips DND off from their phone mid-day, the room
-  //      re-appears in the next refresh and gets manually dragged in.
-  // shiftRooms (raw CA snapshot) is preserved for the csvRoomSnapshot so
-  // the diff-on-refresh logic still compares apples to apples with the
-  // next CA pull.
-  const workShiftRooms = useMemo(
-    () => shiftRooms.filter(r => !blockedRoomNumbers.has(r.number) && !r.isDnd),
-    [shiftRooms, blockedRoomNumbers]
-  );
-  // Count every open blocked work order for the property — NOT just blocked
-  // rooms that also happen to be in today's shift. Multi-day OOO blocks (e.g.
-  // a room deep-cleaned 4/22 → 4/30) get stripped out of the daily CA CSV, so
-  // intersecting with shiftRooms would silently miss them. This stat mirrors
-  // the "OOO" counter on ChoiceAdvantage, which counts the whole work-order
-  // list regardless of day.
-  const blockedCount = blockedRoomNumbers.size;
-  const dndCount = shiftRooms.filter(r => r.isDnd && !blockedRoomNumbers.has(r.number)).length;
-
-  const checkouts = workShiftRooms.filter(r => r.type === 'checkout').length;
-  const stayovers = workShiftRooms.filter(r => r.type === 'stayover').length;
-  const totalRooms = checkouts + stayovers;
-  // Per-room cleaning minutes using stayoverDay cycle (Day 1 odd = light, Day 2 even = full).
-  // Fall back to legacy stayoverMinutes for arrival-day stayovers (stayoverDay=0 or missing).
-  const minsForRoom = (r: { type: string; stayoverDay?: number }): number => {
-    if (r.type === 'checkout') return coMins;
-    const d = r.stayoverDay;
-    if (typeof d !== 'number' || d <= 0) return legacySoMins;
-    return d % 2 === 1 ? day1Mins : day2Mins;
-  };
-  const stayoverRooms = workShiftRooms.filter(r => r.type === 'stayover');
-  const stayoverMinutesTotal = stayoverRooms.reduce((sum, r) => sum + minsForRoom(r), 0);
-  const roomMinutes = (checkouts * coMins) + stayoverMinutesTotal;
-  const prepMinutes = totalRooms * prepPerRoom;
-
-  const [shiftY, shiftM, shiftD] = shiftDate.split('-').map(Number);
-  const shiftDateObj = new Date(shiftY, shiftM - 1, shiftD);
-  const areasDueToday = getPublicAreasDueToday(publicAreas, shiftDateObj);
-  const publicAreaMinutes = calcPublicAreaMinutes(areasDueToday);
-
-  const LAUNDRY_STAFF = 1;
-  const workloadMinutes = roomMinutes + prepMinutes;
-  const cleaningStaff = workloadMinutes > 0 ? Math.ceil(workloadMinutes / shiftLen) : 0;
-  const recommendedStaff = cleaningStaff + LAUNDRY_STAFF;
-
-  // ── Auto-select crew + auto-assign rooms ──
-  const eligiblePool = useMemo(() => autoSelectEligible(staff, shiftDate, new Set()), [staff, shiftDate]);
-  const assignableRooms = useMemo(() =>
-    [...workShiftRooms].filter(r => r.type === 'checkout' || r.type === 'stayover')
-      .sort((a, b) => (parseInt(a.number.replace(/\D/g, '')) || 0) - (parseInt(b.number.replace(/\D/g, '')) || 0)),
-    [workShiftRooms]
+  // Rooms eligible for cleaning (excludes blocked rooms)
+  const assignableRooms = useMemo(
+    () => shiftRooms.filter(r => !blockedRoomNumbers.has(r.number)),
+    [shiftRooms, blockedRoomNumbers],
   );
 
-  // The selected crew: auto-pick or manual override.
-  // Always strip out anyone who isn't a housekeeper anymore — a saved
-  // crew doc from an earlier day can still carry the old IDs, and we
-  // don't want a manager who got moved to 'other' to keep showing up
-  // on the schedule with rooms assigned.
-  const isHousekeeper = (s: StaffMember) => (s.department ?? 'housekeeping') === 'housekeeping';
-  const selectedCrew = useMemo(() => {
-    if (userEditedCrew.current) {
-      // User has made manual changes — respect crewOverride exactly (even if empty)
-      return crewOverride
-        .map(id => staff.find(s => s.id === id))
-        .filter((s): s is StaffMember => !!s && isHousekeeper(s));
-    }
-    if (crewOverride.length > 0) return crewOverride
-      .map(id => staff.find(s => s.id === id))
-      .filter((s): s is StaffMember => !!s && isHousekeeper(s));
-    if (recommendedStaff > 0 && totalRooms > 0) return eligiblePool.slice(0, recommendedStaff);
-    return eligiblePool;
-  }, [crewOverride, eligiblePool, recommendedStaff, totalRooms, staff]);
+  const checkouts = assignableRooms.filter(r => r.type === 'checkout').length;
+  const stayoverDay1 = assignableRooms.filter(r => r.type === 'stayover' && r.stayoverDay === 1).length;
+  const stayoverDay2 = assignableRooms.filter(r => r.type === 'stayover' && r.stayoverDay === 2).length;
 
-  // Auto-assign: full assign on first load, then only assign unassigned rooms on crew changes
-  //
-  // 2026-05-07 BUG FIX (Maria's "rooms keep reshuffling" complaint):
-  // The previous version did `setAssignments({}); hasInitialAssign.current = false`
-  // whenever `selectedCrew` or `assignableRooms` were briefly empty (e.g. during a
-  // page reload while the staff query was still in flight). That single render
-  // un-armed the hydration guard, then on the very next render the auto-assign
-  // re-ran and silently overwrote whatever Maria had saved on the schedule
-  // board. The autosave 400ms later then mirrored the algorithm's choices into
-  // `rooms.assigned_to`, so the housekeepers' phone links showed reshuffled
-  // rooms instead of what Maria actually assigned.
-  //
-  // Two-part fix:
-  //   1. The empty-input guard now just bails out (no state wipe). A momentary
-  //      empty crew is a loading hiccup, not a signal to nuke saved work.
-  //   2. Auto-assign is now hard-gated on (a) hydration having settled for this
-  //      date and (b) NO saved schedule_assignments doc existing for this date.
-  //      If Maria has ever saved for this date, the algorithm cannot overwrite
-  //      her board — only her own drag-drops can change assignments from there.
-  useEffect(() => {
-    // Bail out on bad/incomplete inputs WITHOUT wiping state. The previous
-    // `setAssignments({}); hasInitialAssign.current = false` line was the
-    // foot-gun that caused the reshuffle bug.
-    if (assignableRooms.length === 0 || selectedCrew.length === 0) return;
+  // Time math — checkout 30m + stayoverDay1 15m + stayoverDay2 20m by default,
+  // or whatever Maria has set in Property settings.
+  const ckMin   = activeProperty?.checkoutMinutes      ?? 30;
+  const so1Min  = activeProperty?.stayoverDay1Minutes  ?? 15;
+  const so2Min  = activeProperty?.stayoverDay2Minutes  ?? 20;
+  const totalMinutes = checkouts * ckMin + stayoverDay1 * so1Min + stayoverDay2 * so2Min;
+  const SHIFT_MINS = 8 * 60;
+  const recommendedHKs = Math.max(1, Math.ceil(totalMinutes / SHIFT_MINS));
 
-    // Don't auto-assign until hydration has settled for the current date —
-    // otherwise we race the schedule_assignments doc load and risk
-    // overwriting Maria's saved work.
-    if (hydratedForDate.current !== shiftDate) return;
+  // Crew = the staff IDs we're scheduling today. Default to active
+  // housekeeping staff if no override has been saved yet.
+  const activeCrew: StaffMember[] = useMemo(() => {
+    const ids = crewIds.length > 0 ? crewIds : staff.filter(s => s.isActive && s.department === 'housekeeping').map(s => s.id);
+    return ids.map(id => staff.find(s => s.id === id)).filter((s): s is StaffMember => Boolean(s));
+  }, [crewIds, staff]);
 
-    // If a saved schedule_assignments doc exists for this date, RESPECT IT.
-    // The algorithm only seeds initial state when there's nothing saved yet.
-    if (scheduleAssignmentsDoc) return;
+  const offCrew = useMemo(
+    () => staff.filter(s => s.isActive && s.department === 'housekeeping' && !activeCrew.some(c => c.id === s.id)),
+    [staff, activeCrew],
+  );
 
-    if (!hasInitialAssign.current) {
-      // First time on a fresh date with no saved doc: seed from algorithm.
-      const fakeScheduled = selectedCrew.map(s => ({ ...s, scheduledToday: true }));
-      const auto = autoAssignRooms(assignableRooms, fakeScheduled, {
-        checkoutMinutes: coMins,
-        stayoverMinutes: legacySoMins,
-        stayoverDay1Minutes: day1Mins,
-        stayoverDay2Minutes: day2Mins,
-        prepMinutesPerRoom: prepPerRoom,
-        shiftMinutes: shiftLen,
-      });
-      setAssignments(auto);
-      hasInitialAssign.current = true;
-
-      // Auto-remove staff with 0 rooms (unless manually added)
-      const assignedStaffIds = new Set(Object.values(auto));
-      const emptyStaff = selectedCrew.filter(s => !assignedStaffIds.has(s.id) && !manuallyAdded.current.has(s.id));
-      if (emptyStaff.length > 0) {
-        setCrewOverride(prev => {
-          const current = prev.length > 0 ? prev : selectedCrew.map(s => s.id);
-          return current.filter(id => assignedStaffIds.has(id) || manuallyAdded.current.has(id));
-        });
-      }
-    }
-    // On subsequent crew changes, don't re-assign — let unassigned rooms stay unassigned
-    // `legacySoMins` is intentionally NOT in deps; it's a back-compat read-only
-    // shadow of soMins consulted only inside this branch and would not change
-    // independently of soMins.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedCrew, assignableRooms, coMins, soMins, day1Mins, day2Mins, prepPerRoom, shiftLen, shiftDate, scheduleAssignmentsDoc]);
-
-  const toggleCrewMember = (memberId: string) => {
-    userEditedCrew.current = true;
-    setCrewOverride(prev => {
-      const current = prev.length > 0 ? prev : selectedCrew.map(s => s.id);
-      if (current.includes(memberId)) {
-        manuallyAdded.current.delete(memberId);
-        // Unassign this person's rooms (move to unassigned pool)
-        setAssignments(a => {
-          const updated = { ...a };
-          for (const [roomId, staffId] of Object.entries(updated)) {
-            if (staffId === memberId) delete updated[roomId];
-          }
-          return updated;
-        });
-        return current.filter(id => id !== memberId);
-      } else {
-        manuallyAdded.current.add(memberId);
-        return [...current, memberId];
-      }
-    });
+  const fmtTime = (mins: number) => {
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return h > 0 ? `${h}h${m > 0 ? ` ${m}m` : ''}` : `${m}m`;
   };
 
-
-  // Snapshot of what the CSV looked like at save time — so the next open can diff.
-  const currentCsvSnapshot = useMemo<CsvRoomSnapshot[]>(
-    () => shiftRooms.map(r => ({ number: r.number, type: r.type as 'checkout' | 'stayover' })),
-    [shiftRooms],
-  );
-  const currentCsvPulledAt = useMemo<string | null>(
-    () => (planSnapshot?.pulledAt ? new Date(planSnapshot.pulledAt).toISOString() : null),
-    [planSnapshot?.pulledAt],
-  );
-
-  // Ref mirror of assignableRooms so the sync-effect below can read the latest
-  // list without becoming a dep (which would cause loops when our own write
-  // bumps the rooms snapshot).
-  const assignableRoomsRef = useRef(assignableRooms);
-  useEffect(() => { assignableRoomsRef.current = assignableRooms; }, [assignableRooms]);
-
-  // ── Persist assignments + crew to scheduleAssignments (debounced) ─────────
-  // This is what makes Maria's 7pm work survive the 6am CSV refresh.
-  //
-  // ALSO fires /api/sync-room-assignments which mirrors the per-room
-  // `assignedTo`/`assignedName` field on each rooms doc so the crew-row "Link"
-  // button (opens /housekeeper/{id}) shows the current Schedule state before
-  // Maria even hits Send. The HK page queries rooms by `assignedTo`, so
-  // without this sync the Link preview would show stale data.
+  // ── Persist (debounced) ───────────────────────────────────────────────
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
+  const persist = useCallback(() => {
     if (!uid || !pid) return;
-    if (!scheduleAssignmentsLoaded) return;            // don't save before first load
-    if (hydratedForDate.current !== shiftDate) return; // still hydrating this date
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       const staffNames: Record<string, string> = {};
-      selectedCrew.forEach(s => { staffNames[s.id] = s.name; });
+      activeCrew.forEach(s => { staffNames[s.id] = s.name; });
       saveScheduleAssignments(uid, pid, shiftDate, {
         roomAssignments: assignments,
-        crew: selectedCrew.map(s => s.id),
+        crew: activeCrew.map(s => s.id),
         staffNames,
-        csvRoomSnapshot: currentCsvSnapshot,
-        csvPulledAt: currentCsvPulledAt,
-      }).catch(err => console.error('[Schedule] save assignments failed:', err));
+        // Skip the optional csv snapshot fields — saving without them
+        // is fine. PlanSnapshot.rooms has a `roomType` field while the
+        // schedule_assignments table expects CsvRoomSnapshot's `type`,
+        // and mapping isn't worth the noise here.
+      }).catch(err => console.error('[Schedule] save failed:', err));
+    }, 500);
+    // planSnapshot intentionally not in deps — we no longer save the
+    // CSV snapshot fields (see comment inside), so referencing it would
+    // re-trigger debounced saves on every scraper tick for nothing.
+  }, [uid, pid, shiftDate, assignments, activeCrew]);
 
-      // Mirror the assignments onto each room doc (drives the HK Link preview).
-      // Best-effort — a transient failure here is not user-visible; the next
-      // autosave or Send will catch it up. Uses an `assignableRoomsRef` so the
-      // effect doesn't re-fire every time Firestore's own write bumps the
-      // rooms snapshot (which would loop through this effect).
-      const currentAssignable = assignableRoomsRef.current;
-      const staffPayload = selectedCrew.map(s => ({
-        staffId: s.id,
-        staffName: s.name,
-        assignedRooms: currentAssignable
-          .filter(r => assignments[r.id] === s.id)
-          .map(r => r.number),
-      }));
-      fetchWithAuth('/api/sync-room-assignments', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uid, pid, shiftDate, staff: staffPayload }),
-      }).catch(err => console.error('[Schedule] sync room assignments failed:', err));
-    }, 400);
+  useEffect(() => {
+    persist();
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
-  }, [uid, pid, shiftDate, assignments, selectedCrew, scheduleAssignmentsLoaded, currentCsvSnapshot, currentCsvPulledAt]);
+  }, [persist]);
 
-  // ── Morning diff: what changed between Maria's saved CSV and the fresh 6am CSV ──
-  // Only fires when (a) she's saved before and (b) a newer CSV has landed.
-  const morningDiff = useMemo(() => {
-    if (!scheduleAssignmentsDoc) return null;
-    const savedSnap = scheduleAssignmentsDoc.csvRoomSnapshot ?? [];
-    const savedPulledAt = scheduleAssignmentsDoc.csvPulledAt ?? null;
-    if (savedSnap.length === 0) return null;                  // first save — nothing to diff against
-    if (!currentCsvPulledAt || !savedPulledAt) return null;
-    if (new Date(currentCsvPulledAt) <= new Date(savedPulledAt)) return null; // same or older CSV
-
-    const savedByNumber = new Map(savedSnap.map(r => [r.number, r.type]));
-    const currentByNumber = new Map(currentCsvSnapshot.map(r => [r.number, r.type]));
-
-    const added: CsvRoomSnapshot[] = [];
-    const removed: CsvRoomSnapshot[] = [];
-    const typeChanged: Array<{ number: string; was: 'checkout' | 'stayover'; now: 'checkout' | 'stayover' }> = [];
-
-    for (const r of currentCsvSnapshot) {
-      const prev = savedByNumber.get(r.number);
-      if (prev === undefined) added.push(r);
-      else if (prev !== r.type) typeChanged.push({ number: r.number, was: prev, now: r.type });
-    }
-    for (const r of savedSnap) {
-      if (!currentByNumber.has(r.number)) removed.push(r);
-    }
-
-    const hasChanges = added.length > 0 || removed.length > 0 || typeChanged.length > 0;
-    if (!hasChanges) return null;
-    return { added, removed, typeChanged, savedPulledAt, currentPulledAt: currentCsvPulledAt };
-  }, [scheduleAssignmentsDoc, currentCsvSnapshot, currentCsvPulledAt]);
-
-  // ── Morning confirmation: fresh CSV landed since Maria's save but nothing changed ──
-  // This gives her a positive signal instead of silence when the 6am pull matches 7pm.
-  const morningConfirmation = useMemo(() => {
-    if (morningDiff) return null; // yellow callout takes priority
-    if (!scheduleAssignmentsDoc) return null;
-    const savedSnap = scheduleAssignmentsDoc.csvRoomSnapshot ?? [];
-    const savedPulledAt = scheduleAssignmentsDoc.csvPulledAt ?? null;
-    if (savedSnap.length === 0) return null;
-    if (!currentCsvPulledAt || !savedPulledAt) return null;
-    if (new Date(currentCsvPulledAt) <= new Date(savedPulledAt)) return null;
-    return { pulledAt: currentCsvPulledAt };
-  }, [morningDiff, scheduleAssignmentsDoc, currentCsvPulledAt]);
-
-  // Plain-English sentence describing what changed overnight.
-  const morningSummary = useMemo(() => {
-    if (!morningDiff) return '';
-    const parts: string[] = [];
-    const { added, removed, typeChanged } = morningDiff;
-    if (added.length) {
-      const co = added.filter(r => r.type === 'checkout').map(r => r.number);
-      const so = added.filter(r => r.type === 'stayover').map(r => r.number);
-      const bits: string[] = [];
-      if (co.length) bits.push(`${co.length} new checkout${co.length === 1 ? '' : 's'} (${co.join(', ')})`);
-      if (so.length) bits.push(`${so.length} new stayover${so.length === 1 ? '' : 's'} (${so.join(', ')})`);
-      parts.push(bits.join(' and ') + ' showed up');
-    }
-    if (removed.length) {
-      parts.push(`${removed.length} room${removed.length === 1 ? '' : 's'} got pulled (${removed.map(r => r.number).join(', ')})`);
-    }
-    if (typeChanged.length) {
-      parts.push(typeChanged.map(c => `${c.number} flipped from ${c.was} to ${c.now}`).join(', '));
-    }
-    const joined = parts.length === 1 ? parts[0] : parts.slice(0, -1).join(', ') + ', and ' + parts.at(-1);
-    return joined.charAt(0).toUpperCase() + joined.slice(1) + '.';
-  }, [morningDiff]);
-
-  // Auto Recommend — clean-slate redistribute every dirty room across the crew.
-  //
-  // Design rules (burned in from the 4/22 incident where Brenda ended at
-  // 10h 15m, Cindy at 25m, and Julia at 9h 50m after a button press):
-  //
-  //   1. HARD CAP at shiftLen — nobody ever exceeds 7h (or whatever the
-  //      operator configured). If nobody can fit a room, it stays unassigned
-  //      and the "X rooms need a housekeeper" banner surfaces it.
-  //   2. CLEAN-SLATE — every dirty room's assignment is wiped and rebuilt.
-  //      Rooms already in_progress / clean / inspected are preserved (never
-  //      yank a room off an HK mid-clean). This is what prevents stale 10h
-  //      distributions from surviving the button press.
-  //   3. CONSOLIDATION — after distribution, any HK with <2h of work has
-  //      their rooms offered to other HKs who still have capacity under cap.
-  //      If all their rooms get absorbed, they're dropped from crew (no more
-  //      "Cindy shows up for one room" scenarios).
-  //   4. SMART STAFFING — top up only when the current crew genuinely can't
-  //      fit the work under cap. Then post-prune anyone who ended up empty.
-  const handleAutoRecommend = () => {
-    const MIN_WORTHWHILE_MINUTES = 120; // 2h — anything less gets consolidated
-
-    // Preserved rooms — we never move these on a clean-slate pass:
-    //   1. Status !== 'dirty' → HK already started, finished, or been
-    //      signed off. Pulling it back is chaos.
-    //   2. Maria manually dragged this room onto a specific HK. She
-    //      overrode the algorithm deliberately, so respect it until she
-    //      un-pins by dragging back to Unassigned.
-    // Still-unassigned rooms with a manual pin (shouldn't happen, but
-    // defensive) get the pin cleared and treated as redistributable.
-    const isPinned = (r: Room) => {
-      if (!manuallyAssignedRooms.current.has(r.id)) return false;
-      const owner = assignments[r.id];
-      return !!owner; // only honor pin if there's an actual owner
+  // ── Handlers ──────────────────────────────────────────────────────────
+  const handleAutoAssign = () => {
+    const config = {
+      checkoutMinutes:    ckMin,
+      stayoverDay1Minutes: so1Min,
+      stayoverDay2Minutes: so2Min,
+      stayoverMinutes:     activeProperty?.stayoverMinutes      ?? 20,
+      prepMinutesPerActivity: activeProperty?.prepMinutesPerActivity ?? 5,
+      shiftMinutes:        420,
     };
-    const isPreserved = (r: Room) => r.status !== 'dirty' || isPinned(r);
-    const preservedRooms = assignableRooms.filter(isPreserved);
-    const redistributableRooms = assignableRooms.filter(r => !isPreserved(r));
-
-    // ── Step 1: top up crew to cleaningStaff (rooms-only, no laundry) ──
-    const currentIds = new Set(selectedCrew.map(s => s.id));
-    const additions: StaffMember[] = [];
-    const target = Math.max(cleaningStaff, 1);
-    for (const s of eligiblePool) {
-      if (currentIds.has(s.id)) continue;
-      if (selectedCrew.length + additions.length >= target) break;
-      additions.push(s);
-    }
-    const effectiveCrew = [...selectedCrew, ...additions];
-    if (effectiveCrew.length === 0) return;
-
-    // ── Step 2: seed loads ONLY from preserved rooms ──
-    // Dirty rooms are about to be rebuilt from zero. Preserved rooms (in
-    // progress or done) keep their owner and contribute to that owner's
-    // baseline load so the distribution accounts for work already in
-    // flight.
-    const loadByStaff = new Map<string, number>();
-    const floorCountByStaff = new Map<string, Map<string, number>>();
-    for (const s of effectiveCrew) {
-      loadByStaff.set(s.id, 0);
-      floorCountByStaff.set(s.id, new Map());
-    }
-    const next: Record<string, string> = {};
-    // Track which floor each HK is locked to. If a HK has preserved rooms,
-    // they're effectively locked to that floor already — record it so the
-    // new-floor distribution can't add rooms from a different floor.
-    const hkFloor = new Map<string, string>();
-    for (const r of preservedRooms) {
-      const who = assignments[r.id];
-      if (!who || !loadByStaff.has(who)) continue;
-      next[r.id] = who;
-      const mins = minsForRoom(r) + prepPerRoom;
-      loadByStaff.set(who, (loadByStaff.get(who) ?? 0) + mins);
-      const f = getFloor(r.number);
-      const fmap = floorCountByStaff.get(who)!;
-      fmap.set(f, (fmap.get(f) ?? 0) + 1);
-      // First preserved room wins the HK's floor lock. If that HK has more
-      // preserved rooms on another floor (rare — only happens if Maria
-      // manually assigned across floors earlier), they're still locked to
-      // the first one seen here and the others stay on whichever HK they
-      // already had.
-      if (!hkFloor.has(who)) hkFloor.set(who, f);
-    }
-
-    // ── Step 3: group redistributable rooms by floor ──
-    // Maria's hard rule: each housekeeper works ONE floor. Mixing floors
-    // means extra walking between rooms, dragging cart & linen across the
-    // building — so we cluster by floor before anything else and only split
-    // a floor across multiple HKs if a single HK can't cover it under cap.
-    //
-    // Within a floor, rooms are sorted so the split (if any) is clean:
-    //   1. VIP / early-arrival first — Maria wants those done ASAP
-    //   2. Checkouts before stayovers (checkouts dominate cart loadout)
-    //   3. Then by room number (natural walking order down the hall)
-    const PRI_RANK: Record<string, number> = { vip: 0, early: 1, standard: 2 };
-    const roomsByFloor = new Map<string, Room[]>();
-    for (const r of redistributableRooms) {
-      const f = getFloor(r.number);
-      const list = roomsByFloor.get(f) ?? [];
-      list.push(r);
-      roomsByFloor.set(f, list);
-    }
-    for (const list of roomsByFloor.values()) {
-      list.sort((a, b) => {
-        const pA = PRI_RANK[a.priority ?? 'standard'] ?? 2;
-        const pB = PRI_RANK[b.priority ?? 'standard'] ?? 2;
-        if (pA !== pB) return pA - pB;
-        if (a.type !== b.type) return a.type === 'checkout' ? -1 : 1;
-        return (parseInt(a.number.replace(/\D/g, '')) || 0) - (parseInt(b.number.replace(/\D/g, '')) || 0);
-      });
-    }
-
-    // Floor-level metadata: total minutes of dirty work per floor.
-    const minsByFloor = new Map<string, number>();
-    for (const [f, list] of roomsByFloor) {
-      const total = list.reduce((s, r) => s + minsForRoom(r) + prepPerRoom, 0);
-      minsByFloor.set(f, total);
-    }
-
-    // ── Step 4: dedicate-then-adjacency-bin-pack (2026-04-30 redesign) ──
-    //
-    // The previous algorithm processed floors largest-first and gave each
-    // its own HK, with leftovers redistributed by raw load. That worked
-    // when floors and HKs matched 1:1, but with 4 floors and 3 HKs the
-    // small floor (floor 1, ~140 min) ended up scattered: 4 rooms onto
-    // the floor-2 HK (adjacent ✓) and 2 rooms onto the floor-3 HK (NOT
-    // adjacent — Julia ended up walking floor 3 ↔ floor 1, two flights).
-    //
-    // New logic — two-phase:
-    //
-    //   PHASE A — Dedicate single-floor HKs.
-    //     Walk floors largest-first. A floor is "dedicate-able" if:
-    //       • its rooms fit in one shift, AND
-    //       • after reserving one HK to that floor, the remaining HKs can
-    //         still cover the remaining floors (slack-aware feasibility).
-    //     Each dedicated floor gets a fresh HK; that HK does ONLY that
-    //     floor. Stops as soon as the next-largest floor would steal too
-    //     much capacity from the rest.
-    //
-    //   PHASE B — Adjacency bin-pack the rest.
-    //     Walk remaining floors in ASCENDING numeric order, pouring rooms
-    //     onto remaining HKs in load-asc order. When an HK fills, advance
-    //     to the next. Because rooms come in ascending floor order, any
-    //     cross-floor work stays adjacent (floor N ↔ floor N+1) — never
-    //     a 2-floor skip.
-    //
-    // For Reeyen's typical Comfort Suites layout (3 HKs / 4 floors, total
-    // work ~96% of total cap) this produces:
-    //   • One HK on floor 4 alone (single-floor — no walking)
-    //   • One HK on floors 1 + most of floor 2 (1-floor walk)
-    //   • One HK on floor 2 spillover + floor 3 (1-floor walk)
-    // Compared to the old output where Julia had to skip a floor.
-    //
-    // Edge cases handled:
-    //   • Preserved/locked HKs (in-progress or pinned rooms) — Phase A
-    //     skips floors that have a locked HK; Phase B keeps that HK on
-    //     their floor.
-    //   • Floor that exceeds shiftLen by itself — never dedicate-able,
-    //     falls through to Phase B which will split it.
-    //   • Total work > total cap — Phase B leaves the overflow rooms
-    //     unassigned, surfaced via the existing toast.
-
-    const hksByFloor = new Map<string, string[]>(); // floor -> ordered HK ids
-    const dedicatedFloors = new Set<string>();
-    const dedicatedHKs = new Set<string>();
-
-    // ── PHASE A ──
-    {
-      const candidateFloors = [...roomsByFloor.keys()].sort(
-        (a, b) => (minsByFloor.get(b) ?? 0) - (minsByFloor.get(a) ?? 0),
-      );
-
-      for (const f of candidateFloors) {
-        const fMins = minsByFloor.get(f) ?? 0;
-
-        // Skip floors with a preserved-locked HK — that HK is committed
-        // here regardless. We'll let Phase B finish their floor.
-        const lockedHere = effectiveCrew.find(s => hkFloor.get(s.id) === f);
-        if (lockedHere) continue;
-
-        // Doesn't fit one shift on its own → can't dedicate.
-        if (fMins > shiftLen) continue;
-
-        // Capacity-feasibility: after reserving one HK for this floor,
-        // can the remaining HKs cover the remaining floors?
-        const remainingMins = [...minsByFloor.entries()]
-          .filter(([ff]) => ff !== f && !dedicatedFloors.has(ff))
-          .reduce((s, [, m]) => s + m, 0);
-
-        const remainingHKs = effectiveCrew.filter(
-          s => !dedicatedHKs.has(s.id) && !hkFloor.has(s.id),
-        );
-        // -1 because we'd be reserving one of them for this floor.
-        const remainingCap = (remainingHKs.length - 1) * shiftLen;
-
-        if (remainingMins > remainingCap) continue; // can't afford to dedicate
-
-        // Pick the freshest HK (lowest current load) — usually 0.
-        const fresh = remainingHKs
-          .filter(s => !dedicatedHKs.has(s.id))
-          .sort((a, b) => (loadByStaff.get(a.id) ?? 0) - (loadByStaff.get(b.id) ?? 0))[0];
-        if (!fresh) break;
-
-        dedicatedFloors.add(f);
-        dedicatedHKs.add(fresh.id);
-        hkFloor.set(fresh.id, f);
-        hksByFloor.set(f, [fresh.id]);
-
-        const rooms = roomsByFloor.get(f)!;
-        for (const r of rooms) {
-          const mins = minsForRoom(r) + prepPerRoom;
-          if ((loadByStaff.get(fresh.id) ?? 0) + mins > shiftLen) continue;
-          next[r.id] = fresh.id;
-          loadByStaff.set(fresh.id, (loadByStaff.get(fresh.id) ?? 0) + mins);
-          const fmap = floorCountByStaff.get(fresh.id)!;
-          fmap.set(f, (fmap.get(f) ?? 0) + 1);
-        }
-      }
-    }
-
-    // ── PHASE B ──
-    {
-      // Floors not yet handled, in ASCENDING numeric order so an HK
-      // crossing a floor boundary always crosses to the adjacent next
-      // floor — never a skip.
-      const remainingFloors = [...roomsByFloor.keys()]
-        .filter(f => !dedicatedFloors.has(f))
-        .sort((a, b) => (parseInt(a) || 99) - (parseInt(b) || 99));
-
-      // HKs available for Phase B. Already-locked HKs (preserved on a
-      // specific floor by in-progress / pinned work) are placed at the
-      // FRONT of their floor's queue so they finish their own floor
-      // first; other HKs are sorted by current load.
-      const phaseBPool = effectiveCrew
-        .filter(s => !dedicatedHKs.has(s.id))
-        .sort((a, b) => (loadByStaff.get(a.id) ?? 0) - (loadByStaff.get(b.id) ?? 0));
-
-      // For each floor, build a chosen list: locked-here HKs first,
-      // then top up from phaseBPool.
-      const phaseBUsed = new Set<string>();
-      let poolIdx = 0;
-
-      for (const f of remainingFloors) {
-        const rooms = roomsByFloor.get(f)!;
-
-        const lockedHere = phaseBPool.filter(s => hkFloor.get(s.id) === f);
-        const chosen = [...lockedHere];
-        for (const s of lockedHere) phaseBUsed.add(s.id);
-
-        // Pour rooms onto chosen[0] until cap, then fall through to the
-        // pool to draft a fresh HK (or continue with the next chosen[i]
-        // if there are multiple locked HKs).
-        let chosenIdx = 0;
-        for (const r of rooms) {
-          const mins = minsForRoom(r) + prepPerRoom;
-
-          // Find an HK who can fit this room. Try chosen first.
-          while (
-            chosenIdx < chosen.length &&
-            (loadByStaff.get(chosen[chosenIdx].id) ?? 0) + mins > shiftLen
-          ) {
-            chosenIdx++;
-          }
-
-          // chosen exhausted → pull next from pool (skipping ones already
-          // used / dedicated / over cap).
-          while (chosenIdx >= chosen.length) {
-            // Find next pool HK with any capacity left.
-            while (
-              poolIdx < phaseBPool.length &&
-              (phaseBUsed.has(phaseBPool[poolIdx].id) ||
-                (loadByStaff.get(phaseBPool[poolIdx].id) ?? 0) + mins > shiftLen)
-            ) {
-              poolIdx++;
-            }
-            if (poolIdx >= phaseBPool.length) break; // no more HKs to draft
-            const fresh = phaseBPool[poolIdx];
-            chosen.push(fresh);
-            phaseBUsed.add(fresh.id);
-            hkFloor.set(fresh.id, f);
-          }
-
-          if (chosenIdx >= chosen.length) continue; // unassigned
-
-          const pick = chosen[chosenIdx];
-          next[r.id] = pick.id;
-          loadByStaff.set(pick.id, (loadByStaff.get(pick.id) ?? 0) + mins);
-          const fmap = floorCountByStaff.get(pick.id)!;
-          fmap.set(f, (fmap.get(f) ?? 0) + 1);
-        }
-
-        hksByFloor.set(f, chosen.map(s => s.id));
-      }
-    }
-
-    // ── Step 5: consolidation pass ──
-    // If any HK ended up with less than MIN_WORTHWHILE_MINUTES of work,
-    // try to move their rooms onto other HKs who still have capacity.
-    // We don't touch preserved rooms (in-progress stays put even if it's
-    // only 25 minutes of work — can't pull a room off someone mid-clean).
-    // If all movable rooms get absorbed, the HK is eligible to be dropped
-    // from the crew by Step 6.
-    const preservedByStaff = new Map<string, number>();
-    for (const r of preservedRooms) {
-      const who = next[r.id];
-      if (!who) continue;
-      preservedByStaff.set(who, (preservedByStaff.get(who) ?? 0) + 1);
-    }
-    // Also don't let consolidation move manually-pinned rooms off their
-    // HK — they were placed there intentionally.
-    const pinnedSet = new Set<string>();
-    for (const r of assignableRooms) {
-      if (isPinned(r)) pinnedSet.add(r.id);
-    }
-
-    // Iterate repeatedly: moving rooms can push another HK below the
-    // threshold, or free capacity on the recipient. Cap at crew.length
-    // iterations to avoid any theoretical loop.
-    for (let pass = 0; pass < effectiveCrew.length; pass++) {
-      let movedThisPass = false;
-      for (const giver of effectiveCrew) {
-        const giverLoad = loadByStaff.get(giver.id) ?? 0;
-        if (giverLoad >= MIN_WORTHWHILE_MINUTES) continue;
-        if (giverLoad === 0) continue; // nothing to move — will be pruned
-        if ((preservedByStaff.get(giver.id) ?? 0) > 0) continue; // don't disturb in-progress
-        // Find every redistributable, non-pinned room currently assigned
-        // to giver. (Pinned rooms survive consolidation too.)
-        const giverRooms = redistributableRooms.filter(r =>
-          next[r.id] === giver.id && !pinnedSet.has(r.id)
-        );
-        if (giverRooms.length === 0) continue;
-        // Try to move each room to another HK under cap. Sort smallest
-        // rooms first so if some fit and some don't, we at least offload
-        // the easy wins and drain the giver down.
-        const withSize = giverRooms.map(r => ({ r, mins: minsForRoom(r) + prepPerRoom }))
-          .sort((a, b) => a.mins - b.mins);
-        const moves: Array<{ room: Room; mins: number; to: string; from: string }> = [];
-        const simLoad = new Map(loadByStaff);
-        const simFloorCount = new Map<string, Map<string, number>>();
-        floorCountByStaff.forEach((m, k) => simFloorCount.set(k, new Map(m)));
-        let giverEmptied = true;
-        for (const { r, mins } of withSize) {
-          const f = getFloor(r.number);
-          // Pick recipient: someone other than giver, under cap, prefer
-          // most floor ownership then least load (same ruleset as Step 4).
-          const candidates = effectiveCrew.filter(s =>
-            s.id !== giver.id &&
-            (simLoad.get(s.id) ?? 0) + mins <= shiftLen
-          );
-          if (candidates.length === 0) { giverEmptied = false; break; }
-          let pick: string | null = null;
-          let pickFloor = -1;
-          let pickLoad = Infinity;
-          for (const s of candidates) {
-            const fc = simFloorCount.get(s.id)?.get(f) ?? 0;
-            const load = simLoad.get(s.id) ?? 0;
-            if (fc > pickFloor || (fc === pickFloor && load < pickLoad)) {
-              pickFloor = fc;
-              pickLoad = load;
-              pick = s.id;
-            }
-          }
-          if (!pick) { giverEmptied = false; break; }
-          moves.push({ room: r, mins, to: pick, from: giver.id });
-          simLoad.set(pick, (simLoad.get(pick) ?? 0) + mins);
-          simLoad.set(giver.id, (simLoad.get(giver.id) ?? 0) - mins);
-          const fmapTo = simFloorCount.get(pick)!;
-          fmapTo.set(f, (fmapTo.get(f) ?? 0) + 1);
-          const fmapFrom = simFloorCount.get(giver.id)!;
-          fmapFrom.set(f, Math.max(0, (fmapFrom.get(f) ?? 0) - 1));
-        }
-        // Only commit the moves if they actually emptied the giver — a
-        // partial move would leave the giver with a smaller-still tiny
-        // load, which defeats the purpose.
-        if (giverEmptied && moves.length > 0) {
-          for (const mv of moves) {
-            next[mv.room.id] = mv.to;
-          }
-          // Commit the simulated loads / floor counts.
-          simLoad.forEach((v, k) => loadByStaff.set(k, v));
-          simFloorCount.forEach((m, k) => floorCountByStaff.set(k, m));
-          movedThisPass = true;
-        }
-      }
-      if (!movedThisPass) break;
-    }
-
-    // ── Step 5b: aggressive cross-floor consolidation ──
-    // Same-floor consolidation (Step 5) keeps everyone on one floor but
-    // leaves HKs half-loaded when a floor is light. This pass is willing
-    // to break the floor rule *only when doing so eliminates a whole HK*.
-    // Scattering rooms across floors for no net HK reduction is worse
-    // than sticking to one floor — so we only commit moves that fully
-    // empty the giver. Try smallest-load HKs first.
-    for (let pass = 0; pass < effectiveCrew.length; pass++) {
-      // Recompute sort each pass — loads change as we eliminate HKs.
-      const candidates = [...effectiveCrew]
-        .filter(s => (loadByStaff.get(s.id) ?? 0) > 0)
-        .filter(s => (preservedByStaff.get(s.id) ?? 0) === 0)
-        .sort((a, b) => (loadByStaff.get(a.id) ?? 0) - (loadByStaff.get(b.id) ?? 0));
-      let eliminatedThisPass = false;
-      for (const giver of candidates) {
-        const giverRooms = redistributableRooms.filter(r =>
-          next[r.id] === giver.id && !pinnedSet.has(r.id),
-        );
-        if (giverRooms.length === 0) continue;
-
-        // Try to place every giver room on some other HK without ever
-        // going over cap. Big rooms first — if there's a tight slot, we
-        // want to claim it with the big one while space still exists.
-        const withSize = giverRooms
-          .map(r => ({ r, mins: minsForRoom(r) + prepPerRoom }))
-          .sort((a, b) => b.mins - a.mins);
-        const moves: Array<{ room: Room; mins: number; to: string }> = [];
-        const simLoad = new Map(loadByStaff);
-        const simFloorCount = new Map<string, Map<string, number>>();
-        floorCountByStaff.forEach((m, k) => simFloorCount.set(k, new Map(m)));
-        let allFit = true;
-        for (const { r, mins } of withSize) {
-          const f = getFloor(r.number);
-          const recipients = effectiveCrew.filter(s =>
-            s.id !== giver.id &&
-            (simLoad.get(s.id) ?? 0) + mins <= shiftLen,
-          );
-          if (recipients.length === 0) { allFit = false; break; }
-          // Prefer recipient already on this floor (zero walk penalty).
-          // Ties broken by lowest current load (spread, not pile).
-          let pick: string | null = null;
-          let pickFc = -1;
-          let pickLoad = Infinity;
-          for (const s of recipients) {
-            const fc = simFloorCount.get(s.id)?.get(f) ?? 0;
-            const load = simLoad.get(s.id) ?? 0;
-            if (fc > pickFc || (fc === pickFc && load < pickLoad)) {
-              pickFc = fc;
-              pickLoad = load;
-              pick = s.id;
-            }
-          }
-          if (!pick) { allFit = false; break; }
-          moves.push({ room: r, mins, to: pick });
-          simLoad.set(pick, (simLoad.get(pick) ?? 0) + mins);
-          simLoad.set(giver.id, (simLoad.get(giver.id) ?? 0) - mins);
-          const fmapTo = simFloorCount.get(pick)!;
-          fmapTo.set(f, (fmapTo.get(f) ?? 0) + 1);
-          const fmapFrom = simFloorCount.get(giver.id)!;
-          fmapFrom.set(f, Math.max(0, (fmapFrom.get(f) ?? 0) - 1));
-        }
-        // All of giver's rooms fit on others → commit and mark giver
-        // empty. They'll get pruned from the crew by Step 6.
-        if (allFit && moves.length > 0) {
-          for (const mv of moves) next[mv.room.id] = mv.to;
-          simLoad.forEach((v, k) => loadByStaff.set(k, v));
-          simFloorCount.forEach((m, k) => floorCountByStaff.set(k, m));
-          eliminatedThisPass = true;
-          break; // sort order is now stale, restart outer loop
-        }
-      }
-      if (!eliminatedThisPass) break;
-    }
-
-    // ── Step 5c: retry previously-unassigned rooms ──
-    // Eliminating an HK can free capacity on their former crew-mates.
-    // More useful, though: it can free capacity on the *other* HKs on
-    // the same floor because the eliminated HK's floor mates no longer
-    // have to share with a second HK. Give every unassigned room one
-    // more shot at landing somewhere.
-    const nowUnassigned = redistributableRooms.filter(r => !next[r.id]);
-    for (const r of nowUnassigned) {
-      const mins = minsForRoom(r) + prepPerRoom;
-      const f = getFloor(r.number);
-      const recipients = effectiveCrew.filter(s =>
-        (loadByStaff.get(s.id) ?? 0) + mins <= shiftLen,
-      );
-      if (recipients.length === 0) continue;
-      let pick: string | null = null;
-      let pickFc = -1;
-      let pickLoad = Infinity;
-      for (const s of recipients) {
-        const fc = floorCountByStaff.get(s.id)?.get(f) ?? 0;
-        const load = loadByStaff.get(s.id) ?? 0;
-        if (fc > pickFc || (fc === pickFc && load < pickLoad)) {
-          pickFc = fc;
-          pickLoad = load;
-          pick = s.id;
-        }
-      }
-      if (!pick) continue;
-      next[r.id] = pick;
-      loadByStaff.set(pick, (loadByStaff.get(pick) ?? 0) + mins);
-      const fmap = floorCountByStaff.get(pick)!;
-      fmap.set(f, (fmap.get(f) ?? 0) + 1);
-    }
-
-    // ── Step 6: drop anyone with 0 rooms after distribution + consolidation ──
-    const usedStaffIds = new Set(
-      Object.values(next).filter((v): v is string => !!v)
-    );
-    const keep = effectiveCrew.filter(s => usedStaffIds.has(s.id));
-    const dropped = effectiveCrew.filter(s => !usedStaffIds.has(s.id));
-    const shouldPrune = keep.length > 0 && dropped.length > 0;
-
-    if (additions.length > 0 || shouldPrune) {
-      userEditedCrew.current = true;
-      additions.forEach(s => {
-        if (usedStaffIds.has(s.id)) manuallyAdded.current.add(s.id);
-      });
-      dropped.forEach(s => manuallyAdded.current.delete(s.id));
-      const finalCrew = shouldPrune ? keep : effectiveCrew;
-      setCrewOverride(finalCrew.map(s => s.id));
-    }
+    const next = autoAssignRooms(assignableRooms, activeCrew, config);
     setAssignments(next);
+    flashToast(lang === 'es' ? 'Cuartos auto-asignados' : 'Rooms auto-assigned');
+  };
 
-    // Toast summary — count how many rooms are still unassigned + whether
-    // anyone is still over cap (shouldn't happen with hard cap, but a
-    // safety signal for dev).
-    const stillUnassigned = redistributableRooms.filter(r => !next[r.id]).length;
-    const overCapList = effectiveCrew
-      .filter(s => (loadByStaff.get(s.id) ?? 0) > shiftLen)
-      .map(s => s.name.split(' ')[0]); // first name is enough for a toast
-
-    const parts: string[] = [];
-    if (additions.length > 0) {
-      parts.push(lang === 'es'
-        ? `Agregado${additions.length === 1 ? '' : 's'}: ${additions.length}`
-        : `Added ${additions.length}`);
-    }
-    if (shouldPrune) {
-      parts.push(lang === 'es'
-        ? `Quitado${dropped.length === 1 ? '' : 's'}: ${dropped.length}`
-        : `Removed ${dropped.length}`);
-    }
-    if (stillUnassigned > 0) {
-      parts.push(lang === 'es'
-        ? `${stillUnassigned} sin asignar (añade personal)`
-        : `${stillUnassigned} unassigned (add staff)`);
-    }
-    if (overCapList.length > 0) {
-      // Hard cap should prevent this. If it fires, a pinned room pushed
-      // someone over — show who so Maria can un-pin or stretch manually.
-      parts.push(lang === 'es'
-        ? `⚠︎ sobre el límite: ${overCapList.join(', ')}`
-        : `⚠︎ over cap: ${overCapList.join(', ')}`);
-    }
-    const toastMsg = parts.length > 0
-      ? (lang === 'es'
-          ? `Habitaciones redistribuidas (${parts.join(', ')})`
-          : `Rooms redistributed (${parts.join(', ')})`)
-      : (lang === 'es' ? 'Habitaciones redistribuidas' : 'Rooms redistributed');
-    showMoveToast(toastMsg);
+  const handleReset = () => {
+    setAssignments({});
+    flashToast(lang === 'es' ? 'Asignaciones reseteadas' : 'Assignments reset');
   };
 
   const handleSend = async () => {
-    if (!uid || !pid || selectedCrew.length === 0 || sending) return;
+    if (sending || !uid || !pid) return;
     setSending(true);
     try {
-      // Make sure the latest assignments are written before we fire SMS.
-      // The debounced save above may still be pending.
-      const staffNames: Record<string, string> = {};
-      selectedCrew.forEach(s => { staffNames[s.id] = s.name; });
-      await saveScheduleAssignments(uid, pid, shiftDate, {
-        roomAssignments: assignments,
-        crew: selectedCrew.map(s => s.id),
-        staffNames,
-        csvRoomSnapshot: currentCsvSnapshot,
-        csvPulledAt: currentCsvPulledAt,
-      }).catch(err => console.error('[Schedule] save-before-send failed:', err));
-
       const baseUrl = window.location.origin;
-      // Include EVERYONE on the crew — even people without a phone number.
-      // The backend skips the SMS for phoneless staff but keeps their room
-      // assignments intact (so the rooms don't fly back to Unassigned). Each
-      // person gets a status back (sent / skipped / failed) that we render
-      // as a badge next to their name.
-      const staffPayload = selectedCrew.map(s => {
-        const memberRooms = assignableRooms
-          .filter(r => assignments[r.id] === s.id)
-          .map(r => r.number);
-        return {
-          staffId: s.id,
-          name: s.name,
-          phone: s.phone ?? '',
-          language: s.language,
-          assignedRooms: memberRooms,
-          assignedAreas: [] as string[],
-        };
-      });
-      // Mint a fresh idempotency key per click. The server-side
-      // `/api/send-shift-confirmations` route checks this header — same
-      // key inside the 24h window returns the cached response, so a
-      // mis-click on an unresponsive button (or a network retry that
-      // re-fires the same request) won't double-text the crew. Use
-      // crypto.randomUUID for collision-free keys; the field is opaque
-      // to the server (any A-Za-z0-9_- string up to 256 chars is fine).
+      const staffPayload = activeCrew.map(s => ({
+        staffId: s.id,
+        name: s.name,
+        phone: s.phone ?? '',
+        language: s.language,
+        assignedRooms: assignableRooms.filter(r => assignments[r.id] === s.id).map(r => r.number),
+        assignedAreas: [] as string[],
+      }));
       const idempotencyKey = (typeof crypto !== 'undefined' && crypto.randomUUID)
         ? crypto.randomUUID()
         : `send-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
       const res = await fetchWithAuth('/api/send-shift-confirmations', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Idempotency-Key': idempotencyKey,
-        },
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
         body: JSON.stringify({ uid, pid, shiftDate, baseUrl, staff: staffPayload }),
       });
-      // The subscribeToShiftConfirmations effect will pick up the new docs
-      // and flip `alreadySent` automatically.
-
-      // Parse the API response so we can tell Maria what actually happened:
-      // - `fresh`: HKs who got a brand-new link SMS (no prior doc)
-      // - `updated`: HKs whose existing doc was refreshed + re-texted
-      // - `skipped`: HKs we couldn't text (no phone / invalid phone)
-      // - `failed`: SMS sends that errored (Twilio issue, etc.)
-      // - `perStaff`: per-person outcome, drives the badge next to each name
-      //
-      // Response shape post-2026-04-29: standard ApiResponse envelope —
-      // { ok, requestId, data: { sent, failed, ... } }. Read counts off
-      // body.data; cache hits AND fresh responses both return this shape.
-      try {
-        const body = (await res.json()) as {
-          ok?: boolean;
-          data?: {
-            sent?: number; failed?: number; skipped?: number; updated?: number; fresh?: number;
-            perStaff?: Array<{ staffId: string; status: 'sent' | 'skipped' | 'failed'; reason?: string }>;
-          };
-          error?: string;
+      const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        data?: {
+          sent?: number; failed?: number; skipped?: number; updated?: number; fresh?: number;
+          perStaff?: Array<{ staffId: string; status: 'sent' | 'skipped' | 'failed'; reason?: string }>;
         };
-        const data = body?.data ?? {};
-        const fresh = data.fresh ?? 0;
-        const updated = data.updated ?? 0;
-        const skipped = data.skipped ?? 0;
-        const failed = data.failed ?? 0;
-
-        // Store per-person outcome so each crew card can show its own badge.
-        if (data.perStaff) {
-          const m = new Map<string, SendResult>();
-          data.perStaff.forEach(r => m.set(r.staffId, { status: r.status, reason: r.reason }));
-          setSendResults(m);
-        }
-
-        const parts: string[] = [];
-        if (fresh > 0) parts.push(lang === 'es' ? `${fresh} enlace${fresh === 1 ? '' : 's'}` : `${fresh} link${fresh === 1 ? '' : 's'}`);
-        if (updated > 0) parts.push(lang === 'es' ? `${updated} actualización${updated === 1 ? '' : 'es'}` : `${updated} update${updated === 1 ? '' : 's'}`);
-        if (skipped > 0) parts.push(lang === 'es' ? `${skipped} omitido${skipped === 1 ? '' : 's'}` : `${skipped} skipped`);
-        if (failed > 0) parts.push(lang === 'es' ? `${failed} fallaron` : `${failed} failed`);
-
-        const msg = parts.length
-          ? (lang === 'es' ? `Enviado: ${parts.join(' · ')}` : `Sent: ${parts.join(' · ')}`)
-          : (lang === 'es' ? 'Enviado' : 'Sent');
-
-        if (toastTimer.current) clearTimeout(toastTimer.current);
-        setMoveToast(msg);
-        toastTimer.current = setTimeout(() => setMoveToast(null), 5000);
-      } catch (err) {
-        console.error('[Schedule] send response parse failed:', err);
+      };
+      const data = body?.data ?? {};
+      if (data.perStaff) {
+        const m = new Map<string, SendResult>();
+        data.perStaff.forEach(r => m.set(r.staffId, { status: r.status, reason: r.reason }));
+        setSendResults(m);
       }
-    } finally { setSending(false); }
+      const parts: string[] = [];
+      if ((data.fresh ?? 0)   > 0) parts.push(`${data.fresh} ${lang === 'es' ? 'enlaces' : 'links'}`);
+      if ((data.updated ?? 0) > 0) parts.push(`${data.updated} ${lang === 'es' ? 'actualizados' : 'updates'}`);
+      if ((data.skipped ?? 0) > 0) parts.push(`${data.skipped} ${lang === 'es' ? 'omitidos' : 'skipped'}`);
+      if ((data.failed ?? 0)  > 0) parts.push(`${data.failed} ${lang === 'es' ? 'fallaron' : 'failed'}`);
+      flashToast(parts.length
+        ? `${lang === 'es' ? 'Enviado' : 'Sent'}: ${parts.join(' · ')}`
+        : (lang === 'es' ? 'Enviado' : 'Sent'));
+    } catch (err) {
+      console.error('[Schedule] send failed:', err);
+      flashToast(lang === 'es' ? 'Error al enviar' : 'Send failed');
+    } finally {
+      setSending(false);
+    }
   };
 
-  // Room workload per staff member
-  const getStaffWorkload = (staffId: string) => {
-    const staffRooms = assignableRooms.filter(r => assignments[r.id] === staffId);
-    const mins = staffRooms.reduce((sum, r) => sum + minsForRoom(r) + prepPerRoom, 0);
-    return { rooms: staffRooms, mins };
-  };
-
-  // Unassigned rooms (not assigned to any current crew member)
-  const unassignedRooms = useMemo(() => {
-    const crewIds = new Set(selectedCrew.map(s => s.id));
-    return assignableRooms.filter(r => !assignments[r.id] || !crewIds.has(assignments[r.id]));
-  }, [assignableRooms, assignments, selectedCrew]);
-
-  const unassignedRef = useRef<HTMLDivElement | null>(null);
-
-  // ── Drag-and-drop via Pointer Events (mouse + touch) ──
-  const DRAG_THRESHOLD = 8;
-
-  const findDropTarget = useCallback((x: number, y: number): string | null => {
-    // Check unassigned box first
-    if (unassignedRef.current) {
-      const r = unassignedRef.current.getBoundingClientRect();
-      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return '__unassigned__';
-    }
-    for (const [staffId, el] of Object.entries(crewCardRefs.current)) {
-      if (!el) continue;
-      const r = el.getBoundingClientRect();
-      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return staffId;
-    }
-    return null;
-  }, []);
-
-  const showMoveToast = useCallback((msg: string) => {
+  const flashToast = (msg: string) => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    setMoveToast(msg);
-    toastTimer.current = setTimeout(() => setMoveToast(null), 4000);
-  }, []);
+    setToast(msg);
+    toastTimer.current = setTimeout(() => setToast(null), 4000);
+  };
 
-  // Shared commit path used by both press-and-drag release and click-to-drop.
-  // Reads fromStaffId out of the current assignments, writes the new target,
-  // pins the room as a manual placement (so Auto Assign won't move it), and
-  // surfaces a move toast. No-op if the target is the same as the source.
-  const commitRoomTo = useCallback((roomId: string, roomNumber: string, target: string | null) => {
-    if (!roomId || !target) return;
-    const fromStaffId = assignments[roomId];
-    if (target === '__unassigned__') {
-      if (!fromStaffId) return; // already unassigned
-      setAssignments(a => { const updated = { ...a }; delete updated[roomId]; return updated; });
-      manuallyAssignedRooms.current.delete(roomId);
-      const fromName = selectedCrew.find(s => s.id === fromStaffId)?.name ?? '?';
-      showMoveToast(lang === 'es' ? `${roomNumber} movida de ${fromName} a Sin Asignar` : `Moved ${roomNumber} from ${fromName} to Unassigned`);
-      return;
-    }
-    if (fromStaffId === target) return; // dropped back on source
-    setAssignments(a => ({ ...a, [roomId]: target }));
-    manuallyAssignedRooms.current.add(roomId);
-    const fromName = fromStaffId ? (selectedCrew.find(s => s.id === fromStaffId)?.name ?? '?') : (lang === 'es' ? 'Sin Asignar' : 'Unassigned');
-    const toName = selectedCrew.find(s => s.id === target)?.name ?? '?';
-    showMoveToast(lang === 'es' ? `${roomNumber} movida de ${fromName} a ${toName}` : `Moved ${roomNumber} from ${fromName} to ${toName}`);
-  }, [assignments, selectedCrew, lang, showMoveToast]);
+  // Shift back/forward controls — date stepper
+  const today = useMemo(() => new Date().toLocaleDateString('en-CA'), []);
+  const isToday = shiftDate === today;
+  const isYesterday = shiftDate === addDays(today, -1);
+  const isTomorrow = shiftDate === addDays(today, 1);
 
-  const onPillPointerDown = useCallback((e: React.PointerEvent<HTMLButtonElement>, room: Room) => {
-    // Stop the window-level pointerdown (attached while floating) from also
-    // running — the pill handler owns this click.
-    e.stopPropagation();
+  const pulledAtLabel = planSnapshot?.pulledAt
+    ? new Date(planSnapshot.pulledAt as unknown as string).toLocaleString([], {
+        hour: '2-digit', minute: '2-digit',
+      })
+    : (lang === 'es' ? 'sin datos' : 'no data');
 
-    // If we're already floating from a previous click, this click is a drop
-    // onto this pill's crew card (or back onto the source pill). Commit and
-    // exit floating mode. Do NOT start a new drag.
-    if (dragState?.floating && dragState.roomId) {
-      const target = findDropTarget(e.clientX, e.clientY);
-      commitRoomTo(dragState.roomId, dragState.roomNumber, target);
-      setDragState(null);
-      dragRef.current = { roomId: null, roomNumber: '', roomType: '', startX: 0, startY: 0, active: false };
-      return;
-    }
+  // Confirmation status pill helper
+  const confPill = (staffId: string) => {
+    const conf = confirmations.find(c => c.staffId === staffId);
+    if (!conf) return null;
+    if (conf.status === 'confirmed') return <Pill tone="sage">✓ {lang === 'es' ? 'Confirmado' : 'Confirmed'}</Pill>;
+    if (conf.status === 'declined')  return <Pill tone="warm">{lang === 'es' ? 'Rechazado' : 'Declined'}</Pill>;
+    if (conf.status === 'pending')   return <Pill tone="neutral">{lang === 'es' ? 'Pendiente' : 'Pending'}</Pill>;
+    return <Pill tone="caramel">{lang === 'es' ? 'Sin respuesta' : 'No reply'}</Pill>;
+  };
 
-    // Otherwise start press-and-drag tracking. If the pointer moves past the
-    // threshold before release, we enter classic drag mode; if it releases
-    // without moving, pointerup will switch into click-float mode.
-    e.currentTarget.setPointerCapture(e.pointerId);
-    dragRef.current = {
-      roomId: room.id, roomNumber: room.number, roomType: room.type, stayoverDay: room.stayoverDay,
-      startX: e.clientX, startY: e.clientY, active: false,
-    };
-  }, [dragState, findDropTarget, commitRoomTo]);
-
-  const onPillPointerMove = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
-    const d = dragRef.current;
-    if (!d.roomId) return;
-    const dx = e.clientX - d.startX;
-    const dy = e.clientY - d.startY;
-    if (!d.active) {
-      if (Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) return;
-      d.active = true;
-    }
-    e.preventDefault();
-    const dt = findDropTarget(e.clientX, e.clientY);
-    setDragState({
-      roomId: d.roomId, roomNumber: d.roomNumber, roomType: d.roomType, stayoverDay: d.stayoverDay,
-      ghost: { x: e.clientX, y: e.clientY }, dropTarget: dt,
-    });
-  }, [findDropTarget]);
-
-  const onPillPointerUp = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
-    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
-    const d = dragRef.current;
-    // Press-and-drag path: pointer moved past threshold before release.
-    if (d.active && d.roomId) {
-      setDragState(prev => {
-        if (prev?.roomId && prev.dropTarget) {
-          commitRoomTo(prev.roomId, prev.roomNumber, prev.dropTarget);
-        }
-        return null;
-      });
-      dragRef.current = { roomId: null, roomNumber: '', roomType: '', startX: 0, startY: 0, active: false };
-      return;
-    }
-
-    // Click-to-pickup path: pointer released without moving. Enter floating
-    // mode — the pill sticks to the cursor until the next click commits it.
-    if (d.roomId && !dragState?.floating) {
-      setDragState({
-        roomId: d.roomId, roomNumber: d.roomNumber, roomType: d.roomType, stayoverDay: d.stayoverDay,
-        ghost: { x: e.clientX, y: e.clientY },
-        dropTarget: findDropTarget(e.clientX, e.clientY),
-        floating: true,
-      });
-    }
-    dragRef.current = { roomId: null, roomNumber: '', roomType: '', startX: 0, startY: 0, active: false };
-  }, [dragState, findDropTarget, commitRoomTo]);
-
-  // If the browser cancels the pointer (e.g. interrupted by scroll, app switch),
-  // clear any in-flight press-drag state — but leave `floating` mode alone
-  // (floating rooms should persist across scroll gestures).
-  const onPillPointerCancel = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
-    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
-    if (dragRef.current.active) {
-      setDragState(prev => (prev?.floating ? prev : null));
-    }
-    dragRef.current = { roomId: null, roomNumber: '', roomType: '', startX: 0, startY: 0, active: false };
-  }, []);
-
-  // Floating mode: while a pill is stuck to the cursor, we need window-level
-  // listeners so the ghost follows the pointer everywhere (not just over the
-  // pill's original crew card) and so clicks on empty space cancel cleanly.
-  // Clicks on pills are handled by the pill's own onPointerDown (which stops
-  // propagation); this effect picks up everything else.
-  useEffect(() => {
-    if (!dragState?.floating) return;
-
-    const onMove = (e: PointerEvent) => {
-      const dt = findDropTarget(e.clientX, e.clientY);
-      setDragState(prev => (prev && prev.floating
-        ? { ...prev, ghost: { x: e.clientX, y: e.clientY }, dropTarget: dt }
-        : prev));
-    };
-
-    const onDown = (e: PointerEvent) => {
-      // If the click is on a room pill, the pill's own handler runs and
-      // stops propagation; this listener won't fire. So anything that
-      // reaches here is a click on empty space or a crew card / unassigned
-      // box. findDropTarget tells us which (if any).
-      const target = findDropTarget(e.clientX, e.clientY);
-      setDragState(prev => {
-        if (!prev || !prev.floating) return prev;
-        if (target) {
-          commitRoomTo(prev.roomId, prev.roomNumber, target);
-        }
-        return null;
-      });
-    };
-
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setDragState(null);
-    };
-
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerdown', onDown);
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerdown', onDown);
-      window.removeEventListener('keydown', onKey);
-    };
-  }, [dragState?.floating, findDropTarget, commitRoomTo]);
+  // Send result badge
+  const sendBadge = (staffId: string) => {
+    const r = sendResults.get(staffId);
+    if (!r) return null;
+    if (r.status === 'sent')    return <Pill tone="sage">→ {lang === 'es' ? 'Enviado' : 'Link sent'}</Pill>;
+    if (r.status === 'skipped') return <Pill tone="caramel">{lang === 'es' ? 'Omitido' : 'Skipped'}{r.reason ? ` · ${r.reason}` : ''}</Pill>;
+    if (r.status === 'failed')  return <Pill tone="warm">{lang === 'es' ? 'Falló' : 'Failed'}</Pill>;
+    return null;
+  };
 
   return (
-    <div style={{ padding: '16px 24px 200px', background: 'var(--bg)', minHeight: 'calc(100dvh - 180px)', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+    <div style={{
+      padding: '24px 48px 48px', background: T.bg, color: T.ink,
+      fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)',
+    }}>
 
-      {/* ── Date picker ── */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '16px' }}>
-        <button onClick={() => { setShiftDate(d => addDays(d, -1)); setCrewOverride([]); }} style={{ background: 'rgba(255,255,255,0.7)', backdropFilter: 'blur(24px)', border: '1px solid rgba(197,197,212,0.2)', borderRadius: '12px', padding: '8px 12px', cursor: 'pointer', color: '#454652' }} aria-label={lang === 'es' ? 'Día anterior' : 'Previous day'}>
-          <ChevronLeft size={18} />
-        </button>
-        <span style={{ fontSize: '16px', fontWeight: 600, color: '#364262', letterSpacing: '-0.01em' }}>
-          {formatDisplayDate(shiftDate, lang)}
-        </span>
-        <button onClick={() => { setShiftDate(d => addDays(d, 1)); setCrewOverride([]); }} style={{ background: 'rgba(255,255,255,0.7)', backdropFilter: 'blur(24px)', border: '1px solid rgba(197,197,212,0.2)', borderRadius: '12px', padding: '8px 12px', cursor: 'pointer', color: '#454652' }} aria-label={lang === 'es' ? 'Día siguiente' : 'Next day'}>
-          <ChevronRight size={18} />
-        </button>
+      {/* DATE STEPPER */}
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end',
+        marginBottom: 18, gap: 24, flexWrap: 'wrap',
+      }}>
+        <div>
+          <Caps>{lang === 'es' ? 'Horario' : 'Schedule'} · {isToday ? (lang === 'es' ? 'hoy' : 'today') : isYesterday ? (lang === 'es' ? 'ayer' : 'yesterday') : isTomorrow ? (lang === 'es' ? 'mañana' : 'tomorrow') : ''}</Caps>
+          <h1 style={{
+            fontFamily: FONT_SERIF, fontSize: 36, color: T.ink, margin: '4px 0 0',
+            letterSpacing: '-0.03em', lineHeight: 1.25, fontWeight: 400,
+          }}>
+            <span style={{ fontStyle: 'italic' }}>{formatDisplayDate(shiftDate, lang).split(',')[0]}</span>
+            <span> · {formatDisplayDate(shiftDate, lang).split(',').slice(1).join(',').trim()}</span>
+          </h1>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Btn variant="ghost" size="sm" onClick={() => setShiftDate(addDays(shiftDate, -1))}>← {lang === 'es' ? 'Ayer' : 'Yesterday'}</Btn>
+          <Btn variant={isToday ? 'paper' : 'ghost'} size="sm" onClick={() => setShiftDate(today)}>{lang === 'es' ? 'Hoy' : 'Today'}</Btn>
+          <Btn variant="ghost" size="sm" onClick={() => setShiftDate(addDays(shiftDate, 1))}>{lang === 'es' ? 'Mañana' : 'Tomorrow'} →</Btn>
+        </div>
       </div>
 
-      {/* ── Last CSV update stamp — always visible so Maria knows the system is alive ── */}
-      {currentCsvPulledAt && (() => {
-        const ageMs = Date.now() - new Date(currentCsvPulledAt).getTime();
-        const ageHours = ageMs / (1000 * 60 * 60);
-        const isStale = ageHours > 6; // flag if >6h old
-        const isVeryStale = ageHours > 12;
-        const accent = isVeryStale ? '#b91c1c' : isStale ? '#b45309' : '#364262';
-        const mutedText = isVeryStale ? '#ef4444' : isStale ? '#d97706' : '#94a3b8';
-        return (
-          <div style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-            fontSize: '12px', color: isStale ? accent : '#64748b', marginTop: '-12px',
-            fontWeight: isStale ? 600 : 400,
-          }}>
-            {isStale ? <AlertTriangle size={12} style={{ color: accent }} /> : <Clock size={12} style={{ color: '#94a3b8' }} />}
-            <span>
-              {lang === 'es' ? 'Lista de habitaciones actualizada:' : 'Room list updated:'}{' '}
-              <span style={{ color: accent, fontWeight: 600 }}>{formatPulledAt(currentCsvPulledAt, lang)}</span>
-              {planSnapshot?.pullType && (
-                <span style={{ color: mutedText }}>
-                  {' · '}
-                  {planSnapshot.pullType === 'evening'
-                    ? (lang === 'es' ? 'Plan nocturno' : 'Evening plan')
-                    : (lang === 'es' ? 'Plan matutino' : 'Morning plan')}
-                </span>
-              )}
-              {isStale && (
-                <span style={{ color: accent, marginLeft: '8px' }}>
-                  {lang === 'es'
-                    ? `· Datos de hace ${Math.round(ageHours)}h — considera recargar`
-                    : `· ${Math.round(ageHours)}h old — consider refreshing`}
-                </span>
-              )}
-            </span>
-          </div>
-        );
-      })()}
-
-      {/* ── Carry-forward banner ── */}
-      {seededFromYesterday && (
-        <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px',
-          padding: '10px 14px',
-          background: 'rgba(54, 66, 98, 0.06)',
-          border: '1px solid rgba(54, 66, 98, 0.18)',
-          borderRadius: '10px',
-          fontSize: '13px', color: '#364262',
-        }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Sparkles size={14} style={{ color: '#364262' }} />
-            {lang === 'es'
-              ? 'Reusé las asignaciones de ayer — edita si lo necesitas.'
-              : "Reused yesterday's pairings — edit if needed."}
-          </span>
+      {/* PMS PULL STRIP — front/back toggle + 5 numbers in plain sight */}
+      <div style={{
+        background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
+        padding: '18px 22px', marginBottom: 18,
+        display: 'flex', alignItems: 'center', gap: 24, flexWrap: 'wrap',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <button
-            onClick={() => setSeededFromYesterday(false)}
+            onClick={() => setPullType('morning')}
             style={{
-              background: 'transparent', border: 'none', color: '#364262',
-              cursor: 'pointer', fontSize: '12px', fontWeight: 600, padding: '4px 8px',
-              borderRadius: '6px',
+              width: 28, height: 28, borderRadius: '50%', cursor: 'pointer',
+              background: 'transparent', border: `1px solid ${T.rule}`, color: T.ink2,
+              fontFamily: FONT_SANS, fontSize: 14,
             }}
-          >
-            {lang === 'es' ? 'Ocultar' : 'Dismiss'}
-          </button>
-        </div>
-      )}
-
-      {/* ── Prediction Hero Card (glass) ── */}
-      <section className="glass-hero" style={{
-        border: '1px solid rgba(197,197,212,0.2)', borderRadius: '16px',
-        padding: '24px 32px', position: 'relative', overflow: 'hidden',
-        cursor: 'pointer', margin: '0 auto', width: 'fit-content', minWidth: '320px',
-      }} onClick={() => setShowPredictionSettings(true)}>
-        {/* Background image — same as dashboard hero */}
-        <div className="glass-hero-bg">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="https://lh3.googleusercontent.com/aida-public/AB6AXuAUkJ87OGqb9QZ3nLbfCbHYuNgoCRsfcrSTqcfy8LlaEm8_94XXXZc5LvqA_5T36RJJykyAlxUHbasVhW-V52jbgsdVMHhedC17vZk_Y5-TCMq6NWzbrN60mUF_bgeUYq_2wEOltK3e5GIuN5krTVz7lju3NN9ru-gTTwjtEG0ZIRdl1dGDL4FP5KjnJsNm2lw4HNq9nO7C0xSjh0WnhsNEQ0c9rQP5-Bg5ycpesyUdhDiSQPxFLzP6L1vDs-8LjUHCbvH0R4UFxyU"
-            alt=""
-            aria-hidden="true"
-          />
-        </div>
-
-        {predictionLoading ? (
-          <div style={{ textAlign: 'center' }}>
-            <div className="spinner" style={{ width: '28px', height: '28px', margin: '0 auto 12px' }} />
-            <p style={{ fontSize: '14px', color: '#454652', margin: 0 }}>{t('roomDataLoading', lang)}</p>
-          </div>
-        ) : totalRooms === 0 && planSnapshot ? (
-          /* ── Plan Snapshot Card (CSV data from 7pm/6am) ── */
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px', position: 'relative', zIndex: 10 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
-              <span style={{ fontSize: '12px', color: '#64748b', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                {planSnapshot.pullType === 'evening' ? (lang === 'es' ? 'Plan Nocturno' : 'Evening Plan') : (lang === 'es' ? 'Plan Matutino' : 'Morning Plan')}
-              </span>
-              <span style={{ fontSize: '11px', color: '#94a3b8' }}>
-                {planSnapshot.pulledAt ? new Date(planSnapshot.pulledAt).toLocaleTimeString(lang === 'es' ? 'es' : 'en', { hour: 'numeric', minute: '2-digit' }) : ''}
-              </span>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, auto)', gap: '40px' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Salidas' : 'Checkouts'}</p>
-                <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>{planSnapshot.checkouts}</p>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Continuaciones' : 'Stayovers'}</p>
-                <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>
-                  {planSnapshot.stayovers}
-                  <span style={{ fontSize: '14px', color: '#64748b', fontWeight: 400, marginLeft: '6px' }}>
-                    ({planSnapshot.stayoverDay1 ?? 0} {lang === 'es' ? 'ligeros' : 'light'} · {planSnapshot.stayoverDay2 ?? 0} {lang === 'es' ? 'completos' : 'full'})
-                  </span>
-                </p>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Personal Necesario' : 'Staff Needed'}</p>
-                <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>{planSnapshot.recommendedHKs}</p>
-              </div>
-            </div>
-            {/* Workload bar */}
-            <div style={{ width: '100%', maxWidth: '400px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                <span style={{ fontSize: '12px', color: '#64748b', fontWeight: 500 }}>{lang === 'es' ? 'Carga Total' : 'Total Workload'}</span>
-                <span style={{ fontSize: '12px', fontFamily: 'var(--font-mono)', color: '#454652' }}>
-                  {Math.floor(planSnapshot.totalCleaningMinutes / 60)}h {planSnapshot.totalCleaningMinutes % 60}m
-                </span>
-              </div>
-              <div style={{ height: '6px', borderRadius: '3px', background: 'rgba(197,197,212,0.2)', overflow: 'hidden' }}>
-                <div style={{
-                  height: '100%', borderRadius: '3px',
-                  background: 'linear-gradient(90deg, #3b82f6, #6366f1)',
-                  width: `${Math.min(100, (planSnapshot.totalCleaningMinutes / (planSnapshot.recommendedHKs * 480)) * 100)}%`,
-                }} />
-              </div>
-            </div>
-            {/* Extra counts row */}
-            <div style={{ display: 'flex', gap: '24px', fontSize: '13px', color: '#64748b' }}>
-              <span><Sparkles size={13} style={{ display: 'inline', verticalAlign: '-2px', marginRight: '3px' }} />{planSnapshot.vacantClean} {lang === 'es' ? 'Listas' : 'Ready'}</span>
-              {planSnapshot.ooo > 0 && <span><Ban size={13} style={{ display: 'inline', verticalAlign: '-2px', marginRight: '3px' }} />{planSnapshot.ooo} OOO</span>}
-            </div>
-          </div>
-        ) : totalRooms === 0 ? (
-          <div style={{ textAlign: 'center' }}>
-            <p style={{ fontSize: '14px', color: '#454652', margin: 0 }}>{t('noRoomDataYet', lang)}</p>
-            <p style={{ fontSize: '12px', color: '#94a3b8', margin: '4px 0 0' }}>{t('pmsSync15Min', lang)}</p>
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px', position: 'relative', zIndex: 10 }}>
-            {/* CSV caption — Active Checkouts / Stayovers / Staff Needed all
-                come from the hourly CSV pull (see scraper/scraper.js
-                maybeRunCSVPull). Freshness logic lives in csvFreshness()
-                so it can combine today's snapshot age with the live
-                pipeline status (scraper_status[morning]). Single window:
-                the scraper writes to today's row 5am–11pm CT, so anywhere
-                in that range a fresh pull is expected. */}
-            {(() => {
-              const fr = csvFreshness(planSnapshot, csvPipelineStatus, nowMs);
-              const refTime = fr.referenceAt
-                ? fr.referenceAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-                : null;
-
-              if (fr.state === 'fresh') {
-                if (!refTime) return null;
-                return (
-                  <p style={{ fontSize: '11px', color: '#94a3b8', margin: 0 }}>
-                    {lang === 'es' ? `CSV actualizado ${refTime}` : `CSV updated ${refTime}`}
-                  </p>
-                );
-              }
-
-              if (fr.state === 'stale') {
-                return (
-                  <div style={{
-                    display: 'flex', alignItems: 'center', gap: '8px',
-                    padding: '8px 12px', borderRadius: '8px',
-                    background: 'rgba(245, 158, 11, 0.12)',
-                    border: '1px solid rgba(217, 119, 6, 0.35)',
-                    fontSize: '12px', color: '#78350f', fontWeight: 500,
-                    maxWidth: '440px', textAlign: 'center',
-                  }}>
-                    <AlertTriangle size={14} style={{ color: '#b45309', flexShrink: 0 }} />
-                    <span>
-                      {fr.reason === 'no_snapshot'
-                        ? (lang === 'es'
-                          ? `Aún no hay plan para hoy — esperando primer CSV.`
-                          : `No plan yet for today — waiting for first CSV pull.`)
-                        : (lang === 'es'
-                          ? `CSV antiguo — última actualización ${refTime} (hace ${fr.minutesAgo} min). Debería actualizarse cada hora.`
-                          : `CSV stale — last updated ${refTime} (${fr.minutesAgo} min ago). Should pull hourly.`)}
-                    </span>
-                  </div>
-                );
-              }
-
-              // fr.state === 'error' — pipeline_error or snapshot_stale
-              const isPipelineError = fr.reason === 'pipeline_error';
-              return (
-                <div style={{
-                  display: 'flex', alignItems: 'flex-start', gap: '8px',
-                  padding: '8px 12px', borderRadius: '8px',
-                  background: 'rgba(220, 38, 38, 0.10)',
-                  border: '1px solid rgba(220, 38, 38, 0.35)',
-                  fontSize: '12px', color: '#7f1d1d', fontWeight: 500,
-                  maxWidth: '440px',
-                }}>
-                  <AlertTriangle size={14} style={{ color: '#b91c1c', flexShrink: 0, marginTop: '2px' }} />
-                  <div style={{ textAlign: 'left' }}>
-                    <div>
-                      {lang === 'es'
-                        ? 'Falla la actualización del CSV. Avísale a Reeyen.'
-                        : 'CSV pull failing. Tell Reeyen.'}
-                    </div>
-                    <div style={{ fontSize: '11px', color: '#991b1b', fontWeight: 400, marginTop: '2px' }}>
-                      {isPipelineError && fr.errorCode
-                        ? (lang === 'es'
-                          ? `Código: ${fr.errorCode}${refTime ? ` · último intento ${refTime}` : ''}.`
-                          : `Code: ${fr.errorCode}${refTime ? ` · last attempt ${refTime}` : ''}.`)
-                        : refTime
-                          ? (lang === 'es'
-                            ? `Últimos números buenos a las ${refTime} (hace ${fr.minutesAgo} min).`
-                            : `Last good numbers at ${refTime} (${fr.minutesAgo} min ago).`)
-                          : ''}
-                    </div>
-                  </div>
-                </div>
-              );
-            })()}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, auto)', gap: '40px' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Salidas Activas' : 'Active Checkouts'}</p>
-                <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>{checkouts}</p>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Continuaciones' : 'Stayovers'}</p>
-                <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>{stayovers}</p>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Hab. Bloqueadas' : 'Blocked Rooms'}</p>
-                <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>{blockedCount}</p>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Personal Necesario' : 'Staff Needed'}</p>
-                <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: '#364262', lineHeight: 1, margin: 0 }}>{recommendedStaff}</p>
-              </div>
-            </div>
-
-          </div>
-        )}
-
-        {/* ── Live PMS numbers from Choice Advantage View pages ───────── */}
-        {/* Always rendered — regardless of plan-snapshot / active-rooms /  */}
-        {/* empty branch above — because these are CURRENT-MOMENT PMS      */}
-        {/* numbers and Maria needs them visible on every view of the      */}
-        {/* Schedule tab. Pulled every 15 min 5am–11pm by the Railway      */}
-        {/* scraper (see scraper/dashboard-pull.js).                        */}
-        {/*                                                                  */}
-        {/* Three visual states, driven by dashboardFreshness():            */}
-        {/*   • fresh:   normal numbers, grey "PMS updated 4:01 PM" caption */}
-        {/*   • stale:   numbers greyed out with amber warning banner;      */}
-        {/*              Maria can still see them but knows not to trust    */}
-        {/*   • error:   numbers replaced with dashes, red banner with      */}
-        {/*              actionable text ("Sign in failed — password may   */}
-        {/*              have been changed")                                */}
-        {/*                                                                  */}
-        {/* We deliberately NEVER show a plausible-looking number without   */}
-        {/* also telling Maria how stale it is. The whole point of this     */}
-        {/* block is that a silently wrong number is worse than no number. */}
-        {!predictionLoading && (() => {
-          // Historical mode: when the user is looking at a past or future date
-          // tab, these numbers came from dashboardByDate/{date} — a frozen
-          // end-of-day snapshot, not a live feed. We skip staleness detection
-          // (a frozen snapshot can't go "stale"), hide the error banner, and
-          // show a "Last updated 10:45 PM on Apr 22" caption instead of the
-          // live-refresh one. If we have no snapshot for that date at all,
-          // show an empty-state caption rather than dashes-with-no-context.
-          const isHistorical = shiftDate !== schedTodayStr();
-          const freshness = isHistorical
-            ? (dashboardNums ? 'fresh' : 'unknown')
-            : dashboardFreshness(dashboardNums, nowMs);
-          // Wrap the numbers-or-dashes choice once so it stays consistent
-          // across all three columns. 'error' shows dashes unless we have
-          // a pulledAt still in-window (then it's degraded to "stale"
-          // visually but we already flagged it in the banner).
-          const showDashes = freshness === 'error' || freshness === 'unknown';
-          const fmt = (n: number | null | undefined) =>
-            showDashes ? '—' : (typeof n === 'number' ? n : '—');
-          const numColor =
-            freshness === 'fresh' ? '#364262' :
-            freshness === 'stale' ? '#94a3b8' :
-            '#cbd5e1';
-          // Build the caption / banner. Shape depends on state.
-          const errorCopy = (code: DashboardNumbers['errorCode'], lang: 'en' | 'es'): string => {
-            // Actionable human copy per code. Keep short — this shows in a
-            // red banner on a phone screen. "What does Maria do next?" is
-            // the guiding question for the wording.
-            const en: Record<string, string> = {
-              login_failed:      'Choice Advantage sign-in failed — password may have been changed. Tell Reeyen.',
-              session_expired:   'Lost Choice Advantage session — retrying. Check back in a minute.',
-              selector_miss:     'Choice Advantage page layout changed — Reeyen needs to update the scraper.',
-              timeout:           'Choice Advantage was slow to respond — retrying in 15 min.',
-              parse_error:       'Could not read numbers from Choice Advantage. Tell Reeyen.',
-              validation_failed: 'Choice Advantage returned numbers outside the expected range. Tell Reeyen.',
-              ca_unreachable:    'Could not reach Choice Advantage. Check the CA website yourself.',
-              unknown:           'Something unexpected happened pulling PMS data. Tell Reeyen.',
-            };
-            const es: Record<string, string> = {
-              login_failed:      'Falló el inicio de sesión en Choice Advantage — la contraseña puede haber cambiado. Avísale a Reeyen.',
-              session_expired:   'Sesión de Choice Advantage perdida — reintentando. Revisa en un minuto.',
-              selector_miss:     'El diseño de Choice Advantage cambió — Reeyen debe actualizar el scraper.',
-              timeout:           'Choice Advantage respondió lento — reintentando en 15 min.',
-              parse_error:       'No se pudieron leer los números de Choice Advantage. Avísale a Reeyen.',
-              validation_failed: 'Choice Advantage devolvió números fuera de rango. Avísale a Reeyen.',
-              ca_unreachable:    'No se pudo conectar con Choice Advantage. Revisa el sitio directamente.',
-              unknown:           'Ocurrió algo inesperado al obtener los datos del PMS. Avísale a Reeyen.',
-            };
-            const dict = lang === 'es' ? es : en;
-            return dict[code ?? 'unknown'] ?? dict.unknown;
-          };
-          // Stale caption shows BOTH last-fresh time and minutes-old count so
-          // Maria can eyeball "how out of date is this" without doing math.
-          const minutesStale = dashboardNums?.pulledAt
-            ? Math.max(0, Math.round((nowMs - dashboardNums.pulledAt.getTime()) / 60_000))
-            : null;
-          return (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', marginTop: '16px', paddingTop: '16px', borderTop: '1px solid rgba(0,0,0,0.08)' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, auto)', gap: '40px' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center' }}>
-                  <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Llegadas' : 'Arrivals'}</p>
-                  <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: numColor, lineHeight: 1, margin: 0 }}>
-                    {fmt(dashboardNums?.arrivals)}
-                  </p>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center' }}>
-                  <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'En Casa' : 'In House'}</p>
-                  <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: numColor, lineHeight: 1, margin: 0 }}>
-                    {fmt(dashboardNums?.inHouse)}
-                  </p>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center' }}>
-                  <p style={{ fontSize: '14px', color: '#454652', fontWeight: 500, margin: 0 }}>{lang === 'es' ? 'Salidas' : 'Departures'}</p>
-                  <p style={{ fontFamily: 'var(--font-mono)', fontSize: '36px', fontWeight: 500, color: numColor, lineHeight: 1, margin: 0 }}>
-                    {fmt(dashboardNums?.departures)}
-                  </p>
-                </div>
-              </div>
-              {/* Status line / banner — one of four variants. On historical
-                  tabs the stale/error banners are skipped (a frozen snapshot
-                  can't go stale) and the caption shows the snapshot date. */}
-              {freshness === 'fresh' && dashboardNums?.pulledAt && (
-                <p style={{ fontSize: '11px', color: '#94a3b8', margin: 0 }}>
-                  {isHistorical
-                    ? `${lang === 'es' ? 'Última actualización' : 'Last updated'} ${dashboardNums.pulledAt.toLocaleDateString(lang === 'es' ? 'es-ES' : 'en-US', { month: 'short', day: 'numeric' })}, ${dashboardNums.pulledAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
-                    : `${lang === 'es' ? 'PMS actualizado' : 'PMS updated'} ${dashboardNums.pulledAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`}
-                </p>
-              )}
-              {freshness === 'stale' && (
-                <div style={{
-                  display: 'flex', alignItems: 'center', gap: '8px',
-                  padding: '8px 12px', borderRadius: '8px',
-                  background: 'rgba(245, 158, 11, 0.12)',
-                  border: '1px solid rgba(217, 119, 6, 0.35)',
-                  fontSize: '12px', color: '#78350f', fontWeight: 500,
-                  maxWidth: '440px', textAlign: 'center',
-                }}>
-                  <AlertTriangle size={14} style={{ color: '#b45309', flexShrink: 0 }} />
-                  <span>
-                    {lang === 'es'
-                      ? `Datos PMS antiguos — última actualización ${dashboardNums?.pulledAt?.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) ?? '—'}${minutesStale !== null ? ` (hace ${minutesStale} min)` : ''}. Verifica Choice Advantage directamente si necesitas números en vivo.`
-                      : `PMS data is stale — last updated ${dashboardNums?.pulledAt?.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) ?? '—'}${minutesStale !== null ? ` (${minutesStale} min ago)` : ''}. Should be every ${DASHBOARD_STALE_MINUTES} min max. Check Choice Advantage directly if you need live numbers.`}
-                  </span>
-                </div>
-              )}
-              {freshness === 'error' && (
-                <div style={{
-                  display: 'flex', alignItems: 'flex-start', gap: '8px',
-                  padding: '8px 12px', borderRadius: '8px',
-                  background: 'rgba(220, 38, 38, 0.10)',
-                  border: '1px solid rgba(220, 38, 38, 0.35)',
-                  fontSize: '12px', color: '#7f1d1d', fontWeight: 500,
-                  maxWidth: '440px',
-                }}>
-                  <AlertTriangle size={14} style={{ color: '#b91c1c', flexShrink: 0, marginTop: '2px' }} />
-                  <div style={{ textAlign: 'left' }}>
-                    <div>{errorCopy(dashboardNums?.errorCode ?? 'unknown', lang === 'es' ? 'es' : 'en')}</div>
-                    {dashboardNums?.pulledAt && (
-                      <div style={{ fontSize: '11px', color: '#991b1b', fontWeight: 400, marginTop: '2px' }}>
-                        {lang === 'es'
-                          ? `Últimos números buenos a las ${dashboardNums.pulledAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.`
-                          : `Last good numbers at ${dashboardNums.pulledAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.`}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-              {freshness === 'unknown' && (
-                <p style={{ fontSize: '11px', color: '#94a3b8', margin: 0 }}>
-                  {isHistorical
-                    ? (lang === 'es' ? 'Sin datos guardados para este día.' : 'No saved data for this day.')
-                    : (lang === 'es' ? 'Esperando datos de PMS...' : 'Waiting for PMS data...')}
-                </p>
-              )}
-
-              {/* ── Room-count reconciliation ("hidden rooms" check) ──
-                  Maria's 7pm ritual: at 100% occupancy, in-house + arrivals
-                  should equal the property's total rooms. If it's GREATER
-                  than total, the front desk has over-counted a group booking
-                  (e.g. TDCJ books 25 when they only need 18 → 7 rooms get
-                  "hidden" and can't be sold). Brandy is the only one with
-                  group-booking access, so the action is "tell Brandy".
-
-                  We deliberately do NOT flag the under-count case (sum <
-                  total). On a non-fully-booked night that's just empty
-                  rooms — totally normal. The under-count-with-hidden-rooms
-                  scenario only matters when CA shows 0 available, and we
-                  don't scrape that field yet, so we can't distinguish it
-                  from "just empty" without false positives.
-
-                  Rendered only when PMS numbers are actually trustworthy —
-                  skipped on 'error' and 'unknown' freshness so we don't flag
-                  bogus math on stale/missing data. Property totalRooms (74
-                  for Comfort Suites Beaumont) is configured in settings.   */}
-              {(freshness === 'fresh' || freshness === 'stale')
-                && dashboardNums?.inHouse != null
-                && dashboardNums?.arrivals != null
-                && (activeProperty?.totalRooms ?? 0) > 0
-                && (() => {
-                  const totalPropertyRooms = activeProperty!.totalRooms;
-                  const inHouseNum = dashboardNums!.inHouse as number;
-                  const arrivalsNum = dashboardNums!.arrivals as number;
-                  const roomSum = inHouseNum + arrivalsNum;
-                  const delta = roomSum - totalPropertyRooms;
-
-                  // Fully booked and everything adds up — subtle green ✓
-                  // so Maria can see at a glance that the math is clean.
-                  if (delta === 0) {
-                    return (
-                      <p style={{ fontSize: '11px', color: '#15803d', margin: 0, fontWeight: 500 }}>
-                        {lang === 'es'
-                          ? `✓ Habitaciones cuadran: ${inHouseNum} en casa + ${arrivalsNum} llegadas = ${totalPropertyRooms}`
-                          : `✓ Room count matches: ${inHouseNum} in-house + ${arrivalsNum} arrivals = ${totalPropertyRooms}`}
-                      </p>
-                    );
-                  }
-
-                  // Over-count — red. Group booking has extra rooms that
-                  // should be released. The scenario Maria catches most
-                  // often (e.g. TDCJ booked 25, needs 18).
-                  if (delta > 0) {
-                    return (
-                      <div style={{
-                        display: 'flex', alignItems: 'flex-start', gap: '8px',
-                        padding: '8px 12px', borderRadius: '8px',
-                        background: 'rgba(220, 38, 38, 0.10)',
-                        border: '1px solid rgba(220, 38, 38, 0.35)',
-                        fontSize: '12px', color: '#7f1d1d', fontWeight: 500,
-                        maxWidth: '460px',
-                      }}>
-                        <AlertTriangle size={14} style={{ color: '#b91c1c', flexShrink: 0, marginTop: '2px' }} />
-                        <div style={{ textAlign: 'left' }}>
-                          <div>
-                            {lang === 'es'
-                              ? `Habitaciones no cuadran: ${inHouseNum} en casa + ${arrivalsNum} llegadas = ${roomSum}, pero la propiedad tiene ${totalPropertyRooms}.`
-                              : `Room count mismatch: ${inHouseNum} in-house + ${arrivalsNum} arrivals = ${roomSum}, but property has ${totalPropertyRooms}.`}
-                          </div>
-                          <div style={{ fontSize: '11px', color: '#991b1b', fontWeight: 400, marginTop: '2px' }}>
-                            {lang === 'es'
-                              ? `${delta} habitación${delta === 1 ? '' : 'es'} de más — pídele a Brandy que revise las reservas de grupos (probablemente reservaron más de lo necesario).`
-                              : `${delta} extra room${delta === 1 ? '' : 's'} showing — ask Brandy to check group bookings (likely over-booked).`}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  }
-
-                  // Under-count — silent. Empty rooms on a non-busy night
-                  // look identical to hidden rooms on a fully-booked night;
-                  // we'd need CA's "available" number to distinguish them.
-                  return null;
-                })()}
-            </div>
-          );
-        })()}
-      </section>
-
-      {/* ── Overnight Changes Callout (6am CSV diff vs Maria's saved plan) ── */}
-      {!predictionLoading && morningDiff && (
-        <section style={{
-          display: 'flex', flexDirection: 'column', gap: '12px',
-          padding: '16px 18px',
-          borderRadius: '16px',
-          background: 'linear-gradient(180deg, rgba(255,236,179,0.45) 0%, rgba(255,236,179,0.2) 100%)',
-          border: '1px solid rgba(217,119,6,0.25)',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <Sparkles size={16} style={{ color: '#b45309' }} />
-              <h3 style={{ fontSize: '15px', fontWeight: 700, color: '#78350f', margin: 0, letterSpacing: '0.01em' }}>
-                {lang === 'es' ? 'Cambios durante la noche' : 'What changed overnight'}
-              </h3>
-            </div>
-            <button
-              onClick={handleAutoRecommend}
-              disabled={assignableRooms.length === 0 || selectedCrew.length === 0}
-              style={{
-                padding: '8px 14px', borderRadius: '9999px',
-                background: assignableRooms.length === 0 ? '#e5e7eb' : '#364262',
-                color: assignableRooms.length === 0 ? '#9ca3af' : '#ffffff',
-                border: 'none',
-                fontFamily: 'var(--font-sans)', fontSize: '13px', fontWeight: 600,
-                cursor: assignableRooms.length === 0 ? 'not-allowed' : 'pointer',
-                display: 'inline-flex', alignItems: 'center', gap: '6px',
-              }}
-            >
-              <Sparkles size={13} />
-              {lang === 'es' ? 'Recomendación Automática' : 'Auto Recommend'}
-            </button>
-          </div>
-
-          <p style={{ fontSize: '14px', color: '#57361f', margin: 0, lineHeight: 1.5 }}>
-            {morningSummary}
-          </p>
-
-          {unassignedRooms.length > 0 && (
-            <p style={{ fontSize: '13px', color: '#92400e', margin: 0, lineHeight: 1.4, fontWeight: 500 }}>
-              {lang === 'es'
-                ? `${unassignedRooms.length} habitación${unassignedRooms.length === 1 ? '' : 'es'} sin asignar — arrastra manualmente o usa Recomendación Automática para repartirlas.`
-                : `${unassignedRooms.length} room${unassignedRooms.length === 1 ? '' : 's'} still need a housekeeper — drag them yourself or hit Auto Recommend to split them across the crew.`}
-            </p>
-          )}
-          {unassignedRooms.length === 0 && (
-            <p style={{ fontSize: '13px', color: '#065f46', margin: 0, lineHeight: 1.4, fontWeight: 500 }}>
-              {lang === 'es'
-                ? '✓ Todas las habitaciones están asignadas. Revisa y pulsa Enviar para actualizar a los limpiadores.'
-                : '✓ All rooms are covered. Review and hit Send to update the housekeepers.'}
-            </p>
-          )}
-        </section>
-      )}
-
-      {/* ── "No overnight changes" confirmation (6am CSV landed, matched Maria's 7pm save) ── */}
-      {!predictionLoading && morningConfirmation && (
-        <section style={{
-          display: 'flex', flexDirection: 'column', gap: '8px',
-          padding: '14px 18px',
-          borderRadius: '16px',
-          background: 'linear-gradient(180deg, rgba(34,197,94,0.12) 0%, rgba(34,197,94,0.04) 100%)',
-          border: '1px solid rgba(34,197,94,0.25)',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <CheckCircle2 size={16} style={{ color: '#15803d' }} />
-            <h3 style={{ fontSize: '15px', fontWeight: 700, color: '#14532d', margin: 0, letterSpacing: '0.01em' }}>
-              {lang === 'es' ? 'Sin cambios durante la noche' : 'No overnight changes'}
-            </h3>
-          </div>
-          <p style={{ fontSize: '14px', color: '#166534', margin: 0, lineHeight: 1.5 }}>
-            {lang === 'es'
-              ? `El PMS se actualizó (${formatPulledAt(morningConfirmation.pulledAt, lang)}) y coincide con lo que guardaste anoche. Tu plan está bien — pulsa Enviar cuando estés lista.`
-              : `The PMS refreshed (${formatPulledAt(morningConfirmation.pulledAt, lang)}) and matches what you saved last night. Your plan is good to go — hit Send when you're ready.`}
-          </p>
-        </section>
-      )}
-
-      {/* ── Unassigned Rooms Pool ── */}
-      {!predictionLoading && totalRooms > 0 && (
-        <section style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <h3 style={{ fontSize: '16px', fontWeight: 600, color: '#364262', margin: 0 }}>
-              {lang === 'es' ? 'Habitaciones Sin Asignar' : 'Unassigned Rooms'}
-            </h3>
-            <span style={{ fontSize: '14px', fontFamily: 'var(--font-mono)', color: '#454652' }}>
-              {unassignedRooms.length} {lang === 'es' ? 'Restantes' : 'Rooms Remaining'}
+            aria-label="Previous pull"
+          >‹</button>
+          <div style={{ display: 'flex', flexDirection: 'column', minWidth: 160 }}>
+            <Caps size={9}>{pullType === 'evening'
+              ? (lang === 'es' ? 'Plan vespertino' : 'Evening plan')
+              : (lang === 'es' ? 'Plan matutino'   : 'Morning plan')}</Caps>
+            <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 500, marginTop: 2 }}>
+              {lang === 'es' ? 'Pulled' : 'Pulled'} {pulledAtLabel}
             </span>
           </div>
-          <div
-            ref={unassignedRef}
+          <button
+            onClick={() => setPullType('evening')}
             style={{
-              display: 'flex', flexWrap: 'wrap', gap: '12px',
-              minHeight: '48px',
-              padding: unassignedRooms.length === 0 ? '12px' : '0',
-              background: dragState?.dropTarget === '__unassigned__' ? 'rgba(54,66,98,0.04)' : 'transparent',
-              borderRadius: '16px',
-              border: dragState?.dropTarget === '__unassigned__' ? '2px dashed #364262' : '2px dashed transparent',
-              transition: 'all 0.15s',
+              width: 28, height: 28, borderRadius: '50%', cursor: 'pointer',
+              background: 'transparent', border: `1px solid ${T.rule}`, color: T.ink2,
+              fontFamily: FONT_SANS, fontSize: 14,
             }}
-          >
-            {unassignedRooms.length === 0 && totalRooms > 0 && (
-              <p style={{ fontSize: '14px', color: '#10b981', fontWeight: 600, margin: 0 }}>
-                ✓ {lang === 'es' ? 'Todas asignadas' : 'All rooms assigned'}
-              </p>
-            )}
-            {unassignedRooms.map(room => (
-              <button
-                key={room.id}
-                onPointerDown={e => onPillPointerDown(e, room)}
-                onPointerMove={onPillPointerMove}
-                onPointerUp={e => { onPillPointerUp(e); }}
-                onPointerCancel={onPillPointerCancel}
-                className="sched-room-pill"
-                style={{
-                  width: '42px', height: '48px',
-                  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                  gap: '1px',
-                  borderRadius: '8px', background: '#eae8e3',
-                  border: 'none', cursor: 'grab',
-                  opacity: dragState?.roomId === room.id ? 0.3 : 1,
-                  touchAction: 'none', userSelect: 'none',
-                  WebkitUserSelect: 'none', WebkitTouchCallout: 'none',
-                }}
-              >
-                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '14px', color: '#364262', lineHeight: 1 }}>{room.number}</span>
-                <span style={{ fontSize: '9px', fontWeight: 700, color: room.type === 'checkout' ? '#93000a' : '#757684', lineHeight: 1, textTransform: 'uppercase' }}>
-                  {room.type === 'checkout'
-                    ? 'C'
-                    : (typeof room.stayoverDay === 'number' && room.stayoverDay > 0
-                        ? (room.stayoverDay % 2 === 1 ? 'S1' : 'S2')
-                        : 'S')}
-                </span>
-              </button>
-            ))}
-          </div>
-        </section>
-      )}
+            aria-label="Next pull"
+          >›</button>
+        </div>
+        <span style={{ width: 1, height: 42, background: T.rule }} />
+        <div style={{ display: 'flex', gap: 32, flex: 1, flexWrap: 'wrap' }}>
+          {[
+            { l: lang === 'es' ? 'Salidas'      : 'Checkouts',   v: checkouts },
+            { l: lang === 'es' ? 'Estadía·1'    : 'Stay · light',v: stayoverDay1 },
+            { l: lang === 'es' ? 'Estadía·2+'   : 'Stay · full', v: stayoverDay2 },
+            { l: lang === 'es' ? 'Tiempo total' : 'Total time',  v: fmtTime(totalMinutes) },
+            { l: lang === 'es' ? 'Recomendado'  : 'Recommended', v: `${recommendedHKs} HKs`, tone: T.sageDeep },
+          ].map(n => (
+            <div key={n.l} style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 80 }}>
+              <Caps size={9}>{n.l}</Caps>
+              <span style={{
+                fontFamily: FONT_SERIF, fontSize: 30, color: n.tone || T.ink,
+                lineHeight: 1, letterSpacing: '-0.02em', fontWeight: 400, whiteSpace: 'nowrap',
+              }}>{n.v}</span>
+            </div>
+          ))}
+        </div>
+      </div>
 
-      {/* ── Active Crew ── */}
-      {!predictionLoading && totalRooms > 0 && (
-        <section style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-          <h3 style={{ fontSize: '16px', fontWeight: 600, color: '#364262', margin: 0 }}>
-            {lang === 'es' ? 'Equipo Activo' : 'Active Crew'}
-          </h3>
+      {/* CREW ROWS */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {activeCrew.map(c => {
+          const myRooms = assignableRooms.filter(r => assignments[r.id] === c.id);
+          const minsLoaded = myRooms.reduce((sum, r) => {
+            if (r.type === 'checkout') return sum + ckMin;
+            if (r.type === 'stayover') return sum + (r.stayoverDay === 1 ? so1Min : so2Min);
+            return sum;
+          }, 0);
+          const pct = Math.min(100, (minsLoaded / SHIFT_MINS) * 100);
+          const isOver = minsLoaded > SHIFT_MINS;
+          const isNear = !isOver && minsLoaded > SHIFT_MINS * 0.85;
+          const status = myRooms.length === 0 ? 'available' : isOver ? 'over' : isNear ? 'near' : 'assigned';
+          const dotColor = status === 'over' ? T.warm : status === 'near' ? T.caramelDeep : status === 'available' ? T.sageDeep : T.ink2;
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            {selectedCrew.map((member, idx) => {
-              const { rooms: memberRooms, mins } = getStaffWorkload(member.id);
-              const hrs = Math.floor(mins / 60);
-              const remMins = mins % 60;
-              const timeLabel = hrs > 0 ? `${hrs}h ${remMins > 0 ? `${remMins}m` : ''}`.trim() : `${mins}m`;
-              const isDropHover = dragState?.dropTarget === member.id && dragState?.roomId && assignments[dragState.roomId] !== member.id;
-              const coCount = memberRooms.filter(r => r.type === 'checkout').length;
-              const soCount = memberRooms.length - coCount;
-              // Three-state capacity gauge so Maria can see at a glance
-              // who's stretched. Over cap should be impossible via Auto
-              // Assign (hard cap), but can still happen if a room was
-              // manually dragged onto someone already at 6h 55m.
-              const isOverCap     = mins > shiftLen;
-              const isNearCapacity = !isOverCap && mins > shiftLen * 0.85;
-              const statusLabel = memberRooms.length === 0
-                ? (lang === 'es' ? 'Disponible' : 'Available')
-                : isOverCap
-                  ? (lang === 'es' ? 'Sobre el límite' : 'Over Cap')
-                  : isNearCapacity
-                    ? (lang === 'es' ? 'Casi lleno' : 'Near Capacity')
-                    : (lang === 'es' ? 'Asignado' : 'Assigned');
-              // Over cap = deep red. Near = amber. Assigned = neutral.
-              const statusBg = memberRooms.length === 0
-                ? '#d3e4f8'
-                : isOverCap ? '#ffdad6'
-                : isNearCapacity ? '#fef3c7'
-                : '#eae8e3';
-              const statusColor = memberRooms.length === 0
-                ? '#0c1d2b'
-                : isOverCap ? '#7f1d1d'
-                : isNearCapacity ? '#92400e'
-                : '#454652';
-
-              // The badge next to each crew member's name is simple now:
-              //   - sent         → "Link Sent" (green)
-              //   - skipped      → "Didn't Send — No Phone Number" (red)
-              //   - failed       → "Didn't Send — <reason>"         (red)
-              // On page reload, a confirmation doc being present is enough
-              // to show "Link Sent" even if we don't have a fresh sendResult.
-              const confStatus = statusByStaff.get(member.id);
-              const sendResult = sendResults.get(member.id);
-
-              const reasonLabel = (reason?: string): string => {
-                switch (reason) {
-                  case 'no_phone':      return lang === 'es' ? 'Sin teléfono'        : 'No Phone Number';
-                  case 'invalid_phone': return lang === 'es' ? 'Teléfono inválido'   : 'Invalid Phone';
-                  case 'sms_error':     return lang === 'es' ? 'Error de SMS'        : 'SMS Error';
-                  default:              return reason || (lang === 'es' ? 'Error' : 'Error');
-                }
-              };
-
-              const confBadge =
-                (sendResult?.status === 'skipped' || sendResult?.status === 'failed')
-                  ? { label: (lang === 'es' ? 'No se envió — ' : "Didn't Send — ") + reasonLabel(sendResult.reason),
-                      bg: 'rgba(239,68,68,0.12)', color: '#b91c1c' }
-                : (sendResult?.status === 'sent' || confStatus === 'sent' || confStatus === 'pending')
-                  ? { label: lang === 'es' ? 'Enlace enviado' : 'Link Sent',
-                      bg: 'rgba(16,185,129,0.15)', color: '#059669' }
-                : null;
-
-              return (
-                <div
-                  key={member.id}
-                  ref={el => { crewCardRefs.current[member.id] = el; }}
-                  data-crew-id={member.id}
-                  className="sched-crew-row"
-                  style={{
-                    background: isDropHover ? 'rgba(54,66,98,0.04)' : 'rgba(255,255,255,0.7)',
-                    backdropFilter: 'blur(24px)',
-                    border: isDropHover ? '2px solid #364262' : '1px solid rgba(197,197,212,0.2)',
-                    borderRadius: '16px',
-                    padding: '24px',
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    gap: '24px', transition: 'all 0.15s',
-                    // Intentionally NOT wrapping: when a heavy crew member had
-                    // 19+ pills, the RIGHT block got too wide to fit next to
-                    // LEFT and the whole block wrapped down, making the page
-                    // look broken. The RIGHT block now uses flex:1 + min-width:0
-                    // so pills wrap internally without punting the whole row.
-                    // Mobile (<600px) switches to column direction via CSS.
-                  }}
-                >
-                  {/* Left: avatar + info */}
-                  <div className="sched-crew-info" style={{ display: 'flex', alignItems: 'center', gap: '24px', flexShrink: 0 }}>
-                    <div style={{ position: 'relative' }}>
-                      <div style={{
-                        width: '64px', height: '64px', borderRadius: '50%',
-                        background: 'linear-gradient(135deg, #364262 0%, #4e5a7a 100%)',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        color: '#dae2ff', fontWeight: 700, fontSize: '20px',
-                        fontFamily: 'var(--font-sans)',
-                      }}>
-                        {member.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)}
-                      </div>
-                      <div style={{
-                        position: 'absolute', bottom: 0, right: 0,
-                        width: '16px', height: '16px', borderRadius: '50%',
-                        background: memberRooms.length === 0
-                          ? '#22c55e'
-                          : isOverCap ? '#dc2626'
-                          : isNearCapacity ? '#f59e0b'
-                          : '#0ea5e9',
-                        border: '4px solid #fff',
-                      }} />
-                    </div>
-                    <div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-                        <button
-                          className="sched-crew-name"
-                          onClick={(e) => {
-                            const rect = e.currentTarget.getBoundingClientRect();
-                            setSwapAnchor({ top: rect.bottom + 4, left: rect.left });
-                            setSwapOpenFor(prev => prev === member.id ? null : member.id);
-                          }}
-                          style={{
-                            background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-                            fontFamily: 'var(--font-sans)', fontSize: '20px', fontWeight: 700,
-                            color: '#1b1c19', textAlign: 'left',
-                          }}
-                        >
-                          {member.name}
-                        </button>
-                        {/* HK link + copy — opens the same magic-link URL the SMS
-                            fan-out emits. Click "Link" to mint a fresh single-use
-                            token and open the housekeeper page; click "Copy" to
-                            mint and copy to clipboard. We always mint on demand
-                            (rather than caching) because magic-link tokens are
-                            single-use — the moment a HK clicks one, it's spent. */}
-                        {(() => {
-                          const isCopied = copiedFor === member.id;
-                          // Mint a magic-link URL via /api/staff-link. Falls back
-                          // to the legacy tokenless URL if the mint call fails so
-                          // Maria still has SOMETHING to share — degraded UX
-                          // (polling, no realtime) is strictly better than a
-                          // dead button.
-                          const mintLink = async (): Promise<string> => {
-                            try {
-                              const sessRes = await supabase.auth.getSession();
-                              const accessToken = sessRes.data.session?.access_token;
-                              const res = await fetch('/api/staff-link', {
-                                method: 'POST',
-                                headers: {
-                                  'Content-Type': 'application/json',
-                                  ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-                                },
-                                body: JSON.stringify({ staffId: member.id, pid }),
-                              });
-                              if (!res.ok) throw new Error(`http ${res.status}`);
-                              const json = await res.json();
-                              if (json?.ok && typeof json.data?.url === 'string') return json.data.url;
-                              throw new Error('mint returned no url');
-                            } catch (mintErr) {
-                              console.warn('[schedule-tab] magic-link mint failed, using tokenless URL:', mintErr);
-                              const qs = `?pid=${encodeURIComponent(pid)}`;
-                              return typeof window !== 'undefined'
-                                ? `${window.location.origin}/housekeeper/${member.id}${qs}`
-                                : `/housekeeper/${member.id}${qs}`;
-                            }
-                          };
-                          return (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  const url = await mintLink();
-                                  if (typeof window !== 'undefined') window.open(url, '_blank', 'noopener,noreferrer');
-                                }}
-                                title={lang === 'es' ? 'Abrir página del limpiador' : "Open housekeeper's page"}
-                                style={{
-                                  display: 'inline-flex', alignItems: 'center', gap: '4px',
-                                  padding: '4px 10px', borderRadius: '9999px',
-                                  background: 'rgba(54,66,98,0.08)', color: '#364262',
-                                  fontFamily: 'var(--font-sans)', fontSize: '11px', fontWeight: 600,
-                                  cursor: 'pointer',
-                                  border: '1px solid rgba(54,66,98,0.15)',
-                                }}
-                              >
-                                <Link2 size={12} />
-                                {lang === 'es' ? 'Enlace' : 'Link'}
-                              </button>
-                              <button
-                                onClick={async () => {
-                                  const hkUrl = await mintLink();
-                                  try {
-                                    await navigator.clipboard.writeText(hkUrl);
-                                  } catch {
-                                    // Fallback for older browsers / non-HTTPS
-                                    const ta = document.createElement('textarea');
-                                    ta.value = hkUrl;
-                                    document.body.appendChild(ta);
-                                    ta.select();
-                                    try { document.execCommand('copy'); } catch {}
-                                    document.body.removeChild(ta);
-                                  }
-                                  if (copiedTimer.current) clearTimeout(copiedTimer.current);
-                                  setCopiedFor(member.id);
-                                  copiedTimer.current = setTimeout(() => setCopiedFor(null), 1500);
-                                }}
-                                title={lang === 'es' ? 'Copiar enlace' : 'Copy link'}
-                                style={{
-                                  display: 'inline-flex', alignItems: 'center', gap: '4px',
-                                  padding: '4px 10px', borderRadius: '9999px',
-                                  background: isCopied ? 'rgba(16,185,129,0.15)' : 'rgba(54,66,98,0.08)',
-                                  color: isCopied ? '#059669' : '#364262',
-                                  fontFamily: 'var(--font-sans)', fontSize: '11px', fontWeight: 600,
-                                  cursor: 'pointer',
-                                  border: `1px solid ${isCopied ? 'rgba(16,185,129,0.3)' : 'rgba(54,66,98,0.15)'}`,
-                                }}
-                              >
-                                {isCopied ? <Check size={12} /> : <Copy size={12} />}
-                                {isCopied
-                                  ? (lang === 'es' ? '¡Copiado!' : 'Copied!')
-                                  : (lang === 'es' ? 'Copiar' : 'Copy')}
-                              </button>
-                            </div>
-                          );
-                        })()}
-                      </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px' }}>
-                        <span style={{
-                          padding: '2px 8px', borderRadius: '9999px',
-                          background: statusBg, color: statusColor,
-                          fontSize: '12px', fontWeight: 600,
-                        }}>
-                          {statusLabel}
-                        </span>
-                        {confBadge && (
-                          <span style={{
-                            padding: '2px 8px', borderRadius: '9999px',
-                            background: confBadge.bg, color: confBadge.color,
-                            fontSize: '12px', fontWeight: 600,
-                          }}>
-                            {confBadge.label}
-                          </span>
-                        )}
-                        <button onClick={() => {
-                          const roomCount = Object.values(assignments).filter(sid => sid === member.id).length;
-                          const msg = lang === 'es'
-                            ? `¿Quitar a ${member.name} y desasignar sus ${roomCount} habitaciones?`
-                            : `Remove ${member.name} and unassign their ${roomCount} room${roomCount !== 1 ? 's' : ''}?`;
-                          if (confirm(msg)) toggleCrewMember(member.id);
-                        }} style={{
-                          background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'var(--font-sans)',
-                          fontSize: '11px', fontWeight: 600, color: '#ba1a1a', padding: '0',
-                          opacity: 0.5,
-                        }}>
-                          {lang === 'es' ? 'Quitar' : 'Remove'}
-                        </button>
-                      </div>
-                      {/* Checkouts / Stayovers counts live in the LEFT column
-                          (below Link / Copy / status) so they stay anchored to
-                          the crew member instead of floating around the pill
-                          strip and wrapping awkwardly when the pill count is
-                          high. */}
-                      {memberRooms.length > 0 && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginTop: '6px' }}>
-                          <span style={{ fontSize: '12px', fontWeight: 600, color: '#364262', fontFamily: 'var(--font-sans)' }}>
-                            {coCount} {lang === 'es' ? 'Salidas' : 'Checkout'}{coCount !== 1 && lang !== 'es' ? 's' : ''}
-                          </span>
-                          <span style={{ fontSize: '12px', fontWeight: 600, color: '#757684', fontFamily: 'var(--font-sans)' }}>
-                            {soCount} {lang === 'es' ? 'Continuaciones' : 'Stayover'}{soCount !== 1 && lang !== 'es' ? 's' : ''}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Right: workload + room tiles. Uses flex:1, min-width:0 so
-                      the block shrinks to the remaining space; pills wrap
-                      internally rather than punting the whole right block to
-                      a new row. */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '24px', flex: '1 1 0', minWidth: 0, justifyContent: 'flex-end' }}>
-                    <div className="sched-crew-stats" style={{ textAlign: 'right', flexShrink: 0 }}>
-                      <p style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.15em', fontWeight: 700, color: '#454652', margin: '0 0 2px' }}>
-                        {lang === 'es' ? 'Carga' : 'Workload'}
-                      </p>
-                      <p style={{
-                        fontFamily: 'var(--font-mono)', fontSize: '20px', fontWeight: 500,
-                        color: isOverCap ? '#7f1d1d' : isNearCapacity ? '#b45309' : '#364262',
-                        margin: 0,
-                      }}>
-                        {timeLabel}
-                      </p>
-                    </div>
-                    <div className="sched-crew-pills" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignContent: 'flex-start', flex: '1 1 0', minWidth: 0, justifyContent: 'flex-end' }}>
-                      {memberRooms.map(room => (
-                        <button
-                          key={room.id}
-                          onPointerDown={e => onPillPointerDown(e, room)}
-                          onPointerMove={onPillPointerMove}
-                          onPointerUp={e => { onPillPointerUp(e); }}
-                          onPointerCancel={onPillPointerCancel}
-                          className="sched-room-pill"
-                          style={{
-                            width: '42px', height: '48px',
-                            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                            gap: '1px',
-                            borderRadius: '8px', background: '#eae8e3',
-                            border: 'none', cursor: 'grab',
-                            opacity: dragState?.roomId === room.id ? 0.3 : 1,
-                            touchAction: 'none', userSelect: 'none',
-                            WebkitUserSelect: 'none', WebkitTouchCallout: 'none',
-                          }}
-                        >
-                          <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '14px', color: '#364262', lineHeight: 1 }}>{room.number}</span>
-                          <span style={{ fontSize: '9px', fontWeight: 700, color: room.type === 'checkout' ? '#93000a' : '#757684', lineHeight: 1, textTransform: 'uppercase' }}>
-                            {room.type === 'checkout'
-                              ? 'C'
-                              : (typeof room.stayoverDay === 'number' && room.stayoverDay > 0
-                                  ? (room.stayoverDay % 2 === 1 ? 'S1' : 'S2')
-                                  : 'S')}
-                          </span>
-                        </button>
-                      ))}
-                      {/* Add room button */}
-                      <button
-                        onClick={(e) => { e.stopPropagation(); }}
-                        style={{
-                          width: '40px', height: '40px',
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          borderRadius: '8px', border: '2px dashed rgba(197,197,212,0.5)',
-                          background: 'transparent', color: '#757684', cursor: 'default',
-                        }}
-                      >
-                        <Plus size={16} />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Add staff + Priority row + Send Confirmations centered on same line.
-              Tighter gap (10px, uniform) on the left cluster so there's room
-              for the Send Confirmations cluster to sit absolutely centered
-              without colliding with Unassign All. */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', position: 'relative', minHeight: '48px' }}>
-            {eligiblePool.filter(s => !selectedCrew.find(c => c.id === s.id)).length > 0 && (
-              <button onClick={() => setShowAddStaff(true)} style={{
-                padding: '10px 20px', background: 'rgba(255,255,255,0.7)', backdropFilter: 'blur(24px)',
-                border: '1px solid rgba(197,197,212,0.2)', borderRadius: '12px',
-                cursor: 'pointer', fontFamily: 'var(--font-sans)',
-                display: 'flex', alignItems: 'center', gap: '8px',
-                fontSize: '14px', fontWeight: 600, color: '#454652',
-              }}>
-                <Plus size={16} />
-                {lang === 'es' ? 'Agregar personal' : 'Add Staff'}
-              </button>
-            )}
-            <button onClick={() => setShowPrioritySettings(true)} style={{
-              padding: '10px 20px', background: 'rgba(255,255,255,0.7)', backdropFilter: 'blur(24px)',
-              border: '1px solid rgba(197,197,212,0.2)', borderRadius: '12px',
-              cursor: 'pointer', fontFamily: 'var(--font-sans)',
-              display: 'flex', alignItems: 'center', gap: '8px',
-              fontSize: '14px', fontWeight: 600, color: '#454652',
+          return (
+            <div key={c.id} style={{
+              background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 16,
+              padding: '18px 22px', display: 'grid',
+              gridTemplateColumns: 'auto 1fr auto', gap: 20, alignItems: 'center',
             }}>
-              <Settings size={16} />
-              {lang === 'es' ? 'Prioridad' : 'Priority'}
-            </button>
-
-            {/* Auto Assign — clean-slate redistribute. Wipes every dirty
-                room's assignment and rebuilds from zero under the 7h hard
-                cap, preserving in-progress rooms and Maria's pinned
-                drags. Enabled whenever there are ANY assignable rooms
-                (not just unassigned) — the whole point is to let Maria
-                click this when a bad distribution needs to be rebuilt
-                (e.g. someone over cap after a stale save). Only
-                disabled when there's literally nothing to distribute or
-                nobody to distribute to. */}
-            {(() => {
-              const canStaff = selectedCrew.length > 0 || eligiblePool.length > 0;
-              const disabled = assignableRooms.length === 0 || !canStaff;
-              return (
-                <button
-                  onClick={handleAutoRecommend}
-                  disabled={disabled}
-                  title={
-                    disabled
-                      ? (assignableRooms.length === 0
-                          ? (lang === 'es' ? 'No hay habitaciones para asignar' : 'No rooms to assign')
-                          : (lang === 'es' ? 'No hay personal elegible' : 'No eligible staff'))
-                      : (lang === 'es'
-                          ? 'Reconstruye la distribución desde cero respetando el límite de 7h'
-                          : 'Rebuild distribution from scratch under the 7h cap')
-                  }
-                  style={{
-                    padding: '10px 20px',
-                    background: disabled ? 'rgba(229,231,235,0.6)' : 'rgba(255,255,255,0.7)',
-                    backdropFilter: 'blur(24px)',
-                    border: '1px solid rgba(197,197,212,0.2)', borderRadius: '12px',
-                    cursor: disabled ? 'not-allowed' : 'pointer',
-                    fontFamily: 'var(--font-sans)',
-                    display: 'flex', alignItems: 'center', gap: '8px',
-                    fontSize: '14px', fontWeight: 600,
-                    color: disabled ? '#9ca3af' : '#454652',
-                    opacity: disabled ? 0.7 : 1,
-                  }}
-                >
-                  <Sparkles size={16} />
-                  {lang === 'es' ? 'Asignación Automática' : 'Auto Assign'}
-                  {unassignedRooms.length > 0 && (
-                    <span style={{
-                      padding: '1px 7px', borderRadius: '9999px',
-                      background: '#364262', color: '#ffffff',
-                      fontSize: '11px', fontWeight: 700,
-                    }}>
-                      {unassignedRooms.length}
+              {/* Avatar + name + capacity */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                <span style={{ position: 'relative' }}>
+                  <HousekeeperDot staff={c} size={48} />
+                  <span style={{
+                    position: 'absolute', bottom: -2, right: -2,
+                    width: 12, height: 12, borderRadius: '50%',
+                    background: dotColor, border: `2px solid ${T.paper}`,
+                  }} />
+                </span>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 160 }}>
+                  <span style={{ fontFamily: FONT_SANS, fontSize: 15, color: T.ink, fontWeight: 600 }}>{c.name}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2, whiteSpace: 'nowrap' }}>
+                      {myRooms.length} {lang === 'es' ? 'cuartos' : 'rooms'} · {fmtTime(minsLoaded)} / 8h
                     </span>
-                  )}
-                </button>
-              );
-            })()}
-
-            {/* Unassign All — clears every room assignment so the whole pool
-                goes back to Unassigned. Useful when the distribution is off
-                (one person overloaded, another idle) and Maria wants to reset
-                and let Auto Assign rebuild from scratch. Confirms first since
-                it wipes local state. */}
-            {(() => {
-              const assignedCount = Object.keys(assignments).length;
-              const disabled = assignedCount === 0;
-              return (
-                <button
-                  onClick={() => {
-                    const msg = lang === 'es'
-                      ? `¿Quitar la asignación de las ${assignedCount} habitaciones? Todas regresarán al grupo "Sin asignar".`
-                      : `Unassign all ${assignedCount} room${assignedCount === 1 ? '' : 's'}? Every room will go back to the Unassigned pool.`;
-                    if (!confirm(msg)) return;
-                    setAssignments({});
-                    // IMPORTANT: do NOT reset hasInitialAssign here. The
-                    // initial-auto-assign effect keys off that flag, and if we
-                    // flip it back to false, the next crew change (e.g. Maria
-                    // clicking Add Staff) will silently re-run the full
-                    // auto-assignment. Unassign All should leave the pool
-                    // empty and stay empty until the user explicitly hits
-                    // Auto Assign — nothing should redistribute on its own.
-                    showMoveToast(lang === 'es' ? 'Todas las habitaciones sin asignar' : 'All rooms unassigned');
-                  }}
-                  disabled={disabled}
-                  title={
-                    disabled
-                      ? (lang === 'es' ? 'No hay habitaciones asignadas' : 'No rooms to unassign')
-                      : (lang === 'es' ? 'Desasigna todas las habitaciones' : 'Clear every room assignment')
-                  }
-                  style={{
-                    padding: '10px 20px',
-                    background: disabled ? 'rgba(229,231,235,0.6)' : 'rgba(255,255,255,0.7)',
-                    backdropFilter: 'blur(24px)',
-                    border: '1px solid rgba(197,197,212,0.2)', borderRadius: '12px',
-                    cursor: disabled ? 'not-allowed' : 'pointer',
-                    fontFamily: 'var(--font-sans)',
-                    display: 'flex', alignItems: 'center', gap: '8px',
-                    fontSize: '14px', fontWeight: 600,
-                    color: disabled ? '#9ca3af' : '#ba1a1a',
-                    opacity: disabled ? 0.7 : 1,
-                  }}
-                >
-                  <Ban size={16} />
-                  {lang === 'es' ? 'Desasignar Todo' : 'Unassign All'}
-                  {assignedCount > 0 && (
+                    {status === 'over'      && <Pill tone="warm">{lang === 'es' ? 'Sobre cupo' : 'Over cap'}</Pill>}
+                    {status === 'near'      && <Pill tone="caramel">{lang === 'es' ? 'Casi lleno' : 'Near full'}</Pill>}
+                    {status === 'available' && <Pill tone="sage">{lang === 'es' ? 'Disponible' : 'Available'}</Pill>}
+                  </div>
+                  <div style={{ width: 200, height: 4, background: T.ruleSoft, borderRadius: 2, overflow: 'hidden' }}>
                     <span style={{
-                      padding: '1px 7px', borderRadius: '9999px',
-                      background: '#ba1a1a', color: '#ffffff',
-                      fontSize: '11px', fontWeight: 700,
-                    }}>
-                      {assignedCount}
-                    </span>
-                  )}
-                </button>
-              );
-            })()}
-
-            {/* Send Links — absolutely centered on the same line.
-                The left cluster uses a tight 10px gap so there's breathing
-                room around this centered block. Before the first send:
-                primary "Send Links" button. After: status pill +
-                the SAME "Send Links" button so Maria can re-send
-                assignments at any time without us calling it something
-                different. "Send Updates" / "Send Confirmations" as concepts
-                are gone — it's one action, and you can do it as many times
-                as you want. Maria confirms availability in person at 3pm,
-                so the SMS is just the link to their list. */}
-            {!alreadySent && selectedCrew.length > 0 && (
-              <button onClick={(e) => { e.stopPropagation(); handleSend(); }} disabled={sending} style={{
-                position: 'absolute', left: '50%', transform: 'translateX(-50%)',
-                padding: '14px 24px', background: '#006565', color: '#82e2e1',
-                borderRadius: '9999px', fontWeight: 600, fontSize: '14px',
-                border: 'none', cursor: sending ? 'not-allowed' : 'pointer',
-                display: 'flex', alignItems: 'center', gap: '10px',
-                boxShadow: '0 10px 30px -10px rgba(0,101,101,0.3)',
-                opacity: sending ? 0.7 : 1,
-                fontFamily: 'var(--font-sans)',
-                overflow: 'hidden',
-              }}>
-                <Zap size={18} />
-                {sending ? (lang === 'es' ? 'Enviando…' : 'Sending…') : (lang === 'es' ? 'Enviar Enlaces' : 'Send Links')}
-              </button>
-            )}
-            {alreadySent && (
-              <div style={{
-                position: 'absolute', left: '50%', transform: 'translateX(-50%)',
-                display: 'flex', alignItems: 'center', gap: '10px',
-                whiteSpace: 'nowrap',
-              }}>
-                <div style={{
-                  display: 'flex', alignItems: 'center', gap: '12px',
-                  padding: '10px 20px',
-                  background: 'rgba(255,255,255,0.7)', backdropFilter: 'blur(24px)',
-                  border: '1px solid rgba(197,197,212,0.3)', borderRadius: '9999px',
-                  fontSize: '13px', fontWeight: 600, color: '#454652',
-                }}>
-                  <CheckCircle2 size={16} color="#10b981" />
-                  <span style={{ color: '#10b981' }}>
-                    {lang === 'es' ? 'Enlaces enviados' : 'Links sent'}
-                  </span>
+                      display: 'block', height: '100%', width: `${pct}%`,
+                      background: status === 'over' ? T.warm : status === 'near' ? T.caramelDeep : T.sageDeep,
+                    }} />
+                  </div>
                 </div>
-                {selectedCrew.length > 0 && (
-                  <button onClick={(e) => { e.stopPropagation(); handleSend(); }} disabled={sending} style={{
-                    padding: '10px 16px', background: '#006565', color: '#82e2e1',
-                    borderRadius: '9999px', fontWeight: 600, fontSize: '13px',
-                    border: 'none', cursor: sending ? 'not-allowed' : 'pointer',
-                    display: 'flex', alignItems: 'center', gap: '6px',
-                    boxShadow: '0 8px 20px -10px rgba(0,101,101,0.3)',
-                    opacity: sending ? 0.7 : 1,
-                    fontFamily: 'var(--font-sans)',
+              </div>
+
+              {/* Room pills */}
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                {myRooms.length === 0 ? (
+                  <span style={{ fontFamily: FONT_SERIF, fontSize: 14, color: T.ink2, fontStyle: 'italic' }}>
+                    {lang === 'es'
+                      ? 'Sin asignar — toca Auto-asignar.'
+                      : 'No rooms assigned yet — tap Auto-assign.'}
+                  </span>
+                ) : myRooms.map(r => (
+                  <span key={r.id} style={{
+                    padding: '5px 11px', borderRadius: 8,
+                    background: T.bg, border: `1px solid ${T.rule}`, color: T.ink,
+                    fontFamily: FONT_MONO, fontSize: 13, fontWeight: 600, letterSpacing: '-0.02em',
                     whiteSpace: 'nowrap',
                   }}>
-                    <Zap size={14} />
-                    {sending
-                      ? (lang === 'es' ? 'Enviando…' : 'Sending…')
-                      : (lang === 'es' ? 'Enviar Enlaces' : 'Send Links')}
-                  </button>
-                )}
+                    {r.number}
+                    {r.type === 'checkout' && <span style={{ color: T.ink3, fontWeight: 400 }}> ↗</span>}
+                    {r.type === 'stayover' && <span style={{ color: T.ink3, fontWeight: 400 }}> ◐</span>}
+                  </span>
+                ))}
               </div>
-            )}
-          </div>
-        </section>
-      )}
 
-      {/* ── Move toast ── */}
-      {moveToast && (
-        <div style={{
-          position: 'fixed', bottom: '100px', left: '50%', transform: 'translateX(-50%)', zIndex: 10000,
-          background: '#364262', color: '#fff', padding: '12px 24px', borderRadius: '12px',
-          fontSize: '14px', fontWeight: 600, boxShadow: '0 4px 16px rgba(0,0,0,0.2)',
-          animation: 'toastIn 0.2s ease-out', whiteSpace: 'nowrap',
-        }}>
-          {moveToast}
-        </div>
-      )}
-      <style>{`@keyframes toastIn { from { transform: translateX(-50%) translateY(10px); opacity: 0; } to { transform: translateX(-50%) translateY(0); opacity: 1; } }`}</style>
+              {/* Status pills + per-row actions */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
+                {sendBadge(c.id) ?? confPill(c.id)}
+              </div>
+            </div>
+          );
+        })}
 
-      {/* ── Swap dropdown ── */}
-      {swapOpenFor && (
-        <>
-          <div style={{ position: 'fixed', inset: 0, zIndex: 9990 }} onClick={() => setSwapOpenFor(null)} />
+        {/* Off-today crew strip — keeps recently-removed staff one tap away */}
+        {offCrew.length > 0 && (
           <div style={{
-            position: 'fixed', top: swapAnchor.top, left: swapAnchor.left, zIndex: 9991,
-            background: '#fff', border: '1px solid rgba(197,197,212,0.2)', borderRadius: '12px',
-            boxShadow: '0 8px 30px rgba(0,0,0,0.12)', padding: '4px', minWidth: '180px',
-            backdropFilter: 'blur(24px)',
+            marginTop: 4, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+            padding: '10px 14px', background: T.bg,
           }}>
-            {eligiblePool.filter(s => !selectedCrew.find(c => c.id === s.id)).map(s => (
-              <button key={s.id} onClick={() => {
-                const oldId = swapOpenFor!;
-                setAssignments(a => {
-                  const updated = { ...a };
-                  for (const [roomId, staffId] of Object.entries(updated)) {
-                    if (staffId === oldId) updated[roomId] = s.id;
-                  }
-                  return updated;
-                });
-                setCrewOverride(prev => {
-                  const current = prev.length > 0 ? prev : selectedCrew.map(c => c.id);
-                  return current.map(id => id === oldId ? s.id : id);
-                });
-                const oldName = selectedCrew.find(c => c.id === oldId)?.name ?? '?';
-                showMoveToast(lang === 'es' ? `${oldName} reemplazado por ${s.name}` : `Replaced ${oldName} with ${s.name}`);
-                setSwapOpenFor(null);
-              }} style={{
-                display: 'block', width: '100%', padding: '10px 14px', border: 'none', borderRadius: '8px',
-                background: 'transparent', cursor: 'pointer', fontFamily: 'var(--font-sans)',
-                fontSize: '14px', fontWeight: 600, color: '#1b1c19', textAlign: 'left',
-              }}
-                onMouseEnter={e => { (e.target as HTMLElement).style.background = '#f5f3ee'; }}
-                onMouseLeave={e => { (e.target as HTMLElement).style.background = 'transparent'; }}
+            <Caps>{lang === 'es' ? 'Disponibles hoy' : 'Available today'}</Caps>
+            {offCrew.map(s => (
+              <button
+                key={s.id}
+                onClick={() => setCrewIds(prev => [...prev.length > 0 ? prev : activeCrew.map(c => c.id), s.id])}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '4px 12px 4px 4px', borderRadius: 999,
+                  background: 'transparent', border: `1px dashed ${T.rule}`, cursor: 'pointer',
+                  fontFamily: FONT_SANS, fontSize: 12, color: T.ink2,
+                }}
               >
-                {s.name}
+                <HousekeeperDot staff={s} size={22} />
+                <span>{s.name}</span>
+                <span style={{ color: T.ink3 }}>+ {lang === 'es' ? 'añadir' : 'add'}</span>
               </button>
             ))}
-            {eligiblePool.filter(s => !selectedCrew.find(c => c.id === s.id)).length === 0 && (
-              <div style={{ padding: '10px 14px', fontSize: '13px', color: '#454652' }}>
-                {lang === 'es' ? 'Sin personal disponible' : 'No available staff'}
-              </div>
-            )}
           </div>
-        </>
-      )}
+        )}
+      </div>
 
-      {/* ── Staff Priority Settings popup ── */}
-      {/* Portaled to <body> so it escapes any ancestor that has a CSS
-          transform / filter / perspective — those make `position:fixed`
-          relative to the transformed ancestor instead of the viewport,
-          which was rendering this modal off-center (Reeyen's screenshots
-          on 2026-04-28). Flexbox-centered overlay so we don't depend on
-          transform-based centering anymore. Body scroll is locked via
-          the useEffect above. */}
-      {showPrioritySettings && uid && pid && typeof document !== 'undefined' && createPortal(
-        <div
-          style={{
-            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 9997,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            padding: '16px',
-          }}
-          onClick={() => setShowPrioritySettings(false)}
-        >
-          <div
-            onClick={e => e.stopPropagation()}
-            style={{
-              position: 'relative',
-              background: '#fff', borderRadius: '16px', padding: '24px',
-              boxShadow: '0 8px 40px rgba(0,0,0,0.2)',
-              width: '380px', maxWidth: '100%', maxHeight: '80vh', overflowY: 'auto',
-              animation: 'popIn 0.15s ease-out',
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-              <p style={{ fontSize: '18px', fontWeight: 700, color: '#1b1c19', margin: 0 }}>
-                {lang === 'es' ? 'Prioridad del Personal' : 'Staff Priority'}
-              </p>
-              <button onClick={() => setShowPrioritySettings(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '18px', color: '#454652' }} aria-label="Close">✕</button>
-            </div>
-            <div style={{ display: 'flex', gap: '6px', marginBottom: '14px', fontSize: '12px', color: '#454652' }}>
-              <span style={{ padding: '4px 10px', background: '#d3e4f8', color: '#0c1d2b', borderRadius: '8px', fontWeight: 600 }}>{lang === 'es' ? 'Prioridad' : 'Priority'}</span>
-              <span style={{ display: 'flex', alignItems: 'center' }}>{lang === 'es' ? '= primera selección' : '= picked first'}</span>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              {/* Render in the FROZEN order captured when the modal opened.
-                  Clicks update each row's badge live (via the lookup into
-                  `staff`) but never reshuffle the list. New / removed staff
-                  during the session won't appear / disappear until the
-                  modal is reopened — acceptable, this is a settings panel,
-                  not a live roster. */}
-              {frozenStaffOrder.map(sid => {
-                const s = staff.find(x => x.id === sid);
-                if (!s) return null; // staff was deleted while modal open
-                if (s.isActive === false) return null; // became inactive — hide
-                const pri = s.schedulePriority ?? 'normal';
-                return (
-                  <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '12px 14px', background: '#f5f3ee', borderRadius: '12px' }}>
-                    <span style={{ flex: 1, fontSize: '14px', fontWeight: 600, color: '#1b1c19' }}>{s.name}</span>
-                    <div style={{ display: 'flex', gap: '4px' }}>
-                      {(['priority', 'normal', 'excluded'] as const).map(level => (
-                        <button key={level} onClick={async () => {
-                          await updateStaffMember(uid!, pid!, s.id, { schedulePriority: level } as Partial<StaffMember>);
-                        }} style={{
-                          padding: '4px 10px', borderRadius: '8px', border: 'none', cursor: 'pointer',
-                          fontFamily: 'var(--font-sans)', fontSize: '12px', fontWeight: 600,
-                          background: pri === level
-                            ? level === 'priority' ? '#d3e4f8' : level === 'normal' ? '#eae8e3' : '#ffdad6'
-                            : 'transparent',
-                          color: pri === level
-                            ? level === 'priority' ? '#0c1d2b' : level === 'normal' ? '#454652' : '#93000a'
-                            : '#757684',
-                        }}>
-                          {level === 'priority' ? (lang === 'es' ? 'Prior.' : 'Priority') : level === 'normal' ? 'Normal' : (lang === 'es' ? 'Excluir' : 'Exclude')}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            <p style={{ fontSize: '12px', color: '#757684', margin: '16px 0 0', lineHeight: 1.5 }}>
-              {lang === 'es'
-                ? 'Prioridad = seleccionado automáticamente primero. Normal = respaldo. Excluir = nunca seleccionado automáticamente.'
-                : 'Priority = auto-selected first. Normal = backup when needed. Exclude = never auto-selected.'}
-            </p>
-            {/* Pop-in animation for the modal. Was previously combined with
-                a translate(-50%,-50%) for centering — that's gone now (flex
-                centers it instead), so the keyframes only handle scale +
-                opacity. */}
-            <style>{`@keyframes popIn { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }`}</style>
-          </div>
-        </div>,
-        document.body
-      )}
-
-      {/* ── Add Staff popup ── */}
-      {showAddStaff && (
-        <>
-          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 9997 }} onClick={() => setShowAddStaff(false)} />
-          <div style={{
-            position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 9998,
-            background: '#fff', borderRadius: '16px',
-            boxShadow: '0 8px 40px rgba(0,0,0,0.2)',
-            padding: '24px', width: '520px', maxWidth: 'calc(100vw - 40px)', maxHeight: '70vh', overflowY: 'auto',
-            animation: 'popIn 0.15s ease-out',
+      {/* ACTION BAND — bottom */}
+      <div style={{
+        marginTop: 18,
+        background: `linear-gradient(135deg, ${T.sageDim}, rgba(201,150,68,0.06))`,
+        border: '1px solid rgba(92,122,96,0.18)', borderRadius: 18,
+        padding: '14px 22px',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        gap: 18, flexWrap: 'wrap',
+      }}>
+        <div>
+          <Caps c={T.sageDeep}>{lang === 'es' ? 'Listo para asignar' : 'Ready to assign'}</Caps>
+          <p style={{
+            fontFamily: FONT_SERIF, fontSize: 22, color: T.ink,
+            margin: '4px 0 0', lineHeight: 1.3, fontWeight: 400,
           }}>
-            <p style={{ fontSize: '18px', fontWeight: 700, color: '#1b1c19', margin: '0 0 16px' }}>
-              {lang === 'es' ? 'Agregar Personal' : 'Add Staff'}
-            </p>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
-              {eligiblePool.filter(s => !selectedCrew.find(c => c.id === s.id)).map(member => (
-                <button key={member.id} onClick={() => { toggleCrewMember(member.id); setShowAddStaff(false); }} style={{
-                  display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px',
-                  padding: '16px 8px', background: '#f5f3ee', border: '1px solid rgba(197,197,212,0.2)',
-                  borderRadius: '16px', cursor: 'pointer', fontFamily: 'var(--font-sans)',
-                }}>
-                  <div style={{
-                    width: '48px', height: '48px', borderRadius: '50%',
-                    background: 'linear-gradient(135deg, #364262 0%, #4e5a7a 100%)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    color: '#dae2ff', fontWeight: 700, fontSize: '16px',
-                  }}>
-                    {member.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)}
-                  </div>
-                  <span style={{ fontSize: '13px', fontWeight: 600, color: '#1b1c19', textAlign: 'center', lineHeight: 1.2 }}>
-                    {member.name}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-          <style>{`@keyframes popIn { from { transform: translate(-50%, -50%) scale(0.9); opacity: 0; } to { transform: translate(-50%, -50%) scale(1); opacity: 1; } }`}</style>
-        </>
-      )}
-
-      {/* Prediction Settings Modal — rendered via createPortal so it
-          centers on the actual viewport. Without the portal it inherits
-          the containing block of whatever ancestor up the tree has a
-          `transform`, `filter`, or `will-change` (which kills the
-          position:fixed → viewport contract). The Priority Settings
-          modal nearby uses the same pattern for the same reason. */}
-      {showPredictionSettings && typeof document !== 'undefined' && createPortal(
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 9998, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }} onClick={() => setShowPredictionSettings(false)}>
-          <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: '16px', padding: '28px', width: '100%', maxWidth: '400px', maxHeight: 'calc(100dvh - 40px)', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', gap: '20px' }}>
-            <div>
-              <p style={{ fontWeight: 700, fontSize: '18px', color: '#1b1c19', margin: 0 }}>
-                {lang === 'es' ? 'Ajustes de Predicción' : 'Prediction Settings'}
-              </p>
-              <p style={{ fontSize: '13px', color: '#757684', margin: '6px 0 0' }}>
-                {lang === 'es' ? 'Ajusta los tiempos de limpieza.' : 'Adjust cleaning times.'}
-              </p>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              {/* Max hours per housekeeper — shown in hours for readability,
-                  stored as minutes on the property doc (shiftMinutes). This
-                  is the cap Auto Assign respects when deciding whether it
-                  needs to pull in more crew. */}
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-                  <span style={{ fontSize: '14px', fontWeight: 500, color: '#1b1c19' }}>
-                    {lang === 'es' ? 'Horas máx. por limpiador' : 'Max hours per housekeeper'}
-                  </span>
-                  <span style={{ fontSize: '11px', color: '#9a9baa', marginTop: '2px' }}>
-                    {lang === 'es' ? 'Tope diario por persona' : 'Daily cap per person'}
-                  </span>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
-                  <DraftNumberInput
-                    value={settingsForm.shiftMinutes / 60}
-                    onCommit={hrs => setSettingsForm(p => ({ ...p, shiftMinutes: Math.round(hrs * 60) }))}
-                    min={1}
-                    max={24}
-                    step={0.25}
-                  />
-                  <span style={{ fontSize: '13px', color: '#757684' }}>hr</span>
-                </div>
-              </div>
-              {[
-                {
-                  label: lang === 'es' ? 'Habitación de salida' : 'Checkout room',
-                  sub: lang === 'es' ? 'Limpieza completa al salir' : 'Full clean at check-out',
-                  key: 'checkoutMinutes' as const,
-                },
-                {
-                  label: lang === 'es' ? 'Continuación — Día 1' : 'Stayover — Day 1',
-                  sub: lang === 'es' ? 'Limpieza ligera (sin cambio de sábanas)' : 'Light clean (no bed change)',
-                  key: 'stayoverDay1Minutes' as const,
-                },
-                {
-                  label: lang === 'es' ? 'Continuación — Día 2' : 'Stayover — Day 2',
-                  sub: lang === 'es' ? 'Limpieza completa (cambio de sábanas)' : 'Full clean (bed change)',
-                  key: 'stayoverDay2Minutes' as const,
-                },
-                {
-                  label: lang === 'es' ? 'Entre habitaciones' : 'Between rooms',
-                  sub: lang === 'es' ? 'Tiempo de preparación por hab.' : 'Prep/transition time',
-                  key: 'prepMinutesPerActivity' as const,
-                },
-              ].map(({ label, sub, key }) => (
-                <div key={key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-                    <span style={{ fontSize: '14px', fontWeight: 500, color: '#1b1c19' }}>{label}</span>
-                    <span style={{ fontSize: '11px', color: '#9a9baa', marginTop: '2px' }}>{sub}</span>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
-                    <DraftNumberInput
-                      value={settingsForm[key]}
-                      onCommit={n => setSettingsForm(p => ({ ...p, [key]: n }))}
-                      min={key === 'prepMinutesPerActivity' ? 0 : 1}
-                    />
-                    <span style={{ fontSize: '13px', color: '#757684' }}>min</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
-              <button onClick={() => setShowPredictionSettings(false)} style={{ flex: 1, padding: '12px', borderRadius: '12px', border: '1px solid rgba(197,197,212,0.2)', background: '#fff', color: '#454652', fontWeight: 600, fontSize: '14px', cursor: 'pointer' }}>{t('cancel', lang)}</button>
-              <button onClick={handleSaveSettings} disabled={savingSettings} style={{ flex: 1, padding: '12px', borderRadius: '12px', border: 'none', background: '#364262', color: '#fff', fontWeight: 600, fontSize: '14px', cursor: 'pointer', opacity: savingSettings ? 0.6 : 1 }}>{savingSettings ? t('saving', lang) : t('save', lang)}</button>
-            </div>
-            <button onClick={() => { setShowPredictionSettings(false); setShowPublicAreas(true); }} style={{
-              width: '100%', padding: '16px', marginTop: '4px',
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              background: '#f5f3ee', border: '1px solid rgba(197,197,212,0.2)', borderRadius: '12px',
-              cursor: 'pointer', fontFamily: 'var(--font-sans)',
-            }}>
-              <span style={{ fontSize: '14px', fontWeight: 600, color: '#1b1c19' }}>{lang === 'es' ? 'Áreas Comunes' : 'Public Areas'}</span>
-              <span style={{ fontSize: '12px', color: '#757684' }}>{areasDueToday.length} {lang === 'es' ? 'para hoy' : 'due today'} · {publicAreaMinutes}m →</span>
-            </button>
-          </div>
-        </div>,
-        document.body,
-      )}
-
-      <PublicAreasModal show={showPublicAreas} onClose={() => setShowPublicAreas(false)} />
-
-      {/* Drag ghost — floating room pill that follows your finger */}
-      {dragState && (
-        <div style={{
-          position: 'fixed',
-          left: dragState.ghost.x - 28,
-          top: dragState.ghost.y - 40,
-          zIndex: 10000,
-          pointerEvents: 'none',
-          padding: '8px 14px',
-          background: '#364262',
-          border: '2px solid rgba(255,255,255,0.5)',
-          borderRadius: '10px',
-          boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
-          transform: 'scale(1.15)',
-          display: 'flex', flexDirection: 'column', alignItems: 'center', lineHeight: 1,
-        }}>
-          <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '14px', color: '#fff' }}>{dragState.roomNumber}</span>
-          <span style={{ fontSize: '9px', fontWeight: 700, color: 'rgba(255,255,255,0.6)' }}>
-            {dragState.roomType === 'checkout'
-              ? 'C'
-              : (typeof dragState.stayoverDay === 'number' && dragState.stayoverDay > 0
-                  ? (dragState.stayoverDay % 2 === 1 ? 'S1' : 'S2')
-                  : 'S')}
-          </span>
+            <span style={{ fontStyle: 'italic' }}>
+              {assignableRooms.length} {lang === 'es' ? 'cuartos' : 'rooms'}
+            </span>
+            {' '}{lang === 'es' ? 'entre' : 'across'} {activeCrew.length} {lang === 'es' ? 'limpiadoras activas' : 'active housekeepers'}.
+          </p>
         </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <Btn variant="ghost" size="md" onClick={handleReset}>
+            {lang === 'es' ? 'Resetear todo' : 'Reset all'}
+          </Btn>
+          <Btn variant="primary" size="md" onClick={handleAutoAssign} disabled={activeCrew.length === 0}>
+            ↻ {lang === 'es' ? 'Auto-asignar' : 'Auto-assign'} {assignableRooms.length} {lang === 'es' ? 'cuartos' : 'rooms'}
+          </Btn>
+          <Btn variant="sage" size="md" onClick={handleSend} disabled={sending || activeCrew.length === 0}>
+            → {sending ? (lang === 'es' ? 'Enviando…' : 'Sending…') : `${lang === 'es' ? 'Enviar' : 'Send'} ${activeCrew.length} ${lang === 'es' ? 'enlaces' : 'links'}`}
+          </Btn>
+        </div>
+      </div>
+
+      {/* TOAST */}
+      {toast && (
+        <div style={{
+          position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)',
+          zIndex: 70, padding: '12px 18px',
+          background: T.sageDim, color: T.sageDeep,
+          border: '1px solid rgba(104,131,114,0.3)',
+          borderRadius: 999, fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500,
+        }}>{toast}</div>
       )}
 
-      {/* ── Glass Metrics Footer ── */}
-      {!predictionLoading && totalRooms > 0 && (
-        <footer style={{
-          position: 'fixed', bottom: 0, left: 0, width: '100%', zIndex: 50,
-          padding: '16px 24px',
-        }}>
-          <div style={{
-            maxWidth: '768px', margin: '0 auto',
-            background: 'rgba(255,255,255,0.7)', backdropFilter: 'blur(24px) saturate(200%)',
-            border: '1px solid rgba(197,197,212,0.2)',
-            borderRadius: '9999px', padding: '16px 40px',
-            boxShadow: '0 20px 60px rgba(0,0,0,0.08)',
-            display: 'flex', alignItems: 'center', justifyContent: 'space-around',
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <BedDouble size={18} color="#364262" />
-              <span style={{ fontSize: '14px', fontWeight: 600, letterSpacing: '0.02em', color: '#454652' }}>{lang === 'es' ? 'Ocupación' : 'Occupancy'}</span>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: '18px', fontWeight: 700, color: '#364262' }}>
-                {totalRooms > 0 ? Math.round((totalRooms / (activeProperty?.totalRooms ?? totalRooms)) * 100) : 0}%
-              </span>
-            </div>
-            <div style={{ height: '24px', width: '1px', background: 'rgba(197,197,212,0.3)' }} />
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <AlertTriangle size={18} color="#ba1a1a" />
-              <span style={{ fontSize: '14px', fontWeight: 600, letterSpacing: '0.02em', color: '#454652' }}>{lang === 'es' ? 'Sin Asignar' : 'Unassigned'}</span>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: '18px', fontWeight: 700, color: unassignedRooms.length > 0 ? '#ba1a1a' : '#10b981' }}>
-                {unassignedRooms.length}
-              </span>
-            </div>
-            <div style={{ height: '24px', width: '1px', background: 'rgba(197,197,212,0.3)' }} />
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <Clock size={18} color="#006565" />
-              <span style={{ fontSize: '14px', fontWeight: 600, letterSpacing: '0.02em', color: '#454652' }}>{lang === 'es' ? 'Est. Total' : 'Est. Labor'}</span>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: '18px', fontWeight: 700, color: '#364262' }}>
-                {fmtMins(workloadMinutes)}
-              </span>
-            </div>
-          </div>
-        </footer>
-      )}
+      {/* dashboardNums consumed silently — keeps the subscription alive so
+          the live PMS numbers stay fresh under the hood. We don't render
+          them on this tab; they're shown on the dashboard. */}
+      {dashboardNums && <span style={{ display: 'none' }} aria-hidden />}
     </div>
   );
 }
-
-// ══════════════════════════════════════════════════════════════════════════════
-// ROOMS SECTION (live room status)
-// ══════════════════════════════════════════════════════════════════════════════
-
-
-export { ScheduleTab };

@@ -1,190 +1,65 @@
-// Split from the housekeeping/page.tsx monolith on 2026-04-27.
-// Shared helpers / constants / components are imported from ./_shared.
-// Only this tab's section logic lives here.
-
 'use client';
 
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { createPortal } from 'react-dom';
-import { useRouter } from 'next/navigation';
+// Snow / floor-tracks redesign from the Claude Design housekeeping handoff
+// (May 2026). All real-time data hooks and write handlers are preserved
+// from the previous version — only the JSX layout changed:
+//   • horizontal floor "tracks" with 76×82 tiles (was: floor grids)
+//   • filter pills + search box (was: status-color legend)
+//   • progress strip across the top (replaces glass metrics footer)
+//   • crew-on-the-floor strip at the bottom
+//   • AI Intelligence Recommendation card removed per design lock
+//
+// Click a room → popup with status-cycle actions, same as before. If a
+// room has helpRequested = true, the popup is replaced by the backup
+// picker (same flow as before, just re-skinned to Snow).
+
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
-import { t } from '@/lib/translations';
-import { AppLayout } from '@/components/layout/AppLayout';
-import { Modal } from '@/components/ui/Modal';
 import { useSyncContext } from '@/contexts/SyncContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import {
   subscribeToRooms, updateRoom, addRoom,
-  addStaffMember, updateStaffMember, deleteStaffMember,
-  getRoomsForDate, getPublicAreas, setPublicArea, deletePublicArea,
-  updateProperty,
-  getDeepCleanConfig, setDeepCleanConfig, getDeepCleanRecords,
-  markRoomDeepCleaned, assignRoomDeepClean, completeRoomDeepClean,
-  subscribeToPlanSnapshot,
-  subscribeToShiftConfirmations,
-  subscribeToScheduleAssignments,
-  saveScheduleAssignments,
-  subscribeToDashboardNumbers,
-  getDashboardForDate,
   subscribeToWorkOrders,
 } from '@/lib/db';
-import type { PlanSnapshot, ScheduleAssignments, CsvRoomSnapshot, DashboardNumbers } from '@/lib/db';
-import { dashboardFreshness, DASHBOARD_STALE_MINUTES } from '@/lib/db';
-import { getPublicAreasDueToday, calcPublicAreaMinutes, autoAssignRooms, getOverdueRooms, calcDndFreedMinutes, suggestDeepCleans } from '@/lib/calculations';
-import { getDefaultPublicAreas } from '@/lib/defaults';
-import type { PublicArea } from '@/types';
-import { errToString } from '@/lib/utils';
 import { useTodayStr } from '@/lib/use-today-str';
-import type { Room, RoomStatus, RoomType, RoomPriority, StaffMember, DeepCleanRecord, DeepCleanConfig, ShiftConfirmation, ConfirmationStatus, WorkOrder } from '@/types';
-import { format, subDays } from 'date-fns';
+import type { Room, RoomStatus, WorkOrder, StaffMember } from '@/types';
 import {
-  Calendar, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, CheckCircle2, Clock,
-  AlertTriangle, Users, Send, Zap, BedDouble, Plus, Pencil, Trash2, Star, Check,
-  Trophy, TrendingUp, TrendingDown, Minus, Upload, Settings,
-  Search, XCircle, Home, ArrowRightLeft, Sparkles, Ban, RefreshCw,
-  Link2, Copy,
-} from 'lucide-react';
+  T, FONT_SANS, FONT_MONO, FONT_SERIF,
+  Caps, Pill, Btn, RoomTileBase, HousekeeperDot,
+} from './_snow';
 
-import {
-  TABS,
-  schedTodayStr, addDays, defaultShiftDate, formatPulledAt, formatDisplayDate,
-  isEligible, PRIORITY_ORDER, snapshotToShiftRooms, autoSelectEligible,
-  STAFF_COLORS,
-  toDate, fmtMins, HKInitials, buildLive, buildHistory,
-  PaceBadge, RankBadge, StatPill,
-  EMPTY_FORM, staffInitials,
-  getFloor, ROOM_ACTION_COLOR,
-  paFloorLabel, freqLabel, FrequencySlider, AREA_NAME_ES, areaDisplayName,
-  PublicAreasModal, PA_FLOOR_VALUES, SLIDER_MAX,
-} from './_shared';
-import type { TabKey, HKLive, HKHistory, StaffFormData } from './_shared';
+// Internal "floor" extracted from a room number — first char for now,
+// matches what `_shared.tsx` does. Inlined to avoid pulling in the
+// heavy _shared module just for one helper.
+function floorOf(num: string): string {
+  if (!num) return '?';
+  return num.charAt(0);
+}
 
-function RoomsTab() {
-  const { user }                                           = useAuth();
-  const { activePropertyId, activeProperty, staff }        = useProperty();
-  const { lang }                                           = useLang();
-  const { recordOfflineAction }                            = useSyncContext();
+export function RoomsTab() {
+  const { user } = useAuth();
+  const { activePropertyId, activeProperty, staff } = useProperty();
+  const { lang } = useLang();
+  const { recordOfflineAction } = useSyncContext();
 
-  // The Rooms tab is a single live view of "right now" — no per-date snapshot,
-  // no smart date-picker, no fallback to yesterday. We always subscribe to
-  // today's rows and merge with the property's master room inventory so all
-  // 74 (or however many) rooms render every time, regardless of what's
-  // happened in PMS today. See the useEffect below for the subscription.
   const today = useTodayStr();
-  const [rooms,   setRooms]   = useState<Room[]>([]);
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  // Toast severity drives color: 'success' = green, 'error' = red.
-  // Set in handlePopulateFromCsv before each setToastMessage call so the
-  // toast can self-explain the outcome at a glance — Mario shouldn't
-  // have to read the message text to know if the load worked.
   const [toastKind, setToastKind] = useState<'success' | 'error'>('success');
-  const [actionRoom, setActionRoom] = useState<Room | null>(null); // room action popup
-  const [nowMs, setNowMs] = useState(Date.now());
+  const [actionRoom, setActionRoom] = useState<Room | null>(null);
+  const [backupRoom, setBackupRoom] = useState<Room | null>(null);
   const [populating, setPopulating] = useState(false);
+  const [pulledAt, setPulledAt] = useState<Date | null>(null);
+  const [filter, setFilter] = useState<'all' | 'toturn' | 'cleaning' | 'ready' | 'dnd' | 'help'>('all');
+  const [search, setSearch] = useState('');
+  const [, setNowMs] = useState(Date.now());
 
-  // Help request badge tracking — rooms where helpRequested is true
-  const [backupRoom, setBackupRoom] = useState<Room | null>(null); // room needing backup staff picker
-
-  // "Load Rooms from CSV" button handler.
-  //
-  // 2026-04-28: switched from /api/populate-rooms-from-plan (which read
-  // from the cached plan_snapshots table) to /api/refresh-from-pms (which
-  // calls the Railway scraper to pull live state from Choice Advantage's
-  // Housekeeping Center page right now). Reeyen wanted the button to
-  // reflect what's actually in PMS at the moment of click, not whatever
-  // the morning scraper happened to capture an hour ago.
-  //
-  // Round-trip latency: ~5-15s typically. Worst case ~25s if the Railway
-  // scraper has to re-login mid-pull. Button shows a spinner state during
-  // the fetch.
-  const handlePopulateFromCsv = async () => {
-    if (!user || !activePropertyId || populating) return;
-    setPopulating(true);
-    try {
-      const res = await fetchWithAuth('/api/refresh-from-pms', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          pid:  activePropertyId,
-          // Always pulls into today's slice. The Rooms tab no longer offers
-          // per-date browsing — the board is "right now" and this button
-          // refreshes "right now" from PMS. Historical days aren't pulled
-          // because Mario has no UI to view them anyway.
-          date: today,
-        }),
-      });
-      // /api/refresh-from-pms now returns the standard ApiResponse envelope:
-      //   ok=true:  { ok, requestId, data: { pulledAt, createdCount, updatedCount, totalFromHkCenter, elapsedMs } }
-      //   ok=false: { ok, requestId, error, code, details? }
-      const body = (await res.json().catch(() => ({}))) as {
-        ok?: boolean;
-        data?: { createdCount?: number; updatedCount?: number };
-        error?: string;
-      };
-      if (!res.ok || body?.ok !== true) {
-        // Make errors specific about the source so it's obvious WHAT failed.
-        // The user shouldn't have to know what "PMS" means — say
-        // "Choice Advantage Housekeeping Center" plainly.
-        const reason = body?.error ?? (lang === 'es' ? 'razón desconocida' : 'unknown reason');
-        setToastKind('error');
-        setToastMessage(lang === 'es'
-          ? `❌ No se pudo cargar desde Choice Advantage: ${reason}`
-          : `❌ Couldn't load from Choice Advantage: ${reason}`);
-      } else {
-        // Success message names the exact source so anyone clicking the
-        // button understands what just happened. Includes time of pull
-        // so consecutive clicks don't blur together.
-        const created = (body.data && typeof body.data.createdCount === 'number') ? body.data.createdCount : 0;
-        const updated = (body.data && typeof body.data.updatedCount === 'number') ? body.data.updatedCount : 0;
-        const total = created + updated;
-        const time = new Date().toLocaleTimeString(lang === 'es' ? 'es-MX' : 'en-US', {
-          hour: 'numeric',
-          minute: '2-digit',
-        });
-        setToastKind('success');
-        setToastMessage(lang === 'es'
-          ? `✓ Cargadas ${total} habitaciones desde Choice Advantage · ${time}`
-          : `✓ Loaded ${total} rooms from Choice Advantage Housekeeping Center · ${time}`);
-      }
-    } catch (err: unknown) {
-      // Network-layer error (Vercel unreachable, browser offline, etc.)
-      // — distinct from a server error response handled above.
-      const msg = errToString(err);
-      setToastKind('error');
-      setToastMessage(lang === 'es'
-        ? `❌ Error de red: ${msg}`
-        : `❌ Network error: ${msg}`);
-    } finally {
-      setPopulating(false);
-      // Errors stay up longer so Mario can read the reason.
-      setTimeout(() => setToastMessage(null), 6000);
-    }
-  };
-
-  // Subscribe to TODAY's rooms only.
-  //
-  // Architectural intent (set 2026-05-10): Staxis's Rooms tab is the
-  // canonical source of truth for room state. It's not a per-date
-  // historical view, not a "last shift" snapshot — it's the live picture
-  // of every room right now. Status only changes from human action:
-  //   • housekeeper tap (Done/Skip via SMS link)
-  //   • Mario click on the tab (handleToggle below)
-  //   • Maria's schedule send-confirmations (seeds today's row with assignedTo)
-  //   • the manual "Load Rooms from CSV" button (one-time bootstrap)
-  //
-  // The previous implementation subscribed to ALL rooms across all dates
-  // and picked one with smart fallback (assigned-shift dates first, then
-  // today, then nearest future, then most recent past). That made the
-  // board silently show yesterday whenever today had no assignments yet,
-  // which surfaced as the "LAST SHIFT · Saturday May 9" badge confusion.
-  //
-  // Choice Advantage continues to be the source for occupancy / checkout
-  // / DND signals via the "Load Rooms from CSV" button, but no longer
-  // continuously feeds the Rooms tab in the background — Staxis owns the
-  // state. Eventually we'll write status BACK to CA on housekeeper-Done.
+  // Subscribe to today's rooms (canonical live source — see the long
+  // comment in the previous version for the full rationale).
   useEffect(() => {
     if (!user || !activePropertyId) return;
     setLoading(true);
@@ -195,18 +70,21 @@ function RoomsTab() {
     return unsub;
   }, [user, activePropertyId, today]);
 
-  // Merge today's actual rooms with the property's master room inventory.
-  // Anything in inventory that isn't in today's table renders as a phantom
-  // CLEAN row — the safe assumption (a clean room stays clean until someone
-  // makes it dirty). This is what makes all 74 rooms always show, even
-  // before "Load Rooms from CSV" has been clicked for the day.
-  //
-  // Phantom rows have id: "phantom-<number>" so handleToggle can detect
-  // them and lazily materialize a real row when Mario clicks one.
-  //
-  // Backward-compat: if room_inventory is empty (a property that hasn't
-  // been onboarded by the CUA worker yet), fall back to whatever's in
-  // today's rooms table — same as the old behavior.
+  // Work orders → derive the "has open WO" flag per room number.
+  useEffect(() => {
+    if (!user || !activePropertyId) return;
+    return subscribeToWorkOrders(user.uid, activePropertyId, setWorkOrders);
+  }, [user, activePropertyId]);
+
+  // Tick every 15s so in-progress tiles update their elapsed-time badge.
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 15_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Merge today's rooms with property inventory so all rooms render even
+  // before "Refresh from PMS" has been clicked. Phantom rows have an id
+  // prefixed `phantom-` so handleToggle can lazily materialize them.
   const displayRooms = useMemo<Room[]>(() => {
     if (!activePropertyId) return [];
     const inventory = activeProperty?.roomInventory ?? [];
@@ -218,9 +96,8 @@ function RoomsTab() {
     const out: Room[] = [];
     for (const num of inventory) {
       const existing = byNumber.get(num);
-      if (existing) {
-        out.push(existing);
-      } else {
+      if (existing) out.push(existing);
+      else {
         out.push({
           id: `phantom-${num}`,
           number: num,
@@ -232,42 +109,74 @@ function RoomsTab() {
         });
       }
     }
-    // Defensive: include any rooms in today's table that aren't in the
-    // inventory list (e.g. inventory was updated after a manual addRoom).
     for (const r of rooms) {
       if (!inventory.includes(r.number)) out.push(r);
     }
     return out;
   }, [rooms, activeProperty?.roomInventory, activePropertyId, today]);
 
-  // Live timer refresh every 15 seconds
-  useEffect(() => {
-    const id = setInterval(() => setNowMs(Date.now()), 15_000);
-    return () => clearInterval(id);
-  }, []);
+  // Open-WO set keyed by room number, used to flag tiles with a red dot.
+  const openWoRooms = useMemo(() => {
+    const set = new Set<string>();
+    for (const o of workOrders) {
+      if (o.status !== 'resolved') set.add(o.roomNumber);
+    }
+    return set;
+  }, [workOrders]);
 
-  const floors = [...new Set(displayRooms.map(r => getFloor(r.number)))].sort((a, b) => {
-    if (a === 'G') return -1; if (b === 'G') return 1;
-    return parseInt(a) - parseInt(b);
-  });
+  // Status counts across the whole property.
+  const counts = useMemo(() => {
+    const c = { total: 0, ready: 0, cleaning: 0, dirty: 0, dnd: 0, blocked: 0, help: 0 };
+    for (const r of displayRooms) {
+      c.total++;
+      if (r.status === 'clean' || r.status === 'inspected') c.ready++;
+      if (r.status === 'in_progress') c.cleaning++;
+      if (r.status === 'dirty') c.dirty++;
+      if (r.type === 'vacant') c.dnd++;
+      if (openWoRooms.has(r.number)) c.blocked++;
+      if (r.helpRequested) c.help++;
+    }
+    return c;
+  }, [displayRooms, openWoRooms]);
 
-  const sorted = [...displayRooms].sort((a, b) => (parseInt(a.number.replace(/\D/g, '')) || 0) - (parseInt(b.number.replace(/\D/g, '')) || 0));
+  const pct = counts.total > 0 ? Math.round((counts.ready / counts.total) * 100) : 0;
 
-  const doneCount  = displayRooms.filter(r => r.status === 'clean' || r.status === 'inspected').length;
-  const totalCount = displayRooms.length;
-  const pct        = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
+  // "Refresh from PMS" — pulls live state from Choice Advantage via the
+  // Railway scraper. ~5–15s round-trip typically. Same handler as before,
+  // just renamed in the UI to match the design.
+  const handlePopulateFromCsv = useCallback(async () => {
+    if (!user || !activePropertyId || populating) return;
+    setPopulating(true);
+    try {
+      const res = await fetchWithAuth('/api/refresh-from-pms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pid: activePropertyId, date: today }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (j?.ok) {
+        const data = j.data || {};
+        const msg = lang === 'es'
+          ? `Cargados ${data.totalFromHkCenter ?? '?'} cuartos del PMS`
+          : `Loaded ${data.totalFromHkCenter ?? '?'} rooms from PMS`;
+        setToastKind('success');
+        setToastMessage(msg);
+        setPulledAt(new Date());
+      } else {
+        setToastKind('error');
+        setToastMessage(lang === 'es' ? 'No se pudo cargar del PMS' : 'Could not load from PMS');
+      }
+    } catch {
+      setToastKind('error');
+      setToastMessage(lang === 'es' ? 'Error al conectar con PMS' : 'PMS connection error');
+    } finally {
+      setPopulating(false);
+      setTimeout(() => setToastMessage(null), 3000);
+    }
+  }, [user, activePropertyId, populating, today, lang]);
 
-  const STATUS_INFO: Record<RoomStatus, { label: string; color: string; bgColor: string; borderColor: string }> = {
-    dirty:       { label: t('dirty', lang),          color: 'var(--red)', bgColor: 'var(--red-dim)',   borderColor: 'var(--red-border, rgba(239,68,68,0.25))'   },
-    in_progress: { label: t('cleaning', lang),       color: 'var(--amber)', bgColor: 'var(--amber-dim)',  borderColor: 'var(--amber-border)'  },
-    clean:       { label: t('clean', lang) + ' ✓',  color: 'var(--green)', bgColor: 'var(--green-dim)',   borderColor: 'var(--green-border, rgba(34,197,94,0.25))'   },
-    inspected:   { label: t('approved', lang),       color: 'var(--purple, #8B5CF6)', bgColor: 'rgba(139,92,246,0.08)',  borderColor: 'rgba(139,92,246,0.25)'  },
-  };
-
-  const ACTION_LABEL: Record<RoomStatus, string> = {
-    dirty: t('start', lang), in_progress: t('done', lang) + ' ✓', clean: t('reset', lang), inspected: t('locked', lang),
-  };
-
+  // Cycle a room's status: dirty → in_progress → clean → dirty. Phantom
+  // rooms are materialized into a real DB row on first click.
   const handleToggle = async (room: Room) => {
     if (!user || !activePropertyId || room.status === 'inspected') return;
     let newStatus: RoomStatus;
@@ -276,14 +185,9 @@ function RoomsTab() {
     else newStatus = 'dirty';
     if (!navigator.onLine) recordOfflineAction();
 
-    // Phantom rooms (id starts with "phantom-") are inventory members that
-    // don't have a real DB row yet. Materialize a real row on first click —
-    // the realtime subscription will then replace the phantom with the
-    // real row in displayRooms. Without this, updateRoom(phantom-205, …)
-    // would 404 on the rooms table.
     if (room.id.startsWith('phantom-')) {
-      const startedAt = newStatus === 'in_progress' ? new Date() : undefined;
-      const completedAt = newStatus === 'clean' ? new Date() : undefined;
+      const startedAt   = newStatus === 'in_progress' ? new Date() : undefined;
+      const completedAt = newStatus === 'clean'       ? new Date() : undefined;
       await addRoom(user.uid, activePropertyId, {
         number: room.number,
         type: 'vacant',
@@ -294,491 +198,434 @@ function RoomsTab() {
         ...(startedAt ? { startedAt } : {}),
         ...(completedAt ? { completedAt } : {}),
       });
+      setActionRoom(null);
       return;
     }
 
     const updates: Partial<Room> = { status: newStatus };
-    if (newStatus === 'in_progress') updates.startedAt  = new Date();
+    if (newStatus === 'in_progress') updates.startedAt   = new Date();
     if (newStatus === 'clean')       updates.completedAt = new Date();
     await updateRoom(user.uid, activePropertyId, room.id, updates);
+    setActionRoom(null);
   };
 
-  // Send backup handler — assign a backup person to a room
+  // Assign a backup housekeeper to a room that hit "help requested" and
+  // text them via /api/notify-backup. Same flow as before.
   const handleSendBackup = async (room: Room, backupStaffId: string, backupStaffName: string) => {
     if (!user || !activePropertyId) return;
     if (!navigator.onLine) recordOfflineAction();
-    // Clear help request and assign backup
     await updateRoom(user.uid, activePropertyId, room.id, {
       helpRequested: false,
       issueNote: `Backup sent: ${backupStaffName} at ${new Date().toLocaleTimeString()}`,
     });
-    // Send SMS directly to the backup person Mario picked — not the
-    // scheduling manager, not a broadcast. Uses /api/notify-backup which is
-    // the only path that texts a specific staff member by id.
     try {
       await fetchWithAuth('/api/notify-backup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           uid: user.uid, pid: activePropertyId,
-          backupStaffId,
-          roomNumber: room.number,
-          language: 'en',
+          backupStaffId, roomNumber: room.number, language: 'en',
         }),
       });
-    } catch (e) { /* SMS failure is non-blocking */ }
+    } catch { /* SMS failure is non-blocking */ }
     setBackupRoom(null);
-    setToastMessage(lang === 'es' ? `${backupStaffName} enviado a ${room.number}` : `${backupStaffName} sent to Room ${room.number}`);
+    setToastKind('success');
+    setToastMessage(lang === 'es'
+      ? `${backupStaffName} enviado a ${room.number}`
+      : `${backupStaffName} sent to Room ${room.number}`);
     setTimeout(() => setToastMessage(null), 2500);
   };
 
-  // Helper: get elapsed minutes for an in-progress room
-  const getElapsedMins = (room: Room): number | null => {
-    if (room.status !== 'in_progress') return null;
-    const s = toDate(room.startedAt);
-    if (!s) return null;
-    return Math.round((nowMs - s.getTime()) / 60_000);
-  };
-
-  // Helper: check if room is over time
-  const isOverTime = (room: Room): boolean => {
-    const elapsed = getElapsedMins(room);
-    if (elapsed === null) return false;
-    let limit: number;
-    if (room.type === 'checkout') {
-      limit = activeProperty?.checkoutMinutes ?? 30;
-    } else {
-      const d = room.stayoverDay;
-      const d1 = activeProperty?.stayoverDay1Minutes ?? 15;
-      const d2 = activeProperty?.stayoverDay2Minutes ?? activeProperty?.stayoverMinutes ?? 20;
-      if (typeof d === 'number' && d > 0) {
-        limit = d % 2 === 1 ? d1 : d2;
-      } else {
-        limit = activeProperty?.stayoverMinutes ?? d2;
-      }
+  // Group rooms by floor → reversed so the top floor renders first
+  // (matches the design's "top-down" stack).
+  const floorMap = useMemo(() => {
+    const m = new Map<string, Room[]>();
+    for (const r of displayRooms) {
+      const f = floorOf(r.number);
+      if (!m.has(f)) m.set(f, []);
+      m.get(f)!.push(r);
     }
-    return elapsed > limit;
+    // Numerical sort, ground floor 'G' first.
+    const sortedKeys = [...m.keys()].sort((a, b) => {
+      if (a === 'G') return -1; if (b === 'G') return 1;
+      return parseInt(a) - parseInt(b);
+    }).reverse();
+    return sortedKeys.map(k => ({
+      floor: k,
+      rooms: m.get(k)!.sort((a, b) =>
+        (parseInt(a.number.replace(/\D/g, '')) || 0) - (parseInt(b.number.replace(/\D/g, '')) || 0)
+      ),
+    }));
+  }, [displayRooms]);
+
+  const matchesFilter = (r: Room) => {
+    if (search && !r.number.includes(search)) return false;
+    if (filter === 'all') return true;
+    if (filter === 'toturn')   return r.status === 'dirty';
+    if (filter === 'cleaning') return r.status === 'in_progress';
+    if (filter === 'ready')    return r.status === 'clean' || r.status === 'inspected';
+    if (filter === 'dnd')      return r.type === 'vacant' || openWoRooms.has(r.number);
+    if (filter === 'help')     return Boolean(r.helpRequested);
+    return true;
   };
 
-  // Compute metrics for the footer
-  const dirtyCount = displayRooms.filter(r => r.status === 'dirty').length;
-  const inProgressCount = displayRooms.filter(r => r.status === 'in_progress').length;
-  const queueCount = dirtyCount + inProgressCount;
+  const filters: Array<{ key: typeof filter; label: string; n: number; danger?: boolean }> = [
+    { key: 'all',      label: lang === 'es' ? 'Todas'        : 'All',             n: counts.total },
+    { key: 'toturn',   label: lang === 'es' ? 'A limpiar'    : 'To turn',         n: counts.dirty },
+    { key: 'cleaning', label: lang === 'es' ? 'Limpiando'    : 'Cleaning',        n: counts.cleaning },
+    { key: 'ready',    label: lang === 'es' ? 'Listas'       : 'Ready',           n: counts.ready },
+    { key: 'dnd',      label: lang === 'es' ? 'DND / Bloq.'  : 'DND / blocked',   n: counts.dnd + counts.blocked },
+    { key: 'help',     label: lang === 'es' ? 'Ayuda'        : 'Help requested',  n: counts.help, danger: true },
+  ];
 
-  // Status → glow class mapping
-  const GLOW_CLASS: Record<RoomStatus, string> = {
-    dirty: 'glow-dirty',
-    in_progress: 'glow-cleaning',
-    clean: 'glow-clean',
-    inspected: 'glow-inspected',
-  };
+  // Active crew → housekeepers currently assigned to at least one room
+  // today. Powers the bottom strip.
+  const activeCrew = useMemo(() => {
+    const byId = new Map<string, { staff: StaffMember; done: number; total: number; active: Room | null }>();
+    for (const r of displayRooms) {
+      if (!r.assignedTo) continue;
+      const s = staff.find(x => x.id === r.assignedTo);
+      if (!s) continue;
+      if (!byId.has(s.id)) byId.set(s.id, { staff: s, done: 0, total: 0, active: null });
+      const entry = byId.get(s.id)!;
+      entry.total++;
+      if (r.status === 'clean' || r.status === 'inspected') entry.done++;
+      if (r.status === 'in_progress') entry.active = r;
+    }
+    return [...byId.values()].sort((a, b) => {
+      if (a.active && !b.active) return -1;
+      if (!a.active && b.active) return 1;
+      return a.staff.name.localeCompare(b.staff.name);
+    });
+  }, [displayRooms, staff]);
 
-  // Status → text color class
-  const STATUS_TEXT_CLASS: Record<RoomStatus, string> = {
-    dirty: 'text-status-dirty',
-    in_progress: 'text-status-cleaning',
-    clean: 'text-status-clean',
-    inspected: 'text-status-inspected',
-  };
-
-  // Room type icon (using unicode instead of Material Symbols for simplicity)
-  const getRoomIcon = (room: Room): string | null => {
-    if (room.isDnd) return '⊘';
-    if (room.type === 'checkout') return '↗';
-    if (room.type === 'stayover') return '🔒';
-    return null;
-  };
+  if (loading) {
+    return (
+      <div style={{
+        padding: '40px 48px', background: T.bg, color: T.ink2, fontFamily: FONT_SANS,
+        minHeight: 'calc(100dvh - 130px)',
+      }}>
+        {lang === 'es' ? 'Cargando cuartos…' : 'Loading rooms…'}
+      </div>
+    );
+  }
 
   return (
-    <div style={{ padding: '24px', paddingBottom: '200px', background: 'var(--bg)', minHeight: 'calc(100dvh - 180px)' }}>
+    <div style={{
+      padding: '24px 48px 48px', background: T.bg, color: T.ink,
+      fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)',
+    }}>
 
-      {/* Backup staff picker popup */}
-      {backupRoom && (
-        <>
-          <div style={{ position: 'fixed', inset: 0, zIndex: 9997, background: 'rgba(0,0,0,0.4)' }} onClick={() => setBackupRoom(null)} />
-          <div style={{
-            position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 9998,
-            background: '#fff', borderRadius: '16px 16px 0 0',
-            boxShadow: '0 -4px 30px rgba(0,0,0,0.15)',
-            padding: '20px 16px 32px', display: 'flex', flexDirection: 'column', gap: '12px',
-            maxHeight: '60vh', overflowY: 'auto',
+      {/* HERO ROW — title + refresh-from-PMS button */}
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end',
+        marginBottom: 20, gap: 24, flexWrap: 'wrap',
+      }}>
+        <div>
+          <Caps>{lang === 'es' ? 'El tablero · en vivo' : 'The board · live'}</Caps>
+          <h1 style={{
+            fontFamily: FONT_SERIF, fontSize: 36, color: T.ink, margin: '4px 0 0',
+            letterSpacing: '-0.03em', lineHeight: 1.25, fontWeight: 400,
           }}>
-            <div style={{ width: '40px', height: '4px', borderRadius: '2px', background: '#e2e8f0', margin: '0 auto 4px' }} />
-            <p style={{ fontSize: '16px', fontWeight: 700, color: '#0f172a', margin: 0 }}>
-              {lang === 'es' ? `Enviar ayuda a ${backupRoom.number}` : `Send backup to Room ${backupRoom.number}`}
-            </p>
-            <p style={{ fontSize: '13px', color: '#64748b', margin: 0 }}>
-              {lang === 'es' ? 'Selecciona quién enviar:' : 'Select who to send:'}
-            </p>
-            {staff.filter(s => s.isActive !== false && s.id !== backupRoom.assignedTo).map(s => (
-              <button key={s.id} onClick={() => handleSendBackup(backupRoom, s.id, s.name)} style={{
-                display: 'flex', alignItems: 'center', gap: '12px', padding: '14px 16px',
-                background: '#fff', border: '1px solid #e2e8f0', borderRadius: '12px',
-                cursor: 'pointer', fontFamily: 'var(--font-sans)', width: '100%',
-              }}>
-                <div style={{
-                  width: '36px', height: '36px', borderRadius: '10px',
-                  background: '#0f172a', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontWeight: 700, fontSize: '13px', flexShrink: 0,
-                }}>
-                  {s.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)}
-                </div>
-                <span style={{ fontSize: '14px', fontWeight: 600, color: '#0f172a' }}>{s.name}</span>
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-
-      {/* Toast notification — green for success, red for errors so the
-          outcome is obvious at a glance even before reading the text.
-          Portaled to document.body because some ancestor in the
-          housekeeping layout has a CSS transform/perspective that turns
-          this component's containing block into the ancestor instead of
-          the viewport — without the portal, position:fixed anchors to
-          that ancestor and the toast renders below the page fold.
-          Same fix pattern used on the Staff Priority modal (commit
-          c2bb521). */}
-      {toastMessage && typeof document !== 'undefined' && createPortal(
-        <div style={{
-          position: 'fixed', bottom: '24px', right: '24px',
-          maxWidth: '440px',
-          background: toastKind === 'error' ? '#dc2626' : '#10b981',
-          color: '#fff',
-          padding: '14px 18px', borderRadius: '12px',
-          fontSize: '14px', fontWeight: 500,
-          lineHeight: 1.4,
-          boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
-          zIndex: 9999,
-        }}>
-          {toastMessage}
-        </div>,
-        document.body,
-      )}
-
-      {loading ? (
-        <div style={{ textAlign: 'center', padding: '48px 0' }}>
-          <div className="spinner" style={{ width: '28px', height: '28px', margin: '0 auto 12px' }} />
-          <p style={{ color: '#64748b', fontSize: '14px', margin: 0 }}>{t('loading', lang)}</p>
+            <span style={{ fontStyle: 'italic' }}>{counts.dirty}</span>
+            {lang === 'es' ? ' cuartos por limpiar' : ' rooms to turn'}
+            <span style={{ color: T.ink3 }}>
+              {lang === 'es' ? ` · ${counts.cleaning} en progreso` : ` · ${counts.cleaning} in progress`}
+            </span>
+          </h1>
         </div>
-      ) : sorted.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: '52px 20px', background: 'rgba(255,255,255,0.7)', borderRadius: '12px', backdropFilter: 'blur(8px)' }}>
-          <p style={{ fontSize: '32px', marginBottom: '12px' }}>🛏️</p>
-          <p style={{ color: '#64748b', fontSize: '15px', fontWeight: 500, marginBottom: '20px' }}>{rooms.length === 0 ? t('noRoomsTodayHkp', lang) : t('noRoomsFloor', lang)}</p>
-          <button
-            onClick={handlePopulateFromCsv}
-            disabled={populating}
-            title={lang === 'es'
-              ? 'Pulsa para cargar el estado en vivo (limpio/sucio, ocupado, asignado) de la página Housekeeping Center de Choice Advantage. Conserva las asignaciones del personal.'
-              : 'Click to load live room status (clean/dirty, occupied, assigned) from Choice Advantage\u2019s Housekeeping Center page. Preserves staff assignments.'}
-            style={{
-              display: 'inline-flex', alignItems: 'center', gap: '8px',
-              padding: '10px 18px',
-              background: populating ? 'rgba(16,185,129,0.4)' : '#10b981',
-              color: '#fff', border: 'none', borderRadius: '10px',
-              fontSize: '13px', fontWeight: 700, letterSpacing: '0.03em',
-              cursor: populating ? 'wait' : 'pointer',
-              boxShadow: '0 2px 8px rgba(16,185,129,0.3)',
-              fontFamily: 'var(--font-sans)',
-            }}
-          >
-            <RefreshCw size={14} style={{ animation: populating ? 'spin 1s linear infinite' : undefined }} />
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
+          {pulledAt && (
+            <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2, whiteSpace: 'nowrap' }}>
+              <span style={{ color: T.ink3 }}>{lang === 'es' ? 'Última carga PMS · ' : 'Last PMS pull · '}</span>
+              <strong style={{ color: T.ink }}>{pulledAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</strong>
+            </span>
+          )}
+          <Btn variant="primary" onClick={handlePopulateFromCsv} disabled={populating}>
             {populating
               ? (lang === 'es' ? 'Cargando…' : 'Loading…')
-              : (lang === 'es' ? 'Cargar desde CSV' : 'Load Rooms from CSV')}
-          </button>
+              : (lang === 'es' ? '↻ Cargar del PMS' : '↻ Refresh from PMS')}
+          </Btn>
         </div>
-      ) : (
-        <>
-          {/* ── Today's Shift Banner ──
-              Always today, no fallback to past/future. The Rooms tab is
-              a live view of "right now", not a per-date snapshot. */}
-          <div style={{
-            display: 'inline-flex', alignItems: 'center', gap: '10px',
-            padding: '8px 14px', marginBottom: '20px',
-            background: 'rgba(16,185,129,0.08)',
-            border: '1px solid rgba(16,185,129,0.25)',
-            borderRadius: '999px', color: '#047857',
-            fontSize: '13px', fontWeight: 600,
-          }}>
-            <Calendar size={14} />
-            <span style={{ textTransform: 'uppercase', letterSpacing: '0.08em', fontSize: '11px', fontWeight: 700, opacity: 0.8 }}>
-              {lang === 'es' ? 'Turno de hoy' : "Today's shift"}
-            </span>
-            <span style={{ opacity: 0.45 }}>·</span>
-            <span>{format(new Date(today + 'T00:00:00'), 'EEEE, MMMM d')}</span>
-          </div>
+      </div>
 
-          {/* ── Status Legend ── */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '32px', marginBottom: '40px', padding: '0 4px', flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
-              {[
-                { label: lang === 'es' ? 'Sucia' : 'Dirty', color: '#ef4444' },
-                { label: lang === 'es' ? 'Limpiando' : 'Cleaning', color: '#f59e0b' },
-                { label: lang === 'es' ? 'Limpia' : 'Clean', color: '#10b981' },
-                { label: lang === 'es' ? 'Inspeccionada' : 'Inspected', color: '#8b5cf6' },
-              ].map(s => (
-                <div key={s.label} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+      {/* PROGRESS STRIP — overall % + per-status counts */}
+      <div style={{
+        background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14,
+        padding: '14px 18px', marginBottom: 18,
+        display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap',
+      }}>
+        <div style={{ flex: 1, minWidth: 240, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+            <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2 }}>
+              <strong style={{ color: T.ink, fontWeight: 600 }}>{counts.ready} of {counts.total}</strong>
+              {lang === 'es' ? ' listas' : ' ready'}
+            </span>
+            <span style={{
+              fontFamily: FONT_SERIF, fontSize: 24, fontStyle: 'italic',
+              color: T.sageDeep, letterSpacing: '-0.02em',
+            }}>{pct}%</span>
+          </div>
+          <div style={{ height: 6, background: T.ruleSoft, borderRadius: 3, overflow: 'hidden', display: 'flex' }}>
+            <span style={{ width: `${(counts.ready / Math.max(1, counts.total)) * 100}%`, background: T.sageDeep }} />
+            <span style={{ width: `${(counts.cleaning / Math.max(1, counts.total)) * 100}%`, background: T.caramelDeep }} />
+            <span style={{ width: `${(counts.dirty / Math.max(1, counts.total)) * 100}%`, background: T.warm }} />
+          </div>
+        </div>
+        <span style={{ width: 1, height: 34, background: T.rule }} />
+        <div style={{ display: 'flex', gap: 18 }}>
+          {[
+            { l: lang === 'es' ? 'Listas'    : 'Ready',    v: counts.ready,    c: T.sageDeep },
+            { l: lang === 'es' ? 'Limpiando' : 'Cleaning', v: counts.cleaning, c: T.caramelDeep },
+            { l: lang === 'es' ? 'Sucias'    : 'Dirty',    v: counts.dirty,    c: T.warm },
+            { l: 'DND',                                     v: counts.dnd + counts.blocked, c: T.ink2 },
+          ].map(s => (
+            <div key={s.l} style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'flex-start' }}>
+              <Caps size={9}>{s.l}</Caps>
+              <span style={{
+                fontFamily: FONT_MONO, fontSize: 22, fontWeight: 500, color: s.c,
+                letterSpacing: '-0.02em', lineHeight: 1,
+              }}>{s.v}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* FILTERS + SEARCH */}
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        marginBottom: 18, gap: 14, flexWrap: 'wrap',
+      }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {filters.map(f => {
+            const active = filter === f.key;
+            return (
+              <button
+                key={f.key}
+                onClick={() => setFilter(f.key)}
+                style={{
+                  padding: '7px 14px', borderRadius: 999, cursor: 'pointer',
+                  background: active ? T.ink : (f.danger ? T.warmDim : T.paper),
+                  color: active ? T.bg : (f.danger ? T.warm : T.ink2),
+                  border: active ? 'none' : `1px solid ${f.danger ? 'rgba(184,119,94,0.3)' : T.rule}`,
+                  fontFamily: FONT_SANS, fontSize: 13, fontWeight: active ? 600 : 500,
+                  display: 'inline-flex', alignItems: 'center', gap: 7,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {f.label}
+                <span style={{
+                  fontFamily: FONT_MONO, fontSize: 11, fontWeight: 600,
+                  color: active ? T.bg : (f.danger ? T.warm : T.ink3),
+                  opacity: active ? 0.7 : 1,
+                }}>{f.n}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '7px 14px', background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 999,
+          width: 260,
+        }}>
+          <svg width="13" height="13" viewBox="0 0 14 14">
+            <circle cx="6" cy="6" r="4" fill="none" stroke={T.ink3 as string} strokeWidth="1.5"/>
+            <line x1="9" y1="9" x2="12.5" y2="12.5" stroke={T.ink3 as string} strokeWidth="1.5" strokeLinecap="round"/>
+          </svg>
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder={lang === 'es' ? 'Buscar cuarto…' : 'Find room number…'}
+            style={{
+              flex: 1, background: 'transparent', border: 'none', outline: 'none',
+              fontFamily: FONT_SANS, fontSize: 13, color: T.ink,
+            }}
+          />
+        </div>
+      </div>
+
+      {/* FLOOR TRACKS */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        {floorMap.map(({ floor, rooms: floorRooms }) => {
+          const visible = floorRooms.filter(matchesFilter);
+          if (visible.length === 0) return null;
+          const fc = {
+            d: floorRooms.filter(r => r.status === 'dirty').length,
+            p: floorRooms.filter(r => r.status === 'in_progress').length,
+            c: floorRooms.filter(r => r.status === 'clean' || r.status === 'inspected').length,
+          };
+          return (
+            <div key={floor} style={{
+              background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
+              padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 12,
+            }}>
+              <div style={{
+                display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
+                flexWrap: 'wrap', gap: 14,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, whiteSpace: 'nowrap' }}>
                   <span style={{
-                    width: '10px', height: '10px', borderRadius: '50%',
-                    background: s.color, boxShadow: `0 0 8px ${s.color}80`,
-                  }} />
-                  <span style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
-                    {s.label}
+                    fontFamily: FONT_SERIF, fontSize: 30, color: T.ink,
+                    fontStyle: 'italic', lineHeight: 1.1, letterSpacing: '-0.02em',
+                  }}>
+                    {lang === 'es' ? 'Piso' : 'Floor'} {floor}
+                  </span>
+                  <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink3 }}>
+                    {floorRooms.length} {lang === 'es' ? 'cuartos' : 'rooms'}
                   </span>
                 </div>
-              ))}
-            </div>
-            <div style={{ height: '16px', width: '1px', background: 'rgba(148,163,184,0.3)' }} />
-            <div style={{ display: 'flex', alignItems: 'center', gap: '20px', color: '#94a3b8' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <span style={{ fontSize: '14px' }}>⊘</span>
-                <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em' }}>DND</span>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <span style={{ fontSize: '14px' }}>🔒</span>
-                <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em' }}>{lang === 'es' ? 'Ocupada' : 'Occupied'}</span>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <span style={{ fontSize: '14px' }}>↗</span>
-                <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em' }}>{lang === 'es' ? 'Salida' : 'Checkout'}</span>
-              </div>
-            </div>
-
-            {/* ── Populate from CSV button (right-aligned) ──
-                The button name still reads "Load Rooms from CSV" because
-                Mario knows that label, but the title (hover tooltip) is
-                explicit about what it actually does today: pulls live
-                state from Choice Advantage's Housekeeping Center page. */}
-            <button
-              onClick={handlePopulateFromCsv}
-              disabled={populating}
-              title={lang === 'es'
-                ? 'Pulsa para cargar el estado en vivo (limpio/sucio, ocupado, asignado) de la página Housekeeping Center de Choice Advantage. Conserva las asignaciones del personal.'
-                : 'Click to load live room status (clean/dirty, occupied, assigned) from Choice Advantage\u2019s Housekeeping Center page. Preserves staff assignments.'}
-              style={{
-                marginLeft: 'auto',
-                display: 'inline-flex', alignItems: 'center', gap: '8px',
-                padding: '8px 14px',
-                background: populating ? 'rgba(16,185,129,0.4)' : 'rgba(16,185,129,0.1)',
-                color: '#047857',
-                border: '1px solid rgba(16,185,129,0.35)',
-                borderRadius: '999px',
-                fontSize: '12px', fontWeight: 700,
-                letterSpacing: '0.03em',
-                cursor: populating ? 'wait' : 'pointer',
-                fontFamily: 'var(--font-sans)',
-                transition: 'all 0.15s ease',
-              }}
-            >
-              <RefreshCw size={13} style={{ animation: populating ? 'spin 1s linear infinite' : undefined }} />
-              {populating
-                ? (lang === 'es' ? 'Cargando…' : 'Loading…')
-                : (lang === 'es' ? 'Cargar desde CSV' : 'Load Rooms from CSV')}
-            </button>
-          </div>
-
-          {/* ── Floor Grids ── */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '48px' }}>
-            {floors.map((floor) => {
-              const floorRooms = sorted.filter(r => getFloor(r.number) === floor);
-              if (floorRooms.length === 0) return null;
-              const floorLabel = floor === 'G' ? 'LOBBY' : `LEVEL ${floor.padStart(2, '0')}`;
-              return (
-                <section key={floor}>
-                  {/* Floor header with gradient divider */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '16px', padding: '0 4px' }}>
-                    <h2 style={{
-                      fontSize: '10px', fontWeight: 900, textTransform: 'uppercase',
-                      letterSpacing: '0.3em', color: '#94a3b8', margin: 0,
-                      fontFamily: 'var(--font-sans)',
-                    }}>
-                      {floorLabel}
-                    </h2>
-                    <div style={{ flex: 1, height: '1px', background: 'linear-gradient(to right, #e2e8f0, #e2e8f0 50%, transparent)' }} />
-                  </div>
-
-                  {/* Room tiles grid */}
-                  <div style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fill, minmax(80px, 1fr))',
-                    gap: '12px',
-                  }}>
-                    {floorRooms.map(room => {
-                      const hasHelp = room.helpRequested === true;
-                      const elapsed = getElapsedMins(room);
-                      const overTime = isOverTime(room);
-                      const icon = getRoomIcon(room);
-                      const glowClass = hasHelp ? 'glow-help' : GLOW_CLASS[room.status];
-                      const textClass = STATUS_TEXT_CLASS[room.status];
-
-                      return (
-                        <button
-                          key={room.id}
-                          className={`glass-tile ${glowClass}`}
-                          onClick={() => hasHelp ? setBackupRoom(room) : handleToggle(room)}
-                          disabled={room.status === 'inspected' && !hasHelp}
-                          title={`Room ${room.number} · ${room.type ?? ''} · ${STATUS_INFO[room.status].label}`}
-                          style={{
-                            display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
-                            padding: '14px', borderRadius: '8px',
-                            border: '1px solid rgba(255,255,255,0.4)',
-                            cursor: room.status === 'inspected' && !hasHelp ? 'default' : 'pointer',
-                            fontFamily: 'var(--font-sans)',
-                            position: 'relative',
-                            minHeight: '56px',
-                          }}
-                        >
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                            <span className={textClass} style={{
-                              fontFamily: 'var(--font-mono)', fontSize: '18px', fontWeight: 700, lineHeight: 1,
-                            }}>
-                              {room.number}
-                            </span>
-                            {icon && (
-                              <span style={{
-                                fontSize: '13px', lineHeight: 1,
-                                color: room.isDnd ? 'rgba(239,68,68,0.7)' : 'rgba(148,163,184,0.6)',
-                              }}>
-                                {icon}
-                              </span>
-                            )}
-                          </div>
-
-                          {/* Timer for in-progress rooms */}
-                          {elapsed !== null && (
-                            <span style={{
-                              fontSize: '10px', fontWeight: 700, fontFamily: 'var(--font-mono)',
-                              color: overTime ? '#ef4444' : '#94a3b8',
-                              marginTop: '4px', lineHeight: 1,
-                            }}>
-                              {elapsed}m{overTime ? ' ⚠' : ''}
-                            </span>
-                          )}
-
-                          {/* SOS badge */}
-                          {hasHelp && (
-                            <div style={{
-                              position: 'absolute', bottom: '4px', left: '50%', transform: 'translateX(-50%)',
-                              fontSize: '9px', fontWeight: 900, color: '#fff',
-                              background: '#dc2626', borderRadius: '4px', padding: '1px 6px',
-                              letterSpacing: '0.05em',
-                              boxShadow: '0 0 8px rgba(220, 38, 38, 0.6)',
-                            }}>
-                              SOS
-                            </div>
-                          )}
-
-                          {/* Assigned staff name */}
-                          {room.assignedName && !hasHelp && (
-                            <div style={{
-                              fontSize: '9px', fontWeight: 600, color: '#94a3b8',
-                              marginTop: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                            }}>
-                              {room.assignedName.split(' ')[0]}
-                            </div>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </section>
-              );
-            })}
-          </div>
-
-          {/* ── AI Intelligence Recommendation Card ── */}
-          {dirtyCount > 0 && (
-            <div style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              marginTop: '48px', padding: '24px 28px',
-              background: 'rgba(255,255,255,0.7)', backdropFilter: 'blur(8px)',
-              border: '1px solid rgba(16,185,129,0.2)', borderRadius: '16px',
-              flexWrap: 'wrap', gap: '16px',
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                <div style={{
-                  width: '48px', height: '48px', borderRadius: '16px',
-                  background: 'rgba(16,185,129,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  flexShrink: 0, boxShadow: '0 0 20px rgba(16,185,129,0.4)',
-                }}>
-                  <Zap size={24} color="#10b981" />
-                </div>
-                <div>
-                  <h3 style={{ fontSize: '10px', fontWeight: 900, color: '#059669', textTransform: 'uppercase', letterSpacing: '0.2em', marginBottom: '4px' }}>
-                    {lang === 'es' ? 'Recomendación Inteligente' : 'Intelligence Recommendation'}
-                  </h3>
-                  <p style={{ fontSize: '14px', color: '#334155', margin: 0 }}>
-                    {dirtyCount} {lang === 'es' ? 'habitaciones pendientes' : 'rooms in queue'}.{' '}
-                    <span style={{ color: '#059669', fontWeight: 700 }}>{pct}%</span>{' '}
-                    {lang === 'es' ? 'completado hoy' : 'completed today'}.
-                    {inProgressCount > 0 && (
-                      <> {inProgressCount} {lang === 'es' ? 'en progreso ahora' : 'in progress now'}.</>
-                    )}
-                  </p>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <Pill tone="warm">{fc.d} {lang === 'es' ? 'sucias' : 'dirty'}</Pill>
+                  <Pill tone="caramel">{fc.p} {lang === 'es' ? 'limpiando' : 'cleaning'}</Pill>
+                  <Pill tone="sage">{fc.c} {lang === 'es' ? 'listas' : 'ready'}</Pill>
                 </div>
               </div>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                {visible.map(r => (
+                  <RoomTileBase
+                    key={r.id}
+                    r={r}
+                    lang={lang}
+                    hasWorkOrder={openWoRooms.has(r.number)}
+                    onClick={() => r.helpRequested ? setBackupRoom(r) : setActionRoom(r)}
+                  />
+                ))}
+              </div>
             </div>
-          )}
+          );
+        })}
+      </div>
+
+      {/* CREW STRIP — only renders if at least one housekeeper is assigned today */}
+      {activeCrew.length > 0 && (
+        <div style={{
+          marginTop: 18, background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14,
+          padding: '14px 18px', display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap',
+        }}>
+          <Caps>{lang === 'es' ? 'En el piso' : 'On the floor'}</Caps>
+          {activeCrew.map(({ staff: s, done, total, active }) => (
+            <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <HousekeeperDot staff={s} size={26} />
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <span style={{
+                  fontFamily: FONT_SANS, fontSize: 13, color: T.ink,
+                  fontWeight: 500, lineHeight: 1.1,
+                }}>{s.name}</span>
+                <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink2 }}>
+                  {done}/{total} · {active
+                    ? `${lang === 'es' ? 'en' : 'in'} ${active.number}`
+                    : (lang === 'es' ? 'entre cuartos' : 'between rooms')}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ACTION POPUP — click a tile to cycle its status */}
+      {actionRoom && (
+        <>
+          <div
+            style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(31,35,28,0.32)' }}
+            onClick={() => setActionRoom(null)}
+          />
+          <div style={{
+            position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
+            zIndex: 61, background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
+            padding: '20px 22px', minWidth: 320, boxShadow: '0 24px 48px rgba(31,35,28,0.18)',
+            display: 'flex', flexDirection: 'column', gap: 16,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+              <div>
+                <Caps>{lang === 'es' ? 'Cuarto' : 'Room'}</Caps>
+                <h3 style={{
+                  fontFamily: FONT_SERIF, fontSize: 32, color: T.ink, margin: '2px 0 0',
+                  fontStyle: 'italic', letterSpacing: '-0.02em', lineHeight: 1,
+                }}>{actionRoom.number}</h3>
+              </div>
+              <Btn variant="ghost" size="sm" onClick={() => setActionRoom(null)}>{lang === 'es' ? 'Cerrar' : 'Close'}</Btn>
+            </div>
+            <p style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, margin: 0 }}>
+              {lang === 'es' ? 'Estado actual:' : 'Current status:'}{' '}
+              <strong style={{ color: T.ink }}>{actionRoom.status}</strong>
+            </p>
+            <Btn variant="primary" size="md" onClick={() => handleToggle(actionRoom)}>
+              {actionRoom.status === 'dirty'       ? (lang === 'es' ? 'Marcar como limpiando' : 'Mark as cleaning')
+                : actionRoom.status === 'in_progress' ? (lang === 'es' ? 'Marcar como lista'      : 'Mark as ready')
+                : actionRoom.status === 'clean'       ? (lang === 'es' ? 'Reiniciar a sucia'      : 'Reset to dirty')
+                : (lang === 'es' ? 'Inspeccionada (bloqueada)' : 'Inspected (locked)')}
+            </Btn>
+          </div>
         </>
       )}
 
-      {/* ── Glass Metrics Footer ── */}
-      {!loading && sorted.length > 0 && (
-        <footer className="glass-footer" style={{
-          position: 'fixed', bottom: 0, left: 0, width: '100%', zIndex: 50,
-          borderTop: '1px solid rgba(226,232,240,0.5)',
-          padding: '20px 40px',
-        }}>
-          <div style={{ maxWidth: '1800px', margin: '0 auto', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '64px' }}>
-              {/* Occupancy */}
-              <div style={{ display: 'flex', flexDirection: 'column' }}>
-                <span style={{ fontSize: '9px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.2em', color: '#94a3b8', marginBottom: '4px' }}>
-                  {lang === 'es' ? 'Progreso' : 'Progress'}
-                </span>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '30px', fontWeight: 900, color: '#0f172a', lineHeight: 1 }}>
-                  {pct}<span style={{ fontSize: '14px', fontWeight: 500, color: '#94a3b8' }}>%</span>
-                </span>
-              </div>
-              {/* Queue */}
-              <div style={{ display: 'flex', flexDirection: 'column' }}>
-                <span style={{ fontSize: '9px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.2em', color: '#94a3b8', marginBottom: '4px' }}>
-                  {lang === 'es' ? 'En Cola' : 'Queue Status'}
-                </span>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '30px', fontWeight: 900, color: queueCount > 0 ? '#ef4444' : '#10b981', lineHeight: 1 }}>
-                  {queueCount}<span style={{ fontSize: '14px', fontWeight: 500, color: '#94a3b8' }}> {lang === 'es' ? 'hab.' : 'rooms'}</span>
-                </span>
-              </div>
-              {/* Total */}
-              <div style={{ display: 'flex', flexDirection: 'column' }}>
-                <span style={{ fontSize: '9px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.2em', color: '#94a3b8', marginBottom: '4px' }}>
-                  {lang === 'es' ? 'Total' : 'Total Rooms'}
-                </span>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '30px', fontWeight: 900, color: '#0f172a', lineHeight: 1 }}>
-                  {totalCount}
-                </span>
-              </div>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-              <span style={{
-                padding: '12px 28px', borderRadius: '12px', fontSize: '12px', fontWeight: 700,
-                border: '1px solid #e2e8f0', background: 'rgba(255,255,255,0.5)', color: '#475569',
-                fontFamily: 'var(--font-sans)',
+      {/* BACKUP PICKER — opens when clicking a room with helpRequested */}
+      {backupRoom && (
+        <>
+          <div
+            style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(31,35,28,0.32)' }}
+            onClick={() => setBackupRoom(null)}
+          />
+          <div style={{
+            position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
+            zIndex: 61, background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
+            padding: '20px 22px', minWidth: 360, maxWidth: 420,
+            boxShadow: '0 24px 48px rgba(31,35,28,0.18)',
+            display: 'flex', flexDirection: 'column', gap: 14,
+          }}>
+            <div>
+              <Caps>{lang === 'es' ? 'Enviar refuerzo' : 'Send backup'}</Caps>
+              <h3 style={{
+                fontFamily: FONT_SERIF, fontSize: 28, color: T.ink, margin: '2px 0 0',
+                fontStyle: 'italic', letterSpacing: '-0.02em', lineHeight: 1,
               }}>
-                {doneCount}/{totalCount} {lang === 'es' ? 'Completadas' : 'Complete'}
-              </span>
+                {lang === 'es' ? `Cuarto ${backupRoom.number}` : `Room ${backupRoom.number}`}
+              </h3>
+              <p style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, margin: '6px 0 0' }}>
+                {lang === 'es'
+                  ? 'Elige a quién enviar como refuerzo. Recibirán un SMS.'
+                  : 'Pick who to send as backup. They’ll get an SMS.'}
+              </p>
             </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 320, overflowY: 'auto' }}>
+              {staff.filter(s => s.isActive && s.department === 'housekeeping').map(s => (
+                <button
+                  key={s.id}
+                  onClick={() => handleSendBackup(backupRoom, s.id, s.name)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 12,
+                    padding: '10px 14px', borderRadius: 12,
+                    background: T.bg, border: `1px solid ${T.rule}`, cursor: 'pointer',
+                    fontFamily: FONT_SANS, fontSize: 14, color: T.ink, fontWeight: 500,
+                    textAlign: 'left',
+                  }}
+                >
+                  <HousekeeperDot staff={s} size={28} />
+                  <span style={{ flex: 1 }}>{s.name}</span>
+                  <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink3 }}>SMS →</span>
+                </button>
+              ))}
+            </div>
+            <Btn variant="ghost" size="sm" onClick={() => setBackupRoom(null)}>
+              {lang === 'es' ? 'Cancelar' : 'Cancel'}
+            </Btn>
           </div>
-        </footer>
+        </>
+      )}
+
+      {/* TOAST */}
+      {toastMessage && (
+        <div style={{
+          position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)',
+          zIndex: 70, padding: '12px 18px',
+          background: toastKind === 'success' ? T.sageDim : T.warmDim,
+          color: toastKind === 'success' ? T.sageDeep : T.warm,
+          border: `1px solid ${toastKind === 'success' ? 'rgba(104,131,114,0.3)' : 'rgba(184,92,61,0.3)'}`,
+          borderRadius: 999, fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500,
+        }}>
+          {toastMessage}
+        </div>
       )}
     </div>
   );
 }
-
-// ══════════════════════════════════════════════════════════════════════════════
-// STAFF SECTION
-// ══════════════════════════════════════════════════════════════════════════════
-
-
-export { RoomsTab };

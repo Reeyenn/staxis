@@ -15,22 +15,22 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
-import { t } from '@/lib/translations';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { ScheduleTab } from './_components/ScheduleTab';
 import { RoomsTab } from './_components/RoomsTab';
 import { DeepCleanTab } from './_components/DeepCleanTab';
 import { PerformanceTab } from './_components/PerformanceTab';
+import { T, FONT_SANS } from './_components/_snow';
 
 // ─── Tab config ──────────────────────────────────────────────────────────────
 
 type TabKey = 'rooms' | 'schedule' | 'deepclean' | 'performance';
 
 const TABS: { key: TabKey; label: string; labelEs: string }[] = [
-  { key: 'rooms',       label: 'Rooms',        labelEs: 'Habitaciones'   },
-  { key: 'schedule',    label: 'Schedule',     labelEs: 'Horario'        },
-  { key: 'deepclean',   label: 'Deep Clean',   labelEs: 'Limpieza Prof.' },
-  { key: 'performance', label: 'Performance',  labelEs: 'Rendimiento'    },
+  { key: 'rooms',       label: 'Rooms',       labelEs: 'Habitaciones'    },
+  { key: 'schedule',    label: 'Schedule',    labelEs: 'Horario'         },
+  { key: 'performance', label: 'Performance', labelEs: 'Rendimiento'     },
+  { key: 'deepclean',   label: 'Deep Clean',  labelEs: 'Limpieza prof.'  },
 ];
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -41,7 +41,7 @@ export default function HousekeepingPage() {
   const [activeTab, setActiveTabState] = useState<TabKey>('rooms');
   const { lang } = useLang();
   const { user, loading: authLoading } = useAuth();
-  const { activeProperty, activePropertyId, loading: propLoading } = useProperty();
+  const { activePropertyId, loading: propLoading } = useProperty();
   const router = useRouter();
 
   // Auth guard — redirect if not logged in or no property
@@ -64,65 +64,64 @@ export default function HousekeepingPage() {
 
   if (authLoading || propLoading) {
     return (
-      <div style={{ minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)' }}>
-        <div className="spinner" style={{ width: '32px', height: '32px' }} />
-      </div>
+      <AppLayout>
+        <div style={{
+          minHeight: '60dvh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: T.bg, fontFamily: FONT_SANS,
+        }}>
+          <div className="animate-spin" style={{
+            width: '28px', height: '28px',
+            border: `2px solid ${T.rule}`, borderTopColor: T.ink, borderRadius: '50%',
+          }} />
+        </div>
+      </AppLayout>
     );
   }
 
   return (
     <AppLayout>
-      {/* ── Sub-tab bar (Stitch pill style) ── */}
-      <div style={{ padding: '16px 24px 0', position: 'sticky', top: 64, zIndex: 10, background: 'var(--bg)' }}>
-        <nav style={{
-          display: 'flex', alignItems: 'center', gap: '32px',
-          borderBottom: '1px solid rgba(197,197,212,0.25)',
-          paddingBottom: '0',
-        }}>
+      {/* ── Snow sub-tab bar ──
+          Sticky directly under the global Header (64px). White background,
+          1px hairline rule on the bottom, 1.5px ink underline on the active
+          tab — matches the design's SubTabBar from hk-shared.jsx. */}
+      <div style={{
+        padding: '18px 48px 0',
+        background: T.bg,
+        borderBottom: `1px solid ${T.rule}`,
+        position: 'sticky', top: 64, zIndex: 10,
+      }}>
+        <nav style={{ display: 'flex', gap: '28px' }}>
           {TABS.map(tab => {
             const isActive = activeTab === tab.key;
-            const tabLabel = tab.key === 'deepclean' ? (lang === 'es' ? tab.labelEs : tab.label) : undefined;
-            const tabLabelKey = tab.key === 'rooms' ? 'rooms' : tab.key === 'schedule' ? 'scheduling' : tab.key === 'deepclean' ? undefined : 'performance';
+            const label = lang === 'es' ? tab.labelEs : tab.label;
             return (
               <button
                 key={tab.key}
-                className="hk-tab-btn"
                 onClick={() => setActiveTab(tab.key)}
                 style={{
-                  padding: '8px 0 12px',
-                  border: 'none',
-                  borderRadius: 0,
-                  background: 'none',
-                  color: isActive ? '#1b1c19' : '#757684',
-                  fontWeight: isActive ? 600 : 400,
-                  fontSize: '15px',
-                  cursor: 'pointer',
-                  whiteSpace: 'nowrap',
-                  fontFamily: "'Inter', sans-serif",
-                  transition: 'all 150ms',
-                  boxShadow: 'none',
-                  borderBottom: isActive ? '2px solid #1b1c19' : '2px solid transparent',
-                  letterSpacing: '-0.01em',
+                  background: 'transparent', border: 'none', cursor: 'pointer',
+                  padding: '8px 0 14px', position: 'relative',
+                  fontFamily: FONT_SANS, fontSize: 14,
+                  fontWeight: isActive ? 600 : 500,
+                  color: isActive ? T.ink : T.ink2,
+                  borderBottom: isActive ? `1.5px solid ${T.ink}` : '1.5px solid transparent',
                   marginBottom: '-1px',
+                  whiteSpace: 'nowrap',
                 }}
               >
-                {tabLabel ?? (tabLabelKey ? t(tabLabelKey, lang) : '')}
+                {label}
               </button>
             );
           })}
         </nav>
       </div>
 
-      {/* ── Section content ──
-          Wrapped in a keyed div so React remounts the wrapper on tab
-          switch, which re-triggers the CSS .animate-in fade-up. Same
-          cascade-in feel as the dashboard page. The tab subcomponents
-          themselves are unchanged. */}
+      {/* ── Tab content — keyed remount triggers the CSS .animate-in cascade ── */}
       <div key={activeTab} className="animate-in stagger-1">
-        {activeTab === 'schedule'    && <ScheduleTab />}
         {activeTab === 'rooms'       && <RoomsTab />}
-        {activeTab === 'deepclean'   && <DeepCleanTab />}
+        {activeTab === 'schedule'    && <ScheduleTab />}
         {activeTab === 'performance' && <PerformanceTab />}
+        {activeTab === 'deepclean'   && <DeepCleanTab />}
       </div>
     </AppLayout>
   );
