@@ -20,7 +20,6 @@
     "@anthropic-ai/sdk": "^0.95.0",
     "@sentry/nextjs": "^10.51.0",
     "@stablelib/base64": "^2.0.1",
-    "@supabase/ssr": "^0.5.2",
     "@supabase/supabase-js": "^2.47.0",
     "bcryptjs": "^3.0.3",
     "clsx": "^2.1.1",
