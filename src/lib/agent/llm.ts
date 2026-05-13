@@ -316,6 +316,11 @@ export interface RunAgentOpts {
    *  2026-05-13 (A-C3): prior route comment claimed this was checked, but
    *  it wasn't — disconnected clients kept burning Anthropic tokens. */
   abortSignal?: AbortSignal;
+  /** Override the default tier for THIS call. Used by the summarization
+   *  cron to run on Haiku ($1/$5 per M tokens) instead of Sonnet
+   *  ($3/$15 per M). Normal user-driven requests omit this and get
+   *  pickModel()'s default. Longevity L4 part B, 2026-05-13. */
+  model?: ModelTier;
 }
 
 export interface RunAgentResult {
@@ -479,7 +484,9 @@ function buildSystemBlocks(systemPrompt: SystemPromptBlocks): Anthropic.Messages
  * calls (or we hit MAX_TOOL_ITERATIONS).
  */
 export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
-  const model = pickModel();
+  // L4 part B (2026-05-13): caller can override the default tier. The
+  // summarizer cron passes 'haiku' for cheaper text-only work.
+  const model = opts.model ?? pickModel();
   const client = getClient();
   const tools = toAnthropicTools(opts.tools);
 
@@ -652,7 +659,7 @@ export type AgentEvent =
  * UI needs to render (text deltas, tool call status, final done).
  */
 export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEvent> {
-  const model = pickModel();
+  const model = opts.model ?? pickModel();
   const client = getClient();
   const tools = toAnthropicTools(opts.tools);
 

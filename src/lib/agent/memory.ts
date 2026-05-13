@@ -84,54 +84,73 @@ export async function loadConversation(
   if (!convo) return null;
   if (convo.user_id !== userAccountId) return null;
 
-  // Pull messages in chronological order.
+  // Pull messages in chronological order. L4 (2026-05-13): filter out
+  // is_summarized=true rows so the model never sees pre-summary
+  // messages on replay. The summary row itself (is_summarized=false,
+  // is_summary=true) IS included and appears at the position of the
+  // batch it replaced (its created_at is the moment of summarization,
+  // which is AFTER all the rows it summarized).
   const { data: rows, error: msgErr } = await supabaseAdmin
     .from('agent_messages')
-    .select('role, content, tool_call_id, tool_name, tool_args, tool_result, created_at')
+    .select('role, content, tool_call_id, tool_name, tool_args, tool_result, is_summary, created_at')
     .eq('conversation_id', conversationId)
+    .eq('is_summarized', false)
     .order('created_at', { ascending: true });
   if (msgErr) throw msgErr;
 
   const messages: AgentMessage[] = [];
   // Group assistant text + adjacent assistant tool_use rows into a single
   // AgentMessage so the LLM wrapper sees the same shape it produced.
+  // L4 (2026-05-13): summary rows (is_summary=true) are emitted as a
+  // SELF-CONTAINED assistant text turn — never pending more tool_use
+  // rows. This stops a tool_result row that historically followed a
+  // (now-summarized) assistant tool_use from being wrongly attached
+  // to the summary as if the summary itself had called the tool.
   let pendingAssistant: { content: string; toolCalls: AgentToolCall[] } | null = null;
+
+  const flushPending = () => {
+    if (pendingAssistant) {
+      messages.push({
+        role: 'assistant',
+        content: pendingAssistant.content,
+        toolCalls: pendingAssistant.toolCalls.length ? pendingAssistant.toolCalls : undefined,
+      });
+      pendingAssistant = null;
+    }
+  };
 
   for (const row of rows ?? []) {
     const role = row.role as string;
+    const isSummary = (row.is_summary as boolean) === true;
     if (role === 'user') {
-      if (pendingAssistant) {
-        messages.push({
-          role: 'assistant',
-          content: pendingAssistant.content,
-          toolCalls: pendingAssistant.toolCalls.length ? pendingAssistant.toolCalls : undefined,
-        });
-        pendingAssistant = null;
-      }
+      flushPending();
       messages.push({ role: 'user', content: (row.content as string) ?? '' });
     } else if (role === 'assistant') {
-      if (!pendingAssistant) pendingAssistant = { content: '', toolCalls: [] };
-      // Either a text turn (content set) or a tool_use turn (tool_name set).
-      if (row.tool_name) {
-        pendingAssistant.toolCalls.push({
-          id: (row.tool_call_id as string) ?? '',
-          name: row.tool_name as string,
-          args: (row.tool_args as Record<string, unknown>) ?? {},
-        });
-      } else if (row.content) {
-        pendingAssistant.content =
-          (pendingAssistant.content ? pendingAssistant.content + '\n' : '') +
-          (row.content as string);
-      }
-    } else if (role === 'tool') {
-      if (pendingAssistant) {
+      if (isSummary) {
+        // Summary row is a complete assistant text turn on its own.
+        // Flush any pending assistant being built up, then push the
+        // summary as a standalone assistant message.
+        flushPending();
         messages.push({
           role: 'assistant',
-          content: pendingAssistant.content,
-          toolCalls: pendingAssistant.toolCalls.length ? pendingAssistant.toolCalls : undefined,
+          content: (row.content as string) ?? '',
         });
-        pendingAssistant = null;
+      } else {
+        if (!pendingAssistant) pendingAssistant = { content: '', toolCalls: [] };
+        if (row.tool_name) {
+          pendingAssistant.toolCalls.push({
+            id: (row.tool_call_id as string) ?? '',
+            name: row.tool_name as string,
+            args: (row.tool_args as Record<string, unknown>) ?? {},
+          });
+        } else if (row.content) {
+          pendingAssistant.content =
+            (pendingAssistant.content ? pendingAssistant.content + '\n' : '') +
+            (row.content as string);
+        }
       }
+    } else if (role === 'tool') {
+      flushPending();
       messages.push({
         role: 'tool',
         toolCallId: (row.tool_call_id as string) ?? '',
@@ -140,13 +159,7 @@ export async function loadConversation(
     }
     // 'system' rows aren't replayed — they're metadata (e.g., nudge surface).
   }
-  if (pendingAssistant) {
-    messages.push({
-      role: 'assistant',
-      content: pendingAssistant.content,
-      toolCalls: pendingAssistant.toolCalls.length ? pendingAssistant.toolCalls : undefined,
-    });
-  }
+  flushPending();
 
   return {
     id: convo.id as string,
@@ -401,9 +414,11 @@ export async function lockLoadAndRecordUserTurn(opts: {
     };
   }
 
-  // Reconstruct AgentMessage[] from jsonb. Same shape as loadConversation
-  // returns — assistant turns with adjacent tool_use rows get folded by
-  // toClaudeMessages adjacency logic on the next replay.
+  // Reconstruct AgentMessage[] from jsonb. The RPC already filters
+  // is_summarized=false; we additionally need to know which rows are
+  // summary rows (is_summary=true) so we can emit them as self-
+  // contained assistant turns without attaching subsequent tool_result
+  // rows. L4 part B fix, 2026-05-13.
   const rawRows = (row.history_rows ?? []) as Array<{
     role: string;
     content: string | null;
@@ -411,42 +426,45 @@ export async function lockLoadAndRecordUserTurn(opts: {
     tool_name: string | null;
     tool_args: Record<string, unknown> | null;
     tool_result: unknown;
+    is_summary?: boolean;
   }>;
 
   const messages: AgentMessage[] = [];
   let pendingAssistant: { content: string; toolCalls: AgentToolCall[] } | null = null;
+  const flushPending = () => {
+    if (pendingAssistant) {
+      messages.push({
+        role: 'assistant',
+        content: pendingAssistant.content,
+        toolCalls: pendingAssistant.toolCalls.length ? pendingAssistant.toolCalls : undefined,
+      });
+      pendingAssistant = null;
+    }
+  };
+
   for (const r of rawRows) {
     if (r.role === 'user') {
-      if (pendingAssistant) {
-        messages.push({
-          role: 'assistant',
-          content: pendingAssistant.content,
-          toolCalls: pendingAssistant.toolCalls.length ? pendingAssistant.toolCalls : undefined,
-        });
-        pendingAssistant = null;
-      }
+      flushPending();
       messages.push({ role: 'user', content: r.content ?? '' });
     } else if (r.role === 'assistant') {
-      if (!pendingAssistant) pendingAssistant = { content: '', toolCalls: [] };
-      if (r.tool_name) {
-        pendingAssistant.toolCalls.push({
-          id: r.tool_call_id ?? '',
-          name: r.tool_name,
-          args: r.tool_args ?? {},
-        });
-      } else if (r.content) {
-        pendingAssistant.content =
-          (pendingAssistant.content ? pendingAssistant.content + '\n' : '') + r.content;
+      if (r.is_summary === true) {
+        flushPending();
+        messages.push({ role: 'assistant', content: r.content ?? '' });
+      } else {
+        if (!pendingAssistant) pendingAssistant = { content: '', toolCalls: [] };
+        if (r.tool_name) {
+          pendingAssistant.toolCalls.push({
+            id: r.tool_call_id ?? '',
+            name: r.tool_name,
+            args: r.tool_args ?? {},
+          });
+        } else if (r.content) {
+          pendingAssistant.content =
+            (pendingAssistant.content ? pendingAssistant.content + '\n' : '') + r.content;
+        }
       }
     } else if (r.role === 'tool') {
-      if (pendingAssistant) {
-        messages.push({
-          role: 'assistant',
-          content: pendingAssistant.content,
-          toolCalls: pendingAssistant.toolCalls.length ? pendingAssistant.toolCalls : undefined,
-        });
-        pendingAssistant = null;
-      }
+      flushPending();
       messages.push({
         role: 'tool',
         toolCallId: r.tool_call_id ?? '',
@@ -454,13 +472,7 @@ export async function lockLoadAndRecordUserTurn(opts: {
       });
     }
   }
-  if (pendingAssistant) {
-    messages.push({
-      role: 'assistant',
-      content: pendingAssistant.content,
-      toolCalls: pendingAssistant.toolCalls.length ? pendingAssistant.toolCalls : undefined,
-    });
-  }
+  flushPending();
 
   return { ok: true, reason: null, history: messages };
 }

@@ -24,6 +24,10 @@
     {
       "path": "/api/cron/agent-archive-stale-conversations",
       "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/cron/agent-summarize-long-conversations",
+      "schedule": "*/30 * * * *"
     }
   ]
 }
