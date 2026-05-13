@@ -207,13 +207,20 @@ export function PerformanceTab() {
     id: s.staffId, name: s.name,
   });
 
-  // Flagged review action.
+  // Flagged review action. Updates BOTH the flagged queue AND the
+  // events array — the leaderboard / Cleaning Efficiency derivations
+  // filter `events` for status === 'recorded' || 'approved', so without
+  // updating events here the metrics would stay stale until the user
+  // changed the date pill (which re-fetches events from scratch).
   const handleDecide = async (eventId: string, decision: 'approved' | 'rejected') => {
     if (!user || !activePropertyId) return;
     setReviewingId(eventId);
     try {
       await decideOnFlaggedEvent(eventId, decision, user.uid);
       setFlagged(prev => prev.filter(e => e.id !== eventId));
+      setEvents(prev => prev.map(e =>
+        e.id === eventId ? { ...e, status: decision } : e,
+      ));
     } catch (err) {
       console.error('[PerformanceTab] decide failed:', err);
     } finally {

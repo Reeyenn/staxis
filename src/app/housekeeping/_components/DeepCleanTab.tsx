@@ -58,7 +58,12 @@ export function DeepCleanTab() {
   const [toast, setToast] = useState<string | null>(null);
   const [toastKind, setToastKind] = useState<'success' | 'error'>('success');
   const [showCadence, setShowCadence] = useState(false);
-  const [cadenceDraft, setCadenceDraft] = useState<number>(28);
+  // Default cadence is 90 days — matches the historical behavior on
+  // properties that haven't explicitly configured one. The Claude Design
+  // mock used 28 (which is fine for housekeeper-rotation) but the prior
+  // production default was 90, and a quieter cycle is the conservative
+  // choice for a hotel that hasn't actively opted in.
+  const [cadenceDraft, setCadenceDraft] = useState<number>(90);
   const [savingCadence, setSavingCadence] = useState(false);
   // Tracks the bulk-schedule promise so rapid clicks on "Schedule N deep
   // cleans" can't fire the same writes 3× before optimistic state updates.
@@ -179,7 +184,7 @@ export function DeepCleanTab() {
     toastTimer.current = setTimeout(() => setToast(null), 3000);
   };
 
-  const parDays = config?.frequencyDays ?? 28;
+  const parDays = config?.frequencyDays ?? 90;
 
   // ── Derived per-room info ──────────────────────────────────────────────
   const allInfo: RoomInfo[] = useMemo(() => allRoomNumbers.map(num => {

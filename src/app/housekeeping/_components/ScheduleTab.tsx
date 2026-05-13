@@ -56,6 +56,13 @@ export function ScheduleTab() {
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [assignments, setAssignments] = useState<Record<string, string>>({});
   const [crewIds, setCrewIds] = useState<string[]>([]);
+  // `crewExplicit` distinguishes "user has actively set the crew (even
+  // to empty)" from "no saved crew yet, fall back to all housekeeping
+  // staff." Without this flag, a user who removes everyone via the
+  // Remove buttons would have their empty list silently overridden
+  // with the full default crew on the next render — the "manager can't
+  // clear everyone" regression.
+  const [crewExplicit, setCrewExplicit] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendResults, setSendResults] = useState<Map<string, SendResult>>(new Map());
   const [toast, setToast] = useState<string | null>(null);
@@ -79,6 +86,7 @@ export function ScheduleTab() {
     hydratedDate.current = null;
     setAssignments({});
     setCrewIds([]);
+    setCrewExplicit(false);
     setSendResults(new Map());
   }, [shiftDate]);
 
@@ -101,9 +109,13 @@ export function ScheduleTab() {
       if (doc) {
         setAssignments(doc.roomAssignments ?? {});
         setCrewIds(doc.crew ?? []);
+        // A saved doc is by definition an explicit choice — respect the
+        // crew list even when it's empty.
+        setCrewExplicit(true);
       } else {
         setAssignments({});
         setCrewIds([]);
+        setCrewExplicit(false);
       }
       hydratedDate.current = shiftDate;
     });
@@ -166,9 +178,11 @@ export function ScheduleTab() {
   );
 
   const activeCrew: StaffMember[] = useMemo(() => {
-    const ids = crewIds.length > 0 ? crewIds : housekeepingStaff.map(s => s.id);
+    // Use the user's explicit crew list once they've made any change
+    // (including emptying it). Otherwise fall back to the default.
+    const ids = crewExplicit ? crewIds : housekeepingStaff.map(s => s.id);
     return ids.map(id => staff.find(s => s.id === id)).filter((s): s is StaffMember => Boolean(s));
-  }, [crewIds, housekeepingStaff, staff]);
+  }, [crewIds, crewExplicit, housekeepingStaff, staff]);
 
   const offCrew = useMemo(
     () => housekeepingStaff.filter(s => !activeCrew.some(c => c.id === s.id)),
@@ -503,8 +517,9 @@ export function ScheduleTab() {
                 {sendBadge(c.id) ?? confPill(c.id)}
                 <button
                   onClick={() => {
-                    const baseline = crewIds.length > 0 ? crewIds : housekeepingStaff.map(s => s.id);
+                    const baseline = crewExplicit ? crewIds : housekeepingStaff.map(s => s.id);
                     setCrewIds(baseline.filter(id => id !== c.id));
+                    setCrewExplicit(true);
                     // Drop their assignments too — otherwise they'd persist
                     // pinned to a person no longer on today's roster.
                     setAssignments(prev => {
@@ -542,8 +557,9 @@ export function ScheduleTab() {
                 onClick={() => {
                   // First add: seed crewIds from the implicit default
                   // (housekeepingStaff) so we don't lose the others.
-                  const baseline = crewIds.length > 0 ? crewIds : housekeepingStaff.map(x => x.id);
+                  const baseline = crewExplicit ? crewIds : housekeepingStaff.map(x => x.id);
                   setCrewIds([...baseline, s.id]);
+                  setCrewExplicit(true);
                 }}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 8,
