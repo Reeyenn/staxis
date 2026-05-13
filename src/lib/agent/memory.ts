@@ -305,6 +305,43 @@ export function recordToolResult(
 }
 
 /**
+ * Insert a synthetic tool_result row for a tool_call_id that didn't get
+ * a normal result before the stream aborted. Round-8 fix B7, 2026-05-13:
+ * post-migration 0094 there's a partial unique index on
+ * (conversation_id, tool_call_id) for role='tool' rows. If the normal
+ * `recordToolResult` already landed earlier in the stream but the
+ * route's finally still has the id in `pendingToolCallIds` (race),
+ * a plain insert would throw a unique-violation. The route catches
+ * and logs, producing noisy errors in prod for every abort path.
+ *
+ * Use ON CONFLICT DO NOTHING via supabase-js upsert so an existing row
+ * is left untouched silently. Idempotent and cleaner in logs.
+ */
+export async function recordSyntheticAbortToolResult(
+  conversationId: string,
+  toolCallId: string,
+  result: unknown,
+): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from('agent_messages')
+    .upsert(
+      {
+        conversation_id: conversationId,
+        role: 'tool',
+        tool_call_id: toolCallId,
+        tool_result: result ?? null,
+      },
+      {
+        onConflict: 'conversation_id,tool_call_id',
+        ignoreDuplicates: true,
+      },
+    );
+  if (error) {
+    throw new Error(`recordSyntheticAbortToolResult failed: ${error.message}`);
+  }
+}
+
+/**
  * Atomic prep for /api/agent/command: acquire per-conversation lock,
  * verify ownership + property scope, load history, and record the user
  * turn — all in ONE RPC transaction.

@@ -81,6 +81,11 @@ export async function runOneEval(
   let finalText = '';
   let costUsd = 0;
   let model = 'sonnet';
+  // Round-8 fix B4: capture the exact Anthropic snapshot ID so eval cost
+  // rows carry it, matching production turns. Without this the eval table
+  // has model_id=null and we can't correlate eval results to snapshot
+  // updates (the whole reason 0094 captures it).
+  let modelId: string | null = null;
   let tokensIn = 0;
   let tokensOut = 0;
   let errorMessage: string | null = null;
@@ -92,10 +97,19 @@ export async function runOneEval(
       finalText = event.finalText;
       costUsd = event.usage.costUsd;
       model = event.usage.model;
+      modelId = event.usage.modelId;
       tokensIn = event.usage.inputTokens;
       tokensOut = event.usage.outputTokens;
     } else if (event.type === 'error') {
       errorMessage = event.message;
+      if (event.usage) {
+        // Capture partial usage on error paths too (round-7 R5).
+        costUsd = event.usage.costUsd;
+        model = event.usage.model;
+        modelId = event.usage.modelId;
+        tokensIn = event.usage.inputTokens;
+        tokensOut = event.usage.outputTokens;
+      }
     }
   }
 
@@ -112,6 +126,7 @@ export async function runOneEval(
       propertyId: opts.propertyId,
       conversationId: null,
       model,
+      modelId,
       tokensIn,
       tokensOut,
       costUsd,

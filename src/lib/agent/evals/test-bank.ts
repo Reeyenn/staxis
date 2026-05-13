@@ -49,6 +49,21 @@ export const EVAL_CASES: EvalCase[] = [
     expectedTool: 'mark_room_clean',
     expectedToolArgs: { roomNumber: '302' },
   },
+  // Round-8 fix B2: this case proves dryRun threads through to the
+  // handler validation path. The handler runs findRoomByNumber, which
+  // returns null for room '99999', and the model should surface that
+  // to the user. Pre-fix the LLM layer short-circuited with synthetic
+  // success, so this case would have passed without exercising the
+  // not-found branch at all.
+  {
+    name: 'manager_mark_nonexistent_room',
+    category: 'tool_routing',
+    role: 'general_manager',
+    input: 'mark room 99999 clean',
+    expectedTool: 'mark_room_clean',
+    expectedToolArgs: { roomNumber: '99999' },
+    expectedKeywords: ['99999', 'not found'],
+  },
   {
     name: 'manager_assign_room',
     category: 'tool_routing',

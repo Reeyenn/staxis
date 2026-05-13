@@ -753,7 +753,15 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
       //          PROMPT_BASE blocks the model from following any
       //          instructions found in tool output.
       //   (A-C3) Check abort signal between tool calls.
-      //   (A-H11) dryRun returns a synthetic success without executing.
+      //   (A-H11) dryRun is now threaded INTO executeTool via the
+      //          ToolContext so handlers exercise their validation path
+      //          (room lookup, scope check, recipient existence) and
+      //          return synthetic success only AFTER validation passes.
+      //          Round-8 fix B2 (2026-05-13): the prior pattern
+      //          short-circuited at this layer with synthetic success
+      //          BEFORE the handler ran, so eval refusal cases gave
+      //          false-positive confidence on the exact mutation paths
+      //          they exist to protect.
       const toolResultBlocks: ClaudeContent[] = [];
       for (const call of calls) {
         if (checkAborted()) {
@@ -761,9 +769,10 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
           return;
         }
         yield { type: 'tool_call_started', call };
-        const result = opts.dryRun
-          ? { ok: true, data: { dryRun: true, name: call.name, args: call.args }, error: undefined }
-          : await executeTool(call.name, call.args, opts.toolContext);
+        const result = await executeTool(call.name, call.args, {
+          ...opts.toolContext,
+          dryRun: opts.dryRun,
+        });
         const isError = !result.ok;
         yield { type: 'tool_call_finished', call, result: result.data ?? result.error, isError };
         const rawContent = result.ok

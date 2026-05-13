@@ -50,6 +50,7 @@ import {
   recordUserTurn,
   recordAssistantTurn,
   recordToolResult,
+  recordSyntheticAbortToolResult,
 } from '@/lib/agent/memory';
 import {
   reserveCostBudget,
@@ -343,11 +344,18 @@ export async function POST(req: NextRequest): Promise<Response> {
       } finally {
         // ── Fix #3 cleanup: synthesize tool_result rows for any tool_use
         // that didn't get a matching result before the stream ended. This
-        // keeps the conversation history valid for the next replay. ──
+        // keeps the conversation history valid for the next replay.
+        //
+        // Round-8 fix B7 (2026-05-13): post-0094 unique index on
+        // (conversation_id, tool_call_id) for role='tool', a plain insert
+        // would throw a constraint violation if the result actually landed
+        // earlier in the stream but pendingToolCallIds wasn't cleared in
+        // time. recordSyntheticAbortToolResult uses ON CONFLICT DO NOTHING
+        // so existing rows are left alone — silent + idempotent. ──
         if (pendingToolCallIds.size > 0) {
           await Promise.allSettled(
             Array.from(pendingToolCallIds).map(toolCallId =>
-              recordToolResult(finalConversationId, toolCallId, {
+              recordSyntheticAbortToolResult(finalConversationId, toolCallId, {
                 ok: false,
                 error: 'aborted — tool result was not captured before the stream ended',
               }).catch(err => {

@@ -244,6 +244,11 @@ export async function recordNonRequestCost(opts: {
   propertyId: string;
   conversationId: string | null;
   model: string;
+  /** Exact Anthropic snapshot ID from response.model. Round-8 fix B4,
+   *  2026-05-13: prior version dropped this, so eval cost rows showed
+   *  model_id=null and operators couldn't correlate eval results to
+   *  Anthropic snapshot updates. */
+  modelId: string | null;
   tokensIn: number;
   tokensOut: number;
   cachedInputTokens?: number;
@@ -256,6 +261,7 @@ export async function recordNonRequestCost(opts: {
     property_id: opts.propertyId,
     conversation_id: opts.conversationId,
     model: opts.model,
+    model_id: opts.modelId,
     tokens_in: opts.tokensIn,
     tokens_out: opts.tokensOut,
     cached_input_tokens: opts.cachedInputTokens ?? 0,

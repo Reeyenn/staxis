@@ -103,13 +103,19 @@ export function getToolsForRole(role: AppRole): ToolDefinition[] {
  * handler can't accidentally bypass it. Returns a structured ToolResult that
  * the agent loop feeds back to Claude as a tool_result message.
  *
- * Defense-in-depth backlog cleanup, 2026-05-13: also re-checks that the
- * user's propertyAccess array still includes ctx.propertyId. The route
- * boundary's userHasPropertyAccess gate runs once at request start; if
- * access is revoked in a concurrent admin action while the agent loop
- * is still iterating (rare but real for tool-heavy turns), this re-check
- * stops further tool execution mid-flight rather than relying on every
- * individual tool handler to filter by propertyId.
+ * Round-8 fix B3, 2026-05-13: this propertyAccess check is
+ * defense-in-depth against future tool handlers that forget to filter
+ * by ctx.propertyId. It does NOT defend against mid-conversation
+ * revocation — the check reads ctx.user.propertyAccess captured at
+ * request start, not a fresh DB row. A fresh DB read per tool call
+ * would cost an extra round-trip for every tool invocation, which
+ * is too expensive for the benefit. The route boundary's
+ * userHasPropertyAccess runs once at request start and is sufficient
+ * for the live-revocation case.
+ *
+ * Only `admin` bypasses — this matches userHasPropertyAccess
+ * semantics. `owner` is NOT bypassed because an owner can be removed
+ * from a specific property in their property_access array.
  */
 export async function executeTool(
   name: string,
@@ -126,19 +132,16 @@ export async function executeTool(
       error: `Your role (${ctx.user.role}) is not allowed to use ${name}. Explain to the user that this action requires a different role.`,
     };
   }
-  // Admins + owners can access any property the access-control system
-  // grants them via userHasPropertyAccess at the route boundary;
-  // propertyAccess on the account row is the canonical list for floor
-  // and management roles. Admins keep their full-property scope via the
-  // route-boundary check.
+  // Defense-in-depth on the cached propertyAccess. Admins bypass via
+  // route-boundary userHasPropertyAccess; every other role (including
+  // owner) is filtered by their property_access array.
   if (
     ctx.user.role !== 'admin' &&
-    ctx.user.role !== 'owner' &&
     !ctx.user.propertyAccess.includes(ctx.propertyId)
   ) {
     return {
       ok: false,
-      error: 'Property access for this conversation was revoked. The user must restart the conversation from a property they currently have access to.',
+      error: 'Property access for this conversation is not in your account. The user must restart the conversation from a property they currently have access to.',
     };
   }
   try {
@@ -166,7 +169,15 @@ export interface AnthropicToolFormat {
 }
 
 export function toAnthropicTools(tools: ToolDefinition[]): AnthropicToolFormat[] {
-  return tools.map((t, idx) => ({
+  // Sort alphabetically by name so the cache_control breakpoint position
+  // is independent of registry insertion order (which depends on import
+  // order in tools/index.ts). Without this sort, adding a new `import './foo'`
+  // anywhere except the end of tools/index.ts shifts the "last tool" — and
+  // so the cache breakpoint hash — invalidating Anthropic's prompt cache for
+  // every existing conversation's next turn. Silent 10-30% cost regression
+  // until the tool list stabilizes. Round-8 fix B5, 2026-05-13.
+  const sorted = [...tools].sort((a, b) => a.name.localeCompare(b.name));
+  return sorted.map((t, idx) => ({
     name: t.name,
     description: t.description,
     input_schema: t.inputSchema,
@@ -175,6 +186,6 @@ export function toAnthropicTools(tools: ToolDefinition[]): AnthropicToolFormat[]
     // array for this conversation, identical to how we mark the stable
     // system block. Saves ~10–15% of input tokens on every multi-turn
     // request after the first.
-    ...(idx === tools.length - 1 ? { cache_control: { type: 'ephemeral' as const } } : {}),
+    ...(idx === sorted.length - 1 ? { cache_control: { type: 'ephemeral' as const } } : {}),
   }));
 }
