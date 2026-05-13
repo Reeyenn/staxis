@@ -193,14 +193,19 @@ def _train_supply_inner(
     # (0.5% relative — achievable), a 200-room hotel makes the absolute
     # number meaningless. Gate on ratio with a floor so trivial values
     # don't auto-pass.
-    mean_predicted_pos = float(np.mean(np.abs(pred_test))) or 1.0
-    mae_ratio = validation_mae / max(mean_predicted_pos, settings.validation_mae_floor)
+    #
+    # Codex follow-up 2026-05-13 (B1): denominator is ACTUALS (y_test),
+    # not predictions — see training/demand.py for rationale.
+    mean_actual_pos = float(np.mean(np.abs(y_test.values))) or 1.0
+    mae_ratio = validation_mae / max(mean_actual_pos, settings.validation_mae_floor)
 
     # Check gates. Supply still uses a lower baseline-beat bar (0.05) than
     # demand (0.20) because per-room cleaning-time variance is inherently
     # noisier than per-day total demand variance.
+    # Codex follow-up 2026-05-13 (B2): sample-size guard (>=30 holdout).
     passes_gates = (
         len(df) >= settings.training_row_count_activation
+        and len(X_test) >= 30
         and mae_ratio < settings.validation_mae_ratio_threshold
         and beats_baseline_pct >= 0.05
     )

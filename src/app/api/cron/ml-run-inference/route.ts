@@ -225,21 +225,23 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     r.optimizer?.status === 'error',
   );
   // Phase 3.4 (2026-05-13): mark the heartbeat 'degraded' when any stage
-  // returned 'skipped' — currently the optimizer is paused (line 131),
-  // but the same logic catches a future ML-service URL misconfig that
-  // returns skipped silently. The doctor surfaces a yellow banner when
-  // a cron stays 'degraded' for >24h; pages remain reserved for actually
-  // missing heartbeats (the freshness check).
-  const anyStageSkipped = results.some((r) =>
+  // returned 'skipped'. Codex follow-up 2026-05-13 (B4): the optimizer
+  // is hardcoded `status: 'skipped'` because it's paused — that means
+  // anyStageSkipped was always true and the heartbeat was permanently
+  // degraded, making the signal useless. Filter the optimizer's paused
+  // skip out so 'degraded' fires only on demand/supply skips (real
+  // misconfigured properties or actual ML-service problems). When the
+  // optimizer is unpaused, this filter needs to come back out — the
+  // test below pins the optimizer-only case as 'ok' to make the
+  // requirement obvious.
+  const stageIsRealSkip = (r: typeof results[number]): boolean => (
     r.demand?.status === 'skipped' ||
-    r.supply?.status === 'skipped' ||
-    r.optimizer?.status === 'skipped',
+    r.supply?.status === 'skipped'
+    // optimizer.status === 'skipped' is currently always true (paused);
+    // re-enable the optimizer check when the cron is unpaused.
   );
-  const propertiesSkipped = results.filter((r) =>
-    r.demand?.status === 'skipped' ||
-    r.supply?.status === 'skipped' ||
-    r.optimizer?.status === 'skipped',
-  ).length;
+  const anyStageSkipped = results.some(stageIsRealSkip);
+  const propertiesSkipped = results.filter(stageIsRealSkip).length;
   if (!anyStageError) {
     await writeCronHeartbeat('ml-run-inference', {
       requestId,

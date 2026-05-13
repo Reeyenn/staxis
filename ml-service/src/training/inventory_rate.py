@@ -873,6 +873,17 @@ def _create_cold_start_model_run(
     # The staxis_install_cold_start_model_run RPC (migration 0086) does
     # both writes in one transaction under an advisory lock, refuses to
     # clobber a real graduated model, and skips is_shadow=true rows.
+    #
+    # Codex follow-up 2026-05-13 (B5): TWO layers of locking apply here:
+    #   1. The Python outer advisory_lock at training/inventory_rate.py:124
+    #      serializes all training runs for the same property (lock key
+    #      based on (property_id, "inventory_rate")).
+    #   2. The RPC's own pg_advisory_xact_lock serializes per (property,
+    #      item) — distinct lock space because the SQL key is built from
+    #      'inventory_cold_start:' || property_id || ':' || item_id.
+    # Defense in depth — direct RPC callers from outside the training
+    # path (none today, but possible for ad-hoc backfills) still get the
+    # per-item lock without relying on the outer property lock.
     posterior_json = json.dumps(posterior_params)
     hyperparams_json = json.dumps({
         "prior_rate_used": prior_rate,

@@ -251,14 +251,24 @@ def _train_demand_inner(
     # Phase 3.2 (2026-05-13): size-relative MAE gate. The prior absolute
     # 5-min threshold was Beaumont-shaped — at 200 rooms (6000 min/day
     # mean demand) 5 min is 0.08% relative, never achievable, model
-    # never activated. Now we gate on validation_mae / mean_predicted <
+    # never activated. Now we gate on validation_mae / mean_actual <
     # 10% with an absolute floor so trivial-demand days don't auto-pass.
-    mean_predicted_pos = float(np.mean(np.abs(pred_test))) or 1.0
-    mae_ratio = validation_mae / max(mean_predicted_pos, settings.validation_mae_floor)
+    #
+    # Codex follow-up 2026-05-13 (B1): denominator is mean of ACTUALS
+    # (y_test), not predictions. Predictions can be systematically
+    # inflated by an over-predicting model — using them as the
+    # denominator masks the bias and lets a bad model pass the ratio
+    # gate without improving accuracy.
+    mean_actual_pos = float(np.mean(np.abs(y_test.values))) or 1.0
+    mae_ratio = validation_mae / max(mean_actual_pos, settings.validation_mae_floor)
 
-    # Check activation gates
+    # Check activation gates. Codex follow-up 2026-05-13 (B2): require
+    # at least 30 holdout points so a single freak good week doesn't
+    # flip a model active. Inventory training has the equivalent guard
+    # at training/inventory_rate.py:513; demand+supply were missing it.
     passes_gates = (
         len(df) >= settings.training_row_count_activation
+        and len(X_test) >= 30
         and mae_ratio < settings.validation_mae_ratio_threshold
         and beats_baseline_pct >= settings.baseline_beat_pct_threshold
     )
