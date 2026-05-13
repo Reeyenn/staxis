@@ -1,5 +1,6 @@
 """Layer 3 Optimizer: Monte Carlo simulation for headcount recommendation."""
 import hashlib
+import heapq
 import json
 import uuid
 from datetime import date, datetime, timedelta, timezone
@@ -234,39 +235,55 @@ async def optimize_headcount(
             min(50, int((median_total_minutes / shift_cap) * 1.5) + 1),
         )
 
+        # Codex post-merge review 2026-05-13 (F4 — common random numbers):
+        # Pre-generate the per-(draw, room) uniforms ONCE, outside the H
+        # loop. Every H value samples from the SAME u-matrix → adjacent H
+        # values differ ONLY in how the LPT bin-packing distributes the
+        # same set of job times → variance of the difference between
+        # adjacent H values drops dramatically. Without CRN, adjacent H
+        # could swap purely from MC noise (SE~0.69pp at p=0.95).
+        n_rooms = len(supply_preds)
+        u_matrix = rng.uniform(size=(settings.monte_carlo_draws, n_rooms))
+
+        # Pre-compute each room's quantile triple ONCE so the inner loop
+        # doesn't re-parse predictions every draw.
+        room_quantiles: List[Tuple[float, float, float, bool]] = []
+        for pred in supply_preds:
+            p25 = float(pred.get("predicted_minutes_p25", 15))
+            p50 = float(pred.get("predicted_minutes_p50", 22))
+            p90 = float(pred.get("predicted_minutes_p90", 30))
+            degenerate = p90 <= p25
+            room_quantiles.append((p25, p50, p90, degenerate))
+
+        # Pre-compute the sampled room_times matrix ONCE — used by every H.
+        # Shape: [monte_carlo_draws, n_rooms]
+        sampled_times = np.zeros((settings.monte_carlo_draws, n_rooms))
+        for j, (p25, p50, p90, degenerate) in enumerate(room_quantiles):
+            if degenerate:
+                sampled_times[:, j] = (p25 + p90) / 2.0
+            else:
+                quantile_dict = {0.25: p25, 0.5: p50, 0.9: p90}
+                for d in range(settings.monte_carlo_draws):
+                    sampled_times[d, j] = _invert_quantile_cdf(quantile_dict, float(u_matrix[d, j]))
+
         for headcount in range(1, max_headcount + 1):
             total_completed = 0
 
-            for _ in range(settings.monte_carlo_draws):
-                # Sample per-room times from supply predictions. Codex
-                # adversarial review 2026-05-13 (M-C3): the prior code did
-                # uniform(p25, p90), which throws away the bottom 25% and
-                # top 10% of the distribution, gives equal mass to every
-                # interior value, and biases E[X] far above the true
-                # median for right-skewed distributions like cleaning
-                # times. Now we invert the actual quantile CDF.
-                room_times: List[float] = []
-                for pred in supply_preds:
-                    p25 = float(pred.get("predicted_minutes_p25", 15))
-                    p50 = float(pred.get("predicted_minutes_p50", 22))
-                    p90 = float(pred.get("predicted_minutes_p90", 30))
-                    if p90 <= p25:
-                        # Degenerate distribution — use the midpoint deterministically.
-                        room_times.append((p25 + p90) / 2.0)
-                    else:
-                        u = float(rng.uniform(0.0, 1.0))
-                        room_times.append(
-                            _invert_quantile_cdf({0.25: p25, 0.5: p50, 0.9: p90}, u)
-                        )
+            for d in range(settings.monte_carlo_draws):
+                # Same draw d → same room_times across every H (CRN).
+                row = sampled_times[d].copy()
+                # LPT: longest jobs first → assign to the currently-least-loaded
+                # worker. Codex post-merge review F4a: use a min-heap so each
+                # assignment is O(log H) instead of O(H) np.argmin.
+                row[::-1].sort()  # descending in-place
+                heap: List[Tuple[float, int]] = [(0.0, i) for i in range(headcount)]
+                heapq.heapify(heap)
+                for t in row:
+                    load, worker_idx = heapq.heappop(heap)
+                    heapq.heappush(heap, (load + float(t), worker_idx))
 
-                # LPT: longest jobs first → assign each to the currently-least-loaded worker.
-                room_times.sort(reverse=True)
-                worker_loads = [0.0] * headcount
-                for t in room_times:
-                    idx = int(np.argmin(worker_loads))
-                    worker_loads[idx] += t
-
-                makespan = max(worker_loads) if worker_loads else 0.0
+                # Max load = makespan = max(load for load, _ in heap)
+                makespan = max(load for load, _ in heap) if heap else 0.0
                 if makespan <= shift_cap:
                     total_completed += 1
 
@@ -277,12 +294,14 @@ async def optimize_headcount(
             if recommended_headcount is None and completion_prob >= target_prob:
                 recommended_headcount = headcount
 
-        # If no headcount in the searched range meets the target, pick
-        # the highest curve point and flag the recommendation so the
-        # cockpit can surface "we couldn't find a headcount that meets
-        # 95% on-time — even at H=N you're at P=...".
+        # Codex post-merge review F4b: track whether we hit the search
+        # ceiling without satisfying the target. If so, the cockpit should
+        # show "we couldn't find a headcount that meets 95% on-time" rather
+        # than treating the returned value as a confident recommendation.
+        truncated_at_cap = False
         if recommended_headcount is None:
             recommended_headcount = max(completion_curves, key=lambda c: c["p"])["headcount"]
+            truncated_at_cap = True
     else:
         # L1 path: total demand only. Codex adversarial review 2026-05-13
         # (M-C3): the prior code sampled uniform(p50, p95) which is biased
@@ -307,15 +326,17 @@ async def optimize_headcount(
             min(50, int((max_demand / shift_cap_l1) * 1.5) + 1),
         )
 
+        # Codex post-merge review F4 (CRN): pre-generate uniforms ONCE so
+        # adjacent H values see the same demand samples.
+        u_l1 = rng.uniform(size=settings.monte_carlo_draws)
+        sampled_demands = np.array(
+            [_invert_quantile_cdf(l1_quantiles, float(u)) for u in u_l1]
+        )
+
         for headcount in range(1, max_headcount + 1):
             shift_capacity = headcount * settings.shift_cap_minutes
-            total_completed = 0
-
-            for _ in range(settings.monte_carlo_draws):
-                u = float(rng.uniform(0.0, 1.0))
-                sampled_demand = _invert_quantile_cdf(l1_quantiles, u)
-                if sampled_demand <= shift_capacity:
-                    total_completed += 1
+            # Same sampled_demands across every H → CRN.
+            total_completed = int((sampled_demands <= shift_capacity).sum())
 
             completion_prob = float(total_completed / settings.monte_carlo_draws)
             completion_curves.append({"headcount": headcount, "p": completion_prob})
@@ -323,8 +344,11 @@ async def optimize_headcount(
             if recommended_headcount is None and completion_prob >= target_prob:
                 recommended_headcount = headcount
 
+        # Same truncated_at_cap surfacing as the L2 path (F4b).
+        truncated_at_cap = False
         if recommended_headcount is None:
             recommended_headcount = max(completion_curves, key=lambda c: c["p"])["headcount"]
+            truncated_at_cap = True
 
     # Look up completion_prob by headcount value (not array index) so a
     # future change to the search range (e.g. range(2, 12)) doesn't
@@ -358,6 +382,11 @@ async def optimize_headcount(
             "one_hk_sick": {"recommended": max(1, recommended_headcount - 1)},
             "plus_5_checkouts": {"recommended": min(sensitivity_ceiling, recommended_headcount + 1)},
             "target_met": target_met,
+            # Codex post-merge F4b: surface explicitly when no H in the
+            # searched range met target_prob, so the cockpit can render
+            # "we couldn't find a satisfying headcount" instead of treating
+            # the returned value as a confident recommendation.
+            "truncated_at_cap": truncated_at_cap,
         }),
         "inputs_snapshot": json.dumps({
             "l1_model_run_id": demand.get("model_run_id"),

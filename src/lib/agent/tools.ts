@@ -36,6 +36,13 @@ export interface ToolContext {
   staffId: string | null;
   /** Request correlation id (echoed through to logs + API responses). */
   requestId: string;
+  /** When true, mutation tools should run their pre-write validation
+   *  (lookups, role checks, etc.) but SKIP the actual DB mutation —
+   *  return synthetic success at the would-have-mutated boundary.
+   *  Used by the eval runner so test-bank cases hit real lookup paths
+   *  (e.g. findRoomByNumber for "made up room 99999") but don't touch
+   *  prod data. Codex post-merge review 2026-05-13 (F2). */
+  dryRun?: boolean;
 }
 
 export interface ToolResult {

@@ -27,6 +27,14 @@ registerTool<{ roomNumber: string; staffName: string }>({
     const staff = await findStaffByName(ctx.propertyId, staffName);
     if (!staff) return { ok: false, error: `No active staff member matching "${staffName}".` };
 
+    // Codex post-merge review 2026-05-13 (F2): dryRun gate.
+    if (ctx.dryRun) {
+      return {
+        ok: true,
+        data: { dryRun: true, roomNumber: room.number, assignedTo: staff.name, staffId: staff.id },
+      };
+    }
+
     const { error } = await supabaseAdmin
       .from('rooms')
       .update({ assigned_to: staff.id })
@@ -125,6 +133,15 @@ registerTool<{ staffName: string; message: string }>({
 
     const trimmed = (message ?? '').slice(0, 320);
     if (!trimmed) return { ok: false, error: 'Message is empty.' };
+
+    // Codex post-merge review 2026-05-13 (F2): dryRun gate — skip the
+    // SMS-outbox insert (real Twilio costs $) after lookups validate.
+    if (ctx.dryRun) {
+      return {
+        ok: true,
+        data: { dryRun: true, recipient: staff.name, message: trimmed, queued: true },
+      };
+    }
 
     // Insert as a nudge with category 'operational' so the SMS dispatcher
     // (existing cron) can pick it up. Use a unique dedupe_key per send so

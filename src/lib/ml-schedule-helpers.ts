@@ -31,7 +31,15 @@ function getTomorrowDateStr(tz: string = APP_TIMEZONE): string {
 
 /**
  * Fetch the active optimizer result for tomorrow (the recommended headcount).
- * Returns null if no active model exists or date is not tomorrow.
+ * Returns null if no active model exists or the row is older than 24h.
+ *
+ * Codex post-merge review 2026-05-13 (N2): the optimizer cron is currently
+ * paused (`src/app/api/cron/ml-run-inference/route.ts` returns
+ * `{status:'skipped'}` for the optimizer stage). Anything in the
+ * `optimizer_results` table from before the pause is now stale. The 24h
+ * `ran_at` gate prevents this helper from surfacing those rows. Combined
+ * with the paused cron, the function returns null until the cron is
+ * re-enabled — better than silently showing months-old recommendations.
  */
 export async function getActiveOptimizerForTomorrow(
   propertyId: string,
@@ -42,11 +50,13 @@ export async function getActiveOptimizerForTomorrow(
 } | null> {
   try {
     const tomorrow = getTomorrowDateStr(tz);
+    const freshnessIso = new Date(Date.now() - 24 * 3_600_000).toISOString();
     const { data, error } = await supabase
       .from('optimizer_results')
-      .select('recommended_headcount, completion_probability_curve')
+      .select('recommended_headcount, completion_probability_curve, ran_at')
       .eq('property_id', propertyId)
       .eq('date', tomorrow)
+      .gte('ran_at', freshnessIso)
       .maybeSingle();
 
     if (error) throw error;

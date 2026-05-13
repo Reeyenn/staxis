@@ -99,11 +99,14 @@ export async function runOneEval(
     }
   }
 
-  // Record this eval's cost so it doesn't get attributed to a real user's cap.
-  // Use a special user_id wouldn't validate against the FK; recordCost will
-  // log the error but not throw. For local CLI runs we can opt out via
-  // STAXIS_EVAL_SKIP_COST=1.
-  if (!process.env.STAXIS_EVAL_SKIP_COST) {
+  // Record this eval's cost. Codex post-merge review 2026-05-13 (N7):
+  // dropped the STAXIS_EVAL_SKIP_COST escape hatch — it made CI eval
+  // spend invisible to cost-controls cap. Every eval run hits Anthropic
+  // and bills real tokens; recording into agent_costs with kind='eval'
+  // attributes the spend so the global cap can throttle a runaway loop.
+  // recordNonRequestCost throws on FK violation (N9 fix) so any schema
+  // drift surfaces loudly rather than silently dropping rows.
+  try {
     await recordNonRequestCost({
       userId: opts.userId,
       propertyId: opts.propertyId,
@@ -113,7 +116,11 @@ export async function runOneEval(
       tokensOut,
       costUsd,
       kind: 'eval',
-    }).catch(() => {});
+    });
+  } catch (costErr) {
+    console.error('[eval-runner] failed to record cost — investigate', costErr);
+    // Don't fail the eval over a cost-ledger error, but make the
+    // failure visible in CI logs.
   }
 
   // Compute pass/fail per the case's expectation.

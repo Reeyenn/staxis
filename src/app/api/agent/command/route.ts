@@ -25,6 +25,15 @@
 //   - Fix #4: housekeeper identity. `staff.id` is resolved from
 //     `staff.auth_user_id = userCtx.uid` and passed into ToolContext.
 //     Housekeeper-scoped queries use this, NOT `accountId`.
+//
+// Notes on abort-signal behavior (Codex post-merge review N6):
+// `req.signal` is forwarded into `streamAgent` and the Anthropic SDK. It
+// fires on TCP-level disconnect, which under Vercel's edge proxy is the
+// proxy timeout — NOT the browser close. In practice the abort can take
+// 30–60s to fire after the user closes the tab. The actual cost ceiling
+// is `REQUEST_TIMEOUT_MS = 50_000` per Anthropic call in
+// `src/lib/agent/llm.ts`. Treat the abort signal as best-effort cost
+// containment, not a deterministic kill switch.
 
 import type { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';

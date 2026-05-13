@@ -643,17 +643,31 @@ def _build_training_rows(
             continue
         days_elapsed = max((t_curr - t_prev).total_seconds() / 86400.0, 0.5)
 
+        # Codex post-merge review 2026-05-13 (N1): use `received_at` (NOT NULL,
+        # defaults now() per migration 0026:96), NOT `ordered_at` (nullable —
+        # "when PO was placed, often unknown"). The previous code filtered by
+        # `ordered_at` so any order without a recorded PO date silently fell
+        # out of the consumption window math, inflating the per-property
+        # daily-rate target 30–80%. All three consumers of "orders in window"
+        # (this Python trainer, inventory_priors.py cohort SQL, the
+        # inventory_observed_rate_v view) now use `received_at` consistently.
         orders_between = sum(
             float(o.get("quantity") or 0)
             for o in orders
-            if pd.to_datetime(o.get("ordered_at")).tz_localize(None) > t_prev
-            and pd.to_datetime(o.get("ordered_at")).tz_localize(None) <= t_curr
+            if pd.to_datetime(o.get("received_at")).tz_localize(None) > t_prev
+            and pd.to_datetime(o.get("received_at")).tz_localize(None) <= t_curr
         )
+        # Discards use `discarded_at` (NOT NULL, defaults now() per migration
+        # 0061:71). The previous code used `created_at` which is also NOT
+        # NULL — same value semantically — but `discarded_at` matches the
+        # other consumers (inventory_priors uses `created_at` aliased as
+        # `discarded_at` in 0061; both are now-defaulted). Keep
+        # `discarded_at` for consistency with the SQL view.
         discards_between = sum(
             float(d.get("quantity") or 0)
             for d in discards
-            if pd.to_datetime(d.get("created_at")).tz_localize(None) > t_prev
-            and pd.to_datetime(d.get("created_at")).tz_localize(None) <= t_curr
+            if pd.to_datetime(d.get("discarded_at") or d.get("created_at")).tz_localize(None) > t_prev
+            and pd.to_datetime(d.get("discarded_at") or d.get("created_at")).tz_localize(None) <= t_curr
         )
 
         consumption = (

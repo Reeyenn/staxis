@@ -52,6 +52,23 @@ registerTool<{ roomNumber: string }>({
     if (scopeError) return { ok: false, error: scopeError };
 
     const now = new Date().toISOString();
+    // Codex post-merge review 2026-05-13 (F2): dryRun skips the write
+    // after validation passes. Eval cases see realistic synthetic
+    // success for valid inputs and the real "not found" branch above
+    // for invalid inputs (e.g. mark_room_clean('99999')).
+    if (ctx.dryRun) {
+      return {
+        ok: true,
+        data: {
+          dryRun: true,
+          roomNumber: room.number,
+          previousStatus: room.status,
+          newStatus: 'clean',
+          completedAt: now,
+        },
+      };
+    }
+
     const { error } = await supabaseAdmin
       .from('rooms')
       .update({
@@ -93,6 +110,14 @@ registerTool<{ roomNumber: string }>({
 
     const scopeError = assertFloorRoleCanMutateRoom(room, ctx);
     if (scopeError) return { ok: false, error: scopeError };
+
+    // Codex post-merge review 2026-05-13 (F2): dryRun gates.
+    if (ctx.dryRun) {
+      return {
+        ok: true,
+        data: { dryRun: true, roomNumber: room.number, previousStatus: room.status, newStatus: 'dirty' },
+      };
+    }
 
     const { error } = await supabaseAdmin
       .from('rooms')
@@ -139,6 +164,11 @@ registerTool<{ roomNumber: string; on: boolean; note?: string }>({
     if (on) updates.dnd_note = note ?? null;
     else updates.dnd_note = null;
 
+    // Codex post-merge review 2026-05-13 (F2): dryRun gate.
+    if (ctx.dryRun) {
+      return { ok: true, data: { dryRun: true, roomNumber: room.number, dnd: on, note: note ?? null } };
+    }
+
     const { error } = await supabaseAdmin.from('rooms').update(updates).eq('id', room.id);
     if (error) return { ok: false, error: 'Failed to toggle DND.' };
 
@@ -170,6 +200,11 @@ registerTool<{ roomNumber: string; note: string }>({
     if (scopeError) return { ok: false, error: scopeError };
 
     const trimmed = (note ?? '').slice(0, 500);
+    // Codex post-merge review 2026-05-13 (F2): dryRun gate.
+    if (ctx.dryRun) {
+      return { ok: true, data: { dryRun: true, roomNumber: room.number, issue: trimmed } };
+    }
+
     const { error } = await supabaseAdmin
       .from('rooms')
       .update({ issue_note: trimmed || null })
@@ -211,7 +246,11 @@ registerTool<{ roomNumber?: string; message?: string }>({
       if (room) {
         const scopeError = assertFloorRoleCanMutateRoom(room, ctx);
         if (scopeError) return { ok: false, error: scopeError };
-        await supabaseAdmin.from('rooms').update({ help_requested: true }).eq('id', room.id);
+        // Codex post-merge review 2026-05-13 (F2): dryRun skips the
+        // room-help_requested update.
+        if (!ctx.dryRun) {
+          await supabaseAdmin.from('rooms').update({ help_requested: true }).eq('id', room.id);
+        }
         roomFlagged = room.number;
       }
     }
@@ -235,14 +274,38 @@ registerTool<{ roomNumber?: string; message?: string }>({
       };
     }
 
+    // Codex post-merge review 2026-05-13 (F2): dryRun returns synthetic
+    // success after validation passes (recipients found, scope OK) so
+    // eval cases can exercise routing without hitting agent_nudges.
+    if (ctx.dryRun) {
+      return {
+        ok: true,
+        data: {
+          dryRun: true,
+          sent: true,
+          recipientCount: recipients.length,
+          roomFlagged,
+          message: trimmedMessage,
+          deliveryNote: `Would notify ${recipients.length} manager(s).`,
+        },
+      };
+    }
+
+    // Codex post-merge review 2026-05-13 (F6a — dedupe message hash):
+    // include a coarse hash of the trimmed message in the dedupe_key so
+    // distinct distress signals from the same requester don't collapse
+    // into "already pending". First 30 non-space chars differentiate
+    // "broken TV" from "guest aggressive" while still dedup-ing repeat
+    // sends of the same text.
+    const messageKey = trimmedMessage
+      ? trimmedMessage.slice(0, 30).replace(/\s+/g, '_')
+      : 'none';
+
     // Insert one row per recipient, swallowing per-row 23505 (unique
     // violation on the partial pending-dedupe index). A duplicate means
     // the recipient ALREADY has an unresolved help nudge for this
-    // (requester, room) — which is exactly what we want for dedupe. We
-    // treat that as success-by-presence for that recipient. Codex review
-    // fix C2 + my D1: batched .insert(rows) previously aborted entirely
-    // on the FIRST conflict, even for recipients that would have
-    // succeeded. Per-row gives each recipient an independent outcome.
+    // (requester, room, message-key) — which is exactly what we want
+    // for dedupe. Per-row gives each recipient an independent outcome.
     let inserted = 0;
     let alreadyPending = 0;
     let hardErrors = 0;
@@ -260,7 +323,7 @@ registerTool<{ roomNumber?: string; message?: string }>({
           room_number: roomFlagged,
           message: trimmedMessage,
         },
-        dedupe_key: `help:${managerAccountId}:${ctx.user.accountId}:${roomFlagged ?? 'general'}`,
+        dedupe_key: `help:${managerAccountId}:${ctx.user.accountId}:${roomFlagged ?? 'general'}:${messageKey}`,
       });
       if (!error) {
         inserted += 1;
@@ -302,7 +365,11 @@ registerTool<{ roomNumber?: string; message?: string }>({
           ? `Notified ${successfulRecipients} of ${recipients.length} managers — ${hardErrors} could not be reached. Tell the user, and suggest they ping a supervisor directly if no help arrives.`
           : `Notified ${successfulRecipients} of ${recipients.length} managers.`,
         roomFlagged,
-        message: message ?? null,
+        // Codex post-merge review 2026-05-13 (F6): return trimmedMessage,
+        // not raw `message`. Prior code reverted to untrimmed input in
+        // the return shape only — model saw a different value than what
+        // was stored.
+        message: trimmedMessage,
       },
     };
   },

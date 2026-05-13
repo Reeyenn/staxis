@@ -477,9 +477,17 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     // execution and returns a synthetic success — eval-safe.
     const toolResultBlocks: ClaudeContent[] = [];
     for (const call of calls) {
-      const result = opts.dryRun
-        ? { ok: true, data: { dryRun: true, name: call.name, args: call.args }, error: undefined }
-        : await executeTool(call.name, call.args, opts.toolContext);
+      // Codex post-merge review 2026-05-13 (F2): dryRun is now threaded
+      // through ToolContext so mutation tools can run their pre-write
+      // validation (findRoomByNumber, role check) and return synthetic
+      // success at the would-have-mutated boundary. Previously the
+      // synthetic success was generated HERE at the llm layer, which
+      // bypassed every lookup — eval cases like mark_room_clean('99999')
+      // got fake success instead of the "not found" branch.
+      const result = await executeTool(call.name, call.args, {
+        ...opts.toolContext,
+        dryRun: opts.dryRun,
+      });
       const isError = !result.ok;
       toolCallsExecuted.push({ call, result: result.data ?? result.error, isError });
       const rawContent = result.ok

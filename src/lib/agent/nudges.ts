@@ -160,7 +160,23 @@ export async function getNudgeRecipients(propertyId: string): Promise<string[]> 
   if (sub) {
     if (sub.enabled === false) return [];
     if (Array.isArray(sub.recipient_account_ids) && sub.recipient_account_ids.length > 0) {
-      return sub.recipient_account_ids;
+      // Codex post-merge review 2026-05-13 (N3 + B.5): defense-in-depth
+      // against cross-tenant nudge exfiltration. The DB trigger from
+      // migration 0095 is the durable guard, but stale state (raw SQL,
+      // pre-trigger data) could let invalid UUIDs slip through. Validate
+      // here too: every recipient must have role='admin' OR property_access
+      // (uuid[]) containing this propertyId.
+      const { data: validated } = await supabaseAdmin
+        .from('accounts')
+        .select('id, role, property_access')
+        .in('id', sub.recipient_account_ids);
+      return (validated ?? [])
+        .filter(a => {
+          if (a.role === 'admin') return true;
+          const access = (a.property_access as string[]) ?? [];
+          return access.includes(propertyId);
+        })
+        .map(a => a.id as string);
     }
   }
 

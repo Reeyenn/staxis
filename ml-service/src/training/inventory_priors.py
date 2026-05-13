@@ -228,15 +228,39 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
         #   keep rates in [q1 - 1.5*iqr, q3 + 1.5*iqr]
         # We need at least 4 contributors before clipping makes sense
         # (otherwise IQR is meaningless). Below 4, fall back to raw median.
+        # Codex post-merge review 2026-05-13 (F5): IQR clip on raw rates
+        # was over-aggressive for lognormal data (a 200-room hotel
+        # legitimately uses 10× a 30-room hotel; Tukey-on-raw clipped real
+        # cohort members and biased the prior LOW). Fix: clip on
+        # log1p(rates) so multiplicative noise becomes additive and
+        # the Tukey assumption (~symmetric distribution) holds.
         rates_arr = np.asarray(rates, dtype=float)
         if len(rates_arr) >= 4:
-            q1 = float(np.percentile(rates_arr, 25))
-            q3 = float(np.percentile(rates_arr, 75))
+            log_rates = np.log1p(rates_arr)
+            q1 = float(np.percentile(log_rates, 25))
+            q3 = float(np.percentile(log_rates, 75))
             iqr = q3 - q1
             lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
-            mask = (rates_arr >= lo) & (rates_arr <= hi)
+            mask = (log_rates >= lo) & (log_rates <= hi)
             n_clipped = int((~mask).sum())
-            clipped = rates_arr[mask] if mask.any() else rates_arr
+            if mask.any():
+                clipped = rates_arr[mask]
+            else:
+                # F5a: every value clipped is pathological — should never
+                # happen with sane data. Log LOUD so operators notice,
+                # then fall back to unclipped (a noisy prior beats no prior).
+                print(json.dumps({
+                    "level": "error",
+                    "event": "cohort_prior_all_clipped",
+                    "cohort_key": cohort_key,
+                    "canonical": canonical,
+                    "n_input": int(len(rates_arr)),
+                    "log_iqr_lo": lo,
+                    "log_iqr_hi": hi,
+                    "rates_sample": [float(r) for r in rates_arr[:5].tolist()],
+                    "ts": datetime.utcnow().isoformat(),
+                }))
+                clipped = rates_arr
             if n_clipped > 0:
                 cohorts_with_outliers_clipped += 1
                 print(json.dumps({
@@ -246,8 +270,8 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
                     "canonical": canonical,
                     "n_input": int(len(rates_arr)),
                     "n_clipped": n_clipped,
-                    "iqr_lo": lo,
-                    "iqr_hi": hi,
+                    "log_iqr_lo": lo,
+                    "log_iqr_hi": hi,
                     "ts": datetime.utcnow().isoformat(),
                 }))
             cohort_median = float(np.median(clipped))
