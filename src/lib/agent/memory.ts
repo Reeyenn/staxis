@@ -66,6 +66,82 @@ export async function listConversations(userAccountId: string, limit = 30): Prom
   }));
 }
 
+/** Row shape returned by the staxis_load_and_record_user_turn RPC and also
+ *  used internally by loadConversation. Exported so the route can decode
+ *  the RPC response without duplicating the field set. */
+export interface AgentMessageRow {
+  role: string;
+  content: string | null;
+  tool_call_id: string | null;
+  tool_name: string | null;
+  tool_args: Record<string, unknown> | null;
+  tool_result: unknown;
+  created_at?: string;
+}
+
+/** Convert a chronologically-sorted run of agent_messages rows into the
+ *  AgentMessage shape the LLM wrapper consumes. Groups assistant text +
+ *  adjacent assistant tool_use rows so a turn with N tool calls becomes
+ *  ONE AgentMessage with toolCalls.length === N — matches the shape
+ *  streamAgent produced when those rows were written. Codex post-merge
+ *  review 2026-05-13 (F1): extracted from loadConversation so the new
+ *  single-RPC path can reuse the same logic. */
+export function rowsToAgentMessages(rows: AgentMessageRow[]): AgentMessage[] {
+  const messages: AgentMessage[] = [];
+  let pendingAssistant: { content: string; toolCalls: AgentToolCall[] } | null = null;
+
+  for (const row of rows) {
+    const role = row.role;
+    if (role === 'user') {
+      if (pendingAssistant) {
+        messages.push({
+          role: 'assistant',
+          content: pendingAssistant.content,
+          toolCalls: pendingAssistant.toolCalls.length ? pendingAssistant.toolCalls : undefined,
+        });
+        pendingAssistant = null;
+      }
+      messages.push({ role: 'user', content: row.content ?? '' });
+    } else if (role === 'assistant') {
+      if (!pendingAssistant) pendingAssistant = { content: '', toolCalls: [] };
+      if (row.tool_name) {
+        pendingAssistant.toolCalls.push({
+          id: row.tool_call_id ?? '',
+          name: row.tool_name,
+          args: row.tool_args ?? {},
+        });
+      } else if (row.content) {
+        pendingAssistant.content =
+          (pendingAssistant.content ? pendingAssistant.content + '\n' : '') +
+          row.content;
+      }
+    } else if (role === 'tool') {
+      if (pendingAssistant) {
+        messages.push({
+          role: 'assistant',
+          content: pendingAssistant.content,
+          toolCalls: pendingAssistant.toolCalls.length ? pendingAssistant.toolCalls : undefined,
+        });
+        pendingAssistant = null;
+      }
+      messages.push({
+        role: 'tool',
+        toolCallId: row.tool_call_id ?? '',
+        result: row.tool_result ?? null,
+      });
+    }
+    // 'system' rows aren't replayed — they're metadata (e.g., nudge surface).
+  }
+  if (pendingAssistant) {
+    messages.push({
+      role: 'assistant',
+      content: pendingAssistant.content,
+      toolCalls: pendingAssistant.toolCalls.length ? pendingAssistant.toolCalls : undefined,
+    });
+  }
+  return messages;
+}
+
 export async function loadConversation(
   conversationId: string,
   userAccountId: string,

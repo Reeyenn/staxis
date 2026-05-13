@@ -25,6 +25,15 @@
 //   - Fix #4: housekeeper identity. `staff.id` is resolved from
 //     `staff.auth_user_id = userCtx.uid` and passed into ToolContext.
 //     Housekeeper-scoped queries use this, NOT `accountId`.
+//
+// Notes on abort-signal behavior (Codex post-merge review N6):
+// `req.signal` is forwarded into `streamAgent` and the Anthropic SDK. It
+// fires on TCP-level disconnect, which under Vercel's edge proxy is the
+// proxy timeout — NOT the browser close. In practice the abort takes
+// 30–60s to fire after the user closes the tab. The actual cost ceiling
+// is `REQUEST_TIMEOUT_MS = 50_000` per Anthropic call in
+// `src/lib/agent/llm.ts`. Treat the abort signal as best-effort cost
+// containment, not a deterministic kill switch.
 
 import type { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
@@ -37,10 +46,11 @@ import { buildHotelSnapshot } from '@/lib/agent/context';
 import { buildSystemPrompt, PROMPT_VERSION } from '@/lib/agent/prompts';
 import {
   createConversation,
-  loadConversation,
   recordUserTurn,
   recordAssistantTurn,
   recordToolResult,
+  rowsToAgentMessages,
+  type AgentMessageRow,
 } from '@/lib/agent/memory';
 import {
   reserveCostBudget,
@@ -150,33 +160,52 @@ export async function POST(req: NextRequest): Promise<Response> {
   const reservationId = reservation.reservationId;
 
   // ── Load or create the conversation ───────────────────────────────────
-  // Codex adversarial review 2026-05-13 (A-C4): wrap the load+writeUserTurn
-  // prep window inside a per-conversation advisory lock so two browser tabs
-  // cannot interleave writes. The lock auto-releases when the supabase RPC
-  // call completes (pg_advisory_xact_lock holds for the implicit txn). We
-  // only protect the prep window, NOT the SSE stream — the stream's
-  // atomicity is already covered by recordAssistantTurn's RPC.
+  // Codex post-merge review 2026-05-13 (F1): the previous lock path used
+  // a standalone staxis_lock_conversation RPC, but pg_advisory_xact_lock
+  // releases on the RPC's auto-commit — the load+write that followed ran
+  // UNLOCKED. Now we use staxis_load_and_record_user_turn which performs
+  // the lock + ownership-check + load-messages + insert-user-turn inside
+  // a SINGLE transaction. The lock genuinely holds for the duration.
+  // Streaming (recordAssistantTurn etc.) runs after this RPC returns and
+  // its atomicity is covered by recordAssistantTurn's own RPC.
   let conversationId = body.conversationId;
   let history: AgentMessage[] = [];
   try {
     if (conversationId) {
-      try {
-        await supabaseAdmin.rpc('staxis_lock_conversation', {
+      const { data: rpcResult, error: rpcErr } = await supabaseAdmin.rpc(
+        'staxis_load_and_record_user_turn',
+        {
           p_conversation_id: conversationId,
-        });
-      } catch (lockErr) {
-        console.error('[agent/command] conversation lock RPC failed (proceeding)', lockErr);
-      }
-      const convo = await loadConversation(conversationId, userCtx.accountId);
-      if (!convo) {
+          p_user_id: userCtx.accountId,
+          p_user_message: body.message,
+        },
+      );
+      if (rpcErr) {
         await cancelCostReservation(reservationId);
-        return Response.json({ ok: false, error: 'conversation not found or not yours', requestId }, { status: 404 });
+        console.error('[agent/command] load-and-record RPC failed', rpcErr);
+        return Response.json(
+          { ok: false, error: 'failed to prepare conversation', requestId, details: rpcErr.message },
+          { status: 500 },
+        );
       }
-      if (convo.propertyId !== body.propertyId) {
+      const bundle = rpcResult as {
+        ok: boolean;
+        reason?: string;
+        conversation?: { property_id: string };
+        messages?: AgentMessageRow[];
+      };
+      if (!bundle?.ok) {
+        await cancelCostReservation(reservationId);
+        if (bundle?.reason === 'not_found' || bundle?.reason === 'wrong_owner') {
+          return Response.json({ ok: false, error: 'conversation not found or not yours', requestId }, { status: 404 });
+        }
+        return Response.json({ ok: false, error: 'failed to prepare conversation', requestId }, { status: 500 });
+      }
+      if (bundle.conversation?.property_id !== body.propertyId) {
         await cancelCostReservation(reservationId);
         return Response.json({ ok: false, error: 'conversation is scoped to a different property', requestId }, { status: 400 });
       }
-      history = convo.messages;
+      history = rowsToAgentMessages(bundle.messages ?? []);
     } else {
       conversationId = await createConversation({
         userAccountId: userCtx.accountId,
@@ -186,8 +215,11 @@ export async function POST(req: NextRequest): Promise<Response> {
         title: body.message.trim().slice(0, 120),
       });
       history = [];
+      // New conversation: the user turn isn't written by the RPC path,
+      // so we still call recordUserTurn here. Race is impossible because
+      // no other tab could have this conversationId yet.
+      await recordUserTurn(conversationId, body.message);
     }
-    await recordUserTurn(conversationId, body.message);
   } catch (e) {
     await cancelCostReservation(reservationId);
     return Response.json(

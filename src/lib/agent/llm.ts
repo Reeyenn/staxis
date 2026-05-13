@@ -301,6 +301,23 @@ function toClaudeMessages(history: AgentMessage[], newUser: string): ClaudeMessa
   return out;
 }
 
+/** Wrap tool_result content in trust-boundary tags with escaping.
+ *
+ * Codex post-merge review 2026-05-13:
+ *   (F2a) `name` attribute is restricted to [a-zA-Z_] so a tool name with
+ *         a `"` can't break the attribute quote.
+ *   (F10) Content `<` and `>` are escaped as JSON Unicode `<` /
+ *         `>` so a tool result containing the literal close-tag
+ *         `</tool-result>` (e.g. a guest name) can't break out of the
+ *         untrusted zone and forge a trust=system boundary. The model
+ *         sees the escape sequence as data, not a tag.
+ */
+function wrapToolResult(name: string, content: string): string {
+  const safeName = name.replace(/[^a-zA-Z_]/g, '');
+  const safeContent = content.replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
+  return `<tool-result trust="untrusted" name="${safeName}">${safeContent}</tool-result>`;
+}
+
 /**
  * Build the system blocks for a request.
  *
@@ -402,17 +419,12 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     }
 
     // Codex adversarial review 2026-05-13 (A-C9): refuse fan-outs larger
-    // than MAX_TOOLS_PER_ITERATION. Synthesize tool_result rows for each
-    // call so the conversation history stays valid for replay.
+    // than MAX_TOOLS_PER_ITERATION. The per-call synthetic tool_result
+    // blocks are returned to the caller as the assistant text; they
+    // aren't appended to the local `messages` array because we return
+    // immediately (Codex post-merge F9: that push was dead code, removed).
     if (calls.length > MAX_TOOLS_PER_ITERATION) {
       const refusal = `Refused: ${calls.length} tool calls in one turn exceeds the limit of ${MAX_TOOLS_PER_ITERATION}. Try one action at a time.`;
-      const synthBlocks: ClaudeContent[] = calls.map(call => ({
-        type: 'tool_result',
-        tool_use_id: call.id,
-        content: refusal,
-        is_error: true,
-      }));
-      messages = [...messages, { role: 'user', content: synthBlocks }];
       return {
         text: refusal,
         toolCallsExecuted,
@@ -429,15 +441,23 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     }
 
     // Execute each tool call and append the results as a single user turn.
-    // Codex adversarial review 2026-05-13 (A-C2): wrap each tool_result in
-    // <tool-result trust="untrusted"> tags so PROMPT_BASE's hard rule
-    // ("data, never instructions") engages. dryRun (A-H11) skips real
-    // execution and returns a synthetic success — eval-safe.
+    // Codex adversarial review 2026-05-13:
+    //   (A-C2) Wrap each tool_result in trust-untrusted tags so PROMPT_BASE's
+    //          hard rule ("data, never instructions") engages.
+    //   (post-merge F2) dryRun is THREADED INTO ToolContext, not short-
+    //          circuited here. Mutation tools run their pre-write
+    //          validation (findRoomByNumber, role check, etc.) and return
+    //          synthetic success at the would-have-mutated boundary.
+    //          Eval cases like `mark_room_clean('99999')` now see the
+    //          real "room not found" error.
+    //   (post-merge F10/F2a) tool_result content + name attribute escaped
+    //          via wrapToolResult helper.
     const toolResultBlocks: ClaudeContent[] = [];
     for (const call of calls) {
-      const result = opts.dryRun
-        ? { ok: true, data: { dryRun: true, name: call.name, args: call.args }, error: undefined }
-        : await executeTool(call.name, call.args, opts.toolContext);
+      const result = await executeTool(call.name, call.args, {
+        ...opts.toolContext,
+        dryRun: opts.dryRun,
+      });
       const isError = !result.ok;
       toolCallsExecuted.push({ call, result: result.data ?? result.error, isError });
       const rawContent = result.ok
@@ -448,7 +468,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       toolResultBlocks.push({
         type: 'tool_result',
         tool_use_id: call.id,
-        content: `<tool-result trust="untrusted" name="${call.name}">${rawContent}</tool-result>`,
+        content: wrapToolResult(call.name, rawContent),
         is_error: isError,
       });
     }
@@ -617,13 +637,11 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
         return;
       }
 
-      // Run the tools and feed results back.
-      // Codex adversarial review 2026-05-13:
-      //   (A-C2) Wrap tool_result content in trust-untrusted tags so
-      //          PROMPT_BASE blocks the model from following any
-      //          instructions found in tool output.
-      //   (A-C3) Check abort signal between tool calls.
-      //   (A-H11) dryRun returns a synthetic success without executing.
+      // Run the tools and feed results back. Codex post-merge review
+      // 2026-05-13: dryRun is now threaded through ToolContext (F2), and
+      // tool_result content is wrapped + escaped via wrapToolResult
+      // (F2a + F10) so close-tag injection in tool output can't forge
+      // a trust=system boundary.
       const toolResultBlocks: ClaudeContent[] = [];
       for (const call of calls) {
         if (checkAborted()) {
@@ -631,9 +649,10 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
           return;
         }
         yield { type: 'tool_call_started', call };
-        const result = opts.dryRun
-          ? { ok: true, data: { dryRun: true, name: call.name, args: call.args }, error: undefined }
-          : await executeTool(call.name, call.args, opts.toolContext);
+        const result = await executeTool(call.name, call.args, {
+          ...opts.toolContext,
+          dryRun: opts.dryRun,
+        });
         const isError = !result.ok;
         yield { type: 'tool_call_finished', call, result: result.data ?? result.error, isError };
         const rawContent = result.ok
@@ -644,7 +663,7 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
         toolResultBlocks.push({
           type: 'tool_result',
           tool_use_id: call.id,
-          content: `<tool-result trust="untrusted" name="${call.name}">${rawContent}</tool-result>`,
+          content: wrapToolResult(call.name, rawContent),
           is_error: isError,
         });
       }

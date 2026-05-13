@@ -217,7 +217,14 @@ export async function recordNonRequestCost(opts: {
     state: 'finalized',
   });
   if (error) {
+    // Codex post-merge review 2026-05-13 (N9): previously this just logged
+    // and returned. An FK violation (deleted user/property) silently lost
+    // the cost record — eval reports "success" but the spend never appears
+    // in agent_costs, so the global cap can't see it. Throw so the caller
+    // notices. Eval runner catches and logs; non-eval callers can choose
+    // their own policy.
     console.error('[cost-controls] non-request cost insert failed', error);
+    throw new Error(`non-request cost insert failed: ${error.message}`);
   }
 }
 

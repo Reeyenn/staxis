@@ -1200,7 +1200,15 @@ function CountMode({
       for (const d of decisions) {
         if (d.action !== 'accept') continue;
         const currentInput = parseInt(prev[d.itemId] ?? '0') || 0;
-        const newValue = d.mode === 'add' ? currentInput + d.aiCount : d.aiCount;
+        // Codex post-merge review 2026-05-13 (F7): clamp at 0 for parity
+        // with the onChange handler's defense-in-depth. DB CHECK (migration
+        // 0084) is the floor; this catches a stale negative `currentInput`
+        // or a negative `d.aiCount` (shouldn't happen but defensive) before
+        // the UI shows a bad value.
+        const newValue = Math.max(
+          0,
+          d.mode === 'add' ? currentInput + d.aiCount : d.aiCount,
+        );
         next[d.itemId] = String(newValue);
         fresh[d.itemId] = d.confidence;
       }

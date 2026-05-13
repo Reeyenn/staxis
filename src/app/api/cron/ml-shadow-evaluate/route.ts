@@ -142,22 +142,23 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
       const shadowMae = shadow.validation_mae;
       const activeMae = active.validation_mae;
-      // Codex adversarial review 2026-05-13 (I-C6): the prior version
-      // promoted on null MAE ("can't make a confidence-based decision,
-      // bias toward fresher data"). But a null MAE often signals that
-      // validation FAILED (insufficient holdout, NaN inputs, etc.) —
-      // promoting an unvalidated shadow over a validated active model
-      // is exactly the silent regression that shadow mode exists to
-      // prevent. Fail closed instead: skip promotion, log loudly, leave
-      // the shadow in place for the next cron tick.
+      // Codex adversarial review 2026-05-13 (I-C6 + post-merge F3): the
+      // prior version promoted on null MAE ("can't make a confidence-based
+      // decision, bias toward fresher data"). But a null MAE often signals
+      // that validation FAILED — promoting an unvalidated shadow over a
+      // validated active is exactly the regression shadow mode exists to
+      // prevent. Now we fail closed AND actually reject the row, instead
+      // of leaving verdict='rejected' in the response while is_shadow=true
+      // stayed in the DB (queue-starvation bug from F3).
       if (shadowMae === null || activeMae === null) {
-        log.warn('ml-shadow-evaluate: skipping promotion on null MAE', {
+        log.warn('ml-shadow-evaluate: rejecting on null MAE', {
           requestId,
           shadow_run_id: shadow.id,
           active_run_id: active.id,
           shadow_mae: shadowMae,
           active_mae: activeMae,
         });
+        await rejectShadow(shadow.id, shadowMae, 'null_mae');
         results.push({
           shadow_run_id: shadow.id, layer: shadow.layer, item_id: shadow.item_id,
           verdict: 'rejected',
@@ -236,11 +237,16 @@ async function promoteShadow(shadowId: string, activeId: string): Promise<void> 
  * Reject a shadow. Marks it as ended with the supplied reason so the
  * admin audit log shows why it was killed; the existing active keeps
  * serving without modification.
+ *
+ * Codex post-merge review 2026-05-13 (F3a): the UPDATE now requires
+ * is_shadow=true to be the current state so concurrent cron instances
+ * (cron overlap, manual trigger during scheduled run) don't double-
+ * update the same row.
  */
 async function rejectShadow(
   shadowId: string,
   shadowMae: number | null,
-  reason: 'shadow_underperformed' | 'active_disabled_during_soak',
+  reason: 'shadow_underperformed' | 'active_disabled_during_soak' | 'null_mae',
 ): Promise<void> {
   const nowIso = new Date().toISOString();
   await supabaseAdmin
@@ -252,5 +258,6 @@ async function rejectShadow(
       deactivation_reason: reason,
       shadow_evaluation_mae: shadowMae,
     })
-    .eq('id', shadowId);
+    .eq('id', shadowId)
+    .eq('is_shadow', true);
 }

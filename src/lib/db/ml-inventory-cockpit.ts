@@ -599,11 +599,22 @@ export async function getInventoryAutoFillMap(
       : null;
     if (predStock === null) continue;
 
-    // Time-decay since prediction. predicted_daily_rate is property-level
-    // total per-day consumption (see ml-service/src/inference/inventory_rate.py).
+    // Time-decay since prediction. predicted_daily_rate is per-item per-day
+    // total consumption (see ml-service/src/inference/inventory_rate.py:229).
     // Subtract `rate * hours_since / 24` from the snapshot value, clamp at 0.
+    //
+    // Codex post-merge review 2026-05-13 (F11a): apply a 48-hour hard cap.
+    // The 7-day freshness gate above means anything past 7 days is already
+    // excluded, but by 48 hours the decay-by-point-estimate has
+    // accumulated enough uncertainty (p10-p90 range × hours) that
+    // showing the value with the "high confidence" graduated pip is
+    // misleading. Drop the item from auto-fill — manager counts manually.
+    const HOURS_DECAY_HARD_CAP = 48;
     const predictedAt = typeof p.predicted_at === 'string' ? new Date(p.predicted_at).getTime() : nowMs;
     const hoursSince = Math.max(0, (nowMs - predictedAt) / 3_600_000);
+    if (hoursSince > HOURS_DECAY_HARD_CAP) {
+      continue;
+    }
     const dailyRate = p.predicted_daily_rate !== null && p.predicted_daily_rate !== undefined
       ? Number(p.predicted_daily_rate)
       : 0;

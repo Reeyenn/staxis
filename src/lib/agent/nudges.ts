@@ -160,7 +160,23 @@ export async function getNudgeRecipients(propertyId: string): Promise<string[]> 
   if (sub) {
     if (sub.enabled === false) return [];
     if (Array.isArray(sub.recipient_account_ids) && sub.recipient_account_ids.length > 0) {
-      return sub.recipient_account_ids;
+      // Codex post-merge review 2026-05-13 (N3 + B.5): the DB trigger
+      // (migration 0092) is the durable guard, but stale state could let
+      // an out-of-band UPDATE bypass it (e.g. raw SQL by an operator).
+      // Validate here too: every recipient must have a legitimate path to
+      // this property (role='admin' OR property_access uuid[] contains
+      // this propertyId). Drop anything that doesn't pass.
+      const { data: validated } = await supabaseAdmin
+        .from('accounts')
+        .select('id, role, property_access')
+        .in('id', sub.recipient_account_ids);
+      return (validated ?? [])
+        .filter(a => {
+          if (a.role === 'admin') return true;
+          const access = (a.property_access as string[]) ?? [];
+          return access.includes(propertyId);
+        })
+        .map(a => a.id as string);
     }
   }
 
