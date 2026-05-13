@@ -124,7 +124,10 @@ export function RoomsTab() {
     return set;
   }, [workOrders]);
 
-  // Status counts across the whole property.
+  // Status counts across the whole property. DND is the housekeeper-set
+  // "do not disturb" flag (r.isDnd), NOT r.type === 'vacant' — the inventory
+  // merge above creates a phantom 'vacant' row for every untouched room,
+  // which would inflate the DND count to "every room not yet touched today."
   const counts = useMemo(() => {
     const c = { total: 0, ready: 0, cleaning: 0, dirty: 0, dnd: 0, blocked: 0, help: 0 };
     for (const r of displayRooms) {
@@ -132,7 +135,7 @@ export function RoomsTab() {
       if (r.status === 'clean' || r.status === 'inspected') c.ready++;
       if (r.status === 'in_progress') c.cleaning++;
       if (r.status === 'dirty') c.dirty++;
-      if (r.type === 'vacant') c.dnd++;
+      if (r.isDnd) c.dnd++;
       if (openWoRooms.has(r.number)) c.blocked++;
       if (r.helpRequested) c.help++;
     }
@@ -264,7 +267,7 @@ export function RoomsTab() {
     if (filter === 'toturn')   return r.status === 'dirty';
     if (filter === 'cleaning') return r.status === 'in_progress';
     if (filter === 'ready')    return r.status === 'clean' || r.status === 'inspected';
-    if (filter === 'dnd')      return r.type === 'vacant' || openWoRooms.has(r.number);
+    if (filter === 'dnd')      return Boolean(r.isDnd) || openWoRooms.has(r.number);
     if (filter === 'help')     return Boolean(r.helpRequested);
     return true;
   };
@@ -588,7 +591,17 @@ export function RoomsTab() {
               </p>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 320, overflowY: 'auto' }}>
-              {staff.filter(s => s.isActive && s.department === 'housekeeping').map(s => (
+              {staff
+                // Match the historical filter: undefined isActive defaults
+                // to active; undefined department defaults to housekeeping.
+                // Also exclude the housekeeper who's already on this room
+                // (no point sending backup to themselves).
+                .filter(s =>
+                  s.isActive !== false &&
+                  (!s.department || s.department === 'housekeeping') &&
+                  s.id !== backupRoom.assignedTo,
+                )
+                .map(s => (
                 <button
                   key={s.id}
                   onClick={() => handleSendBackup(backupRoom, s.id, s.name)}

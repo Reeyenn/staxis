@@ -23,7 +23,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import {
   subscribeToRooms,
   getDeepCleanConfig, setDeepCleanConfig, getDeepCleanRecords,
-  markRoomDeepCleaned,
+  assignRoomDeepClean,
 } from '@/lib/db';
 import { useTodayStr } from '@/lib/use-today-str';
 import type { Room, DeepCleanConfig, DeepCleanRecord } from '@/types';
@@ -132,12 +132,16 @@ export function DeepCleanTab() {
     };
   }), [allRoomNumbers, records, parDays, today]);
 
+  // Overdue list excludes rooms already in_progress (Maria scheduled
+  // them in this session — they shouldn't keep yelling "OVERDUE!").
   const overdue  = useMemo(() => allInfo
-    .filter(r => r.status === 'overdue' || r.status === 'never')
+    .filter(r => (r.status === 'overdue' || r.status === 'never') && !r.inProgress)
     .sort((a, b) =>
       (b.daysSince === Infinity ? 99999 : b.daysSince) -
       (a.daysSince === Infinity ? 99999 : a.daysSince),
     ), [allInfo]);
+
+  const scheduled = useMemo(() => allInfo.filter(r => r.inProgress), [allInfo]);
 
   const dueSoon = useMemo(() => allInfo
     .filter(r => r.status === 'due-soon')
@@ -160,22 +164,24 @@ export function DeepCleanTab() {
     : null;
   const fits = suggestion?.count ?? 0;
 
-  // Schedule a deep clean for one room. Uses markRoomDeepCleaned which
-  // bumps `lastDeepClean` to today (treated as "started" for the cycle
-  // purposes — the real completion logging happens elsewhere).
+  // Schedule a deep clean for one room — sets status='in_progress' via
+  // assignRoomDeepClean (NOT markRoomDeepCleaned, which would mark it
+  // already-completed and silently advance the cycle date for a clean
+  // that hasn't actually happened yet). Empty team = "queued, no
+  // specific staff yet" — Maria can assign someone later via a future
+  // team-picker modal.
   const handleSchedule = async (roomNumber: string) => {
     if (!uid || !pid) return;
     try {
-      // markRoomDeepCleaned auto-stamps today's date and status='completed'
-      // server-side; we just pass the room number.
-      await markRoomDeepCleaned(uid, pid, roomNumber);
-      // Optimistic local update so the row drops out of overdue immediately.
+      await assignRoomDeepClean(uid, pid, roomNumber, []);
+      // Optimistic local update — flip status to in_progress so the row
+      // re-classifies. lastDeepClean is preserved server-side.
       setRecords(prev => ({
         ...prev,
         [roomNumber]: {
-          ...(prev[roomNumber] ?? { roomNumber }),
-          lastDeepClean: format(today, 'yyyy-MM-dd'),
-          status: 'completed',
+          ...(prev[roomNumber] ?? { roomNumber, lastDeepClean: null }),
+          status: 'in_progress',
+          cleanedByTeam: prev[roomNumber]?.cleanedByTeam ?? [],
         } as DeepCleanRecord,
       }));
       flashToast(lang === 'es' ? `Limpieza profunda programada · ${roomNumber}` : `Deep clean scheduled · ${roomNumber}`);
@@ -225,6 +231,7 @@ export function DeepCleanTab() {
               {overdue.length} {lang === 'es' ? 'atrasadas' : 'overdue'}
             </span>
             <span style={{ color: T.ink3 }}>
+              {scheduled.length > 0 && ` · ${scheduled.length} ${lang === 'es' ? 'programadas' : 'scheduled'}`}
               {' · '}{dueSoon.length} {lang === 'es' ? 'próximas' : 'due soon'}
               {' · '}{freshCount} {lang === 'es' ? 'frescas' : 'fresh'}
             </span>

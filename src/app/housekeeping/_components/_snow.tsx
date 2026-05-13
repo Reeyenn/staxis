@@ -288,8 +288,24 @@ export function RoomTileBase({
   const s = statusLetter(r);
   const tone = tileTone(s);
   const label = (lang === 'es' ? STATUS_LABEL_ES : STATUS_LABEL)[s];
-  const elapsed = r.startedAt && !r.completedAt
-    ? Math.max(0, Math.round((Date.now() - new Date(r.startedAt as unknown as string).getTime()) / 60000))
+  // Safely coerce startedAt — Supabase returns ISO strings, but legacy
+  // Firestore-style rows may still come through with a `.toDate()` method.
+  // Inlined so this file stays free of _shared.tsx imports.
+  const startedMs = (() => {
+    const ts: unknown = r.startedAt;
+    if (!ts) return null;
+    if (ts instanceof Date) return ts.getTime();
+    if (typeof ts === 'object' && 'toDate' in ts && typeof (ts as { toDate?: unknown }).toDate === 'function') {
+      return (ts as { toDate: () => Date }).toDate().getTime();
+    }
+    if (typeof ts === 'string' || typeof ts === 'number') {
+      const d = new Date(ts);
+      return isNaN(d.getTime()) ? null : d.getTime();
+    }
+    return null;
+  })();
+  const elapsed = startedMs && !r.completedAt
+    ? Math.max(0, Math.round((Date.now() - startedMs) / 60000))
     : null;
   const overTime = elapsed != null && elapsed > 30;
 

@@ -26,12 +26,11 @@ import {
   subscribeToShiftConfirmations,
   subscribeToScheduleAssignments,
   saveScheduleAssignments,
-  subscribeToDashboardNumbers,
   subscribeToWorkOrders,
 } from '@/lib/db';
-import type { PlanSnapshot, ScheduleAssignments, DashboardNumbers } from '@/lib/db';
+import type { PlanSnapshot, ScheduleAssignments } from '@/lib/db';
 import { autoAssignRooms } from '@/lib/calculations';
-import type { ShiftConfirmation, WorkOrder, StaffMember, Room } from '@/types';
+import type { ShiftConfirmation, WorkOrder, StaffMember } from '@/types';
 import {
   defaultShiftDate, addDays, formatDisplayDate, snapshotToShiftRooms,
 } from './_shared';
@@ -48,11 +47,8 @@ export function ScheduleTab() {
   const { lang } = useLang();
 
   const [shiftDate, setShiftDate] = useState(defaultShiftDate);
-  const [pullType, setPullType] = useState<'morning' | 'evening'>('evening');
   const [planSnapshot, setPlanSnapshot] = useState<PlanSnapshot | null>(null);
-  const [scheduleDoc, setScheduleDoc] = useState<ScheduleAssignments | null>(null);
   const [confirmations, setConfirmations] = useState<ShiftConfirmation[]>([]);
-  const [dashboardNums, setDashboardNums] = useState<DashboardNumbers | null>(null);
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [assignments, setAssignments] = useState<Record<string, string>>({});
   const [crewIds, setCrewIds] = useState<string[]>([]);
@@ -61,8 +57,26 @@ export function ScheduleTab() {
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Track which date our local state has been hydrated for. Without this,
+  // the debounced persist effect can fire while we're mid-date-switch and
+  // overwrite the new date's saved doc with the previous date's
+  // assignments. Same class of bug as the 2026-05-07 "Maria's rooms
+  // reshuffled" incident — re-introduced when the tab was rewritten, now
+  // re-fixed.
+  const hydratedDate = useRef<string | null>(null);
+
   const uid = user?.uid ?? '';
   const pid = activePropertyId ?? '';
+
+  // Switching dates: clear local state immediately and mark un-hydrated
+  // so the persist guard below skips the next debounced save until the
+  // subscription callback re-fires for the new date.
+  useEffect(() => {
+    hydratedDate.current = null;
+    setAssignments({});
+    setCrewIds([]);
+    setSendResults(new Map());
+  }, [shiftDate]);
 
   // ── Subscriptions ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -70,9 +84,21 @@ export function ScheduleTab() {
     return subscribeToPlanSnapshot(uid, pid, shiftDate, setPlanSnapshot);
   }, [uid, pid, shiftDate]);
 
+  // Hydrate from saved doc inside the subscription callback so we know
+  // exactly when the doc for the current date has loaded — required by
+  // the persist guard above.
   useEffect(() => {
     if (!uid || !pid) return;
-    return subscribeToScheduleAssignments(uid, pid, shiftDate, setScheduleDoc);
+    return subscribeToScheduleAssignments(uid, pid, shiftDate, (doc) => {
+      if (doc) {
+        setAssignments(doc.roomAssignments ?? {});
+        setCrewIds(doc.crew ?? []);
+      } else {
+        setAssignments({});
+        setCrewIds([]);
+      }
+      hydratedDate.current = shiftDate;
+    });
   }, [uid, pid, shiftDate]);
 
   useEffect(() => {
@@ -81,20 +107,9 @@ export function ScheduleTab() {
   }, [uid, pid, shiftDate]);
 
   useEffect(() => {
-    return subscribeToDashboardNumbers(setDashboardNums);
-  }, []);
-
-  useEffect(() => {
     if (!uid || !pid) return;
     return subscribeToWorkOrders(uid, pid, setWorkOrders);
   }, [uid, pid]);
-
-  // ── Hydrate local state from saved doc ────────────────────────────────
-  useEffect(() => {
-    if (!scheduleDoc) return;
-    setAssignments(scheduleDoc.roomAssignments ?? {});
-    setCrewIds(scheduleDoc.crew ?? []);
-  }, [scheduleDoc]);
 
   // ── Derived: shift rooms from CSV pull ────────────────────────────────
   const shiftRooms = useMemo(() => snapshotToShiftRooms(planSnapshot, pid), [planSnapshot, pid]);
@@ -121,19 +136,35 @@ export function ScheduleTab() {
   const so1Min  = activeProperty?.stayoverDay1Minutes  ?? 15;
   const so2Min  = activeProperty?.stayoverDay2Minutes  ?? 20;
   const totalMinutes = checkouts * ckMin + stayoverDay1 * so1Min + stayoverDay2 * so2Min;
-  const SHIFT_MINS = 8 * 60;
-  const recommendedHKs = Math.max(1, Math.ceil(totalMinutes / SHIFT_MINS));
+  // Per-housekeeper shift cap. Property setting (default 420 = 7h),
+  // not a hardcoded 8h — the auto-assign algorithm and the capacity
+  // bars MUST agree on the same number, or the bars will misrepresent
+  // what auto-assign actually produced.
+  const SHIFT_MINS = activeProperty?.shiftMinutes ?? 420;
+  // Recommended housekeeping headcount = cleaning crew needed to cover
+  // the total cleaning minutes within shift hours, plus 1 dedicated to
+  // laundry. Matches the previous version's `recommendedStaff` formula.
+  const LAUNDRY_STAFF = 1;
+  const recommendedHKs = Math.max(1, Math.ceil(totalMinutes / SHIFT_MINS)) + LAUNDRY_STAFF;
 
   // Crew = the staff IDs we're scheduling today. Default to active
-  // housekeeping staff if no override has been saved yet.
+  // housekeeping staff if no override has been saved yet. Using
+  // `s.isActive !== false` (rather than `=== true`) and a permissive
+  // department check means seeded rows with undefined fields still
+  // appear — matches the historical behavior on the staff page.
+  const housekeepingStaff = useMemo(
+    () => staff.filter(s => s.isActive !== false && (!s.department || s.department === 'housekeeping')),
+    [staff],
+  );
+
   const activeCrew: StaffMember[] = useMemo(() => {
-    const ids = crewIds.length > 0 ? crewIds : staff.filter(s => s.isActive && s.department === 'housekeeping').map(s => s.id);
+    const ids = crewIds.length > 0 ? crewIds : housekeepingStaff.map(s => s.id);
     return ids.map(id => staff.find(s => s.id === id)).filter((s): s is StaffMember => Boolean(s));
-  }, [crewIds, staff]);
+  }, [crewIds, housekeepingStaff, staff]);
 
   const offCrew = useMemo(
-    () => staff.filter(s => s.isActive && s.department === 'housekeeping' && !activeCrew.some(c => c.id === s.id)),
-    [staff, activeCrew],
+    () => housekeepingStaff.filter(s => !activeCrew.some(c => c.id === s.id)),
+    [housekeepingStaff, activeCrew],
   );
 
   const fmtTime = (mins: number) => {
@@ -146,6 +177,10 @@ export function ScheduleTab() {
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const persist = useCallback(() => {
     if (!uid || !pid) return;
+    // Only save once we've confirmed the saved doc for the current date
+    // has loaded. Without this, the initial-mount empty state would
+    // clobber an existing doc within 500ms of opening the tab.
+    if (hydratedDate.current !== shiftDate) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       const staffNames: Record<string, string> = {};
@@ -291,7 +326,16 @@ export function ScheduleTab() {
         marginBottom: 18, gap: 24, flexWrap: 'wrap',
       }}>
         <div>
-          <Caps>{lang === 'es' ? 'Horario' : 'Schedule'} · {isToday ? (lang === 'es' ? 'hoy' : 'today') : isYesterday ? (lang === 'es' ? 'ayer' : 'yesterday') : isTomorrow ? (lang === 'es' ? 'mañana' : 'tomorrow') : ''}</Caps>
+          <Caps>{
+            // Show "Schedule" alone for arbitrary past/future dates so we
+            // don't render "Schedule · " with a dangling middle-dot.
+            (() => {
+              if (isToday)     return lang === 'es' ? 'Horario · hoy'     : 'Schedule · today';
+              if (isYesterday) return lang === 'es' ? 'Horario · ayer'    : 'Schedule · yesterday';
+              if (isTomorrow)  return lang === 'es' ? 'Horario · mañana'  : 'Schedule · tomorrow';
+              return lang === 'es' ? 'Horario' : 'Schedule';
+            })()
+          }</Caps>
           <h1 style={{
             fontFamily: FONT_SERIF, fontSize: 36, color: T.ink, margin: '4px 0 0',
             letterSpacing: '-0.03em', lineHeight: 1.25, fontWeight: 400,
@@ -307,39 +351,22 @@ export function ScheduleTab() {
         </div>
       </div>
 
-      {/* PMS PULL STRIP — front/back toggle + 5 numbers in plain sight */}
+      {/* PMS PULL STRIP — current pull's numbers in plain sight.
+          The design also showed ‹/› buttons toggling between morning and
+          evening pulls, but the underlying subscription only gives us the
+          most-recent pull for the date. Rather than render lying buttons
+          we just show the current pull's freshness; we'll add real
+          history navigation when the data layer supports it. */}
       <div style={{
         background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
         padding: '18px 22px', marginBottom: 18,
         display: 'flex', alignItems: 'center', gap: 24, flexWrap: 'wrap',
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <button
-            onClick={() => setPullType('morning')}
-            style={{
-              width: 28, height: 28, borderRadius: '50%', cursor: 'pointer',
-              background: 'transparent', border: `1px solid ${T.rule}`, color: T.ink2,
-              fontFamily: FONT_SANS, fontSize: 14,
-            }}
-            aria-label="Previous pull"
-          >‹</button>
-          <div style={{ display: 'flex', flexDirection: 'column', minWidth: 160 }}>
-            <Caps size={9}>{pullType === 'evening'
-              ? (lang === 'es' ? 'Plan vespertino' : 'Evening plan')
-              : (lang === 'es' ? 'Plan matutino'   : 'Morning plan')}</Caps>
-            <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 500, marginTop: 2 }}>
-              {lang === 'es' ? 'Pulled' : 'Pulled'} {pulledAtLabel}
-            </span>
-          </div>
-          <button
-            onClick={() => setPullType('evening')}
-            style={{
-              width: 28, height: 28, borderRadius: '50%', cursor: 'pointer',
-              background: 'transparent', border: `1px solid ${T.rule}`, color: T.ink2,
-              fontFamily: FONT_SANS, fontSize: 14,
-            }}
-            aria-label="Next pull"
-          >›</button>
+        <div style={{ display: 'flex', flexDirection: 'column', minWidth: 160 }}>
+          <Caps size={9}>{lang === 'es' ? 'Última carga PMS' : 'Latest PMS pull'}</Caps>
+          <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 500, marginTop: 2 }}>
+            {pulledAtLabel}
+          </span>
         </div>
         <span style={{ width: 1, height: 42, background: T.rule }} />
         <div style={{ display: 'flex', gap: 32, flex: 1, flexWrap: 'wrap' }}>
@@ -436,6 +463,29 @@ export function ScheduleTab() {
               {/* Status pills + per-row actions */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
                 {sendBadge(c.id) ?? confPill(c.id)}
+                <button
+                  onClick={() => {
+                    const baseline = crewIds.length > 0 ? crewIds : housekeepingStaff.map(s => s.id);
+                    setCrewIds(baseline.filter(id => id !== c.id));
+                    // Drop their assignments too — otherwise they'd persist
+                    // pinned to a person no longer on today's roster.
+                    setAssignments(prev => {
+                      const next: Record<string, string> = {};
+                      for (const [roomId, staffId] of Object.entries(prev)) {
+                        if (staffId !== c.id) next[roomId] = staffId;
+                      }
+                      return next;
+                    });
+                  }}
+                  title={lang === 'es' ? 'Quitar de hoy' : 'Remove from today'}
+                  style={{
+                    background: 'transparent', border: 'none', cursor: 'pointer',
+                    padding: '2px 6px', borderRadius: 4,
+                    fontFamily: FONT_SANS, fontSize: 11, color: T.ink3,
+                  }}
+                >
+                  {lang === 'es' ? 'Quitar' : 'Remove'}
+                </button>
               </div>
             </div>
           );
@@ -451,7 +501,12 @@ export function ScheduleTab() {
             {offCrew.map(s => (
               <button
                 key={s.id}
-                onClick={() => setCrewIds(prev => [...prev.length > 0 ? prev : activeCrew.map(c => c.id), s.id])}
+                onClick={() => {
+                  // First add: seed crewIds from the implicit default
+                  // (housekeepingStaff) so we don't lose the others.
+                  const baseline = crewIds.length > 0 ? crewIds : housekeepingStaff.map(x => x.id);
+                  setCrewIds([...baseline, s.id]);
+                }}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 8,
                   padding: '4px 12px 4px 4px', borderRadius: 999,
@@ -513,10 +568,6 @@ export function ScheduleTab() {
         }}>{toast}</div>
       )}
 
-      {/* dashboardNums consumed silently — keeps the subscription alive so
-          the live PMS numbers stay fresh under the hood. We don't render
-          them on this tab; they're shown on the dashboard. */}
-      {dashboardNums && <span style={{ display: 'none' }} aria-hidden />}
     </div>
   );
 }
