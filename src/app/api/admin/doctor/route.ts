@@ -1242,10 +1242,13 @@ export const EXPECTED_MIGRATIONS: ReadonlyArray<string> = [
   //  observed-rate view v2 + cold-start parent-child guard.
   // 0098 round-8: dedupe preflight (B1) + finalize state-guard (B6).
   // 0099 ML post-merge: drop hardcoded-TZ views (Phase 1+2 cleanup).
+  // 0100 longevity foundation: prompt_version per msg + msg_count trigger
+  //  + eval baselines + account tier.
   '0079', '0080', '0081', '0082', '0083',
   '0084', '0085', '0086', '0087', '0088', '0089',
   '0090', '0091', '0092', '0093', '0094',
   '0095', '0096', '0097', '0098', '0099',
+  '0100',
 ];
 async function checkAppliedMigrations(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {

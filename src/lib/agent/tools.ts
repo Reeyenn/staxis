@@ -53,6 +53,18 @@ export interface ToolResult {
   error?: string;
 }
 
+/**
+ * Surface types that can invoke tools. Each agent surface (chat UI,
+ * voice agent, Clicky walkthrough) declares its surface when fetching
+ * tools, and individual tools can opt in/out per surface.
+ *
+ * Longevity fix L3, 2026-05-13: future-proofs the registry for voice
+ * and walkthrough surfaces. Default is 'chat' only — tools must
+ * explicitly opt into other surfaces. Stops a voice-specific tool
+ * (e.g. play_alert_sound) from being callable from the chat agent.
+ */
+export type AgentSurface = 'chat' | 'voice' | 'walkthrough';
+
 export interface ToolDefinition<TArgs = unknown> {
   /** Stable identifier — what the model calls (e.g. "mark_room_clean"). */
   name: string;
@@ -66,6 +78,12 @@ export interface ToolDefinition<TArgs = unknown> {
   };
   /** Roles allowed to invoke this tool. Anyone else gets a refusal returned to the model. */
   allowedRoles: readonly AppRole[];
+  /**
+   * Surfaces this tool is callable from. Defaults to `['chat']` — every
+   * existing tool registered before L3 is implicitly chat-only.
+   * Voice + walkthrough tools must opt in explicitly. Longevity L3.
+   */
+  surfaces?: readonly AgentSurface[];
   /**
    * True when this tool MUTATES data (writes to DB, sends SMS, sends nudges).
    * False/undefined for read-only queries. Eval refusal checks derive the
@@ -93,9 +111,19 @@ export function listAllTools(): ToolDefinition[] {
   return Array.from(registry.values());
 }
 
-/** Tools the given role is allowed to invoke. This is what we hand to Claude. */
-export function getToolsForRole(role: AppRole): ToolDefinition[] {
-  return Array.from(registry.values()).filter(t => t.allowedRoles.includes(role));
+/** Tools the given role is allowed to invoke on a given surface. This is
+ *  what we hand to Claude.
+ *
+ *  Longevity fix L3, 2026-05-13: `surface` defaults to `'chat'` so existing
+ *  callers (the /api/agent/command route) don't break. Voice + walkthrough
+ *  callers will pass their surface explicitly. A tool without a `surfaces`
+ *  field defaults to chat-only, matching pre-L3 behaviour. */
+export function getToolsForRole(role: AppRole, surface: AgentSurface = 'chat'): ToolDefinition[] {
+  return Array.from(registry.values()).filter(t => {
+    if (!t.allowedRoles.includes(role)) return false;
+    const allowedSurfaces = t.surfaces ?? ['chat'];
+    return allowedSurfaces.includes(surface);
+  });
 }
 
 /**

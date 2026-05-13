@@ -282,6 +282,7 @@ export async function POST(req: NextRequest): Promise<Response> {
                 modelUsed: event.usage.model,
                 modelId: event.usage.modelId,
                 costUsd: event.usage.costUsd,
+                promptVersion: PROMPT_VERSION,
               },
             );
             // Register every tool_call id from this iteration as in-flight.
@@ -327,6 +328,7 @@ export async function POST(req: NextRequest): Promise<Response> {
               modelUsed: finalUsage?.model ?? 'sonnet',
               modelId: finalUsage?.modelId ?? null,
               costUsd: finalUsage?.costUsd ?? 0,
+              promptVersion: PROMPT_VERSION,
             },
           );
         }

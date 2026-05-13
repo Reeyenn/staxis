@@ -21,14 +21,48 @@ import {
 // ─── Configuration ─────────────────────────────────────────────────────────
 
 // Model IDs pinned. Bumping any of these requires re-running evals before
-// merging — see src/lib/agent/evals/ (to be added).
-export const MODELS = {
-  haiku: 'claude-haiku-4-5',
+// merging — see src/lib/agent/evals/.
+//
+// Longevity fix L1, 2026-05-13: these strings are model ALIASES (e.g.
+// 'claude-sonnet-4-6' resolves to whichever snapshot Anthropic flags as
+// current). When Anthropic ships a new snapshot, behavior can shift
+// without us redeploying. The agent_costs.model_id column captures the
+// actual snapshot ID per request, and /admin/agent surfaces the
+// distribution. If a snapshot shift causes a regression, operators can
+// roll back via the MODEL_OVERRIDE env var WITHOUT a deploy.
+//
+// MODEL_OVERRIDE format (env): comma-separated "<tier>=<snapshot>" pairs.
+//   MODEL_OVERRIDE=sonnet=claude-sonnet-4-6-20260427
+// freezes Sonnet requests to a specific build, ignoring future alias
+// updates. Useful when Anthropic ships a snapshot that breaks evals.
+const BASE_MODELS = {
+  haiku:  'claude-haiku-4-5',
   sonnet: 'claude-sonnet-4-6',
-  opus: 'claude-opus-4-7',
+  opus:   'claude-opus-4-7',
 } as const;
 
-export type ModelTier = keyof typeof MODELS;
+export type ModelTier = keyof typeof BASE_MODELS;
+
+function parseModelOverride(): Partial<Record<ModelTier, string>> {
+  const raw = process.env.MODEL_OVERRIDE;
+  if (!raw) return {};
+  const out: Partial<Record<ModelTier, string>> = {};
+  for (const pair of raw.split(',')) {
+    const [tier, snapshot] = pair.split('=', 2).map(s => s.trim());
+    if (tier && snapshot && (tier === 'haiku' || tier === 'sonnet' || tier === 'opus')) {
+      out[tier as ModelTier] = snapshot;
+    }
+  }
+  return out;
+}
+
+const MODEL_OVERRIDES = parseModelOverride();
+
+export const MODELS: Record<ModelTier, string> = {
+  haiku:  MODEL_OVERRIDES.haiku  ?? BASE_MODELS.haiku,
+  sonnet: MODEL_OVERRIDES.sonnet ?? BASE_MODELS.sonnet,
+  opus:   MODEL_OVERRIDES.opus   ?? BASE_MODELS.opus,
+};
 
 // Pricing in USD per million tokens (input | output). Cached input is 10×
 // cheaper. Numbers are approximate per the cost-estimation rule — real
@@ -110,6 +144,39 @@ function safeStringify(value: unknown): string {
   } catch (err) {
     return `[tool result serialization failed: ${err instanceof Error ? err.message : String(err)}]`;
   }
+}
+
+// Anthropic SDK error classification (Longevity L8a, 2026-05-13).
+// SDK throws different concrete error classes for different conditions;
+// we collapse them into operator-meaningful categories so /admin/agent
+// can break down "Anthropic error rate" by cause rather than lumping
+// rate-limits with input-validation in the same opaque error bucket.
+export type AnthropicErrorClass =
+  | 'rate_limit'        // 429: backoff and retry
+  | 'auth'              // 401/403: bad API key — operator must rotate
+  | 'invalid_request'   // 400: our request was malformed — code bug
+  | 'overloaded'        // 529: Anthropic capacity — wait and retry
+  | 'server_error'      // 5xx other: transient
+  | 'timeout'           // local SDK timeout
+  | 'network'           // connection refused, DNS, etc.
+  | 'unknown';
+
+export function classifyAnthropicError(err: unknown): AnthropicErrorClass {
+  if (!err || typeof err !== 'object') return 'unknown';
+  const e = err as { status?: number; name?: string; message?: string };
+  if (e.status === 429) return 'rate_limit';
+  if (e.status === 401 || e.status === 403) return 'auth';
+  if (e.status === 400) return 'invalid_request';
+  if (e.status === 529) return 'overloaded';
+  if (typeof e.status === 'number' && e.status >= 500 && e.status < 600) return 'server_error';
+  const msg = (e.message ?? '').toLowerCase();
+  const name = (e.name ?? '').toLowerCase();
+  if (name.includes('abort') || msg.includes('abort')) return 'timeout';
+  if (name.includes('timeout') || msg.includes('timeout')) return 'timeout';
+  if (msg.includes('fetch failed') || msg.includes('econnrefused') || msg.includes('enotfound')) {
+    return 'network';
+  }
+  return 'unknown';
 }
 
 // Escape XML/HTML metacharacters so a tool returning literal "</tool-result>"
@@ -817,9 +884,16 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
       totalInput += estInputTokens;
       totalOutput += estOutputTokens;
     }
+    // Longevity L8a, 2026-05-13: classify the SDK error so the operator-
+    // facing log can break down causes (rate_limit vs auth vs malformed
+    // request vs network). Stored as a structured prefix in the error
+    // message so Sentry + log search can filter.
+    const errorClass = classifyAnthropicError(err);
+    const rawMessage = err instanceof Error ? err.message : String(err);
+    console.error('[agent/llm] stream error', { errorClass, rawMessage });
     yield {
       type: 'error',
-      message: err instanceof Error ? err.message : String(err),
+      message: `[${errorClass}] ${rawMessage}`,
       usage: totalInput + totalOutput > 0 ? buildUsage() : undefined,
     };
   }

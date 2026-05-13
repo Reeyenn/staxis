@@ -11,8 +11,9 @@
 import { streamAgent, type RunAgentOpts, type AgentEvent } from '@/lib/agent/llm';
 import { getToolsForRole, listAllTools } from '@/lib/agent/tools';
 import { buildHotelSnapshot } from '@/lib/agent/context';
-import { buildSystemPrompt } from '@/lib/agent/prompts';
+import { buildSystemPrompt, PROMPT_VERSION } from '@/lib/agent/prompts';
 import { recordNonRequestCost } from '@/lib/agent/cost-controls';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import { EVAL_CASES, type EvalCase } from './test-bank';
 import '@/lib/agent/tools/index';
 
@@ -202,12 +203,57 @@ export async function runOneEval(
     passed = true;
   }
 
+  const durationMs = Date.now() - start;
+
+  // Longevity L5a, 2026-05-13: record baseline + check regression.
+  // Write a row to agent_eval_baselines and compare against the most
+  // recent prior baseline for the same case_name + prompt_version. If
+  // cost > 2x or duration > 1.5x prior, flag a regression in the reason.
+  // The runner still reports pass/fail; regressions surface as a warning
+  // in the row's reason. CI consumers (run-agent-evals.ts) can choose to
+  // fail the build on regression.
+  let regressionWarning: string | null = null;
+  try {
+    const { data: prior } = await supabaseAdmin
+      .from('agent_eval_baselines')
+      .select('cost_usd, duration_ms')
+      .eq('case_name', evalCase.name)
+      .eq('prompt_version', PROMPT_VERSION)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    const priorRow = (prior ?? [])[0];
+    if (priorRow) {
+      const priorCost = Number(priorRow.cost_usd ?? 0);
+      const priorDuration = Number(priorRow.duration_ms ?? 0);
+      if (priorCost > 0 && costUsd > priorCost * 2) {
+        regressionWarning = `cost regression: $${costUsd.toFixed(4)} vs prior $${priorCost.toFixed(4)} (>2x)`;
+      } else if (priorDuration > 0 && durationMs > priorDuration * 1.5) {
+        regressionWarning = `latency regression: ${durationMs}ms vs prior ${priorDuration}ms (>1.5x)`;
+      }
+    }
+
+    await supabaseAdmin.from('agent_eval_baselines').insert({
+      case_name: evalCase.name,
+      prompt_version: PROMPT_VERSION,
+      model,
+      model_id: modelId,
+      passed,
+      cost_usd: costUsd,
+      tokens_in: tokensIn,
+      tokens_out: tokensOut,
+      duration_ms: durationMs,
+    });
+  } catch (baselineErr) {
+    console.warn('[eval-runner] baseline write/compare failed (non-fatal)', baselineErr);
+  }
+
   return {
     name: evalCase.name,
     category: evalCase.category,
     passed,
-    reason,
-    durationMs: Date.now() - start,
+    reason: regressionWarning ? `${reason} | WARN: ${regressionWarning}` : reason,
+    durationMs,
     costUsd,
     toolsCalled,
     finalText: finalText.slice(0, 200),

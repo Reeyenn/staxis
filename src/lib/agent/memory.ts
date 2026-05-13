@@ -267,6 +267,10 @@ export async function recordAssistantTurn(
     modelUsed: ModelTier;
     modelId: string | null;
     costUsd: number;
+    /** PROMPT_VERSION captured at the moment this turn was produced.
+     *  Longevity L2a, 2026-05-13: persisted per-row so we can correlate
+     *  quality regressions to specific prompt versions. */
+    promptVersion: string;
   },
 ): Promise<void> {
   const { error } = await supabaseAdmin.rpc('staxis_record_assistant_turn', {
@@ -282,6 +286,7 @@ export async function recordAssistantTurn(
     p_model: telemetry.modelUsed,
     p_model_id: telemetry.modelId,
     p_cost_usd: telemetry.costUsd,
+    p_prompt_version: telemetry.promptVersion,
   });
   if (error) {
     // Throw — caller is expected to catch, cancel the cost reservation,

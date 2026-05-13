@@ -59,6 +59,37 @@ export const COST_LIMITS = {
   estimatedRequestUsd: ESTIMATED_REQUEST_USD,
 } as const;
 
+// ─── Tier-based cost caps (Longevity L7a, 2026-05-13) ────────────────────
+// accounts.ai_cost_tier (migration 0100) drives the user_daily cap so
+// premium customers can have a higher allowance without code change.
+// reserveCostBudget reads the tier and substitutes the tier-specific
+// user cap. property + global caps stay shared across tiers (those are
+// system-level safety limits, not user-quota).
+//
+// Free tier matches the prior hardcoded $10 default so existing accounts
+// see no behaviour change unless their tier is bumped.
+export type AccountTier = 'free' | 'pro' | 'enterprise';
+
+const TIER_USER_DAILY_USD: Record<AccountTier, number> = {
+  free:       10,
+  pro:        50,
+  enterprise: 200,
+};
+
+async function getUserDailyCapUsd(userId: string): Promise<number> {
+  const { data, error } = await supabaseAdmin
+    .from('accounts')
+    .select('ai_cost_tier')
+    .eq('id', userId)
+    .maybeSingle();
+  if (error || !data) {
+    console.error('[cost-controls] tier lookup failed; falling back to free tier', error);
+    return TIER_USER_DAILY_USD.free;
+  }
+  const tier = (data.ai_cost_tier as AccountTier) ?? 'free';
+  return TIER_USER_DAILY_USD[tier] ?? TIER_USER_DAILY_USD.free;
+}
+
 // ─── Public types ─────────────────────────────────────────────────────────
 
 export type ReserveResult =
@@ -95,6 +126,12 @@ export async function reserveCostBudget(opts: {
     };
   }
 
+  // Longevity L7a, 2026-05-13: user cap is now per-account-tier
+  // (accounts.ai_cost_tier from migration 0100). Free tier = $10/day
+  // matching prior default; pro = $50; enterprise = $200. Property +
+  // global caps remain system-wide safety limits.
+  const userCapUsd = await getUserDailyCapUsd(opts.userId);
+
   // Now the atomic dollar-cap reservation. The RPC takes an advisory
   // lock keyed on user_id so concurrent requests for the same user
   // serialize on this check.
@@ -102,7 +139,7 @@ export async function reserveCostBudget(opts: {
     p_user_id: opts.userId,
     p_property_id: opts.propertyId,
     p_estimated_usd: COST_LIMITS.estimatedRequestUsd,
-    p_user_cap_usd: COST_LIMITS.userDailyUsd,
+    p_user_cap_usd: userCapUsd,
     p_property_cap_usd: COST_LIMITS.propertyDailyUsd,
     p_global_cap_usd: COST_LIMITS.globalDailyUsd,
   });
@@ -123,7 +160,7 @@ export async function reserveCostBudget(opts: {
   const row = Array.isArray(data) ? data[0] : data;
   if (!row || !row.ok) {
     const reason = (row?.reason as 'user_cap' | 'property_cap' | 'global_cap') ?? 'global_cap';
-    return { ok: false, reason, message: capMessage(reason) };
+    return { ok: false, reason, message: capMessage(reason, userCapUsd) };
   }
 
   return { ok: true, reservationId: row.reservation_id as string };
@@ -283,10 +320,10 @@ export async function recordNonRequestCost(opts: {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
-function capMessage(reason: 'user_cap' | 'property_cap' | 'global_cap'): string {
+function capMessage(reason: 'user_cap' | 'property_cap' | 'global_cap', userCapUsd: number): string {
   switch (reason) {
     case 'user_cap':
-      return `You've hit your daily AI usage cap ($${COST_LIMITS.userDailyUsd}). Try again tomorrow, or ask an admin to raise the limit.`;
+      return `You've hit your daily AI usage cap ($${userCapUsd}). Try again tomorrow, or ask an admin to upgrade your tier.`;
     case 'property_cap':
       return `This property has hit its daily AI usage cap ($${COST_LIMITS.propertyDailyUsd}). Ask the owner to raise the limit or wait until tomorrow.`;
     case 'global_cap':
