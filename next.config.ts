@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { withSentryConfig } from "@sentry/nextjs";
 
 /**
  * Security headers applied to every route.
@@ -155,4 +156,37 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+// Wrap the export with Sentry's plugin. When SENTRY_AUTH_TOKEN is set on
+// Vercel (Production scope), the plugin uploads source maps as part of the
+// Next build so stack traces in Sentry resolve to real file/line numbers
+// instead of minified `chunks/3-xy7.js:1:2391`.
+//
+// Without the auth token the plugin is a no-op — the wrapper itself adds
+// zero overhead, so this is safe to ship before the token is provisioned.
+// See docs/sentry-sourcemaps-activation.md for the 2-minute token-paste
+// procedure Reeyen needs to run once.
+export default withSentryConfig(nextConfig, {
+  // Sentry org + project slugs (from staxis.sentry.io). Both names are
+  // public information visible in the dashboard URL; safe to commit.
+  org: "staxis",
+  project: "javascript-nextjs",
+
+  // Suppress the plugin's setup log lines on every build. They're noise
+  // once you're past the initial configuration.
+  silent: !process.env.CI,
+
+  // Upload source maps in production builds only — local `next dev` doesn't
+  // need them, and uploading on every `next build` during local dev would
+  // waste Sentry quota.
+  sourcemaps: {
+    disable: false,
+    // Delete uploaded source maps from the build artifact so they don't
+    // ship to the browser. Sentry has them; users shouldn't.
+    deleteSourcemapsAfterUpload: true,
+  },
+
+  // Disable Sentry's automatic transaction tracing instrumentation —
+  // we already configure tracesSampleRate explicitly in
+  // sentry.server.config.ts / sentry.client.config.ts.
+  disableLogger: true,
+});
