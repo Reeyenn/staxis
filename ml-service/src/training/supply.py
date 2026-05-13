@@ -206,9 +206,10 @@ def _train_supply_inner(
     )
 
     # Check consecutive passing runs: look at last 5 runs, count backwards.
-    # Phase 3.2: prior_passes drops the validation_mae absolute check —
-    # threshold semantics changed; beats_baseline + row count carry the
-    # "did the prior gate pass" signal.
+    # Phase 3.2 (revised after Codex review 2026-05-13 #3): prior runs
+    # are evaluated against the OLD absolute MAE gate (10 min for
+    # supply), while the current run uses the new ratio gate. See
+    # training/demand.py for the longer rationale.
     recent_runs = client.fetch_many(
         "model_runs",
         filters={"property_id": property_id, "layer": "supply"},
@@ -220,9 +221,12 @@ def _train_supply_inner(
     # Count consecutive passing runs (from most recent backwards)
     consecutive_passes = 1 if passes_gates else 0
     for prior_run in (recent_runs or []):
-        # Check if this prior run passed gates
+        # Check if this prior run passed gates. Legacy absolute MAE
+        # threshold (10 min for supply) because prior rows don't carry
+        # mae_ratio.
         prior_passes = (
             prior_run.get("beats_baseline_pct", 0) >= 0.05
+            and prior_run.get("validation_mae", float("inf")) < 10.0
             and prior_run.get("training_row_count", 0) >= settings.training_row_count_activation
         )
         if prior_passes and consecutive_passes > 0:

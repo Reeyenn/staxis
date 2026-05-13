@@ -264,9 +264,16 @@ def _train_demand_inner(
     )
 
     # Check consecutive passing runs: look at last 5 runs, count backwards.
-    # Phase 3.2: prior_passes drops the validation_mae absolute check
-    # because the threshold semantics changed; beats_baseline + row count
-    # are still the right "did the prior gate pass" signal for consecutives.
+    # Phase 3.2 (revised after Codex review 2026-05-13 #3): prior runs
+    # are evaluated against the OLD absolute MAE gate, while the current
+    # run uses the new ratio gate. Why: prior model_runs rows don't
+    # store mae_ratio, so we can't apply the new gate retroactively.
+    # Dropping the MAE check entirely (the original Phase 3.2 attempt)
+    # let runs that previously failed the absolute gate count as
+    # "passing" toward the activation streak — a model could go active
+    # after 1 fresh good run instead of 2. Keeping the old absolute
+    # threshold for prior-run counting closes that loop without
+    # punishing properties that were on track to activate.
     recent_runs = client.fetch_many(
         "model_runs",
         filters={"property_id": property_id, "layer": "demand"},
@@ -278,9 +285,11 @@ def _train_demand_inner(
     # Count consecutive passing runs (from most recent backwards)
     consecutive_passes = 1 if passes_gates else 0
     for prior_run in (recent_runs or []):
-        # Check if this prior run passed gates
+        # Check if this prior run passed gates. Use the LEGACY absolute
+        # MAE threshold here because prior rows don't carry mae_ratio.
         prior_passes = (
             prior_run.get("beats_baseline_pct", 0) >= settings.baseline_beat_pct_threshold
+            and prior_run.get("validation_mae", float("inf")) < settings.validation_mae_threshold
             and prior_run.get("training_row_count", 0) >= settings.training_row_count_activation
         )
         if prior_passes and consecutive_passes > 0:

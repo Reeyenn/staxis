@@ -209,13 +209,54 @@ def test_demand_uses_mae_ratio_gate():
 
 
 def test_supply_uses_mae_ratio_gate():
-    """training/supply.py must gate graduation on mae_ratio.
-    The old `validation_mae < 10.0` hardcode is now Beaumont-shaped."""
+    """training/supply.py must gate graduation on mae_ratio for the
+    current run. The legacy `validation_mae < 10.0` check IS still
+    present, but only inside the prior_passes loop — see the
+    `test_supply_prior_passes_keeps_legacy_mae_gate` test below for
+    why (Codex review 2026-05-13 #3: activation grandfather)."""
+    import re
+
     src = _read_module_source("training/supply.py")
     assert "mae_ratio" in src, "Phase 3.2: supply must compute mae_ratio"
     assert "validation_mae_ratio_threshold" in src
-    assert "< 10.0" not in src, (
-        "Phase 3.2 reverted: the hardcoded 10.0 absolute threshold came back."
+    # The legacy threshold may appear inside the prior_passes loop
+    # (intentional, see #3 below). It must NOT appear as the gate for
+    # the current run — that's the line we changed in Phase 3.2.
+    # Heuristic: the `passes_gates` block uses mae_ratio, not < 10.0.
+    passes_gates_block = re.search(
+        r"passes_gates\s*=\s*\(([^)]+)\)", src, flags=re.DOTALL,
+    )
+    assert passes_gates_block, "couldn't find passes_gates expression"
+    assert "< 10.0" not in passes_gates_block.group(1), (
+        "Phase 3.2 reverted: the current-run gate is using the legacy "
+        "absolute 10-min threshold again."
+    )
+
+
+def test_demand_prior_passes_keeps_legacy_mae_gate():
+    """Codex 2026-05-13 #3 fix (Option B): prior-run counting must
+    still check the legacy absolute MAE threshold, otherwise runs that
+    previously failed the gate count as 'passing' toward the activation
+    streak. Pinned via source inspection because the prior_passes
+    expression is in a loop, not a callable."""
+    src = _read_module_source("training/demand.py")
+    # The prior_passes block must reference validation_mae_threshold
+    # (the legacy absolute gate). If a future PR drops this again the
+    # grandfather bug returns.
+    assert "settings.validation_mae_threshold" in src, (
+        "Codex #3 regression: training/demand.py no longer references "
+        "the legacy MAE threshold; activation grandfather is back."
+    )
+
+
+def test_supply_prior_passes_keeps_legacy_mae_gate():
+    """Same check for supply. Codex 2026-05-13 #3."""
+    src = _read_module_source("training/supply.py")
+    # Supply hardcodes 10.0 (its legacy supply-only threshold).
+    assert "validation_mae" in src and "< 10.0" in src, (
+        "Codex #3 regression: training/supply.py no longer applies the "
+        "legacy 10-min MAE gate to prior runs; activation grandfather "
+        "is back."
     )
 
 
