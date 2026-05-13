@@ -1694,7 +1694,12 @@ async function checkCronHeartbeatsFresh(): Promise<Omit<Check, 'name' | 'duratio
         continue;
       }
       const last = entry.last;
-      const status = (entry.notes?._status as string | undefined) ?? 'ok';
+      // Codex follow-up 2026-05-13 (C5): strict equality on the literal
+      // 'degraded' so a typo in the writer (`'degradd'`, `'Degraded'`)
+      // doesn't silently fall through as 'ok'. Any other string becomes
+      // 'ok' (the default).
+      const rawStatus = entry.notes?._status as string | undefined;
+      const status: 'ok' | 'degraded' = rawStatus === 'degraded' ? 'degraded' : 'ok';
       const ageHours = (now - new Date(last).getTime()) / (60 * 60 * 1000);
       if (status === 'degraded' && ageHours <= 24) {
         // Not flagging within the single-tick freshness window — one

@@ -132,23 +132,51 @@ describe('emitPropertyMisconfiguredEvent (Codex #2)', () => {
 });
 
 describe('parsePropertyMisconfiguredError', () => {
-  it('parses well-formed messages', () => {
+  it('parses well-formed messages with allowlisted fields', () => {
     assert.deepEqual(
       parsePropertyMisconfiguredError("property_misconfigured: total_rooms=0"),
       { field: 'total_rooms', value: '0' },
     );
+  });
+
+  it('normalizes Python None sentinel to null (C2)', () => {
     assert.deepEqual(
       parsePropertyMisconfiguredError("property_misconfigured: timezone=None"),
-      { field: 'timezone', value: 'None' },
+      { field: 'timezone', value: null },
     );
   });
 
-  it('handles repr-style values with quotes + spaces', () => {
-    // Python's repr(None) is "None" but repr('') is "''" — the parser
-    // should keep the raw RHS so the doctor can show what was wrong.
+  it('normalizes empty-string repr to null (C2)', () => {
+    // Python's repr('') is "''" — also a "missing" signal.
     assert.deepEqual(
       parsePropertyMisconfiguredError("property_misconfigured: timezone=''"),
-      { field: 'timezone', value: "''" },
+      { field: 'timezone', value: null },
+    );
+  });
+
+  it('normalizes JS null/undefined sentinels too (C2)', () => {
+    assert.deepEqual(
+      parsePropertyMisconfiguredError("property_misconfigured: timezone=null"),
+      { field: 'timezone', value: null },
+    );
+    assert.deepEqual(
+      parsePropertyMisconfiguredError("property_misconfigured: timezone=undefined"),
+      { field: 'timezone', value: null },
+    );
+  });
+
+  it('preserves non-sentinel values verbatim', () => {
+    assert.deepEqual(
+      parsePropertyMisconfiguredError("property_misconfigured: timezone=America/New_York"),
+      { field: 'timezone', value: 'America/New_York' },
+    );
+  });
+
+  it('remaps unknown fields to unknown_field with original preserved (C4)', () => {
+    // Typo on Python side: should NOT propagate uselessly to the doctor.
+    assert.deepEqual(
+      parsePropertyMisconfiguredError("property_misconfigured: total_roomz=0"),
+      { field: 'unknown_field', originalField: 'total_roomz', value: '0' },
     );
   });
 

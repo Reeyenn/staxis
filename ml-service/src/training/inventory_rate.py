@@ -422,7 +422,17 @@ def _train_single_item(
         beats_baseline_pct = 0.0
 
     # Graduation gates: ≥30 events + MAE/mean<0.10 + 5 consecutive passes
-    mean_observed_rate = float(y.mean())
+    # Codex follow-up 2026-05-13 (C1): use TEST-set mean (not train-set
+    # y.mean()) for the ratio denominator. Train-set leak: a model that
+    # overfits a tiny train set with a high mean would flatter mae_ratio
+    # against that inflated mean rather than the held-out actuals it
+    # was evaluated on. Fall back to y.mean() when the test set is
+    # empty (the gate_mae check below already short-circuits empty
+    # test sets, so this fallback is purely defensive).
+    if len(y_test) > 0:
+        mean_observed_rate = float(y_test.mean())
+    else:
+        mean_observed_rate = float(y.mean())
     mae_ratio = (validation_mae / mean_observed_rate) if mean_observed_rate > 1e-9 else float("inf")
     gate_events = len(df) >= settings.inventory_graduation_min_events
     gate_mae = (

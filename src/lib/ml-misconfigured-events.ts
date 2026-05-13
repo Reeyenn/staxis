@@ -91,22 +91,63 @@ export async function emitPropertyMisconfiguredEvent(
 }
 
 /**
+ * Known property fields the ML service can report as misconfigured.
+ * Codex follow-up 2026-05-13 (C4): allowlist so a typo on the Python
+ * side (e.g. `total_roomz`) doesn't propagate uselessly to the doctor.
+ * Unknown fields are remapped to `unknown_field` and the original
+ * field name is preserved in `original_field` for forensic logs.
+ */
+const KNOWN_MISCONFIGURED_FIELDS = ['timezone', 'total_rooms'] as const;
+
+/**
+ * Sentinel values that mean "missing" across the TS/Python boundary.
+ * Codex follow-up 2026-05-13 (C2): TS-detected skips wrote `null`,
+ * Python's repr() preserved `None`, `''`, `"NULL"`, etc. — operators
+ * querying app_events would see three different sentinels for the
+ * same condition. Normalize all of them to a single canonical `null`.
+ */
+const NULL_SENTINELS = new Set(['None', 'null', 'NULL', "''", '""', 'undefined']);
+
+/**
  * Parse a ML-service error string like
  *   "property_misconfigured: total_rooms=0"
  *   "property_misconfigured: timezone=None"
  * into { field, value }. Returns null if the string doesn't match the
  * expected shape — the caller should log + skip silently in that case
  * (the structured event won't be written but the cron continues).
+ *
+ * Codex follow-up 2026-05-13 (C2 + C4):
+ *   - Field is allowlist-checked. Unknown fields surface as
+ *     `unknown_field` with the original name preserved.
+ *   - Value is normalized: Python's repr() sentinels for "missing"
+ *     (None, '', NULL, etc.) all collapse to JS null.
  */
+export interface ParsedPropertyMisconfiguredError {
+  field: string;
+  /** Set when field was not in the allowlist (the original raw name). */
+  originalField?: string;
+  /** null if the value matched a known "missing" sentinel; else the raw string. */
+  value: string | null;
+}
+
 export function parsePropertyMisconfiguredError(
   message: string,
-): { field: string; value: string } | null {
+): ParsedPropertyMisconfiguredError | null {
   if (!message.startsWith('property_misconfigured:')) return null;
   const rest = message.slice('property_misconfigured:'.length).trim();
   const eq = rest.indexOf('=');
   if (eq < 0) return null;
-  const field = rest.slice(0, eq).trim();
-  const value = rest.slice(eq + 1).trim();
-  if (!field) return null;
-  return { field, value };
+  const rawField = rest.slice(0, eq).trim();
+  const rawValue = rest.slice(eq + 1).trim();
+  if (!rawField) return null;
+
+  const normalizedField: string = (KNOWN_MISCONFIGURED_FIELDS as readonly string[]).includes(rawField)
+    ? rawField
+    : 'unknown_field';
+  const normalizedValue: string | null = NULL_SENTINELS.has(rawValue) ? null : rawValue;
+
+  if (normalizedField === 'unknown_field') {
+    return { field: 'unknown_field', originalField: rawField, value: normalizedValue };
+  }
+  return { field: normalizedField, value: normalizedValue };
 }
