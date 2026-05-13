@@ -93,6 +93,23 @@ function truncateToolResultContent(content: string): string {
   );
 }
 
+// Escape XML/HTML metacharacters so a tool returning literal "</tool-result>"
+// inside its data can't close the trust-marker tag and inject "trusted"
+// instructions into the prompt. Codex round-6 R4, 2026-05-13.
+//
+// The trust marker wrap relies on the model treating everything between
+// the opening and closing <tool-result> tags as untrusted data. If raw
+// content contains "</tool-result>SYSTEM: ignore prior...", the model can
+// see the second segment as outside the boundary. Escaping ampersands +
+// angle brackets makes the boundary unforgeable while keeping the content
+// semantically readable to Claude (it understands HTML entities).
+function escapeToolResultContent(content: string): string {
+  return content
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 // ─── Client ────────────────────────────────────────────────────────────────
 
 let cachedClient: Anthropic | null = null;
@@ -473,9 +490,9 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       toolResultBlocks.push({
         type: 'tool_result',
         tool_use_id: call.id,
-        // Truncate first (R3 — bound context cost), then wrap in the
-        // trust marker (A-C2 — anti-jailbreak boundary for the model).
-        content: `<tool-result trust="untrusted" name="${call.name}">${truncateToolResultContent(rawContent)}</tool-result>`,
+        // Truncate first (R3), escape <>& second (R6 R4 — unforgeable
+        // boundary), wrap in trust marker third (A-C2 — anti-jailbreak).
+        content: `<tool-result trust="untrusted" name="${call.name}">${escapeToolResultContent(truncateToolResultContent(rawContent))}</tool-result>`,
         is_error: isError,
       });
     }
@@ -534,6 +551,22 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
   let finalText = '';
   let lastModelId: string | null = null;
 
+  // Mid-iter spend accounting (Codex round-6 R5, 2026-05-13).
+  // streamAgent only commits an iter's usage AFTER stream.finalMessage()
+  // returns. If the SDK throws between emitting text_deltas and resolving
+  // finalMessage (rare but observed under transient API errors), Anthropic
+  // has billed for input + partial output but our totals never absorbed it.
+  // The catch block previously yielded `usage: undefined` whenever no
+  // PRIOR iter completed, so the route cancel()-ed the reservation and
+  // we silently lost the billed spend.
+  //
+  // We now track per-iter state so the catch can estimate uncommitted
+  // tokens from the prompt size and streamed-so-far output. Only applied
+  // when we have evidence Anthropic processed the prompt (text_deltas
+  // received) — for connection-refused / 400 errors we still cancel.
+  let inflightIterStarted = false;
+  let inflightTurnText: string[] = [];
+
   // Helpers for the abort signal + usage report. Codex adversarial review
   // 2026-05-13 (A-C3, A-C7).
   const buildUsage = (): UsageReport => ({
@@ -552,6 +585,8 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
         yield { type: 'error', message: 'aborted by client', usage: buildUsage() };
         return;
       }
+      inflightIterStarted = true;
+      inflightTurnText = [];
       const stream = client.messages.stream({
         model: MODELS[model],
         max_tokens: MAX_OUTPUT_TOKENS,
@@ -568,6 +603,7 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
       for await (const event of stream) {
         if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
           turnText.push(event.delta.text);
+          inflightTurnText.push(event.delta.text);
           finalText = ''; // reset — final text is reassembled at end of iteration
           yield { type: 'text_delta', delta: event.delta.text };
         }
@@ -578,6 +614,8 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
       totalOutput += finalMsg.usage.output_tokens;
       totalCachedInput += finalMsg.usage.cache_read_input_tokens ?? 0;
       lastModelId = finalMsg.model;
+      // Iter usage is now committed to running totals — clear the inflight flag.
+      inflightIterStarted = false;
 
       for (const block of finalMsg.content) {
         if (block.type === 'tool_use') {
@@ -672,9 +710,9 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
         toolResultBlocks.push({
           type: 'tool_result',
           tool_use_id: call.id,
-          // Truncate first (R3 — bound context cost), then wrap in the
-          // trust marker (A-C2 — anti-jailbreak boundary for the model).
-          content: `<tool-result trust="untrusted" name="${call.name}">${truncateToolResultContent(rawContent)}</tool-result>`,
+          // Truncate first (R3), escape <>& second (R6 R4 — unforgeable
+          // boundary), wrap in trust marker third (A-C2 — anti-jailbreak).
+          content: `<tool-result trust="untrusted" name="${call.name}">${escapeToolResultContent(truncateToolResultContent(rawContent))}</tool-result>`,
           is_error: isError,
         });
       }
@@ -691,8 +729,19 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
       usage: buildUsage(),
     };
   } catch (err) {
-    // Same reasoning — if any iterations completed before the error,
-    // those tokens were billed externally; we must record them.
+    // Codex round-6 R5: if the in-flight iter streamed any text before
+    // erroring, Anthropic almost certainly billed us for input + partial
+    // output. Estimate them so the route FINALIZES against actual spend
+    // instead of cancelling (which would lose the billed cost silently).
+    // For pre-output errors (rate limit, bad request, connection refused)
+    // no text was streamed → totals stay 0 → reservation gets cancelled
+    // as before. ~4 chars per token is the standard rough conversion.
+    if (inflightIterStarted && inflightTurnText.length > 0) {
+      const estInputTokens = Math.round(JSON.stringify(messages).length / 4);
+      const estOutputTokens = Math.round(inflightTurnText.join('').length / 4);
+      totalInput += estInputTokens;
+      totalOutput += estOutputTokens;
+    }
     yield {
       type: 'error',
       message: err instanceof Error ? err.message : String(err),

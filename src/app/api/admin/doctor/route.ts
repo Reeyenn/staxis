@@ -1234,9 +1234,10 @@ export const EXPECTED_MIGRATIONS: ReadonlyArray<string> = [
   //  observed-rate view, atomic cold-start, property nudge subscription,
   //  inventory unique-name).
   // 0090 round-5 stale-reservation sweeper.
+  // 0091 round-6 swept_at column + count_swept_today RPC.
   '0079', '0080', '0081', '0082', '0083',
   '0084', '0085', '0086', '0087', '0088', '0089',
-  '0090',
+  '0090', '0091',
 ];
 async function checkAppliedMigrations(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {

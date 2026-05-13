@@ -49,6 +49,7 @@ interface MetricsPayload {
   modelIdsToday: Array<{ modelId: string; count: number }>;
   pendingNudges: number;
   staleReservations: number;
+  sweptToday: number;
 }
 
 export default function AdminAgentPage() {
@@ -187,10 +188,10 @@ export default function AdminAgentPage() {
             icon={<AlertTriangle size={14} />}
             label="Stuck reservations"
             value={data ? String(data.staleReservations) : '—'}
-            sub={data && data.staleReservations > 0
-              ? 'finalize+cancel both failing — investigate'
-              : 'sweeper running clean'}
-            severity={data && data.staleReservations > 0 ? 'warm' : 'ok'}
+            sub={data
+              ? `${data.sweptToday} swept today${data.staleReservations > 0 ? ' · finalize+cancel both failing' : data.sweptToday > 0 ? ' · sweeper recovering failures' : ' · sweeper running clean'}`
+              : ''}
+            severity={data && (data.staleReservations > 0 || data.sweptToday > 0) ? 'warm' : 'ok'}
           />
         </div>
 

@@ -47,6 +47,11 @@ interface MetricsPayload {
    *  finalize+cancel are both failing — operator should investigate.
    *  Codex round-5 fix R2, 2026-05-13. */
   staleReservations: number;
+  /** Count of reservations that the sweeper had to recover today.
+   *  Non-zero means the sweeper IS running but finalize+cancel keep
+   *  failing — recurring failures that staleReservations alone would
+   *  hide between sweep runs. Codex round-6 fix R6, 2026-05-13. */
+  sweptToday: number;
 }
 
 export async function GET(req: NextRequest): Promise<Response> {
@@ -59,15 +64,17 @@ export async function GET(req: NextRequest): Promise<Response> {
   const dayStartIso = dayStart.toISOString();
 
   try {
-    // Costs today — only finalized rows. Reservation ('reserved') rows have
-    // model='pending' and cost_usd=$0.15 (the upfront hold) — including
-    // them would show a fake "pending" model in the dashboard and inflate
-    // today's spend by the reservation amount of every in-flight request.
-    // Codex review fix B6, 2026-05-13.
+    // Costs today — only finalized rows that the sweeper did NOT touch.
+    // Reservation ('reserved') rows have model='pending' and cost_usd=
+    // reservation amount. Swept rows (Codex round-6 R6) are also state=
+    // 'finalized' but represent recovered-from-failure events, not real
+    // requests. Including either would skew today's spend + cache math.
+    // Codex review fix B6 (2026-05-13) + round-6 R6 (swept_at filter).
     const { data: costs } = await supabaseAdmin
       .from('agent_costs')
-      .select('cost_usd, kind, user_id, property_id, model, model_id, state, tokens_in, cached_input_tokens')
+      .select('cost_usd, kind, user_id, property_id, model, model_id, state, tokens_in, cached_input_tokens, swept_at')
       .eq('state', 'finalized')
+      .is('swept_at', null)
       .gte('created_at', dayStartIso);
 
     const requestCosts = (costs ?? []).filter(c => c.kind === 'request');
@@ -165,13 +172,17 @@ export async function GET(req: NextRequest): Promise<Response> {
       .select('id', { count: 'exact', head: true })
       .eq('status', 'pending');
 
-    // Codex round-5 fix R2: stuck-reservation count. Non-zero ⇒ either the
-    // cron sweeper hasn't run yet (just deployed?) OR finalize+cancel are
-    // both failing for some user → operator should look.
+    // Codex round-5 fix R2 + round-6 fix R6: stuck-reservation count plus
+    // swept-today count. Together they give the operator visibility into
+    // BOTH "currently stuck" (between sweep runs) AND "kept getting swept
+    // today" (recurring failures the staleReservations metric alone hides).
     const { data: staleData } = await supabaseAdmin.rpc('staxis_count_stale_reservations', {
       p_max_age_minutes: 5,
     });
     const staleReservations = Number(staleData ?? 0);
+
+    const { data: sweptData } = await supabaseAdmin.rpc('staxis_count_swept_today');
+    const sweptToday = Number(sweptData ?? 0);
 
     const payload: MetricsPayload = {
       caps: {
@@ -193,6 +204,7 @@ export async function GET(req: NextRequest): Promise<Response> {
       modelIdsToday,
       pendingNudges: pendingNudges ?? 0,
       staleReservations,
+      sweptToday,
     };
 
     return ok(payload, { requestId });
