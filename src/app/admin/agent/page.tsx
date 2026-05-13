@@ -48,6 +48,7 @@ interface MetricsPayload {
   modelUsage: Array<{ model: string; count: number; costUsd: number }>;
   modelIdsToday: Array<{ modelId: string; count: number }>;
   pendingNudges: number;
+  staleReservations: number;
 }
 
 export default function AdminAgentPage() {
@@ -181,6 +182,15 @@ export default function AdminAgentPage() {
             value={data ? `${data.today.cacheHitRatePct}%` : '—'}
             sub={data && data.today.cacheHitRatePct > 50 ? 'prompt cache is hitting well' : 'cache is missing — investigate'}
             severity={data && data.today.cacheHitRatePct < 30 ? 'warm' : 'ok'}
+          />
+          <KPI
+            icon={<AlertTriangle size={14} />}
+            label="Stuck reservations"
+            value={data ? String(data.staleReservations) : '—'}
+            sub={data && data.staleReservations > 0
+              ? 'finalize+cancel both failing — investigate'
+              : 'sweeper running clean'}
+            severity={data && data.staleReservations > 0 ? 'warm' : 'ok'}
           />
         </div>
 

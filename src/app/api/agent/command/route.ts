@@ -244,15 +244,16 @@ export async function POST(req: NextRequest): Promise<Response> {
         });
 
         for await (const event of iter) {
-          // Two internal-only events are NOT forwarded immediately:
-          //   - assistant_turn: persistence signal (no user-visible content)
-          //   - done: held until the final assistant turn is durably saved
-          //           so the client never sees "success" for a message that
-          //           failed to persist (Codex review fix C4).
-          if (event.type !== 'assistant_turn' && event.type !== 'done') {
-            send(event);
-          }
-
+          // assistant_turn is a persistence signal only — never forwarded.
+          // `done` is held until the final assistant turn is durably saved
+          // so the client never sees "success" for a message that failed
+          // to persist (Codex review fix C4).
+          //
+          // Codex round-5 fix R1: `error` events now carry a `usage`
+          // payload when the iter-cap was hit or any prior iteration
+          // completed before the throw. Forward the error to the client
+          // BUT strip the `usage` field — that's an internal signal for
+          // the finally block to finalize the reservation.
           if (event.type === 'assistant_turn') {
             // Codex fix #2: throw on failure rather than continuing.
             // recordAssistantTurn uses an atomic RPC; if it fails, the
@@ -279,16 +280,21 @@ export async function POST(req: NextRequest): Promise<Response> {
               console.error('[agent/command] failed to persist tool result', err);
             });
             pendingToolCallIds.delete(event.call.id);
+            send(event);
           } else if (event.type === 'done') {
             finalUsage = event.usage;
             lastDoneText = event.finalText;
-          } else if (event.type === 'error' && event.usage) {
-            // Codex adversarial review 2026-05-13 (A-C7): error events that
-            // carry usage represent runaway tool loops or aborts that
-            // really spent tokens at Anthropic. Promote that usage so the
-            // finally block finalizes (charges the cap) instead of
-            // canceling the reservation.
-            finalUsage = event.usage;
+          } else if (event.type === 'error') {
+            // Codex A-C7 (cbc4228) + round-5 R1: error events may carry
+            // accumulated usage (runaway tool loops, abort-after-spend,
+            // mid-stream exception). Promote so the finally FINALIZES the
+            // reservation against actual spend instead of cancelling and
+            // leaking the cost. Strip the usage from the client-bound
+            // event — it's an internal signal.
+            if (event.usage) finalUsage = event.usage;
+            send({ type: 'error', message: event.message });
+          } else {
+            send(event);
           }
         }
 

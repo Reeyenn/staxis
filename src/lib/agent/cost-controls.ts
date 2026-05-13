@@ -25,22 +25,25 @@
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { MAX_OUTPUT_TOKENS, MAX_TOOL_ITERATIONS, PRICING } from './llm';
 
-// ─── Reservation sizing (Codex review fix H1) ─────────────────────────────
+// ─── Reservation sizing (Codex review fix H1 + round-5 R3) ────────────────
 // The cost gate is only safe if the reservation is bigger than the
-// worst-case actual cost. Previously a fixed $0.15 was set when max output
-// was 4096 — but bumping to 8192 broke the invariant: 8192 tokens × $15/M
-// × 8 iterations = $0.98 just for output, before any input tokens. A user
-// near their cap could be admitted at $0.15 and finalize at $1+.
+// worst-case actual cost.
 //
-// Now derived from constants. If MAX_OUTPUT_TOKENS or MAX_TOOL_ITERATIONS
-// bumps, this auto-recomputes. We size against Sonnet (the default tier)
-// since smart routing to Opus isn't enabled yet.
+// Output bound: every iteration can emit MAX_OUTPUT_TOKENS at Sonnet's
+// output price; 8 × 8192 × $15/M = $0.983.
+//
+// Input bound (Codex round-5 R3): tool_result content is now truncated
+// to MAX_TOOL_RESULT_CHARS (6000) in llm.ts, which caps the per-iteration
+// history growth. Per-iter fresh input ≈ initial-context + growing
+// truncated-tool-results. Across 8 iters this sums to ~200K-250K
+// tokens × $3/M ≈ $0.60-$0.75 worst-case input.
+//
+// We pick $1.00 headroom for a comfortable buffer above that ceiling.
+// If MAX_TOOL_RESULT_CHARS or MAX_TOOL_ITERATIONS bump materially,
+// re-derive the bound here.
 const WORST_CASE_OUTPUT_USD =
   (MAX_OUTPUT_TOKENS / 1_000_000) * PRICING.sonnet.output * MAX_TOOL_ITERATIONS;
-// Generous input headroom — real input is typically $0.05–$0.20/turn, but
-// 8 iterations of tool-result-bloated history can stretch this. Round
-// reservation UP to a clean number so we don't ever under-reserve.
-const INPUT_HEADROOM_USD = 0.50;
+const INPUT_HEADROOM_USD = 1.00;
 const ESTIMATED_REQUEST_USD =
   Math.ceil((WORST_CASE_OUTPUT_USD + INPUT_HEADROOM_USD) * 100) / 100;
 

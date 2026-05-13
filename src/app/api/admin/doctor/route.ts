@@ -1227,6 +1227,16 @@ export const EXPECTED_MIGRATIONS: ReadonlyArray<string> = [
   '0076',
   // Codex audit follow-up (2026-05-12): FK constraints + atomic recipe-version RPC.
   '0077', '0078',
+  // Central AI agent layer + AI-stack net-new fixes (2026-05-13):
+  // 0079-0083 chat brain + cost controls + atomic reservations +
+  // multi-scope locks + Anthropic model_id capture.
+  // 0084-0089 cbc4228 batch (inventory CHECK, per-conversation lock,
+  //  observed-rate view, atomic cold-start, property nudge subscription,
+  //  inventory unique-name).
+  // 0090 round-5 stale-reservation sweeper.
+  '0079', '0080', '0081', '0082', '0083',
+  '0084', '0085', '0086', '0087', '0088', '0089',
+  '0090',
 ];
 async function checkAppliedMigrations(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {

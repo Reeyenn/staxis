@@ -16,6 +16,10 @@
     {
       "path": "/api/agent/nudges/check",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/agent-sweep-reservations",
+      "schedule": "*/5 * * * *"
     }
   ]
 }

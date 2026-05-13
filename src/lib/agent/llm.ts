@@ -73,6 +73,26 @@ export const MAX_TOOL_ITERATIONS = 8;
 // legitimate multi-tool turn with margin.
 export const MAX_TOOLS_PER_ITERATION = 5;
 
+// Per-tool-result content cap in characters. Bounds how much each tool
+// response can re-bloat the conversation context on the NEXT iteration's
+// input. Without this cap, a tool returning 20K chars of JSON would be
+// re-sent on each of the remaining (up to 7) iterations, multiplying
+// input cost and easily exceeding the cost reservation's input headroom.
+// 6000 chars ≈ 1500 tokens — enough for any single room/staff lookup,
+// but truncates pathological large-list dumps to a known ceiling.
+// Combined with A-C2 trust-marker wrapping (applied AFTER truncation),
+// every persisted tool_result content stays under ~6100 chars.
+// Codex round-5 fix R3, 2026-05-13.
+export const MAX_TOOL_RESULT_CHARS = 6000;
+
+function truncateToolResultContent(content: string): string {
+  if (content.length <= MAX_TOOL_RESULT_CHARS) return content;
+  return (
+    content.slice(0, MAX_TOOL_RESULT_CHARS) +
+    `\n…[truncated for context; original ${content.length} chars]`
+  );
+}
+
 // ─── Client ────────────────────────────────────────────────────────────────
 
 let cachedClient: Anthropic | null = null;
@@ -87,13 +107,18 @@ function getClient(): Anthropic {
     );
   }
   // maxRetries: SDK-level retry on transient 5xx / 408 / 429 / connection
-  // errors. The SDK uses exponential backoff. We're well under Vercel's
-  // 60s function ceiling even with retries thanks to REQUEST_TIMEOUT_MS=50s.
-  // Codex review fix G5, 2026-05-13.
+  // errors. The Anthropic SDK applies `timeout` PER-ATTEMPT, so total
+  // budget = (maxRetries + 1) × REQUEST_TIMEOUT_MS in the pathological
+  // case (every attempt fully times out). With REQUEST_TIMEOUT_MS=50s
+  // and maxRetries=1, the worst-case attempt budget is ~100s — still
+  // larger than Vercel's 60s function ceiling, but the function will be
+  // killed naturally and the sweeper cron (R2) recovers any stranded
+  // reservation. maxRetries=2 would let us burn 150s, well over.
+  // Codex review fix G5 + round-5 fix MD1, 2026-05-13.
   cachedClient = new Anthropic({
     apiKey: key,
     timeout: REQUEST_TIMEOUT_MS,
-    maxRetries: 2,
+    maxRetries: 1,
   });
   return cachedClient;
 }
@@ -448,7 +473,9 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       toolResultBlocks.push({
         type: 'tool_result',
         tool_use_id: call.id,
-        content: `<tool-result trust="untrusted" name="${call.name}">${rawContent}</tool-result>`,
+        // Truncate first (R3 — bound context cost), then wrap in the
+        // trust marker (A-C2 — anti-jailbreak boundary for the model).
+        content: `<tool-result trust="untrusted" name="${call.name}">${truncateToolResultContent(rawContent)}</tool-result>`,
         is_error: isError,
       });
     }
@@ -483,10 +510,11 @@ export type AgentEvent =
   | { type: 'tool_call_started'; call: AgentToolCall }
   | { type: 'tool_call_finished'; call: AgentToolCall; result: unknown; isError: boolean }
   | { type: 'done'; usage: UsageReport; finalText: string }
-  // Codex adversarial review 2026-05-13 (A-C7): error events MAY carry
-  // accumulated usage. When the route sees usage on an error, it
-  // finalizes the cost reservation rather than canceling — runaway tool
-  // loops legitimately spend tokens at Anthropic and must be billed.
+  // Error events carry `usage` whenever the stream consumed any tokens
+  // before the error fired (iteration-cap exit, mid-stream exception).
+  // The route finalizes the cost reservation against this usage rather
+  // than cancelling — runaway tool loops legitimately spend tokens at
+  // Anthropic and must be billed. Codex A-C7 (cbc4228) + round-5 R1.
   | { type: 'error'; message: string; usage?: UsageReport };
 
 /**
@@ -644,22 +672,27 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
         toolResultBlocks.push({
           type: 'tool_result',
           tool_use_id: call.id,
-          content: `<tool-result trust="untrusted" name="${call.name}">${rawContent}</tool-result>`,
+          // Truncate first (R3 — bound context cost), then wrap in the
+          // trust marker (A-C2 — anti-jailbreak boundary for the model).
+          content: `<tool-result trust="untrusted" name="${call.name}">${truncateToolResultContent(rawContent)}</tool-result>`,
           is_error: isError,
         });
       }
       messages = [...messages, { role: 'user', content: toolResultBlocks }];
     }
 
-    // Iteration cap reached. Codex adversarial review 2026-05-13 (A-C7):
-    // include accumulated usage so the route finalizes the cost
-    // reservation rather than canceling — tokens were really spent.
+    // Iteration cap reached. Include accumulated usage so the route
+    // FINALIZES the cost reservation rather than cancelling it — the
+    // 8 completed Anthropic calls were really billed and must be
+    // recorded. Codex A-C7 (cbc4228) + round-5 fix R1.
     yield {
       type: 'error',
       message: 'Reached maximum tool-call iterations without resolving.',
       usage: buildUsage(),
     };
   } catch (err) {
+    // Same reasoning — if any iterations completed before the error,
+    // those tokens were billed externally; we must record them.
     yield {
       type: 'error',
       message: err instanceof Error ? err.message : String(err),

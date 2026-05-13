@@ -42,6 +42,11 @@ interface MetricsPayload {
    *  snapshot of the model alias — worth re-running evals. Codex fix G9. */
   modelIdsToday: Array<{ modelId: string; count: number }>;
   pendingNudges: number;
+  /** Count of agent_costs rows stuck in 'reserved' state for >5 minutes.
+   *  A non-zero number means either the cron sweeper isn't running OR
+   *  finalize+cancel are both failing — operator should investigate.
+   *  Codex round-5 fix R2, 2026-05-13. */
+  staleReservations: number;
 }
 
 export async function GET(req: NextRequest): Promise<Response> {
@@ -160,6 +165,14 @@ export async function GET(req: NextRequest): Promise<Response> {
       .select('id', { count: 'exact', head: true })
       .eq('status', 'pending');
 
+    // Codex round-5 fix R2: stuck-reservation count. Non-zero ⇒ either the
+    // cron sweeper hasn't run yet (just deployed?) OR finalize+cancel are
+    // both failing for some user → operator should look.
+    const { data: staleData } = await supabaseAdmin.rpc('staxis_count_stale_reservations', {
+      p_max_age_minutes: 5,
+    });
+    const staleReservations = Number(staleData ?? 0);
+
     const payload: MetricsPayload = {
       caps: {
         user: COST_LIMITS.userDailyUsd,
@@ -179,6 +192,7 @@ export async function GET(req: NextRequest): Promise<Response> {
       modelUsage,
       modelIdsToday,
       pendingNudges: pendingNudges ?? 0,
+      staleReservations,
     };
 
     return ok(payload, { requestId });
