@@ -66,6 +66,11 @@ function buildCsp(): string {
     `img-src 'self' data: https:`,
     `font-src 'self' data: ${googleFontsFile}`,
     `connect-src 'self' ${supabaseConnect}`,
+    // `frame-src` defaults to `default-src 'self'` when unset, which would
+    // block Stripe Elements, Calendly, etc. if/when we embed them. Set it
+    // explicitly so the limit is visible and adding a third party is a
+    // one-line CSP change instead of a debugging session.
+    `frame-src 'self'`,
     `frame-ancestors 'none'`,
     `form-action 'self'`,
     `base-uri 'self'`,
