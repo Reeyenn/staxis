@@ -23,6 +23,9 @@ interface MetricsPayload {
     totalCostUsd: number;
     requestCount: number;
     evalCostUsd: number;
+    /** Cost of kind='background' work today (summarizer auto-runs, etc.).
+     *  Round 11 T2, 2026-05-13. */
+    backgroundCostUsd: number;
     uniqueUsers: number;
     uniqueProperties: number;
     /** % of input tokens served from cache today (Codex review fix G4). */
@@ -97,9 +100,17 @@ export async function GET(req: NextRequest): Promise<Response> {
 
     const requestCosts = (costs ?? []).filter(c => c.kind === 'request');
     const evalCosts = (costs ?? []).filter(c => c.kind === 'eval');
+    // Round 11 T2 (2026-05-13): surface background-work cost (summarizer,
+    // future nightly evals, etc.) as its own KPI tile so operators can
+    // see what auto-pilot work is costing — separate from user-driven
+    // spend. The cost is associated with the originating conversation's
+    // user_id/property_id, but the cap-reservation RPC already filters
+    // kind='request' so background work does NOT crowd a user's cap.
+    const backgroundCosts = (costs ?? []).filter(c => c.kind === 'background');
 
     const totalCostUsd = requestCosts.reduce((acc, r) => acc + Number(r.cost_usd ?? 0), 0);
     const evalCostUsd = evalCosts.reduce((acc, r) => acc + Number(r.cost_usd ?? 0), 0);
+    const backgroundCostUsd = backgroundCosts.reduce((acc, r) => acc + Number(r.cost_usd ?? 0), 0);
     const uniqueUsers = new Set(requestCosts.map(r => r.user_id as string)).size;
     const uniqueProperties = new Set(requestCosts.map(r => r.property_id as string)).size;
 
@@ -267,6 +278,7 @@ export async function GET(req: NextRequest): Promise<Response> {
       },
       today: {
         totalCostUsd: Math.round(totalCostUsd * 10000) / 10000,
+        backgroundCostUsd: Math.round(backgroundCostUsd * 10000) / 10000,
         requestCount: requestCosts.length,
         evalCostUsd: Math.round(evalCostUsd * 10000) / 10000,
         uniqueUsers,

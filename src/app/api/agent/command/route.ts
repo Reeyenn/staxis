@@ -212,7 +212,9 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   // ── Build the context for this turn ──────────────────────────────────
   // L2 (2026-05-13): buildSystemPrompt is now async and takes
-  // conversationId (passed through to prompts-store for canary routing).
+  // conversationId (preserved on the signature for future per-conv
+  // routing; today the prompts-store always returns the single
+  // globally-active row).
   const snapshot = await buildHotelSnapshot(body.propertyId, userCtx.role, staffId);
   const systemPrompt = await buildSystemPrompt(userCtx.role, snapshot, conversationId);
   const tools = getToolsForRole(userCtx.role);

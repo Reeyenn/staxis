@@ -273,8 +273,22 @@ export async function cancelCostReservation(reservationId: string): Promise<void
 /**
  * Record a non-request cost (eg eval runs, background tasks). These don't
  * go through the reservation flow because they're not user-driven and
- * shouldn't count against per-user caps. Still writes to agent_costs so
- * the monitoring page sees them.
+ * shouldn't count against per-user caps.
+ *
+ * Cap math (in staxis_reserve_agent_spend, migration 0082) filters
+ * kind='request' explicitly, so kind='background'/'eval' rows do NOT
+ * accumulate toward user/property/global caps — confirmed Round 11 T2.
+ * The monitoring page (/api/agent/metrics) also splits the buckets:
+ * `today.totalCostUsd` only includes 'request'; `backgroundCostUsd` +
+ * `evalCostUsd` are separate KPIs so operators see what auto-pilot
+ * work is costing without it inflating user spend.
+ *
+ * The user_id / property_id on the row stay attached to the ORIGINATING
+ * conversation (where the background work was for). This is intentional
+ * — a future per-user analytics query can still join "which user's
+ * conversations consumed how much summarizer work." If we ever want
+ * pure-system attribution, we can introduce a sentinel system account
+ * later; the current shape is enough for visibility + correct caps.
  */
 export async function recordNonRequestCost(opts: {
   userId: string;

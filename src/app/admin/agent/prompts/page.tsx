@@ -2,11 +2,13 @@
 
 // ─── /admin/agent/prompts — DB-backed prompt editor ─────────────────────
 // Edit the AI's system prompts without a code deploy. List view shows
-// every version, you click Edit to change content/canary_pct/notes,
-// click Save, click Activate to promote a draft to production. Changes
-// propagate within 30s across all Vercel function instances.
+// every version, you click Edit to change content/notes, click Save,
+// click Activate to promote a draft to production. Changes propagate
+// within 30s across all Vercel function instances.
 //
-// Longevity L2, 2026-05-13.
+// Longevity L2, 2026-05-13. Round 11 T3 (2026-05-13): canary % slider
+// removed — rollouts are always 100%, rollback via re-activating the
+// prior version.
 
 import { useEffect, useState, useMemo } from 'react';
 import Link from 'next/link';
@@ -32,13 +34,14 @@ const FONT_SANS  = "var(--font-geist), -apple-system, BlinkMacSystemFont, sans-s
 const FONT_MONO  = "var(--font-geist-mono), ui-monospace, monospace";
 const FONT_SERIF = "var(--font-instrument-serif), 'Times New Roman', Georgia, serif";
 
-type PromptRole = 'base' | 'housekeeping' | 'general_manager' | 'owner' | 'admin';
+type PromptRole = 'base' | 'housekeeping' | 'general_manager' | 'owner' | 'admin' | 'summarizer';
 const ROLE_LABELS: Record<PromptRole, string> = {
   base: 'Base (applies to every role)',
   housekeeping: 'Housekeeper',
   general_manager: 'Manager / Front desk',
   owner: 'Owner',
   admin: 'Admin (Staxis staff)',
+  summarizer: 'Summarizer (background: writes conversation summaries)',
 };
 
 interface PromptRow {
@@ -47,7 +50,6 @@ interface PromptRow {
   version: string;
   content: string;
   is_active: boolean;
-  canary_pct: number;
   parent_version: string | null;
   notes: string | null;
   created_at: string;
@@ -64,7 +66,6 @@ export default function AdminAgentPromptsPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState('');
   const [editNotes, setEditNotes] = useState('');
-  const [editCanaryPct, setEditCanaryPct] = useState(0);
   const [editVersion, setEditVersion] = useState('');
 
   // New-version state — when set, show the create form for this role
@@ -106,7 +107,6 @@ export default function AdminAgentPromptsPage() {
     setEditingId(p.id);
     setEditContent(p.content);
     setEditNotes(p.notes ?? '');
-    setEditCanaryPct(p.canary_pct);
     setEditVersion(p.version);
     setCreatingRole(null);
   };
@@ -115,7 +115,6 @@ export default function AdminAgentPromptsPage() {
     setEditingId(null);
     setEditContent('');
     setEditNotes('');
-    setEditCanaryPct(0);
     setEditVersion('');
   };
 
@@ -127,7 +126,6 @@ export default function AdminAgentPromptsPage() {
         body: JSON.stringify({
           content: editContent,
           notes: editNotes,
-          canary_pct: editCanaryPct,
           version: editVersion,
         }),
       });
@@ -332,7 +330,6 @@ export default function AdminAgentPromptsPage() {
                   isEditing={editingId === active.id}
                   editContent={editContent} setEditContent={setEditContent}
                   editNotes={editNotes} setEditNotes={setEditNotes}
-                  editCanaryPct={editCanaryPct} setEditCanaryPct={setEditCanaryPct}
                   editVersion={editVersion} setEditVersion={setEditVersion}
                   onStartEdit={() => startEdit(active)}
                   onCancelEdit={cancelEdit}
@@ -355,7 +352,6 @@ export default function AdminAgentPromptsPage() {
                       isEditing={editingId === d.id}
                       editContent={editContent} setEditContent={setEditContent}
                       editNotes={editNotes} setEditNotes={setEditNotes}
-                      editCanaryPct={editCanaryPct} setEditCanaryPct={setEditCanaryPct}
                       editVersion={editVersion} setEditVersion={setEditVersion}
                       onStartEdit={() => startEdit(d)}
                       onCancelEdit={cancelEdit}
@@ -381,7 +377,6 @@ interface RowViewProps {
   isEditing: boolean;
   editContent: string; setEditContent: (s: string) => void;
   editNotes: string; setEditNotes: (s: string) => void;
-  editCanaryPct: number; setEditCanaryPct: (n: number) => void;
   editVersion: string; setEditVersion: (s: string) => void;
   onStartEdit: () => void;
   onCancelEdit: () => void;
@@ -405,12 +400,6 @@ function PromptRowView(p: RowViewProps) {
         <input
           type="text" value={p.editNotes} onChange={e => p.setEditNotes(e.target.value)}
           placeholder="Optional" style={inputStyle}
-        />
-        <label style={labelStyle}>Canary % (active row only — set what fraction of traffic gets this)</label>
-        <input
-          type="number" min={0} max={100} value={p.editCanaryPct}
-          onChange={e => p.setEditCanaryPct(parseInt(e.target.value, 10) || 0)}
-          style={{ ...inputStyle, width: 100 }}
         />
         <label style={labelStyle}>Content</label>
         <textarea
@@ -440,7 +429,7 @@ function PromptRowView(p: RowViewProps) {
           </span>
           {p.row.is_active && (
             <span style={{ fontFamily: FONT_MONO, fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', color: C.sageDeep, padding: '2px 8px', background: 'rgba(94, 122, 96, 0.1)', borderRadius: 999 }}>
-              ACTIVE · {p.row.canary_pct}%
+              ACTIVE
             </span>
           )}
           {p.row.notes && (

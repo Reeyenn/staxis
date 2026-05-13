@@ -12,8 +12,8 @@ import { invalidatePromptsCache } from '@/lib/agent/prompts-store';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-type PromptRole = 'base' | 'housekeeping' | 'general_manager' | 'owner' | 'admin';
-const VALID_ROLES: PromptRole[] = ['base', 'housekeeping', 'general_manager', 'owner', 'admin'];
+type PromptRole = 'base' | 'housekeeping' | 'general_manager' | 'owner' | 'admin' | 'summarizer';
+const VALID_ROLES: PromptRole[] = ['base', 'housekeeping', 'general_manager', 'owner', 'admin', 'summarizer'];
 
 // GET — list all prompt versions, newest first per role
 export async function GET(req: NextRequest): Promise<Response> {
@@ -23,7 +23,7 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   const { data, error } = await supabaseAdmin
     .from('agent_prompts')
-    .select('id, role, version, content, is_active, canary_pct, parent_version, notes, created_at, created_by')
+    .select('id, role, version, content, is_active, parent_version, notes, created_at, created_by')
     .order('role')
     .order('created_at', { ascending: false });
 
@@ -42,7 +42,6 @@ interface CreateBody {
   content: string;
   parent_version?: string;
   notes?: string;
-  canary_pct?: number;
 }
 
 // POST — create a new DRAFT version (is_active=false). Operator must
@@ -68,9 +67,6 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (body.content.length > 50_000) {
     return err('content exceeds 50000 chars', { requestId, status: 413, code: ApiErrorCode.ValidationFailed });
   }
-  if (body.canary_pct !== undefined && (body.canary_pct < 0 || body.canary_pct > 100)) {
-    return err('canary_pct must be 0-100', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  }
 
   const { data, error } = await supabaseAdmin
     .from('agent_prompts')
@@ -80,7 +76,6 @@ export async function POST(req: NextRequest): Promise<Response> {
       content: body.content,
       parent_version: body.parent_version ?? null,
       notes: body.notes ?? null,
-      canary_pct: body.canary_pct ?? 0,
       is_active: false,
       created_by: auth.accountId,
     })

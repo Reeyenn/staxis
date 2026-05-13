@@ -13,6 +13,7 @@
     "seed": "node scripts/seed-supabase.js",
     "seed:reset": "node scripts/seed-supabase.js --reset",
     "agent:evals": "tsx scripts/run-agent-evals.ts",
+    "agent:summarizer-evals": "tsx scripts/run-summarizer-evals.ts",
     "test": "node --test scraper/__tests__/*.test.js && NEXT_PUBLIC_SUPABASE_URL=https://placeholder.supabase.co SUPABASE_SERVICE_ROLE_KEY=placeholder NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder npx tsx --test src/lib/__tests__/*.test.ts",
     "test:scraper": "node --test scraper/__tests__/*.test.js"
   },

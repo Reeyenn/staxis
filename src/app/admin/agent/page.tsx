@@ -36,6 +36,7 @@ interface MetricsPayload {
     totalCostUsd: number;
     requestCount: number;
     evalCostUsd: number;
+    backgroundCostUsd: number;
     uniqueUsers: number;
     uniqueProperties: number;
     cacheHitRatePct: number;
@@ -414,6 +415,21 @@ export default function AdminAgentPage() {
               }}>
                 <AlertTriangle size={12} style={{ marginRight: 6, verticalAlign: 'middle', color: C.caramel }} />
                 Eval runs today: ${data.today.evalCostUsd.toFixed(2)} (not counted against caps)
+              </div>
+            )}
+
+            {data && data.today.backgroundCostUsd > 0 && (
+              <div style={{
+                padding: '10px 14px',
+                background: C.ruleSoft,
+                border: `1px solid ${C.rule}`,
+                borderRadius: 8,
+                fontFamily: FONT_MONO,
+                fontSize: 11,
+                color: C.ink2,
+              }}>
+                <AlertTriangle size={12} style={{ marginRight: 6, verticalAlign: 'middle', color: C.caramel }} />
+                Background work today: ${data.today.backgroundCostUsd.toFixed(2)} (summarizer + auto-pilot, not counted against caps)
               </div>
             )}
           </div>

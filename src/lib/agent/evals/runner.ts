@@ -46,10 +46,9 @@ export async function runOneEval(
 ): Promise<EvalResult> {
   const start = Date.now();
   const snapshot = await buildHotelSnapshot(opts.propertyId, evalCase.role);
-  // L2 (2026-05-13): buildSystemPrompt is async + takes conversationId
-  // for canary routing. Evals don't have a real conversation, so we
-  // synthesize a deterministic ID per case so canary bucket assignments
-  // are stable across runs (same case → same bucket → reproducible).
+  // L2 (2026-05-13): buildSystemPrompt is async + takes conversationId.
+  // Evals don't have a real conversation, so we synthesize a deterministic
+  // ID per case for stable telemetry across runs.
   const evalConversationId = `eval-${evalCase.name}`;
   const systemPrompt = await buildSystemPrompt(evalCase.role, snapshot, evalConversationId);
   const tools = getToolsForRole(evalCase.role);

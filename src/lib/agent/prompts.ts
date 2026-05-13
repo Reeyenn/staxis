@@ -1,6 +1,6 @@
 // ─── System prompts ───────────────────────────────────────────────────────
 // L2 (2026-05-13): prompts now live in the `agent_prompts` DB table and
-// are loaded via prompts-store.ts with caching + canary rollout. The
+// are loaded via prompts-store.ts with a 30s in-process cache. The
 // constants below remain as the FAIL-SOFT BASELINE — if the DB is
 // unreachable, buildSystemPrompt falls back to these values so the chat
 // keeps working. The seed in migration 0102 matches these constants
@@ -113,9 +113,11 @@ export const FALLBACK_PROMPTS = {
  * dynamic block so Anthropic's prompt cache can hit on the stable part.
  *
  * L2 (2026-05-13): now async + takes conversationId because prompts
- * are loaded from the DB via prompts-store (with canary rollout based
- * on a stable hash of conversationId). The DB-vs-fallback decision +
- * cache happens inside prompts-store; this function just composes.
+ * are loaded from the DB via prompts-store. The conversationId is
+ * preserved on the signature for possible per-conversation routing
+ * later, but today the prompts-store returns the single globally-
+ * active row for each role. The DB-vs-fallback decision + cache
+ * happens inside prompts-store; this function just composes.
  */
 export interface SystemPromptBlocks {
   /** Stable across the conversation — eligible for prompt caching. */

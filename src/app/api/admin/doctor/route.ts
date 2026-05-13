@@ -1259,19 +1259,22 @@ export const EXPECTED_MIGRATIONS: ReadonlyArray<string> = [
   // 0100 longevity foundation: prompt_version per msg + msg_count trigger
   //  + eval baselines + account tier.
   // 0101 L8B: agent_messages.is_error for tool error rate KPI.
-  // 0102 L2: agent_prompts table for DB-backed prompts + canary rollout.
+  // 0102 L2: agent_prompts table for DB-backed prompts.
   // 0103 ML retention policies (parallel chat).
   // 0104 ML fleet indexes (parallel chat).
   // 0105 L4: conversation archival + auto-summarization schema.
   // 0106 Round-10 follow-ups: F1+F2+F6 apply-summary rewrite, F5
   //  staxis_activate_prompt, F7 summary_xor CHECK, F4d active-row
   //  prompt content update.
+  // 0107 ML: atomic housekeeping model install RPC (parallel chat).
+  // 0108 Round-11 T3: drop unused agent_prompts.canary_pct column.
+  // 0109 Round-11 T1: add 'summarizer' role to agent_prompts + seed.
   '0079', '0080', '0081', '0082', '0083',
   '0084', '0085', '0086', '0087', '0088', '0089',
   '0090', '0091', '0092', '0093', '0094',
   '0095', '0096', '0097', '0098', '0099',
   '0100', '0101', '0102', '0103', '0104',
-  '0105', '0106', '0107',
+  '0105', '0106', '0107', '0108', '0109',
 ];
 async function checkAppliedMigrations(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {
