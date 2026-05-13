@@ -398,50 +398,6 @@ export function autoAssignRooms(
   return assignments;
 }
 
-// ─── Build per-housekeeper assignment view ─────────────────────────────────
-
-export interface HousekeeperAssignment {
-  staffId: string;
-  name: string;
-  isSenior: boolean;
-  rooms: Array<{ id: string; number: string; type: string; priority: string }>;
-  totalMinutes: number;
-  estimatedDoneBy: string;
-}
-
-export function buildHousekeeperAssignments(
-  rooms: Array<{ id: string; number: string; type: string; priority: string; stayoverDay?: number }>,
-  staff: StaffMember[],
-  assignments: Record<string, string>, // roomId → staffId
-  startTime: string = '08:00',
-  property?: { checkoutMinutes?: number; stayoverMinutes?: number; stayoverDay1Minutes?: number; stayoverDay2Minutes?: number },
-): HousekeeperAssignment[] {
-  const available = staff.filter(s => s.scheduledToday);
-  const [startHour, startMin] = startTime.split(':').map(Number);
-
-  const result: HousekeeperAssignment[] = [];
-
-  for (const s of available) {
-    const assignedRooms = rooms
-      .filter(r => assignments[r.id] === s.id)
-      .sort((a, b) => getRoomSortKey(a.type, a.priority) - getRoomSortKey(b.type, b.priority));
-
-    if (assignedRooms.length === 0) continue;
-
-    const totalMinutes = assignedRooms.reduce((sum, r) => sum + getRoomMinutes(r, property), 0);
-
-    const startDate = new Date();
-    startDate.setHours(startHour, startMin, 0, 0);
-    const doneDate = addMinutes(startDate, totalMinutes);
-    const estimatedDoneBy = format(doneDate, 'h:mm a');
-
-    result.push({ staffId: s.id, name: s.name, isSenior: s.isSenior, rooms: assignedRooms, totalMinutes, estimatedDoneBy });
-  }
-
-  // Sort by least loaded first so most-available HK is on top
-  return result.sort((a, b) => a.totalMinutes - b.totalMinutes);
-}
-
 // ─── Format helpers ────────────────────────────────────────────────────────
 
 export function formatCurrency(n: number): string {
@@ -469,19 +425,6 @@ export function daysSinceDeepClean(roomNumber: string, records: DeepCleanRecord[
   const rec = records.find(r => r.roomNumber === roomNumber);
   if (!rec) return Infinity;
   return differenceInDays(today, parseISO(rec.lastDeepClean));
-}
-
-/** Returns rooms that are overdue for deep cleaning */
-export function getOverdueRooms(
-  allRoomNumbers: string[],
-  records: DeepCleanRecord[],
-  config: DeepCleanConfig,
-  today: Date = new Date()
-): { roomNumber: string; daysSince: number }[] {
-  return allRoomNumbers
-    .map(num => ({ roomNumber: num, daysSince: daysSinceDeepClean(num, records, today) }))
-    .filter(r => r.daysSince >= config.frequencyDays)
-    .sort((a, b) => b.daysSince - a.daysSince); // most overdue first
 }
 
 /** Calculate freed minutes from DND rooms that can be used for deep cleaning */
