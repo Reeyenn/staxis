@@ -83,10 +83,14 @@ export function Caps({
   c?: string; weight?: number; style?: React.CSSProperties;
 }) {
   return (
+    // Default color is ink2 (#5C625C, ~7.2:1 on white) — ink3 (#A6ABA6) is
+    // only 1.9:1 and fails WCAG AA at the 10px size these labels render at.
+    // Tab files that want the lighter ink3 tone still pass `c={T.ink3}`
+    // explicitly (e.g. timestamp prefixes inside briefing items).
     <span style={{
       fontFamily: FONT_MONO, fontSize: size, fontWeight: weight,
       letterSpacing: tracking, textTransform: 'uppercase',
-      color: c || T.ink3, ...style,
+      color: c || T.ink2, ...style,
     }}>{children}</span>
   );
 }

@@ -138,7 +138,10 @@ export function PerformanceTab() {
         avgS1:       e.s1N       > 0 ? e._s1    / e.s1N       : null,
         avgS2:       e.s2N       > 0 ? e._s2    / e.s2N       : null,
       }))
-      .sort((a, b) => a.avgMins - b.avgMins);
+      // Tie-break by name so two crew with identical avgMins don't flip
+      // ranks across renders — without this, refresh-to-refresh stability
+      // depends on Map iteration order.
+      .sort((a, b) => (a.avgMins - b.avgMins) || a.name.localeCompare(b.name));
   }, [eligible, activeStaffIds]);
 
   // Provisional — < 3 rooms; sidebar pills.

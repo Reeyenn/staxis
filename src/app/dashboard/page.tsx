@@ -345,7 +345,13 @@ export default function DashboardPage() {
                 fontSize: 'clamp(140px, 16vw, 220px)',
                 lineHeight: 0.85, letterSpacing: '-0.04em', color: C.ink, fontWeight: 400,
               }}>
-                {occupancyPct}<span style={{ fontStyle: 'italic' }}>%</span>
+                {/* If every room is blocked, sellableRooms is 0 and the
+                    real answer is "undefined" — rendering "0%" reads to a
+                    non-technical owner as "we have zero guests." Show "—"
+                    instead. */}
+                {sellableRooms > 0
+                  ? <>{occupancyPct}<span style={{ fontStyle: 'italic' }}>%</span></>
+                  : '—'}
               </span>
             </div>
             <p style={{
@@ -353,11 +359,15 @@ export default function DashboardPage() {
               fontStyle: 'italic', lineHeight: 1.35, margin: '14px 0 0',
               maxWidth: '540px', fontWeight: 400,
             }}>
-              {activeProperty?.name
+              {sellableRooms === 0
                 ? (lang === 'es'
-                    ? `${activeProperty.name} está al ${occupancyPct}% de ocupación.`
-                    : `${activeProperty.name} is at ${occupancyPct}% occupancy.`)
-                : (lang === 'es' ? `Al ${occupancyPct}% de ocupación.` : `At ${occupancyPct}% occupancy.`)}
+                    ? 'Sin cuartos disponibles para vender hoy.'
+                    : 'No sellable rooms today.')
+                : activeProperty?.name
+                  ? (lang === 'es'
+                      ? `${activeProperty.name} está al ${occupancyPct}% de ocupación.`
+                      : `${activeProperty.name} is at ${occupancyPct}% occupancy.`)
+                  : (lang === 'es' ? `Al ${occupancyPct}% de ocupación.` : `At ${occupancyPct}% occupancy.`)}
             </p>
             <div style={{ display: 'flex', gap: '10px', marginTop: '28px', flexWrap: 'wrap' }}>
               <button

@@ -221,8 +221,9 @@ export function RoomsTab() {
       helpRequested: false,
       issueNote: `Backup sent: ${backupStaffName} at ${new Date().toLocaleTimeString()}`,
     });
+    let smsFailed = false;
     try {
-      await fetchWithAuth('/api/notify-backup', {
+      const res = await fetchWithAuth('/api/notify-backup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -230,13 +231,28 @@ export function RoomsTab() {
           backupStaffId, roomNumber: room.number, language: 'en',
         }),
       });
-    } catch { /* SMS failure is non-blocking */ }
+      if (!res.ok) smsFailed = true;
+    } catch {
+      // Network error or fetch threw — surface the failure so the
+      // manager doesn't trust a "sent ✓" toast when the housekeeper's
+      // phone is silent. We've already cleared helpRequested above (so
+      // the room doesn't keep flashing HELP), but the toast tells the
+      // truth so they can re-send or call manually.
+      smsFailed = true;
+    }
     setBackupRoom(null);
-    setToastKind('success');
-    setToastMessage(lang === 'es'
-      ? `${backupStaffName} enviado a ${room.number}`
-      : `${backupStaffName} sent to Room ${room.number}`);
-    setTimeout(() => setToastMessage(null), 2500);
+    if (smsFailed) {
+      setToastKind('error');
+      setToastMessage(lang === 'es'
+        ? `${backupStaffName} no recibió el aviso — intenta de nuevo`
+        : `${backupStaffName} not notified — try again`);
+    } else {
+      setToastKind('success');
+      setToastMessage(lang === 'es'
+        ? `${backupStaffName} enviado a ${room.number}`
+        : `${backupStaffName} sent to Room ${room.number}`);
+    }
+    setTimeout(() => setToastMessage(null), 3500);
   };
 
   // Group rooms by floor → reversed so the top floor renders first

@@ -32,7 +32,7 @@ import type { PlanSnapshot, ScheduleAssignments } from '@/lib/db';
 import { autoAssignRooms } from '@/lib/calculations';
 import type { ShiftConfirmation, WorkOrder, StaffMember } from '@/types';
 import {
-  defaultShiftDate, addDays, formatDisplayDate, snapshotToShiftRooms,
+  defaultShiftDate, addDays, formatDisplayDate, snapshotToShiftRooms, formatPulledAt,
 } from './_shared';
 import {
   T, FONT_SANS, FONT_MONO, FONT_SERIF,
@@ -48,6 +48,10 @@ export function ScheduleTab() {
 
   const [shiftDate, setShiftDate] = useState(defaultShiftDate);
   const [planSnapshot, setPlanSnapshot] = useState<PlanSnapshot | null>(null);
+  // Flips true after the first plan-snapshot callback fires (with data or
+  // null), so the PMS strip can show a skeleton during the initial fetch
+  // instead of zero-counts that read like real data.
+  const [planLoaded, setPlanLoaded] = useState(false);
   const [confirmations, setConfirmations] = useState<ShiftConfirmation[]>([]);
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [assignments, setAssignments] = useState<Record<string, string>>({});
@@ -81,7 +85,11 @@ export function ScheduleTab() {
   // ── Subscriptions ─────────────────────────────────────────────────────
   useEffect(() => {
     if (!uid || !pid) return;
-    return subscribeToPlanSnapshot(uid, pid, shiftDate, setPlanSnapshot);
+    setPlanLoaded(false);
+    return subscribeToPlanSnapshot(uid, pid, shiftDate, (snap) => {
+      setPlanSnapshot(snap);
+      setPlanLoaded(true);
+    });
   }, [uid, pid, shiftDate]);
 
   // Hydrate from saved doc inside the subscription callback so we know
@@ -207,13 +215,17 @@ export function ScheduleTab() {
 
   // ── Handlers ──────────────────────────────────────────────────────────
   const handleAutoAssign = () => {
+    // Pass the SAME shift cap the UI uses for capacity bars / recommended-HK
+    // math. Hardcoding 420 here while the UI reads activeProperty.shiftMinutes
+    // would produce bars that disagree with what the algorithm actually
+    // distributed (audit finding #1).
     const config = {
       checkoutMinutes:    ckMin,
       stayoverDay1Minutes: so1Min,
       stayoverDay2Minutes: so2Min,
       stayoverMinutes:     activeProperty?.stayoverMinutes      ?? 20,
       prepMinutesPerActivity: activeProperty?.prepMinutesPerActivity ?? 5,
-      shiftMinutes:        420,
+      shiftMinutes:        SHIFT_MINS,
     };
     const next = autoAssignRooms(assignableRooms, activeCrew, config);
     setAssignments(next);
@@ -288,10 +300,17 @@ export function ScheduleTab() {
   const isYesterday = shiftDate === addDays(today, -1);
   const isTomorrow = shiftDate === addDays(today, 1);
 
-  const pulledAtLabel = planSnapshot?.pulledAt
-    ? new Date(planSnapshot.pulledAt as unknown as string).toLocaleString([], {
-        hour: '2-digit', minute: '2-digit',
-      })
+  // formatPulledAt prefixes "Today" vs the weekday so a 2-day-old pull
+  // and a 1-min-old pull don't both show the same time-of-day. Coerce
+  // pulledAt to ISO string for the helper (it can come through as Date
+  // from Supabase or string from a cached snapshot).
+  const pulledAtIso = planSnapshot?.pulledAt
+    ? (planSnapshot.pulledAt instanceof Date
+        ? planSnapshot.pulledAt.toISOString()
+        : String(planSnapshot.pulledAt))
+    : null;
+  const pulledAtLabel = pulledAtIso
+    ? formatPulledAt(pulledAtIso, lang)
     : (lang === 'es' ? 'sin datos' : 'no data');
 
   // Confirmation status pill helper
@@ -365,11 +384,15 @@ export function ScheduleTab() {
         <div style={{ display: 'flex', flexDirection: 'column', minWidth: 160 }}>
           <Caps size={9}>{lang === 'es' ? 'Última carga PMS' : 'Latest PMS pull'}</Caps>
           <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 500, marginTop: 2 }}>
-            {pulledAtLabel}
+            {planLoaded ? pulledAtLabel : (lang === 'es' ? 'Cargando…' : 'Loading…')}
           </span>
         </div>
         <span style={{ width: 1, height: 42, background: T.rule }} />
         <div style={{ display: 'flex', gap: 32, flex: 1, flexWrap: 'wrap' }}>
+          {/* Skeleton dashes until the first plan-snapshot callback fires
+              — without this, the strip momentarily reads "Checkouts: 0
+              · Stay·light: 0 · Recommended: 1 HKs" which looks like real
+              data on a slow pull. */}
           {[
             { l: lang === 'es' ? 'Salidas'      : 'Checkouts',   v: checkouts },
             { l: lang === 'es' ? 'Estadía·1'    : 'Stay · light',v: stayoverDay1 },
@@ -380,9 +403,9 @@ export function ScheduleTab() {
             <div key={n.l} style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 80 }}>
               <Caps size={9}>{n.l}</Caps>
               <span style={{
-                fontFamily: FONT_SERIF, fontSize: 30, color: n.tone || T.ink,
+                fontFamily: FONT_SERIF, fontSize: 30, color: planLoaded ? (n.tone || T.ink) : T.ink3,
                 lineHeight: 1, letterSpacing: '-0.02em', fontWeight: 400, whiteSpace: 'nowrap',
-              }}>{n.v}</span>
+              }}>{planLoaded ? n.v : '—'}</span>
             </div>
           ))}
         </div>

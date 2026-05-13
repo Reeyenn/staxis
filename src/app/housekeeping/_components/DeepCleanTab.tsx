@@ -16,7 +16,7 @@
 // floors. Schedule button on each overdue room flips it to in-progress
 // via markRoomDeepCleaned.
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -56,9 +56,13 @@ export function DeepCleanTab() {
   const [records, setRecords] = useState<Record<string, DeepCleanRecord>>({});
   const [todayRooms, setTodayRooms] = useState<Room[]>([]);
   const [toast, setToast] = useState<string | null>(null);
+  const [toastKind, setToastKind] = useState<'success' | 'error'>('success');
   const [showCadence, setShowCadence] = useState(false);
   const [cadenceDraft, setCadenceDraft] = useState<number>(28);
   const [savingCadence, setSavingCadence] = useState(false);
+  // `loaded` flips true after the first records-fetch resolves so the
+  // empty list doesn't flash "Nothing overdue" while still loading.
+  const [loaded, setLoaded] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const uid = user?.uid ?? '';
@@ -81,25 +85,67 @@ export function DeepCleanTab() {
     return out;
   }, [activeProperty?.roomInventory]);
 
-  // Load config + records, subscribe to today's rooms.
+  // Refresh records from DB. Extracted because we call it on mount, on
+  // tab-visibility change, and on a 60s timer — there's no realtime
+  // channel on deep_clean_records yet (see audit fix #2). Without this,
+  // a completed deep clean wouldn't surface until tab remount.
+  const refreshRecords = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!uid || !pid) return;
+    try {
+      const r = await getDeepCleanRecords(uid, pid);
+      const map: Record<string, DeepCleanRecord> = {};
+      for (const rec of r) map[rec.roomNumber] = rec;
+      setRecords(map);
+    } catch (err) {
+      console.error('[DeepCleanTab] records fetch failed:', err);
+      if (!opts?.silent) {
+        setToastKind('error');
+        setToast(lang === 'es' ? 'No se pudo cargar limpieza profunda' : 'Could not load deep clean data');
+        if (toastTimer.current) clearTimeout(toastTimer.current);
+        toastTimer.current = setTimeout(() => setToast(null), 3500);
+      }
+    } finally {
+      setLoaded(true);
+    }
+  }, [uid, pid, lang]);
+
+  // Load config + records on mount + subscribe to today's rooms for DND math.
   useEffect(() => {
     if (!uid || !pid) return;
     getDeepCleanConfig(uid, pid).then(c => {
       setConfigState(c);
       if (c?.frequencyDays) setCadenceDraft(c.frequencyDays);
-    }).catch(() => {});
-    getDeepCleanRecords(uid, pid).then(r => {
-      const map: Record<string, DeepCleanRecord> = {};
-      for (const rec of r) map[rec.roomNumber] = rec;
-      setRecords(map);
-    }).catch(() => {});
+    }).catch(err => {
+      console.error('[DeepCleanTab] config fetch failed:', err);
+      // Config failure is recoverable (we fall back to defaults). Don't
+      // toast — the records-fetch toast already signals if the DB is down.
+    });
+    refreshRecords();
     return subscribeToRooms(uid, pid, todayStrReactive, setTodayRooms);
-  }, [uid, pid, todayStrReactive]);
+  }, [uid, pid, todayStrReactive, refreshRecords]);
+
+  // Refresh on tab-visibility change (manager comes back from another tab)
+  // and every 60s while visible. Cheap stand-in for a realtime channel.
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refreshRecords({ silent: true });
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    const id = setInterval(() => {
+      if (document.visibilityState === 'visible') refreshRecords({ silent: true });
+    }, 60_000);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      clearInterval(id);
+    };
+  }, [refreshRecords]);
 
   useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
 
-  const flashToast = (msg: string) => {
+  const flashToast = (msg: string, kind: 'success' | 'error' = 'success') => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToastKind(kind);
     setToast(msg);
     toastTimer.current = setTimeout(() => setToast(null), 3000);
   };
@@ -187,7 +233,7 @@ export function DeepCleanTab() {
       flashToast(lang === 'es' ? `Limpieza profunda programada · ${roomNumber}` : `Deep clean scheduled · ${roomNumber}`);
     } catch (err) {
       console.error('[DeepCleanTab] schedule failed:', err);
-      flashToast(lang === 'es' ? 'No se pudo programar' : 'Could not schedule');
+      flashToast(lang === 'es' ? 'No se pudo programar' : 'Could not schedule', 'error');
     }
   };
 
@@ -209,6 +255,29 @@ export function DeepCleanTab() {
       setSavingCadence(false);
     }
   };
+
+  // Skeleton until first records-fetch resolves — without this the
+  // header would briefly say "0 overdue · 0 due soon · 0 fresh" and
+  // the body would say "Nothing overdue. Nice work." for the half-
+  // second the request is in flight, both of which are lies.
+  if (!loaded) {
+    return (
+      <div style={{
+        padding: '24px 48px 48px', background: T.bg, color: T.ink,
+        fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        flexDirection: 'column', gap: 12,
+      }}>
+        <div className="animate-spin" style={{
+          width: 28, height: 28,
+          border: `2px solid ${T.rule}`, borderTopColor: T.ink, borderRadius: '50%',
+        }} />
+        <p style={{ color: T.ink2, fontSize: 13 }}>
+          {lang === 'es' ? 'Cargando limpieza profunda…' : 'Loading deep clean…'}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div style={{
@@ -257,26 +326,38 @@ export function DeepCleanTab() {
               fontFamily: FONT_SERIF, fontSize: 22, color: T.ink,
               margin: '4px 0 0', lineHeight: 1.3, fontWeight: 400,
             }}>
-              {lang === 'es' ? 'Cabe(n) ' : 'Fit '}
-              <span style={{ fontStyle: 'italic', color: T.sageDeep }}>
-                {fits} {lang === 'es' ? 'limpieza(s) profunda(s)' : 'deep clean' + (fits === 1 ? '' : 's')}
-              </span>
-              {lang === 'es'
-                ? ` hoy — ${dndFreedMins}m de tiempo DND son recuperables.`
-                : ` today — ${dndFreedMins}m of DND time is reclaimable.`}
+              {fits > 0 ? (
+                <>
+                  {lang === 'es' ? 'Cabe(n) ' : 'Fit '}
+                  <span style={{ fontStyle: 'italic', color: T.sageDeep }}>
+                    {fits} {lang === 'es' ? 'limpieza(s) profunda(s)' : 'deep clean' + (fits === 1 ? '' : 's')}
+                  </span>
+                  {lang === 'es'
+                    ? ` hoy — ${dndFreedMins}m de tiempo DND son recuperables.`
+                    : ` today — ${dndFreedMins}m of DND time is reclaimable.`}
+                </>
+              ) : (
+                lang === 'es'
+                  ? 'Sin tiempo DND recuperable hoy — programa manualmente abajo.'
+                  : 'No DND time reclaimable today — schedule individual rooms below.'
+              )}
             </p>
           </div>
-          <Btn
-            variant="primary"
-            size="md"
-            disabled={fits === 0 || overdue.length === 0}
-            onClick={() => {
-              const queue = overdue.slice(0, fits);
-              Promise.all(queue.map(r => handleSchedule(r.number)));
-            }}
-          >
-            {lang === 'es' ? 'Programar' : 'Schedule'} {fits} {lang === 'es' ? 'profunda(s)' : 'deep clean' + (fits === 1 ? '' : 's')} →
-          </Btn>
+          {/* Bulk-schedule button only renders when there's actually
+              capacity to schedule. A disabled button next to a "Today's
+              suggestion" headline is a misleading affordance. */}
+          {fits > 0 && (
+            <Btn
+              variant="primary"
+              size="md"
+              onClick={() => {
+                const queue = overdue.slice(0, fits);
+                Promise.all(queue.map(r => handleSchedule(r.number)));
+              }}
+            >
+              {lang === 'es' ? 'Programar' : 'Schedule'} {fits} {lang === 'es' ? 'profunda(s)' : 'deep clean' + (fits === 1 ? '' : 's')} →
+            </Btn>
+          )}
         </div>
       )}
 
@@ -467,13 +548,15 @@ export function DeepCleanTab() {
         </>
       )}
 
-      {/* TOAST */}
+      {/* TOAST — color flips by toastKind so init-failure surfaces in
+          warm tone instead of looking like a successful action. */}
       {toast && (
         <div style={{
           position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)',
           zIndex: 70, padding: '12px 18px',
-          background: T.sageDim, color: T.sageDeep,
-          border: '1px solid rgba(104,131,114,0.3)',
+          background: toastKind === 'error' ? T.warmDim : T.sageDim,
+          color:      toastKind === 'error' ? T.warm     : T.sageDeep,
+          border: `1px solid ${toastKind === 'error' ? 'rgba(184,92,61,0.3)' : 'rgba(104,131,114,0.3)'}`,
           borderRadius: 999, fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500,
         }}>{toast}</div>
       )}
