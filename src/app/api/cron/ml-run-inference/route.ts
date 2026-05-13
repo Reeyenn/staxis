@@ -23,6 +23,10 @@ import { errToString } from '@/lib/utils';
 import { runWithConcurrency, applyShardFilter } from '@/lib/parallel';
 import { listMlShardUrls, resolveMlShardUrl } from '@/lib/ml-routing';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
+import {
+  emitPropertyMisconfiguredEvent,
+  parsePropertyMisconfiguredError,
+} from '@/lib/ml-misconfigured-events';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -103,6 +107,36 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         requestId, stage, property_id: propertyId, elapsedMs: Date.now() - t0,
         mlStatus: (json as { status?: string }).status ?? 'unknown',
       });
+
+      // Codex adversarial review 2026-05-13 (#2): the ML service signals
+      // misconfigured properties via {error: 'property_misconfigured: ...'},
+      // not via a status field. Without this branch, those responses
+      // were getting mapped to status: 'unknown' — the heartbeat-degraded
+      // logic missed them and no app_events row was ever written.
+      const errStr = (json as { error?: string }).error;
+      if (typeof errStr === 'string' && errStr.startsWith('property_misconfigured:')) {
+        const parsed = parsePropertyMisconfiguredError(errStr);
+        if (parsed) {
+          await emitPropertyMisconfiguredEvent({
+            requestId,
+            propertyId,
+            layer: stage,
+            field: parsed.field,
+            value: parsed.value,
+          });
+        }
+        return { stage, status: 'skipped', detail: errStr };
+      }
+      // Non-misconfiguration errors stay as errors so the cron heartbeat
+      // refuses to write OK.
+      if (typeof errStr === 'string' || !res.ok) {
+        return {
+          stage,
+          status: 'error',
+          detail: errStr ?? (json as { http?: number }).http ?? `HTTP ${res.status}`,
+        };
+      }
+
       return { stage, status: (json as { status?: string }).status ?? 'unknown', detail: json };
     } catch (err) {
       log.error('ml-run-inference: stage failed', { requestId, stage, property_id: propertyId, err: err as Error });
@@ -115,7 +149,38 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // Intra-property: still sequential — optimizer depends on demand+supply
   // outputs being already written.
   const outcomes = await runWithConcurrency(propertiesForThisShard, async (property) => {
-    const propertyTz = (property.timezone as string | null) ?? 'America/Chicago';
+    // Codex adversarial review 2026-05-13 (#1): the prior code did
+    //   const propertyTz = property.timezone ?? 'America/Chicago';
+    // which silently bypassed the Phase 3.5 PropertyMisconfiguredError
+    // validator on the ML service. Any non-Texas hotel with a missing
+    // timezone got predictions for the WRONG operational date. Now we
+    // skip the property at the TS boundary, emit a structured event,
+    // and let the heartbeat status flip to 'degraded' (Phase 3.4) so
+    // the doctor surfaces it.
+    if (!property.timezone) {
+      log.warn('ml-run-inference: property missing timezone — skip', {
+        requestId, property_id: property.id, property_name: property.name,
+      });
+      await emitPropertyMisconfiguredEvent({
+        requestId,
+        propertyId: property.id,
+        layer: 'orchestrator',
+        field: 'timezone',
+        value: null,
+      });
+      const skip = (stage: 'demand' | 'supply' | 'optimizer') => ({
+        stage,
+        status: 'skipped' as const,
+        detail: 'property_misconfigured: timezone is null',
+      });
+      return {
+        target_date: null,
+        demand: skip('demand'),
+        supply: skip('supply'),
+        optimizer: skip('optimizer'),
+      };
+    }
+    const propertyTz = property.timezone as string;
     const targetDate = tomorrowInTz(propertyTz);
     const demandResult    = await callStage('demand',    property.id, propertyTz, targetDate);
     const supplyResult    = await callStage('supply',    property.id, propertyTz, targetDate);

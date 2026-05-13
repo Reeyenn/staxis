@@ -64,54 +64,13 @@ async function checkDoctor(baseUrl: string, cronSecret: string): Promise<void> {
   }
 }
 
-async function checkAutoFillShape(baseUrl: string, propertyId: string, cronSecret: string): Promise<void> {
-  // This endpoint is owner-only — using CRON_SECRET via the admin
-  // bypass header is the simplest way to authenticate from a script.
-  // If your prod doesn't have that bypass, mark this check as skipped
-  // by returning the route as 401 + falling through with a warn.
-  try {
-    const res = await fetch(
-      `${baseUrl}/api/inventory/auto-fill-map?propertyId=${propertyId}`,
-      {
-        headers: { Authorization: `Bearer ${cronSecret}` },
-        signal: AbortSignal.timeout(30_000),
-      },
-    );
-    if (res.status === 401 || res.status === 403) {
-      // No admin bypass — can't shape-check from here. Don't fail.
-      console.log('ℹ️  auto-fill endpoint requires session auth; shape check skipped.');
-      return;
-    }
-    if (res.status !== 200) {
-      fail('auto-fill-map', `HTTP ${res.status}`);
-      return;
-    }
-    const json = (await res.json()) as {
-      items?: Array<Record<string, unknown>>;
-    };
-    if (!Array.isArray(json.items)) {
-      fail('auto-fill-map', 'response missing items[]');
-      return;
-    }
-    if (json.items.length === 0) {
-      console.log('ℹ️  No items in auto-fill response; shape check skipped (property has no graduated models).');
-      return;
-    }
-    // Pick the first graduated item to verify Phase 1 band fields.
-    const graduated = json.items.find(i => i.graduated === true);
-    if (!graduated) {
-      console.log('ℹ️  No graduated items; band-field check skipped.');
-      return;
-    }
-    const required = ['predictedCurrentStock', 'predictedCurrentStockLow', 'predictedCurrentStockHigh'];
-    const missing = required.filter(k => !(k in graduated));
-    if (missing.length > 0) {
-      fail('auto-fill-map', `graduated item missing fields: ${missing.join(', ')}`);
-    }
-  } catch (err) {
-    fail('auto-fill-map', `request threw: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}
+// Codex follow-up 2026-05-13 (#4): the previous version of this script
+// called /api/inventory/auto-fill-map, a route that does not exist in
+// the codebase (the helper is imported directly by the inventory page).
+// The shape check is now performed server-side by the doctor's
+// `inventory_auto_fill_shape` check — which has admin auth + the
+// helper imported — and surfaces here transitively via checkDoctor().
+// Keeping a placeholder so future re-introduction is straightforward.
 
 async function checkPropertyMisconfiguredEvents(propertyId: string): Promise<void> {
   const supabaseUrl = process.env.SUPABASE_URL;
@@ -158,7 +117,9 @@ async function main(): Promise<void> {
   console.log(`── ML smoke against ${baseUrl} (property ${propertyId}) ──`);
 
   await checkDoctor(baseUrl, cronSecret);
-  await checkAutoFillShape(baseUrl, propertyId, cronSecret);
+  // checkAutoFillShape removed (Codex #4 follow-up): moved server-side
+  // into doctor's inventory_auto_fill_shape check — already validated
+  // by checkDoctor above.
   await checkPropertyMisconfiguredEvents(propertyId);
 
   if (failures.length > 0) {

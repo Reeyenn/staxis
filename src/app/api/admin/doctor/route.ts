@@ -160,6 +160,14 @@ const checks: Array<[string, CheckFn]> = [
   // doctor fails if any expected cron is older than 2× its cadence.
   // See migration 0074 + src/lib/cron-heartbeat.ts.
   ['cron_heartbeats_fresh',          checkCronHeartbeatsFresh],
+  // Codex follow-up 2026-05-13 (#2): operator-visible surface for the
+  // log+skip design from Phase 3.5. Warns when any property has fired
+  // a property_misconfigured event in the last 24h.
+  ['property_misconfigured_recent',  checkPropertyMisconfiguredRecent],
+  // Codex follow-up 2026-05-13 (#4): shape-check the Phase 1 band
+  // fields directly instead of the smoke hitting a (nonexistent)
+  // HTTP route. Doctor already has admin auth + the helper imported.
+  ['inventory_auto_fill_shape',      checkInventoryAutoFillShape],
   // Rate limiter probe — pairs with src/lib/api-ratelimit.ts. If the
   // staxis_api_limit_hit RPC errors at request time, the limiter
   // fails OPEN (production safety: a Postgres blip must not block
@@ -1746,6 +1754,129 @@ async function checkCronHeartbeatsFresh(): Promise<Omit<Check, 'name' | 'duratio
     };
   } catch (err) {
     return { status: 'warn', detail: `cron-heartbeats check threw: ${errToString(err)}` };
+  }
+}
+
+/**
+ * Codex follow-up 2026-05-13 (#2): surface recent property_misconfigured
+ * events. The "log + skip" design from Phase 3.5 emits these events when
+ * a property has a missing `total_rooms` or `timezone`. Without this
+ * check, the only operator-visible signal was a missing prediction in
+ * the cockpit (lagging by hours/days).
+ *
+ * Severity is `warn` not `fail` — a single misconfigured property is
+ * an awareness signal, not a customer outage. The cron skipped that
+ * one property and moved on. Failing the deploy on it would be
+ * over-the-top.
+ */
+async function checkPropertyMisconfiguredRecent(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const cutoff = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const { data, error, count } = await supabaseAdmin
+      .from('app_events')
+      .select('property_id, metadata, ts', { count: 'exact' })
+      .eq('event_type', 'property_misconfigured')
+      .gte('ts', cutoff)
+      .order('ts', { ascending: false })
+      .limit(20);
+    if (error) {
+      return { status: 'warn', detail: `app_events read failed: ${errToString(error)}` };
+    }
+    if (!count) {
+      return { status: 'ok', detail: 'No property_misconfigured events in last 24h' };
+    }
+    const fields = new Set<string>();
+    const propertyIds = new Set<string>();
+    for (const row of data ?? []) {
+      const md = (row as { metadata?: { field?: string } }).metadata;
+      if (md?.field) fields.add(md.field);
+      const pid = (row as { property_id?: string }).property_id;
+      if (pid) propertyIds.add(pid);
+    }
+    return {
+      status: 'warn',
+      detail:
+        `${count} property_misconfigured event(s) in last 24h ` +
+        `across ${propertyIds.size} property/properties; ` +
+        `fields: ${[...fields].join(', ') || '(unknown)'}. ` +
+        `Set the missing field(s) via Live Hotels → [hotel] in the admin UI.`,
+      fix:
+        'Go to Live Hotels → [hotel] → set total_rooms and/or timezone. ' +
+        'ML predictions resume on the next nightly cron (no manual retrain needed).',
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `property_misconfigured check threw: ${errToString(err)}` };
+  }
+}
+
+/**
+ * Codex follow-up 2026-05-13 (#4): the nightly smoke was hitting
+ * /api/inventory/auto-fill-map (a nonexistent route) to assert the
+ * Phase 1 band fields (predictedCurrentStockLow/High) made it through.
+ * Move that shape check server-side where we already have admin auth
+ * and the helper imported.
+ *
+ * Returns `ok` when no graduated items exist (informational) and `fail`
+ * only when graduated items are missing the band fields — that's a
+ * regression in getInventoryAutoFillMap and a real customer impact
+ * (the inventory page won't render the band UI).
+ */
+async function checkInventoryAutoFillShape(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const propertyId = process.env.SMOKE_PROPERTY_ID;
+  if (!propertyId) {
+    return {
+      status: 'ok',
+      detail: 'SMOKE_PROPERTY_ID not set; auto-fill shape check skipped (informational only).',
+    };
+  }
+  try {
+    const { getInventoryAutoFillMap } = await import('@/lib/db/ml-inventory-cockpit');
+    // Use 'auto' mode (matches default property setting); the function
+    // returns the same shape across all non-'off' modes.
+    const items = await getInventoryAutoFillMap(propertyId, 'auto');
+    if (!Array.isArray(items)) {
+      return {
+        status: 'fail',
+        detail: 'getInventoryAutoFillMap returned a non-array value.',
+        fix: 'Inspect src/lib/db/ml-inventory-cockpit.ts:getInventoryAutoFillMap return contract.',
+      };
+    }
+    if (items.length === 0) {
+      return {
+        status: 'ok',
+        detail: `auto-fill map returned 0 items for property ${propertyId} (no graduated models yet — informational).`,
+      };
+    }
+    const graduated = items.find((i) => i.graduated === true);
+    if (!graduated) {
+      return {
+        status: 'ok',
+        detail: `${items.length} items returned; none graduated yet — band-field check skipped.`,
+      };
+    }
+    const required: Array<keyof typeof graduated> = [
+      'predictedCurrentStock',
+      'predictedCurrentStockLow',
+      'predictedCurrentStockHigh',
+    ];
+    const missing = required.filter((k) => !(k in graduated));
+    if (missing.length > 0) {
+      return {
+        status: 'fail',
+        detail:
+          `Phase 1 band fields missing from a graduated item: ${missing.join(', ')}. ` +
+          `The auto-fill response shape regressed; the inventory page will not render the confidence band.`,
+        fix:
+          'Inspect src/lib/db/ml-inventory-cockpit.ts:getInventoryAutoFillMap — ' +
+          'verify the per-item output includes predictedCurrentStockLow/High derived from p25/p75 rate decay.',
+      };
+    }
+    return {
+      status: 'ok',
+      detail: `auto-fill shape valid (${items.length} items; graduated band fields present).`,
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `auto-fill shape check threw: ${errToString(err)}` };
   }
 }
 
