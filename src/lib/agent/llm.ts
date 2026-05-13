@@ -189,7 +189,11 @@ export function classifyAnthropicError(err: unknown): AnthropicErrorClass {
 // see the second segment as outside the boundary. Escaping ampersands +
 // angle brackets makes the boundary unforgeable while keeping the content
 // semantically readable to Claude (it understands HTML entities).
-function escapeToolResultContent(content: string): string {
+// Exported so the summarizer (which also formats tool results, but for
+// Haiku rather than Sonnet) can reuse the same boundary escape. Round 10
+// F4: without this, the summarizer breaks the trust-marker chain rounds
+// 5-7 established.
+export function escapeToolResultContent(content: string): string {
   return content
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')

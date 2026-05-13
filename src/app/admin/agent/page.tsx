@@ -44,8 +44,9 @@ interface MetricsPayload {
     id: string; title: string | null; role: string;
     promptVersion: string | null; updatedAt: string; messageCount: number;
   }>;
-  topTools: Array<{ tool: string; calls: number; errors: number; errorRatePct: number }>;
+  topTools: Array<{ tool: string; calls: number; errors: number; incomplete: number; errorRatePct: number }>;
   toolErrorsToday: number;
+  toolIncompleteToday: number;
   archivedTotal: number;
   archivedToday: number;
   modelUsage: Array<{ model: string; count: number; costUsd: number }>;
@@ -210,10 +211,12 @@ export default function AdminAgentPage() {
             icon={<AlertTriangle size={14} />}
             label="Tool errors today"
             value={data ? String(data.toolErrorsToday) : '—'}
-            sub={data && data.toolErrorsToday > 0
-              ? 'see top tools card for per-tool breakdown'
-              : 'every tool call succeeded today'}
-            severity={data && data.toolErrorsToday > 0 ? 'warm' : 'ok'}
+            sub={data
+              ? data.toolErrorsToday > 0 || data.toolIncompleteToday > 0
+                ? `${data.toolIncompleteToday} incomplete · see top tools`
+                : 'every tool call succeeded today'
+              : ''}
+            severity={data && (data.toolErrorsToday > 0 || data.toolIncompleteToday > 0) ? 'warm' : 'ok'}
           />
           <KPI
             icon={<Archive size={14} />}
@@ -304,11 +307,12 @@ export default function AdminAgentPage() {
                       <span style={{
                         fontFamily: FONT_MONO,
                         fontSize: 12,
-                        color: t.errors > 0 ? C.warm : C.ink2,
+                        color: (t.errors > 0 || t.incomplete > 0) ? C.warm : C.ink2,
                         fontWeight: 500,
                       }}>
                         {t.calls}
                         {t.errors > 0 ? ` · ${t.errors} err (${t.errorRatePct}%)` : ''}
+                        {t.incomplete > 0 ? ` · ${t.incomplete} incomplete` : ''}
                       </span>
                     </div>
                   ))}

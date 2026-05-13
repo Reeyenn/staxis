@@ -300,12 +300,22 @@ export async function POST(req: NextRequest): Promise<Response> {
           } else if (event.type === 'tool_call_finished') {
             // L8B (2026-05-13): isError persisted so /admin/agent can
             // compute per-tool error rate.
-            await recordToolResult(finalConversationId, event.call.id, event.result, event.isError).catch(err => {
-              log.error('[agent/command] failed to persist tool result', {
-                requestId, conversationId: finalConversationId, callId: event.call.id, err,
+            // F3a (Round 10): clear pendingToolCallIds only on successful
+            // persistence. If recordToolResult fails (transient Supabase
+            // outage), keep the id in the set so the finally block's
+            // synthetic-abort path inserts a fallback row via
+            // recordSyntheticAbortToolResult (upsert+ignoreDuplicates from
+            // round 8 B7 makes a late-landing original safe). Without this,
+            // a missing tool_result row is silently counted as success.
+            await recordToolResult(finalConversationId, event.call.id, event.result, event.isError)
+              .then(() => {
+                pendingToolCallIds.delete(event.call.id);
+              })
+              .catch(err => {
+                log.error('[agent/command] failed to persist tool result', {
+                  requestId, conversationId: finalConversationId, callId: event.call.id, err,
+                });
               });
-            });
-            pendingToolCallIds.delete(event.call.id);
             send(event);
           } else if (event.type === 'done') {
             finalUsage = event.usage;

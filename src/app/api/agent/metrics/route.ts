@@ -36,10 +36,15 @@ interface MetricsPayload {
     updatedAt: string;
     messageCount: number;
   }>;
-  topTools: Array<{ tool: string; calls: number; errors: number; errorRatePct: number }>;
+  topTools: Array<{ tool: string; calls: number; errors: number; incomplete: number; errorRatePct: number }>;
   /** Total tool errors today across all tools.
    *  L8B, 2026-05-13. */
   toolErrorsToday: number;
+  /** Total tool_use rows today that have NO matching tool_result row.
+   *  Aborts, mid-stream kills, or transient persist failures. Surfaced
+   *  separately so a missing row doesn't silently count as success.
+   *  Round 10 F3b, 2026-05-13. */
+  toolIncompleteToday: number;
   modelUsage: Array<{ model: string; count: number; costUsd: number }>;
   /** Distinct Anthropic snapshot IDs seen today, newest first. When this
    *  list changes from one day to the next, Anthropic shipped a new
@@ -180,23 +185,37 @@ export async function GET(req: NextRequest): Promise<Response> {
       .eq('role', 'tool')
       .gte('created_at', dayStartIso);
 
-    // Build a lookup: (conversation_id, tool_call_id) → is_error
-    const errorLookup = new Map<string, boolean>();
+    // Build a lookup: (conversation_id, tool_call_id) → is_error.
+    // F3b (Round 10): we need to distinguish three states, not two:
+    //   - row present with is_error=true     → error
+    //   - row present with is_error=false    → success
+    //   - row MISSING                        → incomplete (abort,
+    //                                          stream killed mid-tool,
+    //                                          or persist failure)
+    // Previously, missing rows defaulted to is_error=false and were
+    // silently counted as success — masking real failures. Now we
+    // surface them as a separate bucket on the admin page.
+    const resultLookup = new Map<string, boolean>(); // present rows only
     for (const r of toolResultRows ?? []) {
       const key = `${r.conversation_id as string}:${r.tool_call_id as string}`;
-      errorLookup.set(key, (r.is_error as boolean) === true);
+      resultLookup.set(key, (r.is_error as boolean) === true);
     }
 
-    interface ToolStats { calls: number; errors: number }
+    interface ToolStats { calls: number; errors: number; incomplete: number }
     const toolStats = new Map<string, ToolStats>();
     let toolErrorsToday = 0;
+    let toolIncompleteToday = 0;
     for (const m of toolMsgs ?? []) {
       const name = m.tool_name as string;
       const key = `${m.conversation_id as string}:${m.tool_call_id as string}`;
-      const isErr = errorLookup.get(key) === true;
-      const prev = toolStats.get(name) ?? { calls: 0, errors: 0 };
+      const present = resultLookup.has(key);
+      const isErr = present && resultLookup.get(key) === true;
+      const prev = toolStats.get(name) ?? { calls: 0, errors: 0, incomplete: 0 };
       prev.calls += 1;
-      if (isErr) {
+      if (!present) {
+        prev.incomplete += 1;
+        toolIncompleteToday += 1;
+      } else if (isErr) {
         prev.errors += 1;
         toolErrorsToday += 1;
       }
@@ -207,6 +226,7 @@ export async function GET(req: NextRequest): Promise<Response> {
         tool,
         calls: s.calls,
         errors: s.errors,
+        incomplete: s.incomplete,
         errorRatePct: s.calls > 0 ? Math.round((s.errors / s.calls) * 1000) / 10 : 0,
       }))
       .sort((a, b) => b.calls - a.calls)
@@ -262,6 +282,7 @@ export async function GET(req: NextRequest): Promise<Response> {
       sweptToday,
       finalizeFailuresToday,
       toolErrorsToday,
+      toolIncompleteToday,
       archivedTotal,
       archivedToday,
     };

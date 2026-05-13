@@ -130,10 +130,17 @@ export async function loadConversation(
         // Summary row is a complete assistant text turn on its own.
         // Flush any pending assistant being built up, then push the
         // summary as a standalone assistant message.
+        // Round 10 F4c (2026-05-13): wrap the summary content in a
+        // trust marker. A summary distills BOTH trusted assistant text
+        // AND untrusted tool-result content — the next turn's model
+        // must treat any directive-looking content inside it as data,
+        // not as a true assistant intent. PROMPT_BASE has the matching
+        // rule (F4d). Without this, prompt-injection content the
+        // summarizer paraphrases would re-inject as trusted context.
         flushPending();
         messages.push({
           role: 'assistant',
-          content: (row.content as string) ?? '',
+          content: `<staxis-summary trust="system-derived-from-untrusted">${(row.content as string) ?? ''}</staxis-summary>`,
         });
       } else {
         if (!pendingAssistant) pendingAssistant = { content: '', toolCalls: [] };
@@ -448,8 +455,14 @@ export async function lockLoadAndRecordUserTurn(opts: {
       messages.push({ role: 'user', content: r.content ?? '' });
     } else if (r.role === 'assistant') {
       if (r.is_summary === true) {
+        // Round 10 F4c (2026-05-13): wrap summary content in trust
+        // marker (matches loadConversation site above). PROMPT_BASE has
+        // the matching read-side rule (F4d).
         flushPending();
-        messages.push({ role: 'assistant', content: r.content ?? '' });
+        messages.push({
+          role: 'assistant',
+          content: `<staxis-summary trust="system-derived-from-untrusted">${r.content ?? ''}</staxis-summary>`,
+        });
       } else {
         if (!pendingAssistant) pendingAssistant = { content: '', toolCalls: [] };
         if (r.tool_name) {
