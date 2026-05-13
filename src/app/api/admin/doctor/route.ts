@@ -168,6 +168,12 @@ const checks: Array<[string, CheckFn]> = [
   // fields directly instead of the smoke hitting a (nonexistent)
   // HTTP route. Doctor already has admin auth + the helper imported.
   ['inventory_auto_fill_shape',      checkInventoryAutoFillShape],
+  // HSTS preload list status — submitted 2026-05-13. Today the only
+  // signal that Google rejected the preload submission is a hand-curl
+  // to hstspreload.org. This check folds that into the operator's
+  // existing doctor pass so we find out within one cron tick instead
+  // of never. Warns on anything other than 'pending'/'preloaded'.
+  ['hsts_preload_status',            checkHstsPreloadStatus],
   // Rate limiter probe — pairs with src/lib/api-ratelimit.ts. If the
   // staxis_api_limit_hit RPC errors at request time, the limiter
   // fails OPEN (production safety: a Postgres blip must not block
@@ -1927,6 +1933,61 @@ async function checkInventoryAutoFillShape(): Promise<Omit<Check, 'name' | 'dura
     };
   } catch (err) {
     return { status: 'warn', detail: `auto-fill shape check threw: ${errToString(err)}` };
+  }
+}
+
+/**
+ * HSTS preload list status for getstaxis.com.
+ *
+ * Reeyen submitted getstaxis.com to https://hstspreload.org/ on
+ * 2026-05-13. The submission is irreversible for ~1 year once it
+ * ships in a Chrome release, but Google can reject the submission
+ * silently (status flips back to "unknown") if our HSTS header drifts
+ * out of compliance — e.g., somebody shortens max-age, removes
+ * `preload`, or breaks the HTTP→HTTPS redirect. Without this check
+ * the only signal is a hand-curl by an operator who happens to
+ * remember.
+ *
+ * Statuses:
+ *   - "pending"   → in Google's review queue, not yet shipped. OK.
+ *   - "preloaded" → live in Chrome's preload list. OK.
+ *   - "unknown"   → either never submitted OR Google rejected us. WARN.
+ *   - anything else (incl. network failure)                       → WARN.
+ *
+ * Cost: one outbound HTTPS request per doctor invocation. The
+ * Railway watchdog hits doctor every 5 min; hstspreload.org is a
+ * Google-operated public API with no rate limit for status queries.
+ * 5-second timeout so a slow upstream doesn't pin doctor latency.
+ */
+async function checkHstsPreloadStatus(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const DOMAIN = 'getstaxis.com';
+  try {
+    const r = await fetch(
+      `https://hstspreload.org/api/v2/status?domain=${DOMAIN}`,
+      { signal: AbortSignal.timeout(5000) },
+    );
+    if (!r.ok) {
+      return { status: 'warn', detail: `hstspreload.org returned HTTP ${r.status}` };
+    }
+    const data = (await r.json()) as { name?: string; status?: string };
+    if (data.status === 'preloaded') {
+      return { status: 'ok', detail: `${DOMAIN} is live on the Chrome HSTS preload list` };
+    }
+    if (data.status === 'pending') {
+      return { status: 'ok', detail: `${DOMAIN} HSTS preload submission pending in Chromium queue` };
+    }
+    return {
+      status: 'warn',
+      detail:
+        `${DOMAIN} HSTS preload status is "${data.status ?? 'undefined'}" — expected ` +
+        `"pending" or "preloaded". Either Google rejected the submission (header drift?) ` +
+        `or the API contract changed. Inspect manually: curl https://hstspreload.org/api/v2/status?domain=${DOMAIN}`,
+    };
+  } catch (err) {
+    return {
+      status: 'warn',
+      detail: `HSTS preload status check failed: ${errToString(err)}`,
+    };
   }
 }
 
