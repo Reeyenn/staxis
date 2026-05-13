@@ -17,8 +17,11 @@ import type { NextConfig } from "next";
  *     with the exact CDN host(s).
  *
  * If you add a new third-party script (Stripe, Sentry, Mixpanel, etc.)
- * you must extend `script-src`/`connect-src` here. Do NOT relax to
- * `'unsafe-eval'` or `*` — that defeats the point.
+ * you must extend `script-src`/`connect-src` here. Do NOT relax production
+ * to `'unsafe-eval'` or `*` — that defeats the point. (`'unsafe-eval'` is
+ * appended below for `next dev` only, because React's dev-mode debugger
+ * uses eval() to reconstruct call stacks from worker contexts. Production
+ * builds never include it.)
  */
 function buildCsp(): string {
   // Pull the Supabase URL out of env so previews / staging projects don't
@@ -44,12 +47,21 @@ function buildCsp(): string {
   const googleFontsCss  = 'https://fonts.googleapis.com';
   const googleFontsFile = 'https://fonts.gstatic.com';
 
+  // 'unsafe-eval' is required by React's dev-mode debugger (and Turbopack
+  // HMR) to reconstruct call stacks from worker / RSC contexts. Without it
+  // the browser surfaces a red "eval() is not supported" overlay on every
+  // page load. Scoped to dev only — production builds never include it.
+  const isDev = process.env.NODE_ENV !== 'production';
+  const scriptSrc = isDev
+    ? `script-src 'self' 'unsafe-inline' 'unsafe-eval'`
+    : `script-src 'self' 'unsafe-inline'`;
+
   return [
     `default-src 'self'`,
     // 'unsafe-inline' is needed because Next.js injects inline scripts for
     // hydration that don't carry our nonce. Pair with a tight script-src
     // host whitelist.
-    `script-src 'self' 'unsafe-inline'`,
+    scriptSrc,
     `style-src 'self' 'unsafe-inline' ${googleFontsCss}`,
     `img-src 'self' data: https:`,
     `font-src 'self' data: ${googleFontsFile}`,
