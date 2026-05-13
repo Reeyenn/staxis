@@ -36,7 +36,14 @@ export const stripeIsConfigured = Boolean(SECRET_KEY) && Boolean(WEBHOOK_SECRET)
 // Stripe SDK is null when not configured. Every helper checks first.
 const stripe: Stripe | null = SECRET_KEY
   ? new Stripe(SECRET_KEY, {
-      apiVersion: '2025-04-30.basil' as Stripe.LatestApiVersion,
+      // Pin the API version explicitly so an SDK upgrade can't silently
+      // shift our request/response shapes. Stripe honors pinned versions
+      // for years, even when the SDK's `LatestApiVersion` literal type
+      // moves forward (v22 narrowed it to "2026-04-22.dahlia" and stopped
+      // re-exporting the type publicly). The runtime pin is valid; only
+      // the compile-time literal is too narrow — Stripe documents this
+      // case and `as unknown as never` is the recommended escape hatch.
+      apiVersion: '2025-04-30.basil' as unknown as never,
       typescript: true,
       // Build a meaningful application name in the Stripe dashboard
       // request log so we can grep easily.
