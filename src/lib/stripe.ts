@@ -40,10 +40,16 @@ const stripe: Stripe | null = SECRET_KEY
       // shift our request/response shapes. Stripe honors pinned versions
       // for years, even when the SDK's `LatestApiVersion` literal type
       // moves forward (v22 narrowed it to "2026-04-22.dahlia" and stopped
-      // re-exporting the type publicly). The runtime pin is valid; only
-      // the compile-time literal is too narrow — Stripe documents this
-      // case and `as unknown as never` is the recommended escape hatch.
-      apiVersion: '2025-04-30.basil' as unknown as never,
+      // re-exporting the type publicly).
+      //
+      // @ts-expect-error -- LatestApiVersion in @types/stripe v22 is now
+      // a narrow literal ("2026-04-22.dahlia"); our intentional pin to
+      // "2025-04-30.basil" doesn't satisfy that literal. The runtime
+      // value is valid (Stripe honors any pinned version). When Stripe
+      // widens this literal type back to `string` (or when we bump our
+      // pin to match), TypeScript will report "Unused @ts-expect-error"
+      // — that's the signal to remove this directive.
+      apiVersion: '2025-04-30.basil',
       typescript: true,
       // Build a meaningful application name in the Stripe dashboard
       // request log so we can grep easily.

@@ -53,12 +53,31 @@ function emit(level: LogLevel, msg: string, fields?: LogFields): void {
   };
   // Errors / Error subclasses don't serialize cleanly through JSON.stringify
   // by default — they come out as `{}`. Pull stack/message off explicitly.
+  //
+  // For plain objects shaped like errors (notably Supabase's PostgrestError,
+  // which is `{ message, details, hint, code }` — NOT an Error subclass),
+  // synthesize a real Error from the .message so Sentry has both a sensible
+  // group key AND the underlying message in the event title. Without this
+  // the Sentry fallback at the end of this function would bucket every
+  // Supabase failure under the same static log line.
   let firstError: unknown;
   if (fields) {
     for (const [k, v] of Object.entries(fields)) {
       if (v instanceof Error) {
         line[k] = { name: v.name, message: v.message, stack: v.stack };
         if (!firstError) firstError = v;
+      } else if (
+        !firstError &&
+        typeof v === 'object' && v !== null &&
+        'message' in v && typeof (v as { message: unknown }).message === 'string'
+      ) {
+        const obj = v as { message: string; [k: string]: unknown };
+        const synthetic = new Error(obj.message);
+        // Copy code/details/hint/etc. onto the synthetic Error so Sentry's
+        // event "extras" carry them through. Object.assign won't overwrite
+        // the synthetic's `.stack` because plain objects don't have one.
+        Object.assign(synthetic, obj);
+        firstError = synthetic;
       }
     }
   }
