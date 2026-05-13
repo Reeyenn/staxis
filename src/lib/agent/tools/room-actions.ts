@@ -19,13 +19,16 @@ import { registerTool, type ToolResult } from '../tools';
 import { findRoomByNumber, assertFloorRoleCanMutateRoom } from './_helpers';
 import { getNudgeRecipients } from '../nudges';
 
-// JSON Schema fragment reused by every tool that takes a room number. Adds
-// a regex pattern so the model emits clean digit-or-suite-letter strings
-// instead of integers (which would throw inside .trim()). Codex review fix B4.
+// JSON Schema fragment reused by every tool that takes a room number. The
+// pattern is intentionally permissive — real hotels use formats like
+// "302", "410B", "A101", "PH-1", "100-A", "B12" etc. Anything matching
+// alphanumerics + hyphens is accepted at the schema layer; the helper
+// (`findRoomByNumber`) coerces to string and surfaces a friendly "not
+// found" if the lookup fails. Codex review fix B4 + D5 (2026-05-13).
 const ROOM_NUMBER_SCHEMA = {
   type: 'string' as const,
-  pattern: '^[0-9]+[A-Za-z]?$',
-  description: 'Room number as digits, optionally followed by a letter suffix (e.g. "302", "410B").',
+  pattern: '^[A-Za-z0-9-]+$',
+  description: 'Room number — digits, letters, hyphens, in any order (e.g. "302", "PH-1", "A101", "100-B").',
 };
 
 // ─── mark_room_clean ──────────────────────────────────────────────────────
@@ -40,6 +43,7 @@ registerTool<{ roomNumber: string }>({
     required: ['roomNumber'],
   },
   allowedRoles: ['admin', 'owner', 'general_manager', 'housekeeping', 'front_desk'],
+  mutates: true,
   handler: async ({ roomNumber }, ctx): Promise<ToolResult> => {
     const room = await findRoomByNumber(ctx.propertyId, roomNumber);
     if (!room) return { ok: false, error: `Room ${roomNumber} not found in this property.` };
@@ -82,6 +86,7 @@ registerTool<{ roomNumber: string }>({
     required: ['roomNumber'],
   },
   allowedRoles: ['admin', 'owner', 'general_manager', 'housekeeping', 'front_desk'],
+  mutates: true,
   handler: async ({ roomNumber }, ctx): Promise<ToolResult> => {
     const room = await findRoomByNumber(ctx.propertyId, roomNumber);
     if (!room) return { ok: false, error: `Room ${roomNumber} not found.` };
@@ -122,6 +127,7 @@ registerTool<{ roomNumber: string; on: boolean; note?: string }>({
     required: ['roomNumber', 'on'],
   },
   allowedRoles: ['admin', 'owner', 'general_manager', 'housekeeping', 'front_desk'],
+  mutates: true,
   handler: async ({ roomNumber, on, note }, ctx): Promise<ToolResult> => {
     const room = await findRoomByNumber(ctx.propertyId, roomNumber);
     if (!room) return { ok: false, error: `Room ${roomNumber} not found.` };
@@ -155,6 +161,7 @@ registerTool<{ roomNumber: string; note: string }>({
     required: ['roomNumber', 'note'],
   },
   allowedRoles: ['admin', 'owner', 'general_manager', 'housekeeping', 'front_desk', 'maintenance'],
+  mutates: true,
   handler: async ({ roomNumber, note }, ctx): Promise<ToolResult> => {
     const room = await findRoomByNumber(ctx.propertyId, roomNumber);
     if (!room) return { ok: false, error: `Room ${roomNumber} not found.` };
@@ -187,6 +194,7 @@ registerTool<{ roomNumber?: string; message?: string }>({
     },
   },
   allowedRoles: ['admin', 'owner', 'general_manager', 'housekeeping', 'front_desk', 'maintenance'],
+  mutates: true,
   handler: async ({ roomNumber, message }, ctx): Promise<ToolResult> => {
     // For housekeepers/maintenance, scope by staffId. Managers can flag
     // help on any room (operational override).
@@ -220,28 +228,51 @@ registerTool<{ roomNumber?: string; message?: string }>({
       };
     }
 
-    const rows = recipients.map(managerAccountId => ({
-      user_id: managerAccountId,
-      property_id: ctx.propertyId,
-      category: 'operational' as const,
-      severity: 'urgent' as const,
-      payload: {
-        summary,
-        type: 'help_request',
-        requester_id: ctx.user.accountId,
-        requester_name: ctx.user.displayName,
-        room_number: roomFlagged,
-        message: message ?? null,
-      },
-      // Dedupe per recipient + requester + room so the same housekeeper
-      // can't spam multiple unresolved help nudges for the same room.
-      dedupe_key: `help:${managerAccountId}:${ctx.user.accountId}:${roomFlagged ?? 'general'}`,
-    }));
+    // Insert one row per recipient, swallowing per-row 23505 (unique
+    // violation on the partial pending-dedupe index). A duplicate means
+    // the recipient ALREADY has an unresolved help nudge for this
+    // (requester, room) — which is exactly what we want for dedupe. We
+    // treat that as success-by-presence for that recipient. Codex review
+    // fix C2 + my D1: batched .insert(rows) previously aborted entirely
+    // on the FIRST conflict, even for recipients that would have
+    // succeeded. Per-row gives each recipient an independent outcome.
+    let inserted = 0;
+    let alreadyPending = 0;
+    let hardErrors = 0;
+    for (const managerAccountId of recipients) {
+      const { error } = await supabaseAdmin.from('agent_nudges').insert({
+        user_id: managerAccountId,
+        property_id: ctx.propertyId,
+        category: 'operational',
+        severity: 'urgent',
+        payload: {
+          summary,
+          type: 'help_request',
+          requester_id: ctx.user.accountId,
+          requester_name: ctx.user.displayName,
+          room_number: roomFlagged,
+          message: message ?? null,
+        },
+        dedupe_key: `help:${managerAccountId}:${ctx.user.accountId}:${roomFlagged ?? 'general'}`,
+      });
+      if (!error) {
+        inserted += 1;
+      } else if ((error as { code?: string }).code === '23505') {
+        // Already-pending nudge for this recipient — dedupe working as designed.
+        alreadyPending += 1;
+      } else {
+        console.error('[request_help] failed to insert nudge for recipient', managerAccountId, error);
+        hardErrors += 1;
+      }
+    }
 
-    const { error } = await supabaseAdmin.from('agent_nudges').insert(rows);
-    if (error) {
-      console.error('[request_help] failed to insert nudges', error);
-      return { ok: false, error: 'Failed to deliver the help request. Try again or ask your supervisor directly.' };
+    // Success if at least one recipient now has (or already had) a pending
+    // nudge. Only fail loudly when EVERY recipient hit a non-dedupe error.
+    if (inserted === 0 && alreadyPending === 0) {
+      return {
+        ok: false,
+        error: 'Failed to deliver the help request to any manager. Try again or ask your supervisor directly.',
+      };
     }
 
     return {
@@ -249,6 +280,9 @@ registerTool<{ roomNumber?: string; message?: string }>({
       data: {
         sent: true,
         recipientCount: recipients.length,
+        newlyDelivered: inserted,
+        alreadyPending,
+        hardErrors,
         roomFlagged,
         message: message ?? null,
       },

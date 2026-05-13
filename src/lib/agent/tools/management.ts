@@ -20,6 +20,7 @@ registerTool<{ roomNumber: string; staffName: string }>({
     required: ['roomNumber', 'staffName'],
   },
   allowedRoles: ['admin', 'owner', 'general_manager'],
+  mutates: true,
   handler: async ({ roomNumber, staffName }, ctx): Promise<ToolResult> => {
     const room = await findRoomByNumber(ctx.propertyId, roomNumber);
     if (!room) return { ok: false, error: `Room ${roomNumber} not found.` };
@@ -116,6 +117,7 @@ registerTool<{ staffName: string; message: string }>({
     required: ['staffName', 'message'],
   },
   allowedRoles: ['admin', 'owner', 'general_manager'],
+  mutates: true,
   handler: async ({ staffName, message }, ctx): Promise<ToolResult> => {
     const staff = await findStaffByName(ctx.propertyId, staffName);
     if (!staff) return { ok: false, error: `No active staff member matching "${staffName}".` };

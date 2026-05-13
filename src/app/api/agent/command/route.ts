@@ -310,6 +310,7 @@ export async function POST(req: NextRequest): Promise<Response> {
             conversationId: finalConversationId,
             actualUsd: finalUsage.costUsd,
             model: finalUsage.model,
+            modelId: finalUsage.modelId,
             tokensIn: finalUsage.inputTokens,
             tokensOut: finalUsage.outputTokens,
             cachedInputTokens: finalUsage.cachedInputTokens,

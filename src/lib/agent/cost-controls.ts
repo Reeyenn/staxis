@@ -117,6 +117,10 @@ export async function finalizeCostReservation(opts: {
   conversationId: string;
   actualUsd: number;
   model: string;
+  /** Exact Anthropic snapshot ID from response.model. Captured for
+   *  audit + before-after comparison when Anthropic ships model
+   *  snapshot updates. Codex review fix S5. */
+  modelId: string | null;
   tokensIn: number;
   tokensOut: number;
   cachedInputTokens?: number;
@@ -126,6 +130,7 @@ export async function finalizeCostReservation(opts: {
     p_conversation_id: opts.conversationId,
     p_actual_usd: opts.actualUsd,
     p_model: opts.model,
+    p_model_id: opts.modelId,
     p_tokens_in: opts.tokensIn,
     p_tokens_out: opts.tokensOut,
     p_cached_input_tokens: opts.cachedInputTokens ?? 0,

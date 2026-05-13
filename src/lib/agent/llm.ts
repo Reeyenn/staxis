@@ -84,7 +84,12 @@ export interface UsageReport {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
+  /** The internal model tier ('haiku' | 'sonnet' | 'opus'). */
   model: ModelTier;
+  /** The exact Anthropic snapshot ID, e.g. 'claude-sonnet-4-6-20260427'.
+   *  Null on iteration-cap exit (no completed response to read from).
+   *  Codex review fix S5. */
+  modelId: string | null;
   costUsd: number;
 }
 
@@ -298,11 +303,12 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   let totalInput = 0;
   let totalOutput = 0;
   let totalCachedInput = 0;
+  let lastModelId: string | null = null;
 
   for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
     const response = await client.messages.create({
       model: MODELS[model],
-      max_tokens: 4096,
+      max_tokens: 8192,
       system: buildSystemBlocks(opts.systemPrompt),
       tools: tools.length > 0 ? tools : undefined,
       messages,
@@ -311,6 +317,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     totalInput += response.usage.input_tokens;
     totalOutput += response.usage.output_tokens;
     totalCachedInput += response.usage.cache_read_input_tokens ?? 0;
+    lastModelId = response.model;
 
     // Collect text + tool_use blocks from this assistant turn.
     const textParts: string[] = [];
@@ -332,11 +339,11 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     messages = [...messages, { role: 'assistant', content: response.content }];
 
     if (response.stop_reason !== 'tool_use' || calls.length === 0) {
-      // Done — final answer. If we hit the token cap, surface that
-      // clearly in the response text instead of silently returning a
-      // truncated answer (Codex review fix A2).
+      // Done — final answer. Sync variant has no UI to stream into, so
+      // we return the truncation marker inlined; streamAgent below emits
+      // a synthetic text_delta instead to keep persisted text clean.
       const finalText = response.stop_reason === 'max_tokens'
-        ? `${turnText}\n\n_(Response hit the 4096-token limit. Ask a follow-up to continue.)_`
+        ? `${turnText}\n\n_(Response hit the 8192-token limit. Ask a follow-up to continue.)_`
         : turnText;
       return {
         text: finalText,
@@ -347,6 +354,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
           outputTokens: totalOutput,
           cachedInputTokens: totalCachedInput,
           model,
+          modelId: lastModelId,
           costUsd: estimateCost(model, totalInput, totalOutput, totalCachedInput),
         },
       };
@@ -382,6 +390,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       outputTokens: totalOutput,
       cachedInputTokens: totalCachedInput,
       model,
+      modelId: lastModelId,
       costUsd: estimateCost(model, totalInput, totalOutput, totalCachedInput),
     },
   };
@@ -416,12 +425,13 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
   let totalOutput = 0;
   let totalCachedInput = 0;
   let finalText = '';
+  let lastModelId: string | null = null;
 
   try {
     for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
       const stream = client.messages.stream({
         model: MODELS[model],
-        max_tokens: 4096,
+        max_tokens: 8192,
         system: buildSystemBlocks(opts.systemPrompt),
         tools: tools.length > 0 ? tools : undefined,
         messages,
@@ -444,6 +454,7 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
       totalInput += finalMsg.usage.input_tokens;
       totalOutput += finalMsg.usage.output_tokens;
       totalCachedInput += finalMsg.usage.cache_read_input_tokens ?? 0;
+      lastModelId = finalMsg.model;
 
       for (const block of finalMsg.content) {
         if (block.type === 'tool_use') {
@@ -459,13 +470,19 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
       messages = [...messages, { role: 'assistant', content: finalMsg.content }];
 
       if (finalMsg.stop_reason !== 'tool_use' || calls.length === 0) {
-        // Final answer reached. If we hit the 4096-token output cap,
-        // append a clear truncation marker so the user knows the answer
-        // was cut off (Codex review fix A2). Otherwise it looks like a
-        // normal answer that just happened to end mid-sentence.
-        const completionText = finalMsg.stop_reason === 'max_tokens'
-          ? `${finalText}\n\n_(Response hit the 4096-token limit — ask a follow-up to continue.)_`
-          : finalText;
+        // Final answer reached. If we hit the token cap, emit ONE synthetic
+        // text_delta with the truncation marker BEFORE the done event so:
+        //   1. The streaming UI shows it live (renders deltas, ignores done).
+        //   2. The persisted text stays clean (finalText below excludes it),
+        //      so the next turn doesn't replay our own meta-commentary back
+        //      to Claude.
+        // Codex review fix C1 + D2 (2026-05-13).
+        if (finalMsg.stop_reason === 'max_tokens') {
+          yield {
+            type: 'text_delta',
+            delta: '\n\n_(Response hit the 8192-token limit — ask a follow-up to continue.)_',
+          };
+        }
         yield {
           type: 'done',
           usage: {
@@ -473,9 +490,10 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
             outputTokens: totalOutput,
             cachedInputTokens: totalCachedInput,
             model,
+            modelId: lastModelId,
             costUsd: estimateCost(model, totalInput, totalOutput, totalCachedInput),
           },
-          finalText: completionText,
+          finalText, // clean — no truncation marker baked in
         };
         return;
       }
@@ -493,6 +511,7 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
           outputTokens: totalOutput,
           cachedInputTokens: totalCachedInput,
           model,
+          modelId: lastModelId,
           costUsd: estimateCost(model, totalInput, totalOutput, totalCachedInput),
         },
       };

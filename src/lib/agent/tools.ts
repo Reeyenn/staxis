@@ -59,6 +59,14 @@ export interface ToolDefinition<TArgs = unknown> {
   };
   /** Roles allowed to invoke this tool. Anyone else gets a refusal returned to the model. */
   allowedRoles: readonly AppRole[];
+  /**
+   * True when this tool MUTATES data (writes to DB, sends SMS, sends nudges).
+   * False/undefined for read-only queries. Eval refusal checks derive the
+   * "destructive tools" set from this flag at runtime, so adding a new
+   * mutation tool automatically gets caught in refusal evals without
+   * having to update a separate hardcoded list. Codex review fix D3.
+   */
+  mutates?: boolean;
   /** Implementation — typically wraps an existing API handler. */
   handler: (args: TArgs, ctx: ToolContext) => Promise<ToolResult>;
 }
