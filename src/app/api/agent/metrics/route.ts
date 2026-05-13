@@ -35,7 +35,10 @@ interface MetricsPayload {
     updatedAt: string;
     messageCount: number;
   }>;
-  topTools: Array<{ tool: string; calls: number }>;
+  topTools: Array<{ tool: string; calls: number; errors: number; errorRatePct: number }>;
+  /** Total tool errors today across all tools.
+   *  L8B, 2026-05-13. */
+  toolErrorsToday: number;
   modelUsage: Array<{ model: string; count: number; costUsd: number }>;
   /** Distinct Anthropic snapshot IDs seen today, newest first. When this
    *  list changes from one day to the next, Anthropic shipped a new
@@ -155,20 +158,53 @@ export async function GET(req: NextRequest): Promise<Response> {
       messageCount: messageCountsMap.get(c.id as string) ?? 0,
     }));
 
-    // Top tools called today (across all conversations)
+    // Top tools called today (across all conversations) + per-tool
+    // error rate (L8B, 2026-05-13). We fetch both the assistant
+    // tool_use rows (carry tool_name) AND the tool result rows (carry
+    // is_error) in one query each, then join in JS by tool_call_id +
+    // conversation_id. Cheap at scale because both queries hit indexed
+    // columns and the join is in-memory over ~hundreds of rows/day.
     const { data: toolMsgs } = await supabaseAdmin
       .from('agent_messages')
-      .select('tool_name')
+      .select('tool_name, tool_call_id, conversation_id')
       .not('tool_name', 'is', null)
       .gte('created_at', dayStartIso);
 
-    const toolCounts = new Map<string, number>();
+    const { data: toolResultRows } = await supabaseAdmin
+      .from('agent_messages')
+      .select('tool_call_id, conversation_id, is_error')
+      .eq('role', 'tool')
+      .gte('created_at', dayStartIso);
+
+    // Build a lookup: (conversation_id, tool_call_id) → is_error
+    const errorLookup = new Map<string, boolean>();
+    for (const r of toolResultRows ?? []) {
+      const key = `${r.conversation_id as string}:${r.tool_call_id as string}`;
+      errorLookup.set(key, (r.is_error as boolean) === true);
+    }
+
+    interface ToolStats { calls: number; errors: number }
+    const toolStats = new Map<string, ToolStats>();
+    let toolErrorsToday = 0;
     for (const m of toolMsgs ?? []) {
       const name = m.tool_name as string;
-      toolCounts.set(name, (toolCounts.get(name) ?? 0) + 1);
+      const key = `${m.conversation_id as string}:${m.tool_call_id as string}`;
+      const isErr = errorLookup.get(key) === true;
+      const prev = toolStats.get(name) ?? { calls: 0, errors: 0 };
+      prev.calls += 1;
+      if (isErr) {
+        prev.errors += 1;
+        toolErrorsToday += 1;
+      }
+      toolStats.set(name, prev);
     }
-    const topTools = Array.from(toolCounts.entries())
-      .map(([tool, calls]) => ({ tool, calls }))
+    const topTools = Array.from(toolStats.entries())
+      .map(([tool, s]) => ({
+        tool,
+        calls: s.calls,
+        errors: s.errors,
+        errorRatePct: s.calls > 0 ? Math.round((s.errors / s.calls) * 1000) / 10 : 0,
+      }))
       .sort((a, b) => b.calls - a.calls)
       .slice(0, 10);
 
@@ -218,6 +254,7 @@ export async function GET(req: NextRequest): Promise<Response> {
       staleReservations,
       sweptToday,
       finalizeFailuresToday,
+      toolErrorsToday,
     };
 
     return ok(payload, { requestId });

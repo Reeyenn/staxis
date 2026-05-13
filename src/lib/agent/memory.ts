@@ -40,6 +40,10 @@ export interface SaveMessageOpts {
   toolName?: string;
   toolArgs?: Record<string, unknown>;
   toolResult?: unknown;
+  /** L8B, 2026-05-13: persisted only for role='tool' rows. true means
+   *  the tool handler returned an error (or the request was aborted
+   *  before the result landed). Drives the tool-error-rate KPI. */
+  isError?: boolean;
   tokensIn?: number;
   tokensOut?: number;
   modelUsed?: ModelTier;
@@ -227,6 +231,7 @@ export async function appendMessage(opts: SaveMessageOpts): Promise<void> {
     tool_name: opts.toolName ?? null,
     tool_args: opts.toolArgs ?? null,
     tool_result: opts.toolResult === undefined ? null : opts.toolResult,
+    is_error: opts.isError ?? null,
     tokens_in: opts.tokensIn ?? null,
     tokens_out: opts.tokensOut ?? null,
     model_used: opts.modelUsed ?? null,
@@ -295,17 +300,20 @@ export async function recordAssistantTurn(
   }
 }
 
-/** Helper: write a tool result row. */
+/** Helper: write a tool result row. L8B (2026-05-13): isError persisted
+ *  so the metrics route can compute per-tool error rate. */
 export function recordToolResult(
   conversationId: string,
   toolCallId: string,
   result: unknown,
+  isError: boolean,
 ): Promise<void> {
   return appendMessage({
     conversationId,
     role: 'tool',
     toolCallId,
     toolResult: result,
+    isError,
   });
 }
 
@@ -335,6 +343,10 @@ export async function recordSyntheticAbortToolResult(
         role: 'tool',
         tool_call_id: toolCallId,
         tool_result: result ?? null,
+        // L8B (2026-05-13): the synthetic abort is always an error case
+        // (we never know what the tool would have returned, and the
+        // user sees an abort message). Counts toward tool error rate.
+        is_error: true,
       },
       {
         onConflict: 'conversation_id,tool_call_id',

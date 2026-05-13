@@ -211,8 +211,10 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   // ── Build the context for this turn ──────────────────────────────────
+  // L2 (2026-05-13): buildSystemPrompt is now async and takes
+  // conversationId (passed through to prompts-store for canary routing).
   const snapshot = await buildHotelSnapshot(body.propertyId, userCtx.role, staffId);
-  const systemPrompt = buildSystemPrompt(userCtx.role, snapshot);
+  const systemPrompt = await buildSystemPrompt(userCtx.role, snapshot, conversationId);
   const tools = getToolsForRole(userCtx.role);
 
   // ── Stream the agent response via SSE ────────────────────────────────
@@ -283,7 +285,11 @@ export async function POST(req: NextRequest): Promise<Response> {
                 modelUsed: event.usage.model,
                 modelId: event.usage.modelId,
                 costUsd: event.usage.costUsd,
-                promptVersion: PROMPT_VERSION,
+                // L2: use the actual prompt version resolved from DB (or
+                // the fallback constant if DB was unreachable); falls back
+                // to the code-baseline PROMPT_VERSION only if buildSystemPrompt
+                // itself couldn't run (which would have errored earlier).
+                promptVersion: systemPrompt.versionLabel,
               },
             );
             // Register every tool_call id from this iteration as in-flight.
@@ -292,7 +298,9 @@ export async function POST(req: NextRequest): Promise<Response> {
               pendingToolCallIds.add(call.id);
             }
           } else if (event.type === 'tool_call_finished') {
-            await recordToolResult(finalConversationId, event.call.id, event.result).catch(err => {
+            // L8B (2026-05-13): isError persisted so /admin/agent can
+            // compute per-tool error rate.
+            await recordToolResult(finalConversationId, event.call.id, event.result, event.isError).catch(err => {
               log.error('[agent/command] failed to persist tool result', {
                 requestId, conversationId: finalConversationId, callId: event.call.id, err,
               });
@@ -331,7 +339,7 @@ export async function POST(req: NextRequest): Promise<Response> {
               modelUsed: finalUsage?.model ?? 'sonnet',
               modelId: finalUsage?.modelId ?? null,
               costUsd: finalUsage?.costUsd ?? 0,
-              promptVersion: PROMPT_VERSION,
+              promptVersion: systemPrompt.versionLabel,
             },
           );
         }

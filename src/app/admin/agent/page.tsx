@@ -44,7 +44,8 @@ interface MetricsPayload {
     id: string; title: string | null; role: string;
     promptVersion: string | null; updatedAt: string; messageCount: number;
   }>;
-  topTools: Array<{ tool: string; calls: number }>;
+  topTools: Array<{ tool: string; calls: number; errors: number; errorRatePct: number }>;
+  toolErrorsToday: number;
   modelUsage: Array<{ model: string; count: number; costUsd: number }>;
   modelIdsToday: Array<{ modelId: string; count: number }>;
   pendingNudges: number;
@@ -203,6 +204,15 @@ export default function AdminAgentPage() {
               : 'finalize RPC healthy'}
             severity={data && data.finalizeFailuresToday > 0 ? 'warm' : 'ok'}
           />
+          <KPI
+            icon={<AlertTriangle size={14} />}
+            label="Tool errors today"
+            value={data ? String(data.toolErrorsToday) : '—'}
+            sub={data && data.toolErrorsToday > 0
+              ? 'see top tools card for per-tool breakdown'
+              : 'every tool call succeeded today'}
+            severity={data && data.toolErrorsToday > 0 ? 'warm' : 'ok'}
+          />
         </div>
 
         {/* Two-column layout: recent conversations + side panels */}
@@ -282,9 +292,12 @@ export default function AdminAgentPage() {
                       <span style={{
                         fontFamily: FONT_MONO,
                         fontSize: 12,
-                        color: C.ink2,
+                        color: t.errors > 0 ? C.warm : C.ink2,
                         fontWeight: 500,
-                      }}>{t.calls}</span>
+                      }}>
+                        {t.calls}
+                        {t.errors > 0 ? ` · ${t.errors} err (${t.errorRatePct}%)` : ''}
+                      </span>
                     </div>
                   ))}
                 </div>

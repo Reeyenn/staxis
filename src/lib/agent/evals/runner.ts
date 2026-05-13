@@ -11,7 +11,7 @@
 import { streamAgent, type RunAgentOpts, type AgentEvent } from '@/lib/agent/llm';
 import { getToolsForRole, listAllTools } from '@/lib/agent/tools';
 import { buildHotelSnapshot } from '@/lib/agent/context';
-import { buildSystemPrompt, PROMPT_VERSION } from '@/lib/agent/prompts';
+import { buildSystemPrompt } from '@/lib/agent/prompts';
 import { recordNonRequestCost } from '@/lib/agent/cost-controls';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { EVAL_CASES, type EvalCase } from './test-bank';
@@ -46,7 +46,12 @@ export async function runOneEval(
 ): Promise<EvalResult> {
   const start = Date.now();
   const snapshot = await buildHotelSnapshot(opts.propertyId, evalCase.role);
-  const systemPrompt = buildSystemPrompt(evalCase.role, snapshot);
+  // L2 (2026-05-13): buildSystemPrompt is async + takes conversationId
+  // for canary routing. Evals don't have a real conversation, so we
+  // synthesize a deterministic ID per case so canary bucket assignments
+  // are stable across runs (same case → same bucket → reproducible).
+  const evalConversationId = `eval-${evalCase.name}`;
+  const systemPrompt = await buildSystemPrompt(evalCase.role, snapshot, evalConversationId);
   const tools = getToolsForRole(evalCase.role);
 
   const runOpts: RunAgentOpts = {
@@ -218,7 +223,7 @@ export async function runOneEval(
       .from('agent_eval_baselines')
       .select('cost_usd, duration_ms')
       .eq('case_name', evalCase.name)
-      .eq('prompt_version', PROMPT_VERSION)
+      .eq('prompt_version', systemPrompt.versionLabel)
       .order('created_at', { ascending: false })
       .limit(1);
 
@@ -235,7 +240,7 @@ export async function runOneEval(
 
     await supabaseAdmin.from('agent_eval_baselines').insert({
       case_name: evalCase.name,
-      prompt_version: PROMPT_VERSION,
+      prompt_version: systemPrompt.versionLabel,
       model,
       model_id: modelId,
       passed,
