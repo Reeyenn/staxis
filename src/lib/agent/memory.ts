@@ -1,0 +1,284 @@
+// ─── Agent conversation memory ────────────────────────────────────────────
+// Conversation persistence backed by the Supabase tables created in
+// migration 0079. Three exports for the lifecycle:
+//
+//   listConversations(userId)            — sidebar list
+//   loadConversation(conversationId, userId) — full history for a session
+//   createConversation(...)              — start a new session
+//   appendMessage(...)                   — record a turn (user, assistant, tool)
+//   deleteConversation(id, userId)       — hard delete
+//
+// Auth model: every function takes the calling user's account id and checks
+// ownership before reading or writing. The endpoints layer doesn't need to
+// repeat the check.
+
+import { supabaseAdmin } from '@/lib/supabase-admin';
+import type { AppRole } from '@/lib/roles';
+import type { AgentMessage, AgentToolCall, ModelTier } from './llm';
+
+// ─── Public types ──────────────────────────────────────────────────────────
+
+export interface ConversationSummary {
+  id: string;
+  title: string | null;
+  role: AppRole;
+  propertyId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConversationDetail extends ConversationSummary {
+  promptVersion: string | null;
+  messages: AgentMessage[];
+}
+
+export interface SaveMessageOpts {
+  conversationId: string;
+  role: 'user' | 'assistant' | 'tool' | 'system';
+  content?: string;
+  toolCallId?: string;
+  toolName?: string;
+  toolArgs?: Record<string, unknown>;
+  toolResult?: unknown;
+  tokensIn?: number;
+  tokensOut?: number;
+  modelUsed?: ModelTier;
+  costUsd?: number;
+}
+
+// ─── Conversation CRUD ────────────────────────────────────────────────────
+
+export async function listConversations(userAccountId: string, limit = 30): Promise<ConversationSummary[]> {
+  const { data, error } = await supabaseAdmin
+    .from('agent_conversations')
+    .select('id, title, role, property_id, created_at, updated_at')
+    .eq('user_id', userAccountId)
+    .order('updated_at', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data ?? []).map(row => ({
+    id: row.id as string,
+    title: (row.title as string) ?? null,
+    role: row.role as AppRole,
+    propertyId: row.property_id as string,
+    createdAt: row.created_at as string,
+    updatedAt: row.updated_at as string,
+  }));
+}
+
+export async function loadConversation(
+  conversationId: string,
+  userAccountId: string,
+): Promise<ConversationDetail | null> {
+  // Ownership check + metadata fetch in one query.
+  const { data: convo, error: convoErr } = await supabaseAdmin
+    .from('agent_conversations')
+    .select('id, title, role, property_id, prompt_version, created_at, updated_at, user_id')
+    .eq('id', conversationId)
+    .maybeSingle();
+  if (convoErr) throw convoErr;
+  if (!convo) return null;
+  if (convo.user_id !== userAccountId) return null;
+
+  // Pull messages in chronological order.
+  const { data: rows, error: msgErr } = await supabaseAdmin
+    .from('agent_messages')
+    .select('role, content, tool_call_id, tool_name, tool_args, tool_result, created_at')
+    .eq('conversation_id', conversationId)
+    .order('created_at', { ascending: true });
+  if (msgErr) throw msgErr;
+
+  const messages: AgentMessage[] = [];
+  // Group assistant text + adjacent assistant tool_use rows into a single
+  // AgentMessage so the LLM wrapper sees the same shape it produced.
+  let pendingAssistant: { content: string; toolCalls: AgentToolCall[] } | null = null;
+
+  for (const row of rows ?? []) {
+    const role = row.role as string;
+    if (role === 'user') {
+      if (pendingAssistant) {
+        messages.push({
+          role: 'assistant',
+          content: pendingAssistant.content,
+          toolCalls: pendingAssistant.toolCalls.length ? pendingAssistant.toolCalls : undefined,
+        });
+        pendingAssistant = null;
+      }
+      messages.push({ role: 'user', content: (row.content as string) ?? '' });
+    } else if (role === 'assistant') {
+      if (!pendingAssistant) pendingAssistant = { content: '', toolCalls: [] };
+      // Either a text turn (content set) or a tool_use turn (tool_name set).
+      if (row.tool_name) {
+        pendingAssistant.toolCalls.push({
+          id: (row.tool_call_id as string) ?? '',
+          name: row.tool_name as string,
+          args: (row.tool_args as Record<string, unknown>) ?? {},
+        });
+      } else if (row.content) {
+        pendingAssistant.content =
+          (pendingAssistant.content ? pendingAssistant.content + '\n' : '') +
+          (row.content as string);
+      }
+    } else if (role === 'tool') {
+      if (pendingAssistant) {
+        messages.push({
+          role: 'assistant',
+          content: pendingAssistant.content,
+          toolCalls: pendingAssistant.toolCalls.length ? pendingAssistant.toolCalls : undefined,
+        });
+        pendingAssistant = null;
+      }
+      messages.push({
+        role: 'tool',
+        toolCallId: (row.tool_call_id as string) ?? '',
+        result: row.tool_result ?? null,
+      });
+    }
+    // 'system' rows aren't replayed — they're metadata (e.g., nudge surface).
+  }
+  if (pendingAssistant) {
+    messages.push({
+      role: 'assistant',
+      content: pendingAssistant.content,
+      toolCalls: pendingAssistant.toolCalls.length ? pendingAssistant.toolCalls : undefined,
+    });
+  }
+
+  return {
+    id: convo.id as string,
+    title: (convo.title as string) ?? null,
+    role: convo.role as AppRole,
+    propertyId: convo.property_id as string,
+    promptVersion: (convo.prompt_version as string) ?? null,
+    createdAt: convo.created_at as string,
+    updatedAt: convo.updated_at as string,
+    messages,
+  };
+}
+
+export async function createConversation(opts: {
+  userAccountId: string;
+  propertyId: string;
+  role: AppRole;
+  promptVersion?: string;
+  title?: string;
+}): Promise<string> {
+  const { data, error } = await supabaseAdmin
+    .from('agent_conversations')
+    .insert({
+      user_id: opts.userAccountId,
+      property_id: opts.propertyId,
+      role: opts.role,
+      prompt_version: opts.promptVersion ?? null,
+      title: opts.title ?? null,
+    })
+    .select('id')
+    .single();
+  if (error) throw error;
+  return data.id as string;
+}
+
+export async function deleteConversation(
+  conversationId: string,
+  userAccountId: string,
+): Promise<boolean> {
+  // Ownership check first to avoid 404 vs 403 ambiguity.
+  const { data: row } = await supabaseAdmin
+    .from('agent_conversations')
+    .select('user_id')
+    .eq('id', conversationId)
+    .maybeSingle();
+  if (!row || row.user_id !== userAccountId) return false;
+  const { error } = await supabaseAdmin
+    .from('agent_conversations')
+    .delete()
+    .eq('id', conversationId);
+  if (error) throw error;
+  return true;
+}
+
+export async function setConversationTitle(
+  conversationId: string,
+  userAccountId: string,
+  title: string,
+): Promise<boolean> {
+  const { data: row } = await supabaseAdmin
+    .from('agent_conversations')
+    .select('user_id')
+    .eq('id', conversationId)
+    .maybeSingle();
+  if (!row || row.user_id !== userAccountId) return false;
+  const { error } = await supabaseAdmin
+    .from('agent_conversations')
+    .update({ title: title.slice(0, 200) })
+    .eq('id', conversationId);
+  if (error) throw error;
+  return true;
+}
+
+// ─── Message persistence ──────────────────────────────────────────────────
+
+export async function appendMessage(opts: SaveMessageOpts): Promise<void> {
+  const { error } = await supabaseAdmin.from('agent_messages').insert({
+    conversation_id: opts.conversationId,
+    role: opts.role,
+    content: opts.content ?? null,
+    tool_call_id: opts.toolCallId ?? null,
+    tool_name: opts.toolName ?? null,
+    tool_args: opts.toolArgs ?? null,
+    tool_result: opts.toolResult === undefined ? null : opts.toolResult,
+    tokens_in: opts.tokensIn ?? null,
+    tokens_out: opts.tokensOut ?? null,
+    model_used: opts.modelUsed ?? null,
+    cost_usd: opts.costUsd ?? null,
+  });
+  if (error) throw error;
+}
+
+/** Helper: write a user turn. Convenience wrapper. */
+export function recordUserTurn(conversationId: string, content: string): Promise<void> {
+  return appendMessage({ conversationId, role: 'user', content });
+}
+
+/** Helper: write an assistant turn (text + optional tool calls). */
+export async function recordAssistantTurn(
+  conversationId: string,
+  text: string,
+  toolCalls: AgentToolCall[] | undefined,
+  telemetry: { tokensIn: number; tokensOut: number; modelUsed: ModelTier; costUsd: number },
+): Promise<void> {
+  if (text) {
+    await appendMessage({
+      conversationId,
+      role: 'assistant',
+      content: text,
+      tokensIn: telemetry.tokensIn,
+      tokensOut: telemetry.tokensOut,
+      modelUsed: telemetry.modelUsed,
+      costUsd: telemetry.costUsd,
+    });
+  }
+  for (const call of toolCalls ?? []) {
+    await appendMessage({
+      conversationId,
+      role: 'assistant',
+      toolCallId: call.id,
+      toolName: call.name,
+      toolArgs: call.args,
+    });
+  }
+}
+
+/** Helper: write a tool result row. */
+export function recordToolResult(
+  conversationId: string,
+  toolCallId: string,
+  result: unknown,
+): Promise<void> {
+  return appendMessage({
+    conversationId,
+    role: 'tool',
+    toolCallId,
+    toolResult: result,
+  });
+}
