@@ -438,7 +438,7 @@ export default function InventoryReportsPage() {
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(197,197,212,0.4)" />
                     <XAxis dataKey="month" stroke="#757684" style={{ fontFamily: "'Inter', sans-serif", fontSize: 11 }} />
                     <YAxis stroke="#757684" style={{ fontFamily: "'Inter', sans-serif", fontSize: 11 }} tickFormatter={v => `$${v}`} />
-                    <Tooltip formatter={(v: number) => `$${v.toFixed(2)}`} />
+                    <Tooltip formatter={(v) => `$${typeof v === 'number' ? v.toFixed(2) : v}`} />
                     <Legend />
                     <Bar dataKey="Housekeeping" stackId="a" fill={CATEGORY_COLORS.housekeeping} />
                     <Bar dataKey="Maintenance"  stackId="a" fill={CATEGORY_COLORS.maintenance} />

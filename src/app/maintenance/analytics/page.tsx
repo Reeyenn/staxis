@@ -280,7 +280,7 @@ export default function MaintenanceAnalyticsPage() {
                 <CartesianGrid stroke="#eae8e3" strokeDasharray="3 3" />
                 <XAxis dataKey="date" stroke="#757684" tick={{ fontSize: 11 }} />
                 <YAxis stroke="#757684" tick={{ fontSize: 11 }} tickFormatter={v => formatCurrency(v)} />
-                <Tooltip formatter={(v: number) => formatCurrency(v)} />
+                <Tooltip formatter={(v) => typeof v === 'number' ? formatCurrency(v) : String(v)} />
                 <Line type="monotone" dataKey="cost" stroke="#364262" strokeWidth={2} dot={{ r: 3 }} name={lang === 'es' ? 'Gasto' : 'Spend'} />
               </LineChart>
             </ResponsiveContainer>
@@ -295,7 +295,7 @@ export default function MaintenanceAnalyticsPage() {
                 <CartesianGrid stroke="#eae8e3" strokeDasharray="3 3" horizontal={false} />
                 <XAxis type="number" domain={[0, 100]} stroke="#757684" tick={{ fontSize: 11 }} tickFormatter={v => `${v}%`} />
                 <YAxis type="category" dataKey="name" stroke="#454652" tick={{ fontSize: 11 }} width={110} />
-                <Tooltip formatter={(v: number) => `${v}%`} />
+                <Tooltip formatter={(v) => `${v ?? 0}%`} />
                 <Bar dataKey="health" radius={[0, 6, 6, 0]}>
                   {healthData.map((d, i) => (
                     <Cell key={i} fill={d.health >= 70 ? '#006565' : d.health >= 40 ? '#c98a14' : '#ba1a1a'} />
