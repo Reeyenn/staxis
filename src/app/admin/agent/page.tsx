@@ -11,7 +11,7 @@ import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import { Activity, AlertTriangle, ChevronRight, DollarSign, Hammer, Inbox, Users } from 'lucide-react';
+import { Activity, AlertTriangle, Archive, ChevronRight, DollarSign, Hammer, Inbox, Users } from 'lucide-react';
 
 const C = {
   bg:       'var(--snow-bg, #FFFFFF)',
@@ -46,6 +46,8 @@ interface MetricsPayload {
   }>;
   topTools: Array<{ tool: string; calls: number; errors: number; errorRatePct: number }>;
   toolErrorsToday: number;
+  archivedTotal: number;
+  archivedToday: number;
   modelUsage: Array<{ model: string; count: number; costUsd: number }>;
   modelIdsToday: Array<{ modelId: string; count: number }>;
   pendingNudges: number;
@@ -212,6 +214,16 @@ export default function AdminAgentPage() {
               ? 'see top tools card for per-tool breakdown'
               : 'every tool call succeeded today'}
             severity={data && data.toolErrorsToday > 0 ? 'warm' : 'ok'}
+          />
+          <KPI
+            icon={<Archive size={14} />}
+            label="Archived total"
+            value={data ? data.archivedTotal.toLocaleString() : '—'}
+            sub={data
+              ? data.archivedToday > 0
+                ? `+${data.archivedToday} today · 90-day threshold`
+                : 'cron runs daily at 03:00 UTC'
+              : ''}
           />
         </div>
 

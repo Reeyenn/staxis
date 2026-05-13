@@ -20,6 +20,10 @@
     {
       "path": "/api/cron/agent-sweep-reservations",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/agent-archive-stale-conversations",
+      "schedule": "0 3 * * *"
     }
   ]
 }

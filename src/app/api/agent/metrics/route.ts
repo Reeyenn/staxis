@@ -8,6 +8,7 @@ import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { COST_LIMITS } from '@/lib/agent/cost-controls';
+import { archivalMetrics } from '@/lib/agent/archival';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -61,6 +62,9 @@ interface MetricsPayload {
    *  has the actual usage payload for reconciliation.
    *  Codex round-7 fix F1, 2026-05-13. */
   finalizeFailuresToday: number;
+  /** L4 part A: archival metrics. Longevity 2026-05-13. */
+  archivedTotal: number;
+  archivedToday: number;
 }
 
 export async function GET(req: NextRequest): Promise<Response> {
@@ -232,6 +236,9 @@ export async function GET(req: NextRequest): Promise<Response> {
     const { data: failData } = await supabaseAdmin.rpc('staxis_count_finalize_failures_today');
     const finalizeFailuresToday = Number(failData ?? 0);
 
+    // L4 part A: archived conversation counts.
+    const { archivedTotal, archivedToday } = await archivalMetrics();
+
     const payload: MetricsPayload = {
       caps: {
         user: COST_LIMITS.userDailyUsd,
@@ -255,6 +262,8 @@ export async function GET(req: NextRequest): Promise<Response> {
       sweptToday,
       finalizeFailuresToday,
       toolErrorsToday,
+      archivedTotal,
+      archivedToday,
     };
 
     return ok(payload, { requestId });
