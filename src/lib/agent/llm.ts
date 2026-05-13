@@ -551,21 +551,23 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
   let finalText = '';
   let lastModelId: string | null = null;
 
-  // Mid-iter spend accounting (Codex round-6 R5, 2026-05-13).
+  // Mid-iter spend accounting (Codex round-6 R5 + round-7 F3, 2026-05-13).
   // streamAgent only commits an iter's usage AFTER stream.finalMessage()
-  // returns. If the SDK throws between emitting text_deltas and resolving
+  // returns. If the SDK throws between emitting any content and resolving
   // finalMessage (rare but observed under transient API errors), Anthropic
   // has billed for input + partial output but our totals never absorbed it.
   // The catch block previously yielded `usage: undefined` whenever no
   // PRIOR iter completed, so the route cancel()-ed the reservation and
   // we silently lost the billed spend.
   //
-  // We now track per-iter state so the catch can estimate uncommitted
-  // tokens from the prompt size and streamed-so-far output. Only applied
-  // when we have evidence Anthropic processed the prompt (text_deltas
-  // received) — for connection-refused / 400 errors we still cancel.
+  // Round-6 R5 closed this for text_delta streams. Round-7 F3 extends to
+  // tool_use-only streams: when the model emits a tool_use block (with
+  // input_json_delta bytes) but no text and the stream errors before
+  // finalMessage, we still owe Anthropic for input + partial output.
+  // We now track any content (text OR tool_use) as billing evidence.
   let inflightIterStarted = false;
-  let inflightTurnText: string[] = [];
+  let inflightHasContent = false;
+  let inflightOutputBytes = 0;
 
   // Helpers for the abort signal + usage report. Codex adversarial review
   // 2026-05-13 (A-C3, A-C7).
@@ -586,7 +588,8 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
         return;
       }
       inflightIterStarted = true;
-      inflightTurnText = [];
+      inflightHasContent = false;
+      inflightOutputBytes = 0;
       const stream = client.messages.stream({
         model: MODELS[model],
         max_tokens: MAX_OUTPUT_TOKENS,
@@ -601,11 +604,26 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
       const calls: AgentToolCall[] = [];
 
       for await (const event of stream) {
-        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-          turnText.push(event.delta.text);
-          inflightTurnText.push(event.delta.text);
-          finalText = ''; // reset — final text is reassembled at end of iteration
-          yield { type: 'text_delta', delta: event.delta.text };
+        // Codex round-7 F3: any content_block event is evidence that
+        // Anthropic processed the prompt and is generating billable
+        // output. text_delta + input_json_delta both produce output
+        // tokens; we accumulate their byte length for the catch-path
+        // estimate.
+        if (event.type === 'content_block_start') {
+          inflightHasContent = true;
+        }
+        if (event.type === 'content_block_delta') {
+          inflightHasContent = true;
+          if (event.delta.type === 'text_delta') {
+            turnText.push(event.delta.text);
+            inflightOutputBytes += event.delta.text.length;
+            finalText = ''; // reset — final text is reassembled at end of iteration
+            yield { type: 'text_delta', delta: event.delta.text };
+          } else if (event.delta.type === 'input_json_delta') {
+            // tool_use input streamed as partial JSON; accumulate for the
+            // mid-stream output-token estimate. Not surfaced to the UI.
+            inflightOutputBytes += event.delta.partial_json.length;
+          }
         }
       }
 
@@ -616,6 +634,7 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
       lastModelId = finalMsg.model;
       // Iter usage is now committed to running totals — clear the inflight flag.
       inflightIterStarted = false;
+      inflightHasContent = false;
 
       for (const block of finalMsg.content) {
         if (block.type === 'tool_use') {
@@ -729,16 +748,18 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
       usage: buildUsage(),
     };
   } catch (err) {
-    // Codex round-6 R5: if the in-flight iter streamed any text before
-    // erroring, Anthropic almost certainly billed us for input + partial
-    // output. Estimate them so the route FINALIZES against actual spend
-    // instead of cancelling (which would lose the billed cost silently).
+    // Codex round-6 R5 + round-7 F3: if the in-flight iter received any
+    // content (text_delta OR tool_use's input_json_delta) before erroring,
+    // Anthropic almost certainly billed us for input + partial output.
+    // Estimate them so the route FINALIZES against actual spend instead
+    // of cancelling (which would lose the billed cost silently).
+    //
     // For pre-output errors (rate limit, bad request, connection refused)
-    // no text was streamed → totals stay 0 → reservation gets cancelled
+    // no content was streamed → totals stay 0 → reservation gets cancelled
     // as before. ~4 chars per token is the standard rough conversion.
-    if (inflightIterStarted && inflightTurnText.length > 0) {
+    if (inflightIterStarted && inflightHasContent) {
       const estInputTokens = Math.round(JSON.stringify(messages).length / 4);
-      const estOutputTokens = Math.round(inflightTurnText.join('').length / 4);
+      const estOutputTokens = Math.round(inflightOutputBytes / 4);
       totalInput += estInputTokens;
       totalOutput += estOutputTokens;
     }

@@ -52,6 +52,12 @@ interface MetricsPayload {
    *  failing — recurring failures that staleReservations alone would
    *  hide between sweep runs. Codex round-6 fix R6, 2026-05-13. */
   sweptToday: number;
+  /** Count of permanent finalize-RPC failures today (after 3 inline
+   *  retries). Non-zero ⇒ Anthropic billed us but the cost ledger
+   *  has no record; the audit table agent_cost_finalize_failures
+   *  has the actual usage payload for reconciliation.
+   *  Codex round-7 fix F1, 2026-05-13. */
+  finalizeFailuresToday: number;
 }
 
 export async function GET(req: NextRequest): Promise<Response> {
@@ -184,6 +190,12 @@ export async function GET(req: NextRequest): Promise<Response> {
     const { data: sweptData } = await supabaseAdmin.rpc('staxis_count_swept_today');
     const sweptToday = Number(sweptData ?? 0);
 
+    // Codex round-7 fix F1: count permanent finalize failures so the
+    // operator sees them even when the actual spend was cancelled to
+    // release the budget hold. Non-zero needs investigation.
+    const { data: failData } = await supabaseAdmin.rpc('staxis_count_finalize_failures_today');
+    const finalizeFailuresToday = Number(failData ?? 0);
+
     const payload: MetricsPayload = {
       caps: {
         user: COST_LIMITS.userDailyUsd,
@@ -205,6 +217,7 @@ export async function GET(req: NextRequest): Promise<Response> {
       pendingNudges: pendingNudges ?? 0,
       staleReservations,
       sweptToday,
+      finalizeFailuresToday,
     };
 
     return ok(payload, { requestId });

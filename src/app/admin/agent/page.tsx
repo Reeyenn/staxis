@@ -50,6 +50,7 @@ interface MetricsPayload {
   pendingNudges: number;
   staleReservations: number;
   sweptToday: number;
+  finalizeFailuresToday: number;
 }
 
 export default function AdminAgentPage() {
@@ -192,6 +193,15 @@ export default function AdminAgentPage() {
               ? `${data.sweptToday} swept today${data.staleReservations > 0 ? ' · finalize+cancel both failing' : data.sweptToday > 0 ? ' · sweeper recovering failures' : ' · sweeper running clean'}`
               : ''}
             severity={data && (data.staleReservations > 0 || data.sweptToday > 0) ? 'warm' : 'ok'}
+          />
+          <KPI
+            icon={<AlertTriangle size={14} />}
+            label="Finalize failures"
+            value={data ? String(data.finalizeFailuresToday) : '—'}
+            sub={data && data.finalizeFailuresToday > 0
+              ? 'Anthropic billed — audit table has actuals'
+              : 'finalize RPC healthy'}
+            severity={data && data.finalizeFailuresToday > 0 ? 'warm' : 'ok'}
           />
         </div>
 

@@ -129,11 +129,7 @@ export async function reserveCostBudget(opts: {
   return { ok: true, reservationId: row.reservation_id as string };
 }
 
-/**
- * Reconcile the reservation to actual cost + telemetry. Call after the
- * stream emits its `done` event.
- */
-export async function finalizeCostReservation(opts: {
+export interface FinalizeOpts {
   reservationId: string;
   conversationId: string;
   actualUsd: number;
@@ -145,8 +141,26 @@ export async function finalizeCostReservation(opts: {
   tokensIn: number;
   tokensOut: number;
   cachedInputTokens?: number;
-}): Promise<void> {
-  const { error } = await supabaseAdmin.rpc('staxis_finalize_agent_spend', {
+  /** Used internally for the audit-row fallback when retries are
+   *  exhausted. The route already has these from auth/body. Codex
+   *  round-7 fix F1. */
+  userId: string;
+  propertyId: string;
+}
+
+/**
+ * Reconcile the reservation to actual cost + telemetry. Call after the
+ * stream emits its `done` event.
+ *
+ * Codex round-7 fix F1, 2026-05-13: retry the finalize RPC up to 2 times
+ * with short backoff before falling through. If all attempts fail, write
+ * a row to agent_cost_finalize_failures so the actual usage is preserved
+ * — without this audit table the spend would silently vanish into a
+ * "successful zero-cost request" because the catch path cancels the
+ * reservation to release the budget hold.
+ */
+export async function finalizeCostReservation(opts: FinalizeOpts): Promise<void> {
+  const params = {
     p_reservation_id: opts.reservationId,
     p_conversation_id: opts.conversationId,
     p_actual_usd: opts.actualUsd,
@@ -155,21 +169,51 @@ export async function finalizeCostReservation(opts: {
     p_tokens_in: opts.tokensIn,
     p_tokens_out: opts.tokensOut,
     p_cached_input_tokens: opts.cachedInputTokens ?? 0,
-  });
-  if (error) {
-    // Codex review fix M1, 2026-05-13: previously this just logged and
-    // returned, which left the reservation row stuck in 'reserved' state.
-    // Metrics filters by state='finalized', so the failed finalize was
-    // invisible. AND the reservation kept inflating cap checks.
-    //
-    // Now: throw so the route's finally block catches it. The route logs
-    // critically + attempts a cancel (release the budget hold). The user
-    // has already received their response (done event was emitted before
-    // the finally ran), so we're only losing the actual cost record — a
-    // known trade-off versus permanently stranded reservations.
-    console.error('[cost-controls] finalize RPC failed; throwing so route can cancel reservation', error);
-    throw new Error(`finalize RPC failed: ${error.message}`);
+  };
+
+  const attempts: { attempt: number; error: string }[] = [];
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const { error } = await supabaseAdmin.rpc('staxis_finalize_agent_spend', params);
+    if (!error) return; // success
+    attempts.push({ attempt, error: error.message });
+    if (attempt < 3) {
+      // Backoff between retries: 100ms then 400ms. Total worst-case
+      // ~500ms before we give up — well inside the route's finally budget.
+      await new Promise(r => setTimeout(r, attempt === 1 ? 100 : 400));
+    }
   }
+
+  // All 3 attempts failed. Write an audit row so the actual usage is
+  // preserved for later reconciliation. If the audit insert ALSO fails,
+  // we log critically but still throw — the route needs to cancel the
+  // reservation to release the budget hold.
+  console.error(
+    '[cost-controls] finalize RPC failed after 3 attempts; writing audit row',
+    { reservationId: opts.reservationId, attempts },
+  );
+  const { error: auditErr } = await supabaseAdmin
+    .from('agent_cost_finalize_failures')
+    .insert({
+      reservation_id: opts.reservationId,
+      conversation_id: opts.conversationId,
+      user_id: opts.userId,
+      property_id: opts.propertyId,
+      actual_cost_usd: opts.actualUsd,
+      model: opts.model,
+      model_id: opts.modelId,
+      tokens_in: opts.tokensIn,
+      tokens_out: opts.tokensOut,
+      cached_input_tokens: opts.cachedInputTokens ?? 0,
+      attempt_count: attempts.length,
+      last_error: attempts[attempts.length - 1]?.error ?? null,
+    });
+  if (auditErr) {
+    console.error('[cost-controls] CRITICAL: finalize audit row insert also failed', auditErr);
+  }
+
+  throw new Error(
+    `finalize RPC failed after ${attempts.length} attempts: ${attempts[attempts.length - 1]?.error ?? 'unknown'}`,
+  );
 }
 
 /**

@@ -184,14 +184,30 @@ export async function buildHotelSnapshot(
  * (handled in llm.ts) are wrapped `trust="untrusted"` because they can
  * include user-provided text (issue_note, help message) that a prior
  * housekeeper might have crafted to coerce a future model turn.
+ *
+ * Codex round-7 fix F4, 2026-05-13: escape XML metacharacters in every
+ * interpolated dynamic field so a property/room/staff value containing
+ * literal "</staxis-snapshot>" can't close the trust boundary and inject
+ * "trusted" instructions into the system block. Same defense applied to
+ * tool_result wrap in llm.ts. property.name + room.number are the most
+ * realistic vectors today; staff names + issue_note arrive here via
+ * future snapshot extensions.
  */
+function esc(s: string | number | null | undefined): string {
+  if (s === null || s === undefined) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 export function formatSnapshotForPrompt(snap: HotelSnapshot): string {
   const lines: string[] = [];
   lines.push('<staxis-snapshot trust="system">');
-  lines.push(`Today: ${snap.today}`);
+  lines.push(`Today: ${esc(snap.today)}`);
   lines.push(
-    `Property: ${snap.property.name ?? 'Unnamed'} (${snap.property.id})` +
-    (snap.property.timezone ? `, timezone ${snap.property.timezone}` : ''),
+    `Property: ${esc(snap.property.name ?? 'Unnamed')} (${esc(snap.property.id)})` +
+    (snap.property.timezone ? `, timezone ${esc(snap.property.timezone)}` : ''),
   );
   lines.push(
     `Rooms: ${snap.rooms.total} total — ${snap.rooms.dirty} dirty, ` +
@@ -211,7 +227,7 @@ export function formatSnapshotForPrompt(snap: HotelSnapshot): string {
       if (r.has_issue) flags.push('issue');
       if (r.help_requested) flags.push('help-pending');
       lines.push(
-        `  • Room ${r.number} — ${r.status}` +
+        `  • Room ${esc(r.number)} — ${esc(r.status)}` +
         (flags.length ? ` [${flags.join(', ')}]` : ''),
       );
     }

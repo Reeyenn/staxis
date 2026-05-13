@@ -290,3 +290,110 @@ export function recordToolResult(
     toolResult: result,
   });
 }
+
+/**
+ * Atomic prep for /api/agent/command: acquire per-conversation lock,
+ * verify ownership + property scope, load history, and record the user
+ * turn — all in ONE RPC transaction.
+ *
+ * Codex round-7 fix F2: replaces the prior two-step pattern (call
+ * staxis_lock_conversation, then loadConversation + recordUserTurn in
+ * JS) which had a race window because supabase-js wraps each .rpc() in
+ * its own transaction. The lock from the first call released BEFORE
+ * the JS prep ran. This RPC does everything under one tx + lock.
+ */
+export interface LockedPrepResult {
+  ok: boolean;
+  reason: 'not_found' | 'wrong_owner' | 'wrong_property' | null;
+  history: AgentMessage[];
+}
+
+export async function lockLoadAndRecordUserTurn(opts: {
+  conversationId: string;
+  userAccountId: string;
+  propertyId: string;
+  userMessage: string;
+}): Promise<LockedPrepResult> {
+  const { data, error } = await supabaseAdmin.rpc('staxis_lock_load_and_record_user_turn', {
+    p_conversation_id: opts.conversationId,
+    p_user_account_id: opts.userAccountId,
+    p_property_id: opts.propertyId,
+    p_user_message: opts.userMessage,
+  });
+  if (error) throw new Error(`lockLoadAndRecordUserTurn RPC failed: ${error.message}`);
+
+  // RPC returns table(ok, reason, history_rows) — supabase-js gives an array.
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) throw new Error('lockLoadAndRecordUserTurn returned no row');
+
+  if (!row.ok) {
+    return {
+      ok: false,
+      reason: (row.reason as LockedPrepResult['reason']) ?? null,
+      history: [],
+    };
+  }
+
+  // Reconstruct AgentMessage[] from jsonb. Same shape as loadConversation
+  // returns — assistant turns with adjacent tool_use rows get folded by
+  // toClaudeMessages adjacency logic on the next replay.
+  const rawRows = (row.history_rows ?? []) as Array<{
+    role: string;
+    content: string | null;
+    tool_call_id: string | null;
+    tool_name: string | null;
+    tool_args: Record<string, unknown> | null;
+    tool_result: unknown;
+  }>;
+
+  const messages: AgentMessage[] = [];
+  let pendingAssistant: { content: string; toolCalls: AgentToolCall[] } | null = null;
+  for (const r of rawRows) {
+    if (r.role === 'user') {
+      if (pendingAssistant) {
+        messages.push({
+          role: 'assistant',
+          content: pendingAssistant.content,
+          toolCalls: pendingAssistant.toolCalls.length ? pendingAssistant.toolCalls : undefined,
+        });
+        pendingAssistant = null;
+      }
+      messages.push({ role: 'user', content: r.content ?? '' });
+    } else if (r.role === 'assistant') {
+      if (!pendingAssistant) pendingAssistant = { content: '', toolCalls: [] };
+      if (r.tool_name) {
+        pendingAssistant.toolCalls.push({
+          id: r.tool_call_id ?? '',
+          name: r.tool_name,
+          args: r.tool_args ?? {},
+        });
+      } else if (r.content) {
+        pendingAssistant.content =
+          (pendingAssistant.content ? pendingAssistant.content + '\n' : '') + r.content;
+      }
+    } else if (r.role === 'tool') {
+      if (pendingAssistant) {
+        messages.push({
+          role: 'assistant',
+          content: pendingAssistant.content,
+          toolCalls: pendingAssistant.toolCalls.length ? pendingAssistant.toolCalls : undefined,
+        });
+        pendingAssistant = null;
+      }
+      messages.push({
+        role: 'tool',
+        toolCallId: r.tool_call_id ?? '',
+        result: r.tool_result ?? null,
+      });
+    }
+  }
+  if (pendingAssistant) {
+    messages.push({
+      role: 'assistant',
+      content: pendingAssistant.content,
+      toolCalls: pendingAssistant.toolCalls.length ? pendingAssistant.toolCalls : undefined,
+    });
+  }
+
+  return { ok: true, reason: null, history: messages };
+}

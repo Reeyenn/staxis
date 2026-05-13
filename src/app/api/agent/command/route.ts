@@ -37,7 +37,7 @@ import { buildHotelSnapshot } from '@/lib/agent/context';
 import { buildSystemPrompt, PROMPT_VERSION } from '@/lib/agent/prompts';
 import {
   createConversation,
-  loadConversation,
+  lockLoadAndRecordUserTurn,
   recordUserTurn,
   recordAssistantTurn,
   recordToolResult,
@@ -150,33 +150,36 @@ export async function POST(req: NextRequest): Promise<Response> {
   const reservationId = reservation.reservationId;
 
   // ── Load or create the conversation ───────────────────────────────────
-  // Codex adversarial review 2026-05-13 (A-C4): wrap the load+writeUserTurn
-  // prep window inside a per-conversation advisory lock so two browser tabs
-  // cannot interleave writes. The lock auto-releases when the supabase RPC
-  // call completes (pg_advisory_xact_lock holds for the implicit txn). We
-  // only protect the prep window, NOT the SSE stream — the stream's
-  // atomicity is already covered by recordAssistantTurn's RPC.
+  // Codex round-7 fix F2 (2026-05-13): for EXISTING conversations, do the
+  // entire lock + verify + load + record-user-turn atomically inside a
+  // single RPC. The prior pattern (call staxis_lock_conversation then
+  // loadConversation + recordUserTurn separately) had a race because the
+  // RPC's lock released as soon as its implicit transaction ended —
+  // BEFORE the JS prep ran. Two browser tabs could both pass through.
+  //
+  // For NEW conversations, the conversationId is generated fresh so no
+  // race is possible; we still create + record-user-turn in JS.
   let conversationId = body.conversationId;
   let history: AgentMessage[] = [];
   try {
     if (conversationId) {
-      try {
-        await supabaseAdmin.rpc('staxis_lock_conversation', {
-          p_conversation_id: conversationId,
-        });
-      } catch (lockErr) {
-        console.error('[agent/command] conversation lock RPC failed (proceeding)', lockErr);
-      }
-      const convo = await loadConversation(conversationId, userCtx.accountId);
-      if (!convo) {
+      const prep = await lockLoadAndRecordUserTurn({
+        conversationId,
+        userAccountId: userCtx.accountId,
+        propertyId: body.propertyId,
+        userMessage: body.message,
+      });
+      if (!prep.ok) {
         await cancelCostReservation(reservationId);
-        return Response.json({ ok: false, error: 'conversation not found or not yours', requestId }, { status: 404 });
+        if (prep.reason === 'not_found' || prep.reason === 'wrong_owner') {
+          return Response.json({ ok: false, error: 'conversation not found or not yours', requestId }, { status: 404 });
+        }
+        if (prep.reason === 'wrong_property') {
+          return Response.json({ ok: false, error: 'conversation is scoped to a different property', requestId }, { status: 400 });
+        }
+        return Response.json({ ok: false, error: 'failed to prepare conversation', requestId }, { status: 500 });
       }
-      if (convo.propertyId !== body.propertyId) {
-        await cancelCostReservation(reservationId);
-        return Response.json({ ok: false, error: 'conversation is scoped to a different property', requestId }, { status: 400 });
-      }
-      history = convo.messages;
+      history = prep.history;
     } else {
       conversationId = await createConversation({
         userAccountId: userCtx.accountId,
@@ -186,8 +189,8 @@ export async function POST(req: NextRequest): Promise<Response> {
         title: body.message.trim().slice(0, 120),
       });
       history = [];
+      await recordUserTurn(conversationId, body.message);
     }
-    await recordUserTurn(conversationId, body.message);
   } catch (e) {
     await cancelCostReservation(reservationId);
     return Response.json(
@@ -364,9 +367,14 @@ export async function POST(req: NextRequest): Promise<Response> {
               tokensIn: finalUsage.inputTokens,
               tokensOut: finalUsage.outputTokens,
               cachedInputTokens: finalUsage.cachedInputTokens,
+              // Codex round-7 fix F1: passed through so the audit-row
+              // fallback (agent_cost_finalize_failures) can record the
+              // user + property when retries are exhausted.
+              userId: userCtx.accountId,
+              propertyId: body.propertyId,
             });
           } catch (finalizeErr) {
-            console.error('[agent/command] finalize failed; attempting cancel to release budget hold', finalizeErr);
+            console.error('[agent/command] finalize failed after retries; cancelling to release budget hold (audit row written)', finalizeErr);
             await cancelCostReservation(reservationId).catch(cancelErr => {
               console.error('[agent/command] cancel also failed; reservation will be stranded', cancelErr);
             });
