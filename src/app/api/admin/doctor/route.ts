@@ -1642,22 +1642,26 @@ export const GH_ACTIONS_SKEW_BUFFER_HOURS = 0.25;
 
 export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; description: string }> = [
   // Tight cadences
-  { name: 'scraper-health',          cadenceHours: 0.25, description: '15-min liveness watcher (Vercel native cron)' },
-  { name: 'process-sms-jobs',        cadenceHours: 5 / 60, description: '5-min SMS jobs queue worker (Vercel native cron)' },
-  { name: 'seal-daily',              cadenceHours: 1,    description: 'hourly per-property daily-seal' },
+  { name: 'scraper-health',                cadenceHours: 0.25,  description: '15-min liveness watcher (Vercel native cron)' },
+  { name: 'process-sms-jobs',              cadenceHours: 5/60,  description: '5-min SMS jobs queue worker (Vercel native cron)' },
+  { name: 'agent-nudges-check',            cadenceHours: 5/60,  description: 'every-5-min nudge engine (Vercel native cron) — Codex 2026-05-13' },
+  { name: 'agent-sweep-reservations',      cadenceHours: 5/60,  description: 'every-5-min reserved-row sweeper (Vercel native cron, Codex round-5 R2)' },
+  { name: 'agent-summarize-long-conversations', cadenceHours: 30/60, description: 'every-30-min summarization of long agent conversations (L4 part B)' },
+  { name: 'seal-daily',                    cadenceHours: 1,     description: 'hourly per-property daily-seal' },
   // Daily
-  { name: 'ml-run-inference',        cadenceHours: 24,   description: 'daily demand+supply+optimizer predictions' },
-  { name: 'ml-predict-inventory',    cadenceHours: 24,   description: 'daily inventory predictions for tomorrow' },
-  { name: 'ml-aggregate-priors',     cadenceHours: 24,   description: 'daily cross-fleet cohort prior aggregation' },
-  { name: 'ml-shadow-evaluate',      cadenceHours: 24,   description: 'daily shadow-model promote/reject pass' },
-  { name: 'ml-retention-purge',      cadenceHours: 24,   description: 'daily prediction_log/app_events retention purge (Phase 3.6)' },
-  { name: 'purge-old-error-logs',    cadenceHours: 24,   description: 'daily error_logs retention sweep' },
-  { name: 'expire-trials',           cadenceHours: 24,   description: 'daily trial-expiration flip' },
+  { name: 'ml-run-inference',              cadenceHours: 24,    description: 'daily demand+supply+optimizer predictions' },
+  { name: 'ml-predict-inventory',          cadenceHours: 24,    description: 'daily inventory predictions for tomorrow' },
+  { name: 'ml-aggregate-priors',           cadenceHours: 24,    description: 'daily cross-fleet cohort prior aggregation' },
+  { name: 'ml-shadow-evaluate',            cadenceHours: 24,    description: 'daily shadow-model promote/reject pass' },
+  { name: 'ml-retention-purge',            cadenceHours: 24,    description: 'daily prediction_log/app_events retention purge (Phase 3.6)' },
+  { name: 'purge-old-error-logs',          cadenceHours: 24,    description: 'daily error_logs retention sweep' },
+  { name: 'expire-trials',                 cadenceHours: 24,    description: 'daily trial-expiration flip' },
+  { name: 'agent-archive-stale-conversations', cadenceHours: 24, description: 'daily 3am archival of stale agent conversations (L4 part A)' },
   // Weekly
-  { name: 'ml-train-demand',         cadenceHours: 168,  description: 'weekly demand training (Sunday)' },
-  { name: 'ml-train-supply',         cadenceHours: 168,  description: 'weekly supply training (Sunday)' },
-  { name: 'ml-train-inventory',      cadenceHours: 168,  description: 'weekly inventory training (Sunday)' },
-  { name: 'scraper-weekly-digest',   cadenceHours: 168,  description: 'weekly scraper health digest SMS' },
+  { name: 'ml-train-demand',               cadenceHours: 168,   description: 'weekly demand training (Sunday)' },
+  { name: 'ml-train-supply',               cadenceHours: 168,   description: 'weekly supply training (Sunday)' },
+  { name: 'ml-train-inventory',            cadenceHours: 168,   description: 'weekly inventory training (Sunday)' },
+  { name: 'scraper-weekly-digest',         cadenceHours: 168,   description: 'weekly scraper health digest SMS' },
 ];
 
 async function checkCronHeartbeatsFresh(): Promise<Omit<Check, 'name' | 'durationMs'>> {

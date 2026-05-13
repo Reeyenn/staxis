@@ -56,8 +56,11 @@ const SCHEDULE_REGISTRY: ReadonlyArray<{
   // Tight cadences (sub-hourly) — Vercel native cron (May 2026 audit
   // pass-6: moved from GH Actions, which was silently throttling these
   // to 60-200 min intervals). Vercel Pro supports per-minute precision.
-  { heartbeatName: 'process-sms-jobs',      source: { kind: 'vercel', cronPath: '/api/cron/process-sms-jobs' },     cronExpr: '*/5 * * * *' },
-  { heartbeatName: 'scraper-health',        source: { kind: 'vercel', cronPath: '/api/cron/scraper-health' },       cronExpr: '*/15 * * * *' },
+  { heartbeatName: 'process-sms-jobs',                  source: { kind: 'vercel', cronPath: '/api/cron/process-sms-jobs' },                  cronExpr: '*/5 * * * *' },
+  { heartbeatName: 'scraper-health',                    source: { kind: 'vercel', cronPath: '/api/cron/scraper-health' },                    cronExpr: '*/15 * * * *' },
+  { heartbeatName: 'agent-nudges-check',                source: { kind: 'vercel', cronPath: '/api/agent/nudges/check' },                     cronExpr: '*/5 * * * *' },
+  { heartbeatName: 'agent-sweep-reservations',          source: { kind: 'vercel', cronPath: '/api/cron/agent-sweep-reservations' },          cronExpr: '*/5 * * * *' },
+  { heartbeatName: 'agent-summarize-long-conversations',source: { kind: 'vercel', cronPath: '/api/cron/agent-summarize-long-conversations' },cronExpr: '*/30 * * * *' },
   // seal-daily stays on GH Actions — hourly cadence is well within
   // GH's reliable range.
   { heartbeatName: 'seal-daily',            source: { kind: 'github', workflowFile: 'seal-daily-cron.yml' },         cronExpr: '5 * * * *' },
@@ -68,7 +71,8 @@ const SCHEDULE_REGISTRY: ReadonlyArray<{
   { heartbeatName: 'ml-shadow-evaluate',    source: { kind: 'github', workflowFile: 'ml-shadow-evaluate-cron.yml' }, cronExpr: '30 11 * * *' },
   { heartbeatName: 'purge-old-error-logs',  source: { kind: 'github', workflowFile: 'purge-old-error-logs-cron.yml' }, cronExpr: '30 9 * * *' },
   // expire-trials is a Vercel native cron (vercel.json), not GH Actions.
-  { heartbeatName: 'expire-trials',         source: { kind: 'vercel', cronPath: '/api/cron/expire-trials' },        cronExpr: '0 9 * * *' },
+  { heartbeatName: 'expire-trials',                     source: { kind: 'vercel', cronPath: '/api/cron/expire-trials' },                    cronExpr: '0 9 * * *' },
+  { heartbeatName: 'agent-archive-stale-conversations', source: { kind: 'vercel', cronPath: '/api/cron/agent-archive-stale-conversations' },cronExpr: '0 3 * * *' },
   // Weekly
   { heartbeatName: 'ml-train-demand',       source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '0 8 * * 0' },
   { heartbeatName: 'ml-train-supply',       source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '30 8 * * 0' },
