@@ -33,7 +33,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # Node 22+ ships native WebSocket; older @supabase/supabase-js
+          # versions imported a polyfill but newer ones throw at import
+          # time on Node 20. The smoke crashed with
+          # "Node.js 20 detected without native WebSocket support."
+          # until this bumped to 22.
+          node-version: '22'
           cache: 'npm'
       - name: Install minimal deps for the smoke script
         run: |
