@@ -18,6 +18,10 @@ import { errToString } from '@/lib/utils';
 import { runWithConcurrency } from '@/lib/parallel';
 import { listMlShardUrls, resolveMlShardUrl } from '@/lib/ml-routing';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
+import {
+  emitPropertyMisconfiguredEvent,
+  parsePropertyMisconfiguredError,
+} from '@/lib/ml-misconfigured-events';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -49,13 +53,33 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   }
 
   // Partition into "skipped" and "eligible" before fan-out so ai_off rows
-  // don't occupy parallel slots.
+  // don't occupy parallel slots. Codex follow-up 2026-05-13 (A1):
+  // also skip-and-emit for properties with null timezone — same path
+  // ml-run-inference uses. Without this the inventory cron silently
+  // defaults to America/Chicago for non-Texas hotels (the bug Phase 3.5
+  // was supposed to close, missed on this cron).
   type PropertyRow = { id: string; name: string; timezone: string | null; inventory_ai_mode?: string };
   const eligible: PropertyRow[] = [];
-  const skipped: Array<{ property_id: string; status: string }> = [];
+  const skipped: Array<{ property_id: string; status: string; detail?: string }> = [];
   for (const property of (properties ?? []) as PropertyRow[]) {
     if (property.inventory_ai_mode === 'off') {
       skipped.push({ property_id: property.id, status: 'skipped_ai_off' });
+    } else if (!property.timezone) {
+      log.warn('ml-predict-inventory: property missing timezone — skip', {
+        requestId, property_id: property.id, property_name: property.name,
+      });
+      await emitPropertyMisconfiguredEvent({
+        requestId,
+        propertyId: property.id,
+        layer: 'inventory_rate',
+        field: 'timezone',
+        value: null,
+      });
+      skipped.push({
+        property_id: property.id,
+        status: 'skipped',
+        detail: 'property_misconfigured: timezone is null',
+      });
     } else {
       eligible.push(property);
     }
@@ -63,7 +87,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
   // Parallel fan-out (concurrency 5).
   const outcomes = await runWithConcurrency(eligible, async (property) => {
-    const propertyTz = (property.timezone as string | null) ?? 'America/Chicago';
+    const propertyTz = property.timezone as string;
     const mlServiceUrl = resolveMlShardUrl(property.id)!;
     const res = await fetch(`${mlServiceUrl.replace(/\/$/, '')}/predict/inventory-rate`, {
       method: 'POST',
@@ -80,6 +104,25 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       requestId, property_id: property.id,
       predicted: (json as { predicted?: number }).predicted ?? null,
     });
+
+    // Codex follow-up 2026-05-13 (A2): if the ML service returned a
+    // property_misconfigured error (e.g. for a field caught Python-side
+    // we don't pre-check here), persist the event and return a clean
+    // skipped outcome.
+    const errStr = (json as { error?: string }).error;
+    if (typeof errStr === 'string' && errStr.startsWith('property_misconfigured:')) {
+      const parsed = parsePropertyMisconfiguredError(errStr);
+      if (parsed) {
+        await emitPropertyMisconfiguredEvent({
+          requestId,
+          propertyId: property.id,
+          layer: 'inventory_rate',
+          field: parsed.field,
+          value: parsed.value,
+        });
+      }
+      return { status: 'skipped', detail: errStr };
+    }
     return json;
   }, 5);
 
@@ -99,10 +142,18 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   ];
 
   const anyError = results.some((r) => r.status === 'error');
+  // Codex follow-up 2026-05-13 (A1): degraded heartbeat when any
+  // property was skipped due to missing timezone or other misconfiguration
+  // (status === 'skipped', NOT 'skipped_ai_off' which is intentional).
+  const propertiesMisconfigured = results.filter((r) => r.status === 'skipped').length;
   if (!anyError) {
     await writeCronHeartbeat('ml-predict-inventory', {
       requestId,
-      notes: { properties_processed: results.length },
+      status: propertiesMisconfigured > 0 ? 'degraded' : 'ok',
+      notes: {
+        properties_processed: results.length,
+        properties_misconfigured: propertiesMisconfigured,
+      },
     });
   }
   // Outer ok reflects inner state — see ml-train-demand for full notes.

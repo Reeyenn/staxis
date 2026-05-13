@@ -18,6 +18,10 @@ import { errToString } from '@/lib/utils';
 import { runWithConcurrency } from '@/lib/parallel';
 import { listMlShardUrls, resolveMlShardUrl } from '@/lib/ml-routing';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
+import {
+  emitPropertyMisconfiguredEvent,
+  parsePropertyMisconfiguredError,
+} from '@/lib/ml-misconfigured-events';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -80,6 +84,29 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       elapsedMs: Date.now() - t0,
       items_trained: (json as { items_trained?: number }).items_trained ?? null,
     });
+
+    // Codex follow-up 2026-05-13 (A2 + A6): persist property_misconfigured
+    // events from training; map error responses to status: 'error' so
+    // the heartbeat is suppressed correctly. Inventory training catches
+    // total_rooms misconfiguration before the per-item loop, so this is
+    // where we hear about it.
+    const errStr = (json as { error?: string }).error;
+    if (typeof errStr === 'string' && errStr.startsWith('property_misconfigured:')) {
+      const parsed = parsePropertyMisconfiguredError(errStr);
+      if (parsed) {
+        await emitPropertyMisconfiguredEvent({
+          requestId,
+          propertyId: property.id,
+          layer: 'inventory_rate',
+          field: parsed.field,
+          value: parsed.value,
+        });
+      }
+      return { ...json, status: 'skipped' };
+    }
+    if (typeof errStr === 'string' || !res.ok) {
+      return { ...json, status: 'error' };
+    }
     return json;
   }, 3);
 

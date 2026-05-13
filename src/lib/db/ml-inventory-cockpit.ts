@@ -549,9 +549,35 @@ export interface AutoFillItem {
   graduated: boolean;            // true = passed all 3 graduation gates
 }
 
+/**
+ * Minimal client surface this function uses — for dependency-injecting
+ * supabaseAdmin from server-side callers (e.g. doctor's
+ * inventory_auto_fill_shape check). Default is the browser/anon client
+ * used by the inventory page. Codex follow-up 2026-05-13 (A3): the
+ * doctor was hitting RLS-protected tables with the anon client → no
+ * rows visible from a server context → silent ok-skip on the Phase 1
+ * shape check. Allow admin client injection so the doctor can verify
+ * the actual prod shape.
+ */
+export interface AutoFillReadClient {
+  from(table: 'inventory_rate_predictions' | 'model_runs'): {
+    select(cols: string): {
+      eq(col: string, val: unknown): {
+        gte(col: string, val: unknown): {
+          order(col: string, opts: { ascending: boolean }): {
+            limit(n: number): Promise<{ data: unknown; error: unknown }>;
+          };
+        };
+      };
+      in(col: string, vals: string[]): Promise<{ data: unknown; error: unknown }>;
+    };
+  };
+}
+
 export async function getInventoryAutoFillMap(
   pid: string,
   mode: 'off' | 'auto' | 'always-on',
+  client: AutoFillReadClient = supabase as unknown as AutoFillReadClient,
 ): Promise<AutoFillItem[]> {
   if (mode === 'off') return [];
 
@@ -565,13 +591,15 @@ export async function getInventoryAutoFillMap(
   const sinceMs = Date.now() - ML_PREDICTION_FRESHNESS_DAYS * 86400_000;
   const sinceIso = new Date(sinceMs).toISOString();
 
-  const { data: predData, error: predErr } = await supabase
+  const predResp = await client
     .from('inventory_rate_predictions')
     .select('item_id,predicted_current_stock,predicted_daily_rate,predicted_daily_rate_p25,predicted_daily_rate_p75,model_run_id,predicted_at')
     .eq('property_id', pid)
     .gte('predicted_at', sinceIso)
     .order('predicted_at', { ascending: false })
     .limit(2000);
+  const predData = predResp.data as Array<Record<string, unknown>> | null;
+  const predErr = predResp.error;
   if (predErr) {
     logErr('getInventoryAutoFillMap pred', predErr);
     return [];
@@ -584,16 +612,18 @@ export async function getInventoryAutoFillMap(
   if (latestByItem.size === 0) return [];
 
   const runIds = Array.from(new Set(Array.from(latestByItem.values()).map((p) => String(p.model_run_id))));
-  const { data: runsData, error: runsErr } = await supabase
+  const runsResp = await client
     .from('model_runs')
     .select('id,auto_fill_enabled,algorithm,is_active')
     .in('id', runIds);
+  const runsData = runsResp.data as Array<Record<string, unknown>> | null;
+  const runsErr = runsResp.error;
   if (runsErr) {
     logErr('getInventoryAutoFillMap runs', runsErr);
     return [];
   }
   const runById = new Map<string, Record<string, unknown>>();
-  for (const r of runsData ?? []) runById.set(r.id, r as Record<string, unknown>);
+  for (const r of runsData ?? []) runById.set(String(r.id), r as Record<string, unknown>);
 
   const nowMs = Date.now();
   const out: AutoFillItem[] = [];

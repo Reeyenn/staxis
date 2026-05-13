@@ -237,26 +237,91 @@ def test_demand_prior_passes_keeps_legacy_mae_gate():
     """Codex 2026-05-13 #3 fix (Option B): prior-run counting must
     still check the legacy absolute MAE threshold, otherwise runs that
     previously failed the gate count as 'passing' toward the activation
-    streak. Pinned via source inspection because the prior_passes
-    expression is in a loop, not a callable."""
+    streak.
+
+    Codex review 2026-05-13 (A5) follow-up: the original assertion
+    just grep'd for `settings.validation_mae_threshold` in the file,
+    but that string also appears in comments/docstrings (config.py's
+    DEPRECATED comment). A future PR could revert the actual
+    `prior_passes` code and leave only the comment, and this test
+    would still pass. Now we extract the prior_passes block by regex
+    and assert the threshold reference is INSIDE that block.
+    """
+    import re
+
     src = _read_module_source("training/demand.py")
-    # The prior_passes block must reference validation_mae_threshold
-    # (the legacy absolute gate). If a future PR drops this again the
-    # grandfather bug returns.
-    assert "settings.validation_mae_threshold" in src, (
-        "Codex #3 regression: training/demand.py no longer references "
-        "the legacy MAE threshold; activation grandfather is back."
+    # Extract the for-prior_run loop body. Use a permissive regex that
+    # captures from `for prior_run` to the next blank line + non-indented
+    # code (end of loop body).
+    block = re.search(
+        r"for prior_run in.*?\n(.*?)should_activate\s*=",
+        src,
+        flags=re.DOTALL,
+    )
+    assert block, "couldn't locate prior_passes loop body in training/demand.py"
+    body = block.group(1)
+    assert "settings.validation_mae_threshold" in body, (
+        "Codex #3 regression: training/demand.py prior_passes loop no "
+        "longer references the legacy MAE threshold; activation "
+        "grandfather is back. Loop body found:\n" + body[:500]
     )
 
 
 def test_supply_prior_passes_keeps_legacy_mae_gate():
-    """Same check for supply. Codex 2026-05-13 #3."""
+    """Same check for supply. Codex 2026-05-13 #3 + A5 follow-up.
+
+    Supply hardcodes the legacy 10-min threshold inline (not via
+    settings) — the prior_passes block must contain `< 10.0`
+    inside the loop body, not just anywhere in the file.
+    """
+    import re
+
     src = _read_module_source("training/supply.py")
-    # Supply hardcodes 10.0 (its legacy supply-only threshold).
-    assert "validation_mae" in src and "< 10.0" in src, (
-        "Codex #3 regression: training/supply.py no longer applies the "
-        "legacy 10-min MAE gate to prior runs; activation grandfather "
-        "is back."
+    block = re.search(
+        r"for prior_run in.*?\n(.*?)should_activate\s*=",
+        src,
+        flags=re.DOTALL,
+    )
+    assert block, "couldn't locate prior_passes loop body in training/supply.py"
+    body = block.group(1)
+    assert "validation_mae" in body and "< 10.0" in body, (
+        "Codex #3 regression: training/supply.py prior_passes loop no "
+        "longer applies the legacy 10-min MAE gate; activation "
+        "grandfather is back. Loop body found:\n" + body[:500]
+    )
+
+
+def test_demand_prior_passes_block_distinct_from_current_gate():
+    """Sanity check: the prior_passes block must NOT execute the new
+    ratio threshold against prior rows (they don't have mae_ratio stored).
+
+    Filters out comment lines so a `# don't reference mae_ratio` style
+    note doesn't trip the test. We're checking the actual code, not
+    the documentation."""
+    import re
+
+    src = _read_module_source("training/demand.py")
+    block = re.search(
+        r"for prior_run in.*?\n(.*?)should_activate\s*=",
+        src,
+        flags=re.DOTALL,
+    )
+    assert block, "couldn't locate prior_passes loop body"
+    body = block.group(1)
+    # Strip comment-only lines before checking for mae_ratio references.
+    code_lines = [
+        line for line in body.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    code = "\n".join(code_lines)
+    # The new ratio gate uses `mae_ratio` — that name should NOT appear
+    # in the executable code inside the prior_passes loop (prior rows
+    # don't have it stored).
+    assert "mae_ratio" not in code, (
+        "Codex #3 regression risk: prior_passes loop references mae_ratio "
+        "in executable code, but prior model_runs rows don't store that "
+        "field — this would always evaluate to inf and reject all prior runs.\n"
+        f"Loop body (code only):\n{code[:500]}"
     )
 
 

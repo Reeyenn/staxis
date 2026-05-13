@@ -17,6 +17,10 @@ import { errToString } from '@/lib/utils';
 import { runWithConcurrency, applyShardFilter } from '@/lib/parallel';
 import { listMlShardUrls, resolveMlShardUrl } from '@/lib/ml-routing';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
+import {
+  emitPropertyMisconfiguredEvent,
+  parsePropertyMisconfiguredError,
+} from '@/lib/ml-misconfigured-events';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -63,6 +67,30 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       signal: AbortSignal.timeout(45_000),
     });
     const json = await res.json().catch(() => ({ status: 'non_json_response', http: res.status }));
+
+    // Codex follow-up 2026-05-13 (A2 + A6): persist property_misconfigured
+    // events from training; map error responses to status: 'error' so
+    // the heartbeat is suppressed correctly.
+    const errStr = (json as { error?: string }).error;
+    if (typeof errStr === 'string' && errStr.startsWith('property_misconfigured:')) {
+      const parsed = parsePropertyMisconfiguredError(errStr);
+      if (parsed) {
+        await emitPropertyMisconfiguredEvent({
+          requestId,
+          propertyId: property.id,
+          layer: 'supply',
+          field: parsed.field,
+          value: parsed.value,
+        });
+      }
+      return { status: 'skipped', detail: errStr };
+    }
+    if (typeof errStr === 'string' || !res.ok) {
+      return {
+        status: 'error',
+        detail: errStr ?? (json as { http?: number }).http ?? `HTTP ${res.status}`,
+      };
+    }
     return { status: (json as { status?: string }).status ?? 'unknown', detail: json };
   }, 5);
 

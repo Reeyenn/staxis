@@ -31,6 +31,10 @@ import { errToString } from '@/lib/utils';
 import { runWithConcurrency, applyShardFilter } from '@/lib/parallel';
 import { listMlShardUrls, resolveMlShardUrl } from '@/lib/ml-routing';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
+import {
+  emitPropertyMisconfiguredEvent,
+  parsePropertyMisconfiguredError,
+} from '@/lib/ml-misconfigured-events';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -100,6 +104,34 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       elapsedMs,
       mlStatus: (json as { status?: string }).status ?? 'unknown',
     });
+
+    // Codex follow-up 2026-05-13 (A2): persist property_misconfigured to
+    // app_events when the ML service flags a missing total_rooms /
+    // timezone during training (otherwise the only signal is a Vercel
+    // log line). Plus map the error response to status: 'skipped' so
+    // the heartbeat-degraded logic can surface it.
+    const errStr = (json as { error?: string }).error;
+    if (typeof errStr === 'string' && errStr.startsWith('property_misconfigured:')) {
+      const parsed = parsePropertyMisconfiguredError(errStr);
+      if (parsed) {
+        await emitPropertyMisconfiguredEvent({
+          requestId,
+          propertyId: property.id,
+          layer: 'demand',
+          field: parsed.field,
+          value: parsed.value,
+        });
+      }
+      return { status: 'skipped', detail: errStr };
+    }
+    // Codex follow-up A6 (training-cron error mapping): non-2xx + any
+    // error body → status: 'error' so the heartbeat is suppressed.
+    if (typeof errStr === 'string' || !res.ok) {
+      return {
+        status: 'error',
+        detail: errStr ?? (json as { http?: number }).http ?? `HTTP ${res.status}`,
+      };
+    }
     return { status: (json as { status?: string }).status ?? 'unknown', detail: json };
   }, 5);
 

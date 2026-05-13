@@ -1779,31 +1779,39 @@ async function checkCronHeartbeatsFresh(): Promise<Omit<Check, 'name' | 'duratio
 async function checkPropertyMisconfiguredRecent(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {
     const cutoff = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    // Codex follow-up 2026-05-13 (B3): bumped to 200 so propertyIds + fields
+    // sets are not undercounted at fleet scale (50 hotels × 4 layers × daily).
     const { data, error, count } = await supabaseAdmin
       .from('app_events')
       .select('property_id, metadata, ts', { count: 'exact' })
       .eq('event_type', 'property_misconfigured')
       .gte('ts', cutoff)
       .order('ts', { ascending: false })
-      .limit(20);
+      .limit(200);
     if (error) {
       return { status: 'warn', detail: `app_events read failed: ${errToString(error)}` };
     }
-    if (!count) {
+    // Codex follow-up 2026-05-13 (A4): `!count` was wrong because Supabase
+    // can return `count: null` in proxied environments while `data` is
+    // populated. Use the array length as the source of truth (matches
+    // the smoke at scripts/ml-smoke-test.ts:95).
+    const rows = data ?? [];
+    if (rows.length === 0 && (count ?? 0) === 0) {
       return { status: 'ok', detail: 'No property_misconfigured events in last 24h' };
     }
     const fields = new Set<string>();
     const propertyIds = new Set<string>();
-    for (const row of data ?? []) {
+    for (const row of rows) {
       const md = (row as { metadata?: { field?: string } }).metadata;
       if (md?.field) fields.add(md.field);
       const pid = (row as { property_id?: string }).property_id;
       if (pid) propertyIds.add(pid);
     }
+    const eventCount = count ?? rows.length;
     return {
       status: 'warn',
       detail:
-        `${count} property_misconfigured event(s) in last 24h ` +
+        `${eventCount} property_misconfigured event(s) in last 24h ` +
         `across ${propertyIds.size} property/properties; ` +
         `fields: ${[...fields].join(', ') || '(unknown)'}. ` +
         `Set the missing field(s) via Live Hotels → [hotel] in the admin UI.`,
@@ -1838,9 +1846,22 @@ async function checkInventoryAutoFillShape(): Promise<Omit<Check, 'name' | 'dura
   }
   try {
     const { getInventoryAutoFillMap } = await import('@/lib/db/ml-inventory-cockpit');
-    // Use 'auto' mode (matches default property setting); the function
-    // returns the same shape across all non-'off' modes.
-    const items = await getInventoryAutoFillMap(propertyId, 'auto');
+    // Codex follow-up 2026-05-13 (A3): pass supabaseAdmin explicitly.
+    // The default browser/anon client has no JWT in a server context,
+    // so RLS-protected tables return empty — silent ok-skip in prod.
+    // Use 'always-on' mode so we get ALL active items (not just
+    // graduated ones), letting the doctor distinguish "0 items at all"
+    // (real regression) from "items present but none graduated yet".
+    // The unknown cast is required because supabaseAdmin's full builder
+    // type doesn't structurally match the minimal AutoFillReadClient
+    // interface — only the methods the function uses need to exist on
+    // the injected client.
+    const items = await getInventoryAutoFillMap(
+      propertyId,
+      'always-on',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      supabaseAdmin as unknown as any,
+    );
     if (!Array.isArray(items)) {
       return {
         status: 'fail',
@@ -1848,10 +1869,21 @@ async function checkInventoryAutoFillShape(): Promise<Omit<Check, 'name' | 'dura
         fix: 'Inspect src/lib/db/ml-inventory-cockpit.ts:getInventoryAutoFillMap return contract.',
       };
     }
+    // Codex follow-up 2026-05-13 (A3): when SMOKE_PROPERTY_ID is set we
+    // expect to see SOME items. Zero items on a property tagged for
+    // smoke means either (a) cron stopped writing predictions, or
+    // (b) the predictions are >7 days stale and got freshness-filtered.
+    // Both are real regressions — warn (not ok).
     if (items.length === 0) {
       return {
-        status: 'ok',
-        detail: `auto-fill map returned 0 items for property ${propertyId} (no graduated models yet — informational).`,
+        status: 'warn',
+        detail:
+          `auto-fill map returned 0 items for SMOKE_PROPERTY_ID ${propertyId}. ` +
+          `Either inventory predictions stopped writing or freshness-filtered out (>7d). ` +
+          `Check ml-predict-inventory cron.`,
+        fix:
+          'Check the most recent inventory_rate_predictions row: ' +
+          `select max(predicted_at) from inventory_rate_predictions where property_id = '${propertyId}';`,
       };
     }
     const graduated = items.find((i) => i.graduated === true);

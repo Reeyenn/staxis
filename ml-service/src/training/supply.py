@@ -267,32 +267,44 @@ def _train_supply_inner(
             "feature_set_version": FEATURE_SET_VERSION,
         }
 
-    # Create model_runs row
-    model_run = client.insert(
-        "model_runs",
+    # Codex adversarial review 2026-05-13 (A6): atomic deactivate + insert
+    # via the migration 0107 RPC. See training/demand.py for the rationale.
+    fields = {
+        "trained_at": datetime.utcnow().isoformat(),
+        "training_row_count": len(df),
+        "feature_set_version": FEATURE_SET_VERSION,
+        "model_version": model_version,
+        "algorithm": model.get_config()["algorithm"],
+        "training_mae": training_mae,
+        "validation_mae": validation_mae,
+        "baseline_mae": baseline_mae,
+        "beats_baseline_pct": beats_baseline_pct,
+        "validation_holdout_n": len(X_test),
+        "consecutive_passing_runs": consecutive_passes,
+        "posterior_params": posterior_params,
+        "hyperparameters": model.get_config(),
+    }
+    rpc_result = client.client.rpc(
+        "staxis_install_housekeeping_model_run",
         {
-            "property_id": property_id,
-            "layer": "supply",
-            "trained_at": datetime.utcnow().isoformat(),
-            "training_row_count": len(df),
-            "feature_set_version": FEATURE_SET_VERSION,
-            "model_version": model_version,
-            "algorithm": model.get_config()["algorithm"],
-            "training_mae": training_mae,
-            "validation_mae": validation_mae,
-            "baseline_mae": baseline_mae,
-            "beats_baseline_pct": beats_baseline_pct,
-            "validation_holdout_n": len(X_test),
-            "is_active": should_activate,
-            "activated_at": datetime.utcnow().isoformat() if should_activate else None,
-            "consecutive_passing_runs": consecutive_passes,
-            "posterior_params": json.dumps(posterior_params) if posterior_params else None,
-            "hyperparameters": json.dumps(model.get_config()),
+            "p_property_id": property_id,
+            "p_layer": "supply",
+            "p_fields": fields,
+            "p_should_activate": should_activate,
         },
-    )
+    ).execute()
+    rows = rpc_result.data or []
+    row = rows[0] if isinstance(rows, list) and rows else (rows or {})
+    if not row.get("ok"):
+        return {
+            "error": f"model_install_refused: {row.get('reason', 'unknown')}",
+            "model_run_id": None,
+            "is_active": False,
+        }
+    new_run_id = row.get("model_run_id")
 
     return {
-        "model_run_id": model_run.get("id"),
+        "model_run_id": new_run_id,
         "is_active": should_activate,
         "training_mae": training_mae,
         "validation_mae": validation_mae,
