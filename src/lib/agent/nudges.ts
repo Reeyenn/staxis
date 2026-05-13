@@ -131,8 +131,10 @@ interface NudgeDraft {
   dedupeKey: string;
 }
 
-/** Find the accounts that should receive nudges for a property (owners + GMs). */
-async function getNudgeRecipients(propertyId: string): Promise<string[]> {
+/** Find the accounts that should receive nudges for a property (owners + GMs).
+ *  Exported so tool handlers (e.g. request_help in room-actions.ts) can route
+ *  user-driven nudges to the right inbox without duplicating this logic. */
+export async function getNudgeRecipients(propertyId: string): Promise<string[]> {
   const { data } = await supabaseAdmin
     .from('accounts')
     .select('id, role, property_access')

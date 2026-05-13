@@ -40,9 +40,12 @@ const PRICING: Record<ModelTier, { input: number; output: number; cachedInput: n
 };
 
 // Per-request timeout. Tool loops can fan out — if Claude calls 5 tools
-// each with their own DB round-trips, total wall time matters. 60s is
-// generous and well under Vercel's 300s function ceiling on Pro plans.
-const REQUEST_TIMEOUT_MS = 60_000;
+// each with their own DB round-trips, total wall time matters. Set to 50s
+// so the SDK fails BEFORE Vercel's maxDuration=60s kills the function —
+// gives the route's finally block time to release the cost reservation
+// and synthesize tool_result rows for any dangling tool_use. Codex review
+// fix B5, 2026-05-13.
+const REQUEST_TIMEOUT_MS = 50_000;
 
 // Max tool-call iterations within one user turn before we give up. Prevents
 // runaway loops where the model keeps calling tools without resolving.
@@ -65,26 +68,13 @@ function getClient(): Anthropic {
   return cachedClient;
 }
 
-// ─── Smart routing ─────────────────────────────────────────────────────────
-
-export interface RoutingHints {
-  /** Caller can force a specific tier (e.g. evals pin to Sonnet). */
-  forceModel?: ModelTier;
-  /** Hint that the user's request is complex (financial analysis, multi-step). */
-  complex?: boolean;
-}
-
-/**
- * Pick the model tier for this turn.
- *
- * For v1: default to Sonnet, which is the workhorse model Reeyen approved
- * ("same brain Notion / Linear / Anthropic use"). Future optimization: route
- * confirmed-simple commands ("mark 302 clean") to Haiku for ~10× cost win.
- * Don't ship Haiku-default until we have evals proving it doesn't regress.
- */
-export function pickModel(hints: RoutingHints = {}): ModelTier {
-  if (hints.forceModel) return hints.forceModel;
-  if (hints.complex) return 'opus';
+// ─── Model selection ──────────────────────────────────────────────────────
+// Pinned to Sonnet 4.6 — the workhorse model Reeyen approved ("same brain
+// Notion / Linear / Anthropic use"). Smart routing (Haiku for confirmed-
+// simple commands → ~10× cost win) is backlog and requires evals to prove
+// no regression before flipping the default. Codex review fix A6, 2026-05-13:
+// removed the dead RoutingHints surface that was never used by callers.
+function pickModel(): ModelTier {
   return 'sonnet';
 }
 
@@ -128,9 +118,22 @@ export interface AgentToolCall {
   args: Record<string, unknown>;
 }
 
+/**
+ * System prompt split into stable (cache-eligible) and dynamic (changes
+ * every turn) pieces. The Anthropic API accepts an array of system blocks
+ * with per-block cache_control — only the stable block gets cached, so
+ * the dynamic snapshot doesn't invalidate the cache. Codex review fix A1.
+ */
+export interface SystemPromptBlocks {
+  /** Stable across the conversation — eligible for prompt caching. */
+  stable: string;
+  /** Changes every turn (e.g. live hotel snapshot). NOT cached. */
+  dynamic: string;
+}
+
 export interface RunAgentOpts {
-  /** System prompt — the brain's "you are" instructions. Will be cache-marked. */
-  systemPrompt: string;
+  /** System prompt — split into stable (cached) + dynamic (not cached). */
+  systemPrompt: SystemPromptBlocks;
   /** Conversation history (the past). */
   history: AgentMessage[];
   /** The user's new turn. */
@@ -139,8 +142,6 @@ export interface RunAgentOpts {
   tools: ToolDefinition[];
   /** Tool execution context (user + property + request id). */
   toolContext: ToolContext;
-  /** Routing hints (force model, etc.). */
-  hints?: RoutingHints;
 }
 
 export interface RunAgentResult {
@@ -162,110 +163,119 @@ type ClaudeContent = Anthropic.Messages.ContentBlockParam;
 /**
  * Translate our AgentMessage shape into Claude's MessageParam list.
  *
- * Subtle requirement from Anthropic: every tool_use block in an assistant
- * turn must have its matching tool_result block in the IMMEDIATELY following
- * user turn — and multiple tool_results must be packed into ONE user
- * message, not separate adjacent user messages. We coalesce consecutive
- * tool entries here so a turn with N tool calls produces exactly one
- * user message containing N tool_result blocks.
+ * Anthropic's strict requirement: every assistant `tool_use` block must
+ * be IMMEDIATELY followed by a user message containing the matching
+ * `tool_result` block(s). Multiple tool_results from one iteration must
+ * be packed into a SINGLE user message — not adjacent ones.
  *
- * Codex review fix #3 Layer B (2026-05-13): also repairs DANGLING tool_use
- * blocks — assistant tool_uses with no matching tool_result in the history.
- * This happens when a previous request crashed/aborted before its tool
- * results landed. We inject synthetic error tool_results for each unmatched
- * id so the replay still validates. Layer A (cleanup-on-abort in the route)
- * is the primary defense; Layer B exists for the cases where Layer A itself
- * fails (process crash, OOM, etc.).
+ * This function reconstructs that exact shape from our DB-row representation,
+ * AND repairs dangling tool_use blocks left behind when a prior request
+ * was aborted or crashed before its tool_results landed.
+ *
+ * Adjacency-aware repair (Codex review fix C3, 2026-05-13): we look only
+ * at the contiguous run of `tool` rows IMMEDIATELY after each assistant
+ * turn — anything outside that adjacent block doesn't count as a match.
+ * The previous implementation searched the entire history for matching
+ * tool_result ids, which could let an out-of-order persistence (e.g.
+ * abort-cleanup row racing a new user turn) be misclassified as
+ * "matched" while still producing an invalid message sequence.
  */
 function toClaudeMessages(history: AgentMessage[], newUser: string): ClaudeMessage[] {
   const out: ClaudeMessage[] = [];
-  let toolResultBuffer: ClaudeContent[] = [];
 
-  const flushToolResults = () => {
-    if (toolResultBuffer.length) {
-      out.push({ role: 'user', content: toolResultBuffer });
-      toolResultBuffer = [];
-    }
-  };
-
-  // Walk the history once and collect the tool_use ids that are followed
-  // (eventually, before the next non-tool message) by a matching tool_result.
-  // Anything in tool_use that's not in this set is dangling and gets a
-  // synthetic result injected at the right spot below.
-  const matchedToolUseIds = new Set<string>();
-  {
-    const knownToolResultIds = new Set<string>();
-    for (const m of history) {
-      if (m.role === 'tool' && m.toolCallId) {
-        knownToolResultIds.add(m.toolCallId);
-      }
-    }
-    for (const m of history) {
-      if (m.role === 'assistant' && m.toolCalls) {
-        for (const tc of m.toolCalls) {
-          if (knownToolResultIds.has(tc.id)) matchedToolUseIds.add(tc.id);
-        }
-      }
-    }
-  }
-
-  for (const m of history) {
+  // Iterate over history with explicit index control so we can peek
+  // ahead at the contiguous tool-result block after each assistant turn.
+  let i = 0;
+  while (i < history.length) {
+    const m = history[i];
     if (m.role === 'user') {
-      flushToolResults();
       out.push({ role: 'user', content: m.content });
-    } else if (m.role === 'assistant') {
-      flushToolResults();
-      const blocks: ClaudeContent[] = [];
-      if (m.content) blocks.push({ type: 'text', text: m.content });
-      if (m.toolCalls) {
-        for (const tc of m.toolCalls) {
-          blocks.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.args });
-        }
-      }
-      out.push({ role: 'assistant', content: blocks });
-
-      // If any tool_use in this assistant turn lacks a tool_result later
-      // in the history, synthesize an error result for it RIGHT NOW so
-      // Claude's "tool_use must be immediately followed by tool_result"
-      // rule is satisfied. The dangling tools become "aborted" errors —
-      // honest about what happened.
-      if (m.toolCalls) {
-        for (const tc of m.toolCalls) {
-          if (!matchedToolUseIds.has(tc.id)) {
-            toolResultBuffer.push({
-              type: 'tool_result',
-              tool_use_id: tc.id,
-              content: 'Tool result was not captured (request was aborted or crashed before completion).',
-              is_error: true,
-            });
-          }
-        }
-      }
-    } else if (m.role === 'tool') {
-      toolResultBuffer.push({
-        type: 'tool_result',
-        tool_use_id: m.toolCallId,
-        content: typeof m.result === 'string' ? m.result : JSON.stringify(m.result),
-        is_error: m.isError ?? false,
-      });
+      i++;
+      continue;
     }
+    if (m.role === 'tool') {
+      // Stray tool result with no immediately-preceding assistant tool_use.
+      // Skip it — emitting a tool_result without a matching tool_use would
+      // make Claude reject the whole request.
+      i++;
+      continue;
+    }
+
+    // Assistant turn. Emit text + tool_use blocks.
+    const blocks: ClaudeContent[] = [];
+    if (m.content) blocks.push({ type: 'text', text: m.content });
+    const toolCallIds: string[] = [];
+    if (m.toolCalls) {
+      for (const tc of m.toolCalls) {
+        blocks.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.args });
+        toolCallIds.push(tc.id);
+      }
+    }
+    out.push({ role: 'assistant', content: blocks });
+    i++;
+
+    // If this assistant turn had no tool calls, no tool_result follow-up
+    // is expected — continue to the next iteration.
+    if (toolCallIds.length === 0) continue;
+
+    // Otherwise, consume the contiguous `tool` rows that follow as the
+    // matching tool_result block. Stop at the first non-tool row.
+    const adjacentResults = new Map<string, AgentMessage & { role: 'tool' }>();
+    while (i < history.length && history[i].role === 'tool') {
+      const tm = history[i] as AgentMessage & { role: 'tool' };
+      if (tm.toolCallId) adjacentResults.set(tm.toolCallId, tm);
+      i++;
+    }
+
+    // For each tool_use in the assistant turn, emit a matching tool_result.
+    // Missing ones (dangling — never persisted, or aborted) get a synthetic
+    // error result so the message sequence still validates.
+    const resultBlocks: ClaudeContent[] = toolCallIds.map(id => {
+      const tm = adjacentResults.get(id);
+      if (tm) {
+        return {
+          type: 'tool_result' as const,
+          tool_use_id: id,
+          content: typeof tm.result === 'string' ? tm.result : JSON.stringify(tm.result),
+          is_error: tm.isError ?? false,
+        };
+      }
+      return {
+        type: 'tool_result' as const,
+        tool_use_id: id,
+        content: 'Tool result was not captured (request was aborted or crashed before completion).',
+        is_error: true,
+      };
+    });
+    out.push({ role: 'user', content: resultBlocks });
   }
-  flushToolResults();
 
   // The new user turn always goes at the end.
   out.push({ role: 'user', content: newUser });
   return out;
 }
 
-/** Build a cache-marked system block so the prompt prefix is reused across turns. */
-function buildSystemBlocks(systemPrompt: string): Anthropic.Messages.TextBlockParam[] {
-  return [
+/**
+ * Build the system blocks for a request.
+ *
+ * Two blocks: stable (cache_control: ephemeral) + dynamic (no caching).
+ * The stable block (base + role prompt) is identical across turns of a
+ * conversation, so Anthropic's prompt cache hits — typically 80%+ of
+ * system tokens. The dynamic block (live hotel snapshot) is appended
+ * un-cached because it changes every turn. Codex review fix A1.
+ */
+function buildSystemBlocks(systemPrompt: SystemPromptBlocks): Anthropic.Messages.TextBlockParam[] {
+  const blocks: Anthropic.Messages.TextBlockParam[] = [
     {
       type: 'text',
-      text: systemPrompt,
+      text: systemPrompt.stable,
       cache_control: { type: 'ephemeral' },
     },
   ];
+  if (systemPrompt.dynamic && systemPrompt.dynamic.trim().length > 0) {
+    blocks.push({ type: 'text', text: systemPrompt.dynamic });
+  }
+  return blocks;
 }
 
 // ─── Sync agent loop ───────────────────────────────────────────────────────
@@ -277,7 +287,7 @@ function buildSystemBlocks(systemPrompt: string): Anthropic.Messages.TextBlockPa
  * calls (or we hit MAX_TOOL_ITERATIONS).
  */
 export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
-  const model = pickModel(opts.hints);
+  const model = pickModel();
   const client = getClient();
   const tools = toAnthropicTools(opts.tools);
 
@@ -322,9 +332,14 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     messages = [...messages, { role: 'assistant', content: response.content }];
 
     if (response.stop_reason !== 'tool_use' || calls.length === 0) {
-      // Done — final answer.
+      // Done — final answer. If we hit the token cap, surface that
+      // clearly in the response text instead of silently returning a
+      // truncated answer (Codex review fix A2).
+      const finalText = response.stop_reason === 'max_tokens'
+        ? `${turnText}\n\n_(Response hit the 4096-token limit. Ask a follow-up to continue.)_`
+        : turnText;
       return {
-        text: turnText,
+        text: finalText,
         toolCallsExecuted,
         assistantMessages,
         usage: {
@@ -392,7 +407,7 @@ export type AgentEvent =
  * UI needs to render (text deltas, tool call status, final done).
  */
 export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEvent> {
-  const model = pickModel(opts.hints);
+  const model = pickModel();
   const client = getClient();
   const tools = toAnthropicTools(opts.tools);
 
@@ -444,7 +459,13 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
       messages = [...messages, { role: 'assistant', content: finalMsg.content }];
 
       if (finalMsg.stop_reason !== 'tool_use' || calls.length === 0) {
-        // Final answer reached.
+        // Final answer reached. If we hit the 4096-token output cap,
+        // append a clear truncation marker so the user knows the answer
+        // was cut off (Codex review fix A2). Otherwise it looks like a
+        // normal answer that just happened to end mid-sentence.
+        const completionText = finalMsg.stop_reason === 'max_tokens'
+          ? `${finalText}\n\n_(Response hit the 4096-token limit — ask a follow-up to continue.)_`
+          : finalText;
         yield {
           type: 'done',
           usage: {
@@ -454,7 +475,7 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
             model,
             costUsd: estimateCost(model, totalInput, totalOutput, totalCachedInput),
           },
-          finalText,
+          finalText: completionText,
         };
         return;
       }

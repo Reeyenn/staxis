@@ -215,10 +215,12 @@ export async function POST(req: NextRequest): Promise<Response> {
         });
 
         for await (const event of iter) {
-          // The internal-only assistant_turn event is for persistence; don't
-          // forward it to the client (the text_deltas + tool_call_started
-          // events already rendered everything the user sees).
-          if (event.type !== 'assistant_turn') {
+          // Two internal-only events are NOT forwarded immediately:
+          //   - assistant_turn: persistence signal (no user-visible content)
+          //   - done: held until the final assistant turn is durably saved
+          //           so the client never sees "success" for a message that
+          //           failed to persist (Codex review fix C4).
+          if (event.type !== 'assistant_turn' && event.type !== 'done') {
             send(event);
           }
 
@@ -254,8 +256,10 @@ export async function POST(req: NextRequest): Promise<Response> {
           }
         }
 
-        // Persist the FINAL assistant text turn — the one with no tool calls
-        // (those got saved via assistant_turn events above).
+        // Persist the FINAL assistant text turn BEFORE forwarding the
+        // `done` event to the client. If this throws, the catch block
+        // sends an error event — the client never gets a misleading
+        // success terminal (Codex review fix C4, 2026-05-13).
         if (lastDoneText) {
           await recordAssistantTurn(
             finalConversationId,
@@ -268,6 +272,12 @@ export async function POST(req: NextRequest): Promise<Response> {
               costUsd: finalUsage?.costUsd ?? 0,
             },
           );
+        }
+
+        // Final assistant turn is now durable. Emit the held `done` event
+        // so the client knows the response is complete.
+        if (finalUsage) {
+          send({ type: 'done', usage: finalUsage, finalText: lastDoneText });
         }
       } catch (err) {
         // Includes errors thrown from recordAssistantTurn (Fix #2). The

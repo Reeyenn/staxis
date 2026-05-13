@@ -4,6 +4,7 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import type { AppRole } from '@/lib/roles';
+import type { ToolContext } from '../tools';
 
 export interface RoomRow {
   id: string;
@@ -31,9 +32,14 @@ export interface RoomRow {
  */
 export async function findRoomByNumber(
   propertyId: string,
-  roomNumber: string,
+  roomNumber: string | number,
 ): Promise<RoomRow | null> {
-  const normalized = roomNumber.trim();
+  // Claude usually emits roomNumber as a string per our JSON Schema, but
+  // occasionally returns a JSON number (e.g., `302` instead of `"302"`).
+  // Coerce defensively so a string-only method like .trim() doesn't blow up.
+  // Codex review fix #6, 2026-05-13.
+  const normalized = String(roomNumber ?? '').trim();
+  if (!normalized) return null;
   const { data, error } = await supabaseAdmin
     .from('rooms')
     .select('id, property_id, number, status, date, assigned_to, is_dnd, dnd_note, issue_note, help_requested, started_at, completed_at, type')
@@ -43,6 +49,35 @@ export async function findRoomByNumber(
     .limit(1);
   if (error || !data?.length) return null;
   return data[0] as unknown as RoomRow;
+}
+
+/**
+ * Gate room mutations by housekeeper-style scoping. Returns null when the
+ * caller is allowed to mutate the room, an error message string when not.
+ *
+ * Floor roles (housekeeping / maintenance) MUST have a resolved staffId
+ * AND the room must either be unassigned or assigned to that staffId.
+ * Manager-tier roles (admin / owner / general_manager / front_desk) get a
+ * free pass — operational override.
+ *
+ * Codex review fix C2 (2026-05-13): every housekeeping-allowed mutation
+ * tool MUST call this. Previously only mark_room_clean checked scope, so a
+ * housekeeper could reset/DND/flag any room in the property.
+ */
+export function assertFloorRoleCanMutateRoom(
+  room: RoomRow,
+  ctx: ToolContext,
+): string | null {
+  if (ctx.user.role !== 'housekeeping' && ctx.user.role !== 'maintenance') {
+    return null; // manager-tier — allowed
+  }
+  if (!ctx.staffId) {
+    return 'Your account isn\'t linked to a staff record on this property. Ask the manager to link it before using the chat.';
+  }
+  if (room.assigned_to && room.assigned_to !== ctx.staffId) {
+    return `Room ${room.number} is assigned to a different housekeeper.`;
+  }
+  return null;
 }
 
 export interface StaffRow {

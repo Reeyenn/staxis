@@ -48,10 +48,15 @@ export async function GET(req: NextRequest): Promise<Response> {
   const dayStartIso = dayStart.toISOString();
 
   try {
-    // Costs today
+    // Costs today — only finalized rows. Reservation ('reserved') rows have
+    // model='pending' and cost_usd=$0.15 (the upfront hold) — including
+    // them would show a fake "pending" model in the dashboard and inflate
+    // today's spend by the reservation amount of every in-flight request.
+    // Codex review fix B6, 2026-05-13.
     const { data: costs } = await supabaseAdmin
       .from('agent_costs')
-      .select('cost_usd, kind, user_id, property_id, model')
+      .select('cost_usd, kind, user_id, property_id, model, state')
+      .eq('state', 'finalized')
       .gte('created_at', dayStartIso);
 
     const requestCosts = (costs ?? []).filter(c => c.kind === 'request');
