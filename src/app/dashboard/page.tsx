@@ -203,9 +203,15 @@ export default function DashboardPage() {
   const mtCost    = Math.round(1 * wage * 8);
   const totalCost = fdCost + hkCost + mtCost;
 
-  // Date string — locale-aware, full weekday + month. Lives at the top
-  // of the right-side stat list now (the greeting strip was dropped to
-  // pull the page up vertically).
+  // Greeting + date strip — both sit left-aligned at the top of the
+  // page. Greeting first, then a small-dot separator, then the date.
+  // Right side of the strip is intentionally empty.
+  const greeting = (() => {
+    const h = new Date().getHours();
+    if (lang === 'es') return h < 12 ? 'Buenos días' : h < 18 ? 'Buenas tardes' : 'Buenas noches';
+    return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+  })();
+  const firstName = (user?.displayName ?? user?.username ?? '').split(' ')[0];
   const dateLine = new Date().toLocaleDateString(lang === 'es' ? 'es-MX' : 'en-US', {
     weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
   });
@@ -321,12 +327,32 @@ export default function DashboardPage() {
         padding: '32px 48px',
       }}>
 
-        {/* hero row — focal occupancy + stat list ───────────────────
-            The greeting strip is gone; the date now lives at the top of
-            the right-side stat list (see below) so it's all one tighter
-            block. Top spacing trimmed (was marginBottom 48; now 24) so
-            the divider sits closer to the hero and the page reads less
-            spacey. */}
+        {/* greeting strip — left-aligned. Greeting first, then a thin
+            vertical rule, then the date. Right side intentionally
+            empty so the eye starts at "Good morning, Reeyen" the way
+            you'd open a newspaper. */}
+        <div style={{
+          display: 'flex', alignItems: 'center',
+          marginBottom: '24px', gap: '14px', flexWrap: 'wrap',
+        }}>
+          <span style={{
+            fontFamily: FONT_MONO, fontSize: '10px', color: C.ink3,
+            letterSpacing: '0.18em', textTransform: 'uppercase',
+          }}>
+            {greeting}{firstName ? `, ${firstName}` : ''}
+          </span>
+          <span style={{ width: 1, height: 12, background: C.rule }} />
+          <span style={{
+            fontFamily: FONT_MONO, fontSize: '10px', color: C.ink3,
+            letterSpacing: '0.18em', textTransform: 'uppercase',
+          }}>
+            {dateLine}
+          </span>
+        </div>
+
+        {/* hero row — focal occupancy + stat list. Tighter spacing than
+            the original mock (marginBottom 24 instead of 48) so the
+            page doesn't read as overly spacey. */}
         <div style={{
           display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: '48px',
           marginBottom: '24px', alignItems: 'start',
@@ -398,21 +424,8 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* RIGHT: stat list — now leads with the date (right-aligned),
-              which used to live in the dropped greeting strip. Slight
-              right-side breathing room (paddingRight 4) so the text
-              doesn't crash the column edge. */}
+          {/* RIGHT: stat list */}
           <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <div style={{
-              textAlign: 'right', paddingRight: 4, paddingBottom: 12,
-            }}>
-              <span style={{
-                fontFamily: FONT_MONO, fontSize: '10px', color: C.ink3,
-                letterSpacing: '0.18em', textTransform: 'uppercase',
-              }}>
-                {dateLine}
-              </span>
-            </div>
             {stats.map((row, i) => (
               <div key={row.label} style={{
                 padding: '18px 0',
