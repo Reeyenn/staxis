@@ -46,7 +46,7 @@ import { EXPECTED_CRONS } from '@/app/api/admin/doctor/route';
  */
 type ScheduleSource =
   | { kind: 'github'; workflowFile: string }
-  | { kind: 'vercel' };
+  | { kind: 'vercel'; cronPath: string };
 
 const SCHEDULE_REGISTRY: ReadonlyArray<{
   heartbeatName: string;
@@ -56,8 +56,8 @@ const SCHEDULE_REGISTRY: ReadonlyArray<{
   // Tight cadences (sub-hourly) — Vercel native cron (May 2026 audit
   // pass-6: moved from GH Actions, which was silently throttling these
   // to 60-200 min intervals). Vercel Pro supports per-minute precision.
-  { heartbeatName: 'process-sms-jobs',      source: { kind: 'vercel' },                                              cronExpr: '*/5 * * * *' },
-  { heartbeatName: 'scraper-health',        source: { kind: 'vercel' },                                              cronExpr: '*/15 * * * *' },
+  { heartbeatName: 'process-sms-jobs',      source: { kind: 'vercel', cronPath: '/api/cron/process-sms-jobs' },     cronExpr: '*/5 * * * *' },
+  { heartbeatName: 'scraper-health',        source: { kind: 'vercel', cronPath: '/api/cron/scraper-health' },       cronExpr: '*/15 * * * *' },
   // seal-daily stays on GH Actions — hourly cadence is well within
   // GH's reliable range.
   { heartbeatName: 'seal-daily',            source: { kind: 'github', workflowFile: 'seal-daily-cron.yml' },         cronExpr: '5 * * * *' },
@@ -68,7 +68,7 @@ const SCHEDULE_REGISTRY: ReadonlyArray<{
   { heartbeatName: 'ml-shadow-evaluate',    source: { kind: 'github', workflowFile: 'ml-shadow-evaluate-cron.yml' }, cronExpr: '30 11 * * *' },
   { heartbeatName: 'purge-old-error-logs',  source: { kind: 'github', workflowFile: 'purge-old-error-logs-cron.yml' }, cronExpr: '30 9 * * *' },
   // expire-trials is a Vercel native cron (vercel.json), not GH Actions.
-  { heartbeatName: 'expire-trials',         source: { kind: 'vercel' },                                              cronExpr: '0 9 * * *' },
+  { heartbeatName: 'expire-trials',         source: { kind: 'vercel', cronPath: '/api/cron/expire-trials' },        cronExpr: '0 9 * * *' },
   // Weekly
   { heartbeatName: 'ml-train-demand',       source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '0 8 * * 0' },
   { heartbeatName: 'ml-train-supply',       source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '30 8 * * 0' },
@@ -174,18 +174,22 @@ describe('cron cadences', () => {
           `to match) or the registry above is stale (update the workflow).`,
         );
       } else {
-        // Vercel native cron — vercel.json's crons[] array.
+        // Vercel native cron — vercel.json's crons[] array. Match by the
+        // explicit cronPath in the registry entry, not by suffix on the
+        // heartbeat name. (Some routes — e.g. /api/agent/nudges/check —
+        // have heartbeat names that don't match their path's last segment.)
         const content = readFileSync(VERCEL_JSON_PATH, 'utf8');
         const json = JSON.parse(content) as { crons?: Array<{ path: string; schedule: string }> };
-        const match = (json.crons ?? []).find((c) => c.path.endsWith(`/${entry.heartbeatName}`));
+        const cronPath = entry.source.cronPath;
+        const match = (json.crons ?? []).find((c) => c.path === cronPath);
         assert.ok(
           match,
-          `vercel.json crons[] has no entry for path ending with "/${entry.heartbeatName}". ` +
+          `vercel.json crons[] has no entry for path "${cronPath}". ` +
           `Either add one with schedule "${entry.cronExpr}" or remove this row from SCHEDULE_REGISTRY.`,
         );
         assert.equal(
           match.schedule, entry.cronExpr,
-          `vercel.json crons[] entry for "${entry.heartbeatName}" has schedule "${match.schedule}" ` +
+          `vercel.json crons[] entry "${cronPath}" has schedule "${match.schedule}" ` +
           `but SCHEDULE_REGISTRY expects "${entry.cronExpr}".`,
         );
       }
