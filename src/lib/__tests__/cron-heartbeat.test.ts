@@ -16,29 +16,25 @@ interface CapturedUpsert {
   notes: Record<string, unknown>;
 }
 
-// Inject a mock supabase client via the same module path the writer uses.
-// We do this by patching the module before each call. Since the writer
-// imports supabaseAdmin at the top level, we monkey-patch through the
-// module cache.
+// Inject a mock supabase client via writeCronHeartbeat's optional
+// `client` parameter. (Earlier this test tried to monkey-patch the
+// supabaseAdmin module export, but ESM module bindings are read-only
+// at the consumer's side, so the assignment threw "Cannot set property
+// supabaseAdmin of #<Object> which has only a getter".)
 async function captureUpsert(extras: Parameters<typeof writeCronHeartbeat>[1]): Promise<CapturedUpsert> {
   let captured: CapturedUpsert | null = null;
-  // Replace the module export. require() the module so we can mutate its
-  // exports object. Node's CommonJS interop with TS via tsx makes this work.
-  const supabaseAdminMod = await import('../supabase-admin');
-  const original = supabaseAdminMod.supabaseAdmin;
-  (supabaseAdminMod as { supabaseAdmin: unknown }).supabaseAdmin = {
+  // Minimal SupabaseClient stub: the writer only ever calls .from().upsert(),
+  // so we only implement those two methods. The cast through `unknown` keeps
+  // TypeScript happy without pulling in 50+ unused query-builder methods.
+  const mockClient = {
     from: (_table: string) => ({
       upsert: (row: CapturedUpsert) => {
         captured = row;
         return Promise.resolve({ error: null });
       },
     }),
-  };
-  try {
-    await writeCronHeartbeat('test-cron', extras);
-  } finally {
-    (supabaseAdminMod as { supabaseAdmin: unknown }).supabaseAdmin = original;
-  }
+  } as unknown as Parameters<typeof writeCronHeartbeat>[2];
+  await writeCronHeartbeat('test-cron', extras, mockClient);
   if (!captured) throw new Error('upsert was never called');
   return captured;
 }

@@ -19,6 +19,7 @@
  * write failure to mark the cron as failed.
  */
 
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
 
@@ -41,13 +42,19 @@ export interface CronHeartbeatExtras {
  * Upsert the cron's heartbeat row. Names must match the values the
  * doctor's expected-crons list checks — see FAILSAFES.md for the
  * canonical list.
+ *
+ * The optional `client` parameter exists for testability — ESM module
+ * exports can't be monkey-patched at the consumer's side (the bindings
+ * are read-only), so unit tests inject a mock client directly here.
+ * Production callers always omit it and get the shared admin client.
  */
 export async function writeCronHeartbeat(
   cronName: string,
   extras: CronHeartbeatExtras = {},
+  client: Pick<SupabaseClient, 'from'> = supabaseAdmin,
 ): Promise<void> {
   try {
-    const { error } = await supabaseAdmin
+    const { error } = await client
       .from('cron_heartbeats')
       .upsert(
         {
