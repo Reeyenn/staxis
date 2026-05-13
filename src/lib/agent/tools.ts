@@ -128,12 +128,23 @@ export interface AnthropicToolFormat {
   name: string;
   description: string;
   input_schema: ToolDefinition['inputSchema'];
+  // The Anthropic API supports `cache_control: { type: 'ephemeral' }` on
+  // the LAST tool in the array — that breakpoint caches the entire tools
+  // array. ~3000 tokens of descriptions stay cached across turns.
+  // Codex review fix G3.
+  cache_control?: { type: 'ephemeral' };
 }
 
 export function toAnthropicTools(tools: ToolDefinition[]): AnthropicToolFormat[] {
-  return tools.map(t => ({
+  return tools.map((t, idx) => ({
     name: t.name,
     description: t.description,
     input_schema: t.inputSchema,
+    // Anthropic caches the prefix up to and including the marked block.
+    // Marking the LAST tool with cache_control caches the entire tools
+    // array for this conversation, identical to how we mark the stable
+    // system block. Saves ~10–15% of input tokens on every multi-turn
+    // request after the first.
+    ...(idx === tools.length - 1 ? { cache_control: { type: 'ephemeral' as const } } : {}),
   }));
 }

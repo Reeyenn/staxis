@@ -303,18 +303,32 @@ export async function POST(req: NextRequest): Promise<Response> {
 
         // ── Fix #1 cleanup: reconcile the cost reservation. If the stream
         // completed and gave us a usage report, finalize to actual spend.
-        // Otherwise cancel (release the budget hold). ──
+        // Otherwise cancel (release the budget hold).
+        //
+        // Codex review fix M1 (2026-05-13): finalizeCostReservation now
+        // throws on RPC error. If it does, we attempt a cancel to release
+        // the budget hold (better than leaving the row stuck in 'reserved'
+        // state forever, inflating future cap checks). The user has
+        // already received their response via the `done` event emitted
+        // above; we're just losing the actual-cost record. ──
         if (finalUsage) {
-          await finalizeCostReservation({
-            reservationId,
-            conversationId: finalConversationId,
-            actualUsd: finalUsage.costUsd,
-            model: finalUsage.model,
-            modelId: finalUsage.modelId,
-            tokensIn: finalUsage.inputTokens,
-            tokensOut: finalUsage.outputTokens,
-            cachedInputTokens: finalUsage.cachedInputTokens,
-          });
+          try {
+            await finalizeCostReservation({
+              reservationId,
+              conversationId: finalConversationId,
+              actualUsd: finalUsage.costUsd,
+              model: finalUsage.model,
+              modelId: finalUsage.modelId,
+              tokensIn: finalUsage.inputTokens,
+              tokensOut: finalUsage.outputTokens,
+              cachedInputTokens: finalUsage.cachedInputTokens,
+            });
+          } catch (finalizeErr) {
+            console.error('[agent/command] finalize failed; attempting cancel to release budget hold', finalizeErr);
+            await cancelCostReservation(reservationId).catch(cancelErr => {
+              console.error('[agent/command] cancel also failed; reservation will be stranded', cancelErr);
+            });
+          }
         } else {
           await cancelCostReservation(reservationId);
         }

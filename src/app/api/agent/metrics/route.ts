@@ -24,6 +24,8 @@ interface MetricsPayload {
     evalCostUsd: number;
     uniqueUsers: number;
     uniqueProperties: number;
+    /** % of input tokens served from cache today (Codex review fix G4). */
+    cacheHitRatePct: number;
   };
   recentConversations: Array<{
     id: string;
@@ -35,6 +37,10 @@ interface MetricsPayload {
   }>;
   topTools: Array<{ tool: string; calls: number }>;
   modelUsage: Array<{ model: string; count: number; costUsd: number }>;
+  /** Distinct Anthropic snapshot IDs seen today, newest first. When this
+   *  list changes from one day to the next, Anthropic shipped a new
+   *  snapshot of the model alias — worth re-running evals. Codex fix G9. */
+  modelIdsToday: Array<{ modelId: string; count: number }>;
   pendingNudges: number;
 }
 
@@ -55,7 +61,7 @@ export async function GET(req: NextRequest): Promise<Response> {
     // Codex review fix B6, 2026-05-13.
     const { data: costs } = await supabaseAdmin
       .from('agent_costs')
-      .select('cost_usd, kind, user_id, property_id, model, state')
+      .select('cost_usd, kind, user_id, property_id, model, model_id, state, tokens_in, cached_input_tokens')
       .eq('state', 'finalized')
       .gte('created_at', dayStartIso);
 
@@ -66,6 +72,28 @@ export async function GET(req: NextRequest): Promise<Response> {
     const evalCostUsd = evalCosts.reduce((acc, r) => acc + Number(r.cost_usd ?? 0), 0);
     const uniqueUsers = new Set(requestCosts.map(r => r.user_id as string)).size;
     const uniqueProperties = new Set(requestCosts.map(r => r.property_id as string)).size;
+
+    // Cache hit rate (Codex fix G4): cached_input_tokens / (cached + fresh
+    // input). Fresh input = tokens_in (which is the FRESH input tokens not
+    // already cached). Higher is better — proves the prompt cache is
+    // hitting and we're not paying full input price every turn.
+    const totalCached = requestCosts.reduce((acc, r) => acc + Number(r.cached_input_tokens ?? 0), 0);
+    const totalFresh = requestCosts.reduce((acc, r) => acc + Number(r.tokens_in ?? 0), 0);
+    const cacheHitRatePct = totalCached + totalFresh > 0
+      ? Math.round((totalCached / (totalCached + totalFresh)) * 1000) / 10
+      : 0;
+
+    // Distinct Anthropic snapshot IDs seen today (Codex fix G9). When this
+    // list changes day-to-day, Anthropic shipped a new model snapshot;
+    // re-run evals to catch behaviour drift.
+    const byModelId = new Map<string, number>();
+    for (const c of requestCosts) {
+      const id = (c.model_id as string) ?? '(none)';
+      byModelId.set(id, (byModelId.get(id) ?? 0) + 1);
+    }
+    const modelIdsToday = Array.from(byModelId.entries())
+      .map(([modelId, count]) => ({ modelId, count }))
+      .sort((a, b) => b.count - a.count);
 
     // Model usage breakdown
     const byModel = new Map<string, { count: number; costUsd: number }>();
@@ -144,10 +172,12 @@ export async function GET(req: NextRequest): Promise<Response> {
         evalCostUsd: Math.round(evalCostUsd * 10000) / 10000,
         uniqueUsers,
         uniqueProperties,
+        cacheHitRatePct,
       },
       recentConversations,
       topTools,
       modelUsage,
+      modelIdsToday,
       pendingNudges: pendingNudges ?? 0,
     };
 

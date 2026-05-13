@@ -33,7 +33,13 @@ export type ModelTier = keyof typeof MODELS;
 // Pricing in USD per million tokens (input | output). Cached input is 10×
 // cheaper. Numbers are approximate per the cost-estimation rule — real
 // spend should be read off console.anthropic.com/cost after we ship.
-const PRICING: Record<ModelTier, { input: number; output: number; cachedInput: number }> = {
+//
+// Exported because cost-controls.ts derives the cost-cap reservation
+// amount from this table (worst-case per request = output × MAX_OUTPUT_TOKENS
+// × MAX_TOOL_ITERATIONS). Keeping the reservation tied to these constants
+// means raising the output cap or iteration limit automatically raises
+// the reservation — no silent cap bypass. Codex review fix H1.
+export const PRICING: Record<ModelTier, { input: number; output: number; cachedInput: number }> = {
   haiku:  { input: 1.00,  output: 5.00,  cachedInput: 0.10 },
   sonnet: { input: 3.00,  output: 15.00, cachedInput: 0.30 },
   opus:   { input: 15.00, output: 75.00, cachedInput: 1.50 },
@@ -47,9 +53,16 @@ const PRICING: Record<ModelTier, { input: number; output: number; cachedInput: n
 // fix B5, 2026-05-13.
 const REQUEST_TIMEOUT_MS = 50_000;
 
+// Max output tokens per single Anthropic API call. Sonnet 4.6 supports
+// 8192. Exported so cost-controls.ts can use it to size the reservation.
+// Codex review fix G2 (constant extraction) + H1 (reservation tied to it).
+export const MAX_OUTPUT_TOKENS = 8192;
+
 // Max tool-call iterations within one user turn before we give up. Prevents
 // runaway loops where the model keeps calling tools without resolving.
-const MAX_TOOL_ITERATIONS = 8;
+// Exported for the same reason as MAX_OUTPUT_TOKENS — the reservation
+// formula multiplies by this.
+export const MAX_TOOL_ITERATIONS = 8;
 
 // ─── Client ────────────────────────────────────────────────────────────────
 
@@ -64,7 +77,15 @@ function getClient(): Anthropic {
       'Set in Vercel → Project Settings → Environment Variables and redeploy.',
     );
   }
-  cachedClient = new Anthropic({ apiKey: key, timeout: REQUEST_TIMEOUT_MS });
+  // maxRetries: SDK-level retry on transient 5xx / 408 / 429 / connection
+  // errors. The SDK uses exponential backoff. We're well under Vercel's
+  // 60s function ceiling even with retries thanks to REQUEST_TIMEOUT_MS=50s.
+  // Codex review fix G5, 2026-05-13.
+  cachedClient = new Anthropic({
+    apiKey: key,
+    timeout: REQUEST_TIMEOUT_MS,
+    maxRetries: 2,
+  });
   return cachedClient;
 }
 
@@ -308,7 +329,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
     const response = await client.messages.create({
       model: MODELS[model],
-      max_tokens: 8192,
+      max_tokens: MAX_OUTPUT_TOKENS,
       system: buildSystemBlocks(opts.systemPrompt),
       tools: tools.length > 0 ? tools : undefined,
       messages,
@@ -343,7 +364,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       // we return the truncation marker inlined; streamAgent below emits
       // a synthetic text_delta instead to keep persisted text clean.
       const finalText = response.stop_reason === 'max_tokens'
-        ? `${turnText}\n\n_(Response hit the 8192-token limit. Ask a follow-up to continue.)_`
+        ? `${turnText}\n\n_(Response hit the output token limit. Ask a follow-up to continue.)_`
         : turnText;
       return {
         text: finalText,
@@ -431,7 +452,7 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
     for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
       const stream = client.messages.stream({
         model: MODELS[model],
-        max_tokens: 8192,
+        max_tokens: MAX_OUTPUT_TOKENS,
         system: buildSystemBlocks(opts.systemPrompt),
         tools: tools.length > 0 ? tools : undefined,
         messages,
@@ -480,7 +501,7 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
         if (finalMsg.stop_reason === 'max_tokens') {
           yield {
             type: 'text_delta',
-            delta: '\n\n_(Response hit the 8192-token limit — ask a follow-up to continue.)_',
+            delta: '\n\n_(Response hit the output token limit — ask a follow-up to continue.)_',
           };
         }
         yield {

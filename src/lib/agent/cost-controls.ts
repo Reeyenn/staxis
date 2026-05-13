@@ -23,6 +23,26 @@
 // being rate-limited.
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { MAX_OUTPUT_TOKENS, MAX_TOOL_ITERATIONS, PRICING } from './llm';
+
+// ─── Reservation sizing (Codex review fix H1) ─────────────────────────────
+// The cost gate is only safe if the reservation is bigger than the
+// worst-case actual cost. Previously a fixed $0.15 was set when max output
+// was 4096 — but bumping to 8192 broke the invariant: 8192 tokens × $15/M
+// × 8 iterations = $0.98 just for output, before any input tokens. A user
+// near their cap could be admitted at $0.15 and finalize at $1+.
+//
+// Now derived from constants. If MAX_OUTPUT_TOKENS or MAX_TOOL_ITERATIONS
+// bumps, this auto-recomputes. We size against Sonnet (the default tier)
+// since smart routing to Opus isn't enabled yet.
+const WORST_CASE_OUTPUT_USD =
+  (MAX_OUTPUT_TOKENS / 1_000_000) * PRICING.sonnet.output * MAX_TOOL_ITERATIONS;
+// Generous input headroom — real input is typically $0.05–$0.20/turn, but
+// 8 iterations of tool-result-bloated history can stretch this. Round
+// reservation UP to a clean number so we don't ever under-reserve.
+const INPUT_HEADROOM_USD = 0.50;
+const ESTIMATED_REQUEST_USD =
+  Math.ceil((WORST_CASE_OUTPUT_USD + INPUT_HEADROOM_USD) * 100) / 100;
 
 // ─── Configurable limits ──────────────────────────────────────────────────
 
@@ -31,11 +51,9 @@ export const COST_LIMITS = {
   propertyDailyUsd: 50,
   globalDailyUsd:   500,
   userRateLimitPerMin: 10,
-  // Conservative upfront reservation per request. Sonnet 4.6 tool-iterated
-  // turns max around $0.10 in practice; we reserve $0.15 so the cap can't
-  // be exceeded even by a bad-faith caller burning every iteration.
-  // Reconciled to actual on finalize.
-  estimatedRequestUsd: 0.15,
+  // Worst-case per-request reservation, derived from MAX_OUTPUT_TOKENS and
+  // MAX_TOOL_ITERATIONS. Reconciled to actual on finalize. Codex fix H1.
+  estimatedRequestUsd: ESTIMATED_REQUEST_USD,
 } as const;
 
 // ─── Public types ─────────────────────────────────────────────────────────
@@ -136,7 +154,18 @@ export async function finalizeCostReservation(opts: {
     p_cached_input_tokens: opts.cachedInputTokens ?? 0,
   });
   if (error) {
-    console.error('[cost-controls] finalize RPC failed', error);
+    // Codex review fix M1, 2026-05-13: previously this just logged and
+    // returned, which left the reservation row stuck in 'reserved' state.
+    // Metrics filters by state='finalized', so the failed finalize was
+    // invisible. AND the reservation kept inflating cap checks.
+    //
+    // Now: throw so the route's finally block catches it. The route logs
+    // critically + attempts a cancel (release the budget hold). The user
+    // has already received their response (done event was emitted before
+    // the finally ran), so we're only losing the actual cost record — a
+    // known trade-off versus permanently stranded reservations.
+    console.error('[cost-controls] finalize RPC failed; throwing so route can cancel reservation', error);
+    throw new Error(`finalize RPC failed: ${error.message}`);
   }
 }
 

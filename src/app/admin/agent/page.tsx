@@ -38,6 +38,7 @@ interface MetricsPayload {
     evalCostUsd: number;
     uniqueUsers: number;
     uniqueProperties: number;
+    cacheHitRatePct: number;
   };
   recentConversations: Array<{
     id: string; title: string | null; role: string;
@@ -45,6 +46,7 @@ interface MetricsPayload {
   }>;
   topTools: Array<{ tool: string; calls: number }>;
   modelUsage: Array<{ model: string; count: number; costUsd: number }>;
+  modelIdsToday: Array<{ modelId: string; count: number }>;
   pendingNudges: number;
 }
 
@@ -173,6 +175,13 @@ export default function AdminAgentPage() {
             value={data ? String(data.pendingNudges) : '—'}
             sub="across all properties"
           />
+          <KPI
+            icon={<Activity size={14} />}
+            label="Cache hit rate"
+            value={data ? `${data.today.cacheHitRatePct}%` : '—'}
+            sub={data && data.today.cacheHitRatePct > 50 ? 'prompt cache is hitting well' : 'cache is missing — investigate'}
+            severity={data && data.today.cacheHitRatePct < 30 ? 'warm' : 'ok'}
+          />
         </div>
 
         {/* Two-column layout: recent conversations + side panels */}
@@ -285,6 +294,48 @@ export default function AdminAgentPage() {
                       }}>{m.count} · ${m.costUsd.toFixed(2)}</span>
                     </div>
                   ))}
+                </div>
+              )}
+            </Card>
+
+            <Card title="Anthropic snapshot IDs today">
+              {!data || data.modelIdsToday.length === 0 ? (
+                <EmptyRow text="No requests yet today." />
+              ) : (
+                <div style={{ padding: '8px 0' }}>
+                  {data.modelIdsToday.map(m => (
+                    <div key={m.modelId} style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '6px 16px',
+                    }}>
+                      <span style={{
+                        fontFamily: FONT_MONO,
+                        fontSize: 11,
+                        color: C.ink,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        maxWidth: 200,
+                      }} title={m.modelId}>{m.modelId}</span>
+                      <span style={{
+                        fontFamily: FONT_MONO,
+                        fontSize: 11,
+                        color: C.ink3,
+                      }}>{m.count}</span>
+                    </div>
+                  ))}
+                  {data.modelIdsToday.length > 1 && (
+                    <div style={{
+                      padding: '6px 16px',
+                      fontFamily: FONT_MONO,
+                      fontSize: 10,
+                      color: C.warm,
+                    }}>
+                      ⚠ Multiple snapshots — Anthropic may have shipped a model update. Re-run evals.
+                    </div>
+                  )}
                 </div>
               )}
             </Card>

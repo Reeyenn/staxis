@@ -275,6 +275,12 @@ registerTool<{ roomNumber?: string; message?: string }>({
       };
     }
 
+    // Codex review fix N1, 2026-05-13: when SOME recipients hard-failed but
+    // others succeeded, surface the partial-delivery state so the model
+    // tells the user accurately. Previously this returned plain `ok: true`
+    // and the housekeeper thought all managers were notified.
+    const successfulRecipients = inserted + alreadyPending;
+    const partial = hardErrors > 0;
     return {
       ok: true,
       data: {
@@ -283,6 +289,11 @@ registerTool<{ roomNumber?: string; message?: string }>({
         newlyDelivered: inserted,
         alreadyPending,
         hardErrors,
+        partial,
+        // Friendly summary for the model to surface to the user
+        deliveryNote: partial
+          ? `Notified ${successfulRecipients} of ${recipients.length} managers — ${hardErrors} could not be reached. Tell the user, and suggest they ping a supervisor directly if no help arrives.`
+          : `Notified ${successfulRecipients} of ${recipients.length} managers.`,
         roomFlagged,
         message: message ?? null,
       },
