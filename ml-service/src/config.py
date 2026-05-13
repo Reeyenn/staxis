@@ -1,4 +1,7 @@
 """Configuration management for ML Service."""
+import os
+from typing import Optional
+
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
@@ -10,6 +13,14 @@ class Settings(BaseSettings):
     supabase_service_role_key: str
     ml_service_secret: str
     log_level: str = "INFO"
+
+    # Direct Postgres connection string for psycopg2 (used by advisory locks
+    # and the auto-rollback path). NOT the Supabase HTTPS URL — that's the
+    # PostgREST gateway on 443. Codex adversarial review 2026-05-13 (M-C1):
+    # shadow_mae.py was building a host string from supabase_url and
+    # connecting to PostgREST as if it were Postgres, which always failed
+    # silently and made auto-rollback dead code.
+    database_url: Optional[str] = None
 
     # Model training thresholds
     training_row_count_min: int = 200
@@ -47,6 +58,15 @@ class Settings(BaseSettings):
         if not v or len(v) < 8:
             raise ValueError("ML_SERVICE_SECRET must be set and at least 8 chars")
         return v
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def fallback_database_url(cls, v: Optional[str]) -> Optional[str]:
+        """Allow either DATABASE_URL or SUPABASE_DB_URL env vars (the training
+        modules already check both — keep that compatibility)."""
+        if v:
+            return v
+        return os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_DB_URL")
 
     class Config:
         env_file = ".env"

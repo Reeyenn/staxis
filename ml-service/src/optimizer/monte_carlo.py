@@ -1,4 +1,5 @@
 """Layer 3 Optimizer: Monte Carlo simulation for headcount recommendation."""
+import hashlib
 import json
 import uuid
 from datetime import date, datetime, timedelta, timezone
@@ -12,6 +13,76 @@ from src.supabase_client import get_supabase_client
 
 
 DEFAULT_PROPERTY_TIMEZONE = "America/Chicago"
+
+
+# ─── Deterministic RNG helpers ─────────────────────────────────────────────
+# Codex adversarial review 2026-05-13 (M-C2): the prior implementation called
+# np.random.uniform(...) with no seed, so two optimizer runs minutes apart
+# produced different recommended_headcount values. That defeats reproducibility
+# (auditors can't ask "why did you recommend 6 on 2026-05-01") and confuses
+# managers when the cockpit number flips on refresh.
+#
+# We seed per (property_id, prediction_date) so:
+#   - The same input always gives the same output (idempotent, auditable).
+#   - Different days get independent samples (no cross-day leakage).
+#   - Different properties on the same day are independent.
+
+def _deterministic_seed(property_id: str, prediction_date: date) -> int:
+    """Stable 32-bit seed derived from (property_id, prediction_date)."""
+    digest = hashlib.md5(
+        f"{property_id}:{prediction_date.isoformat()}".encode("utf-8")
+    ).hexdigest()
+    return int(digest[:16], 16) % (2**32)
+
+
+def _invert_quantile_cdf(quantiles: Dict[float, float], u: float) -> float:
+    """Piecewise-linear inverse-CDF sampler from a discrete quantile set.
+
+    Codex adversarial review 2026-05-13 (M-C3): the prior code did
+    np.random.uniform(p25, p90), which is NOT a draw from the underlying
+    distribution — it gives equal mass to every value in the inter-quartile
+    range, throws away the tails entirely, and shifts E[X] far above the
+    true median when the distribution is right-skewed (which housekeeping
+    times always are).
+
+    Given (q, value) pairs and a uniform u in [0, 1], walk the sorted
+    quantile points and linearly interpolate. For tails (u < q_min or
+    u > q_max) we extrapolate but clamp to [min_value, max_value] so a
+    rare-tail draw can't return a wildly negative or runaway-large time.
+    """
+    if not quantiles:
+        return 0.0
+    sorted_pairs = sorted(quantiles.items())
+    qs = [q for q, _ in sorted_pairs]
+    vs = [v for _, v in sorted_pairs]
+    min_v, max_v = min(vs), max(vs)
+
+    # Below the smallest known quantile: extrapolate using the first segment,
+    # clamped at the floor.
+    if u <= qs[0]:
+        if len(sorted_pairs) >= 2 and qs[1] != qs[0]:
+            slope = (vs[1] - vs[0]) / (qs[1] - qs[0])
+            extrapolated = vs[0] - slope * (qs[0] - u)
+            return max(min_v, extrapolated)
+        return vs[0]
+
+    # Above the largest known quantile: extrapolate using the last segment,
+    # clamped at the ceiling.
+    if u >= qs[-1]:
+        if len(sorted_pairs) >= 2 and qs[-1] != qs[-2]:
+            slope = (vs[-1] - vs[-2]) / (qs[-1] - qs[-2])
+            extrapolated = vs[-1] + slope * (u - qs[-1])
+            return min(max_v, extrapolated)
+        return vs[-1]
+
+    # Interior: piecewise-linear between the two adjacent known quantiles.
+    for i in range(len(sorted_pairs) - 1):
+        if qs[i] <= u <= qs[i + 1]:
+            if qs[i + 1] == qs[i]:
+                return vs[i]
+            t = (u - qs[i]) / (qs[i + 1] - qs[i])
+            return vs[i] + t * (vs[i + 1] - vs[i])
+    return vs[-1]  # unreachable
 
 
 def _tomorrow_in_property_tz(tz_name: str = DEFAULT_PROPERTY_TIMEZONE) -> date:
@@ -67,6 +138,11 @@ async def optimize_headcount(
         prediction_date = _tomorrow_in_property_tz(
             property_timezone or DEFAULT_PROPERTY_TIMEZONE
         )
+
+    # Seed RNG deterministically from (property_id, date) so this run is
+    # reproducible. Codex adversarial review 2026-05-13 (M-C2). All sampling
+    # below uses `rng`, NEVER bare np.random.uniform.
+    rng = np.random.default_rng(_deterministic_seed(property_id, prediction_date))
 
     # Fetch active L1 + L2 predictions
     demand_preds = client.fetch_many(
@@ -162,18 +238,26 @@ async def optimize_headcount(
             total_completed = 0
 
             for _ in range(settings.monte_carlo_draws):
-                # Sample per-room times from supply predictions. Uniform between
-                # p25 and p90 is a coarse but unbiased approximation of the
-                # quantile-pinball distribution shape.
+                # Sample per-room times from supply predictions. Codex
+                # adversarial review 2026-05-13 (M-C3): the prior code did
+                # uniform(p25, p90), which throws away the bottom 25% and
+                # top 10% of the distribution, gives equal mass to every
+                # interior value, and biases E[X] far above the true
+                # median for right-skewed distributions like cleaning
+                # times. Now we invert the actual quantile CDF.
                 room_times: List[float] = []
                 for pred in supply_preds:
                     p25 = float(pred.get("predicted_minutes_p25", 15))
+                    p50 = float(pred.get("predicted_minutes_p50", 22))
                     p90 = float(pred.get("predicted_minutes_p90", 30))
                     if p90 <= p25:
                         # Degenerate distribution — use the midpoint deterministically.
                         room_times.append((p25 + p90) / 2.0)
                     else:
-                        room_times.append(float(np.random.uniform(p25, p90)))
+                        u = float(rng.uniform(0.0, 1.0))
+                        room_times.append(
+                            _invert_quantile_cdf({0.25: p25, 0.5: p50, 0.9: p90}, u)
+                        )
 
                 # LPT: longest jobs first → assign each to the currently-least-loaded worker.
                 room_times.sort(reverse=True)
@@ -200,12 +284,16 @@ async def optimize_headcount(
         if recommended_headcount is None:
             recommended_headcount = max(completion_curves, key=lambda c: c["p"])["headcount"]
     else:
-        # L1 path: total demand only. Sample uniformly between p50 and p95
-        # of the predicted minutes distribution. shift_capacity = H × shift_cap;
-        # success = sampled_demand fits in capacity.
+        # L1 path: total demand only. Codex adversarial review 2026-05-13
+        # (M-C3): the prior code sampled uniform(p50, p95) which is biased
+        # *upward* (opposite direction of the L2 bias). Now we use the
+        # quantile-CDF inversion sampler. We have only two quantile points
+        # to work with on the L1 layer (p50 and p95), so the inversion is
+        # piecewise-linear with extrapolation in the tails.
         p50_minutes = float(demand.get("predicted_minutes_p50", 180.0) or 180.0)
         p95_minutes = float(demand.get("predicted_minutes_p95", 240.0) or 240.0)
-        min_demand = p50_minutes
+        # Build the quantile dict; keep min/max for fallback when degenerate.
+        l1_quantiles = {0.5: p50_minutes, 0.95: p95_minutes}
         max_demand = max(p95_minutes, p50_minutes + 1.0)  # avoid zero-width range
 
         completion_curves = []
@@ -224,7 +312,8 @@ async def optimize_headcount(
             total_completed = 0
 
             for _ in range(settings.monte_carlo_draws):
-                sampled_demand = float(np.random.uniform(min_demand, max_demand))
+                u = float(rng.uniform(0.0, 1.0))
+                sampled_demand = _invert_quantile_cdf(l1_quantiles, u)
                 if sampled_demand <= shift_capacity:
                     total_completed += 1
 

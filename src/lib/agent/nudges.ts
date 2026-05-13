@@ -131,8 +131,41 @@ interface NudgeDraft {
   dedupeKey: string;
 }
 
-/** Find the accounts that should receive nudges for a property (owners + GMs). */
+/** Find the accounts that should receive nudges for a property.
+ *
+ * Codex adversarial review 2026-05-13 (A-H9): the prior version included
+ * any account whose property_access contained '*' (wildcard) — meaning
+ * admins receive every property's nudges × every category × every 5-min
+ * cron tick. With one admin (Reeyen) it's a few extra rows. The first
+ * support hire would receive ~144,000 nudges/day at 50 properties.
+ *
+ * New policy:
+ *   1. Check properties.nudge_subscription (migration 0087) for an explicit
+ *      override. If `enabled === false`, send to nobody. If
+ *      `recipient_account_ids` is set, send to exactly those accounts.
+ *   2. Otherwise fall back to owners + general_managers whose
+ *      property_access INCLUDES this propertyId. Wildcard '*' (admins)
+ *      is intentionally NOT a fallback — admins get a dedicated admin
+ *      view, not the cron fan-out.
+ */
 async function getNudgeRecipients(propertyId: string): Promise<string[]> {
+  // 1. Check the per-property override first.
+  const { data: prop } = await supabaseAdmin
+    .from('properties')
+    .select('nudge_subscription')
+    .eq('id', propertyId)
+    .maybeSingle();
+  const sub = (prop?.nudge_subscription as { enabled?: boolean; recipient_account_ids?: string[] } | null) ?? null;
+  if (sub) {
+    if (sub.enabled === false) return [];
+    if (Array.isArray(sub.recipient_account_ids) && sub.recipient_account_ids.length > 0) {
+      return sub.recipient_account_ids;
+    }
+    // enabled === true with no explicit recipients → fall through to default.
+  }
+
+  // 2. Default fallback: owners + general_managers with property_access
+  //    that explicitly includes THIS propertyId. No wildcard ('*') match.
   const { data } = await supabaseAdmin
     .from('accounts')
     .select('id, role, property_access')
@@ -141,7 +174,7 @@ async function getNudgeRecipients(propertyId: string): Promise<string[]> {
   return data
     .filter(a => {
       const access = (a.property_access as string[]) ?? [];
-      return access.includes(propertyId) || access.includes('*');
+      return access.includes(propertyId);
     })
     .map(a => a.id as string);
 }
@@ -314,16 +347,25 @@ async function buildDailySummary(propertyId: string): Promise<Record<string, unk
 
 async function checkInventory(propertyId: string): Promise<NudgeDraft[]> {
   const drafts: NudgeDraft[] = [];
-  // Try to read inventory_items — if the table doesn't exist for this property
-  // or returns empty, skip silently.
+  // Codex adversarial review 2026-05-13 (A-C8 / Codex F4): the prior
+  // version queried `inventory_items` (doesn't exist) with field
+  // `reorder_threshold` (also doesn't exist). Real table is `inventory`
+  // with `current_stock` and `reorder_at` (per supabase/migrations/
+  // 0001_initial_schema.sql:285-301). The wrong-table query silently
+  // returned empty and low-stock nudges NEVER fired despite real data.
   const { data, error } = await supabaseAdmin
-    .from('inventory_items')
-    .select('name, current_stock, reorder_threshold')
+    .from('inventory')
+    .select('name, category, current_stock, reorder_at, unit')
     .eq('property_id', propertyId);
-  if (error || !data?.length) return drafts;
+  if (error) {
+    // Surface schema errors loudly so we notice if the table changes again.
+    console.error('[nudges] inventory query failed', error);
+    throw new Error(`inventory query failed: ${error.message}`);
+  }
+  if (!data?.length) return drafts;
 
   const below = data.filter(
-    i => Number(i.current_stock ?? 0) < Number(i.reorder_threshold ?? 0),
+    i => Number(i.current_stock ?? 0) < Number(i.reorder_at ?? 0),
   );
   if (below.length > 0) {
     drafts.push({
@@ -333,8 +375,10 @@ async function checkInventory(propertyId: string): Promise<NudgeDraft[]> {
         type: 'inventory_low',
         items: below.map(i => ({
           name: i.name,
+          category: i.category,
           current: Number(i.current_stock ?? 0),
-          threshold: Number(i.reorder_threshold ?? 0),
+          threshold: Number(i.reorder_at ?? 0),
+          unit: i.unit ?? null,
         })),
       },
       dedupeKey: `inventory_low:${new Date().toISOString().slice(0, 10)}`,

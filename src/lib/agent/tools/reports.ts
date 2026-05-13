@@ -93,38 +93,42 @@ registerTool<{ period?: 'week' | 'month' | 'quarter' }>({
 
 // ─── get_inventory ────────────────────────────────────────────────────────
 
-registerTool<{ category?: 'supplies' | 'linens' | 'amenities' | 'all' }>({
+registerTool<{ category?: 'housekeeping' | 'maintenance' | 'breakfast' | 'all' }>({
   name: 'get_inventory',
   description:
-    'Get current inventory levels by category. Returns items, current stock, and any below threshold. Category defaults to "all".',
+    'Get current inventory levels by category. Returns items, current stock, and any below the reorder threshold. Categories: housekeeping, maintenance, breakfast, or all.',
   inputSchema: {
     type: 'object',
     properties: {
-      category: { type: 'string', enum: ['supplies', 'linens', 'amenities', 'all'], description: 'Inventory category.' },
+      category: { type: 'string', enum: ['housekeeping', 'maintenance', 'breakfast', 'all'], description: 'Inventory category.' },
     },
   },
   allowedRoles: ['admin', 'owner', 'general_manager'],
   handler: async ({ category = 'all' }, ctx): Promise<ToolResult> => {
-    // The inventory tables exist (see /api/inventory routes). Try to read the
-    // top-level inventory_items table for this property; if it's empty we
-    // return an honest empty list.
+    // Codex adversarial review 2026-05-13 (A-C8 / Codex F4): the prior
+    // version queried `inventory_items` (doesn't exist) with field
+    // `reorder_threshold` (also doesn't exist). Real table is `inventory`
+    // with column `reorder_at` and categories housekeeping/maintenance/
+    // breakfast (per supabase/migrations/0001_initial_schema.sql:285-301).
+    // Old code ALWAYS returned the misleading "not set up" note.
     let q = supabaseAdmin
-      .from('inventory_items')
-      .select('name, category, current_stock, reorder_threshold, unit')
+      .from('inventory')
+      .select('name, category, current_stock, reorder_at, unit')
       .eq('property_id', ctx.propertyId);
     if (category !== 'all') q = q.eq('category', category);
     const { data, error } = await q;
     if (error) {
-      return { ok: true, data: { items: [], note: 'Inventory tracking is not yet set up for this property.' } };
+      // Surface the real error instead of pretending the data isn't there.
+      return { ok: false, error: 'Failed to load inventory.' };
     }
 
     const items = (data ?? []).map(i => ({
       name: i.name as string,
       category: i.category as string,
       currentStock: Number(i.current_stock ?? 0),
-      reorderThreshold: Number(i.reorder_threshold ?? 0),
+      reorderThreshold: Number(i.reorder_at ?? 0),
       unit: (i.unit as string) ?? null,
-      belowThreshold: Number(i.current_stock ?? 0) < Number(i.reorder_threshold ?? 0),
+      belowThreshold: Number(i.current_stock ?? 0) < Number(i.reorder_at ?? 0),
     }));
 
     const belowThreshold = items.filter(i => i.belowThreshold);

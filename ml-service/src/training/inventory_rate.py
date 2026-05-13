@@ -804,46 +804,68 @@ def _create_cold_start_model_run(
         "cohort_key": cohort_key,
     }
 
-    # Deactivate the prior active row for this item, same pattern as the
-    # real training path. Best-effort.
-    try:
-        client.client.table("model_runs").update({
-            "is_active": False,
-            "deactivated_at": datetime.utcnow().isoformat(),
-            "deactivation_reason": "superseded",
-        }).eq("property_id", property_id).eq("layer", "inventory_rate")\
-          .eq("item_id", item_id).eq("is_active", True).execute()
-    except Exception:
-        pass
-
-    model_run = client.insert("model_runs", {
-        "property_id": property_id,
-        "layer": "inventory_rate",
-        "item_id": item_id,
-        "trained_at": datetime.utcnow().isoformat(),
-        "training_row_count": 0,
-        "feature_set_version": "v1",
-        "model_version": f"inventory-cold-start-v1-{item_id}-{datetime.utcnow().isoformat()}",
-        "algorithm": "cold-start-cohort-prior",
-        "training_mae": None,
-        "validation_mae": None,
-        "baseline_mae": None,
-        "beats_baseline_pct": None,
-        "validation_holdout_n": 0,
-        "is_active": True,
-        "activated_at": datetime.utcnow().isoformat(),
-        "consecutive_passing_runs": 0,
-        "auto_fill_enabled": False,
-        "auto_fill_enabled_at": None,
-        "posterior_params": json.dumps(posterior_params),
-        "hyperparameters": json.dumps({
-            "prior_rate_used": prior_rate,
-            "cohort_key": cohort_key,
-            "prior_source": prior_source,
-            "events_observed": events_observed,
-        }),
+    # Codex adversarial review 2026-05-13 (M-C8): the prior implementation
+    # did deactivate-then-insert as TWO separate Supabase calls with NO
+    # is_shadow filter and NO atomicity. Three real bugs:
+    #   1. A graduated shadow being soaked got killed alongside the prior
+    #      active (no is_shadow=False filter on deactivation).
+    #   2. Two concurrent trainings could both insert is_active=true.
+    #   3. Cold-start could clobber a real graduated model if the gate
+    #      condition flipped back to "insufficient data" later.
+    # The staxis_install_cold_start_model_run RPC (migration 0086) does
+    # both writes in one transaction under an advisory lock, refuses to
+    # clobber a real graduated model, and skips is_shadow=true rows.
+    posterior_json = json.dumps(posterior_params)
+    hyperparams_json = json.dumps({
+        "prior_rate_used": prior_rate,
+        "cohort_key": cohort_key,
+        "prior_source": prior_source,
+        "events_observed": events_observed,
     })
-    return model_run or {}
+    model_version = (
+        f"inventory-cold-start-v1-{item_id}-{datetime.utcnow().isoformat()}"
+    )
+    try:
+        rpc_result = client.client.rpc(
+            "staxis_install_cold_start_model_run",
+            {
+                "p_property_id": property_id,
+                "p_item_id": item_id,
+                "p_model_version": model_version,
+                "p_posterior_params": json.loads(posterior_json),
+                "p_hyperparameters": json.loads(hyperparams_json),
+            },
+        ).execute()
+        rows = rpc_result.data or []
+        row = rows[0] if isinstance(rows, list) and rows else (rows or {})
+        if not row.get("ok"):
+            # 'graduated_model_active' is the expected refusal — log info, not error.
+            print(json.dumps({
+                "level": "info",
+                "event": "cold_start_skipped",
+                "property_id": property_id,
+                "item_id": item_id,
+                "reason": row.get("reason"),
+                "ts": datetime.utcnow().isoformat(),
+            }))
+            return {}
+        return {
+            "id": row.get("model_run_id"),
+            "property_id": property_id,
+            "item_id": item_id,
+            "algorithm": "cold-start-cohort-prior",
+            "is_active": True,
+        }
+    except Exception as exc:
+        print(json.dumps({
+            "level": "error",
+            "event": "cold_start_rpc_failed",
+            "property_id": property_id,
+            "item_id": item_id,
+            "err": repr(exc),
+            "ts": datetime.utcnow().isoformat(),
+        }))
+        return {}
 
 
 def _seed_bayesian_intercept(model: BayesianRegression, prior_rate: float, room_count: int) -> None:

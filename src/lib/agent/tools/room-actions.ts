@@ -10,7 +10,7 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { registerTool, type ToolResult, type ToolContext } from '../tools';
-import { findRoomByNumber } from './_helpers';
+import { findRoomByNumber, assertHousekeeperAssignment } from './_helpers';
 
 // ─── mark_room_clean ──────────────────────────────────────────────────────
 
@@ -33,17 +33,8 @@ registerTool<{ roomNumber: string }>({
     const room = await findRoomByNumber(ctx.propertyId, roomNumber);
     if (!room) return { ok: false, error: `Room ${roomNumber} not found in this property.` };
 
-    // Housekeeper-scope enforcement: only the assigned housekeeper can
-    // mark their own rooms clean. `rooms.assigned_to` is a `staff.id`
-    // (not `accounts.id`) — fixed in Codex review 2026-05-13.
-    if (ctx.user.role === 'housekeeping') {
-      if (!ctx.staffId) {
-        return { ok: false, error: 'Your account isn\'t linked to a staff record on this property. Ask the manager to link it before using the chat.' };
-      }
-      if (room.assigned_to && room.assigned_to !== ctx.staffId) {
-        return { ok: false, error: `Room ${roomNumber} is assigned to a different housekeeper.` };
-      }
-    }
+    const guardErr = assertHousekeeperAssignment(room, ctx);
+    if (guardErr) return guardErr;
 
     const now = new Date().toISOString();
     const { error } = await supabaseAdmin
@@ -84,6 +75,12 @@ registerTool<{ roomNumber: string }>({
     const room = await findRoomByNumber(ctx.propertyId, roomNumber);
     if (!room) return { ok: false, error: `Room ${roomNumber} not found.` };
 
+    // Codex adversarial review 2026-05-13 (A-C6): the prior version
+    // skipped the housekeeper-scope check that mark_room_clean had,
+    // letting a housekeeper reset any room in the property.
+    const guardErr = assertHousekeeperAssignment(room, ctx);
+    if (guardErr) return guardErr;
+
     const { error } = await supabaseAdmin
       .from('rooms')
       .update({ status: 'dirty', started_at: null, completed_at: null })
@@ -121,6 +118,10 @@ registerTool<{ roomNumber: string; on: boolean; note?: string }>({
     const room = await findRoomByNumber(ctx.propertyId, roomNumber);
     if (!room) return { ok: false, error: `Room ${roomNumber} not found.` };
 
+    // Codex adversarial review 2026-05-13 (A-C6): scope check.
+    const guardErr = assertHousekeeperAssignment(room, ctx);
+    if (guardErr) return guardErr;
+
     const updates: Record<string, unknown> = { is_dnd: on };
     if (on) updates.dnd_note = note ?? null;
     else updates.dnd_note = null;
@@ -151,6 +152,10 @@ registerTool<{ roomNumber: string; note: string }>({
     const room = await findRoomByNumber(ctx.propertyId, roomNumber);
     if (!room) return { ok: false, error: `Room ${roomNumber} not found.` };
 
+    // Codex adversarial review 2026-05-13 (A-C6): scope check.
+    const guardErr = assertHousekeeperAssignment(room, ctx);
+    if (guardErr) return guardErr;
+
     const trimmed = (note ?? '').slice(0, 500);
     const { error } = await supabaseAdmin
       .from('rooms')
@@ -177,6 +182,11 @@ registerTool<{ roomNumber?: string; message?: string }>({
   },
   allowedRoles: ['admin', 'owner', 'general_manager', 'housekeeping', 'front_desk', 'maintenance'],
   handler: async ({ roomNumber, message }, ctx): Promise<ToolResult> => {
+    // Codex adversarial review 2026-05-13 (A-C2): cap message length so
+    // a model hallucination ("summarize the chat into the help message")
+    // can't blow past Twilio limits or DB row sizes via this path.
+    const trimmedMessage = message ? message.slice(0, 200) : null;
+
     // If a room was specified, flag the room. Always log the help request to nudges.
     let roomFlagged: string | null = null;
     if (roomNumber) {
@@ -196,12 +206,12 @@ registerTool<{ roomNumber?: string; message?: string }>({
       category: 'operational',
       severity: 'urgent',
       payload: {
-        summary: `${ctx.user.displayName} requested help${roomFlagged ? ` for room ${roomFlagged}` : ''}${message ? `: ${message}` : ''}`,
+        summary: `${ctx.user.displayName} requested help${roomFlagged ? ` for room ${roomFlagged}` : ''}${trimmedMessage ? `: ${trimmedMessage}` : ''}`,
         type: 'help_request',
         requester_id: ctx.user.accountId,
         requester_name: ctx.user.displayName,
         room_number: roomFlagged,
-        message: message ?? null,
+        message: trimmedMessage,
       },
       dedupe_key: dedupeKey,
     });
@@ -211,7 +221,7 @@ registerTool<{ roomNumber?: string; message?: string }>({
       data: {
         sent: true,
         roomFlagged,
-        message: message ?? null,
+        message: trimmedMessage,
       },
     };
   },

@@ -123,6 +123,33 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       if (!predByItem.has(key)) predByItem.set(key, p as { id: string; predicted_daily_rate: number; model_run_id: string; predicted_at: string });
     }
 
+    // Codex adversarial review 2026-05-13 (I-C3): observed rate must net
+    // out orders received and discards logged in the window between counts.
+    // The prior formula (older - newer) / days attributed ALL stock loss
+    // to consumption — a 20-unit order in the window would underestimate
+    // consumption by 20, and a discard would inflate it. Real formula
+    // (matches Python ML training):
+    //   consumption = max(0, older + orders - discards - newer)
+    //   rate = consumption / days
+    // The inventory_observed_rate_v view (migration 0085) does this in
+    // SQL. Pull pre-computed rates by newer_count_id and use them.
+    const newerCountIds = Array.from(byItem.values())
+      .filter(arr => arr.length >= 2)
+      .map(arr => arr[0].id);
+    const observedByNewerCountId = new Map<string, number>();
+    if (newerCountIds.length > 0) {
+      const { data: rateRows, error: rateErr } = await supabaseAdmin
+        .from('inventory_observed_rate_v')
+        .select('newer_count_id, observed_rate')
+        .in('newer_count_id', newerCountIds);
+      if (rateErr) {
+        log.warn('post-count-process: observed-rate view query failed', { requestId, err: rateErr });
+      }
+      for (const r of rateRows ?? []) {
+        observedByNewerCountId.set(String(r.newer_count_id), Number(r.observed_rate ?? 0));
+      }
+    }
+
     // Build observations + prediction_log rows
     const observations: RateObservation[] = [];
     const predictionLogRows: Array<Record<string, unknown>> = [];
@@ -135,7 +162,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       const tNewer = new Date(newer.counted_at).getTime();
       const tOlder = new Date(older.counted_at).getTime();
       const days = Math.max((tNewer - tOlder) / 86400000, 0.5);
-      const observed = Math.max(0, (Number(older.counted_stock) - Number(newer.counted_stock)) / days);
+      // Prefer the view's accounting-aware rate; fall back to the legacy
+      // formula only if the view has no row for this pair (shouldn't
+      // happen in practice but defensive).
+      const observed = observedByNewerCountId.has(newer.id)
+        ? observedByNewerCountId.get(newer.id) as number
+        : Math.max(0, (Number(older.counted_stock) - Number(newer.counted_stock)) / days);
       const pred = predByItem.get(itemId);
       if (!pred) continue;
       observations.push({

@@ -4,6 +4,7 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import type { AppRole } from '@/lib/roles';
+import type { ToolResult, ToolContext } from '../tools';
 
 export interface RoomRow {
   id: string;
@@ -86,4 +87,49 @@ export function isManagerOrAbove(role: AppRole): boolean {
 /** Returns true if the role is allowed to see financial data. */
 export function canSeeFinancials(role: AppRole): boolean {
   return role === 'admin' || role === 'owner' || role === 'general_manager';
+}
+
+/**
+ * Housekeeper-scope guard for room-mutation tools. Returns null when the
+ * caller is allowed to mutate `room`, or a ToolResult error when not.
+ *
+ * Codex adversarial review 2026-05-13 (A-C6 / Codex F2): only `mark_room_clean`
+ * was checking `ctx.staffId` against `room.assigned_to`. The other three
+ * floor mutations (`reset_room`, `toggle_dnd`, `flag_issue`) trusted the role
+ * but not the assignment, so a housekeeper could mutate any room in the
+ * property — service-role bypasses RLS, and that JS check was the only
+ * barrier. This helper centralizes the policy:
+ *
+ *   Housekeepers may mutate a room iff:
+ *     - they have a linked staff record on this property (staffId !== null), AND
+ *     - the room is unassigned (room.assigned_to === null) OR
+ *     - the room is assigned to them (room.assigned_to === ctx.staffId).
+ *
+ * Other roles (owner, GM, admin, front_desk) bypass this guard — they have
+ * legitimate operational reasons to mutate any room (manager override,
+ * front-desk overriding for a guest issue, etc.).
+ */
+export interface AssignmentGuardable {
+  assigned_to: string | null;
+  number: string;
+}
+
+export function assertHousekeeperAssignment(
+  room: AssignmentGuardable,
+  ctx: ToolContext,
+): ToolResult | null {
+  if (ctx.user.role !== 'housekeeping') return null;
+  if (!ctx.staffId) {
+    return {
+      ok: false,
+      error: "Your account isn't linked to a staff record on this property. Ask the manager to link it before using the chat.",
+    };
+  }
+  if (room.assigned_to && room.assigned_to !== ctx.staffId) {
+    return {
+      ok: false,
+      error: `Room ${room.number} is assigned to a different housekeeper.`,
+    };
+  }
+  return null;
 }

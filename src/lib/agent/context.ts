@@ -175,9 +175,19 @@ export async function buildHotelSnapshot(
   return snapshot;
 }
 
-/** Format the snapshot as a compact string the system prompt can embed. */
+/** Format the snapshot as a compact string the system prompt can embed.
+ *
+ * Codex adversarial review 2026-05-13 (A-C2): wrap the snapshot in
+ * trust-boundary tags. Anything that flows from the database (including
+ * fields ultimately derived from PMS imports or staff/guest input) is
+ * marked `trust="system"` here — we trust this source today. Tool results
+ * (handled in llm.ts) are wrapped `trust="untrusted"` because they can
+ * include user-provided text (issue_note, help message) that a prior
+ * housekeeper might have crafted to coerce a future model turn.
+ */
 export function formatSnapshotForPrompt(snap: HotelSnapshot): string {
   const lines: string[] = [];
+  lines.push('<staxis-snapshot trust="system">');
   lines.push(`Today: ${snap.today}`);
   lines.push(
     `Property: ${snap.property.name ?? 'Unnamed'} (${snap.property.id})` +
@@ -206,5 +216,6 @@ export function formatSnapshotForPrompt(snap: HotelSnapshot): string {
       );
     }
   }
+  lines.push('</staxis-snapshot>');
   return lines.join('\n');
 }

@@ -165,7 +165,12 @@ export async function fetchDailyAverages(
 // Returns a Map<itemId, dailyRate>. Empty when no predictions exist or the
 // ai_mode is 'off'. The caller passes this map to predictReorders().
 
-const ML_PREDICTION_FRESHNESS_DAYS = 7;
+// Freshness window for ML predictions: anything older than this is treated
+// as stale (cron broken, model not retraining, etc.) and excluded from
+// consumer surfaces. Exported so getInventoryAutoFillMap can reuse the
+// same constant — Codex adversarial review 2026-05-13 (I-C2) called out
+// that the auto-fill map had NO freshness gate while this fetcher did.
+export const ML_PREDICTION_FRESHNESS_DAYS = 7;
 
 export async function fetchMlPredictedRates(pid: string): Promise<Map<string, number>> {
   const out = new Map<string, number>();

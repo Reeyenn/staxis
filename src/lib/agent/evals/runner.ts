@@ -53,6 +53,13 @@ export async function runOneEval(
     history: [],
     newUserMessage: evalCase.input,
     tools,
+    // Codex adversarial review 2026-05-13 (A-H11): dry-run mode prevents
+    // tool handlers from actually executing. The model still sees a
+    // synthetic-success tool_result so it produces a realistic final text,
+    // but mark_room_clean / assign_room / send_help_sms etc. do NOT
+    // mutate the DB or send real SMS. Eval runs against a property no
+    // longer flip room status or charge real users.
+    dryRun: true,
     toolContext: {
       user: {
         uid: opts.userId,
