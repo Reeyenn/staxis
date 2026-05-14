@@ -211,7 +211,13 @@ async def predict_demand(
             }))
             prior_per_room = 20.0  # industry-default fallback
 
-        total_rooms = property_meta.get("total_rooms") or 0
+        # Phase M3.1 (2026-05-14): use the plan snapshot's total_count
+        # column (already loaded above from the plan_snapshots SQL query
+        # at line 128 — `coalesce(total_rooms, 0) as total_count`). The
+        # original M3 code referenced `property_meta` which was never
+        # fetched in this function — first cold-start invocation crashed
+        # with NameError. Caught by test_demand_inference_cold_start.py.
+        total_rooms = plan.get("total_count") or 0
         # Mean prediction = prior × room count. Cohort priors are
         # already empirically averaged across many days with varied
         # occupancy, so we don't try to scale by today's occupancy
