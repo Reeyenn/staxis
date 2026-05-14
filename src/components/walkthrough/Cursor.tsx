@@ -46,24 +46,24 @@ export function Cursor({ x, y, visible, pulsing }: CursorProps) {
       <div
         style={{
           position: 'relative',
-          width: 36,
-          height: 36,
+          width: 44,
+          height: 44,
           // Anchor the SVG tip to (0,0) of the wrapper so the (x,y) prop
           // means "where the cursor is pointing", not the top-left of the box.
-          transform: 'translate(-4px, -2px)',
+          transform: 'translate(-5px, -3px)',
           animation: pulsing
             ? 'staxis-cursor-pulse 1100ms cubic-bezier(0.4, 0, 0.6, 1) infinite'
             : 'none',
         }}
       >
         <svg
-          width="36"
-          height="36"
+          width="44"
+          height="44"
           viewBox="0 0 36 36"
           fill="none"
           xmlns="http://www.w3.org/2000/svg"
           style={{
-            filter: 'drop-shadow(0 4px 10px rgba(31, 35, 28, 0.25)) drop-shadow(0 1px 3px rgba(31, 35, 28, 0.15))',
+            filter: 'drop-shadow(0 4px 10px rgba(31, 35, 28, 0.28)) drop-shadow(0 1px 3px rgba(31, 35, 28, 0.18))',
           }}
         >
           {/* Classic arrow shape filled with Snow caramel. */}
@@ -71,7 +71,7 @@ export function Cursor({ x, y, visible, pulsing }: CursorProps) {
             d="M5 3 L5 27 L11.5 21 L15.5 30 L19 28.5 L15 19.5 L24 19.5 Z"
             fill="var(--snow-caramel, #C99644)"
             stroke="var(--snow-ink, #1F231C)"
-            strokeWidth="1.3"
+            strokeWidth="1.1"
             strokeLinejoin="round"
           />
         </svg>

@@ -82,11 +82,15 @@ export function WalkthroughOverlay() {
   const historyRef = useRef<HistoryEntry[]>([]);
 
   // ── Touch detection ──────────────────────────────────────────────────
+  // `(hover: none)` is the standard signal for "no precise pointer." Also
+  // honor `?staxis_touch=1` in the URL as a QA override so the touch
+  // metaphor can be tested from a regular desktop browser.
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    const forced = new URLSearchParams(window.location.search).get('staxis_touch') === '1';
     const mq = window.matchMedia('(hover: none)');
-    setIsTouch(mq.matches);
-    const handler = (e: MediaQueryListEvent) => setIsTouch(e.matches);
+    setIsTouch(forced || mq.matches);
+    const handler = (e: MediaQueryListEvent) => setIsTouch(forced || e.matches);
     mq.addEventListener('change', handler);
     return () => mq.removeEventListener('change', handler);
   }, []);
