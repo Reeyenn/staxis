@@ -1285,13 +1285,17 @@ const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // 0109 Round-11 T1: add 'summarizer' role to agent_prompts + seed.
   // 0110 ML: atomic inventory model install (parallel chat).
   // 0111 ML: RPC unknown-field notice (parallel chat).
+  // 0112 ML: preserve auto_fill_enabled_at across retrains (parallel chat).
+  // 0113 Round-12 T12.2: restore RPC counters=0 + recompute (no double-count).
+  // 0114 Round-12 T12.9/T12.11/T12.12: invariant CHECKs + tool-result orphan
+  //   trigger + heal RPC + T12.7 active prompt update.
   '0079', '0080', '0081', '0082', '0083',
   '0084', '0085', '0086', '0087', '0088', '0089',
   '0090', '0091', '0092', '0093', '0094',
   '0095', '0096', '0097', '0098', '0099',
   '0100', '0101', '0102', '0103', '0104',
   '0105', '0106', '0107', '0108', '0109',
-  '0110', '0111', '0112',
+  '0110', '0111', '0112', '0113', '0114',
 ];
 
 /**
