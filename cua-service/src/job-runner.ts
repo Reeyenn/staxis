@@ -240,6 +240,12 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
       recipe_id: recipeIdForJob,
       duration_ms: Date.now() - startedAt,
     });
+    // Phase M1.3 (2026-05-14): flip the property's pms_connected flag
+    // and seed last_synced_at. Without this, list-properties / doctor
+    // never know the property is "alive" — the Live Hotels view
+    // filtered by pmsConnected and freshly-onboarded hotels stayed
+    // invisible until the next scraper tick wrote last_synced_at.
+    await markPropertyConnected(job.property_id);
     log.info('job complete', { jobId, durationMs: Date.now() - startedAt });
   } catch (err) {
     const e = err as Error;
@@ -433,6 +439,39 @@ async function markComplete(
     .eq('id', jobId)
     .eq('worker_id', workerId)
     .in('status', RUNNING_STATUSES);
+}
+
+/**
+ * Phase M1.3 (2026-05-14) — flip properties.pms_connected = true and
+ * seed last_synced_at = now() once an onboarding job completes
+ * successfully. Called from the success branch right after
+ * markComplete().
+ *
+ * Why this isn't inside markComplete itself:
+ *   - markComplete owns one DB row (onboarding_jobs)
+ *   - this owns a different DB row (properties)
+ *   Keeping them as separate writes is intentional — if the property
+ *   update fails (RLS regression, schema drift), the job still
+ *   correctly reports complete, and we log the failure separately so
+ *   ops can see exactly which side broke.
+ *
+ * Idempotency: this is a plain UPDATE keyed on property_id. Re-running
+ * it produces the same end state.
+ */
+async function markPropertyConnected(propertyId: string): Promise<void> {
+  const { error } = await supabase
+    .from('properties')
+    .update({
+      pms_connected: true,
+      last_synced_at: new Date().toISOString(),
+    })
+    .eq('id', propertyId);
+  if (error) {
+    log.error('markPropertyConnected: failed to flip pms_connected', {
+      propertyId,
+      err: error.message,
+    });
+  }
 }
 
 async function markFailed(
