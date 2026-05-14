@@ -11,7 +11,7 @@
  * past 72h are purged daily by /api/cron/purge-old-error-logs.
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import {
@@ -75,13 +75,37 @@ export function LiveHotelsTab() {
   const [feedback, setFeedback] = useState<FeedbackItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const load = async () => {
+  // Phase M2 (2026-05-14): server-side search/filter/pagination.
+  // searchInput is the raw input field (debounced); searchTerm is what
+  // we actually send to the server (300ms debounce).
+  const [searchInput, setSearchInput] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'trial' | 'past_due' | 'stale' | 'pms_disconnected'>('all');
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState<{ totalMatching: number; totalPages: number; hasMore: boolean } | null>(null);
+  const PAGE_SIZE = 50;
+
+  // Debounce search input → searchTerm (300ms)
+  useEffect(() => {
+    const t = setTimeout(() => setSearchTerm(searchInput.trim()), 300);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
+  // Reset to page 1 whenever search/filter changes (avoid landing on empty page).
+  useEffect(() => { setPage(1); }, [searchTerm, statusFilter]);
+
+  const load = useCallback(async () => {
     setError(null);
     try {
-      // 72h window for errors + SMS health (used to be 24h).
       const since72h = new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString();
+      const propsParams = new URLSearchParams({
+        page: String(page),
+        pageSize: String(PAGE_SIZE),
+        status: statusFilter,
+      });
+      if (searchTerm) propsParams.set('search', searchTerm);
       const [propsRes, errorsRes, smsRes, feedbackRes] = await Promise.all([
-        fetchWithAuth('/api/admin/list-properties'),
+        fetchWithAuth(`/api/admin/list-properties?${propsParams.toString()}`),
         fetchWithAuth(`/api/admin/recent-errors?since=${encodeURIComponent(since72h)}`),
         fetchWithAuth('/api/admin/sms-health?hours=72'),
         fetchWithAuth('/api/admin/feedback'),
@@ -89,16 +113,19 @@ export function LiveHotelsTab() {
       const [propsJson, errorsJson, smsJson, feedbackJson] = await Promise.all([
         propsRes.json(), errorsRes.json(), smsRes.json(), feedbackRes.json(),
       ]);
-      if (propsJson.ok) setProps(propsJson.data.properties);
+      if (propsJson.ok) {
+        setProps(propsJson.data.properties);
+        setPagination(propsJson.data.pagination ?? null);
+      }
       if (errorsJson.ok) setErrors(errorsJson.data.groups);
       if (smsJson.ok) setSms(smsJson.data.perHotel);
       if (feedbackJson.ok) setFeedback(feedbackJson.data.feedback);
     } catch (err) {
       setError(`Network error: ${(err as Error).message}`);
     }
-  };
+  }, [page, statusFilter, searchTerm]);
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => { void load(); }, [load]);
 
   if (error) {
     return (
@@ -120,7 +147,14 @@ export function LiveHotelsTab() {
     );
   }
 
-  const live = props.filter((p) => p.lastSyncedAt !== null || p.subscriptionStatus === 'active');
+  // Phase M2: when admin picks a non-default status filter, show ALL
+  // matching properties regardless of "live" criteria. Otherwise keep
+  // the historical "Live hotels" semantics: only properties that have
+  // synced OR are active subscribers (in-flight onboarding hotels show
+  // on the Onboarding tab, not here).
+  const live = statusFilter === 'all'
+    ? props.filter((p) => p.lastSyncedAt !== null || p.subscriptionStatus === 'active')
+    : props;
 
   const enriched = live.map((p) => ({
     ...p,
@@ -148,11 +182,42 @@ export function LiveHotelsTab() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
 
       {/* Health chips — kept Total, Active, Disconnected PMS. Stale/Past due
-          chips removed per Reeyen (they were noise at single-property scale). */}
+          chips removed per Reeyen (they were noise at single-property scale).
+          Phase M2: total now reflects the FILTERED universe via pagination,
+          so "Total" can be smaller than props.length when search/filter is active. */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-        <Chip label="Total" value={summary.total} color="var(--text-secondary)" />
+        <Chip label="Total" value={pagination?.totalMatching ?? summary.total} color="var(--text-secondary)" />
         <Chip label="Active" value={summary.active} color="var(--green)" />
         <Chip label="Disconnected PMS" value={summary.disconnected} color={summary.disconnected > 0 ? 'var(--amber)' : 'var(--text-muted)'} />
+      </div>
+
+      {/* Phase M2: server-side search + status filter for fleet scale.
+          Inputs sit just under the chips so they're discoverable without
+          stealing screen real estate from the 4-column grid below. */}
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+        <input
+          type="search"
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          placeholder="Search hotels by name or brand…"
+          style={{
+            flex: '1 1 240px', minWidth: '200px', maxWidth: '400px',
+            padding: '8px 12px', fontSize: '13px',
+            border: '1px solid var(--border)', borderRadius: '8px',
+          }}
+        />
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
+          style={{ padding: '8px 12px', fontSize: '13px', border: '1px solid var(--border)', borderRadius: '8px' }}
+        >
+          <option value="all">All statuses</option>
+          <option value="active">Active</option>
+          <option value="trial">Trial</option>
+          <option value="past_due">Past due</option>
+          <option value="stale">Stale (no PMS sync &gt;12h)</option>
+          <option value="pms_disconnected">PMS disconnected</option>
+        </select>
       </div>
 
       {/* 4-column horizontal layout. minmax(280px, 1fr) so columns collapse
@@ -211,6 +276,34 @@ export function LiveHotelsTab() {
                   </div>
                 </Link>
               ))}
+            </div>
+          )}
+
+          {/* Phase M2: pagination controls. Only render when there's more than one page. */}
+          {pagination && pagination.totalPages > 1 && (
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              gap: '8px', marginTop: '12px',
+              padding: '10px 12px', background: 'var(--surface-primary)',
+              border: '1px solid var(--border)', borderRadius: '8px',
+            }}>
+              <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                Page {page} of {pagination.totalPages} · {pagination.totalMatching} hotels
+              </span>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <button
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={page <= 1}
+                  className="btn btn-secondary"
+                  style={{ padding: '4px 10px', fontSize: '12px', opacity: page <= 1 ? 0.4 : 1 }}
+                >Prev</button>
+                <button
+                  onClick={() => setPage((p) => p + 1)}
+                  disabled={!pagination.hasMore}
+                  className="btn btn-secondary"
+                  style={{ padding: '4px 10px', fontSize: '12px', opacity: pagination.hasMore ? 1 : 0.4 }}
+                >Next</button>
+              </div>
             </div>
           )}
         </section>

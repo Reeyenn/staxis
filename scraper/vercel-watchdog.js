@@ -86,9 +86,16 @@ const HEARTBEAT_MIN_GAP_MS = 20 * 60 * 60 * 1000;
 const DOCTOR_URL = process.env.VERCEL_DOCTOR_URL
   || 'https://getstaxis.com/api/admin/doctor';
 
-// Max time to wait for doctor to respond. Doctor itself caps at 30s, so
-// 35s covers the round trip with headroom.
-const DOCTOR_TIMEOUT_MS = 35_000;
+// Max time to wait for doctor to respond. Phase M2 (2026-05-14): doctor
+// maxDuration was bumped to 60s to absorb cold-cache cycles at fleet
+// scale. Watchdog timeout now 65s to cover the round trip with headroom.
+const DOCTOR_TIMEOUT_MS = 65_000;
+
+// Phase M2: 'slow' threshold. If doctor returns 200 in 25–60s, the
+// alert is "doctor slow at fleet scale," not "doctor down." Different
+// remediation: slow = scale up Vercel resources or aggressive cache;
+// down = the route itself is broken or Vercel is having an outage.
+const DOCTOR_SLOW_MS = 25_000;
 
 function log(msg) {
   console.log(`[${new Date().toISOString()}] [watchdog] ${msg}`);
@@ -104,23 +111,32 @@ function localHour(tz) {
 
 /**
  * Ping the doctor endpoint. Returns a classified result:
- *   { status: 'ok'       }                        — HTTP 200, ok:true
+ *   { status: 'ok'           }                    — HTTP 200, ok:true, fast
+ *   { status: 'slow', detail: '...' }             — HTTP 200, ok:true, but >25s
+ *                                                   (Phase M2: doctor responding but
+ *                                                    fleet scale showing — alert
+ *                                                    separately from 'down')
  *   { status: 'red', detail: '...'  }             — HTTP 503 (checks failed) or ok:false body
  *   { status: 'unreachable', detail: '...' }      — network error, timeout, non-2xx/503
  *   { status: 'auth_mismatch', detail: '...' }    — HTTP 401 (CRON_SECRET drift)
  *
- * We distinguish 'unreachable' from 'red' because their remediation is
- * different: red = fix Vercel config, unreachable = check network/Vercel up.
+ * Why 'slow' is its own status: at fleet scale a 30-40s doctor response
+ * means we're approaching the timeout but haven't crossed it. The
+ * remediation is "scale up Vercel resources / tune doctor cache" not
+ * "Vercel is down." Operators get a different, less-urgent message and
+ * can act on it during business hours rather than at 3am.
  */
 async function pingDoctor(cronSecret) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DOCTOR_TIMEOUT_MS);
+  const startedAt = Date.now();
   try {
     const res = await fetch(DOCTOR_URL, {
       method: 'GET',
       headers: { Authorization: `Bearer ${cronSecret}` },
       signal: controller.signal,
     });
+    const elapsedMs = Date.now() - startedAt;
 
     if (res.status === 401) {
       return {
@@ -147,6 +163,13 @@ async function pingDoctor(cronSecret) {
     }
 
     if (body.ok) {
+      // Phase M2: doctor returned green but maybe slowly.
+      if (elapsedMs > DOCTOR_SLOW_MS) {
+        return {
+          status: 'slow',
+          detail: `Doctor green but took ${Math.round(elapsedMs / 1000)}s (threshold ${Math.round(DOCTOR_SLOW_MS / 1000)}s) — fleet scale showing.`,
+        };
+      }
       return { status: 'ok' };
     }
 
@@ -430,6 +453,14 @@ async function runVercelWatchdog({ supabase, timezone }) {
     ? `Staxis Vercel watchdog: CRON_SECRET mismatch between Railway and Vercel. Update one to match the other, then redeploy.`
     : result.status === 'red'
     ? `Staxis Vercel watchdog: doctor RED (${result.detail}). Hit /api/admin/doctor for the fix message.`
+    : result.status === 'slow'
+    // Phase M2: 'slow' is its own failure mode. Doctor IS responding (no
+    // outage) but taking >25s — fleet scale showing through. Different
+    // remediation than 'unreachable' (scale up Vercel resources or tune
+    // doctor cache TTL, not "is Vercel down"). The 3-tick threshold
+    // means a single transient slow doesn't wake operators; sustained
+    // slowness over 15min does.
+    ? `Staxis Vercel watchdog: doctor SLOW for ${newCount * 5}+ min (${result.detail}). Not an outage — fleet scale is showing. Tune doctor cache or scale Vercel.`
     : `Staxis Vercel watchdog: Vercel unreachable from Railway for ${newCount * 5}+ min. ${result.detail}`;
 
   const smsRes = await sendTwilioSms(alertPhone, body);

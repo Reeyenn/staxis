@@ -71,7 +71,10 @@ export async function GET(req: NextRequest) {
   if (cronGate) return cronGate;
 
   try {
-    const report = await runAllChecks();
+    // Phase M2: hourly cron must always see fresh state — bypass the
+    // doctor's per-check cache. Otherwise a "fail" cached for 60s
+    // could be served stale and we'd alert based on outdated data.
+    const report = await runAllChecks(false);
     const decision = decideDoctorCheckAlert(report);
 
     if (decision.shouldAlert && decision.message) {
