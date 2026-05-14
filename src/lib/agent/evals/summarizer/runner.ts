@@ -8,7 +8,7 @@
 //
 // Round 11 T4, 2026-05-13.
 
-import { runAgent, escapeToolResultContent } from '@/lib/agent/llm';
+import { runAgent, escapeTrustMarkerContent, MAX_TOOL_RESULT_CHARS } from '@/lib/agent/llm';
 import { getActivePrompt } from '@/lib/agent/prompts-store';
 import { SUMMARIZER_EVAL_CASES } from './test-bank';
 import type { SummarizerEvalCase } from './test-bank';
@@ -39,8 +39,8 @@ function formatRows(rows: EvalMessageRow[]): string {
       lines.push(`[${ts}] ASSISTANT: ${r.content ?? ''}`);
     } else if (r.role === 'tool') {
       const result = typeof r.tool_result === 'string' ? r.tool_result : JSON.stringify(r.tool_result);
-      const sliced = (result ?? '').slice(0, 500);
-      const escaped = escapeToolResultContent(sliced);
+      const sliced = (result ?? '').slice(0, MAX_TOOL_RESULT_CHARS);
+      const escaped = escapeTrustMarkerContent(sliced);
       const toolName = r.tool_name ?? 'unknown';
       lines.push(`[${ts}] <tool-result trust="untrusted" name="${toolName}">${escaped}</tool-result>`);
     }

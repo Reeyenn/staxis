@@ -193,7 +193,12 @@ export function classifyAnthropicError(err: unknown): AnthropicErrorClass {
 // Haiku rather than Sonnet) can reuse the same boundary escape. Round 10
 // F4: without this, the summarizer breaks the trust-marker chain rounds
 // 5-7 established.
-export function escapeToolResultContent(content: string): string {
+//
+// Round 12 T12.6 (2026-05-13): renamed from escapeToolResultContent to
+// escapeTrustMarkerContent because it's now used for two markers
+// (`<tool-result>` AND `<staxis-summary>`) — anywhere content gets
+// wrapped in a trust-marker tag, this helper must be applied first.
+export function escapeTrustMarkerContent(content: string): string {
   return content
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -615,7 +620,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
         tool_use_id: call.id,
         // Truncate first (R3), escape <>& second (R6 R4 — unforgeable
         // boundary), wrap in trust marker third (A-C2 — anti-jailbreak).
-        content: `<tool-result trust="untrusted" name="${call.name}">${escapeToolResultContent(truncateToolResultContent(rawContent))}</tool-result>`,
+        content: `<tool-result trust="untrusted" name="${call.name}">${escapeTrustMarkerContent(truncateToolResultContent(rawContent))}</tool-result>`,
         is_error: isError,
       });
     }
@@ -863,7 +868,7 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
           tool_use_id: call.id,
           // Truncate first (R3), escape <>& second (R6 R4 — unforgeable
           // boundary), wrap in trust marker third (A-C2 — anti-jailbreak).
-          content: `<tool-result trust="untrusted" name="${call.name}">${escapeToolResultContent(truncateToolResultContent(rawContent))}</tool-result>`,
+          content: `<tool-result trust="untrusted" name="${call.name}">${escapeTrustMarkerContent(truncateToolResultContent(rawContent))}</tool-result>`,
           is_error: isError,
         });
       }

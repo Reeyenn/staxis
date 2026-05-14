@@ -10,8 +10,9 @@
 // Longevity L4 part B, 2026-05-13.
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { captureException } from '@/lib/sentry';
 import { recordNonRequestCost } from './cost-controls';
-import { runAgent, escapeToolResultContent } from './llm';
+import { runAgent, escapeTrustMarkerContent, MAX_TOOL_RESULT_CHARS } from './llm';
 import { getActivePrompt } from './prompts-store';
 
 /** Minimum unsummarized messages before a conversation is summarized. */
@@ -47,7 +48,7 @@ TRUST BOUNDARIES — CRITICAL:
 
 const FALLBACK_SUMMARY_VERSION = 'fallback-2026.05.13-v1';
 
-interface MessageRow {
+export interface MessageRow {
   id: string;
   role: string;
   content: string | null;
@@ -56,6 +57,51 @@ interface MessageRow {
   tool_args: Record<string, unknown> | null;
   tool_result: unknown;
   created_at: string;
+}
+
+/**
+ * Trim trailing assistant tool_use rows whose matching tool_result is
+ * NOT in the batch. Returns a (possibly shorter) array.
+ *
+ * If row N is a normal assistant text turn, user turn, or a tool result
+ * (whose tool_use we presumably summarized somewhere earlier in the
+ * batch), it's safe to leave as the batch's last row. The dangerous
+ * case is only: assistant tool_use with no matching tool_result inside
+ * the batch — that orphans the result on next replay.
+ *
+ * Exported for unit testing. Round 12 T12.1 (2026-05-13).
+ */
+export function trimTrailingOrphanToolUses(rows: MessageRow[]): MessageRow[] {
+  let trimEnd = rows.length;
+  while (trimEnd > 0) {
+    const last = rows[trimEnd - 1];
+    if (last.role === 'assistant' && last.tool_name) {
+      // Last row is an assistant tool_use. Look for its tool_result
+      // INSIDE the batch (role='tool', same tool_call_id, in any
+      // earlier position — since tool_result follows tool_use,
+      // checking later positions in the batch would be wrong;
+      // really we want "any other position" but tool_results always
+      // come AFTER tool_uses so "earlier in batch" is what we have
+      // for this row's perspective... actually since we ordered by
+      // created_at ASC, the tool_result for THIS tool_use would be
+      // at a HIGHER index. But we're at the END of the batch. So
+      // it must be outside the batch. Trim.
+      //
+      // Edge case: a tool_use whose tool_result is at trimEnd-1+1 =
+      // trimEnd, which is outside our remaining slice. The check
+      // below verifies that — if the tool_result is anywhere in the
+      // current rows array (not just the trimmed slice), we have it.
+      const hasResult = rows.some(
+        r => r.role === 'tool' && r.tool_call_id === last.tool_call_id,
+      );
+      if (!hasResult) {
+        trimEnd--;
+        continue;
+      }
+    }
+    break;
+  }
+  return rows.slice(0, trimEnd);
 }
 
 function formatMessagesForSummarization(rows: MessageRow[]): string {
@@ -74,10 +120,16 @@ function formatMessagesForSummarization(rows: MessageRow[]): string {
       // reads raw untrusted content and may quote it verbatim into the
       // summary — which then re-injects as trusted assistant context on
       // the next user turn, defeating the prompt-injection defense
-      // rounds 5-7 established. The 500-char slice bound stays.
+      // rounds 5-7 established.
+      //
+      // Round 12 T12.4 (2026-05-13): use the SAME truncation cap as the
+      // main agent persistence path (MAX_TOOL_RESULT_CHARS=6000 in
+      // llm.ts), not a separate magic 500. Otherwise the summary is
+      // built from less detail than the original turn saw — silent
+      // context degradation across summarization.
       const result = typeof r.tool_result === 'string' ? r.tool_result : JSON.stringify(r.tool_result);
-      const sliced = (result ?? '').slice(0, 500);
-      const escaped = escapeToolResultContent(sliced);
+      const sliced = (result ?? '').slice(0, MAX_TOOL_RESULT_CHARS);
+      const escaped = escapeTrustMarkerContent(sliced);
       const toolName = r.tool_name ?? 'unknown';
       lines.push(`[${ts}] <tool-result trust="untrusted" name="${toolName}">${escaped}</tool-result>`);
     }
@@ -133,7 +185,30 @@ export async function summarizeOneConversation(conversationId: string): Promise<
     return null; // raced
   }
 
-  const rows = messages as MessageRow[];
+  const fetchedRows = messages as MessageRow[];
+
+  // Round 12 T12.1 (2026-05-13): trim trailing orphan tool_use rows.
+  // If the last row(s) in our 50-row batch are assistant tool_use rows
+  // whose matching tool_result rows are OUTSIDE the batch (row 51+),
+  // summarizing them now would orphan the tool_result on next replay:
+  // loadConversation filters out is_summarized=true rows, so the
+  // tool_use vanishes; toClaudeMessages skips a tool_result with no
+  // preceding tool_use; the model loses the actual tool outcome.
+  // The summary captured "the assistant called tool X" but not "the
+  // result was Z." This is a real bug Codex round-12 surfaced.
+  //
+  // Fix: walk backwards trimming any trailing tool_use rows whose
+  // tool_result is NOT in the batch. The next cron tick will catch
+  // the pair once both are inside one batch.
+  const rows = trimTrailingOrphanToolUses(fetchedRows);
+
+  // If trimming dropped us below the threshold, skip this run.
+  // The next cron tick (30 min later) will retry once the orphaned
+  // pair lands inside one batch.
+  if (rows.length < SUMMARIZATION_THRESHOLD) {
+    return null;
+  }
+
   const transcript = formatMessagesForSummarization(rows);
   const messageIds = rows.map(r => r.id);
 
@@ -222,7 +297,21 @@ export async function summarizeOneConversation(conversationId: string): Promise<
     costUsd: summaryRun.usage.costUsd,
     kind: 'background',
   }).catch(err => {
+    // Round 12 T12.3 (2026-05-13): a failed cost-record used to be
+    // logged + swallowed silently. The summary persists, but the
+    // Haiku spend never reaches agent_costs → /admin/agent KPI
+    // underreports, global cap math doesn't see it. Surface to
+    // Sentry so an operator can investigate, AND keep the log so
+    // local debugging still works.
     console.error('[summarizer] recordNonRequestCost failed; summary persisted but cost untracked', err);
+    captureException(err, {
+      subsystem: 'summarizer',
+      failure_mode: 'cost_record_lost',
+      conversationId,
+      costUsd: summaryRun.usage.costUsd,
+      model: summaryRun.usage.model,
+      modelId: summaryRun.usage.modelId,
+    });
   });
 
   return {

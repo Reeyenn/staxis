@@ -309,15 +309,30 @@ export async function POST(req: NextRequest): Promise<Response> {
             // recordSyntheticAbortToolResult (upsert+ignoreDuplicates from
             // round 8 B7 makes a late-landing original safe). Without this,
             // a missing tool_result row is silently counted as success.
-            await recordToolResult(finalConversationId, event.call.id, event.result, event.isError)
-              .then(() => {
-                pendingToolCallIds.delete(event.call.id);
-              })
-              .catch(err => {
-                log.error('[agent/command] failed to persist tool result', {
-                  requestId, conversationId: finalConversationId, callId: event.call.id, err,
-                });
+            //
+            // Round 12 T12.8 (2026-05-13): make tool_result persistence
+            // critical-path. If the insert fails (after Supabase's
+            // own retries), don't let the model proceed to the next
+            // iteration — its NEXT turn would replay the synthetic
+            // abort from finally, diverging from THIS turn's "success"
+            // view. Better to surface the error and abort the stream;
+            // user can retry. The id stays in pendingToolCallIds so
+            // the finally block synthesizes correctly.
+            let toolResultPersisted = false;
+            try {
+              await recordToolResult(finalConversationId, event.call.id, event.result, event.isError);
+              pendingToolCallIds.delete(event.call.id);
+              toolResultPersisted = true;
+            } catch (err) {
+              log.error('[agent/command] failed to persist tool result; aborting stream', {
+                requestId, conversationId: finalConversationId, callId: event.call.id, err,
               });
+              send({
+                type: 'error',
+                message: 'A tool result could not be saved. Your conversation is preserved; please retry.',
+              });
+            }
+            if (!toolResultPersisted) break;
             send(event);
           } else if (event.type === 'done') {
             finalUsage = event.usage;

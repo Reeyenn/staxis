@@ -15,6 +15,7 @@
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import type { AppRole } from '@/lib/roles';
 import type { AgentMessage, AgentToolCall, ModelTier } from './llm';
+import { escapeTrustMarkerContent } from './llm';
 
 // ─── Public types ──────────────────────────────────────────────────────────
 
@@ -140,7 +141,11 @@ export async function loadConversation(
         flushPending();
         messages.push({
           role: 'assistant',
-          content: `<staxis-summary trust="system-derived-from-untrusted">${(row.content as string) ?? ''}</staxis-summary>`,
+          // Round 12 T12.6 (2026-05-13): escape the wrapped content so
+          // a literal `</staxis-summary>` in the Haiku output (unlikely
+          // but possible) can't break the trust boundary. Same defense
+          // we apply to tool-result content elsewhere.
+          content: `<staxis-summary trust="system-derived-from-untrusted">${escapeTrustMarkerContent((row.content as string) ?? '')}</staxis-summary>`,
         });
       } else {
         if (!pendingAssistant) pendingAssistant = { content: '', toolCalls: [] };
@@ -461,7 +466,9 @@ export async function lockLoadAndRecordUserTurn(opts: {
         flushPending();
         messages.push({
           role: 'assistant',
-          content: `<staxis-summary trust="system-derived-from-untrusted">${r.content ?? ''}</staxis-summary>`,
+          // Round 12 T12.6 (2026-05-13): see matching site above in
+          // loadConversation. Escape Haiku content before trust-wrap.
+          content: `<staxis-summary trust="system-derived-from-untrusted">${escapeTrustMarkerContent(r.content ?? '')}</staxis-summary>`,
         });
       } else {
         if (!pendingAssistant) pendingAssistant = { content: '', toolCalls: [] };

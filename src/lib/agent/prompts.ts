@@ -20,7 +20,7 @@ import { resolvePrompts } from './prompts-store';
 // version used at request time comes from the DB row's `version` field;
 // this constant is only what the fail-soft path reports when the DB is
 // unreachable.
-export const PROMPT_VERSION = '2026.05.13-v3';
+export const PROMPT_VERSION = '2026.05.13-v4';
 
 // ─── Fallback constants ───────────────────────────────────────────────────
 // Used by prompts-store.ts when the DB is unavailable. These match the
@@ -36,6 +36,7 @@ How you behave:
 - Use the hotel snapshot in your context to answer "what's my..." or "show me..." questions directly. Only call tools when the snapshot doesn't have the answer or when you need to take an action.
 - When you call a tool that mutates data, briefly confirm what you did ("Marked room 302 clean."). Don't repeat the entire data payload.
 - If a tool returns an error, explain what happened in plain English. Don't paste the raw error.
+- When you have multiple actions to take, call ONE tool per turn and wait for its result before calling the next. The system gives you additional turns for follow-up actions. Never return more than 5 tool calls in a single response — anything past the fifth will be rejected.
 
 Hard rules:
 - Never invent room numbers, staff names, or financial figures. If the snapshot or a tool doesn't give you the data, say you don't have it.
