@@ -450,18 +450,32 @@ def _train_single_item(
     )
     this_run_passes = gate_events and gate_mae
     consecutive_passes = 1 if this_run_passes else 0
-    # Codex round-3 review 2026-05-13 (D4): mirror Option B from Phase 3.2
-    # for inventory. The prior MAE check used `mean_observed_rate * ratio`,
-    # but mean_observed_rate is now (post C1) THIS run's y_test.mean() —
-    # a tiny per-item slice that swings 30-50% week-to-week. With the
-    # streak target of 5, models stalled indefinitely as prior runs
-    # flickered pass/fail across retrains. Drop the MAE check on prior
-    # runs entirely and rely on training_row_count alone as the stable
-    # signal — same simplification demand+supply went through. The
-    # current run still gates on the new ratio.
+    # Codex round-4 review 2026-05-13 (F2): D4's first attempt dropped
+    # the MAE check entirely from prior_passes. That was wrong — the
+    # commit message claimed it mirrored Option B from Phase 3.2, but
+    # demand+supply Option B kept the LEGACY absolute MAE check; only
+    # the *ratio* (post-Phase-3.2) gate moved to current-run-only.
+    # Without any historical pass signal, a current good run + 4
+    # historical bad runs would flip auto_fill_enabled=true after 1
+    # actually-good run (the streak target of 5 became meaningless).
+    #
+    # Fix: restore a stable legacy threshold. We compare the prior run's
+    # stored validation_mae against `inventory_graduation_mae_ratio *
+    # max(prior_run.training_mae, 1.0)` — using the prior's OWN training
+    # mean as a stable per-row denominator, NOT the current run's
+    # noisy y_test.mean(). Falls back to the current mean when the
+    # prior didn't store training_mae (older rows). Mirrors the
+    # legacy pattern Option B kept for demand+supply.
+    fleet_mae_floor_for_prior = max(mean_observed_rate, 1e-9)
     for pr in prior_runs or []:
+        prior_train_mae = pr.get("training_mae") or 0.0
+        prior_denom = max(float(prior_train_mae), fleet_mae_floor_for_prior, 1e-9)
+        prior_mae_ratio = (
+            (pr.get("validation_mae") or float("inf")) / prior_denom
+        )
         prior_passes = (
             (pr.get("training_row_count") or 0) >= settings.inventory_graduation_min_events
+            and prior_mae_ratio < settings.inventory_graduation_mae_ratio
         )
         if prior_passes and consecutive_passes > 0:
             consecutive_passes += 1
