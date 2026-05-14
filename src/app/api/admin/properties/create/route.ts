@@ -44,6 +44,8 @@ import {
   OWNER_CODE_TTL_HOURS,
   OWNER_CODE_MAX_USES,
 } from '@/lib/join-codes';
+import { sendOnboardingInvite } from '@/lib/email/onboarding-invite';
+import { DEFAULT_INVENTORY_ITEMS } from '@/lib/inventory/default-items';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -57,6 +59,9 @@ interface CreateBody {
   propertyKind?: unknown;
   isTest?: unknown;
   ownerEmail?: unknown;
+  // Phase M1.5 additions:
+  inviteRole?: unknown;  // 'owner' | 'general_manager' (default 'owner')
+  sendEmail?: unknown;   // boolean (default false). Requires ownerEmail.
 }
 
 interface ValidationResult {
@@ -70,8 +75,16 @@ interface ValidationResult {
     propertyKind: string;
     isTest: boolean;
     ownerEmail: string | null;
+    inviteRole: 'owner' | 'general_manager';
+    sendEmail: boolean;
   };
 }
+
+// Phase M1.5: only owner + general_manager can be invited via this
+// admin flow. Staff roles (front_desk/housekeeping/maintenance) come
+// in via the staff-side join codes minted later from the per-property
+// admin page, not at hotel creation.
+const INVITE_ROLES = new Set(['owner', 'general_manager']);
 
 const KNOWN_PMS_TYPES = new Set([
   'choice_advantage',
@@ -154,6 +167,23 @@ export function validateBody(body: CreateBody): ValidationResult | { ok: false; 
     ownerEmail = body.ownerEmail.trim().toLowerCase();
   }
 
+  // Phase M1.5: invite role and send-email flag
+  let inviteRole: 'owner' | 'general_manager' = 'owner';
+  if (body.inviteRole !== undefined && body.inviteRole !== null && body.inviteRole !== '') {
+    if (typeof body.inviteRole !== 'string' || !INVITE_ROLES.has(body.inviteRole)) {
+      return {
+        ok: false,
+        reason: `inviteRole must be one of: ${Array.from(INVITE_ROLES).join(', ')} (got: ${String(body.inviteRole)})`,
+      };
+    }
+    inviteRole = body.inviteRole as 'owner' | 'general_manager';
+  }
+
+  const sendEmail = body.sendEmail === true;
+  if (sendEmail && !ownerEmail) {
+    return { ok: false, reason: 'sendEmail=true requires ownerEmail' };
+  }
+
   return {
     ok: true,
     values: {
@@ -165,6 +195,8 @@ export function validateBody(body: CreateBody): ValidationResult | { ok: false; 
       propertyKind,
       isTest,
       ownerEmail,
+      inviteRole,
+      sendEmail,
     },
   };
 }
@@ -215,6 +247,41 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Phase M1.5: seed the 16 default inventory items immediately so the
+  // wizard can confidently say "your inventory is set up" at Step 9 and
+  // ML cold-start training can begin as soon as the first count event
+  // arrives (instead of waiting for the owner to open the inventory
+  // page once to trigger the auto-seed). Idempotent — the unique index
+  // (property_id, lower(name)) makes re-running this a no-op.
+  //
+  // Best-effort: a failure here doesn't roll back the property. The
+  // inventory page's existing client-side seed (page.tsx:38) is the
+  // backstop — if the server-side seed flakes, the owner gets the same
+  // items the next time they open the page.
+  try {
+    const inventoryRows = DEFAULT_INVENTORY_ITEMS.map((item) => ({
+      property_id: created.id,
+      name: item.name,
+      category: item.category,
+      current_stock: item.currentStock,
+      par_level: item.parLevel,
+      unit: item.unit,
+    }));
+    const { error: seedErr } = await supabaseAdmin
+      .from('inventory')
+      .insert(inventoryRows);
+    if (seedErr && !String(seedErr.message ?? '').toLowerCase().includes('duplicate')) {
+      // Non-duplicate errors are real; log them so ops can investigate.
+      console.error('[admin/properties/create] inventory seed failed (non-fatal)', {
+        requestId, propertyId: created.id, error: seedErr.message,
+      });
+    }
+  } catch (e) {
+    console.error('[admin/properties/create] inventory seed threw (non-fatal)', {
+      requestId, propertyId: created.id, error: e instanceof Error ? e.message : String(e),
+    });
+  }
+
   // Mint an owner-role join code so the admin has something to send the
   // hotel's actual owner. Try a few times in case of code collision.
   let joinCodeRow: { code: string; expires_at: string } | null = null;
@@ -227,7 +294,7 @@ export async function POST(req: NextRequest) {
       .insert({
         hotel_id: created.id,
         code,
-        role: 'owner',
+        role: v.inviteRole,  // Phase M1.5: 'owner' | 'general_manager'
         expires_at: expiresAt,
         max_uses: OWNER_CODE_MAX_USES,
         created_by: auth.accountId,
@@ -277,8 +344,41 @@ export async function POST(req: NextRequest) {
   // Build the signup URL. Use NEXT_PUBLIC_SITE_URL when available so
   // dev/preview/prod each generate links to themselves; fall back to the
   // production canonical (matches the smoke test convention).
+  // Phase M1.5: changed path from /signup to /onboard — the new unified
+  // wizard. Old /signup URLs still work via the redirect added in
+  // Commit 8.
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://getstaxis.com';
-  const signupUrl = `${siteUrl}/signup?code=${encodeURIComponent(joinCodeRow.code)}`;
+  const signupUrl = `${siteUrl}/onboard?code=${encodeURIComponent(joinCodeRow.code)}`;
+
+  // Phase M1.5: optional Resend email send. Failure is NEVER fatal —
+  // the signup URL is still in the response body so the admin can
+  // copy/paste as a fallback.
+  let emailSent = false;
+  let emailError: string | null = null;
+  if (v.sendEmail && v.ownerEmail) {
+    const emailResult = await sendOnboardingInvite({
+      to: v.ownerEmail,
+      hotelName: v.name,
+      signupUrl,
+      inviteRole: v.inviteRole,
+      expiresAt: joinCodeRow.expires_at,
+      auditContext: {
+        actorUserId: auth.userId,
+        actorEmail: auth.email ?? undefined,
+        targetType: 'property',
+        targetId: created.id,
+        hotelId: created.id,
+      },
+    });
+    if (emailResult.ok) {
+      emailSent = true;
+    } else {
+      emailError = emailResult.error;
+      console.warn('[admin/properties/create] email send failed (non-fatal)', {
+        requestId, propertyId: created.id, error: emailResult.error,
+      });
+    }
+  }
 
   return ok(
     {
@@ -286,6 +386,9 @@ export async function POST(req: NextRequest) {
       joinCode: joinCodeRow.code,
       signupUrl,
       expiresAt: joinCodeRow.expires_at,
+      emailSent,
+      emailError,
+      inviteRole: v.inviteRole,
     },
     { requestId },
   );

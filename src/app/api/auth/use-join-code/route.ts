@@ -210,6 +210,32 @@ export async function POST(req: NextRequest) {
   }
   // Slot already incremented via the CAS at the top.
 
+  // Phase M1.5 (2026-05-14): when an OWNER signs up via an admin-issued
+  // owner code, transfer properties.owner_id from the placeholder admin
+  // (set at hotel creation time in /api/admin/properties/create) to the
+  // actual owner. Without this, owner_id semantics are wrong — every
+  // hotel "owned by" Reeyen forever.
+  //
+  // GM signups do NOT transfer owner_id. The GM has property_access
+  // (full read/write) but isn't the owner of record.
+  if (finalRole === 'owner') {
+    const { error: ownerXferErr } = await supabaseAdmin
+      .from('properties')
+      .update({ owner_id: authData.user.id })
+      .eq('id', row.hotel_id);
+    if (ownerXferErr) {
+      // Non-fatal: account is created; owner_id semantic is wrong but
+      // the user can still operate the hotel via property_access.
+      // Log so ops can repair manually.
+      console.error('[use-join-code] owner_id transfer failed (non-fatal)', {
+        requestId,
+        hotelId: row.hotel_id,
+        newOwner: authData.user.id,
+        error: ownerXferErr.message,
+      });
+    }
+  }
+
   await writeAudit({
     action: 'join_code.use',
     actorUserId: authData.user.id,
@@ -217,7 +243,11 @@ export async function POST(req: NextRequest) {
     targetType: 'join_code',
     targetId: row.id,
     hotelId: row.hotel_id,
-    metadata: { code: normalizedCode, role: finalRole, username, hasPhone: !!normalizedPhone },
+    metadata: {
+      code: normalizedCode, role: finalRole, username,
+      hasPhone: !!normalizedPhone,
+      ownerIdTransferred: finalRole === 'owner',
+    },
   });
 
   return ok({ email: normalizedEmail }, { requestId });

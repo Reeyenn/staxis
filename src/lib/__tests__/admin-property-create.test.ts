@@ -336,3 +336,98 @@ describe('validateBody — ownerEmail field', () => {
     assert.equal(result.ok, true);
   });
 });
+
+// ─── PHASE M1.5: inviteRole + sendEmail ────────────────────────────────────
+
+describe('validateBody — inviteRole field (Phase M1.5)', () => {
+  test('defaults to owner when omitted', () => {
+    const result = validateBody({
+      name: 'Test', totalRooms: 50, timezone: 'America/Chicago',
+    });
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.values.inviteRole, 'owner');
+  });
+
+  test('accepts owner', () => {
+    const result = validateBody({
+      name: 'Test', totalRooms: 50, timezone: 'America/Chicago',
+      inviteRole: 'owner',
+    });
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.values.inviteRole, 'owner');
+  });
+
+  test('accepts general_manager', () => {
+    const result = validateBody({
+      name: 'Test', totalRooms: 50, timezone: 'America/Chicago',
+      inviteRole: 'general_manager',
+    });
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.values.inviteRole, 'general_manager');
+  });
+
+  test('rejects staff roles (only owner/GM can be invited via admin flow)', () => {
+    for (const role of ['front_desk', 'housekeeping', 'maintenance', 'admin', 'staff']) {
+      const result = validateBody({
+        name: 'Test', totalRooms: 50, timezone: 'America/Chicago',
+        inviteRole: role,
+      });
+      assert.equal(result.ok, false, `inviteRole=${role} should be rejected`);
+      if (!result.ok) assert.match(result.reason, /inviteRole/);
+    }
+  });
+});
+
+describe('validateBody — sendEmail flag (Phase M1.5)', () => {
+  test('defaults to false when omitted', () => {
+    const result = validateBody({
+      name: 'Test', totalRooms: 50, timezone: 'America/Chicago',
+    });
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.values.sendEmail, false);
+  });
+
+  test('accepts true with valid ownerEmail', () => {
+    const result = validateBody({
+      name: 'Test', totalRooms: 50, timezone: 'America/Chicago',
+      sendEmail: true,
+      ownerEmail: 'owner@hotel.com',
+    });
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.values.sendEmail, true);
+      assert.equal(result.values.ownerEmail, 'owner@hotel.com');
+    }
+  });
+
+  test('REJECTS sendEmail=true without ownerEmail (the load-bearing assertion)', () => {
+    // Without this guard, an admin could submit sendEmail=true with no
+    // recipient and the API would silently drop the email send. The form
+    // also enforces this, but server-side guard is the load-bearing one.
+    const result = validateBody({
+      name: 'Test', totalRooms: 50, timezone: 'America/Chicago',
+      sendEmail: true,
+    });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.match(result.reason, /sendEmail.*ownerEmail/i);
+  });
+
+  test('accepts sendEmail=false even without ownerEmail', () => {
+    const result = validateBody({
+      name: 'Test', totalRooms: 50, timezone: 'America/Chicago',
+      sendEmail: false,
+    });
+    assert.equal(result.ok, true);
+  });
+
+  test('treats truthy non-bool as falsy (defensive)', () => {
+    // Form might send "true" string or 1 — only literal `true` enables
+    // email send, otherwise defaults to false. Prevents accidental sends.
+    const result = validateBody({
+      name: 'Test', totalRooms: 50, timezone: 'America/Chicago',
+      sendEmail: 'true' as unknown,
+    });
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.values.sendEmail, false);
+  });
+});

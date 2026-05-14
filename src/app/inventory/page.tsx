@@ -33,26 +33,23 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 
+import { DEFAULT_INVENTORY_ITEMS } from '@/lib/inventory/default-items';
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const DEFAULTS: Omit<InventoryItem, 'id' | 'updatedAt' | 'propertyId'>[] = [
-  { name: 'King Sheets', category: 'housekeeping', currentStock: 0, parLevel: 80, unit: 'sets' },
-  { name: 'Queen Sheets', category: 'housekeeping', currentStock: 0, parLevel: 120, unit: 'sets' },
-  { name: 'Pillowcases', category: 'housekeeping', currentStock: 0, parLevel: 200, unit: 'units' },
-  { name: 'Bath Towels', category: 'housekeeping', currentStock: 0, parLevel: 200, unit: 'units' },
-  { name: 'Hand Towels', category: 'housekeeping', currentStock: 0, parLevel: 200, unit: 'units' },
-  { name: 'Washcloths', category: 'housekeeping', currentStock: 0, parLevel: 200, unit: 'units' },
-  { name: 'Bath Mats', category: 'housekeeping', currentStock: 0, parLevel: 100, unit: 'units' },
-  { name: 'Shampoo', category: 'housekeeping', currentStock: 0, parLevel: 150, unit: 'bottles' },
-  { name: 'Conditioner', category: 'housekeeping', currentStock: 0, parLevel: 150, unit: 'bottles' },
-  { name: 'Body Wash', category: 'housekeeping', currentStock: 0, parLevel: 150, unit: 'bottles' },
-  { name: 'All-Purpose Cleaner', category: 'housekeeping', currentStock: 0, parLevel: 24, unit: 'bottles' },
-  { name: 'Glass Cleaner', category: 'housekeeping', currentStock: 0, parLevel: 12, unit: 'bottles' },
-  { name: 'Trash Liners (Large)', category: 'housekeeping', currentStock: 0, parLevel: 500, unit: 'bags' },
-  { name: 'Coffee Pods', category: 'breakfast', currentStock: 0, parLevel: 200, unit: 'pods' },
-  { name: 'Light Bulbs (LED)', category: 'maintenance', currentStock: 0, parLevel: 50, unit: 'bulbs' },
-  { name: 'HVAC Filters', category: 'maintenance', currentStock: 0, parLevel: 10, unit: 'filters' },
-];
+// Phase M1.5 (2026-05-14): the default item list moved to
+// @/lib/inventory/default-items so the admin "+ New hotel" endpoint
+// can seed these at property creation time. The local DEFAULTS export
+// is preserved for backwards compat with this page's existing
+// auto-seed-on-empty-load behavior — it just re-exports the shared list
+// in the InventoryItem-shaped form this file's seeder expects.
+const DEFAULTS: Omit<InventoryItem, 'id' | 'updatedAt' | 'propertyId'>[] = DEFAULT_INVENTORY_ITEMS.map((item) => ({
+  name: item.name,
+  category: item.category,
+  currentStock: item.currentStock,
+  parLevel: item.parLevel,
+  unit: item.unit,
+}));
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
