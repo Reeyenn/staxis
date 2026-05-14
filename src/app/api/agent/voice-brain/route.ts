@@ -61,10 +61,18 @@ interface OpenAIChatRequest {
   stream?: boolean;
   temperature?: number;
   max_tokens?: number;
-  // ElevenLabs forwards our dynamic_variables under extra_body. We also
-  // accept top-level dynamic_variables and a few common aliases — the API
-  // surface has churned across versions; this lets us be loose on the
-  // exact path and forgiving of minor renames without redeploying.
+  // The SDK's `customLlmExtraBody` config is forwarded by ElevenLabs's
+  // gateway to the custom-LLM webhook under the field `elevenlabs_extra_body`
+  // (per the official docs, NOT `extra_body` or `custom_llm_extra_body`).
+  // Earlier the code only checked `extra_body` and we lost the dynamic
+  // variables on every turn — the user-visible symptom was three hours
+  // of "custom_llm_error: Failed to generate response from custom LLM".
+  // We still check both `extra_body` and `dynamic_variables` (top-level)
+  // as defensive fallbacks for any SDK version drift.
+  elevenlabs_extra_body?: {
+    dynamic_variables?: Record<string, string | number | boolean>;
+    [k: string]: unknown;
+  };
   extra_body?: {
     dynamic_variables?: Record<string, string | number | boolean>;
     [k: string]: unknown;
@@ -94,11 +102,14 @@ function timingSafeBearerCheck(authHeader: string, expected: string): boolean {
 }
 
 function extractDynamicVariables(body: OpenAIChatRequest): Record<string, string | number | boolean> {
-  // Look in every place ElevenLabs might park them. We registered the
-  // variables via `dynamicVariables` in the SDK's startSession, which
-  // their gateway typically forwards under extra_body.dynamic_variables.
-  // Fall through to top-level if their gateway changes.
+  // Primary: ElevenLabs forwards `customLlmExtraBody` (set via the SDK at
+  // session start) as `elevenlabs_extra_body` in the OpenAI request.
+  // Defensive fallbacks for SDK version drift: `extra_body.dynamic_variables`
+  // and top-level `dynamic_variables`. The whole `elevenlabs_extra_body`
+  // object is OUR payload — we set it as `{ dynamic_variables: { ... } }`
+  // in useConversationalSession.
   return (
+    body.elevenlabs_extra_body?.dynamic_variables ??
     body.extra_body?.dynamic_variables ??
     body.dynamic_variables ??
     {}
@@ -260,14 +271,17 @@ export async function POST(req: NextRequest): Promise<Response> {
     // away from `extra_body.dynamic_variables`, this log line is the
     // one-glance diagnostic that names the new key path.
     const bodyKeys = Object.keys(body ?? {});
+    const elevenKeys = body?.elevenlabs_extra_body ? Object.keys(body.elevenlabs_extra_body) : [];
     const extraBodyKeys = body?.extra_body ? Object.keys(body.extra_body) : [];
-    const dvKeys = body?.extra_body?.dynamic_variables
-      ? Object.keys(body.extra_body.dynamic_variables)
-      : [];
+    const dvKeys =
+      (body?.elevenlabs_extra_body?.dynamic_variables && Object.keys(body.elevenlabs_extra_body.dynamic_variables)) ??
+      (body?.extra_body?.dynamic_variables && Object.keys(body.extra_body.dynamic_variables)) ??
+      [];
     log.warn('[voice-brain] context resolution failed', {
       requestId,
       error: ctxResult.error,
       bodyKeys,
+      elevenlabsExtraBodyKeys: elevenKeys,
       extraBodyKeys,
       dynamicVariableKeys: dvKeys,
       topLevelDynamicVarsPresent: !!body?.dynamic_variables,
