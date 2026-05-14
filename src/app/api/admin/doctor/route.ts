@@ -1755,8 +1755,6 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'agent-archive-stale-conversations', cadenceHours: 24, description: 'daily 3am archival of stale agent conversations (L4 part A)' },
   { name: 'agent-heal-counters',           cadenceHours: 24,    description: 'daily 4am counter-drift heal (Round 12 T12.12, invariant doctrine safety net)' },
   { name: 'voice-recordings-purge',        cadenceHours: 24,    description: 'daily 4:30am purge of voice recordings older than 7 days (INV-19)' },
-  { name: 'walkthrough-heal-stale',        cadenceHours: 30/60, description: 'every-30-min sweep of stuck/orphaned walkthrough_runs' },
-  { name: 'walkthrough-health-alert',      cadenceHours: 10/60, description: 'every-10-min bad-outcome-rate watcher for walkthrough' },
   // Weekly
   { name: 'ml-train-demand',               cadenceHours: 168,   description: 'weekly demand training (Sunday)' },
   { name: 'ml-train-supply',               cadenceHours: 168,   description: 'weekly supply training (Sunday)' },
