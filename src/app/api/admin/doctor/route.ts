@@ -201,6 +201,12 @@ const checks: Array<[string, CheckFn]> = [
   // Error tracking — Sentry no-ops gracefully when DSN missing, but a
   // malformed DSN means errors silently disappear. Fail on bad shape.
   ['sentry_dsn_shape',               checkSentryDsnShape],
+  // Picovoice wake-word — operator-visible state for "Hey Staxis". Warns
+  // on half-configured (key OR .ppn but not both), oks both ways for
+  // intentional disabled state and fully-wired state. Replaces the
+  // pre-2026-05-14 PICOVOICE_ACCESS_KEY-in-REQUIRED_ENV_VARS approach that
+  // hard-failed CI any time the key wasn't set.
+  ['picovoice_wake_word_config',     checkPicovoiceWakeWordConfig],
 ];
 
 // ─── Individual checks ───────────────────────────────────────────────────
@@ -243,12 +249,14 @@ const REQUIRED_ENV_VARS: Array<{ name: string; altNames?: string[]; group: strin
   // detection layers; THIS list is what makes both possible.
   { name: 'ANTHROPIC_API_KEY',                 group: 'anthropic' },
   // Voice surface (2026-05-13)
-  // OPENAI_API_KEY backs Whisper STT + Nova TTS. PICOVOICE_ACCESS_KEY
-  // backs the "Hey Staxis" wake word — the feature is also gated on
-  // public/wake-words/*.ppn files existing, but the key being unset
-  // is reported here so an operator notices before training keywords.
+  // OPENAI_API_KEY backs Whisper STT + Nova TTS — required because voice
+  // mode (Phone icon + Cmd+/) depends on it. PICOVOICE_ACCESS_KEY backs
+  // the "Hey Staxis" wake word, which is intentionally optional: gated on
+  // both the access key AND public/wake-words/*.ppn files. Operators run
+  // without it until they choose to wire wake-word; voice still works via
+  // the Phone-button STT fallback. See checkPicovoiceWakeWordConfig below
+  // for the half-configured-state warn.
   { name: 'OPENAI_API_KEY',                    group: 'voice' },
-  { name: 'PICOVOICE_ACCESS_KEY',              group: 'voice' },
   // Billing — these are checked for SHAPE in checkStripeBillingConfigured.
   // Listing here so the env_vars check reports a clean "missing" message
   // when none are set, but the billing-configured check is the source of
@@ -2477,6 +2485,75 @@ async function checkSentryDsnShape(): Promise<Omit<Check, 'name' | 'durationMs'>
   return {
     status: 'ok',
     detail: 'Sentry fully configured (server + client DSNs valid)',
+  };
+}
+
+/**
+ * picovoice_wake_word_config — operator-visible state for the "Hey Staxis"
+ * wake word.
+ *
+ * Wake-word needs TWO things: PICOVOICE_ACCESS_KEY in env AND at least one
+ * .ppn keyword file in public/wake-words/. Voice mode itself works without
+ * wake-word — users can click the Phone icon or hit Cmd+/ to use OpenAI
+ * Whisper STT. So the doctor must NOT hard-fail when both are absent
+ * (intentional disabled state, the default until Picovoice approves).
+ *
+ * Pre-2026-05-14 the env_vars check listed PICOVOICE_ACCESS_KEY as
+ * REQUIRED, which hard-failed the entire doctor any time the key wasn't
+ * set — producing a flood of post-deploy-smoke and ML-smoke-nightly CI
+ * failures despite voice mode working correctly via fallback. This check
+ * replaces that: warn ONLY on the half-configured state (one side wired,
+ * the other not — the real broken case).
+ */
+async function checkPicovoiceWakeWordConfig(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const keySet = (process.env.PICOVOICE_ACCESS_KEY ?? '').trim() !== '';
+
+  let ppnPresent = false;
+  let ppnReadFailed = false;
+  try {
+    const { readdirSync, existsSync } = require('node:fs') as typeof import('node:fs');
+    const { join } = require('node:path') as typeof import('node:path');
+    const dir = join(process.cwd(), 'public', 'wake-words');
+    if (existsSync(dir)) {
+      ppnPresent = readdirSync(dir).some(f => f.endsWith('.ppn'));
+    }
+  } catch {
+    ppnReadFailed = true;
+  }
+
+  if (ppnReadFailed) {
+    return {
+      status: 'warn',
+      detail: 'Could not read public/wake-words/ directory to verify wake-word .ppn files. Voice mode still works via Phone-button / Cmd+/ fallback.',
+    };
+  }
+
+  if (!keySet && !ppnPresent) {
+    return {
+      status: 'ok',
+      detail: 'Wake word ("Hey Staxis") not configured — voice mode uses Phone-button / Cmd+/ Whisper fallback. Set PICOVOICE_ACCESS_KEY in Vercel + add a .ppn file to public/wake-words/ when ready to enable.',
+    };
+  }
+
+  if (keySet && !ppnPresent) {
+    return {
+      status: 'warn',
+      detail: 'Wake word half-configured: PICOVOICE_ACCESS_KEY is set but no .ppn keyword file exists in public/wake-words/. The Picovoice SDK will load but find no keyword to listen for.',
+      fix: 'Either add a trained .ppn file to public/wake-words/ (Picovoice Console → Wake Word), OR unset PICOVOICE_ACCESS_KEY in Vercel to fully disable wake-word.',
+    };
+  }
+
+  if (!keySet && ppnPresent) {
+    return {
+      status: 'warn',
+      detail: 'Wake word half-configured: public/wake-words/ contains .ppn file(s) but PICOVOICE_ACCESS_KEY is not set. The Picovoice SDK will fail to initialize at runtime.',
+      fix: 'Set PICOVOICE_ACCESS_KEY in Vercel → Project Settings → Environment Variables (from Picovoice Console → AccessKey) and redeploy.',
+    };
+  }
+
+  return {
+    status: 'ok',
+    detail: 'Wake word ("Hey Staxis") fully configured (PICOVOICE_ACCESS_KEY set + .ppn file present)',
   };
 }
 
