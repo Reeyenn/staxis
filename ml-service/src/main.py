@@ -16,6 +16,10 @@ from src.inference.supply import predict_supply
 from src.optimizer.monte_carlo import optimize_headcount
 from src.training.demand import train_demand_model
 from src.training.inventory_priors import aggregate_inventory_priors
+from src.training.demand_supply_priors import (
+    aggregate_demand_priors,
+    aggregate_supply_priors,
+)
 from src.training.inventory_rate import train_inventory_rate_model
 from src.training.supply import train_supply_model
 
@@ -223,10 +227,18 @@ class PredictInventoryRateResponse(BaseModel):
 
 
 class AggregatePriorsResponse(BaseModel):
-    """Response for cohort prior aggregation."""
+    """Response for cohort prior aggregation.
+
+    Phase M3 (2026-05-14): widened with optional fields so the demand +
+    supply aggregators can reuse this model. They return hotels_seen +
+    skipped_low_n (which inventory doesn't), and don't return
+    items_canonical (which only inventory does).
+    """
 
     cohorts_updated: int = 0
     items_canonical: int = 0
+    hotels_seen: int = 0
+    skipped_low_n: int = 0
     errors: list = []
     note: Optional[str] = None
 
@@ -404,6 +416,63 @@ async def train_inventory_priors_endpoint(
     Requires bearer token authentication.
     """
     result = await aggregate_inventory_priors()
+    return AggregatePriorsResponse(**result)
+
+
+@app.post(
+    "/train/demand-priors",
+    response_model=AggregatePriorsResponse,
+    tags=["training"],
+    summary="Aggregate cross-hotel demand cohort priors (Phase M3)",
+)
+async def train_demand_priors_endpoint(
+    token: str = Depends(verify_bearer_token),
+) -> AggregatePriorsResponse:
+    """Recompute demand_priors from network data.
+
+    Reads cleaning_minutes_per_day_view for the last 90 days, normalizes
+    each property's daily total to per-room (so hotels of different sizes
+    are comparable), takes per-property median, then per-cohort median.
+
+    Cohort key construction matches inventory_priors:
+      ['global', '<brand-region-size_tier>'] when all 3 fields populated.
+
+    'global' cohort needs 5+ hotels before overriding the
+    industry-benchmark seed in demand_priors. Specific cohorts always
+    upsert (they only exist when there's real cohort data).
+
+    Idempotent — each run replaces every cohort row with source='cohort-aggregate'.
+    Industry-benchmark seeds (source='industry-benchmark') are NOT touched.
+
+    Requires bearer token authentication.
+    """
+    result = await aggregate_demand_priors()
+    return AggregatePriorsResponse(**result)
+
+
+@app.post(
+    "/train/supply-priors",
+    response_model=AggregatePriorsResponse,
+    tags=["training"],
+    summary="Aggregate cross-hotel supply cohort priors (Phase M3)",
+)
+async def train_supply_priors_endpoint(
+    token: str = Depends(verify_bearer_token),
+) -> AggregatePriorsResponse:
+    """Recompute supply_priors from network data.
+
+    Reads cleaning_events.duration_minutes for the last 90 days
+    (status='recorded' only — flagged events are operator-marked outliers
+    that would skew the median). Per-property median, then per-cohort.
+
+    Same cohort key construction + skip-low-n logic as demand-priors above.
+
+    Idempotent — each run replaces every cohort row with source='cohort-aggregate'.
+    Industry-benchmark seeds (source='industry-benchmark') are NOT touched.
+
+    Requires bearer token authentication.
+    """
+    result = await aggregate_supply_priors()
     return AggregatePriorsResponse(**result)
 
 

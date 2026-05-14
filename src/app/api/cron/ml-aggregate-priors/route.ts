@@ -46,49 +46,64 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     });
   }
 
+  // Phase M3 (2026-05-14): aggregate inventory + demand + supply cohort
+  // priors in parallel. All three are cross-fleet, idempotent, cheap.
+  // Failure of one does NOT block the others — each gets its own
+  // ok/fail signal and the heartbeat only writes when ALL three agree.
+  async function callAggregator(endpoint: string): Promise<{ endpoint: string; ok: boolean; status: number; json: unknown }> {
+    try {
+      const res = await fetch(`${mlServiceUrl.replace(/\/$/, '')}${endpoint}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${mlServiceSecret}`,
+          'Content-Type': 'application/json',
+          'x-request-id': requestId,
+        },
+        body: '{}',
+        signal: AbortSignal.timeout(75_000),
+      });
+      const json = await res.json().catch(() => ({ error: 'non_json_response', http: res.status }));
+      const mlStatus = (json as { status?: string; error?: string }).status ?? 'ok';
+      const ok = res.ok && mlStatus !== 'error' && !(json as { error?: string }).error;
+      return { endpoint, ok, status: res.status, json };
+    } catch (e) {
+      return { endpoint, ok: false, status: 0, json: { error: errToString(e) } };
+    }
+  }
+
   try {
-    const res = await fetch(`${mlServiceUrl.replace(/\/$/, '')}/train/inventory-priors`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${mlServiceSecret}`,
-        'Content-Type': 'application/json',
-        'x-request-id': requestId,
-      },
-      body: '{}',
-      signal: AbortSignal.timeout(75_000),
-    });
-    const json = await res.json().catch(() => ({ error: 'non_json_response', http: res.status }));
-    log.info('ml-aggregate-priors: result', { requestId, mlStatus: res.status, json });
+    const results = await Promise.all([
+      callAggregator('/train/inventory-priors'),
+      callAggregator('/train/demand-priors'),
+      callAggregator('/train/supply-priors'),
+    ]);
+    log.info('ml-aggregate-priors: results', { requestId, results });
 
     // ─── Silent-success guard (May 2026 audit pass-3) ────────────────────
-    // The previous version unconditionally wrote the heartbeat and
-    // returned ok:true regardless of res.status or json.status. That
-    // exactly reproduces the silent-failure bug class the heartbeats
-    // were supposed to close: ML service returns HTTP 500 with
-    // {error: "..."} → heartbeat written → doctor's
-    // cron_heartbeats_fresh check sees green → operator never knows
-    // cohort priors stopped refreshing.
-    //
-    // Only write the heartbeat if the ML service actually agreed it
-    // succeeded. Both signals matter: HTTP-level (res.ok) AND
-    // application-level (json.status !== "error"). If either says
-    // "broken", we DON'T touch the heartbeat — the doctor's freshness
-    // check will fire after 2× cadence.
-    const mlStatus = (json as { status?: string; error?: string }).status ?? 'ok';
-    const mlSucceeded = res.ok && mlStatus !== 'error' && !(json as { error?: string }).error;
-    if (mlSucceeded) {
-      await writeCronHeartbeat('ml-aggregate-priors', { requestId, notes: { mlStatus } });
+    // The cron's job is "run all three aggregations." Heartbeat only
+    // writes when ALL three agreed. If even one failed, doctor's
+    // cron_heartbeats_fresh check fires after 2× cadence — operator
+    // gets paged with the specific failed endpoint.
+    const allSucceeded = results.every((r) => r.ok);
+    const failed = results.filter((r) => !r.ok);
+    if (allSucceeded) {
+      await writeCronHeartbeat('ml-aggregate-priors', {
+        requestId,
+        notes: { aggregated: results.map((r) => r.endpoint) },
+      });
     } else {
-      log.error('ml-aggregate-priors: ML service reported failure — heartbeat NOT written', {
-        requestId, httpStatus: res.status, mlStatus, json,
+      log.error('ml-aggregate-priors: at least one aggregator failed — heartbeat NOT written', {
+        requestId,
+        failed: failed.map((f) => ({ endpoint: f.endpoint, status: f.status, json: f.json })),
       });
     }
+
     return NextResponse.json(
-      { ok: mlSucceeded, requestId, result: json },
-      { status: mlSucceeded ? 200 : 502 },
+      { ok: allSucceeded, requestId, results },
+      { status: allSucceeded ? 200 : 502 },
     );
   } catch (e) {
-    log.error('ml-aggregate-priors: ML service call failed', { requestId, err: e as Error });
+    log.error('ml-aggregate-priors: orchestration failed', { requestId, err: e as Error });
     return NextResponse.json({ ok: false, error: errToString(e), requestId }, { status: 502 });
   }
 }
