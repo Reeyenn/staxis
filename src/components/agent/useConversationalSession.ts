@@ -151,9 +151,31 @@ export function useConversationalSession(opts: UseConversationalSessionOpts): Us
         // into the bundle on pages that never open voice mode.
         const mod = await import('@elevenlabs/client');
         if (cancelled) return;
+        // The variables our brain webhook needs to reconstruct ToolContext
+        // (account, property, role, staff, conversation IDs) MUST go on the
+        // ElevenLabs `customLlmExtraBody` field — that's the one the gateway
+        // forwards verbatim as `extra_body` in the OpenAI chat-completions
+        // POST to /api/agent/voice-brain. `dynamicVariables` is a SEPARATE
+        // field that ElevenLabs only uses for its OWN prompt-template
+        // substitution ({{var}} placeholders in the agent's first_message
+        // / system prompt) — never forwarded to a custom LLM. Both fields
+        // are still set so a future template-substitution feature works
+        // without another deploy. The "custom_llm_error: Failed to
+        // generate response from custom LLM" 2026-05-14 was traced to this
+        // exact mix-up: variables were forwarded to template substitution
+        // (a no-op for us — empty first_message) and not to the webhook.
+        // Verified against SDK lib.iife.js lines 471-472.
+        if (!mintData.dynamicVariables || Object.keys(mintData.dynamicVariables).length === 0) {
+          if (!cancelled) {
+            setStatus('error');
+            setError('Voice session minted without context — please reload.');
+          }
+          return;
+        }
         const conversation = await mod.Conversation.startSession({
           signedUrl: mintData.signedUrl,
           connectionType: 'websocket',
+          customLlmExtraBody: { dynamic_variables: mintData.dynamicVariables },
           dynamicVariables: mintData.dynamicVariables,
           // Self-host the AudioWorklet processors. The SDK normally
           // inlines their source code, base64s it into a data: URI, and

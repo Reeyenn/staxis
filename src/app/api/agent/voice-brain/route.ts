@@ -187,6 +187,8 @@ function openAiChunk(content: string, model: string, finishReason: string | null
 
 export async function POST(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
+  const tEntry = performance.now();
+  log.info('[voice-brain] entry', { requestId });
 
   // ── Auth: shared bearer secret ────────────────────────────────────────
   const secret = process.env.ELEVENLABS_WEBHOOK_SECRET;
@@ -196,6 +198,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
   const authHeader = req.headers.get('authorization') ?? '';
   if (!timingSafeBearerCheck(authHeader, secret)) {
+    log.warn('[voice-brain] auth rejected', { requestId, hasHeader: authHeader.length > 0 });
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 
@@ -213,7 +216,23 @@ export async function POST(req: NextRequest): Promise<Response> {
   // ── Reconstruct Staxis context from ElevenLabs dynamic_variables ──────
   const ctxResult = resolveContext(body);
   if ('error' in ctxResult) {
-    log.warn('[voice-brain] context resolution failed', { requestId, error: ctxResult.error });
+    // Log the SHAPE we received (key names only — values may contain
+    // sensitive IDs). If ElevenLabs ever changes their forwarding path
+    // away from `extra_body.dynamic_variables`, this log line is the
+    // one-glance diagnostic that names the new key path.
+    const bodyKeys = Object.keys(body ?? {});
+    const extraBodyKeys = body?.extra_body ? Object.keys(body.extra_body) : [];
+    const dvKeys = body?.extra_body?.dynamic_variables
+      ? Object.keys(body.extra_body.dynamic_variables)
+      : [];
+    log.warn('[voice-brain] context resolution failed', {
+      requestId,
+      error: ctxResult.error,
+      bodyKeys,
+      extraBodyKeys,
+      dynamicVariableKeys: dvKeys,
+      topLevelDynamicVarsPresent: !!body?.dynamic_variables,
+    });
     return NextResponse.json({ error: ctxResult.error }, { status: 400 });
   }
   const ctx = ctxResult;
@@ -225,25 +244,13 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
   const { history, newUserMessage } = translated;
 
-  // ── Build the system prompt for this turn (snapshot + role) ──────────
-  let systemPrompt;
-  try {
-    const snapshot = await buildHotelSnapshot(ctx.propertyId, ctx.role, ctx.staffId);
-    systemPrompt = await buildSystemPrompt(ctx.role, snapshot, ctx.conversationId);
-  } catch (e) {
-    log.error('[voice-brain] failed to build system prompt', { requestId, e });
-    return NextResponse.json({ error: 'failed to build context' }, { status: 500 });
-  }
-
-  const tools = getToolsForRole(ctx.role);
-  const userCtx = {
-    uid: ctx.userId,
-    accountId: ctx.accountId,
-    username: '',
-    displayName: '',
-    role: ctx.role,
-    propertyAccess: [ctx.propertyId],
-  };
+  // NB: We DON'T build the hotel snapshot or system prompt here. Snapshot
+  // builds (Supabase round-trips) can take 3–8s on a cold property and
+  // ElevenLabs has a short first-byte timeout. Building inside the stream
+  // start() lets us flush a keepalive SSE comment immediately so they see
+  // bytes flowing before the slow work runs. Errors during the build are
+  // surfaced as a polite spoken sentence inside the 200 stream instead
+  // of as a 5xx — once headers go out we can't change status code.
 
   // ── Stream the agent → buffer final text → emit OpenAI chunk ─────────
   // We deliberately do NOT stream intermediate-iteration text deltas: the
@@ -256,10 +263,50 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const stream = new ReadableStream({
     async start(controller) {
+      // First byte out the door BEFORE the slow snapshot build. ElevenLabs
+      // (and intermediate proxies) reset connections that look idle; an
+      // SSE comment is ignored by their parser but flushes the HTTP
+      // response headers and proves the stream is alive. Repeated every
+      // few seconds inside long brain turns would harden further, but
+      // for now one upfront comment covers our cold-start latency.
+      controller.enqueue(encoder.encode(': keepalive\n\n'));
+      const tFirstByte = performance.now();
+
       let finalUsage: UsageReport | null = null;
       let finalText = '';
 
       try {
+        // Build the system prompt for this turn AFTER keepalive flushes.
+        // getToolsForRole(role) — second arg defaults to 'chat'. Voice
+        // shares the same tool catalog today; if we ever want a
+        // voice-restricted subset, pass surface='voice' here.
+        let systemPrompt;
+        try {
+          const snapshot = await buildHotelSnapshot(ctx.propertyId, ctx.role, ctx.staffId);
+          systemPrompt = await buildSystemPrompt(ctx.role, snapshot, ctx.conversationId);
+        } catch (e) {
+          log.error('[voice-brain] failed to build system prompt', { requestId, e });
+          controller.enqueue(encoder.encode(openAiChunk(
+            "Sorry, I couldn't load the context for this property. Try again in a moment.",
+            model,
+            null,
+          )));
+          controller.enqueue(encoder.encode(openAiChunk('', model, 'stop')));
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+          return;
+        }
+
+        const tools = getToolsForRole(ctx.role);
+        const userCtx = {
+          uid: ctx.userId,
+          accountId: ctx.accountId,
+          username: '',
+          displayName: '',
+          role: ctx.role,
+          propertyAccess: [ctx.propertyId],
+        };
+
         const iter = streamAgent({
           systemPrompt,
           history,
@@ -294,11 +341,10 @@ export async function POST(req: NextRequest): Promise<Response> {
         }
 
         // Cost ledger — book the LLM spend for this turn under kind='audio'
-        // so it joins the audio cap (which already counts Whisper/TTS spend
-        // on the legacy path). For ElevenLabs the STT + TTS minutes are
-        // billed separately by their platform and surfaced via a different
-        // job later; this row covers only the Claude brain tokens consumed
-        // by /voice-brain.
+        // so it joins the audio cap. ElevenLabs STT + TTS minutes are
+        // billed separately on their side and surfaced via a different
+        // job; this row covers only the Claude brain tokens consumed by
+        // /voice-brain.
         if (finalUsage) {
           try {
             await recordNonRequestCost({
@@ -323,6 +369,16 @@ export async function POST(req: NextRequest): Promise<Response> {
         controller.enqueue(encoder.encode(openAiChunk('', model, 'stop')));
         controller.enqueue(encoder.encode('data: [DONE]\n\n'));
         controller.close();
+
+        const tDone = performance.now();
+        log.info('[voice-brain] done', {
+          requestId,
+          firstByteMs: Math.round(tFirstByte - tEntry),
+          totalMs: Math.round(tDone - tEntry),
+          chars: safe.length,
+          tokensIn: finalUsage?.inputTokens ?? 0,
+          tokensOut: finalUsage?.outputTokens ?? 0,
+        });
       } catch (e) {
         log.error('[voice-brain] unhandled error', { requestId, e });
         try {
@@ -340,6 +396,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   });
 
   return new Response(stream, {
+    status: 200,
     headers: {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache, no-transform',
