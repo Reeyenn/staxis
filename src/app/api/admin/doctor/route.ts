@@ -269,13 +269,14 @@ const REQUIRED_ENV_VARS: Array<{ name: string; altNames?: string[]; group: strin
   { name: 'ANTHROPIC_API_KEY',                 group: 'anthropic' },
   // Voice surface (2026-05-14)
   //   - ElevenLabs Conversational AI powers voice mode (Phone icon + Cmd+/).
-  //     The three vars below are all load-bearing: ELEVENLABS_API_KEY mints
-  //     signed URLs server-side, ELEVENLABS_AGENT_ID names the agent the
-  //     browser connects to, ELEVENLABS_WEBHOOK_SECRET gates the brain
-  //     webhook that every turn hits.
-  //   - OPENAI_API_KEY is kept on the required list for the Clicky
-  //     walkthrough's Nova narration (/api/agent/speak), which still uses
-  //     OpenAI TTS. Voice mode itself no longer depends on it.
+  //     ELEVENLABS_API_KEY mints signed URLs server-side AND drives the
+  //     walkthrough's one-shot TTS (/api/agent/speak → Jessica voice).
+  //     ELEVENLABS_AGENT_ID names the agent the browser connects to,
+  //     ELEVENLABS_WEBHOOK_SECRET gates the brain webhook.
+  //     ELEVENLABS_VOICE_ID is the voice the walkthrough narrates as
+  //     (Jessica — matches the conversational surface for consistency).
+  //   - OPENAI_API_KEY remains on the required list for other surfaces
+  //     (transcription, embedding) but is no longer used by the walkthrough.
   //   - PICOVOICE_ACCESS_KEY backs "Hey Staxis" wake word and is
   //     intentionally OPTIONAL (gated on both the access key AND a .ppn
   //     file in public/wake-words/) — see checkPicovoiceWakeWordConfig.
@@ -283,6 +284,7 @@ const REQUIRED_ENV_VARS: Array<{ name: string; altNames?: string[]; group: strin
   { name: 'ELEVENLABS_API_KEY',                group: 'voice' },
   { name: 'ELEVENLABS_AGENT_ID',               group: 'voice' },
   { name: 'ELEVENLABS_WEBHOOK_SECRET',         group: 'voice' },
+  { name: 'ELEVENLABS_VOICE_ID',               group: 'voice' },
   // Billing — these are checked for SHAPE in checkStripeBillingConfigured.
   // Listing here so the env_vars check reports a clean "missing" message
   // when none are set, but the billing-configured check is the source of

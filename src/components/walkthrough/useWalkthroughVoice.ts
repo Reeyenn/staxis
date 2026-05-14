@@ -1,21 +1,18 @@
 'use client';
 
-// ─── useWalkthroughVoice — Nova TTS playback for walkthrough narration ────
+// ─── useWalkthroughVoice — ElevenLabs TTS playback for walkthrough narration
 //
-// Sends each step's narration to /api/agent/speak (Nova voice), plays the
-// returned MP3 stream through a single <Audio> element, and cancels any
-// in-flight playback + fetch when the next step fires or the user hits Stop.
-//
-// Mirrors the voice chat's useTtsPlayer pattern but stripped down: we don't
-// need a queue (one narration at a time), don't need a speaker on/off
-// toggle (that's the permission prompt), don't need a per-sentence chunker
-// (each narration is ~60 chars).
+// Sends each step's narration to /api/agent/speak (now ElevenLabs Jessica
+// via eleven_turbo_v2_5), plays the returned MP3 stream through a single
+// <Audio> element, and cancels any in-flight playback + fetch when the
+// next step fires or the user hits Stop.
 //
 // The hook is fire-and-forget by design — speak() returns a Promise that
 // resolves when audio finishes OR when aborted. Callers don't have to
 // await; the walkthrough's next /step happens in parallel with the audio.
 //
-// 2026-05-14, walkthrough voice swap.
+// 2026-05-14 — initially Nova; swapped to ElevenLabs same day so the
+// walkthrough matches the realtime voice chat's voice.
 
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
@@ -82,7 +79,7 @@ export function useWalkthroughVoice() {
       const res = await fetchWithAuth('/api/agent/speak', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, voice: 'nova', propertyId }),
+        body: JSON.stringify({ text, propertyId }),
         signal: abort.signal,
       });
       if (!res.ok) {
