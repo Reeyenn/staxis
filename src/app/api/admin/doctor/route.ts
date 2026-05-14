@@ -226,6 +226,14 @@ const checks: Array<[string, CheckFn]> = [
   // pre-2026-05-14 PICOVOICE_ACCESS_KEY-in-REQUIRED_ENV_VARS approach that
   // hard-failed CI any time the key wasn't set.
   ['picovoice_wake_word_config',     checkPicovoiceWakeWordConfig],
+  // Round 14 (2026-05-14): every active property's `rooms` table for
+  // today should have one row per inventory entry. The AI tools now
+  // compute totals from room_inventory (Layer 1), but if today's seed
+  // is short, get_today_summary still under-counts the operational
+  // statuses (dirty/in_progress/clean) for missing rooms. This check
+  // alerts when the gap is ≥ 4 rooms or > 10% of inventory so the
+  // seed-rooms-daily cron's failure mode pages SMS within an hour.
+  ['rooms_today_seeded',             checkRoomsTodaySeeded],
 ];
 
 // ─── Individual checks ───────────────────────────────────────────────────
@@ -1780,6 +1788,7 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'doctor-check',                  cadenceHours: 1,     description: 'hourly health check — runs the doctor battery + alerts Sentry/SMS on any fail (Round 13)' },
   { name: 'walkthrough-heal-stale',        cadenceHours: 30/60, description: 'every-30-min walkthrough recovery (heals stale runs left mid-walkthrough by crashed clients)' },
   { name: 'walkthrough-health-alert',      cadenceHours: 10/60, description: 'every-10-min walkthrough health monitor (alerts on stuck step counts)' },
+  { name: 'seed-rooms-daily',              cadenceHours: 1,     description: 'hourly heal of partial rooms-today seeds against properties.room_inventory (Round 14)' },
   { name: 'seal-daily',                    cadenceHours: 1,     description: 'hourly per-property daily-seal' },
   // Daily
   { name: 'ml-run-inference',              cadenceHours: 24,    description: 'daily demand+supply+optimizer predictions' },
@@ -2601,6 +2610,97 @@ async function checkPicovoiceWakeWordConfig(): Promise<Omit<Check, 'name' | 'dur
     status: 'ok',
     detail: 'Wake word ("Hey Staxis") fully configured (PICOVOICE_ACCESS_KEY set + .ppn file present)',
   };
+}
+
+/**
+ * rooms_today_seeded — every active property's `rooms` table for today
+ * should have one row per `properties.room_inventory` entry.
+ *
+ * Why this matters (Round 14, 2026-05-14): the AI tools now compute
+ * totals from room_inventory directly (Layer 1), so a partial seed
+ * doesn't lie about the room count. But operational rollups
+ * (get_today_summary's dirty/in_progress/clean counts) and the
+ * housekeeper Rooms tab still depend on the seeded rows existing.
+ * Missing rows mean those rooms invisibly don't appear — which is the
+ * exact failure the 2026-05-14 user report flagged.
+ *
+ * Status:
+ *   ok    — every property has gap = 0
+ *   warn  — at least one property has gap 1-3 (transient — scraper has
+ *           pulled but the seed-rooms-daily cron hasn't run yet)
+ *   fail  — at least one property has gap ≥ 4 OR gap > 10% of inventory
+ *
+ * INV-23 doctrine: this check is the third leg of the Round 14 tripod
+ * (agent reads inventory → cron heals seed → doctor alerts on drift).
+ */
+async function checkRoomsTodaySeeded(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data: properties, error: propsErr } = await supabaseAdmin
+      .from('properties')
+      .select('id, name, timezone, room_inventory');
+    if (propsErr) {
+      return { status: 'warn', detail: `Could not read properties: ${propsErr.message}` };
+    }
+
+    type GapEntry = { id: string; name: string; gap: number; inventory: number; seeded: number; pct: number };
+    const gaps: GapEntry[] = [];
+
+    for (const propRaw of (properties ?? [])) {
+      const prop = propRaw as { id: string; name: string | null; timezone: string | null; room_inventory: string[] | null };
+      const inv = Array.isArray(prop.room_inventory) ? prop.room_inventory : [];
+      if (inv.length === 0) continue;  // skip pre-onboarding properties
+
+      // property-local today
+      let date: string;
+      try {
+        date = prop.timezone
+          ? new Intl.DateTimeFormat('en-CA', {
+              timeZone: prop.timezone, year: 'numeric', month: '2-digit', day: '2-digit',
+            }).format(new Date())
+          : new Date().toISOString().slice(0, 10);
+      } catch {
+        date = new Date().toISOString().slice(0, 10);
+      }
+
+      const { count, error: cntErr } = await supabaseAdmin
+        .from('rooms')
+        .select('*', { count: 'exact', head: true })
+        .eq('property_id', prop.id)
+        .eq('date', date);
+      if (cntErr) {
+        return { status: 'warn', detail: `Could not count rooms for ${prop.name ?? prop.id}: ${cntErr.message}` };
+      }
+      const seeded = count ?? 0;
+      const gap = Math.max(0, inv.length - seeded);
+      const pct = inv.length > 0 ? gap / inv.length : 0;
+      if (gap > 0) {
+        gaps.push({ id: prop.id, name: prop.name ?? prop.id, gap, inventory: inv.length, seeded, pct });
+      }
+    }
+
+    if (gaps.length === 0) {
+      return { status: 'ok', detail: 'Every property has today\'s rooms fully seeded against its inventory.' };
+    }
+
+    const worst = gaps.reduce((a, b) => (b.gap > a.gap ? b : a));
+    const summary = gaps
+      .map(g => `${g.name}: ${g.seeded}/${g.inventory} (gap ${g.gap})`)
+      .join('; ');
+
+    if (worst.gap >= 4 || worst.pct > 0.10) {
+      return {
+        status: 'fail',
+        detail: `${gaps.length} ${gaps.length === 1 ? 'property has' : 'properties have'} a seeding gap. Worst: ${worst.name} missing ${worst.gap} of ${worst.inventory} rooms. All: ${summary}`,
+        fix: 'Hit /api/cron/seed-rooms-daily with CRON_SECRET to heal now, or check the scraper\'s plan_snapshots table for today.',
+      };
+    }
+    return {
+      status: 'warn',
+      detail: `Minor seeding drift in ${gaps.length} ${gaps.length === 1 ? 'property' : 'properties'}: ${summary}. The seed-rooms-daily cron will heal on its next run.`,
+    };
+  } catch (e) {
+    return { status: 'warn', detail: `rooms_today_seeded check errored: ${e instanceof Error ? e.message : String(e)}` };
+  }
 }
 
 /**
