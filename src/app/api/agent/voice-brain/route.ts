@@ -170,19 +170,46 @@ function translateMessages(messages: OpenAIMessage[]): { history: AgentMessage[]
   return { history, newUserMessage };
 }
 
-function openAiChunk(content: string, model: string, finishReason: string | null): string {
+// OpenAI's streaming chat-completions emits one chunk per delta shape:
+//   role-only chunk first, then many content-only chunks, then a final
+//   chunk with an empty delta + finish_reason. Combining role+content in
+//   one chunk is a common shape but ElevenLabs's gateway parser was
+//   observed rejecting it (no LLM tokens counted, conversation marked
+//   `custom_llm_error` with no Vercel logs of the call). This helper
+//   emits the canonical OpenAI shape so any strict parser is satisfied.
+function makeOpenAiId(): string {
+  return `chatcmpl-${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
+}
+function sseChunk(id: string, model: string, delta: Record<string, unknown>, finishReason: string | null): string {
   const obj = {
-    id: `chatcmpl-${Date.now()}`,
+    id,
     object: 'chat.completion.chunk',
     created: Math.floor(Date.now() / 1000),
     model,
-    choices: [{
-      index: 0,
-      delta: finishReason ? {} : { role: 'assistant', content },
-      finish_reason: finishReason,
-    }],
+    choices: [{ index: 0, delta, finish_reason: finishReason }],
   };
   return `data: ${JSON.stringify(obj)}\n\n`;
+}
+function splitForStream(text: string): string[] {
+  // Split into ~30-char segments at word boundaries when possible. Mimics
+  // real OpenAI streaming (small frequent chunks) without paying for
+  // per-character serialization overhead. Empty text → one empty chunk
+  // (still need to send something so the gateway sees content).
+  const trimmed = (text ?? '').replace(/\s+/g, ' ').trim();
+  if (!trimmed) return [''];
+  const SIZE = 30;
+  const out: string[] = [];
+  let i = 0;
+  while (i < trimmed.length) {
+    let end = Math.min(i + SIZE, trimmed.length);
+    if (end < trimmed.length) {
+      const space = trimmed.lastIndexOf(' ', end);
+      if (space > i + 5) end = space + 1;
+    }
+    out.push(trimmed.slice(i, end));
+    i = end;
+  }
+  return out;
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
@@ -286,12 +313,12 @@ export async function POST(req: NextRequest): Promise<Response> {
           systemPrompt = await buildSystemPrompt(ctx.role, snapshot, ctx.conversationId);
         } catch (e) {
           log.error('[voice-brain] failed to build system prompt', { requestId, e });
-          controller.enqueue(encoder.encode(openAiChunk(
-            "Sorry, I couldn't load the context for this property. Try again in a moment.",
-            model,
-            null,
-          )));
-          controller.enqueue(encoder.encode(openAiChunk('', model, 'stop')));
+          const id = makeOpenAiId();
+          controller.enqueue(encoder.encode(sseChunk(id, model, { role: 'assistant' }, null)));
+          for (const seg of splitForStream("Sorry, I couldn't load the context for this property. Try again in a moment.")) {
+            controller.enqueue(encoder.encode(sseChunk(id, model, { content: seg }, null)));
+          }
+          controller.enqueue(encoder.encode(sseChunk(id, model, {}, 'stop')));
           controller.enqueue(encoder.encode('data: [DONE]\n\n'));
           controller.close();
           return;
@@ -365,8 +392,19 @@ export async function POST(req: NextRequest): Promise<Response> {
         }
 
         const safe = finalText || "Sorry, I didn't get a response.";
-        controller.enqueue(encoder.encode(openAiChunk(safe, model, null)));
-        controller.enqueue(encoder.encode(openAiChunk('', model, 'stop')));
+        // Canonical OpenAI streaming format:
+        //   1. role-only chunk
+        //   2. one or more content-only chunks
+        //   3. final chunk: empty delta + finish_reason
+        //   4. data: [DONE]
+        // Splitting content into ~30-char segments mimics real OpenAI
+        // streaming and avoids any "single huge chunk" parser quirks.
+        const id = makeOpenAiId();
+        controller.enqueue(encoder.encode(sseChunk(id, model, { role: 'assistant' }, null)));
+        for (const seg of splitForStream(safe)) {
+          controller.enqueue(encoder.encode(sseChunk(id, model, { content: seg }, null)));
+        }
+        controller.enqueue(encoder.encode(sseChunk(id, model, {}, 'stop')));
         controller.enqueue(encoder.encode('data: [DONE]\n\n'));
         controller.close();
 
@@ -382,12 +420,12 @@ export async function POST(req: NextRequest): Promise<Response> {
       } catch (e) {
         log.error('[voice-brain] unhandled error', { requestId, e });
         try {
-          controller.enqueue(encoder.encode(openAiChunk(
-            "Sorry, something went wrong on our end.",
-            model,
-            null,
-          )));
-          controller.enqueue(encoder.encode(openAiChunk('', model, 'stop')));
+          const id = makeOpenAiId();
+          controller.enqueue(encoder.encode(sseChunk(id, model, { role: 'assistant' }, null)));
+          for (const seg of splitForStream('Sorry, something went wrong on our end.')) {
+            controller.enqueue(encoder.encode(sseChunk(id, model, { content: seg }, null)));
+          }
+          controller.enqueue(encoder.encode(sseChunk(id, model, {}, 'stop')));
           controller.enqueue(encoder.encode('data: [DONE]\n\n'));
         } catch { /* controller already closed */ }
         try { controller.close(); } catch { /* already closed */ }
