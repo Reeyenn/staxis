@@ -44,7 +44,12 @@ export default function SignInPage() {
     setError('');
 
     try {
-      const normalizedEmail = email.trim().toLowerCase();
+      const trimmed = email.trim().toLowerCase();
+      // If the user typed a bare username (no @), treat it as a synthetic
+      // ${username}@staxis.local login. Lets the shared "test" investor
+      // account sign in by typing just "test"; real-email accounts (jay,
+      // reeyen, etc.) keep working because their input already has an @.
+      const normalizedEmail = trimmed.includes('@') ? trimmed : `${trimmed}@staxis.local`;
       const errMsg = await signIn(normalizedEmail, password);
       if (errMsg) {
         setError(errMsg);
@@ -147,10 +152,11 @@ export default function SignInPage() {
               {lang === 'es' ? 'Correo electrónico' : 'Email'}
             </label>
             <input
-              type="email"
+              type="text"
+              inputMode="email"
               value={email}
               onChange={e => { setEmail(e.target.value); setError(''); }}
-              autoComplete="email"
+              autoComplete="username"
               autoCapitalize="off"
               spellCheck={false}
               disabled={signing}
