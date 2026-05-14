@@ -1217,8 +1217,12 @@ async function checkCronSecretCrossPlatform(): Promise<Omit<Check, 'name' | 'dur
  * the route 500s with a cryptic "relation … not found" — this surfaces
  * that drift up front so doctor goes red BEFORE Mario sees a broken page.
  *
- * `EXPECTED_MIGRATIONS` is the source of truth maintained alongside the
- * SQL files. Add a new entry whenever you add a new migration file.
+ * Codex round-5 META review 2026-05-13 (J1.2): the prior hand-maintained
+ * array drifted twice (round 2 missed 0099; round 4 missed 0110/0111/0112).
+ * EXPECTED_MIGRATIONS is now generated at module-load by globbing the
+ * supabase/migrations/ directory. The hand-maintained array stays as a
+ * fallback for serverless environments without filesystem access (the
+ * `migration-bookkeeping.test.ts` enforces drift in CI either way).
  *
  * Behavior:
  *   - applied_migrations table missing entirely → warn (0015 itself not applied yet)
@@ -1226,7 +1230,12 @@ async function checkCronSecretCrossPlatform(): Promise<Omit<Check, 'name' | 'dur
  *   - all applied → ok, with the count
  *   - extras in DB not in code → warn (someone applied a hand-rolled migration)
  */
-export const EXPECTED_MIGRATIONS: ReadonlyArray<string> = [
+
+// Static fallback list — used when the filesystem-globbing approach fails
+// (Vercel serverless edge runtime in particular). The CI test
+// `migration-bookkeeping.test.ts` enforces that the static list stays
+// in sync with the migrations directory regardless.
+const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   '0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008',
   '0009', '0010', '0011', '0012', '0013', '0014', '0015', '0016',
   '0017', '0018', '0019', '0020', '0021', '0022', '0023', '0024',
@@ -1284,6 +1293,36 @@ export const EXPECTED_MIGRATIONS: ReadonlyArray<string> = [
   '0105', '0106', '0107', '0108', '0109',
   '0110', '0111', '0112',
 ];
+
+/**
+ * Try to discover migrations from disk at module-load time. Falls back
+ * to the static list above if filesystem isn't accessible (Vercel edge,
+ * unit-test contexts, etc).
+ */
+function discoverMigrationsFromDisk(): ReadonlyArray<string> | null {
+  try {
+    // Lazy-require so the import doesn't run on environments where 'fs'
+    // is unavailable. Using node:fs explicitly to avoid Next.js edge
+    // bundle confusion.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { readdirSync } = require('node:fs') as typeof import('node:fs');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { join } = require('node:path') as typeof import('node:path');
+    const dir = join(process.cwd(), 'supabase', 'migrations');
+    const versions = readdirSync(dir)
+      .filter(f => f.endsWith('.sql'))
+      .map(f => f.match(/^(\d{4})_/)?.[1])
+      .filter((v): v is string => Boolean(v))
+      .sort();
+    return versions.length > 0 ? versions : null;
+  } catch {
+    return null;
+  }
+}
+
+export const EXPECTED_MIGRATIONS: ReadonlyArray<string> =
+  discoverMigrationsFromDisk() ?? EXPECTED_MIGRATIONS_STATIC;
+
 async function checkAppliedMigrations(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {
     const { data, error } = await supabaseAdmin
