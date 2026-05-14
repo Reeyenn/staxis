@@ -53,19 +53,91 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE }}
           SMOKE_BASE_URL: https://getstaxis.com
         run: npx tsx scripts/ml-smoke-test.ts
-      - name: Open issue on failure
+      # Phase J META gap-2 (2026-05-13): the prior version opened a NEW
+      # issue every nightly failure. Five debug-session failures earlier
+      # today produced 5 open issues — alarm fatigue. Now: find the
+      # single existing open issue (label smoke-failure) and update it
+      # with a comment + retitle to the latest date. If none exists,
+      # open one. Auto-closes when smoke passes again.
+      - name: Update or open consolidated failure issue
         if: failure()
         uses: actions/github-script@v7
         with:
           script: |
-            const title = `ML smoke failed at ${new Date().toISOString().slice(0, 10)}`;
-            const body = `The nightly ML smoke test failed. Check the workflow run for details:\n\n` +
-                         `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n\n` +
-                         `This usually means a Phase 1+2+3 invariant was broken — likely a response-shape regression.`;
-            await github.rest.issues.create({
+            const today = new Date().toISOString().slice(0, 10);
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const commentBody =
+              `❌ ML smoke failed again on ${today}.\n\n` +
+              `Run: ${runUrl}\n\n` +
+              `Likely a Phase 1+2+3 invariant regression (response-shape, doctor check, or property_misconfigured event flow). ` +
+              `Check the run logs for the failing assertion.`;
+
+            // Find the existing open smoke-failure issue (if any).
+            const { data: openIssues } = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title,
-              body,
-              labels: ['ml', 'smoke-failure'],
+              labels: 'smoke-failure',
+              state: 'open',
+              per_page: 5,
             });
+
+            if (openIssues.length > 0) {
+              // Update the most recent — comment + retitle so the
+              // last-failure date is always visible in the issue list.
+              const issue = openIssues[0];
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                title: `ML smoke failing (latest: ${today})`,
+              });
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: commentBody,
+              });
+              core.notice(`Updated existing smoke-failure issue #${issue.number}`);
+            } else {
+              // No open issue — create one.
+              const { data: newIssue } = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `ML smoke failing (latest: ${today})`,
+                body: commentBody,
+                labels: ['ml', 'smoke-failure'],
+              });
+              core.notice(`Opened new smoke-failure issue #${newIssue.number}`);
+            }
+      # Auto-close any open smoke-failure issues when the smoke passes.
+      # Reeyen sees green = silence with no leftover noise in the issue
+      # list. Without this, you'd have to manually close failures after
+      # the underlying bug is fixed.
+      - name: Auto-close smoke-failure issues on green
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const today = new Date().toISOString().slice(0, 10);
+            const { data: openIssues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'smoke-failure',
+              state: 'open',
+              per_page: 10,
+            });
+            for (const issue of openIssues) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `✓ ML smoke passed on ${today}. Auto-closing.`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+              });
+              core.notice(`Auto-closed smoke-failure issue #${issue.number}`);
+            }

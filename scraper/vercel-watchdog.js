@@ -65,6 +65,17 @@ const REALERT_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const ALERT_WINDOW_START = 6;
 const ALERT_WINDOW_END   = 22;
 
+// Phase J META gap-3 (2026-05-13): daily "all good" heartbeat SMS.
+// Without this, "no SMS today" is ambiguous — it could mean "all checks
+// green" OR "the watchdog itself is dead." Send one SMS per day from
+// the first watchdog tick after this hour (local Central) confirming
+// the doctor is green. Reeyen sees a daily heartbeat in his messages
+// inbox and knows silence means "watchdog is broken," not "all good."
+const HEARTBEAT_HOUR_LOCAL = 8;        // 8am Central
+// Resilience: require 20h since last heartbeat so Railway redeploys
+// or clock blips don't double-send.
+const HEARTBEAT_MIN_GAP_MS = 20 * 60 * 60 * 1000;
+
 // Doctor endpoint — Vercel's production URL. We hit this URL from Railway
 // specifically because that's the whole point: cross-platform check.
 // Default to the canonical brand domain. The legacy alias
@@ -283,6 +294,35 @@ async function runVercelWatchdog({ supabase, timezone }) {
       if (!smsRes.ok) log(`recovery SMS failed: ${smsRes.detail}`);
       patch.lastRecoverySmsAt = nowIso;
       patch.lastRecoverySmsOk = smsRes.ok;
+    }
+
+    // Phase J META gap-3 (2026-05-13): daily "all good" heartbeat SMS.
+    // Fires at most once per 20h, only at/after HEARTBEAT_HOUR_LOCAL,
+    // only when the doctor is currently green. Without this, silence
+    // is ambiguous (green vs watchdog dead).
+    if (alertPhone) {
+      const localHr = localHour(timezone);
+      const lastHeartbeatAt = parseIso(state.lastHeartbeatSmsAt);
+      const msSinceHeartbeat = lastHeartbeatAt
+        ? now.getTime() - lastHeartbeatAt.getTime()
+        : Infinity;
+      const dueByTime = localHr >= HEARTBEAT_HOUR_LOCAL && localHr < ALERT_WINDOW_END;
+      const dueByGap = msSinceHeartbeat >= HEARTBEAT_MIN_GAP_MS;
+      if (dueByTime && dueByGap) {
+        const smsRes = await sendTwilioSms(
+          alertPhone,
+          'Staxis daily heartbeat: ✓ all checks green. Silence after this means the watchdog itself stopped — page yourself if you don\'t see tomorrow\'s heartbeat.'
+        );
+        if (smsRes.ok) {
+          log(`daily heartbeat SMS sent (localHr=${localHr})`);
+          patch.lastHeartbeatSmsAt = nowIso;
+          patch.lastHeartbeatSmsOk = true;
+        } else {
+          log(`daily heartbeat SMS failed: ${smsRes.detail}`);
+          // Don't update lastHeartbeatSmsAt on failure — try again on next tick.
+          patch.lastHeartbeatSmsOk = false;
+        }
+      }
     }
 
     try { await mergeStatus(supabase, 'vercel_watchdog', patch); }
