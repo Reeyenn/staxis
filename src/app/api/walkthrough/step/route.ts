@@ -512,8 +512,11 @@ export async function POST(req: NextRequest): Promise<Response> {
 }
 
 // ─── Action validation ───────────────────────────────────────────────────
+// Exported for unit testing (walkthrough-validate-action.test.ts). The
+// function is pure: takes Claude's raw tool_use input plus the snapshot's
+// element list, returns a typed action or null if anything's malformed.
 
-function validateAction(
+export function validateAction(
   raw: { type?: string; elementId?: string; narration?: string },
   elements: SnapshotElement[],
 ): StepAction | null {
