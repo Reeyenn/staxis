@@ -123,6 +123,18 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       }
       return { status: 'skipped', detail: errStr };
     }
+    // Codex round-3 review 2026-05-13 (D2): the prior code did `return json`
+    // here, which let `{error: 'No active model'}` or HTTP 500s fall
+    // through. Result mapper defaults missing `status` to 'ok' →
+    // anyError stays false → heartbeat goes green while inventory
+    // predictions are absent. Same hardening A2/A6 added to the
+    // training crons; was missed here.
+    if (typeof errStr === 'string' || !res.ok) {
+      return {
+        status: 'error',
+        detail: errStr ?? (json as { http?: number }).http ?? `HTTP ${res.status}`,
+      };
+    }
     return json;
   }, 5);
 

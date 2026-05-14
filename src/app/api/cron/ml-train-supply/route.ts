@@ -101,10 +101,17 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   });
 
   const anyError = results.some((r) => r.status === 'error');
+  // Codex round-3 review 2026-05-13 (D2): degraded heartbeat when any
+  // property was skipped for misconfiguration — match ml-predict-inventory.
+  const propertiesMisconfigured = results.filter((r) => r.status === 'skipped').length;
   if (!anyError) {
     await writeCronHeartbeat('ml-train-supply', {
       requestId,
-      notes: { properties_processed: results.length },
+      status: propertiesMisconfigured > 0 ? 'degraded' : 'ok',
+      notes: {
+        properties_processed: results.length,
+        properties_misconfigured: propertiesMisconfigured,
+      },
     });
   }
   // Outer ok reflects inner state — see ml-train-demand for full notes.

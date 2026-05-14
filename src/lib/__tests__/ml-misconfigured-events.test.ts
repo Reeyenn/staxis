@@ -172,6 +172,34 @@ describe('parsePropertyMisconfiguredError', () => {
     );
   });
 
+  it('strips surrounding single-quotes (D3 — defense against legacy repr)', () => {
+    // Older Python error messages used `f"{value!r}"` which wrapped
+    // strings in single quotes. The Python side was fixed in errors.py
+    // to use printable_value, but this stripper guards against in-flight
+    // crons that haven't picked up the new code yet.
+    assert.deepEqual(
+      parsePropertyMisconfiguredError("property_misconfigured: timezone='America/New_York'"),
+      { field: 'timezone', value: 'America/New_York' },
+    );
+  });
+
+  it('strips surrounding double-quotes (D3)', () => {
+    assert.deepEqual(
+      parsePropertyMisconfiguredError('property_misconfigured: timezone="America/New_York"'),
+      { field: 'timezone', value: 'America/New_York' },
+    );
+  });
+
+  it('does not strip mismatched or non-paired quotes (D3 defensive)', () => {
+    // A value that legitimately contains a quote but isn't fully quoted
+    // (e.g. operator typo) should be preserved verbatim — not silently
+    // mangled.
+    assert.deepEqual(
+      parsePropertyMisconfiguredError("property_misconfigured: timezone=America/'New_York"),
+      { field: 'timezone', value: "America/'New_York" },
+    );
+  });
+
   it('remaps unknown fields to unknown_field with original preserved (C4)', () => {
     // Typo on Python side: should NOT propagate uselessly to the doctor.
     assert.deepEqual(

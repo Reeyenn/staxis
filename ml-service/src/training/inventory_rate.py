@@ -134,7 +134,7 @@ async def train_inventory_rate_model(
             "layer": "inventory_rate",
             "property_id": exc.property_id,
             "field": exc.field,
-            "value": str(exc.bad_value),
+            "value": exc.printable_value,
         }))
         return {
             "items_trained": 0,
@@ -142,7 +142,7 @@ async def train_inventory_rate_model(
             "items_with_active_model": 0,
             "items_with_auto_fill": 0,
             "errors": [],
-            "error": f"property_misconfigured: {exc.field}={exc.bad_value!r}",
+            "error": f"property_misconfigured: {exc.field}={exc.printable_value}",
         }
     finally:
         if lock_conn is not None:
@@ -450,11 +450,18 @@ def _train_single_item(
     )
     this_run_passes = gate_events and gate_mae
     consecutive_passes = 1 if this_run_passes else 0
+    # Codex round-3 review 2026-05-13 (D4): mirror Option B from Phase 3.2
+    # for inventory. The prior MAE check used `mean_observed_rate * ratio`,
+    # but mean_observed_rate is now (post C1) THIS run's y_test.mean() —
+    # a tiny per-item slice that swings 30-50% week-to-week. With the
+    # streak target of 5, models stalled indefinitely as prior runs
+    # flickered pass/fail across retrains. Drop the MAE check on prior
+    # runs entirely and rely on training_row_count alone as the stable
+    # signal — same simplification demand+supply went through. The
+    # current run still gates on the new ratio.
     for pr in prior_runs or []:
         prior_passes = (
             (pr.get("training_row_count") or 0) >= settings.inventory_graduation_min_events
-            and (pr.get("validation_mae") or float("inf")) < settings.inventory_graduation_mae_ratio
-                * max(mean_observed_rate, 1e-9)
         )
         if prior_passes and consecutive_passes > 0:
             consecutive_passes += 1
@@ -588,55 +595,14 @@ def _train_single_item(
             "feature_names": model.feature_names,
         }
 
-    # Deactivate the prior run in the same "slot" so the partial-unique
-    # indexes added in migration 0072 hold:
-    #   - if this run becomes active: clear the previous active for this
-    #     (property, item).
-    #   - if this run becomes a shadow: clear any in-flight shadow that
-    #     hasn't yet been evaluated/promoted (a senior-review bug —
-    #     without this, weekly retrains would accumulate shadows
-    #     indefinitely because shadow_promoted_at stays null until the
-    #     evaluate cron decides their fate).
-    try:
-        if is_active:
-            client.client.table("model_runs").update({
-                "is_active": False,
-                "deactivated_at": datetime.utcnow().isoformat(),
-                "deactivation_reason": "superseded",
-            }).eq("property_id", property_id).eq("layer", "inventory_rate") \
-              .eq("item_id", item_id).eq("is_active", True).execute()
-        elif is_shadow:
-            client.client.table("model_runs").update({
-                "is_shadow": False,
-                "is_active": False,
-                "deactivated_at": datetime.utcnow().isoformat(),
-                "deactivation_reason": "superseded_by_new_shadow",
-            }).eq("property_id", property_id).eq("layer", "inventory_rate") \
-              .eq("item_id", item_id).eq("is_shadow", True) \
-              .is_("shadow_promoted_at", "null").execute()
-    except Exception as e:
-        # Best-effort; partial-unique-index will reject the new insert if needed.
-        # But log loudly — May 2026 audit pass-5 found this exception was
-        # silently swallowed. If deactivation fails (DB lock contention,
-        # transient connection drop), the subsequent insert collides
-        # with the partial unique index and the model_run is never
-        # written. Operator sees "training succeeded" in logs while the
-        # row was actually lost. Structured-print so Railway/Sentry
-        # ingest can index it (matches the advisory_lock pattern).
-        print(json.dumps({
-            "evt": "model_run_deactivate_failed",
-            "layer": "inventory_rate",
-            "property_id": property_id,
-            "item_id": item_id,
-            "is_active": is_active,
-            "is_shadow": is_shadow,
-            "error": str(e),
-        }))
-
-    model_run = client.insert("model_runs", {
-        "property_id": property_id,
-        "layer": "inventory_rate",
-        "item_id": item_id,
+    # Codex round-3 adversarial review 2026-05-13 (D1): atomic deactivate-
+    # then-insert via the migration 0110 RPC. The prior pattern (separate
+    # update + insert calls with a try/except that silently swallowed
+    # constraint failures) had the exact race window A6 was supposed to
+    # close fleet-wide — fixed for demand+supply via migration 0107, but
+    # the inventory regular-path was missed. The RPC mirrors 0107 with
+    # added p_item_id (per-item models) + p_should_shadow path.
+    fields = {
         "trained_at": datetime.utcnow().isoformat(),
         "training_row_count": len(df),
         "feature_set_version": "v1",
@@ -647,18 +613,44 @@ def _train_single_item(
         "baseline_mae": baseline_mae,
         "beats_baseline_pct": beats_baseline_pct,
         "validation_holdout_n": len(X_test),
-        "is_active": is_active,
-        "is_shadow": is_shadow,
         "shadow_started_at": shadow_started_at,
-        "activated_at": datetime.utcnow().isoformat() if is_active else None,
         "consecutive_passing_runs": consecutive_passes,
         "auto_fill_enabled": auto_fill_enabled if is_active else False,
-        "auto_fill_enabled_at": datetime.utcnow().isoformat() if auto_fill_enabled else None,
-        "posterior_params": json.dumps(posterior_params) if posterior_params else None,
-        "hyperparameters": json.dumps({"prior_rate_used": prior_rate, "cohort_key": cohort_key,
-                                       **(model.get_config() if hasattr(model, "get_config") else {})}),
+        "posterior_params": posterior_params,
+        "hyperparameters": {
+            "prior_rate_used": prior_rate,
+            "cohort_key": cohort_key,
+            **(model.get_config() if hasattr(model, "get_config") else {}),
+        },
         "notes": mae_reject_notes,
-    })
+    }
+    rpc_result = client.client.rpc(
+        "staxis_install_inventory_model_run",
+        {
+            "p_property_id": property_id,
+            "p_item_id": item_id,
+            "p_fields": fields,
+            "p_should_activate": is_active,
+            "p_should_shadow": is_shadow,
+        },
+    ).execute()
+    rows = rpc_result.data or []
+    row = rows[0] if isinstance(rows, list) and rows else (rows or {})
+    if not row.get("ok"):
+        # RPC refused for a known reason (e.g. invalid_mode_active_and_shadow).
+        # Surface via the standard error-print so the cron sees it.
+        print(json.dumps({
+            "evt": "inventory_model_install_refused",
+            "layer": "inventory_rate",
+            "property_id": property_id,
+            "item_id": item_id,
+            "reason": row.get("reason"),
+        }))
+        return {
+            "skipped": True,
+            "reason": f"model_install_refused: {row.get('reason', 'unknown')}",
+        }
+    model_run = {"id": row.get("model_run_id")}
 
     return {
         "skipped": False,

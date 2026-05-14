@@ -106,7 +106,11 @@ const KNOWN_MISCONFIGURED_FIELDS = ['timezone', 'total_rooms'] as const;
  * querying app_events would see three different sentinels for the
  * same condition. Normalize all of them to a single canonical `null`.
  */
-const NULL_SENTINELS = new Set(['None', 'null', 'NULL', "''", '""', 'undefined']);
+// D3: include empty string because stripSurroundingQuotes will turn "''"
+// (Python repr of '') into '', which should still map to null. The
+// quoted forms stay in the set in case stripSurroundingQuotes isn't
+// applied somewhere downstream (defense in depth).
+const NULL_SENTINELS = new Set(['', 'None', 'null', 'NULL', "''", '""', 'undefined']);
 
 /**
  * Parse a ML-service error string like
@@ -130,6 +134,26 @@ export interface ParsedPropertyMisconfiguredError {
   value: string | null;
 }
 
+/**
+ * Strip surrounding single or double quotes if present. Codex round-3
+ * review 2026-05-13 (D3): Python's `f"{value!r}"` previously emitted
+ * surrounding quotes for string-typed values (e.g. timezone='Mars/Olympus'
+ * → "'Mars/Olympus'"). The Python side now uses `printable_value` to
+ * avoid this, but this stripper stays as defense-in-depth — older
+ * error messages from in-flight cron runs, manual debugging, or
+ * future repr-using callers won't store quoted values.
+ */
+function stripSurroundingQuotes(s: string): string {
+  if (s.length >= 2) {
+    const first = s[0];
+    const last = s[s.length - 1];
+    if ((first === "'" && last === "'") || (first === '"' && last === '"')) {
+      return s.slice(1, -1);
+    }
+  }
+  return s;
+}
+
 export function parsePropertyMisconfiguredError(
   message: string,
 ): ParsedPropertyMisconfiguredError | null {
@@ -138,7 +162,10 @@ export function parsePropertyMisconfiguredError(
   const eq = rest.indexOf('=');
   if (eq < 0) return null;
   const rawField = rest.slice(0, eq).trim();
-  const rawValue = rest.slice(eq + 1).trim();
+  // D3: strip surrounding quotes before sentinel check + storage so a
+  // quoted "'None'" still maps to null and a real value like
+  // "'Mars/Olympus'" surfaces as Mars/Olympus (no spurious quotes).
+  const rawValue = stripSurroundingQuotes(rest.slice(eq + 1).trim());
   if (!rawField) return null;
 
   const normalizedField: string = (KNOWN_MISCONFIGURED_FIELDS as readonly string[]).includes(rawField)

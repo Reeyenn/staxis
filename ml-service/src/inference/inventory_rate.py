@@ -83,13 +83,13 @@ async def predict_inventory_rates(
                 "layer": "inventory_rate",
                 "property_id": exc.property_id,
                 "field": exc.field,
-                "value": str(exc.bad_value),
+                "value": exc.printable_value,
             }))
             return {
                 "predicted": 0,
                 "skipped_no_active_model": 0,
                 "errors": [],
-                "error": f"property_misconfigured: {exc.field}={exc.bad_value!r}",
+                "error": f"property_misconfigured: {exc.field}={exc.printable_value}",
             }
         target_date = _tomorrow_in_property_tz(tz_name)
     target_date_iso = target_date.isoformat()

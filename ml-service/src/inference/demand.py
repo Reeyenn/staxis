@@ -86,10 +86,10 @@ async def predict_demand(
                 "layer": "demand",
                 "property_id": exc.property_id,
                 "field": exc.field,
-                "value": str(exc.bad_value),
+                "value": exc.printable_value,
             }))
             return {
-                "error": f"property_misconfigured: {exc.field}={exc.bad_value!r}",
+                "error": f"property_misconfigured: {exc.field}={exc.printable_value}",
                 "property_id": property_id,
                 "date": None,
             }

@@ -144,10 +144,19 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   });
 
   const anyError = results.some((r) => r.status === 'error');
+  // Codex round-3 review 2026-05-13 (D2): match ml-predict-inventory's
+  // pattern — flip heartbeat to 'degraded' when any property was skipped
+  // for misconfiguration. Was missing here; cron looked green even when
+  // every property was misconfigured.
+  const propertiesMisconfigured = results.filter((r) => r.status === 'skipped').length;
   if (!anyError) {
     await writeCronHeartbeat('ml-train-demand', {
       requestId,
-      notes: { properties_processed: results.length },
+      status: propertiesMisconfigured > 0 ? 'degraded' : 'ok',
+      notes: {
+        properties_processed: results.length,
+        properties_misconfigured: propertiesMisconfigured,
+      },
     });
   }
   // ── Outer ok reflects inner state (May 2026 audit pass-5) ───────────

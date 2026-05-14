@@ -15,12 +15,29 @@ class PropertyMisconfiguredError(ValueError):
 
     Caught at the cron route boundary → log a `property_misconfigured`
     event + skip this property + continue with the next one.
+
+    Codex round-3 review 2026-05-13 (D3): two value representations are
+    exposed:
+      - `bad_value` (raw object — preserved for forensic inspection)
+      - `printable_value` (str(value) for strings, repr(value) otherwise)
+    The error message itself uses repr() so it stays human-readable even
+    for None/numbers. The structured event downstream (logged via stdout
+    → parsed by TS cron) uses printable_value to avoid surrounding-quotes
+    on string-typed bad values like 'Mars/Olympus' → "'Mars/Olympus'".
     """
 
     def __init__(self, property_id: str, field: str, value: object) -> None:
         self.property_id = property_id
         self.field = field
         self.bad_value = value
+        # printable_value: stringify without repr's quote-wrapping for
+        # string-typed values. None / numbers / bools / dicts use repr()
+        # because their str() and repr() are equivalent OR because we
+        # want the type-distinguishing repr (e.g. None vs "None").
+        if isinstance(value, str):
+            self.printable_value = value
+        else:
+            self.printable_value = repr(value)
         super().__init__(
             f"Property {property_id} has missing/invalid {field}={value!r}. "
             f"Set this via the onboarding wizard before re-running ML."
