@@ -147,35 +147,49 @@ async def compute_rolling_shadow_mae(
         return None
 
     # Fetch prediction_log for last `auto_rollback_window_days` days
-    # ONLY. Filter on prediction_date (the date the prediction was MADE
-    # FOR), not logged_at (the moment the actual error was recorded) —
-    # otherwise a stale prediction backfilled today pairs against fresh
-    # actuals and biases the rollback decision. (Phase K bug 2.)
+    # ONLY. Filter on `date` (the operational date the prediction was
+    # MADE FOR), not `logged_at` (the moment the actual error was
+    # recorded) — otherwise a stale prediction backfilled today pairs
+    # against fresh actuals and biases the rollback decision.
+    # (Phase L: K mistakenly used `prediction_date`, a column that
+    # doesn't exist on prediction_log; the bare except below swallowed
+    # the SQL error so the bug hid. The actual operational-date column
+    # is `date`, per migration 0021 and the `prediction_log_pld_idx`
+    # index added in 0104.)
     cutoff_dt = datetime.utcnow() - timedelta(days=settings.auto_rollback_window_days)
     cutoff_iso = cutoff_dt.isoformat()
     logs_query = f"""
-        select model_run_id, abs_error, prediction_date
+        select model_run_id, abs_error, date
         from prediction_log
         where property_id = '{property_id}'
           and layer = '{layer}'
-          and prediction_date >= '{cutoff_iso}'
+          and date >= '{cutoff_iso}'
           and model_run_id in ('{active_model_id}', '{comparator_model_id}')
-        order by prediction_date asc
+        order by date asc
     """
     try:
         logs = client.execute_sql(logs_query)
-    except Exception:
+    except Exception as exc:
+        # Phase L discipline rule #3: never swallow silently. A future
+        # column-name regression here surfaces in logs within one cron
+        # cycle instead of hiding for months like Phase K's did.
+        print(json.dumps({
+            "evt": "shadow_mae_query_failed",
+            "property_id": property_id,
+            "layer": layer,
+            "error": str(exc)[:200],
+        }))
         return None
 
     if not logs or len(logs) < 10:
         return None
 
-    # Bucket errors by (date) so we can pair them across the two models.
+    # Bucket errors by date so we can pair them across the two models.
     # Each bucket holds at most one active-error and one comparator-error
     # per date; a date that has both contributes one paired observation.
     by_date: dict = {}
     for log in logs:
-        d = log.get("prediction_date")
+        d = log.get("date")
         if d is None:
             continue
         bucket = by_date.setdefault(str(d), {})
