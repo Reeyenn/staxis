@@ -99,6 +99,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           propertyId: property.id,
           layer: 'inventory_rate',
           field: parsed.field,
+          originalField: parsed.originalField,
           value: parsed.value,
         });
       }

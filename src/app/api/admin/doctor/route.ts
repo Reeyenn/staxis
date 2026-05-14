@@ -168,6 +168,11 @@ const checks: Array<[string, CheckFn]> = [
   // fields directly instead of the smoke hitting a (nonexistent)
   // HTTP route. Doctor already has admin auth + the helper imported.
   ['inventory_auto_fill_shape',      checkInventoryAutoFillShape],
+  // Codex round-3 review 2026-05-13 (E1): surface "model trained but
+  // not activating because holdout too small" without operator having
+  // to read training logs. Phase B's len(X_test)>=30 gate silently
+  // rejects models — this makes that visible.
+  ['ml_models_holdout_size',         checkMlModelsHoldoutSize],
   // HSTS preload list status — submitted 2026-05-13. Today the only
   // signal that Google rejected the preload submission is a hand-curl
   // to hstspreload.org. This check folds that into the operator's
@@ -1870,16 +1875,17 @@ async function checkInventoryAutoFillShape(): Promise<Omit<Check, 'name' | 'dura
     // type doesn't structurally match the minimal AutoFillReadClient
     // interface — only the methods the function uses need to exist on
     // the injected client.
+    // Codex round-3 review 2026-05-13 (E4): a structural-typing
+    // attempt (PromiseLike on AutoFillReadClient) hits the TypeScript
+    // recursive-type limit because supabase's PostgrestFilterBuilder
+    // is deeply generic. Using `Parameters<typeof getInventoryAutoFillMap>[2]`
+    // is the next-tightest option — it's narrower than `any`, locks the
+    // cast to the helper's signature (changes there force a re-think
+    // here), and avoids `unknown as any` which silently disabled type
+    // checking entirely.
     const items = await getInventoryAutoFillMap(
       propertyId,
       'always-on',
-      // The cast goes through `unknown` because the function's parameter
-      // type is a minimal AutoFillReadClient interface that doesn't
-      // structurally match supabaseAdmin's full SupabaseClient builder
-      // chain (only the methods actually called need to exist). No
-      // eslint-disable needed — this repo's flat config doesn't load
-      // @typescript-eslint/no-explicit-any as a rule (verified in
-      // eslint.config.js).
       supabaseAdmin as unknown as Parameters<typeof getInventoryAutoFillMap>[2],
     );
     if (!Array.isArray(items)) {
@@ -1991,6 +1997,82 @@ async function checkHstsPreloadStatus(): Promise<Omit<Check, 'name' | 'durationM
       status: 'warn',
       detail: `HSTS preload status check failed: ${errToString(err)}`,
     };
+  }
+}
+
+/**
+ * Codex round-3 review 2026-05-13 (E1): the Phase B sample-size guard
+ * (len(X_test) >= 30) silently rejects models. Without this check, a
+ * property whose training rows drop below the threshold (e.g. due to
+ * Maria missing day-confirmations) would just see "model not active"
+ * with no indication why. Surface the most-recent run's
+ * validation_holdout_n per (property, layer); warn when below 30.
+ *
+ * Single-property friendly today; scales O(properties × layers) at
+ * fleet scale (3 layers × 50 properties = 150 rows max, single query).
+ */
+async function checkMlModelsHoldoutSize(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    // Pull the most-recent training run per (property, layer). We only
+    // care about non-shadow non-item rows for housekeeping (demand +
+    // supply); inventory has per-item models which is too granular for
+    // this check.
+    const { data, error } = await supabaseAdmin
+      .from('model_runs')
+      .select('id, property_id, layer, validation_holdout_n, trained_at')
+      .in('layer', ['demand', 'supply'])
+      .is('item_id', null)
+      .eq('is_shadow', false)
+      .order('trained_at', { ascending: false })
+      .limit(50);  // small ceiling — at fleet scale, dedupe by (property, layer) below
+    if (error) {
+      return { status: 'warn', detail: `model_runs read failed: ${errToString(error)}` };
+    }
+    const rows = data ?? [];
+    if (rows.length === 0) {
+      return { status: 'ok', detail: 'No demand/supply model_runs yet — informational only.' };
+    }
+    // Dedupe by (property, layer) keeping the most recent.
+    const mostRecent = new Map<string, { layer: string; n: number; trained_at: string }>();
+    for (const r of rows as Array<{
+      property_id: string; layer: string;
+      validation_holdout_n: number | null; trained_at: string;
+    }>) {
+      const key = `${r.property_id}:${r.layer}`;
+      if (!mostRecent.has(key)) {
+        mostRecent.set(key, {
+          layer: r.layer,
+          n: r.validation_holdout_n ?? 0,
+          trained_at: r.trained_at,
+        });
+      }
+    }
+    const HOLDOUT_FLOOR = 30;
+    const tooSmall: string[] = [];
+    for (const [key, info] of mostRecent.entries()) {
+      if (info.n < HOLDOUT_FLOOR) {
+        tooSmall.push(`${key} (n=${info.n})`);
+      }
+    }
+    if (tooSmall.length === 0) {
+      return {
+        status: 'ok',
+        detail: `${mostRecent.size} (property, layer) pair(s) all have validation_holdout_n >= ${HOLDOUT_FLOOR}.`,
+      };
+    }
+    return {
+      status: 'warn',
+      detail:
+        `${tooSmall.length} (property, layer) pair(s) have most-recent training run with ` +
+        `validation_holdout_n < ${HOLDOUT_FLOOR} — gate silently rejects activation. ` +
+        `Affected: ${tooSmall.slice(0, 5).join(', ')}${tooSmall.length > 5 ? ', ...' : ''}.`,
+      fix:
+        'Check that the property has 200+ training rows after the SQL filters ' +
+        '(labels_complete=true AND total_recorded_minutes>0). Maria may be missing ' +
+        'day-confirmations; have her catch up on the housekeeping log.',
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `holdout-size check threw: ${errToString(err)}` };
   }
 }
 

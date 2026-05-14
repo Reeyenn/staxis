@@ -80,6 +80,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           propertyId: property.id,
           layer: 'supply',
           field: parsed.field,
+          originalField: parsed.originalField,
           value: parsed.value,
         });
       }

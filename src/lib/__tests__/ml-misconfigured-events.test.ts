@@ -200,6 +200,44 @@ describe('parsePropertyMisconfiguredError', () => {
     );
   });
 
+  it('round-trips actual Python printable_value output (E5)', () => {
+    // Codex round-3 review 2026-05-13 (E5): pin against the literal
+    // strings the Python service produces today after the D3 fix.
+    // ml-service/src/errors.py:36-40:
+    //   if isinstance(value, str): self.printable_value = value
+    //   else: self.printable_value = repr(value)
+    //
+    // Format from Python's emit sites:
+    //   f"property_misconfigured: {exc.field}={exc.printable_value}"
+    //
+    // Below: 4 representative cases from the actual Python code path.
+
+    // 1. timezone=None (Python None, repr → 'None')
+    assert.deepEqual(
+      parsePropertyMisconfiguredError("property_misconfigured: timezone=None"),
+      { field: 'timezone', value: null },
+    );
+
+    // 2. total_rooms=0 (Python int, repr → '0')
+    assert.deepEqual(
+      parsePropertyMisconfiguredError("property_misconfigured: total_rooms=0"),
+      { field: 'total_rooms', value: '0' },
+    );
+
+    // 3. timezone='' (Python empty string — printable_value is '' bare)
+    assert.deepEqual(
+      parsePropertyMisconfiguredError("property_misconfigured: timezone="),
+      { field: 'timezone', value: null },
+    );
+
+    // 4. timezone=Mars/Olympus (Python valid string — printable_value is
+    //    bare value, no quotes)
+    assert.deepEqual(
+      parsePropertyMisconfiguredError("property_misconfigured: timezone=Mars/Olympus"),
+      { field: 'timezone', value: 'Mars/Olympus' },
+    );
+  });
+
   it('remaps unknown fields to unknown_field with original preserved (C4)', () => {
     // Typo on Python side: should NOT propagate uselessly to the doctor.
     assert.deepEqual(

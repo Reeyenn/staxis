@@ -559,17 +559,29 @@ export interface AutoFillItem {
  * shape check. Allow admin client injection so the doctor can verify
  * the actual prod shape.
  */
+/**
+ * Minimal client surface this function uses — for dependency-injecting
+ * supabaseAdmin from server-side callers (e.g. doctor's
+ * inventory_auto_fill_shape check). Default is the browser/anon client
+ * used by the inventory page.
+ *
+ * Codex round-3 review 2026-05-13 (E4): use PromiseLike instead of
+ * Promise so supabase's PostgrestFilterBuilder (thenable, not a real
+ * Promise) matches structurally without an `as unknown as any` cast
+ * at the doctor call site. The cast was hiding the boundary that
+ * matters most.
+ */
 export interface AutoFillReadClient {
   from(table: 'inventory_rate_predictions' | 'model_runs'): {
     select(cols: string): {
       eq(col: string, val: unknown): {
         gte(col: string, val: unknown): {
           order(col: string, opts: { ascending: boolean }): {
-            limit(n: number): Promise<{ data: unknown; error: unknown }>;
+            limit(n: number): PromiseLike<{ data: unknown; error: unknown }>;
           };
         };
       };
-      in(col: string, vals: string[]): Promise<{ data: unknown; error: unknown }>;
+      in(col: string, vals: string[]): PromiseLike<{ data: unknown; error: unknown }>;
     };
   };
 }

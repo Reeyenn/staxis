@@ -119,6 +119,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           propertyId: property.id,
           layer: 'demand',
           field: parsed.field,
+          originalField: parsed.originalField,
           value: parsed.value,
         });
       }

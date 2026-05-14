@@ -118,6 +118,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           propertyId: property.id,
           layer: 'inventory_rate',
           field: parsed.field,
+          originalField: parsed.originalField,
           value: parsed.value,
         });
       }
@@ -154,10 +155,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   ];
 
   const anyError = results.some((r) => r.status === 'error');
-  // Codex follow-up 2026-05-13 (A1): degraded heartbeat when any
-  // property was skipped due to missing timezone or other misconfiguration
-  // (status === 'skipped', NOT 'skipped_ai_off' which is intentional).
-  const propertiesMisconfigured = results.filter((r) => r.status === 'skipped').length;
+  // Codex follow-up 2026-05-13 (A1) + round-3 (E3): explicit set so the
+  // contract isn't implicit. 'skipped' = misconfigured (degraded
+  // heartbeat). 'skipped_ai_off' = intentional admin setting (NOT
+  // degraded). If a future ML-service path adds a new skipped reason,
+  // add it explicitly here so the dev sees the contract.
+  const MISCONFIG_STATUSES: ReadonlySet<string> = new Set(['skipped']);
+  const propertiesMisconfigured = results.filter((r) => MISCONFIG_STATUSES.has(r.status)).length;
   if (!anyError) {
     await writeCronHeartbeat('ml-predict-inventory', {
       requestId,

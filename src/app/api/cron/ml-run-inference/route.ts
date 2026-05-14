@@ -122,6 +122,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
             propertyId,
             layer: stage,
             field: parsed.field,
+            originalField: parsed.originalField,
             value: parsed.value,
           });
         }

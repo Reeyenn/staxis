@@ -41,6 +41,12 @@ export interface MisconfiguredEventInput {
   layer?: MisconfiguredLayer;
   /** The property field that was invalid — e.g. `total_rooms`, `timezone`. */
   field: string;
+  /**
+   * When the field was remapped to `unknown_field` by the parser
+   * (allowlist miss), this preserves the original raw name so operator
+   * forensics can recover the typo. Codex round-3 review 2026-05-13 (E2).
+   */
+  originalField?: string;
   /** The bad value, captured for debugging (stringified). */
   value: unknown;
 }
@@ -70,6 +76,10 @@ export async function emitPropertyMisconfiguredEvent(
       metadata: {
         layer: input.layer ?? 'orchestrator',
         field: input.field,
+        // E2: persist the original (pre-allowlist) field name when the
+        // parser remapped to 'unknown_field'. Recoverable from
+        // app_events instead of only Vercel logs.
+        ...(input.originalField ? { original_field: input.originalField } : {}),
         value: input.value === null || input.value === undefined ? null : String(input.value),
         request_id: input.requestId ?? null,
       },
