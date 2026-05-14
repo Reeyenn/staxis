@@ -152,6 +152,77 @@ def test_lookup_hardcoded_fallback_when_table_empty():
     assert key == "hardcoded-fallback"
 
 
+def test_lookup_logs_structured_event_when_properties_fetch_raises(capsys):
+    """Phase L rule #3: silent swallow is a bug. When properties fetch fails,
+    lookup must emit a structured log line before falling through.
+    """
+    client = MagicMock()
+
+    def fetch_one(table, filters=None):
+        if table == "properties":
+            raise RuntimeError("simulated db outage")
+        if table == "demand_priors" and (filters or {}).get("cohort_key") == "industry-default":
+            return {
+                "prior_minutes_per_room_per_day": 20.0,
+                "prior_strength": 0.5,
+                "source": "industry-benchmark",
+            }
+        return None
+
+    client.fetch_one.side_effect = fetch_one
+
+    rate, _, _, key = lookup_cohort_prior(
+        client, "p1",
+        table="demand_priors",
+        value_col="prior_minutes_per_room_per_day",
+        hardcoded_fallback=20.0,
+    )
+    # Lookup still falls through to industry-default — graceful degradation.
+    assert rate == 20.0
+    assert key == "industry-default"
+    # And structured-log line was emitted on the swallow.
+    out = capsys.readouterr().out
+    assert "cold_start_lookup_swallowed" in out
+    assert "fetch_properties" in out
+    assert "simulated db outage" in out
+
+
+def test_lookup_logs_structured_event_when_priors_fetch_raises(capsys):
+    """When the priors table fetch raises for one cohort key, log + try next."""
+    client = MagicMock()
+
+    def fetch_one(table, filters=None):
+        if table == "properties":
+            return {"id": "p1", "brand": None, "region": None, "size_tier": None}
+        if table == "demand_priors":
+            ck = (filters or {}).get("cohort_key")
+            if ck == "global":
+                raise RuntimeError("transient timeout")
+            if ck == "industry-default":
+                return {
+                    "prior_minutes_per_room_per_day": 20.0,
+                    "prior_strength": 0.5,
+                    "source": "industry-benchmark",
+                }
+        return None
+
+    client.fetch_one.side_effect = fetch_one
+
+    rate, _, _, key = lookup_cohort_prior(
+        client, "p1",
+        table="demand_priors",
+        value_col="prior_minutes_per_room_per_day",
+        hardcoded_fallback=20.0,
+    )
+    assert rate == 20.0
+    assert key == "industry-default"
+    out = capsys.readouterr().out
+    assert "cold_start_lookup_swallowed" in out
+    assert "fetch_cohort_prior" in out
+    assert "global" in out
+    assert "transient timeout" in out
+
+
 def test_lookup_works_for_supply_priors_with_different_value_col():
     """Same helper handles both demand + supply because value_col is parameterized."""
     client = _make_client(

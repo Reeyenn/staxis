@@ -64,13 +64,36 @@ def lookup_cohort_prior(
     """
     try:
         prop = client.fetch_one("properties", filters={"id": property_id})
-    except Exception:
+    except Exception as exc:
+        # Phase L rule #3: never swallow silently. If properties is unreachable,
+        # cold-start still works (lookup falls through to global → industry-default)
+        # but the operator should know the metadata fetch failed. Mirror the
+        # inventory_rate.py:925-932 structured-event shape.
+        print(json.dumps({
+            "level": "warn",
+            "event": "cold_start_lookup_swallowed",
+            "stage": "fetch_properties",
+            "property_id": property_id,
+            "table": table,
+            "error": str(exc)[:200],
+        }))
         prop = None
 
     for ck in _cohort_keys_in_priority_order(prop):
         try:
             row = client.fetch_one(table, filters={"cohort_key": ck})
-        except Exception:
+        except Exception as exc:
+            # Same Phase L rule. If the priors table is unreachable for one
+            # cohort key, log + try the next (don't crash the lookup).
+            print(json.dumps({
+                "level": "warn",
+                "event": "cold_start_lookup_swallowed",
+                "stage": "fetch_cohort_prior",
+                "property_id": property_id,
+                "table": table,
+                "cohort_key": ck,
+                "error": str(exc)[:200],
+            }))
             row = None
         if row:
             return (
