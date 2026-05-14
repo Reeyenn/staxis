@@ -442,14 +442,14 @@ export function ScheduleTab() {
               its own `loaded` flag so a slow dashboard pull doesn't
               hold back the CSV numbers (or vice versa). */}
           {([
+            { l: lang === 'es' ? 'En Casa'      : 'In House',    v: dashboardNums?.inHouse    ?? null, loaded: dashboardLoaded },
+            { l: lang === 'es' ? 'Llegadas'     : 'Arrivals',    v: dashboardNums?.arrivals   ?? null, loaded: dashboardLoaded },
+            { l: lang === 'es' ? 'Salen'        : 'Departures',  v: dashboardNums?.departures ?? null, loaded: dashboardLoaded },
             { l: lang === 'es' ? 'Salidas'      : 'Checkouts',   v: checkouts,             loaded: planLoaded },
             { l: lang === 'es' ? 'Estadía·1'    : 'Stay · light',v: stayoverDay1,          loaded: planLoaded },
             { l: lang === 'es' ? 'Estadía·2+'   : 'Stay · full', v: stayoverDay2,          loaded: planLoaded },
             { l: lang === 'es' ? 'Tiempo total' : 'Total time',  v: fmtTime(totalMinutes), loaded: planLoaded },
             { l: lang === 'es' ? 'Recomendado'  : 'Recommended', v: `${recommendedHKs} HKs`, loaded: planLoaded, tone: T.sageDeep },
-            { l: lang === 'es' ? 'En Casa'      : 'In House',    v: dashboardNums?.inHouse    ?? null, loaded: dashboardLoaded },
-            { l: lang === 'es' ? 'Llegadas'     : 'Arrivals',    v: dashboardNums?.arrivals   ?? null, loaded: dashboardLoaded },
-            { l: lang === 'es' ? 'Salen'        : 'Departures',  v: dashboardNums?.departures ?? null, loaded: dashboardLoaded },
           ] as Array<{ l: string; v: React.ReactNode; loaded: boolean; tone?: string }>).map(n => (
             <div key={n.l} style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 80 }}>
               <Caps size={9}>{n.l}</Caps>
