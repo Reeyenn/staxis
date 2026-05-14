@@ -27,8 +27,9 @@ import {
   subscribeToScheduleAssignments,
   saveScheduleAssignments,
   subscribeToWorkOrders,
+  subscribeToDashboardByDate,
 } from '@/lib/db';
-import type { PlanSnapshot, ScheduleAssignments } from '@/lib/db';
+import type { PlanSnapshot, ScheduleAssignments, DashboardNumbers } from '@/lib/db';
 import { autoAssignRooms } from '@/lib/calculations';
 import type { ShiftConfirmation, WorkOrder, StaffMember } from '@/types';
 import {
@@ -52,6 +53,11 @@ export function ScheduleTab() {
   // null), so the PMS strip can show a skeleton during the initial fetch
   // instead of zero-counts that read like real data.
   const [planLoaded, setPlanLoaded] = useState(false);
+  // 15-min Choice Advantage dashboard pull (In House / Arrivals /
+  // Departures). Independent of the hourly CSV plan-snapshot above — each
+  // refreshes on its own cadence and has its own loaded flag.
+  const [dashboardNums, setDashboardNums] = useState<DashboardNumbers | null>(null);
+  const [dashboardLoaded, setDashboardLoaded] = useState(false);
   const [confirmations, setConfirmations] = useState<ShiftConfirmation[]>([]);
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [assignments, setAssignments] = useState<Record<string, string>>({});
@@ -91,6 +97,15 @@ export function ScheduleTab() {
   }, [shiftDate]);
 
   // ── Subscriptions ─────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!pid) return;
+    setDashboardLoaded(false);
+    return subscribeToDashboardByDate(pid, shiftDate, (nums) => {
+      setDashboardNums(nums);
+      setDashboardLoaded(true);
+    });
+  }, [pid, shiftDate]);
+
   useEffect(() => {
     if (!uid || !pid) return;
     setPlanLoaded(false);
@@ -418,23 +433,30 @@ export function ScheduleTab() {
         </div>
         <span style={{ width: 1, height: 42, background: T.rule }} />
         <div style={{ display: 'flex', gap: 32, flex: 1, flexWrap: 'wrap' }}>
-          {/* Skeleton dashes until the first plan-snapshot callback fires
+          {/* Skeleton dashes until each source's first callback fires
               — without this, the strip momentarily reads "Checkouts: 0
               · Stay·light: 0 · Recommended: 1 HKs" which looks like real
-              data on a slow pull. */}
-          {[
-            { l: lang === 'es' ? 'Salidas'      : 'Checkouts',   v: checkouts },
-            { l: lang === 'es' ? 'Estadía·1'    : 'Stay · light',v: stayoverDay1 },
-            { l: lang === 'es' ? 'Estadía·2+'   : 'Stay · full', v: stayoverDay2 },
-            { l: lang === 'es' ? 'Tiempo total' : 'Total time',  v: fmtTime(totalMinutes) },
-            { l: lang === 'es' ? 'Recomendado'  : 'Recommended', v: `${recommendedHKs} HKs`, tone: T.sageDeep },
-          ].map(n => (
+              data on a slow pull. The first five cells come from the
+              hourly CSV plan snapshot; the last three come from the
+              15-min Choice Advantage dashboard pull. Each cell uses
+              its own `loaded` flag so a slow dashboard pull doesn't
+              hold back the CSV numbers (or vice versa). */}
+          {([
+            { l: lang === 'es' ? 'Salidas'      : 'Checkouts',   v: checkouts,             loaded: planLoaded },
+            { l: lang === 'es' ? 'Estadía·1'    : 'Stay · light',v: stayoverDay1,          loaded: planLoaded },
+            { l: lang === 'es' ? 'Estadía·2+'   : 'Stay · full', v: stayoverDay2,          loaded: planLoaded },
+            { l: lang === 'es' ? 'Tiempo total' : 'Total time',  v: fmtTime(totalMinutes), loaded: planLoaded },
+            { l: lang === 'es' ? 'Recomendado'  : 'Recommended', v: `${recommendedHKs} HKs`, loaded: planLoaded, tone: T.sageDeep },
+            { l: lang === 'es' ? 'En Casa'      : 'In House',    v: dashboardNums?.inHouse    ?? null, loaded: dashboardLoaded },
+            { l: lang === 'es' ? 'Llegadas'     : 'Arrivals',    v: dashboardNums?.arrivals   ?? null, loaded: dashboardLoaded },
+            { l: lang === 'es' ? 'Salen'        : 'Departures',  v: dashboardNums?.departures ?? null, loaded: dashboardLoaded },
+          ] as Array<{ l: string; v: React.ReactNode; loaded: boolean; tone?: string }>).map(n => (
             <div key={n.l} style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 80 }}>
               <Caps size={9}>{n.l}</Caps>
               <span style={{
-                fontFamily: FONT_SERIF, fontSize: 30, color: planLoaded ? (n.tone || T.ink) : T.ink3,
+                fontFamily: FONT_SERIF, fontSize: 30, color: n.loaded ? (n.tone || T.ink) : T.ink3,
                 lineHeight: 1, letterSpacing: '-0.02em', fontWeight: 400, whiteSpace: 'nowrap',
-              }}>{planLoaded ? n.v : '—'}</span>
+              }}>{n.loaded && n.v != null ? n.v : '—'}</span>
             </div>
           ))}
         </div>

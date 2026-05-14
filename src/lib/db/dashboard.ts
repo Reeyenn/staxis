@@ -115,6 +115,23 @@ export function subscribeToDashboardNumbers(
   );
 }
 
+function dashboardFromRow(r: Record<string, unknown>): DashboardNumbers {
+  return {
+    inHouse:    typeof r.in_house    === 'number' ? r.in_house    : null,
+    arrivals:   typeof r.arrivals    === 'number' ? r.arrivals    : null,
+    departures: typeof r.departures  === 'number' ? r.departures  : null,
+    inHouseGuests:    typeof r.in_house_guests    === 'number' ? r.in_house_guests    : null,
+    arrivalsGuests:   typeof r.arrivals_guests    === 'number' ? r.arrivals_guests    : null,
+    departuresGuests: typeof r.departures_guests  === 'number' ? r.departures_guests  : null,
+    pulledAt:     toDate(r.pulled_at),
+    errorCode:    typeof r.error_code    === 'string' ? r.error_code as DashboardErrorCode : null,
+    errorMessage: typeof r.error_message === 'string' ? r.error_message : null,
+    errorPage:    typeof r.error_page    === 'string' ? r.error_page    : null,
+    erroredAt:    toDate(r.errored_at),
+    error:        null,
+  };
+}
+
 export async function getDashboardForDate(
   dateStr: string,
   propertyId: string,
@@ -127,21 +144,37 @@ export async function getDashboardForDate(
       .eq('property_id', propertyId)
       .maybeSingle();
     if (error) throw error;
-    if (!data) return null;
-    const r = data as Record<string, unknown>;
-    return {
-      inHouse:    typeof r.in_house    === 'number' ? r.in_house    : null,
-      arrivals:   typeof r.arrivals    === 'number' ? r.arrivals    : null,
-      departures: typeof r.departures  === 'number' ? r.departures  : null,
-      inHouseGuests:    typeof r.in_house_guests    === 'number' ? r.in_house_guests    : null,
-      arrivalsGuests:   typeof r.arrivals_guests    === 'number' ? r.arrivals_guests    : null,
-      departuresGuests: typeof r.departures_guests  === 'number' ? r.departures_guests  : null,
-      pulledAt:     toDate(r.pulled_at),
-      errorCode:    typeof r.error_code    === 'string' ? r.error_code as DashboardErrorCode : null,
-      errorMessage: typeof r.error_message === 'string' ? r.error_message : null,
-      errorPage:    typeof r.error_page    === 'string' ? r.error_page    : null,
-      erroredAt:    toDate(r.errored_at),
-      error:        null,
-    };
+    return data ? dashboardFromRow(data as Record<string, unknown>) : null;
   } catch (err) { logErr('getDashboardForDate', err); return null; }
+}
+
+// Per-property realtime subscription on dashboard_by_date. The 15-minute
+// Choice Advantage dashboard pull writes (in_house, arrivals, departures)
+// here per (property_id, date) — used by the Schedule tab to render live
+// PMS counts next to the hourly CSV-derived counts.
+//
+// subscribeToDashboardNumbers() above is legacy (single-tenant
+// scraper_status row); use this instead for any per-property surface.
+export function subscribeToDashboardByDate(
+  pid: string, date: string,
+  callback: (nums: DashboardNumbers | null) => void,
+): () => void {
+  return subscribeTable<DashboardNumbers>(
+    `dashboard_by_date:${pid}:${date}`, 'dashboard_by_date', `property_id=eq.${pid}`,
+    async () => {
+      const { data, error } = await supabase
+        .from('dashboard_by_date').select('*')
+        .eq('property_id', pid).eq('date', date).maybeSingle();
+      if (error) throw error;
+      return data ? [dashboardFromRow(data as Record<string, unknown>)] : [];
+    },
+    (rows) => callback(rows[0] ?? null),
+    // Realtime can only filter on one column; skip re-fetch when another
+    // date's row changes for the same property.
+    (payload) => {
+      const row = (payload.new ?? payload.old) as Record<string, unknown> | null;
+      if (!row) return false;
+      return row.date === date;
+    },
+  );
 }
