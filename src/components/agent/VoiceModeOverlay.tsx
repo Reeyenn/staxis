@@ -179,8 +179,17 @@ function ActiveOverlay() {
     };
   }, [tts, voicePanel]);
 
-  // Stop TTS + release mic on unmount.
-  useEffect(() => () => { tts.stop(); recording.stop(); }, [tts, recording]);
+  // Both `useVoiceRecording` and `useTtsPlayer` already register their
+  // own unmount cleanups (release mic stream + audio context, abort
+  // pending TTS fetches, revoke blob URLs). We deliberately do NOT add
+  // a manual cleanup here:
+  //
+  // The `useEffect(() => () => { ... }, [tts, recording])` shape we had
+  // before re-fired its cleanup on every render (because the hook return
+  // objects are new references), which called `recording.stop()` the
+  // instant state flipped 'idle' → 'recording'. That truncated every
+  // utterance to ~1ms of audio, producing a 0-byte blob and the
+  // "Didn't catch that — tap to try again" error.
 
   // ── Render ─────────────────────────────────────────────────────────────
   const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant' && !m.toolName);
