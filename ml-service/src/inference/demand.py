@@ -314,9 +314,14 @@ async def predict_demand(
     }
 
     try:
+        # on_conflict matches demand_predictions' unique constraint
+        # (property_id, date, model_run_id) from migration 0021. Without
+        # this, retries inserted duplicate rows instead of updating —
+        # the wrapper used to drop on_conflict (Phase K bug 1, 2026-05-13).
         result = client.upsert(
             "demand_predictions",
             prediction_row,
+            on_conflict="property_id,date,model_run_id",
         )
         return {
             "property_id": property_id,

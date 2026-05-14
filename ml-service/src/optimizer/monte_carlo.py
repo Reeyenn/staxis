@@ -453,7 +453,13 @@ async def optimize_headcount(
     }
 
     try:
-        result = client.upsert("optimizer_results", optimizer_result)
+        # Matches optimizer_results' unique constraint (property_id, date)
+        # from migration 0021. Phase K bug 1.
+        result = client.upsert(
+            "optimizer_results",
+            optimizer_result,
+            on_conflict="property_id,date",
+        )
         return {
             "property_id": property_id,
             "date": str(prediction_date),

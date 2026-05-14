@@ -120,15 +120,19 @@ class SupabaseServiceClient:
         Args:
             table: Table name
             data: Row data
-            on_conflict: Conflict resolution column(s)
+            on_conflict: Comma-separated column list matching the table's
+                         unique constraint. Required when the target
+                         constraint is not the primary key — otherwise
+                         PostgREST falls back to PK and may insert
+                         duplicates instead of updating.
 
         Returns:
             Upserted row
         """
-        response = self._client.table(table).upsert(
-            data,
-            ignore_duplicates=False,
-        ).execute()
+        kwargs: Dict[str, Any] = {"ignore_duplicates": False}
+        if on_conflict is not None:
+            kwargs["on_conflict"] = on_conflict
+        response = self._client.table(table).upsert(data, **kwargs).execute()
         return response.data[0] if response.data else {}
 
     def update(
