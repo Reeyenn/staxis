@@ -50,12 +50,17 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // priors in parallel. All three are cross-fleet, idempotent, cheap.
   // Failure of one does NOT block the others — each gets its own
   // ok/fail signal and the heartbeat only writes when ALL three agree.
+  // Bind to non-null locals so TS's nullability narrowing carries into
+  // the nested helper closure (the early-return above guarantees both
+  // are present, but TS doesn't track narrowing through function decls).
+  const baseUrl: string = mlServiceUrl;
+  const secret: string = mlServiceSecret;
   async function callAggregator(endpoint: string): Promise<{ endpoint: string; ok: boolean; status: number; json: unknown }> {
     try {
-      const res = await fetch(`${mlServiceUrl.replace(/\/$/, '')}${endpoint}`, {
+      const res = await fetch(`${baseUrl.replace(/\/$/, '')}${endpoint}`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${mlServiceSecret}`,
+          Authorization: `Bearer ${secret}`,
           'Content-Type': 'application/json',
           'x-request-id': requestId,
         },
