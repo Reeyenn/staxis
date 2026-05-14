@@ -2,82 +2,81 @@
 
 // ─── VoicePanelContext — coordination state for the voice surface ────────
 //
-// The voice surface has four components that need to talk to each other:
+// Coordinates two mutually-exclusive surfaces:
 //
-//   - `<FloatingChatButton />`     opens the panel
-//   - `<FloatingMicButton />`      opens the panel AND requests an immediate
-//                                  recording on the embedded <VoiceButton />
-//   - `<WakeWord />`               does the same (open + record) on a
-//                                  detected wake phrase
-//   - `<ChatPanel />` / `<VoiceButton />`  consumes the "auto-record"
-//                                  request and starts the mic
+//   - The floating ChatPanel (text chat with optional per-message playback)
+//   - The VoiceModeOverlay (dedicated voice experience, Clicky-style bar)
 //
-// Rather than threading refs and prop callbacks across the tree, this
-// context exposes a small set of operations. Provider is mounted once in
-// AppLayout so every consumer can grab it.
+// Mutual exclusion is enforced by the context itself: opening one closes
+// the other. This eliminates the "two overlays stacked" bug class.
 //
-// We intentionally do NOT put the TTS player here — TTS is owned by
-// ChatPanel because that's the only place it's heard, and putting it in a
-// global context complicates SSR + hot-reload.
+// `openVoiceMode` is idempotent — calling it while voice mode is already
+// open is a no-op (prevents the wake word from re-arming mid-utterance).
 
 import { createContext, useCallback, useContext, useMemo, useState } from 'react';
 
 export interface VoicePanelContextValue {
-  /** Whether the floating ChatPanel is currently open. */
+  /** Whether the floating text ChatPanel is currently open. */
   panelOpen: boolean;
-  /** Open the panel without queueing a recording (text mode). */
+  /** Open the text chat panel. Closes voice mode if it was open. */
   openPanel(): void;
-  /** Close the panel. Cancels any pending voice request. */
+  /** Close the text chat panel. */
   closePanel(): void;
-  /** Open the panel AND ask the embedded VoiceButton to start recording
-   *  on its next render. Used by FloatingMicButton + WakeWord. */
-  openPanelAndRecord(): void;
-  /** Has someone (FloatingMic/WakeWord) requested an auto-record that the
-   *  VoiceButton hasn't consumed yet? */
-  voiceRecordingRequested: boolean;
-  /** VoiceButton calls this after it acts on the request, so subsequent
-   *  renders don't re-trigger recording. */
-  consumeVoiceRecordingRequest(): void;
+
+  /** Whether the dedicated VoiceModeOverlay is currently open. */
+  voiceModeOpen: boolean;
+  /** Enter voice mode. Closes the chat panel. No-op if already open. */
+  openVoiceMode(): void;
+  /** Exit voice mode. */
+  closeVoiceMode(): void;
 }
 
 const VoicePanelContext = createContext<VoicePanelContextValue | null>(null);
 
 export function VoicePanelProvider({ children }: { children: React.ReactNode }) {
   const [panelOpen, setPanelOpen] = useState(false);
-  const [voiceRecordingRequested, setVoiceRecordingRequested] = useState(false);
+  const [voiceModeOpen, setVoiceModeOpen] = useState(false);
 
   const openPanel = useCallback(() => {
+    setVoiceModeOpen(false);  // mutual exclusion
     setPanelOpen(true);
   }, []);
 
   const closePanel = useCallback(() => {
     setPanelOpen(false);
-    setVoiceRecordingRequested(false);
   }, []);
 
-  const openPanelAndRecord = useCallback(() => {
-    setPanelOpen(true);
-    setVoiceRecordingRequested(true);
+  const openVoiceMode = useCallback(() => {
+    // Idempotent — bail if already open so the wake word doesn't re-arm
+    // the mic mid-utterance.
+    setVoiceModeOpen((prev) => {
+      if (prev) return prev;
+      // Closing the chat panel needs to happen even when we transition
+      // false→true. Doing it inside the updater keeps the two state
+      // changes batched.
+      setPanelOpen(false);
+      return true;
+    });
   }, []);
 
-  const consumeVoiceRecordingRequest = useCallback(() => {
-    setVoiceRecordingRequested(false);
+  const closeVoiceMode = useCallback(() => {
+    setVoiceModeOpen(false);
   }, []);
 
   const value = useMemo<VoicePanelContextValue>(() => ({
     panelOpen,
     openPanel,
     closePanel,
-    openPanelAndRecord,
-    voiceRecordingRequested,
-    consumeVoiceRecordingRequest,
+    voiceModeOpen,
+    openVoiceMode,
+    closeVoiceMode,
   }), [
     panelOpen,
     openPanel,
     closePanel,
-    openPanelAndRecord,
-    voiceRecordingRequested,
-    consumeVoiceRecordingRequest,
+    voiceModeOpen,
+    openVoiceMode,
+    closeVoiceMode,
   ]);
 
   return (
@@ -88,17 +87,7 @@ export function VoicePanelProvider({ children }: { children: React.ReactNode }) 
 }
 
 /** Hook — returns the panel context, or `null` if used outside the provider.
- *  Components like FloatingMicButton can render no-ops in that case. */
+ *  Components like FloatingChatButton can render no-ops in that case. */
 export function useVoicePanel(): VoicePanelContextValue | null {
   return useContext(VoicePanelContext);
-}
-
-/** Hook — like useVoicePanel but throws if the provider is missing. Use in
- *  components that MUST coordinate (ChatPanel itself). */
-export function useRequiredVoicePanel(): VoicePanelContextValue {
-  const v = useContext(VoicePanelContext);
-  if (!v) {
-    throw new Error('useRequiredVoicePanel must be used inside <VoicePanelProvider>');
-  }
-  return v;
 }

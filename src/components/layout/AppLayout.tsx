@@ -1,13 +1,16 @@
 'use client';
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Header } from './Header';
 import { ActivityTracker } from './ActivityTracker';
 import { FeedbackButton } from './FeedbackButton';
 import { FloatingChatButton } from '@/components/agent/FloatingChatButton';
-import { FloatingMicButton } from '@/components/agent/FloatingMicButton';
 import { WakeWord } from '@/components/agent/WakeWord';
-import { VoicePanelProvider } from '@/components/agent/VoicePanelContext';
+import { VoicePanelProvider, useVoicePanel } from '@/components/agent/VoicePanelContext';
+import { VoiceModeOverlay } from '@/components/agent/VoiceModeOverlay';
+import { VoiceReplyOnboardingModal } from '@/components/agent/VoiceReplyOnboardingModal';
+import { useVoiceModeKeyboard } from '@/components/agent/useVoiceModeKeyboard';
+import { fetchWithAuth } from '@/lib/api-fetch';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -89,9 +92,74 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       </main>
       <FeedbackButton />
       <FloatingChatButton />
-      <FloatingMicButton available={voiceSurfaceAvailable} />
       {voiceSurfaceAvailable && <WakeWord />}
+      {voiceSurfaceAvailable && <VoiceModeMount />}
     </div>
     </VoicePanelProvider>
+  );
+}
+
+// ─── Inner mount — has access to VoicePanelContext ───────────────────────
+//
+// Owns: the global voice-mode keyboard shortcut, the onboarding modal
+// trigger, and the VoiceModeOverlay itself. Lives here (not at the
+// outer AppLayout level) so all three can read `useVoicePanel()`.
+function VoiceModeMount() {
+  const voicePanel = useVoicePanel();
+  const voiceModeOpen = voicePanel?.voiceModeOpen ?? false;
+
+  // Onboarding modal — fires the first time the user enters voice mode
+  // when accounts.voice_onboarded_at is still NULL. Session flag protects
+  // against re-fire within the same tab even before the DB write commits.
+  const [onboardedAt, setOnboardedAt] = useState<string | null | undefined>(undefined);
+  const [shownThisSession, setShownThisSession] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
+
+  // Hydrate onboardedAt once on mount.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetchWithAuth('/api/agent/voice-preference');
+        if (!res.ok || cancelled) return;
+        const body = await res.json();
+        setOnboardedAt(body.data?.voiceOnboardedAt ?? null);
+      } catch {
+        if (!cancelled) setOnboardedAt(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Fire the modal when voice mode opens for the first time without onboarding.
+  useEffect(() => {
+    if (!voiceModeOpen) return;
+    if (shownThisSession) return;
+    if (onboardedAt === undefined) return;  // still loading
+    if (onboardedAt !== null) return;        // already onboarded
+    setModalOpen(true);
+  }, [voiceModeOpen, shownThisSession, onboardedAt]);
+
+  // Keyboard shortcut — Cmd+/ on macOS, Ctrl+/ on Windows. Suppressed
+  // while the onboarding modal owns focus.
+  useVoiceModeKeyboard({ suppressed: modalOpen });
+
+  return (
+    <>
+      <VoiceModeOverlay />
+      <VoiceReplyOnboardingModal
+        open={modalOpen}
+        onDone={() => {
+          setShownThisSession(true);  // only flip AFTER successful POST
+          setOnboardedAt(new Date().toISOString());
+          setModalOpen(false);
+        }}
+        onDismiss={() => {
+          // User dismissed without choosing — don't set session flag so
+          // they get re-prompted next time they enter voice mode.
+          setModalOpen(false);
+        }}
+      />
+    </>
   );
 }

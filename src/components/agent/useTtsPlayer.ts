@@ -21,6 +21,23 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
 
+// ─── Module-scoped TTS singleton — only one playback in the tab at a time ─
+// Without this mediator, the voice-mode overlay and the per-message Play
+// button can each instantiate a separate <audio> element. If both play at
+// once they collide audibly. Every useTtsPlayer instance registers its
+// `stop` here when it enters the speaking state; the next instance to
+// speak calls the previous owner's `stop` first.
+let activeTtsStop: (() => void) | null = null;
+function takeTtsOwnership(stop: () => void): () => void {
+  if (activeTtsStop && activeTtsStop !== stop) {
+    try { activeTtsStop(); } catch { /* ignore */ }
+  }
+  activeTtsStop = stop;
+  return () => {
+    if (activeTtsStop === stop) activeTtsStop = null;
+  };
+}
+
 interface UseTtsPlayerOpts {
   /** Active property — sent with every /speak request for cost attribution. */
   propertyId: string | null;
@@ -97,6 +114,9 @@ export function useTtsPlayer(opts: UseTtsPlayerOpts): UseTtsPlayerReturn {
   // for a fetch" and "playing a blob". Avoids racing onDone for an old
   // queue when a new sentence arrives during stop().
   const activeRef = useRef(false);
+  // Module-singleton ownership release function — populated when this
+  // instance takes ownership of the global "active TTS playback" slot.
+  const ownershipReleaseRef = useRef<(() => void) | null>(null);
 
   // ── Lifecycle: create the <audio> element on mount ──────────────────────
   useEffect(() => {
@@ -117,6 +137,12 @@ export function useTtsPlayer(opts: UseTtsPlayerOpts): UseTtsPlayerReturn {
   // ── Stop everything, NOW ────────────────────────────────────────────────
   const stop = useCallback(() => {
     activeRef.current = false;
+
+    // Release the module-singleton ownership slot if we held it.
+    if (ownershipReleaseRef.current) {
+      try { ownershipReleaseRef.current(); } catch { /* ignore */ }
+      ownershipReleaseRef.current = null;
+    }
 
     // Abort in-flight fetches.
     for (const c of inflightRef.current) {
@@ -142,6 +168,11 @@ export function useTtsPlayer(opts: UseTtsPlayerOpts): UseTtsPlayerReturn {
 
     setIsSpeaking(false);
   }, []);
+
+  // Keep a ref to the latest `stop` so the singleton ownership slot can
+  // call it without depending on a captured-at-mount closure.
+  const stopRef = useRef(stop);
+  useEffect(() => { stopRef.current = stop; }, [stop]);
 
   // ── Reset for a new utterance ──────────────────────────────────────────
   const reset = useCallback(() => {
@@ -195,6 +226,11 @@ export function useTtsPlayer(opts: UseTtsPlayerOpts): UseTtsPlayerReturn {
 
     activeRef.current = true;
     setIsSpeaking(true);
+    // Take the singleton ownership slot — preempts any other instance
+    // mid-utterance (eg per-message Play button while voice mode is speaking).
+    if (!ownershipReleaseRef.current) {
+      ownershipReleaseRef.current = takeTtsOwnership(stopRef.current);
+    }
 
     const controller = new AbortController();
     inflightRef.current.add(controller);

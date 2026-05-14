@@ -106,8 +106,10 @@ export function WakeWord() {
         } catch { /* ignore */ }
         return;
       }
-      // "Hey Staxis" / "Oye Staxis" — open panel + record.
-      ctx.openPanelAndRecord();
+      // "Hey Staxis" / "Oye Staxis" — enter dedicated voice mode.
+      // openVoiceMode is idempotent (no-op when already open) so a re-fire
+      // mid-utterance doesn't re-arm the mic.
+      ctx.openVoiceMode();
     };
 
     const start = async () => {

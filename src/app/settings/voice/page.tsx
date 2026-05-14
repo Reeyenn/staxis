@@ -151,10 +151,10 @@ export default function VoiceSettingsPage() {
 
         <ToggleCard
           icon={Volume2}
-          title={isEs ? 'Respuestas habladas' : 'Voice replies'}
+          title={isEs ? 'Respuestas habladas en modo voz' : 'Voice replies in voice mode'}
           desc={isEs
-            ? 'Staxis lee las respuestas en voz alta (voz Nova).'
-            : 'Staxis reads responses out loud (Nova voice).'}
+            ? 'Cuando estás en modo voz (Cmd+/ o el icono del teléfono), Staxis lee las respuestas en voz alta con la voz Nova. El chat normal sigue siendo silencioso — usa el botón 🔊 debajo de cada respuesta para escucharla una vez.'
+            : 'When you’re in voice mode (Cmd+/ or the phone icon), Staxis reads replies aloud in Nova’s voice. Regular text chat stays silent — use the 🔊 button under each reply to hear it once.'}
           checked={pref?.voiceRepliesEnabled ?? false}
           disabled={!pref || savingKey === 'voiceReplies'}
           saving={savingKey === 'voiceReplies'}

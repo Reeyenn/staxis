@@ -134,6 +134,14 @@ const nextConfig: NextConfig = {
         source: '/:path*',
         headers: securityHeaders,
       },
+      {
+        // Picovoice wake-word assets: `.ppn` keyword files (~3KB each) and
+        // `porcupine_params.pv` (~5MB). All static, rev-with-deploy.
+        // Immutable long-cache keeps the wake-word feature from re-fetching
+        // 5MB on every page load that has the toggle on.
+        source: '/wake-words/:path*',
+        headers: [{ key: 'Cache-Control', value: 'public, max-age=31536000, immutable' }],
+      },
     ];
   },
   /**

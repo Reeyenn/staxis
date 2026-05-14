@@ -18,7 +18,6 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { Plus, Send, Trash2 } from 'lucide-react';
 import { MessageList } from '@/components/agent/MessageList';
 import { useAgentChat } from '@/components/agent/useAgentChat';
-import { VoiceButton } from '@/components/agent/VoiceButton';
 import { fetchWithAuth } from '@/lib/api-fetch';
 
 const C = {
@@ -268,7 +267,12 @@ export default function ChatPage() {
           style={{ flex: 1, overflowY: 'auto', scrollBehavior: 'smooth' }}
         >
           <div style={{ maxWidth: 760, margin: '0 auto', padding: '0 24px' }}>
-            <MessageList messages={messages} streaming={streaming} />
+            <MessageList
+              messages={messages}
+              streaming={streaming}
+              propertyId={activePropertyId}
+              conversationId={conversationId}
+            />
             {error && (
               <div style={{
                 margin: '8px 0 16px',
@@ -323,41 +327,28 @@ export default function ChatPage() {
               onFocus={(e) => { e.currentTarget.style.borderColor = C.sageDeep; }}
               onBlur={(e) => { e.currentTarget.style.borderColor = C.rule; }}
             />
-            <div style={{
-              position: 'absolute',
-              right: 10,
-              bottom: 10,
-              display: 'flex',
-              gap: 6,
-              alignItems: 'center',
-            }}>
-              <VoiceButton
-                propertyId={activePropertyId}
-                conversationId={conversationId}
-                size="small"
-                disabled={streaming}
-                onTranscript={async (text) => { await sendMessage(text); }}
-              />
-              <button
-                onClick={handleSend}
-                disabled={streaming || !input.trim()}
-                aria-label="Send"
-                style={{
-                  width: 30, height: 30,
-                  borderRadius: 8,
-                  border: 'none',
-                  cursor: streaming || !input.trim() ? 'default' : 'pointer',
-                  background: streaming || !input.trim() ? C.rule : C.ink,
-                  color: streaming || !input.trim() ? C.ink3 : 'white',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  transition: 'background 0.12s ease',
-                }}
-              >
-                <Send size={14} strokeWidth={2.5} />
-              </button>
-            </div>
+            <button
+              onClick={handleSend}
+              disabled={streaming || !input.trim()}
+              aria-label="Send"
+              style={{
+                position: 'absolute',
+                right: 10,
+                bottom: 10,
+                width: 30, height: 30,
+                borderRadius: 8,
+                border: 'none',
+                cursor: streaming || !input.trim() ? 'default' : 'pointer',
+                background: streaming || !input.trim() ? C.rule : C.ink,
+                color: streaming || !input.trim() ? C.ink3 : 'white',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'background 0.12s ease',
+              }}
+            >
+              <Send size={14} strokeWidth={2.5} />
+            </button>
           </div>
           <div style={{
             maxWidth: 760,
