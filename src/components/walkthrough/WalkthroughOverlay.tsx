@@ -39,9 +39,10 @@ const CURSOR_FLIGHT_MS = 700;
 interface HistoryEntry {
   narration: string;
   targetName?: string;
-  /** elementId from the snapshot Claude picked for this step. Sent back to
-   * the server so Claude can avoid repeating itself. */
-  targetElementId?: string;
+  /** Cross-snapshot stable hash of (url, rawName, parentSection). Replaces
+   * the old per-snapshot targetElementId so the repetition guard survives
+   * page navigations. (RC3.) */
+  targetFingerprint?: string;
   deviated?: boolean;
   deviatedTo?: string;
 }
@@ -338,10 +339,17 @@ export function WalkthroughOverlay() {
       const click = await waitForClick(node, abort.signal);
       if (myRunId !== runIdRef.current) return;
 
+      // RC3: stable cross-snapshot fingerprint = url|rawName|parentSection.
+      // Same logical button on the same page yields the same fingerprint
+      // every snapshot, so the repetition guard catches navigation-spanning
+      // loops too. rawName intentionally excludes the dup-name qualifier
+      // (e.g. "Save (inside Add Staff dialog)") so the fingerprint stays
+      // stable across snapshots where the qualifier is or isn't present.
+      const targetFingerprint = `${snapshot.url}|${meta.rawName}|${meta.parentSection ?? ''}`;
       historyRef.current.push({
         narration: action.narration,
         targetName: meta.name,
-        targetElementId: action.elementId,
+        targetFingerprint,
         ...(click.onTarget
           ? {}
           : {

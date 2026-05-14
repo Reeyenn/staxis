@@ -41,10 +41,10 @@ export const maxDuration = 30;
 interface HistoryEntry {
   narration: string;
   targetName?: string;
-  /** Synthetic id from the snapshot Claude returned for this step. Echoed
-   * back in the next turn so Claude can see what it already targeted and
-   * refuse to repeat (loop guard). */
-  targetElementId?: string;
+  /** Cross-snapshot stable fingerprint = url|rawName|parentSection. Used
+   * by the repetition guard below. (RC3 — replaces the old targetElementId
+   * which was per-snapshot and didn't survive page navigation.) */
+  targetFingerprint?: string;
   deviated?: boolean;
   deviatedTo?: string;
 }
@@ -139,19 +139,39 @@ function buildUserContent(body: StepRequestBody, role: AppRole): string {
           ? `[step ${i + 1}, user deviated → clicked "${h.deviatedTo ?? 'unknown'}"]`
           : `[step ${i + 1}, user clicked target]`;
         const targetTag = h.targetName
-          ? ` (you targeted element ${h.targetElementId ?? '?'} named "${h.targetName}")`
+          ? ` (you targeted "${h.targetName}")`
           : '';
         return `  ${tag} ${h.narration}${targetTag}`;
       })
     : ['  (none yet — this is step 1)'];
 
-  // Surface the most recent target's elementId prominently so Claude can't
-  // miss it. If we just told the user to click el_X, NEXT turn we must not
-  // pick el_X again.
-  const lastTarget = [...history].reverse().find(h => !h.deviated && h.targetElementId);
-  const repetitionGuard = lastTarget
-    ? `\nPrevious step targeted element id "${lastTarget.targetElementId}" (${lastTarget.targetName ?? 'unknown'}). DO NOT pick that same id again — pick a different element or return done/cannot_help.`
+  // RC3: cross-snapshot stable repetition guard.
+  // The previous incarnation compared synthetic elementIds, which are
+  // per-snapshot and DIFFERENT after a navigation. So "click Settings" on
+  // /dashboard and "click Settings" on /housekeeping looked unrelated to
+  // the guard even though they're the same logical action. The fingerprint
+  // is url|rawName|parentSection — same logical button = same fingerprint
+  // regardless of which snapshot it appears in.
+  //
+  // Compute the fingerprint for every element in the CURRENT snapshot, then
+  // see if any of them match a prior step's fingerprint. If yes, name it
+  // explicitly in the prompt so Claude knows that element is already done.
+  const currentFingerprints = new Map<string, string>();
+  for (const e of body.snapshot.elements) {
+    const fp = `${body.snapshot.url}|${e.rawName}|${e.parentSection ?? ''}`;
+    currentFingerprints.set(e.id, fp);
+  }
+  const priorFingerprints = new Set(
+    history.filter(h => !h.deviated && h.targetFingerprint).map(h => h.targetFingerprint as string),
+  );
+  const matchingCurrent = body.snapshot.elements
+    .filter(e => priorFingerprints.has(`${body.snapshot.url}|${e.rawName}|${e.parentSection ?? ''}`))
+    .map(e => `${e.id} ("${e.rawName}")`)
+    .slice(0, 5);
+  const repetitionGuard = matchingCurrent.length
+    ? `\nIMPORTANT: the following elements MATCH something you've already had the user click in a past step — picking any of them again is a loop bug. Pick a DIFFERENT element or return done/cannot_help.\n  Already-actioned: ${matchingCurrent.join(', ')}`
     : '';
+  void currentFingerprints; // reserved for future per-step debug logging
 
   return [
     `Task: ${body.task}`,
