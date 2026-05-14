@@ -44,10 +44,11 @@ export function FloatingMicButton({ available }: FloatingMicButtonProps) {
       title="Talk to Staxis"
       style={{
         position: 'fixed',
-        right: 20,
-        // Stacks above the existing FloatingChatButton (which lives at
-        // bottom: 20 with a 56px button). Leaves an 8px gap.
-        bottom: 92,
+        right: 'max(20px, env(safe-area-inset-right, 20px))',
+        // Stacks ABOVE the existing FloatingChatButton (52px tall, at
+        // bottom: 84). 84 + 52 + 12 gap = 148. Uses the same safe-area
+        // inset math so both buttons handle notched mobile correctly.
+        bottom: 'calc(max(20px, env(safe-area-inset-bottom, 20px)) + 128px)',
         width: 56,
         height: 56,
         borderRadius: 28,

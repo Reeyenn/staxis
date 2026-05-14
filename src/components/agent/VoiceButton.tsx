@@ -421,6 +421,21 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(funct
         ? 'Daily voice limit reached'
         : 'Start voice message';
 
+  // In small mode (inline in composer), the error message would crash into
+  // the textarea — suppress it and rely on the icon state + title tooltip
+  // to communicate the failure. Large/FAB callers still get the full message.
+  const showInlineMessage = size === 'large';
+
+  // Provide a more descriptive tooltip when in an error/denied/capped state
+  // so users hovering the mic understand why it isn't working.
+  const detailedTitle = isDenied
+    ? 'Enable microphone access in your browser settings'
+    : isError
+      ? state.message
+      : isCapped
+        ? "You've hit today's voice limit — typing still works"
+        : aria;
+
   return (
     <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
       <button
@@ -428,7 +443,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(funct
         onClick={handleClick}
         disabled={isInactive || isUploading}
         aria-label={aria}
-        title={aria}
+        title={detailedTitle}
         style={{
           ...sizeStyle,
           border: 'none',
@@ -463,7 +478,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(funct
           Listening… 0:{String(state.durationSec).padStart(2, '0')}
         </span>
       )}
-      {isDenied && (
+      {showInlineMessage && isDenied && (
         <span style={{
           fontFamily: 'var(--font-geist), sans-serif',
           fontSize: 12,
@@ -473,7 +488,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(funct
           Enable microphone access in your browser settings.
         </span>
       )}
-      {isError && (
+      {showInlineMessage && isError && (
         <span style={{
           fontFamily: 'var(--font-geist), sans-serif',
           fontSize: 12,
@@ -483,7 +498,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(funct
           {state.message}
         </span>
       )}
-      {isCapped && (
+      {showInlineMessage && isCapped && (
         <span style={{
           fontFamily: 'var(--font-geist), sans-serif',
           fontSize: 12,
