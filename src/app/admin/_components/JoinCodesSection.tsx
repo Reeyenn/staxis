@@ -22,7 +22,7 @@
  * hotel or mint via SQL if needed (rare).
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { Plus, Copy, Check, X, KeyRound, AlertCircle } from 'lucide-react';
 
@@ -49,7 +49,7 @@ export function JoinCodesSection({ propertyId }: Props) {
   const [revoking, setRevoking] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -67,9 +67,9 @@ export function JoinCodesSection({ propertyId }: Props) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [propertyId]);
 
-  useEffect(() => { void load(); }, [propertyId]);
+  useEffect(() => { void load(); }, [load]);
 
   const mintStaffCode = async () => {
     setMinting(true);
