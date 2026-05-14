@@ -44,6 +44,14 @@
     {
       "path": "/api/cron/doctor-check",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/walkthrough-heal-stale",
+      "schedule": "*/30 * * * *"
+    },
+    {
+      "path": "/api/cron/walkthrough-health-alert",
+      "schedule": "*/10 * * * *"
     }
   ]
 }

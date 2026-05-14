@@ -24,6 +24,7 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 10;
 
 const MAX_TASK_CHARS = 200;
+const WALKTHROUGH_MAX_RUNS_PER_HOUR = 10;
 
 interface StartRequestBody {
   task: string;
@@ -67,6 +68,40 @@ export async function POST(req: NextRequest): Promise<Response> {
     return Response.json({ ok: false, error: 'account not found', requestId }, { status: 404 });
   }
   const accountId = account.id as string;
+
+  // ── Per-user rate limit (S1 — scale-readiness) ───────────────────────
+  // The chatbot's reserveCostBudget rate-limits at 10/min by counting
+  // agent_messages. Walkthrough doesn't write there, so that rate limit
+  // sees zero — meaning a malicious client could `/start → 12×/step →
+  // /end` in a tight loop and only the $5 daily cap stops them. At
+  // 300-hotel scale, 5 abusers in parallel could saturate the Anthropic
+  // org rate limit and slow real users.
+  //
+  // Counter the attack here: cap legitimate walkthroughs at 10/hr/user.
+  // Average user runs ~3/day; 10/hr is 10× normal use, well below abuse.
+  const hourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const { count: recentRuns, error: rateErr } = await supabaseAdmin
+    .from('walkthrough_runs')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', accountId)
+    .gte('started_at', hourAgo);
+  if (rateErr) {
+    log.error('[walkthrough/start] rate-limit query failed', { requestId, accountId, err: rateErr });
+    // Fail open here — losing the rate limit briefly is less bad than
+    // blocking all walkthroughs when the DB hiccups. The dollar cap
+    // is still in place via reservation.
+  } else if ((recentRuns ?? 0) >= WALKTHROUGH_MAX_RUNS_PER_HOUR) {
+    log.warn('[walkthrough/start] rate_limit hit', { requestId, accountId, recentRuns });
+    return Response.json(
+      {
+        ok: false,
+        code: 'rate_limit',
+        error: "You've started a lot of walkthroughs in the last hour — take a break and try again later.",
+        requestId,
+      },
+      { status: 429 },
+    );
+  }
 
   // The RPC returns null if the partial unique index "one active run per
   // user" blocks the insert. Convert that to a 409 the client can show
