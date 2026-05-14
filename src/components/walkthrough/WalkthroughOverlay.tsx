@@ -27,6 +27,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { Cursor, TargetHighlight } from './Cursor';
 import { snapshotInteractiveElements, serializeSnapshot, type SnapshotElement } from './snapshotDom';
+import { WalkthroughErrorBoundary } from './WalkthroughErrorBoundary';
 
 // ─── Constants ───────────────────────────────────────────────────────────
 
@@ -65,7 +66,17 @@ type StepResponse = StepResponseOk | StepResponseErr;
 
 // ─── Component ───────────────────────────────────────────────────────────
 
+// Public export wraps the inner component in an error boundary so a render-
+// path exception doesn't take down the whole root layout (RC5 R10).
 export function WalkthroughOverlay() {
+  return (
+    <WalkthroughErrorBoundary>
+      <WalkthroughOverlayInner />
+    </WalkthroughErrorBoundary>
+  );
+}
+
+function WalkthroughOverlayInner() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
 
@@ -104,18 +115,27 @@ export function WalkthroughOverlay() {
     return () => mq.removeEventListener('change', handler);
   }, []);
 
-  // ── TTS helper — fire-and-forget. Safari and Chrome diverge slightly
-  //    on cancel behavior; we just cancel-then-speak to keep it simple.
+  // ── TTS helper — fire-and-forget. iOS Safari sometimes drops the new
+  //    utterance when speechSynthesis.cancel() hasn't fully settled. The
+  //    60ms post-cancel delay below works around that — verified-clean
+  //    pattern from W3C and Safari issue reports.
+  //    (RC5 N14.)
   const speak = useCallback((text: string) => {
     if (typeof window === 'undefined' || !window.speechSynthesis) return;
     if (!text?.trim()) return;
     try {
-      window.speechSynthesis.cancel();
+      const synth = window.speechSynthesis;
+      synth.cancel();
       const utt = new SpeechSynthesisUtterance(text);
       utt.rate = 1.0;
       utt.pitch = 1.0;
       utt.volume = 1.0;
-      window.speechSynthesis.speak(utt);
+      // Safari race: queue the utterance on a microtask after a short
+      // delay so cancel can settle. On Chrome this is just an extra
+      // setTimeout(0)-ish; harmless.
+      setTimeout(() => {
+        try { synth.speak(utt); } catch { /* ignore */ }
+      }, 60);
     } catch {
       // Best effort — TTS isn't critical
     }
@@ -338,6 +358,19 @@ export function WalkthroughOverlay() {
 
       const click = await waitForClick(node, abort.signal);
       if (myRunId !== runIdRef.current) return;
+
+      // RC5 N12: 90s no-interaction timeout. End the run, free the
+      // partial-unique-active lock, and show a non-error caption so the
+      // user knows what happened.
+      if (click.timedOut) {
+        await endRun('timeout');
+        const msg = "Still there? Pause was long enough I bowed out — ask me again when you're ready.";
+        setMode('error');
+        setErrorMsg(msg);
+        setCaption(msg);
+        setTarget(null);
+        return;
+      }
 
       // RC3: stable cross-snapshot fingerprint = url|rawName|parentSection.
       // Same logical button on the same page yields the same fingerprint
@@ -604,7 +637,11 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 interface ClickOutcome {
   onTarget: boolean;
   clickedName?: string;
+  /** True if the wait ended because no click/key happened within 90s. */
+  timedOut?: boolean;
 }
+
+const WAIT_FOR_CLICK_TIMEOUT_MS = 90_000;
 
 function waitForClick(target: HTMLElement, signal: AbortSignal): Promise<ClickOutcome> {
   return new Promise((resolve) => {
@@ -612,17 +649,35 @@ function waitForClick(target: HTMLElement, signal: AbortSignal): Promise<ClickOu
       resolve({ onTarget: false });
       return;
     }
-    const handler = (ev: MouseEvent) => {
-      const clicked = ev.target as HTMLElement | null;
-      if (!clicked) return;
-      // Ignore clicks inside the overlay's own UI (caption bar, stop button).
-      // Those have aria-live="polite" or role="status" on ancestors so we
-      // can detect them by walking up; simpler is to check zIndex via
-      // closest with a sentinel class. We use the X-icon button's aria-label.
-      const inOverlay = clicked.closest('[aria-label="Stop walkthrough"]');
-      if (inOverlay) return; // user is interacting with overlay, not the page
 
-      const onTarget = target === clicked || target.contains(clicked);
+    // RC5 N12 — no longer blocks forever. If the user walks away or never
+    // clicks, after 90s we resolve with timedOut so the runLoop can call
+    // endRun('timeout') and clean up.
+    const timeoutId = setTimeout(() => {
+      cleanup();
+      resolve({ onTarget: false, timedOut: true });
+    }, WAIT_FOR_CLICK_TIMEOUT_MS);
+
+    const onMouseClick = (ev: MouseEvent) => handleInteraction(ev.target as HTMLElement | null);
+
+    // RC5 N13 — keyboard users were second-class. Tab to the target +
+    // Enter/Space should advance the walkthrough the same way a click
+    // does. Only count the keydown if the target element is the focused
+    // element (so typing into other inputs doesn't accidentally advance).
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Enter' && ev.key !== ' ') return;
+      const focused = document.activeElement as HTMLElement | null;
+      if (!focused) return;
+      if (focused !== target && !target.contains(focused) && !focused.contains(target)) return;
+      handleInteraction(focused);
+    };
+
+    const handleInteraction = (clicked: HTMLElement | null) => {
+      if (!clicked) return;
+      // Ignore clicks inside the overlay's own UI (caption bar / stop button).
+      const inOverlay = clicked.closest('[aria-label="Stop walkthrough"]');
+      if (inOverlay) return;
+      const onTarget = target === clicked || target.contains(clicked) || clicked.contains(target);
       const name = onTarget
         ? undefined
         : (clicked.getAttribute('aria-label')
@@ -631,15 +686,20 @@ function waitForClick(target: HTMLElement, signal: AbortSignal): Promise<ClickOu
       cleanup();
       resolve({ onTarget, clickedName: name || undefined });
     };
+
     const onAbort = () => {
       cleanup();
       resolve({ onTarget: false });
     };
     const cleanup = () => {
-      document.removeEventListener('click', handler, true);
+      clearTimeout(timeoutId);
+      document.removeEventListener('click', onMouseClick, true);
+      document.removeEventListener('keydown', onKey, true);
       signal.removeEventListener('abort', onAbort);
     };
-    document.addEventListener('click', handler, true);
+
+    document.addEventListener('click', onMouseClick, true);
+    document.addEventListener('keydown', onKey, true);
     signal.addEventListener('abort', onAbort);
   });
 }
