@@ -6,7 +6,7 @@
 // ChatPanel. Hides when no user is signed in or no active property is
 // selected — there's nothing to chat about then.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { MessageCircle } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
@@ -16,6 +16,16 @@ export function FloatingChatButton() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const [open, setOpen] = useState(false);
+
+  // When a walkthrough starts (Clicky-style cursor demo), the chat panel
+  // minimizes so the cursor has the whole page to roam. The overlay
+  // dispatches `walkthrough:start` from its runLoop entry point.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handler = () => setOpen(false);
+    window.addEventListener('walkthrough:start', handler);
+    return () => window.removeEventListener('walkthrough:start', handler);
+  }, []);
 
   if (!user || !activePropertyId) return null;
 

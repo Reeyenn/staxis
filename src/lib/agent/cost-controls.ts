@@ -107,10 +107,18 @@ export type ReserveResult =
  *   1. Rate limit (JS-side count over agent_messages) — fast reject for
  *      bad-faith clients before we touch the lock.
  *   2. Dollar caps via the RPC under advisory lock.
+ *
+ * Optional `estimatedUsd` lets non-chat features (Clicky walkthrough
+ * per-step calls, voice short turns) reserve a smaller worst-case so
+ * a many-step feature doesn't artificially exhaust the user's daily cap.
+ * Default is the chatbot's $1.50 worst-case derived from sonnet x 8
+ * iterations x MAX_OUTPUT_TOKENS. Callers reserving smaller MUST still
+ * call finalizeCostReservation on success.
  */
 export async function reserveCostBudget(opts: {
   userId: string;
   propertyId: string;
+  estimatedUsd?: number;
 }): Promise<ReserveResult> {
   // Rate-limit check first. The query joins agent_messages → agent_conversations
   // by user_id — index `agent_conversations_user_updated_idx` (0079) covers
@@ -135,10 +143,11 @@ export async function reserveCostBudget(opts: {
   // Now the atomic dollar-cap reservation. The RPC takes an advisory
   // lock keyed on user_id so concurrent requests for the same user
   // serialize on this check.
+  const estimate = opts.estimatedUsd ?? COST_LIMITS.estimatedRequestUsd;
   const { data, error } = await supabaseAdmin.rpc('staxis_reserve_agent_spend', {
     p_user_id: opts.userId,
     p_property_id: opts.propertyId,
-    p_estimated_usd: COST_LIMITS.estimatedRequestUsd,
+    p_estimated_usd: estimate,
     p_user_cap_usd: userCapUsd,
     p_property_cap_usd: COST_LIMITS.propertyDailyUsd,
     p_global_cap_usd: COST_LIMITS.globalDailyUsd,

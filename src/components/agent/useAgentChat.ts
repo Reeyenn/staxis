@@ -184,6 +184,19 @@ export function useAgentChat({ propertyId, active = true }: UseAgentChatOpts): U
             continue;
           }
 
+          // Side channel for non-chat observers (walkthrough overlay, voice TTS).
+          // Each SSE event is mirrored as a window CustomEvent so components
+          // mounted outside the hook can listen without forking the stream.
+          // Event names: 'text_delta' → 'agent:text-delta', etc. Detail is the
+          // full SsePayload.
+          if (typeof window !== 'undefined' && payload.type) {
+            window.dispatchEvent(
+              new CustomEvent(`agent:${payload.type.replace(/_/g, '-')}`, {
+                detail: payload,
+              }),
+            );
+          }
+
           if (payload.type === 'conversation_id' && typeof payload.id === 'string') {
             setConversationId(payload.id);
             void reloadConversations();

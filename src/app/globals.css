@@ -604,3 +604,21 @@ body {
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
+/* ── Walkthrough overlay animations (Clicky cursor + target outline) ── */
+@keyframes staxis-cursor-pulse {
+  0%, 100% { transform: translate(-4px, -2px) scale(1); }
+  50%      { transform: translate(-4px, -2px) scale(1.18); }
+}
+@keyframes staxis-target-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 2px var(--snow-caramel, #C99644),
+      0 0 0 6px rgba(201, 150, 68, 0.20);
+  }
+  50% {
+    box-shadow:
+      0 0 0 2px var(--snow-caramel, #C99644),
+      0 0 0 10px rgba(201, 150, 68, 0.32);
+  }
+}
