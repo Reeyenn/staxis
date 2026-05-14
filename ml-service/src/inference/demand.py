@@ -193,7 +193,44 @@ async def predict_demand(
     quantiles = [0.1, 0.25, 0.5, 0.75, 0.8, 0.9, 0.95]
     predictions = None
 
-    if algorithm == "bayesian":
+    # Phase M3 (2026-05-14) — cold-start cohort-prior path. Active when a
+    # new hotel hasn't accumulated 14+ days of training data yet. Reads
+    # the prior_minutes_per_room_per_day from posterior_params (set by
+    # _cold_start.install_cold_start) and produces a wide-band prediction.
+    if algorithm == "cold-start-cohort-prior":
+        try:
+            posterior = model_run.get("posterior_params") or {}
+            if isinstance(posterior, str):
+                posterior = json.loads(posterior)
+            prior_per_room = float(posterior.get("prior_minutes_per_room_per_day", 20.0))
+        except Exception as exc:
+            print(json.dumps({
+                "evt": "demand_cold_start_inference_payload_bad",
+                "model_run_id": model_run_id,
+                "error": str(exc)[:200],
+            }))
+            prior_per_room = 20.0  # industry-default fallback
+
+        total_rooms = property_meta.get("total_rooms") or 0
+        # Mean prediction = prior × room count. Cohort priors are
+        # already empirically averaged across many days with varied
+        # occupancy, so we don't try to scale by today's occupancy
+        # pct (would double-count the prior's embedded average).
+        mu = float(prior_per_room) * float(total_rooms)
+        # Wide quantile bands reflect cold-start uncertainty. The
+        # posterior tightens these as soon as a real Bayesian fit
+        # replaces this row (next training run with ≥14 days of data).
+        predictions = {
+            0.1:  np.array([mu * 0.5]),
+            0.25: np.array([mu * 0.7]),
+            0.5:  np.array([mu]),
+            0.75: np.array([mu * 1.3]),
+            0.8:  np.array([mu * 1.4]),
+            0.9:  np.array([mu * 1.6]),
+            0.95: np.array([mu * 1.8]),
+        }
+
+    elif algorithm == "bayesian":
         from src.layers.bayesian_regression import BayesianRegression
 
         model = BayesianRegression()

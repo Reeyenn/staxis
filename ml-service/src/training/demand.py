@@ -162,12 +162,26 @@ def _train_demand_inner(
         }
 
     if not data or len(data) < settings.training_row_count_min:
-        return {
-            "error": f"Insufficient data (need {settings.training_row_count_min} days, got {len(data) if data else 0})",
-            "model_run_id": None,
-            "is_active": False,
-            "training_row_count": len(data) if data else 0,
-        }
+        # Phase M3 cold-start path. Helpers live in _cold_start.py so
+        # they're testable without sklearn (Phase L _streak.py pattern).
+        from src.training._cold_start import install_cold_start, lookup_cohort_prior
+        local_rows = len(data) if data else 0
+        prior_value, prior_strength, source, cohort_key = lookup_cohort_prior(
+            client, property_id,
+            table="demand_priors",
+            value_col="prior_minutes_per_room_per_day",
+            hardcoded_fallback=20.0,
+        )
+        return install_cold_start(
+            client, property_id,
+            layer="demand",
+            prior_value=prior_value,
+            prior_strength=prior_strength,
+            source=source,
+            cohort_key=cohort_key,
+            local_rows_observed=local_rows,
+            value_param_name="prior_minutes_per_room_per_day",
+        )
 
     df = pd.DataFrame(data)
 

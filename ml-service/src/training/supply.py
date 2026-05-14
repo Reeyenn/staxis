@@ -131,12 +131,26 @@ def _train_supply_inner(
         }
 
     if not data or len(data) < settings.training_row_count_min:
-        return {
-            "error": f"Insufficient data (need {settings.training_row_count_min}, got {len(data)})",
-            "model_run_id": None,
-            "is_active": False,
-            "training_row_count": len(data),
-        }
+        # Phase M3 cold-start path. Same shape as demand.py — reads
+        # supply_priors.prior_minutes_per_event via the shared helpers.
+        from src.training._cold_start import install_cold_start, lookup_cohort_prior
+        local_rows = len(data) if data else 0
+        prior_value, prior_strength, source, cohort_key = lookup_cohort_prior(
+            client, property_id,
+            table="supply_priors",
+            value_col="prior_minutes_per_event",
+            hardcoded_fallback=30.0,
+        )
+        return install_cold_start(
+            client, property_id,
+            layer="supply",
+            prior_value=prior_value,
+            prior_strength=prior_strength,
+            source=source,
+            cohort_key=cohort_key,
+            local_rows_observed=local_rows,
+            value_param_name="prior_minutes_per_event",
+        )
 
     df = pd.DataFrame(data)
 

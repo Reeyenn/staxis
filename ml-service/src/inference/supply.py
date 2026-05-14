@@ -140,6 +140,7 @@ async def predict_supply(
     # Hydrate the actual trained model. If we can't, return an explicit error
     # rather than fabricating predictions from a dummy fit.
     model = None
+    cold_start_prior_minutes_per_event = None  # Optional[float]
     if algorithm == "bayesian":
         model = _hydrate_bayesian_from_run(model_run)
         if model is None:
@@ -149,6 +150,25 @@ async def predict_supply(
                 "date": str(prediction_date),
                 "model_version": model_run.get("model_version"),
             }
+    elif algorithm == "cold-start-cohort-prior":
+        # Phase M3 — cold-start cohort-prior path. Active model exists but
+        # has no fitted posterior; use prior_minutes_per_event from the
+        # model_runs.posterior_params payload (set by
+        # _cold_start.install_cold_start at training time).
+        try:
+            posterior = model_run.get("posterior_params") or {}
+            if isinstance(posterior, str):
+                posterior = json.loads(posterior)
+            cold_start_prior_minutes_per_event = float(
+                posterior.get("prior_minutes_per_event", 30.0)
+            )
+        except Exception as exc:
+            print(json.dumps({
+                "evt": "supply_cold_start_inference_payload_bad",
+                "model_run_id": model_run_id,
+                "error": str(exc)[:200],
+            }))
+            cold_start_prior_minutes_per_event = 30.0  # industry-default
     elif algorithm == "xgboost-quantile":
         # XGBoost serialization not yet wired up. Fail explicitly so this is
         # visible in the cockpit rather than silently producing flat numbers.
@@ -336,42 +356,65 @@ async def predict_supply(
 
     pair_df = pd.DataFrame(pair_rows)
 
-    # Single matrix build → single shape check. If feature_names is
-    # incompatible (e.g. an old v1 model is still active and we trained
-    # the page expecting v2 columns), this raises and we bail before
-    # touching supply_predictions at all.
-    try:
-        X_all, _ = build_supply_features(
-            pair_df, training=False, feature_names=saved_feature_names,
-        )
-        all_preds = model.predict_quantile(X_all, quantiles)
-    except ValueError as exc:
-        return {
-            "error": f"Supply posterior incompatible with inference features: {exc}",
-            "property_id": property_id,
-            "date": str(prediction_date),
-            "model_version": model_run.get("model_version"),
-        }
+    # Phase M3 — cold-start path bypasses model.predict_quantile entirely
+    # because there's no fitted posterior. Every (room, staff) gets the
+    # same cohort-prior-derived prediction with wide quantile bands.
+    # Replaced by per-(room×staff) Bayesian posterior as soon as the
+    # next training run has ≥14 days of data.
+    if cold_start_prior_minutes_per_event is not None:
+        mu = float(cold_start_prior_minutes_per_event)
+        for row in pair_rows:
+            predictions.append({
+                "room_number": row["room_number"],
+                "staff_id": row["staff_id"],
+                "predicted_minutes_p25": mu * 0.7,
+                "predicted_minutes_p50": mu,
+                "predicted_minutes_p75": mu * 1.3,
+                "predicted_minutes_p90": mu * 1.6,
+                "features_snapshot": json.dumps({
+                    "cold_start": True,
+                    "prior_minutes_per_event": mu,
+                    "cohort_key": (model_run.get("posterior_params") or {}).get("cohort_key", "unknown") if isinstance(model_run.get("posterior_params"), dict) else "unknown",
+                }),
+            })
+    else:
+        # Standard Bayesian / posterior-fitted path.
+        # Single matrix build → single shape check. If feature_names is
+        # incompatible (e.g. an old v1 model is still active and we trained
+        # the page expecting v2 columns), this raises and we bail before
+        # touching supply_predictions at all.
+        try:
+            X_all, _ = build_supply_features(
+                pair_df, training=False, feature_names=saved_feature_names,
+            )
+            all_preds = model.predict_quantile(X_all, quantiles)
+        except ValueError as exc:
+            return {
+                "error": f"Supply posterior incompatible with inference features: {exc}",
+                "property_id": property_id,
+                "date": str(prediction_date),
+                "model_version": model_run.get("model_version"),
+            }
 
-    # all_preds is a dict { quantile -> ndarray length N }. Pull row-wise.
-    for i, row in enumerate(pair_rows):
-        # Per-(room, staff) snapshot of the actual feature values that
-        # produced this prediction. Useful for debugging "why did room 305
-        # get 35 min when room 412 got 22?" — read this column to see the
-        # one-hot encodings and base features at predict time.
-        features_snapshot = {
-            k: (X_all.iloc[i][k] if k in X_all.columns else 0.0)
-            for k in saved_feature_names
-        }
-        predictions.append({
-            "room_number": row["room_number"],
-            "staff_id": row["staff_id"],
-            "predicted_minutes_p25": float(all_preds[0.25][i]),
-            "predicted_minutes_p50": float(all_preds[0.5][i]),
-            "predicted_minutes_p75": float(all_preds[0.75][i]),
-            "predicted_minutes_p90": float(all_preds[0.9][i]),
-            "features_snapshot": json.dumps(features_snapshot),
-        })
+        # all_preds is a dict { quantile -> ndarray length N }. Pull row-wise.
+        for i, row in enumerate(pair_rows):
+            # Per-(room, staff) snapshot of the actual feature values that
+            # produced this prediction. Useful for debugging "why did room 305
+            # get 35 min when room 412 got 22?" — read this column to see the
+            # one-hot encodings and base features at predict time.
+            features_snapshot = {
+                k: (X_all.iloc[i][k] if k in X_all.columns else 0.0)
+                for k in saved_feature_names
+            }
+            predictions.append({
+                "room_number": row["room_number"],
+                "staff_id": row["staff_id"],
+                "predicted_minutes_p25": float(all_preds[0.25][i]),
+                "predicted_minutes_p50": float(all_preds[0.5][i]),
+                "predicted_minutes_p75": float(all_preds[0.75][i]),
+                "predicted_minutes_p90": float(all_preds[0.9][i]),
+                "features_snapshot": json.dumps(features_snapshot),
+            })
 
     # Write all predictions
     for pred in predictions:
