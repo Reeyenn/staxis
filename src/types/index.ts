@@ -27,6 +27,16 @@ export interface Property {
   pmsUrl?: string;
   pmsConnected?: boolean;
   lastSyncedAt?: Date | null;
+  /**
+   * IANA timezone name ("America/Chicago", "America/New_York", …). Set at
+   * onboarding (M1.5 wizard Step 4). Used client-side to compute "today"
+   * and "tomorrow" in the property's local time — without this, queries
+   * for daily windows can roll past midnight in the wrong place. The DB
+   * column exists since migration 0046 (Phase G). Phase M3.1 added it
+   * to this type so ScheduleTab's ML confidence panel can pass it
+   * through to getActiveOptimizerForTomorrow().
+   */
+  timezone?: string | null;
   alertPhone?: string;          // E.164 phone for inventory critical SMS alerts; falls back to MANAGER_PHONE env var
   /**
    * Master list of every room number in the hotel ("101", "102", "205", …).
