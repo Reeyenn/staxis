@@ -325,6 +325,116 @@ def test_demand_prior_passes_block_distinct_from_current_gate():
     )
 
 
+def test_demand_passes_gates_does_not_require_activation_row_count():
+    """Phase M3.2 (2026-05-14) — root-cause fix for the activation gap.
+
+    Properties with 200-499 events were trapped: cold-start fired only
+    at <200, Bayesian activated only at >=500. The fix drops the
+    row-count guard from passes_gates because the OTHER gates (holdout,
+    mae_ratio, beats_baseline, consecutive_passes) already prevent
+    unreliable models from activating.
+
+    This test pins that the row-count guard does NOT come back into
+    passes_gates. It MAY still appear inside the for-prior-run loop OR
+    in the use_xgboost algorithm-choice gate (those are different
+    decisions); we extract just the passes_gates expression.
+    """
+    import re
+
+    src = _read_module_source("training/demand.py")
+    passes_gates_block = re.search(
+        r"passes_gates\s*=\s*\(([^)]+)\)", src, flags=re.DOTALL,
+    )
+    assert passes_gates_block, "couldn't find passes_gates expression in demand.py"
+    expr = passes_gates_block.group(1)
+    assert "training_row_count_activation" not in expr, (
+        "Phase M3.2 reverted: the demand passes_gates expression now "
+        "requires training_row_count_activation again, recreating the "
+        "200-499 event activation gap.\nExpression:\n" + expr
+    )
+
+
+def test_supply_passes_gates_does_not_require_activation_row_count():
+    """Same as above for supply. Mirror the demand structural invariant."""
+    import re
+
+    src = _read_module_source("training/supply.py")
+    passes_gates_block = re.search(
+        r"passes_gates\s*=\s*\(([^)]+)\)", src, flags=re.DOTALL,
+    )
+    assert passes_gates_block, "couldn't find passes_gates expression in supply.py"
+    expr = passes_gates_block.group(1)
+    assert "training_row_count_activation" not in expr, (
+        "Phase M3.2 reverted: the supply passes_gates expression now "
+        "requires training_row_count_activation again, recreating the "
+        "200-499 event activation gap.\nExpression:\n" + expr
+    )
+
+
+def test_demand_prior_passes_does_not_require_activation_row_count():
+    """The prior_passes loop body must also not gate on the activation
+    row count — otherwise a property's prior runs (all under 500 rows)
+    never count toward consecutive_passes, and the property never
+    accumulates the 2 passing runs needed to activate."""
+    import re
+
+    src = _read_module_source("training/demand.py")
+    block = re.search(
+        r"for prior_run in.*?\n(.*?)should_activate\s*=",
+        src, flags=re.DOTALL,
+    )
+    assert block, "couldn't locate prior_passes loop body in training/demand.py"
+    body = block.group(1)
+    code_lines = [
+        line for line in body.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    code = "\n".join(code_lines)
+    assert "training_row_count_activation" not in code, (
+        "Phase M3.2 reverted: training/demand.py prior_passes loop now "
+        "gates on training_row_count_activation. Activation gap is back.\n"
+        f"Loop body (code only):\n{code[:500]}"
+    )
+
+
+def test_supply_prior_passes_does_not_require_activation_row_count():
+    """Same as above for supply."""
+    import re
+
+    src = _read_module_source("training/supply.py")
+    block = re.search(
+        r"for prior_run in.*?\n(.*?)should_activate\s*=",
+        src, flags=re.DOTALL,
+    )
+    assert block, "couldn't locate prior_passes loop body in training/supply.py"
+    body = block.group(1)
+    code_lines = [
+        line for line in body.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    code = "\n".join(code_lines)
+    assert "training_row_count_activation" not in code, (
+        "Phase M3.2 reverted: training/supply.py prior_passes loop now "
+        "gates on training_row_count_activation. Activation gap is back.\n"
+        f"Loop body (code only):\n{code[:500]}"
+    )
+
+
+def test_use_xgboost_keeps_activation_row_count_threshold():
+    """Phase M3.2 sanity check: while the activation GATE drops the row
+    count, the algorithm-CHOICE gate (use_xgboost) should keep it.
+    XGBoost overfits at low N — picking it under 500 rows is a different
+    failure mode than activation. This test ensures the M3.2 fix doesn't
+    accidentally also broaden XGBoost selection."""
+    for module in ("training/demand.py", "training/supply.py"):
+        src = _read_module_source(module)
+        assert "use_xgboost = len(X_train) >= settings.training_row_count_activation" in src, (
+            f"{module} no longer gates XGBoost selection on the activation "
+            "row count. Phase M3.2 should have left this alone — XGBoost "
+            "overfits at low N."
+        )
+
+
 def test_config_exposes_ratio_threshold_and_floor():
     """3.2: config.py must expose validation_mae_ratio_threshold and
     validation_mae_floor. Without these the demand+supply trainers can't
