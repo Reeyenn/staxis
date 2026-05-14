@@ -202,6 +202,15 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // 2. Inventory counts — pull all rows for the scope (capped); compute
     //    per-property buckets in JS. At small N this is fine; at scale we
     //    move per-property aggregation server-side via a view.
+    //
+    // Phase K (2026-05-13): the SQL-aggregation refactor for this and the
+    // other count loops below is documented in
+    // ~/.claude/plans/codex-hey-pretty-scalable-kernighan.md (Commit 5).
+    // Deferred from Phase K because (a) Beaumont has 112 inventory_counts
+    // total and the cockpit is sub-second today, and (b) the refactor
+    // needs a 2nd migration this PR which violates the J3 30-day "no new
+    // migrations" discipline. Pick this up when fleet > 10 properties OR
+    // total rows > 100k OR cockpit response > 2s in prod.
     const { data: countRows } = await supabaseAdmin
       .from('inventory_counts')
       .select('property_id, item_id, counted_at')

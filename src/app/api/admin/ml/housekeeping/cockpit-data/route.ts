@@ -193,6 +193,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
     // Pull a wider set than the 30-day window for the phase calculation —
     // Day 0 might be 6+ months ago for some hotels.
+    // Phase K (2026-05-13): the SQL-aggregation refactor for these
+    // count loops is documented in
+    // ~/.claude/plans/codex-hey-pretty-scalable-kernighan.md (Commit 5).
+    // Deferred from Phase K because (a) Beaumont has 361 cleaning_events
+    // total and the cockpit is sub-second today, and (b) the refactor
+    // needs a 2nd migration this PR which violates the J3 30-day "no new
+    // migrations" discipline. Pick this up when fleet > 10 properties OR
+    // total rows > 100k OR cockpit response > 2s in prod.
     const [eventsAllRes, eventsRecentRes, modelRunsRes, overridesRes, scheduleRes, staffRes] = await Promise.all([
       // All events for cumulative stats + first-event lookup. Capped.
       supabaseAdmin
