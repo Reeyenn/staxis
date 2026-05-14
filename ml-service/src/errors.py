@@ -81,6 +81,15 @@ def require_property_timezone(tz_value: Optional[str], property_id: str) -> str:
     cleaned = tz_value.strip()
     try:
         ZoneInfo(cleaned)
-    except ZoneInfoNotFoundError:
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        # Phase L: ZoneInfo raises ValueError for path-traversal
+        # ('../../etc/passwd') and embedded-null inputs, OSError for
+        # over-long names ([Errno 63] File name too long), and
+        # ZoneInfoNotFoundError for unrecognized but well-formed names.
+        # Phase K only caught the last; the other two crashed inference
+        # with a generic exception, defeating the whole point of
+        # surfacing structured property_misconfigured events.
+        # Do NOT broaden to bare `Exception` — that would swallow
+        # AttributeError and friends that point at real bugs.
         raise PropertyMisconfiguredError(property_id, "timezone", tz_value)
     return cleaned

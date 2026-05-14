@@ -1,4 +1,11 @@
--- ─── Migration 0116: voice surface (Whisper STT + Nova TTS + wake word) ──
+-- ─── Migration 0117: voice surface (Whisper STT + Nova TTS + wake word) ──
+-- Phase L (2026-05-14): originally written and applied as 0116 but
+-- collided with 0116_properties_total_rooms_check.sql from the parallel
+-- Phase K work. The DDL is already deployed in prod under filename
+-- 0116_voice_surface.sql; this rename keeps the on-disk version unique
+-- so a fresh-DB replay won't hit duplicate-version INSERTs into
+-- applied_migrations. Phase L Fix 3 adds a CI-time test invariant that
+-- prevents future duplicate-version filename collisions at write time.
 --
 -- Adds the schema for the voice layer that sits on top of /api/agent/command.
 -- Three concerns:
@@ -98,7 +105,7 @@ CREATE POLICY "voice_recordings_select_own"
 
 INSERT INTO public.applied_migrations (version, description)
 VALUES (
-  '0116',
+  '0117',
   'Voice surface: account voice prefs + audio cost kind + voice_recordings retention table'
 )
 ON CONFLICT (version) DO NOTHING;
