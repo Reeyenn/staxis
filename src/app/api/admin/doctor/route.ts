@@ -1886,6 +1886,13 @@ async function checkInventoryAutoFillShape(): Promise<Omit<Check, 'name' | 'dura
     // cast to the helper's signature (changes there force a re-think
     // here), and avoids `unknown as any` which silently disabled type
     // checking entirely.
+    // ⚠️ Trip-wire for future refactors of getInventoryAutoFillMap:
+    // The cast below goes through `unknown`, so if you ever loosen the
+    // 3rd parameter (e.g. make it optional, or accept a wider union),
+    // this line silently compiles against the new shape. The runtime
+    // can break without a TypeScript error. If you're reading this
+    // because you just refactored that function — re-verify supabaseAdmin
+    // is still a valid value for the new signature before merging.
     const items = await getInventoryAutoFillMap(
       propertyId,
       'always-on',

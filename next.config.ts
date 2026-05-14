@@ -185,12 +185,24 @@ export default withSentryConfig(nextConfig, {
     deleteSourcemapsAfterUpload: true,
   },
 
-  // Tree-shake Sentry SDK debug-logger statements out of the bundle.
-  // The older `disableLogger: true` option is @deprecated as of the
-  // @sentry/nextjs version we're on; the replacement lives at
-  // `webpack.treeshake.removeDebugLogging` (verified via the types
-  // in node_modules/@sentry/nextjs/build/types/config/types.d.ts).
-  // Same effect at build time — does not affect Sentry Logs themselves,
-  // only internal SDK debug logging.
+  // Tree-shake Sentry SDK debug-logger statements out of the bundle —
+  // BUT ONLY WHEN the build runs under webpack. The replacement for the
+  // deprecated `disableLogger: true` lives at this nested webpack path
+  // (verified in node_modules/@sentry/nextjs/build/types/config/types.d.ts
+  // and again by reading the plugin source).
+  //
+  // ⚠️ Honest note: Next.js 16 defaults to Turbopack for `next build`,
+  // and `package.json`'s script is plain `next build` (no `--webpack`).
+  // Vercel honors the default. The @sentry/nextjs plugin only wires
+  // `webpack.treeshake.removeDebugLogging` through its webpack pipeline,
+  // so under our actual production build (Turbopack), this option
+  // silently no-ops. The SDK's internal debug logger statements remain
+  // in the bundle (small bundle-size cost, no functional impact).
+  //
+  // Why keep it then: zero cost to leave in. The day we either (a) add
+  // `--webpack` to the build command, (b) Sentry ships a Turbopack
+  // equivalent, or (c) Next changes its default back to webpack, this
+  // option starts doing real work without any code change required.
+  // Removing it now would require a follow-up edit later — net negative.
   webpack: { treeshake: { removeDebugLogging: true } },
 });
