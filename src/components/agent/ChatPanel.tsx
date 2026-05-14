@@ -201,8 +201,6 @@ export function ChatPanel({ open, onClose, propertyId }: ChatPanelProps) {
           <MessageList
             messages={messages}
             streaming={streaming}
-            propertyId={propertyId}
-            conversationId={conversationId}
             emptyHint={
               <>
                 Ask anything. Try{' '}

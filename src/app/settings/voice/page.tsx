@@ -2,12 +2,10 @@
 
 // ─── /settings/voice — voice preferences ─────────────────────────────────
 //
-// Two toggles, both server-backed in accounts.voice_replies_enabled /
-// accounts.wake_word_enabled.
-//
-//   1. Voice replies  — Staxis speaks responses aloud (Nova voice)
-//   2. Hey Staxis     — Wake-word listener that opens chat + records
-//                       on hearing "Hey Staxis" / "Oye Staxis"
+// One toggle: the "Hey Staxis" wake-word listener (Picovoice). Voice mode
+// itself is always on for everyone — ElevenLabs handles speech-in /
+// speech-out whenever the user opens voice mode (Cmd+/ or the phone
+// icon), no opt-in needed.
 //
 // The wake-word toggle is HIDDEN entirely unless the deploy has both
 // .ppn keyword files in public/wake-words/ AND PICOVOICE_ACCESS_KEY set
@@ -20,7 +18,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import { Volume2, Mic, ChevronLeft, Loader2 } from 'lucide-react';
+import { Mic, ChevronLeft, Loader2 } from 'lucide-react';
 
 interface VoicePreference {
   voiceRepliesEnabled: boolean;
@@ -35,7 +33,7 @@ export default function VoiceSettingsPage() {
 
   const [pref, setPref] = useState<VoicePreference | null>(null);
   const [wakeWordAvailable, setWakeWordAvailable] = useState<boolean | null>(null);
-  const [savingKey, setSavingKey] = useState<'voiceReplies' | 'wakeWord' | null>(null);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [wakeWordToastShown, setWakeWordToastShown] = useState(false);
 
@@ -65,51 +63,33 @@ export default function VoiceSettingsPage() {
     return () => { cancelled = true; };
   }, [user]);
 
-  const updatePref = async (
-    key: 'voiceReplies' | 'wakeWord',
-    next: boolean,
-  ) => {
+  const updateWakeWord = async (next: boolean) => {
     if (!pref) return;
-    setSavingKey(key);
+    setSaving(true);
     setError(null);
     // Optimistic update.
-    setPref(prev => prev ? {
-      ...prev,
-      voiceRepliesEnabled: key === 'voiceReplies' ? next : prev.voiceRepliesEnabled,
-      wakeWordEnabled: key === 'wakeWord' ? next : prev.wakeWordEnabled,
-    } : prev);
+    setPref(prev => prev ? { ...prev, wakeWordEnabled: next } : prev);
 
     try {
-      const body = key === 'voiceReplies'
-        ? { voiceReplies: next }
-        : { wakeWordEnabled: next };
       const res = await fetchWithAuth('/api/agent/voice-preference', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ wakeWordEnabled: next }),
       });
       if (!res.ok) {
         // Roll back.
-        setPref(prev => prev ? {
-          ...prev,
-          voiceRepliesEnabled: key === 'voiceReplies' ? !next : prev.voiceRepliesEnabled,
-          wakeWordEnabled: key === 'wakeWord' ? !next : prev.wakeWordEnabled,
-        } : prev);
+        setPref(prev => prev ? { ...prev, wakeWordEnabled: !next } : prev);
         const errBody = await res.json().catch(() => null);
         setError(errBody?.error ?? (isEs ? 'No se pudo guardar.' : 'Couldn\'t save.'));
         return;
       }
       const ok = await res.json();
       setPref(ok.data as VoicePreference);
-
-      // One-time toast when wake word is first turned on.
-      if (key === 'wakeWord' && next && !wakeWordToastShown) {
-        setWakeWordToastShown(true);
-      }
+      if (next && !wakeWordToastShown) setWakeWordToastShown(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setSavingKey(null);
+      setSaving(false);
     }
   };
 
@@ -149,17 +129,17 @@ export default function VoiceSettingsPage() {
           {isEs ? 'Voz' : 'Voice'}
         </h1>
 
-        <ToggleCard
-          icon={Volume2}
-          title={isEs ? 'Respuestas habladas en modo voz' : 'Voice replies in voice mode'}
-          desc={isEs
-            ? 'Cuando estás en modo voz (Cmd+/ o el icono del teléfono), Staxis lee las respuestas en voz alta con la voz Nova. El chat normal sigue siendo silencioso — usa el botón 🔊 debajo de cada respuesta para escucharla una vez.'
-            : 'When you’re in voice mode (Cmd+/ or the phone icon), Staxis reads replies aloud in Nova’s voice. Regular text chat stays silent — use the 🔊 button under each reply to hear it once.'}
-          checked={pref?.voiceRepliesEnabled ?? false}
-          disabled={!pref || savingKey === 'voiceReplies'}
-          saving={savingKey === 'voiceReplies'}
-          onToggle={(next) => void updatePref('voiceReplies', next)}
-        />
+        <p style={{
+          fontFamily: 'var(--font-sans)',
+          fontSize: 13,
+          color: 'var(--text-muted)',
+          lineHeight: 1.5,
+          margin: 0,
+        }}>
+          {isEs
+            ? 'El modo voz se abre con Cmd+/ o el icono del teléfono. Staxis siempre responde con voz cuando estás en modo voz.'
+            : 'Open voice mode with Cmd+/ or the phone icon. Staxis always talks back when you’re in voice mode.'}
+        </p>
 
         {wakeWordAvailable && (
           <ToggleCard
@@ -169,9 +149,9 @@ export default function VoiceSettingsPage() {
               ? 'Escucha en segundo plano mientras Staxis está abierto en una pestaña. Puede usar batería. Requiere permiso del micrófono.'
               : 'Listens in the background while Staxis is open in a tab. May use battery. Requires microphone permission.'}
             checked={pref?.wakeWordEnabled ?? false}
-            disabled={!pref || savingKey === 'wakeWord'}
-            saving={savingKey === 'wakeWord'}
-            onToggle={(next) => void updatePref('wakeWord', next)}
+            disabled={!pref || saving}
+            saving={saving}
+            onToggle={(next) => void updateWakeWord(next)}
           />
         )}
 

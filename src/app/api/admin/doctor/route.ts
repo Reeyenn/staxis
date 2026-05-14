@@ -267,15 +267,22 @@ const REQUIRED_ENV_VARS: Array<{ name: string; altNames?: string[]; group: strin
   // alert + the new captureException in llm.ts's getClient() are the
   // detection layers; THIS list is what makes both possible.
   { name: 'ANTHROPIC_API_KEY',                 group: 'anthropic' },
-  // Voice surface (2026-05-13)
-  // OPENAI_API_KEY backs Whisper STT + Nova TTS — required because voice
-  // mode (Phone icon + Cmd+/) depends on it. PICOVOICE_ACCESS_KEY backs
-  // the "Hey Staxis" wake word, which is intentionally optional: gated on
-  // both the access key AND public/wake-words/*.ppn files. Operators run
-  // without it until they choose to wire wake-word; voice still works via
-  // the Phone-button STT fallback. See checkPicovoiceWakeWordConfig below
-  // for the half-configured-state warn.
+  // Voice surface (2026-05-14)
+  //   - ElevenLabs Conversational AI powers voice mode (Phone icon + Cmd+/).
+  //     The three vars below are all load-bearing: ELEVENLABS_API_KEY mints
+  //     signed URLs server-side, ELEVENLABS_AGENT_ID names the agent the
+  //     browser connects to, ELEVENLABS_WEBHOOK_SECRET gates the brain
+  //     webhook that every turn hits.
+  //   - OPENAI_API_KEY is kept on the required list for the Clicky
+  //     walkthrough's Nova narration (/api/agent/speak), which still uses
+  //     OpenAI TTS. Voice mode itself no longer depends on it.
+  //   - PICOVOICE_ACCESS_KEY backs "Hey Staxis" wake word and is
+  //     intentionally OPTIONAL (gated on both the access key AND a .ppn
+  //     file in public/wake-words/) — see checkPicovoiceWakeWordConfig.
   { name: 'OPENAI_API_KEY',                    group: 'voice' },
+  { name: 'ELEVENLABS_API_KEY',                group: 'voice' },
+  { name: 'ELEVENLABS_AGENT_ID',               group: 'voice' },
+  { name: 'ELEVENLABS_WEBHOOK_SECRET',         group: 'voice' },
   // Billing — these are checked for SHAPE in checkStripeBillingConfigured.
   // Listing here so the env_vars check reports a clean "missing" message
   // when none are set, but the billing-configured check is the source of
@@ -1781,7 +1788,6 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'expire-trials',                 cadenceHours: 24,    description: 'daily trial-expiration flip' },
   { name: 'agent-archive-stale-conversations', cadenceHours: 24, description: 'daily 3am archival of stale agent conversations (L4 part A)' },
   { name: 'agent-heal-counters',           cadenceHours: 24,    description: 'daily 4am counter-drift heal (Round 12 T12.12, invariant doctrine safety net)' },
-  { name: 'voice-recordings-purge',        cadenceHours: 24,    description: 'daily 4:30am purge of voice recordings older than 7 days (INV-19)' },
   // Weekly
   { name: 'ml-train-demand',               cadenceHours: 168,   description: 'weekly demand training (Sunday)' },
   { name: 'ml-train-supply',               cadenceHours: 168,   description: 'weekly supply training (Sunday)' },

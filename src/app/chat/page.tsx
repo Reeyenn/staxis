@@ -270,8 +270,6 @@ export default function ChatPage() {
             <MessageList
               messages={messages}
               streaming={streaming}
-              propertyId={activePropertyId}
-              conversationId={conversationId}
             />
             {error && (
               <div style={{

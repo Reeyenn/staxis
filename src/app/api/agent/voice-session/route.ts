@@ -29,6 +29,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { createConversation } from '@/lib/agent/memory';
+import { assertAudioBudget } from '@/lib/agent/cost-controls';
 import { PROMPT_VERSION } from '@/lib/agent/prompts';
 import type { AppRole } from '@/lib/roles';
 
@@ -78,6 +79,23 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
   const accountId = account.id as string;
   const role = ((account.role as string) ?? 'staff') as AppRole;
+
+  // Pre-flight: refuse a NEW voice session if the user has already hit the
+  // daily audio cap. Mid-session minutes meter on ElevenLabs' side; this
+  // gate stops a fresh session being opened over the cap. Mirrors what the
+  // legacy /transcribe route did.
+  try {
+    const budget = await assertAudioBudget({ userId: accountId, propertyId: body.propertyId });
+    if (!budget.ok) {
+      return NextResponse.json(
+        { ok: false, error: budget.message, code: budget.reason, requestId },
+        { status: 429 },
+      );
+    }
+  } catch (e) {
+    log.error('[voice-session] audio budget check failed', { requestId, e });
+    return NextResponse.json({ ok: false, error: 'audio budget check failed', requestId }, { status: 500 });
+  }
 
   let staffId: string | null = null;
   if (role === 'housekeeping' || role === 'maintenance') {

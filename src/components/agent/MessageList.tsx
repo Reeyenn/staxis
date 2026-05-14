@@ -4,17 +4,11 @@
 // Shared between the floating chat panel and the full /chat page. Renders
 // user / assistant / tool messages with Snow design system tokens and
 // markdown support (tables, lists, bold) via react-markdown.
-//
-// Designed as a "good enough" baseline that Claude Design can refine on
-// top of later — the structure is clean; the styling is opinionated but
-// minimal.
 
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Wrench } from 'lucide-react';
-import { MessageActionRow } from './MessageActionRow';
-import { useMessagePlayback } from './useMessagePlayback';
 
 export interface DisplayMessage {
   role: 'user' | 'assistant' | 'tool' | 'system';
@@ -45,30 +39,13 @@ export interface MessageListProps {
   streaming?: boolean;
   /** Optional empty-state hint. */
   emptyHint?: React.ReactNode;
-  /** Required for per-message TTS playback. When null, action row hides
-   *  the Play button (Copy / thumbs still show). */
-  propertyId?: string | null;
-  /** Optional — attaches cost-ledger rows to the conversation. */
-  conversationId?: string | null;
 }
 
 export function MessageList({
   messages,
   streaming,
   emptyHint,
-  propertyId = null,
-  conversationId = null,
 }: MessageListProps) {
-  // ONE useMessagePlayback instance for the whole list — its single <audio>
-  // element + module-level activeTtsStop singleton ensure two messages
-  // can't play at once across the entire chat.
-  const playback = useMessagePlayback({ propertyId, conversationId });
-
-  // The LAST assistant text message (no toolName) is the one being filled
-  // during streaming. Hide the action row on it until streaming finishes.
-  const streamingAssistantIndex = streaming
-    ? findLastAssistantTextIndex(messages)
-    : -1;
   if (messages.length === 0) {
     return (
       <div style={{
@@ -92,28 +69,9 @@ export function MessageList({
 
   return (
     <div style={{ padding: '20px 20px 80px', fontFamily: FONT_SANS, fontSize: 14, color: C.ink, lineHeight: 1.55 }}>
-      {messages.map((m, i) => {
-        const isPlainAssistantText =
-          m.role === 'assistant' && !m.toolName && m.text.trim().length > 0;
-        const showActions = isPlainAssistantText && i !== streamingAssistantIndex;
-        const messageId = `msg-${i}`;
-        return (
-          <React.Fragment key={i}>
-            <MessageRow message={m} />
-            {showActions && (
-              <div style={{ display: 'flex', justifyContent: 'flex-start', marginLeft: 0 }}>
-                <MessageActionRow
-                  messageId={messageId}
-                  text={m.text}
-                  isCurrentlyPlaying={playback.currentlyPlayingId === messageId}
-                  onPlay={(t, id) => void playback.play(t, id)}
-                  onStopPlay={playback.stop}
-                />
-              </div>
-            )}
-          </React.Fragment>
-        );
-      })}
+      {messages.map((m, i) => (
+        <MessageRow key={i} message={m} />
+      ))}
       {streaming && (
         <div style={{ display: 'flex', gap: 6, padding: '8px 0 0', color: C.ink3 }}>
           <Dot delay={0} />
@@ -123,14 +81,6 @@ export function MessageList({
       )}
     </div>
   );
-}
-
-function findLastAssistantTextIndex(messages: DisplayMessage[]): number {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m.role === 'assistant' && !m.toolName) return i;
-  }
-  return -1;
 }
 
 function MessageRow({ message: m }: { message: DisplayMessage }) {
