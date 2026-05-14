@@ -383,7 +383,14 @@ async def predict_supply(
         })
 
         try:
-            client.upsert("supply_predictions", pred)
+            # Matches supply_predictions' unique constraint
+            # (property_id, date, room_number, staff_id, model_run_id)
+            # from migration 0021. Phase K bug 1.
+            client.upsert(
+                "supply_predictions",
+                pred,
+                on_conflict="property_id,date,room_number,staff_id,model_run_id",
+            )
         except Exception as exc:
             print(json.dumps({
                 "evt": "supply_prediction_write_failed",

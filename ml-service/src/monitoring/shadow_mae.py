@@ -147,8 +147,10 @@ async def compute_rolling_shadow_mae(
         return None
 
     # Fetch prediction_log for last `auto_rollback_window_days` days
-    # ONLY. The cutoff was previously computed-but-unused; pass it
-    # through execute_sql so PostgREST applies the date filter at the DB.
+    # ONLY. Filter on prediction_date (the date the prediction was MADE
+    # FOR), not logged_at (the moment the actual error was recorded) —
+    # otherwise a stale prediction backfilled today pairs against fresh
+    # actuals and biases the rollback decision. (Phase K bug 2.)
     cutoff_dt = datetime.utcnow() - timedelta(days=settings.auto_rollback_window_days)
     cutoff_iso = cutoff_dt.isoformat()
     logs_query = f"""
@@ -156,7 +158,7 @@ async def compute_rolling_shadow_mae(
         from prediction_log
         where property_id = '{property_id}'
           and layer = '{layer}'
-          and logged_at >= '{cutoff_iso}'
+          and prediction_date >= '{cutoff_iso}'
           and model_run_id in ('{active_model_id}', '{comparator_model_id}')
         order by prediction_date asc
     """
