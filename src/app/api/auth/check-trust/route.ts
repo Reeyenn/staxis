@@ -36,11 +36,17 @@ export async function POST(req: NextRequest) {
 
   const { data: account, error: acctErr } = await supabaseAdmin
     .from('accounts')
-    .select('id')
+    .select('id, skip_2fa')
     .eq('data_user_id', userData.user.id)
     .maybeSingle();
   if (acctErr || !account) {
     return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+  }
+
+  // Demo bypass: shared investor account skips OTP unconditionally.
+  // No device cookie is set/refreshed — bypass lives entirely in the DB flag.
+  if (account.skip_2fa) {
+    return ok({ trusted: true }, { requestId });
   }
 
   // Check the cookie.

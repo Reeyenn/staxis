@@ -1,0 +1,10 @@
+-- Demo/investor bypass flag.
+-- When true, /api/auth/check-trust returns trusted=true regardless of device cookie,
+-- so the account skips the post-password OTP step entirely.
+-- Set manually for the shared demo account only — never expose in any UI.
+
+alter table accounts
+  add column if not exists skip_2fa boolean not null default false;
+
+comment on column accounts.skip_2fa is
+  'Demo/investor bypass. When true, /api/auth/check-trust returns trusted=true regardless of device cookie. Set manually for the shared demo account only — never expose in any UI.';
