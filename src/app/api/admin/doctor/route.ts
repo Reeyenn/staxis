@@ -1739,6 +1739,7 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'ml-train-supply',               cadenceHours: 168,   description: 'weekly supply training (Sunday)' },
   { name: 'ml-train-inventory',            cadenceHours: 168,   description: 'weekly inventory training (Sunday)' },
   { name: 'scraper-weekly-digest',         cadenceHours: 168,   description: 'weekly scraper health digest SMS' },
+  { name: 'agent-weekly-digest',           cadenceHours: 168,   description: 'weekly agent activity digest SMS to MANAGER_PHONE (Sundays 9am UTC)' },
 ];
 
 async function checkCronHeartbeatsFresh(): Promise<Omit<Check, 'name' | 'durationMs'>> {

@@ -26,6 +26,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { ShieldAlert } from 'lucide-react';
 
 import { StickyHeader, type AdminTab } from '@/app/admin/_components/StickyHeader';
+import { HealthBanner } from '@/app/admin/_components/HealthBanner';
 import { OnboardingTab } from '@/app/admin/_components/tabs/OnboardingTab';
 import { LiveHotelsTab } from '@/app/admin/_components/tabs/LiveHotelsTab';
 import { SystemTab } from '@/app/admin/_components/tabs/SystemTab';
@@ -85,6 +86,7 @@ export default function AdminPropertiesPage() {
   return (
     <AppLayout>
       <div style={{ padding: '24px', maxWidth: '1200px', margin: '0 auto' }}>
+        <HealthBanner />
         <StickyHeader activeTab={activeTab} onTabChange={handleTabChange} />
 
         {activeTab === 'onboarding' && <OnboardingTab />}

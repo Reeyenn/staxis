@@ -45,7 +45,7 @@ export interface ToolResultHandlerArgs {
     conversationId: string,
     callId: string,
     result: unknown,
-    isError: boolean | undefined,
+    isError: boolean,
   ) => Promise<unknown>;
   send: (event: ToolCallFinishedEvent | AgentErrorEvent) => void;
   onPersistenceFailure: (err: unknown) => void;
@@ -53,7 +53,7 @@ export interface ToolResultHandlerArgs {
 
 export async function handleToolCallFinished(args: ToolResultHandlerArgs): Promise<{ shouldBreak: boolean }> {
   try {
-    await args.recordToolResult(args.conversationId, args.event.call.id, args.event.result, args.event.isError);
+    await args.recordToolResult(args.conversationId, args.event.call.id, args.event.result, args.event.isError ?? false);
     args.pendingToolCallIds.delete(args.event.call.id);
     args.send(args.event);
     return { shouldBreak: false };
