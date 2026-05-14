@@ -100,6 +100,53 @@ async function checkPropertyMisconfiguredEvents(propertyId: string): Promise<voi
   }
 }
 
+/**
+ * Phase M1.5 (2026-05-14) — confirm the admin property-create endpoint
+ * is reachable AND properly rejects unauthenticated requests. We do NOT
+ * actually create a property here (would require an admin session JWT
+ * that the smoke runner doesn't have) — but we DO verify:
+ *   - The route exists (returns 401/403, not 404)
+ *   - The route enforces auth (401/403, not 200)
+ *
+ * If a deploy accidentally removes the route OR loosens its auth gate,
+ * the next nightly smoke fails loudly. Real end-to-end create+delete
+ * needs a delete endpoint (not built yet) — defer to M2 or later.
+ */
+async function checkAdminPropertyCreateEndpoint(baseUrl: string): Promise<void> {
+  try {
+    const res = await fetch(`${baseUrl}/api/admin/properties/create`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'smoke-probe', totalRooms: 1, timezone: 'UTC' }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (res.status === 404) {
+      fail('admin_property_create_endpoint', `route returned 404 — was it removed or renamed?`);
+      return;
+    }
+    if (res.status === 200 || res.status === 201) {
+      fail(
+        'admin_property_create_endpoint',
+        `route returned ${res.status} for an unauthenticated request — auth gate is broken!`,
+      );
+      return;
+    }
+    if (res.status !== 401 && res.status !== 403) {
+      // Acceptable failure modes: 401 (no session) or 403 (session but
+      // not admin). Anything else is a regression worth investigating.
+      fail(
+        'admin_property_create_endpoint',
+        `unexpected status ${res.status} for an unauthenticated request (expected 401 or 403)`,
+      );
+    }
+  } catch (e) {
+    fail(
+      'admin_property_create_endpoint',
+      `request failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
 async function main(): Promise<void> {
   const baseUrl = process.env.SMOKE_BASE_URL ?? 'https://getstaxis.com';
   const propertyId = process.env.SMOKE_PROPERTY_ID;
@@ -121,6 +168,7 @@ async function main(): Promise<void> {
   // into doctor's inventory_auto_fill_shape check — already validated
   // by checkDoctor above.
   await checkPropertyMisconfiguredEvents(propertyId);
+  await checkAdminPropertyCreateEndpoint(baseUrl);
 
   if (failures.length > 0) {
     console.error('\n── FAILED ──');
