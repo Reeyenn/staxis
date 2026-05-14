@@ -173,6 +173,42 @@ describe('migration bookkeeping', () => {
     );
   });
 
+  it('no two migration files share a version (Phase L: prevent 0116 collision class)', () => {
+    // Why: Phase K's 0116_properties_total_rooms_check.sql and a parallel
+    // session's 0116_voice_surface.sql both shipped to main. The other
+    // tests in this file used `new Set(files.map(f => f.version))` which
+    // silently deduped — no test caught the collision. Both DDL blocks
+    // are idempotent so prod schema survived, but applied_migrations was
+    // collapsed to a single row with the WRONG description until manual
+    // repair. Postgres has no concept of "two files for one version,"
+    // so we enforce uniqueness at the file system. CI rejects the next
+    // collision before merge.
+    // Exclude documented stubs (e.g., 0015_accounts_rls_and_migration_tracker.sql,
+    // a no-op file kept alongside the real 0015_applied_migrations_tracker.sql).
+    const files = listMigrationFiles().filter((f) => !STUB_FILENAMES.has(f.filename));
+    const byVersion = new Map<string, string[]>();
+    for (const f of files) {
+      const list = byVersion.get(f.version) ?? [];
+      list.push(f.filename);
+      byVersion.set(f.version, list);
+    }
+    const collisions: Array<[string, string[]]> = [];
+    for (const [version, filenames] of byVersion.entries()) {
+      if (filenames.length > 1) {
+        collisions.push([version, filenames]);
+      }
+    }
+    assert.deepEqual(
+      collisions,
+      [],
+      `Migration version collisions detected (each version must map to exactly one file):\n  ${
+        collisions
+          .map(([v, fs]) => `${v}: ${fs.join(', ')}`)
+          .join('\n  ')
+      }\nRename the newer file to the next free version and update its INSERT statement.`,
+    );
+  });
+
   it('EXPECTED_CRONS export is reachable (sanity for test infrastructure)', () => {
     // Pure smoke check: the import path resolves at test time. If this
     // ever breaks, the cron-cadences.test.ts file is broken too.
