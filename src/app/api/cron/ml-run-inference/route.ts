@@ -251,24 +251,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       },
     });
   }
-  // Phase M3.2 (2026-05-14) — debug log: when anyStageError=true (route
-  // returns 502) the curl in ml-cron.yml uses -fsS so the body is
-  // discarded. Logging the per-stage results here lets us see WHICH
-  // stage flipped to status='error' without modifying the workflow.
-  if (anyStageError) {
-    log.warn('ml-run-inference: returning 502 — stage error detected', {
-      requestId,
-      results: results.map((r) => ({
-        property_id: r.property_id,
-        demand_status: r.demand?.status,
-        supply_status: r.supply?.status,
-        optimizer_status: r.optimizer?.status,
-        demand_detail: r.demand?.detail,
-        supply_detail: r.supply?.detail,
-        optimizer_detail: r.optimizer?.detail,
-      })),
-    });
-  }
   // Outer ok reflects inner state — see ml-train-demand for full notes.
   return NextResponse.json(
     { ok: !anyStageError, requestId, results },
