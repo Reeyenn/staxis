@@ -2,22 +2,24 @@
 
 // ─── VoiceModeOverlay — Clicky-style bottom bar for live voice chat ──────
 //
-// Mounts conditionally when voicePanel.voiceModeOpen === true. Unmounts
-// on close so the <audio> element from useTtsPlayer is created in the
-// user-gesture frame that opened voice mode (iOS Safari autoplay rule).
+// One file, two implementations behind a feature flag:
 //
-// Visual mirrors WalkthroughOverlay.CaptionBar: fixed bottom-center,
-// 640px max, dark ink background, white text, X to exit.
+//   - `ElevenLabsActiveOverlay` (default, prod-on)
+//     Talks directly to ElevenLabs Conversational AI over WebSocket via
+//     `useConversationalSession`. ElevenLabs handles ASR / TTS / VAD /
+//     barge-in; our /api/agent/voice-brain webhook supplies replies from
+//     the same Claude brain text mode uses. Target turn time ~1.5–2s
+//     ear-to-ear.
 //
-// State flow per turn:
-//   1. Mount → mic auto-listens immediately
-//   2. User speaks → silence-detect or 60s cap → upload to /transcribe
-//   3. Transcript → useAgentChat.sendMessage(transcript)
-//   4. SSE streams the reply → text shows live in the overlay
-//   5. When streaming ends:
-//      - If voice replies on: Nova speaks via useTtsPlayer; on done, re-arm mic
-//      - If voice replies off: mic re-arms immediately after text settles
-//   6. Loop until X clicked or wake-word "stop" fired
+//   - `LegacyActiveOverlay` (NEXT_PUBLIC_VOICE_SURFACE=legacy)
+//     The pre-2026-05-14 pipeline: client-side mic recording → upload
+//     to /api/agent/transcribe (Whisper) → /api/agent/command (Claude) →
+//     /api/agent/speak (OpenAI TTS). Kept as a one-flag-flip rollback
+//     for the first week the ElevenLabs path is live. Will be removed
+//     in a follow-up PR after the new surface stabilises.
+//
+// Visual layout is byte-identical between the two: fixed bottom-center,
+// dark ink background, white text, animated status dot, X to exit.
 
 import { useEffect, useRef, useState } from 'react';
 import { X, HelpCircle } from 'lucide-react';
@@ -29,6 +31,7 @@ import { useVoicePanel } from './VoicePanelContext';
 import { useAgentChat } from './useAgentChat';
 import { useVoiceRecording } from './useVoiceRecording';
 import { useTtsPlayer } from './useTtsPlayer';
+import { useConversationalSession, type ConversationStatus } from './useConversationalSession';
 
 const C = {
   ink:  'var(--snow-ink, #1F231C)',
@@ -52,180 +55,30 @@ export function VoiceModeOverlay() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
 
-  // Bail-out states. The hook calls below still happen unconditionally —
-  // we just don't render anything.
   const shouldRender = Boolean(voicePanel?.voiceModeOpen && user && activePropertyId);
+  if (!shouldRender) return null;
 
-  return shouldRender ? <ActiveOverlay /> : null;
+  // The flag is read once per overlay mount. Switching surfaces requires
+  // a re-deploy (env var) and a fresh voice-mode open — that's fine,
+  // the user never changes it mid-session.
+  const surface = process.env.NEXT_PUBLIC_VOICE_SURFACE ?? 'elevenlabs';
+  if (surface === 'legacy') return <LegacyActiveOverlay />;
+  return <ElevenLabsActiveOverlay />;
 }
 
-function ActiveOverlay() {
-  const voicePanel = useVoicePanel();
-  const { activePropertyId } = useProperty();
+// ─── Shared chrome ────────────────────────────────────────────────────────
 
-  // Voice preference loaded once on mount.
-  const [voicePref, setVoicePref] = useState<VoicePreferenceResponse | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetchWithAuth('/api/agent/voice-preference');
-        if (!res.ok || cancelled) return;
-        const body = await res.json();
-        setVoicePref(body.data as VoicePreferenceResponse);
-      } catch { /* graceful — overlay still works text-only */ }
-    })();
-    return () => { cancelled = true; };
-  }, []);
+interface ChromeProps {
+  statusLine: string;
+  dotColor: string;
+  dotPulse: boolean;
+  showMicHelp: boolean;
+  bodyText: string;
+  errorText: string | null;
+  onClose: () => void;
+}
 
-  const speakerOn = voicePref?.voiceRepliesEnabled === true;
-
-  // Conversation handle — shared with the chat panel so voice exchanges
-  // land in the same agent_conversations row history.
-  const {
-    messages,
-    conversationId,
-    streaming,
-    error,
-    sendMessage,
-  } = useAgentChat({ propertyId: activePropertyId, active: true });
-
-  // TTS player for the assistant's spoken reply.
-  const lastFeedRef = useRef<{ msgIndex: number; len: number }>({ msgIndex: -1, len: 0 });
-  const tts = useTtsPlayer({
-    propertyId: activePropertyId,
-    conversationId,
-    enabled: speakerOn,
-    onDone: () => {
-      // After Nova finishes speaking, auto-arm the mic for the next turn.
-      // Small delay so the last syllable lands cleanly before recording.
-      window.setTimeout(() => {
-        voiceRecordingRef.current?.();
-      }, 300);
-    },
-  });
-
-  // Feed streaming assistant text into TTS sentence-by-sentence.
-  useEffect(() => {
-    if (!speakerOn) return;
-    if (messages.length === 0) return;
-    const lastIdx = messages.length - 1;
-    const last = messages[lastIdx];
-    if (last.role !== 'assistant') return;
-
-    if (lastFeedRef.current.msgIndex !== lastIdx) {
-      tts.reset();
-      lastFeedRef.current = { msgIndex: lastIdx, len: 0 };
-    }
-    if (last.text.length > lastFeedRef.current.len) {
-      tts.feedStreamingText(last.text);
-      lastFeedRef.current.len = last.text.length;
-    }
-  }, [messages, speakerOn, tts]);
-
-  // When SSE streaming ends, flush trailing buffer to TTS.
-  const wasStreamingRef = useRef(false);
-  useEffect(() => {
-    if (wasStreamingRef.current && !streaming) {
-      tts.finalizeStreamingText();
-      // If voice replies are OFF, no onDone will fire (because TTS doesn't
-      // play). Re-arm the mic on text-arrival in that case.
-      if (!speakerOn) {
-        window.setTimeout(() => {
-          voiceRecordingRef.current?.();
-        }, 600);
-      }
-    }
-    wasStreamingRef.current = streaming;
-  }, [streaming, tts, speakerOn]);
-
-  // Recording machinery.
-  const recording = useVoiceRecording({
-    propertyId: activePropertyId,
-    conversationId,
-    onTranscript: (text) => { void sendMessage(text); },
-    onStartRecording: () => { tts.stop(); },
-  });
-
-  // Imperative ref so the onDone TTS callback can re-arm the mic without
-  // depending on `recording.start` being stable across renders.
-  const voiceRecordingRef = useRef<() => void>(() => {});
-  useEffect(() => {
-    voiceRecordingRef.current = () => { void recording.start(); };
-  }, [recording]);
-
-  // Kick off the first recording when the overlay mounts. Inside the
-  // same gesture frame as the openVoiceMode call (button click /
-  // keyboard / wake) so iOS Safari permits the getUserMedia prompt.
-  const startedFirstRecordingRef = useRef(false);
-  useEffect(() => {
-    if (startedFirstRecordingRef.current) return;
-    startedFirstRecordingRef.current = true;
-    void recording.start();
-  }, [recording]);
-
-  // Wake-word "stop" keyword and Esc both close the overlay.
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const onTtsStop = () => tts.stop();
-    const onEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') voicePanel?.closeVoiceMode();
-    };
-    window.addEventListener('staxis:tts-stop', onTtsStop);
-    window.addEventListener('keydown', onEsc);
-    return () => {
-      window.removeEventListener('staxis:tts-stop', onTtsStop);
-      window.removeEventListener('keydown', onEsc);
-    };
-  }, [tts, voicePanel]);
-
-  // Both `useVoiceRecording` and `useTtsPlayer` already register their
-  // own unmount cleanups (release mic stream + audio context, abort
-  // pending TTS fetches, revoke blob URLs). We deliberately do NOT add
-  // a manual cleanup here:
-  //
-  // The `useEffect(() => () => { ... }, [tts, recording])` shape we had
-  // before re-fired its cleanup on every render (because the hook return
-  // objects are new references), which called `recording.stop()` the
-  // instant state flipped 'idle' → 'recording'. That truncated every
-  // utterance to ~1ms of audio, producing a 0-byte blob and the
-  // "Didn't catch that — tap to try again" error.
-
-  // ── Render ─────────────────────────────────────────────────────────────
-  const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant' && !m.toolName);
-
-  let statusLine: string;
-  let dotColor: string;
-  switch (recording.state.kind) {
-    case 'recording':
-      statusLine = `Listening… 0:${String(recording.state.durationSec).padStart(2, '0')}`;
-      dotColor = '#D7563A';
-      break;
-    case 'uploading':
-      statusLine = 'Got it…';
-      dotColor = '#C99644';
-      break;
-    case 'denied':
-      statusLine = 'Mic blocked';
-      dotColor = C.warm;
-      break;
-    case 'error':
-      statusLine = recording.state.message;
-      dotColor = C.warm;
-      break;
-    case 'capped':
-      statusLine = "You've hit today's voice limit";
-      dotColor = C.warm;
-      break;
-    default:
-      statusLine = streaming
-        ? 'Thinking…'
-        : tts.isSpeaking
-          ? 'Speaking…'
-          : 'Ready';
-      dotColor = streaming || tts.isSpeaking ? C.sage : C.ink2;
-  }
-
+function OverlayChrome({ statusLine, dotColor, dotPulse, showMicHelp, bodyText, errorText, onClose }: ChromeProps) {
   return (
     <div
       role="status"
@@ -249,20 +102,17 @@ function ActiveOverlay() {
         animation: 'staxis-fade-in 0.18s ease-out, staxis-slide-up 0.22s ease-out',
       }}
     >
-      {/* Left: status line + last assistant text */}
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{
           display: 'flex',
           alignItems: 'center',
           gap: 8,
-          marginBottom: lastAssistant ? 6 : 0,
+          marginBottom: bodyText ? 6 : 0,
         }}>
           <span style={{
             width: 8, height: 8, borderRadius: '50%',
             background: dotColor,
-            animation: recording.state.kind === 'recording' || tts.isSpeaking
-              ? 'staxis-voice-dot-pulse 1.2s ease-in-out infinite'
-              : undefined,
+            animation: dotPulse ? 'staxis-voice-dot-pulse 1.2s ease-in-out infinite' : undefined,
             flexShrink: 0,
           }} />
           <span style={{
@@ -274,7 +124,7 @@ function ActiveOverlay() {
           }}>
             {statusLine}
           </span>
-          {recording.state.kind === 'denied' && (
+          {showMicHelp && (
             <Link
               href="/settings/voice"
               title="Enable mic in browser settings"
@@ -287,7 +137,7 @@ function ActiveOverlay() {
             </Link>
           )}
         </div>
-        {lastAssistant && lastAssistant.text.trim() && (
+        {bodyText && bodyText.trim() && (
           <div style={{
             fontFamily: FONT_SERIF,
             fontSize: 14,
@@ -295,23 +145,22 @@ function ActiveOverlay() {
             color: 'white',
             wordBreak: 'break-word',
           }}>
-            {lastAssistant.text}
+            {bodyText}
           </div>
         )}
-        {error && (
+        {errorText && (
           <div style={{
             marginTop: 6,
             fontSize: 12,
             color: 'rgba(255, 255, 255, 0.7)',
           }}>
-            {error}
+            {errorText}
           </div>
         )}
       </div>
 
-      {/* Right: X close button */}
       <button
-        onClick={() => voicePanel?.closeVoiceMode()}
+        onClick={onClose}
         aria-label="Exit voice mode"
         title="Exit voice mode"
         style={{
@@ -333,5 +182,212 @@ function ActiveOverlay() {
         <X size={16} strokeWidth={2.4} />
       </button>
     </div>
+  );
+}
+
+// ─── ElevenLabs implementation (new default) ──────────────────────────────
+
+function ElevenLabsActiveOverlay() {
+  const voicePanel = useVoicePanel();
+  const { activePropertyId } = useProperty();
+
+  const { status, lastAssistant, error, stop } = useConversationalSession({
+    propertyId: activePropertyId,
+    active: true,
+  });
+
+  // Esc + wake-word "stop" event both close the overlay. Wake word fires
+  // a 'staxis:tts-stop' window event — same wiring the legacy overlay
+  // uses, kept here so wake-word "stop" continues to work on either path.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onTtsStop = () => { stop(); voicePanel?.closeVoiceMode(); };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { stop(); voicePanel?.closeVoiceMode(); }
+    };
+    window.addEventListener('staxis:tts-stop', onTtsStop);
+    window.addEventListener('keydown', onEsc);
+    return () => {
+      window.removeEventListener('staxis:tts-stop', onTtsStop);
+      window.removeEventListener('keydown', onEsc);
+    };
+  }, [stop, voicePanel]);
+
+  const { statusLine, dotColor, dotPulse } = statusFor(status);
+  return (
+    <OverlayChrome
+      statusLine={statusLine}
+      dotColor={dotColor}
+      dotPulse={dotPulse}
+      showMicHelp={status === 'denied'}
+      bodyText={lastAssistant}
+      errorText={error}
+      onClose={() => { stop(); voicePanel?.closeVoiceMode(); }}
+    />
+  );
+}
+
+function statusFor(s: ConversationStatus): { statusLine: string; dotColor: string; dotPulse: boolean } {
+  switch (s) {
+    case 'connecting': return { statusLine: 'Connecting…',  dotColor: C.ink2, dotPulse: false };
+    case 'listening':  return { statusLine: 'Listening…',   dotColor: '#D7563A', dotPulse: true };
+    case 'thinking':   return { statusLine: 'Thinking…',    dotColor: '#C99644', dotPulse: false };
+    case 'speaking':   return { statusLine: 'Speaking…',    dotColor: C.sage,    dotPulse: true };
+    case 'denied':     return { statusLine: 'Mic blocked',  dotColor: C.warm,    dotPulse: false };
+    case 'capped':     return { statusLine: "You've hit today's voice limit", dotColor: C.warm, dotPulse: false };
+    case 'error':      return { statusLine: 'Error',        dotColor: C.warm,    dotPulse: false };
+    default:           return { statusLine: 'Ready',        dotColor: C.ink2,    dotPulse: false };
+  }
+}
+
+// ─── Legacy implementation (NEXT_PUBLIC_VOICE_SURFACE=legacy fallback) ───
+//
+// This is the pre-2026-05-14 pipeline. Left intact behind the feature
+// flag so we can flip back in 60 seconds via Vercel env if the ElevenLabs
+// path has an outage in week one. Slated for deletion in a follow-up PR
+// after the new surface stabilises.
+
+function LegacyActiveOverlay() {
+  const voicePanel = useVoicePanel();
+  const { activePropertyId } = useProperty();
+
+  const [voicePref, setVoicePref] = useState<VoicePreferenceResponse | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetchWithAuth('/api/agent/voice-preference');
+        if (!res.ok || cancelled) return;
+        const body = await res.json();
+        setVoicePref(body.data as VoicePreferenceResponse);
+      } catch { /* graceful */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const speakerOn = voicePref?.voiceRepliesEnabled === true;
+
+  const {
+    messages,
+    conversationId,
+    streaming,
+    error,
+    sendMessage,
+  } = useAgentChat({ propertyId: activePropertyId, active: true });
+
+  const lastFeedRef = useRef<{ msgIndex: number; len: number }>({ msgIndex: -1, len: 0 });
+  const tts = useTtsPlayer({
+    propertyId: activePropertyId,
+    conversationId,
+    enabled: speakerOn,
+    onDone: () => {
+      window.setTimeout(() => { voiceRecordingRef.current?.(); }, 300);
+    },
+  });
+
+  useEffect(() => {
+    if (!speakerOn) return;
+    if (messages.length === 0) return;
+    const lastIdx = messages.length - 1;
+    const last = messages[lastIdx];
+    if (last.role !== 'assistant') return;
+
+    if (lastFeedRef.current.msgIndex !== lastIdx) {
+      tts.reset();
+      lastFeedRef.current = { msgIndex: lastIdx, len: 0 };
+    }
+    if (last.text.length > lastFeedRef.current.len) {
+      tts.feedStreamingText(last.text);
+      lastFeedRef.current.len = last.text.length;
+    }
+  }, [messages, speakerOn, tts]);
+
+  const wasStreamingRef = useRef(false);
+  useEffect(() => {
+    if (wasStreamingRef.current && !streaming) {
+      tts.finalizeStreamingText();
+      if (!speakerOn) {
+        window.setTimeout(() => { voiceRecordingRef.current?.(); }, 600);
+      }
+    }
+    wasStreamingRef.current = streaming;
+  }, [streaming, tts, speakerOn]);
+
+  const recording = useVoiceRecording({
+    propertyId: activePropertyId,
+    conversationId,
+    onTranscript: (text) => { void sendMessage(text); },
+    onStartRecording: () => { tts.stop(); },
+  });
+
+  const voiceRecordingRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    voiceRecordingRef.current = () => { void recording.start(); };
+  }, [recording]);
+
+  const startedFirstRecordingRef = useRef(false);
+  useEffect(() => {
+    if (startedFirstRecordingRef.current) return;
+    startedFirstRecordingRef.current = true;
+    void recording.start();
+  }, [recording]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onTtsStop = () => tts.stop();
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') voicePanel?.closeVoiceMode();
+    };
+    window.addEventListener('staxis:tts-stop', onTtsStop);
+    window.addEventListener('keydown', onEsc);
+    return () => {
+      window.removeEventListener('staxis:tts-stop', onTtsStop);
+      window.removeEventListener('keydown', onEsc);
+    };
+  }, [tts, voicePanel]);
+
+  const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant' && !m.toolName);
+
+  let statusLine: string;
+  let dotColor: string;
+  let dotPulse = false;
+  switch (recording.state.kind) {
+    case 'recording':
+      statusLine = `Listening… 0:${String(recording.state.durationSec).padStart(2, '0')}`;
+      dotColor = '#D7563A';
+      dotPulse = true;
+      break;
+    case 'uploading':
+      statusLine = 'Got it…';
+      dotColor = '#C99644';
+      break;
+    case 'denied':
+      statusLine = 'Mic blocked';
+      dotColor = C.warm;
+      break;
+    case 'error':
+      statusLine = recording.state.message;
+      dotColor = C.warm;
+      break;
+    case 'capped':
+      statusLine = "You've hit today's voice limit";
+      dotColor = C.warm;
+      break;
+    default:
+      statusLine = streaming ? 'Thinking…' : tts.isSpeaking ? 'Speaking…' : 'Ready';
+      dotColor = streaming || tts.isSpeaking ? C.sage : C.ink2;
+      dotPulse = tts.isSpeaking;
+  }
+
+  return (
+    <OverlayChrome
+      statusLine={statusLine}
+      dotColor={dotColor}
+      dotPulse={dotPulse}
+      showMicHelp={recording.state.kind === 'denied'}
+      bodyText={lastAssistant?.text ?? ''}
+      errorText={error}
+      onClose={() => voicePanel?.closeVoiceMode()}
+    />
   );
 }
