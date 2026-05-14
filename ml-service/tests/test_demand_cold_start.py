@@ -152,6 +152,77 @@ def test_lookup_hardcoded_fallback_when_table_empty():
     assert key == "hardcoded-fallback"
 
 
+def test_lookup_logs_structured_event_when_properties_fetch_raises(capsys):
+    """Phase L rule #3: silent swallow is a bug. When properties fetch fails,
+    lookup must emit a structured log line before falling through.
+    """
+    client = MagicMock()
+
+    def fetch_one(table, filters=None):
+        if table == "properties":
+            raise RuntimeError("simulated db outage")
+        if table == "demand_priors" and (filters or {}).get("cohort_key") == "industry-default":
+            return {
+                "prior_minutes_per_room_per_day": 20.0,
+                "prior_strength": 0.5,
+                "source": "industry-benchmark",
+            }
+        return None
+
+    client.fetch_one.side_effect = fetch_one
+
+    rate, _, _, key = lookup_cohort_prior(
+        client, "p1",
+        table="demand_priors",
+        value_col="prior_minutes_per_room_per_day",
+        hardcoded_fallback=20.0,
+    )
+    # Lookup still falls through to industry-default — graceful degradation.
+    assert rate == 20.0
+    assert key == "industry-default"
+    # And structured-log line was emitted on the swallow.
+    out = capsys.readouterr().out
+    assert "cold_start_lookup_swallowed" in out
+    assert "fetch_properties" in out
+    assert "simulated db outage" in out
+
+
+def test_lookup_logs_structured_event_when_priors_fetch_raises(capsys):
+    """When the priors table fetch raises for one cohort key, log + try next."""
+    client = MagicMock()
+
+    def fetch_one(table, filters=None):
+        if table == "properties":
+            return {"id": "p1", "brand": None, "region": None, "size_tier": None}
+        if table == "demand_priors":
+            ck = (filters or {}).get("cohort_key")
+            if ck == "global":
+                raise RuntimeError("transient timeout")
+            if ck == "industry-default":
+                return {
+                    "prior_minutes_per_room_per_day": 20.0,
+                    "prior_strength": 0.5,
+                    "source": "industry-benchmark",
+                }
+        return None
+
+    client.fetch_one.side_effect = fetch_one
+
+    rate, _, _, key = lookup_cohort_prior(
+        client, "p1",
+        table="demand_priors",
+        value_col="prior_minutes_per_room_per_day",
+        hardcoded_fallback=20.0,
+    )
+    assert rate == 20.0
+    assert key == "industry-default"
+    out = capsys.readouterr().out
+    assert "cold_start_lookup_swallowed" in out
+    assert "fetch_cohort_prior" in out
+    assert "global" in out
+    assert "transient timeout" in out
+
+
 def test_lookup_works_for_supply_priors_with_different_value_col():
     """Same helper handles both demand + supply because value_col is parameterized."""
     client = _make_client(
@@ -178,8 +249,14 @@ def test_lookup_works_for_supply_priors_with_different_value_col():
 
 
 def test_install_returns_active_cold_start_on_rpc_success():
-    """RPC returns a UUID → result is active cold-start with model_run_id."""
-    client = _make_client(rpc_response_data="new-model-uuid")
+    """RPC returns TABLE(ok=true, reason=null, model_run_id=...) → active cold-start.
+
+    Phase M3.1 (migration 0123) changed the RPC return from bare uuid to
+    TABLE(ok, reason, model_run_id). Helper unpacks list-of-dicts shape.
+    """
+    client = _make_client(rpc_response_data=[
+        {"ok": True, "reason": None, "model_run_id": "new-model-uuid"},
+    ])
     result = install_cold_start(
         client, "p1",
         layer="demand",
@@ -198,13 +275,15 @@ def test_install_returns_active_cold_start_on_rpc_success():
 
 
 def test_install_skipped_when_real_model_already_active():
-    """RPC returns NULL = real model exists, refused to clobber.
+    """RPC returns (ok=false, reason='graduated_model_active') = refused to clobber.
 
-    This is the load-bearing assertion. A graduated Bayesian model must
-    NOT be replaced by a cold-start prior even if local data later drops
-    (e.g., transient view glitch returning fewer rows).
+    Load-bearing assertion: a graduated Bayesian model must NOT be replaced
+    by a cold-start prior even if local data later drops (e.g., transient
+    view glitch returning fewer rows).
     """
-    client = _make_client(rpc_response_data=None)
+    client = _make_client(rpc_response_data=[
+        {"ok": False, "reason": "graduated_model_active", "model_run_id": None},
+    ])
     result = install_cold_start(
         client, "p1",
         layer="demand",
@@ -214,10 +293,31 @@ def test_install_skipped_when_real_model_already_active():
         value_param_name="prior_minutes_per_room_per_day",
     )
     assert result["skipped"] is True
-    assert result["reason"] == "real_model_already_active"
+    # Phase M3.1: reason now comes from the RPC, not invented in Python.
+    assert result["reason"] == "graduated_model_active"
     assert result["is_active"] is False
     assert result["cold_start"] is False
     # Critically: no error key — this is a normal flow, not a failure.
+    assert "error" not in result
+
+
+def test_install_handles_empty_rpc_response_as_skipped():
+    """Defensive: empty data array (e.g. supabase-py shape drift) → skipped.
+
+    The unpack idiom `rows[0] if rows else {}` returns {} for empty data;
+    {}.get('ok') is None which is falsy, so we treat as a skipped install
+    rather than crashing.
+    """
+    client = _make_client(rpc_response_data=[])
+    result = install_cold_start(
+        client, "p1",
+        layer="supply",
+        prior_value=30.0, prior_strength=0.5,
+        source="industry-benchmark", cohort_key="industry-default",
+        local_rows_observed=0,
+        value_param_name="prior_minutes_per_event",
+    )
+    assert result["skipped"] is True
     assert "error" not in result
 
 
@@ -246,7 +346,9 @@ def test_install_returns_error_dict_on_rpc_exception():
 def test_install_passes_correct_layer_to_rpc():
     """Both demand + supply share the RPC; layer must be passed correctly."""
     for layer in ("demand", "supply"):
-        client = _make_client(rpc_response_data=f"id-{layer}")
+        client = _make_client(rpc_response_data=[
+            {"ok": True, "reason": None, "model_run_id": f"id-{layer}"},
+        ])
         result = install_cold_start(
             client, "p1",
             layer=layer,
@@ -263,7 +365,9 @@ def test_install_passes_correct_layer_to_rpc():
 
 def test_install_handles_missing_property_metadata_gracefully():
     """Property fetch returning None must not crash the install path."""
-    client = _make_client(prop_row=None, rpc_response_data="new-id")
+    client = _make_client(prop_row=None, rpc_response_data=[
+        {"ok": True, "reason": None, "model_run_id": "new-id"},
+    ])
     result = install_cold_start(
         client, "p1",
         layer="demand",

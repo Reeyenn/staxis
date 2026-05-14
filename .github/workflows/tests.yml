@@ -35,6 +35,21 @@ jobs:
 
       - run: npm ci
 
+      # Phase M3.1 (2026-05-14): Python toolchain for ml-service.
+      # Adding pytest to CI was the missing root-cause gate that let two
+      # NameError/AttributeError cold-start crashes ship in M3 — the test
+      # suite existed locally but never ran in CI. Setup is cached on
+      # requirements.txt so this only re-installs when deps change.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: ml-service/requirements.txt
+
+      - name: Install ml-service deps
+        working-directory: ml-service
+        run: pip install -r requirements.txt
+
       # Lint — ESLint flat config (eslint.config.js) bridged to
       # eslint-config-next via FlatCompat. The cosmetic
       # react/no-unescaped-entities rule is disabled project-wide.
@@ -61,6 +76,30 @@ jobs:
           NEXT_PUBLIC_SUPABASE_ANON_KEY: 'placeholder-anon-key'
           SUPABASE_SERVICE_ROLE_KEY: 'placeholder-service-role-key'
         run: npx tsx --test src/lib/__tests__/*.test.ts
+
+      # Phase M3.1 (2026-05-14): static check for undefined names. F821
+      # would have caught the demand.py:214 NameError on `property_meta`
+      # at PR-open time without needing any test. Cheap defense in depth.
+      # Scope narrowed to src/ — pre-existing type debt elsewhere does
+      # not block this gate.
+      - name: Static check ml-service (ruff F821 — undefined names)
+        working-directory: ml-service
+        run: |
+          pip install ruff
+          ruff check src/ --select F821
+
+      # Phase M3.1: Python tests gate. The actual root-cause fix for the
+      # M3 cold-start ship-blockers — they slipped because pytest never
+      # ran in CI. Placeholder env vars keep get_settings() from failing
+      # at module import inside transitively-imported src/* code. Tests
+      # don't make real network/DB calls (mock supabase wrapper).
+      - name: Run ml-service tests
+        working-directory: ml-service
+        env:
+          SUPABASE_URL: 'https://placeholder.supabase.co'
+          SUPABASE_SERVICE_ROLE_KEY: 'placeholder-service-role-key'
+          ML_SERVICE_SECRET: 'placeholder-secret-12345'
+        run: python -m pytest -v --tb=short
 
       # Codex round-5 META J1.4 (2026-05-13): warn on overgrown ML files.
       # The `_train_single_item` function in inventory_rate.py grew from

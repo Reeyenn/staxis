@@ -33,12 +33,13 @@
  *     "property created, code generation failed" and can retry the code.
  */
 
-import { NextRequest } from 'next/server';
+import { NextRequest, after } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId, log } from '@/lib/log';
 import { writeAudit } from '@/lib/audit';
+import { triggerMlTraining } from '@/lib/ml-invoke';
 import {
   generateJoinCode,
   OWNER_CODE_TTL_HOURS,
@@ -281,6 +282,37 @@ export async function POST(req: NextRequest) {
       requestId, propertyId: created.id, error: e instanceof Error ? e.message : String(e),
     });
   }
+
+  // Phase M3.1 (2026-05-14): trigger demand+supply cold-start ML training
+  // for the new property AFTER response is sent. Matches the wizard finalize
+  // hook so admin-created hotels also get instant Day-1 predictions instead
+  // of waiting for the next weekly training cron (Sunday 03:00 CT).
+  //
+  // Fire-and-forget via next/server's after() — Next.js holds the function
+  // alive past the response so this completes (vs raw fire-and-forget where
+  // Vercel may freeze before the fetch resolves). Failures are non-fatal:
+  // the daily aggregator + weekly cron remain the safety nets.
+  after(async () => {
+    const propertyId = created.id;
+    try {
+      const results = await Promise.allSettled([
+        triggerMlTraining(propertyId, 'demand', { requestId }),
+        triggerMlTraining(propertyId, 'supply', { requestId }),
+      ]);
+      log.info('admin_create_ml_kick', {
+        requestId,
+        pid: propertyId,
+        demandStatus: results[0].status === 'fulfilled' ? results[0].value.status : 'rejected',
+        supplyStatus: results[1].status === 'fulfilled' ? results[1].value.status : 'rejected',
+      });
+    } catch (e) {
+      // Should be unreachable — triggerMlTraining never throws — but
+      // belt-and-suspenders for after() context.
+      console.error('[admin/properties/create] ML kick threw (non-fatal)', {
+        requestId, propertyId, error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
 
   // Mint an owner-role join code so the admin has something to send the
   // hotel's actual owner. Try a few times in case of code collision.

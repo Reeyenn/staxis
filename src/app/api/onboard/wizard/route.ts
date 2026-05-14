@@ -27,11 +27,12 @@
  *   - All swallow patterns log structured events.
  */
 
-import { NextRequest } from 'next/server';
+import { NextRequest, after } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId, log } from '@/lib/log';
 import { requireSession } from '@/lib/api-auth';
+import { triggerMlTraining } from '@/lib/ml-invoke';
 import {
   deriveCurrentStep,
   isValidPartialState,
@@ -246,6 +247,34 @@ export async function PATCH(req: NextRequest) {
     console.error('[onboard/wizard:PATCH] update failed', { requestId, error: updErr });
     return err(`Update failed: ${updErr.message}`, {
       requestId, status: 500, code: ApiErrorCode.InternalError,
+    });
+  }
+
+  // Phase M3.1 (2026-05-14): on wizard finalize, trigger demand+supply
+  // cold-start ML training for the property AFTER response is sent.
+  // Without this, a hotel onboarded Monday waits up to 6 days for the
+  // weekly training cron (Sunday 03:00 CT) — Day-1 promise broken.
+  // Inventory is NOT triggered here; inventory cold-start runs on first
+  // count and the existing path is correct.
+  //
+  // Fire-and-forget via next/server's after() — Next.js holds the
+  // function alive past the response so this completes (vs raw fire-
+  // and-forget where Vercel may freeze before the fetch resolves).
+  // Failures are non-fatal: the daily aggregator + weekly cron remain
+  // the safety nets. triggerMlTraining never throws.
+  if (body.finalize === true) {
+    const propertyId = resolved.propertyId;
+    after(async () => {
+      const results = await Promise.allSettled([
+        triggerMlTraining(propertyId, 'demand', { requestId }),
+        triggerMlTraining(propertyId, 'supply', { requestId }),
+      ]);
+      log.info('onboard_finalize_ml_kick', {
+        requestId,
+        pid: propertyId,
+        demandStatus: results[0].status === 'fulfilled' ? results[0].value.status : 'rejected',
+        supplyStatus: results[1].status === 'fulfilled' ? results[1].value.status : 'rejected',
+      });
     });
   }
 

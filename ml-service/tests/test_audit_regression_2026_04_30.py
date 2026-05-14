@@ -137,13 +137,18 @@ def test_lpt_bin_packing_balances_load_across_workers():
 def test_tomorrow_in_property_tz_returns_houston_tomorrow():
     """At 11pm Houston time on day D, _tomorrow_in_property_tz must return D+1
     (in Houston), not D+2 (which is what utcnow + 1 day would have given for
-    the same wall-clock instant once the user crosses midnight UTC)."""
+    the same wall-clock instant once the user crosses midnight UTC).
+
+    Phase 3.5 (2026-05-13) made tz_name required (no America/Chicago fallback).
+    Phase M3.1 (2026-05-14): updated this audit test to pass the explicit
+    timezone — the test's intent (no UTC drift past midnight) still holds.
+    """
     from src.inference.demand import _tomorrow_in_property_tz
 
     today_houston = (
         datetime.now(timezone.utc) - timedelta(hours=6)
     ).date()  # rough "Houston today"
-    result = _tomorrow_in_property_tz()
+    result = _tomorrow_in_property_tz("America/Chicago")
     # Should equal Houston-today + 1 day, ± 1 day for the boundary case.
     assert (result - today_houston).days in (0, 1, 2), (
         f"_tomorrow_in_property_tz returned {result}; "

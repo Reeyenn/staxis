@@ -41,6 +41,17 @@ from src.supabase_client import get_supabase_client
 
 # ─── Shared helpers ─────────────────────────────────────────────────────
 
+# Phase M3.1 (2026-05-14): minimum hotels-per-cohort before publishing a
+# cohort-aggregate prior. Applied uniformly to ALL cohorts (global AND
+# specific), not just 'global' as M3 originally did. Root cause: a
+# 1-hotel specific cohort persisted to demand_priors / supply_priors
+# becomes the preferred lookup for any subsequent same-cohort hotel —
+# self-fulfilling prophecy where one noisy property's median locks in
+# as authoritative cohort truth. Fix at aggregator (the table is the
+# source of truth) so the lookup_cohort_prior path naturally falls
+# through to industry-default for low-n cohorts.
+MIN_HOTELS_FOR_COHORT = 5
+
 
 def _slug(s: Optional[str]) -> str:
     """Same slug normalization as inventory_priors._slug."""
@@ -89,28 +100,29 @@ async def aggregate_demand_priors() -> Dict[str, Any]:
                 "note": "no properties in network"}
     prop_meta = {p["id"]: p for p in properties}
 
-    # Pull last-90-days demand rows.
+    # Pull last-90-days demand rows. Phase M3.1: filter date in SQL
+    # (not Python) so we don't pull years of history per cron run at
+    # fleet=300 just to discard most of it. Mirrors inventory_priors.py
+    # pattern (since clause baked into the query string).
     since = (datetime.utcnow() - timedelta(days=90)).date().isoformat()
+    rows_query = f"""
+        select property_id, date, total_recorded_minutes
+        from cleaning_minutes_per_day_view
+        where date >= '{since}'::date
+        order by date desc
+        limit 200000
+    """
     try:
-        rows = client.fetch_many(
-            "cleaning_minutes_per_day_view",
-            filters=None,
-            order_by="date",
-            descending=True,
-            limit=200000,
-        )
+        rows = client.execute_sql(rows_query)
     except Exception as exc:
         return {"cohorts_updated": 0, "hotels_seen": 0,
                 "errors": [f"cleaning_minutes_per_day_view fetch failed: {exc}"]}
 
-    # Filter to last 90 days + non-null totals + property has total_rooms.
-    cutoff_date = since
+    # Per-property accumulator. SQL already filtered date; we only check
+    # non-null totals + property has total_rooms.
     per_property_rates: Dict[str, List[float]] = {}
     hotels_seen: set = set()
     for row in rows or []:
-        date_val = row.get("date")
-        if date_val is None or str(date_val) < cutoff_date:
-            continue
         total = row.get("total_recorded_minutes")
         if total is None:
             continue
@@ -149,7 +161,9 @@ async def aggregate_demand_priors() -> Dict[str, Any]:
         if not rates:
             continue
         n_hotels = len(cohort_hotels.get(cohort_key, set()))
-        if cohort_key == "global" and n_hotels < 5:
+        # Phase M3.1: skip-low-n applies to ALL cohorts (specific too).
+        # See MIN_HOTELS_FOR_COHORT comment at top of file for rationale.
+        if n_hotels < MIN_HOTELS_FOR_COHORT:
             skipped_low_n += 1
             continue
         cohort_median = statistics.median(rates)
@@ -195,28 +209,32 @@ async def aggregate_supply_priors() -> Dict[str, Any]:
                 "note": "no properties in network"}
     prop_meta = {p["id"]: p for p in properties}
 
-    # Pull last-90-days cleaning_events. status filter excludes 'flagged'
-    # operator-marked outliers — those would skew the median.
+    # Pull last-90-days cleaning_events. Phase M3.1:
+    #   1. Filter date in SQL (not Python) — same N²-scaling fix as demand.
+    #   2. Include BOTH 'recorded' AND 'approved' status. The production
+    #      view (migration 0022) treats both as valid signal — operator
+    #      review approves a recorded event into 'approved'. Filtering
+    #      only 'recorded' undercounts by excluding manually-OK'd events.
+    #   3. fetch_many's filter dict only supports `eq` — switch to
+    #      execute_sql for the IN-clause.
     since = (datetime.utcnow() - timedelta(days=90)).date().isoformat()
+    rows_query = f"""
+        select property_id, date, duration_minutes
+        from cleaning_events
+        where date >= '{since}'::date
+          and status in ('recorded', 'approved')
+        order by date desc
+        limit 200000
+    """
     try:
-        rows = client.fetch_many(
-            "cleaning_events",
-            filters={"status": "recorded"},
-            order_by="date",
-            descending=True,
-            limit=200000,
-        )
+        rows = client.execute_sql(rows_query)
     except Exception as exc:
         return {"cohorts_updated": 0, "hotels_seen": 0,
                 "errors": [f"cleaning_events fetch failed: {exc}"]}
 
     per_property_durations: Dict[str, List[float]] = {}
     hotels_seen: set = set()
-    cutoff_date = since
     for row in rows or []:
-        date_val = row.get("date")
-        if date_val is None or str(date_val) < cutoff_date:
-            continue
         duration = row.get("duration_minutes")
         if duration is None:
             continue
@@ -250,7 +268,8 @@ async def aggregate_supply_priors() -> Dict[str, Any]:
         if not rates:
             continue
         n_hotels = len(cohort_hotels.get(cohort_key, set()))
-        if cohort_key == "global" and n_hotels < 5:
+        # Phase M3.1: skip-low-n applies to ALL cohorts (specific too).
+        if n_hotels < MIN_HOTELS_FOR_COHORT:
             skipped_low_n += 1
             continue
         cohort_median = statistics.median(rates)

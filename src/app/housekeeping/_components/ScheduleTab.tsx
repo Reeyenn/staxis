@@ -42,6 +42,10 @@ import {
   T, FONT_SANS, FONT_MONO, FONT_SERIF,
   Caps, Pill, Btn, HousekeeperDot,
 } from './_snow';
+import {
+  getActiveOptimizerForTomorrow,
+  getActiveDemandForTomorrow,
+} from '@/lib/ml-schedule-helpers';
 
 type SendResult = { status: 'sent' | 'skipped' | 'failed'; reason?: string };
 
@@ -233,6 +237,35 @@ export function ScheduleTab() {
     if (!uid || !pid) return;
     return subscribeToWorkOrders(uid, pid, setWorkOrders);
   }, [uid, pid]);
+
+  // ── Phase M3.1 (2026-05-14): ML confidence panel data ────────────────
+  // Fetches the optimizer's recommended_headcount + completion_probability_curve
+  // for tomorrow, plus demand p80/p95 headcount boundaries. Both helpers exist
+  // at src/lib/ml-schedule-helpers.ts and were dormant (zero callers) waiting
+  // for a UI consumer — this is it. Returns null when the optimizer cron
+  // hasn't written a row yet (e.g. brand-new property before its first
+  // post-onboard run) — panel hides itself in that case.
+  const [optimizerPanel, setOptimizerPanel] = useState<{
+    recommendedHeadcount: number;
+    completionProbabilityCurve: Array<{ headcount: number; p: number }>;
+  } | null>(null);
+  const [demandPanel, setDemandPanel] = useState<{
+    predictedHeadcountP80: number;
+    predictedHeadcountP95: number;
+  } | null>(null);
+  useEffect(() => {
+    if (!pid || !activeProperty) return;
+    let cancelled = false;
+    void Promise.all([
+      getActiveOptimizerForTomorrow(pid, activeProperty.timezone ?? undefined),
+      getActiveDemandForTomorrow(pid, activeProperty.timezone ?? undefined),
+    ]).then(([opt, dem]) => {
+      if (cancelled) return;
+      setOptimizerPanel(opt);
+      setDemandPanel(dem);
+    });
+    return () => { cancelled = true; };
+  }, [pid, activeProperty, shiftDate]);
 
   // ── Derived: shift rooms from CSV pull ────────────────────────────────
   const shiftRooms = useMemo(() => snapshotToShiftRooms(planSnapshot, pid), [planSnapshot, pid]);
@@ -837,6 +870,68 @@ export function ScheduleTab() {
           )}
         </div>
       </div>
+
+      {/* Phase M3.1 (2026-05-14): ML confidence panel — Tomorrow's
+          recommended headcount + p80/p95 confidence band. Renders only
+          when (a) shiftDate is tomorrow (the optimizer writes for
+          tomorrow only), AND (b) optimizer has produced a row for this
+          property. Fail closed: if the optimizer cron hasn't run yet
+          (brand-new property), the panel is hidden — operator falls
+          back to the existing PMS strip + crew rows below. */}
+      {isTomorrow && optimizerPanel && (
+        <div
+          title={
+            optimizerPanel.completionProbabilityCurve.length > 0
+              ? optimizerPanel.completionProbabilityCurve
+                  .map((r) => `${r.headcount} HKs → ${Math.round(r.p * 100)}% finish`)
+                  .join('\n')
+              : (lang === 'es' ? 'Recomendación basada en demanda + capacidad estimada.' : 'Recommendation based on predicted demand + crew capacity.')
+          }
+          style={{
+            background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
+            padding: '14px 22px', marginBottom: 10,
+            display: 'flex', alignItems: 'center', gap: 28, flexWrap: 'wrap',
+          }}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 160 }}>
+            <Caps size={9}>{lang === 'es' ? 'Confianza para mañana' : "Tomorrow's confidence"}</Caps>
+            <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2, marginTop: 2 }}>
+              {lang === 'es' ? 'Recomendación de IA' : 'AI recommendation'}
+            </span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 0 }}>
+            <Caps size={9}>{lang === 'es' ? 'Recomendado' : 'Recommended'}</Caps>
+            <span style={{ fontFamily: FONT_SERIF, fontSize: 28, color: T.ink, lineHeight: 1.1 }}>
+              {optimizerPanel.recommendedHeadcount}
+              <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, marginLeft: 4 }}>
+                {lang === 'es' ? 'HK' : 'HKs'}
+              </span>
+            </span>
+          </div>
+          {demandPanel && (
+            <>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 0 }}>
+                <Caps size={9}>P80</Caps>
+                <span style={{ fontFamily: FONT_SERIF, fontSize: 22, color: T.ink2, lineHeight: 1.1 }}>
+                  {demandPanel.predictedHeadcountP80}
+                  <span style={{ fontFamily: FONT_SANS, fontSize: 11, color: T.ink3, marginLeft: 4 }}>
+                    {lang === 'es' ? 'HK' : 'HKs'}
+                  </span>
+                </span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 0 }}>
+                <Caps size={9}>P95</Caps>
+                <span style={{ fontFamily: FONT_SERIF, fontSize: 22, color: T.ink2, lineHeight: 1.1 }}>
+                  {demandPanel.predictedHeadcountP95}
+                  <span style={{ fontFamily: FONT_SANS, fontSize: 11, color: T.ink3, marginLeft: 4 }}>
+                    {lang === 'es' ? 'HK' : 'HKs'}
+                  </span>
+                </span>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {/* UNASSIGNED STRIP — sits between the PMS strip and the crew so
           rooms that come off Reset, or rooms whose previously-assigned

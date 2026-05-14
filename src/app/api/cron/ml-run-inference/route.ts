@@ -185,16 +185,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const targetDate = tomorrowInTz(propertyTz);
     const demandResult    = await callStage('demand',    property.id, propertyTz, targetDate);
     const supplyResult    = await callStage('supply',    property.id, propertyTz, targetDate);
-    // Codex adversarial review 2026-05-13 (I-H5 / F.1): the /predict/optimizer
-    // call was burning Railway compute every night writing rows to
-    // optimizer_results that NO UI surface displayed. The exported helper
-    // getActiveOptimizerForTomorrow (src/lib/ml-schedule-helpers.ts) had
-    // zero callers. Pause the cron stage until the ScheduleTab gains a
-    // P95 headcount panel that reads optimizer_results — at that point,
-    // re-enable by reverting this change. The Python optimizer function
-    // (optimize_headcount, M-C2/M-C3 fixed) stays in the codebase and is
-    // callable manually for one-off analysis.
-    const optimizerResult = { stage: 'optimizer', status: 'skipped', detail: 'paused 2026-05-13 — re-enable when ScheduleTab renders P95 band' } as Awaited<ReturnType<typeof callStage>>;
+    // Phase M3.1 (2026-05-14): optimizer un-paused. Triggered by
+    // ScheduleTab.tsx's new "Tomorrow's confidence" panel which reads
+    // optimizer_results via getActiveOptimizerForTomorrow. The optimizer
+    // depends on demand_predictions (required) and supply_predictions
+    // (optional, falls back to uniform distribution) — both now exist for
+    // any property with a cold-start model after M3.1's NameError +
+    // AttributeError fixes ship.
+    const optimizerResult = await callStage('optimizer', property.id, propertyTz, targetDate);
     return { target_date: targetDate, demand: demandResult, supply: supplyResult, optimizer: optimizerResult };
   }, 3);
 
