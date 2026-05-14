@@ -28,6 +28,10 @@
     {
       "path": "/api/cron/agent-summarize-long-conversations",
       "schedule": "*/30 * * * *"
+    },
+    {
+      "path": "/api/cron/agent-heal-counters",
+      "schedule": "0 4 * * *"
     }
   ]
 }

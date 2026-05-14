@@ -1315,10 +1315,11 @@ function discoverMigrationsFromDisk(): ReadonlyArray<string> | null {
   try {
     // Lazy-require so the import doesn't run on environments where 'fs'
     // is unavailable. Using node:fs explicitly to avoid Next.js edge
-    // bundle confusion.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // bundle confusion. (The `no-require-imports` rule isn't enabled
+    // in this project's eslint config, so we don't need a disable
+    // directive — directives that point to non-enabled rules ERROR
+    // under flat-config eslint.)
     const { readdirSync } = require('node:fs') as typeof import('node:fs');
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { join } = require('node:path') as typeof import('node:path');
     const dir = join(process.cwd(), 'supabase', 'migrations');
     const versions = readdirSync(dir)
@@ -1728,6 +1729,7 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'purge-old-error-logs',          cadenceHours: 24,    description: 'daily error_logs retention sweep' },
   { name: 'expire-trials',                 cadenceHours: 24,    description: 'daily trial-expiration flip' },
   { name: 'agent-archive-stale-conversations', cadenceHours: 24, description: 'daily 3am archival of stale agent conversations (L4 part A)' },
+  { name: 'agent-heal-counters',           cadenceHours: 24,    description: 'daily 4am counter-drift heal (Round 12 T12.12, invariant doctrine safety net)' },
   // Weekly
   { name: 'ml-train-demand',               cadenceHours: 168,   description: 'weekly demand training (Sunday)' },
   { name: 'ml-train-supply',               cadenceHours: 168,   description: 'weekly supply training (Sunday)' },

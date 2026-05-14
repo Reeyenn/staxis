@@ -18,7 +18,7 @@
     "test:scraper": "node --test scraper/__tests__/*.test.js"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.95.0",
+    "@anthropic-ai/sdk": "0.95.0",
     "@sentry/nextjs": "^10.51.0",
     "@stablelib/base64": "^2.0.1",
     "@supabase/supabase-js": "^2.47.0",

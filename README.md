@@ -169,6 +169,12 @@ For the Vercel-side env var rotation playbook, see
   `supabase/migrations/000N_*.sql` with the table, RLS policy, and
   indexes. Add a domain module under `src/lib/db/<table>.ts` exporting
   read/write/subscribe helpers. Update `src/lib/db.ts` to re-export.
+- **"I'm changing the AI agent layer."** → Read
+  [`src/lib/agent/INVARIANTS.md`](./src/lib/agent/INVARIANTS.md)
+  first. Every invariant the agent layer depends on is listed there,
+  with the DB constraint that enforces it. New features add new
+  invariants AND new constraints. This rule is what stopped the
+  11-round bug-fix loop (Round 12, 2026-05-13).
 
 ---
 
