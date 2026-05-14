@@ -102,6 +102,11 @@ export function ScheduleTab() {
   const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
   const [floatingRoomMeta, setFloatingRoomMeta] = useState<{ number: string; type: string } | null>(null);
   const dragStartRef = useRef<{ x: number; y: number; roomId: string; meta: { number: string; type: string }; crossed: boolean } | null>(null);
+  // Set immediately after a drag-and-drop commit so the synthesized
+  // click that follows pointerup is treated as a no-op. Without this,
+  // the click would bubble to the pill / card the cursor was over and
+  // re-toggle floating or re-commit on top of the drop.
+  const wasDragRef = useRef(false);
 
   // Staff Priority modal — frozen order captured at open so re-saving
   // doesn't re-sort the list under the user's cursor.
@@ -593,38 +598,32 @@ export function ScheduleTab() {
     const onUp = (e: PointerEvent) => {
       const start = dragStartRef.current;
       dragStartRef.current = null;
-      if (!start) return;
+      // Pure-click case is handled by the pill's own onClick handler
+      // (synthesized after pointerup). The document handler is only
+      // responsible for resolving drag drops.
+      if (!start || !start.crossed) return;
 
-      if (start.crossed) {
-        // Drag end. Resolve the drop target via what the cursor is over.
-        // We tag valid targets with data-drop-target=<staffId> (or the
-        // sentinel "__unassigned__") so this lookup needs no React refs.
-        const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
-        const dropEl = el?.closest('[data-drop-target]') as HTMLElement | null;
-        const targetAttr = dropEl?.getAttribute('data-drop-target') ?? null;
-        if (targetAttr) {
-          const targetId = targetAttr === '__unassigned__' ? null : targetAttr;
-          moveRoomTo(start.roomId, targetId);
-          flashToast(targetId === null
-            ? (lang === 'es' ? 'Cuarto sin asignar' : 'Room moved to Unassigned')
-            : (lang === 'es' ? 'Cuarto movido' : 'Room moved'));
-        }
-        // else: dropped on empty space — keep floating so the next
-        // tap on a card commits.
-      } else {
-        // Pure tap (no drag). Toggle floating; if picking up, seed the
-        // cursor at the click point so the ghost appears immediately.
-        setFloatingRoomId(prev => {
-          if (prev === start.roomId) {
-            setFloatingRoomMeta(null);
-            setCursorPos(null);
-            return null;
-          }
-          setFloatingRoomMeta(start.meta);
-          setCursorPos({ x: e.clientX, y: e.clientY });
-          return start.roomId;
-        });
+      // Drag end. Resolve the drop target via what the cursor is over.
+      // We tag valid targets with data-drop-target=<staffId> (or the
+      // sentinel "__unassigned__") so this lookup needs no React refs.
+      const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+      const dropEl = el?.closest('[data-drop-target]') as HTMLElement | null;
+      const targetAttr = dropEl?.getAttribute('data-drop-target') ?? null;
+      if (targetAttr) {
+        const targetId = targetAttr === '__unassigned__' ? null : targetAttr;
+        moveRoomTo(start.roomId, targetId);
+        flashToast(targetId === null
+          ? (lang === 'es' ? 'Cuarto sin asignar' : 'Room moved to Unassigned')
+          : (lang === 'es' ? 'Cuarto movido' : 'Room moved'));
       }
+      // else: dropped on empty space — keep floating so the next
+      // tap on a card commits.
+
+      // Suppress the synthesized click that's about to fire on
+      // whatever element the cursor is over (otherwise it'd re-toggle
+      // floating on a pill, or re-commit via a card's onClick).
+      wasDragRef.current = true;
+      window.setTimeout(() => { wasDragRef.current = false; }, 120);
     };
 
     document.addEventListener('pointermove', onMove);
@@ -884,7 +883,9 @@ export function ScheduleTab() {
                   key={r.id}
                   onPointerDown={(e) => {
                     e.stopPropagation();
-                    e.preventDefault();
+                    // No preventDefault — the browser needs to synthesize
+                    // the click event from this pointer interaction, and
+                    // we handle the tap-to-toggle path in onClick below.
                     dragStartRef.current = {
                       x: e.clientX, y: e.clientY,
                       roomId: r.id,
@@ -892,12 +893,20 @@ export function ScheduleTab() {
                       crossed: false,
                     };
                   }}
-                  // Click bubbles AFTER pointerup, by which time the
-                  // document onUp may have just set floatingRoomId. If
-                  // we let it bubble to the parent card / unassigned
-                  // strip, that container's onClick would immediately
-                  // commit the room back onto itself. Stop here.
-                  onClick={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation(); // don't let the click bubble to the strip's onClick
+                    if (wasDragRef.current) return; // ignore the click that follows a drag
+                    setFloatingRoomId(prev => {
+                      if (prev === r.id) {
+                        setFloatingRoomMeta(null);
+                        setCursorPos(null);
+                        return null;
+                      }
+                      setFloatingRoomMeta({ number: r.number, type: r.type });
+                      setCursorPos({ x: e.clientX, y: e.clientY });
+                      return r.id;
+                    });
+                  }}
                   style={{
                     padding: '5px 11px', borderRadius: 8,
                     background: floating ? T.sageDim : T.bg,
@@ -979,6 +988,17 @@ export function ScheduleTab() {
                       data-swap-trigger
                       onClick={(e) => {
                         e.stopPropagation();
+                        // If a room is currently held, prefer dropping
+                        // it on this housekeeper over opening the swap
+                        // dropdown. Clicking a name is the most obvious
+                        // "give the room to this person" affordance, so
+                        // it would be surprising to instead get a
+                        // staff-swap menu while you're holding a room.
+                        if (floatingRoomId) {
+                          moveRoomTo(floatingRoomId, c.id);
+                          flashToast(lang === 'es' ? `Cuarto movido a ${c.name}` : `Room moved to ${c.name}`);
+                          return;
+                        }
                         setSwapOpenFor(prev => prev === c.id ? null : c.id);
                       }}
                       title={lang === 'es' ? 'Cambiar por otro' : 'Swap with another'}
@@ -1090,13 +1110,28 @@ export function ScheduleTab() {
                       key={r.id}
                       onPointerDown={(e) => {
                         e.stopPropagation();
-                        e.preventDefault();
+                        // No preventDefault — see the unassigned-pill
+                        // handler above for the rationale.
                         dragStartRef.current = {
                           x: e.clientX, y: e.clientY,
                           roomId: r.id,
                           meta: { number: r.number, type: r.type },
                           crossed: false,
                         };
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation(); // don't let the click bubble to the card's onClick
+                        if (wasDragRef.current) return; // ignore the click that follows a drag
+                        setFloatingRoomId(prev => {
+                          if (prev === r.id) {
+                            setFloatingRoomMeta(null);
+                            setCursorPos(null);
+                            return null;
+                          }
+                          setFloatingRoomMeta({ number: r.number, type: r.type });
+                          setCursorPos({ x: e.clientX, y: e.clientY });
+                          return r.id;
+                        });
                       }}
                       title={floating
                         ? (lang === 'es' ? 'Toca un destino o suelta sobre uno para mover' : 'Tap or drop on a target to move')
@@ -1245,7 +1280,7 @@ export function ScheduleTab() {
             position: 'fixed',
             top: cursorPos.y,
             left: cursorPos.x,
-            transform: 'translate(8px, 8px)',
+            transform: 'translate(-50%, -50%)',
             pointerEvents: 'none',
             zIndex: 9999,
           }}
