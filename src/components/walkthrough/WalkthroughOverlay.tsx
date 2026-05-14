@@ -39,6 +39,9 @@ const CURSOR_FLIGHT_MS = 700;
 interface HistoryEntry {
   narration: string;
   targetName?: string;
+  /** elementId from the snapshot Claude picked for this step. Sent back to
+   * the server so Claude can avoid repeating itself. */
+  targetElementId?: string;
   deviated?: boolean;
   deviatedTo?: string;
 }
@@ -254,6 +257,7 @@ export function WalkthroughOverlay() {
       historyRef.current.push({
         narration: action.narration,
         targetName: meta.name,
+        targetElementId: action.elementId,
         ...(click.onTarget
           ? {}
           : {

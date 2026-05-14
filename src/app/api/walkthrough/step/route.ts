@@ -37,6 +37,10 @@ export const maxDuration = 30;
 interface HistoryEntry {
   narration: string;
   targetName?: string;
+  /** Synthetic id from the snapshot Claude returned for this step. Echoed
+   * back in the next turn so Claude can see what it already targeted and
+   * refuse to repeat (loop guard). */
+  targetElementId?: string;
   deviated?: boolean;
   deviatedTo?: string;
 }
@@ -65,15 +69,15 @@ const MAX_HISTORY_ENTRIES = 16;
 const MAX_OUTPUT_TOKENS = 512;
 const MAX_ELEMENTS_TO_CLAUDE = 60;
 
-// Walkthrough is Haiku, one call per step. Worst case input ~4K tokens,
+// Walkthrough is Sonnet, one call per step. Worst case input ~4K tokens,
 // output ~500 tokens.
-// Haiku pricing: $1/M input, $5/M output.
-// 4000/1M * $1 + 500/1M * $5 = $0.004 + $0.0025 = $0.0065. Round to $0.01
+// Sonnet pricing: $3/M input, $15/M output.
+// 4000/1M * $3 + 500/1M * $15 = $0.012 + $0.0075 = $0.0195. Round to $0.03
 // for ceiling. We don't pre-reserve, but track this so the cost-recording
 // row matches expectations.
 // Per-call cap headroom — bail early if a step would push the user past
 // today's cap.
-const PER_STEP_ESTIMATE_USD = 0.01;
+const PER_STEP_ESTIMATE_USD = 0.03;
 
 // ─── Cost-cap pre-check ──────────────────────────────────────────────────
 
@@ -147,6 +151,8 @@ function buildSystemPrompt(role: AppRole, task: string): string {
     '  - Be concise. Narration is one short sentence in the imperative voice ("Click Settings to manage your account preferences"). No greetings, no preamble, no emoji.',
     '  - Do NOT call any tool other than emit_step. Do NOT mutate data. The user does the actual click themselves; the cursor only points.',
     '  - If the user deviated on a prior step, accept it — figure out the next step from where they actually are now, don\'t restart.',
+    '  - HARD RULE: NEVER target the same element you targeted in the previous step. Past steps show the element name AND the field already actioned — pick something different this turn (likely the next logical element in the flow, or `done`).',
+    '  - For form fields that take typed input (Name, Phone, Wage, etc.), the narration should say what to TYPE — e.g. "Type the new housekeeper\'s name here." The user does the typing themselves. Then on the next step move on to the next field or the Save button.',
     '  - If you find yourself repeating the same step or going in circles, return cannot_help with an honest explanation.',
   ].join('\n');
 }
@@ -167,10 +173,21 @@ function buildUserContent(body: StepRequestBody, role: AppRole): string {
     ? history.map((h, i) => {
         const tag = h.deviated
           ? `[step ${i + 1}, user deviated → clicked "${h.deviatedTo ?? 'unknown'}"]`
-          : `[step ${i + 1}, completed]`;
-        return `  ${tag} ${h.narration}${h.targetName ? ` (target: ${h.targetName})` : ''}`;
+          : `[step ${i + 1}, user clicked target]`;
+        const targetTag = h.targetName
+          ? ` (you targeted element ${h.targetElementId ?? '?'} named "${h.targetName}")`
+          : '';
+        return `  ${tag} ${h.narration}${targetTag}`;
       })
     : ['  (none yet — this is step 1)'];
+
+  // Surface the most recent target's elementId prominently so Claude can't
+  // miss it. If we just told the user to click el_X, NEXT turn we must not
+  // pick el_X again.
+  const lastTarget = [...history].reverse().find(h => !h.deviated && h.targetElementId);
+  const repetitionGuard = lastTarget
+    ? `\nPrevious step targeted element id "${lastTarget.targetElementId}" (${lastTarget.targetName ?? 'unknown'}). DO NOT pick that same id again — pick a different element or return done/cannot_help.`
+    : '';
 
   return [
     `Task: ${body.task}`,
@@ -183,6 +200,7 @@ function buildUserContent(body: StepRequestBody, role: AppRole): string {
     '',
     `Interactive elements visible right now (${elements.length}${body.snapshot.elements.length > MAX_ELEMENTS_TO_CLAUDE ? ` of ${body.snapshot.elements.length}` : ''}):`,
     ...elementLines,
+    repetitionGuard,
     '',
     'Now call emit_step with the next action.',
   ].join('\n');
@@ -298,10 +316,15 @@ export async function POST(req: NextRequest): Promise<Response> {
   const systemPrompt = buildSystemPrompt(role, body.task.trim());
   const userContent = buildUserContent(body, role);
 
+  // Sonnet, not Haiku — multi-step walkthroughs need stronger reasoning to
+  // (a) understand app structure, (b) avoid re-targeting the same element
+  // when a step has already been completed, (c) recover from dead-ends.
+  // Haiku looped on simple cases ("clicked Housekeeping → still says click
+  // Housekeeping next"). Per-step cost ~$0.02 vs $0.005 — still cheap.
   let response: Awaited<ReturnType<Anthropic['messages']['create']>>;
   try {
     response = await client().messages.create({
-      model: MODELS.haiku,
+      model: MODELS.sonnet,
       max_tokens: MAX_OUTPUT_TOKENS,
       system: systemPrompt,
       tools: [EMIT_STEP_TOOL],
@@ -344,11 +367,11 @@ export async function POST(req: NextRequest): Promise<Response> {
   const outputTokens = usage.output_tokens;
   const cachedInputTokens =
     ('cache_read_input_tokens' in usage ? (usage.cache_read_input_tokens as number) : 0) ?? 0;
-  const haiku = PRICING.haiku;
+  const pricing = PRICING.sonnet;
   const costUsd =
-    ((inputTokens - cachedInputTokens) / 1_000_000) * haiku.input +
-    (cachedInputTokens / 1_000_000) * haiku.cachedInput +
-    (outputTokens / 1_000_000) * haiku.output;
+    ((inputTokens - cachedInputTokens) / 1_000_000) * pricing.input +
+    (cachedInputTokens / 1_000_000) * pricing.cachedInput +
+    (outputTokens / 1_000_000) * pricing.output;
 
   // Best-effort insert. If this fails we still return the action — losing
   // the cost row is bad but blocking the user mid-walkthrough is worse.
@@ -358,7 +381,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       user_id: accountId,
       property_id: body.propertyId,
       conversation_id: null,
-      model: 'haiku',
+      model: 'sonnet',
       model_id: response.model,
       tokens_in: inputTokens,
       tokens_out: outputTokens,

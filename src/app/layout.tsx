@@ -5,6 +5,7 @@ import { AuthProvider } from '@/contexts/AuthContext';
 import { LanguageProvider } from '@/contexts/LanguageContext';
 import { PropertyProvider } from '@/contexts/PropertyContext';
 import { SyncProvider } from '@/contexts/SyncContext';
+import { WalkthroughOverlay } from '@/components/walkthrough/WalkthroughOverlay';
 
 // Snow design system — typography from the locked Dashboard Explorations
 // design. Geist for body, Geist Mono for small caps / numeric callouts,
@@ -84,6 +85,10 @@ export default function RootLayout({
             <LanguageProvider>
               <PropertyProvider>
                 {children}
+                {/* Mounted at the root so the loop survives page navigations
+                    (AppLayout is per-page and unmounts when the URL changes,
+                    which would kill an in-flight multi-step walkthrough). */}
+                <WalkthroughOverlay />
               </PropertyProvider>
             </LanguageProvider>
           </AuthProvider>
