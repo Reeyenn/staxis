@@ -177,7 +177,11 @@ export async function reserveCostBudget(opts: {
 
 export interface FinalizeOpts {
   reservationId: string;
-  conversationId: string;
+  /** May be null for non-chat callers (Clicky walkthrough, future cron) that
+   *  don't have an `agent_conversations` row to anchor to. Column is nullable
+   *  per migration 0080; `staxis_finalize_agent_spend` writes the value
+   *  through with `set conversation_id = p_conversation_id`. */
+  conversationId: string | null;
   actualUsd: number;
   model: string;
   /** Exact Anthropic snapshot ID from response.model. Captured for

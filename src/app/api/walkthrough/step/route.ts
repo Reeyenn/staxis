@@ -3,20 +3,20 @@
 // this each time it needs to know what to do next. We:
 //
 //   1. Auth + property access check (same pattern as /api/agent/command)
-//   2. Cost-cap pre-check (unified daily caps; sum ALL kind='request' rows
-//      so chatbot + walkthrough share one budget)
-//   3. Ask Claude Haiku what the next action is, via a forced tool_use
-//      so we get back structured JSON
-//   4. Post-record the actual spend to agent_costs (kind='request')
+//   2. Atomic cost reservation via the canonical agent layer (caps user +
+//      property + global serialized under an advisory lock — INV-17).
+//   3. Ask Claude Sonnet what the next action is, via a forced tool_use
+//      so we get back structured JSON. Forwards req.signal so Stop on the
+//      client actually cancels the SDK call.
+//   4. Finalize the reservation to actual spend (or cancel on failure)
+//      in a finally block — no fire-and-forget.
 //
-// Why NOT the reservation pattern from cost-controls.ts: that pattern is
-// optimized for sonnet-tier multi-iteration chat turns ($1.50 worst-case
-// reservation per call). Walkthrough steps are Haiku, single-iteration,
-// ~$0.005 actual. Reserving $1.50 × 6 steps would torch the $10 daily
-// cap on the first walkthrough. Trade-off: a tiny non-atomic window
-// where two concurrent steps from the same user could both pass the
-// cap check before either writes their cost row. Maximum over-spend
-// per user per concurrent burst ≈ a few cents — acceptable.
+// History — RC1 root-cause hardening (post-Codex review, 2026-05-14):
+//   The earlier version of this route reimplemented cap math inline.
+//   That decision spawned 10 different findings (free-tier cap drift,
+//   missing global cap, fire-and-forget cost insert, etc.). Routing
+//   through reserveCostBudget/finalize/cancel with a smaller
+//   per-step estimate fixes them all in one place.
 
 import type { NextRequest } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
@@ -24,7 +24,11 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { MODELS, PRICING } from '@/lib/agent/llm';
-import { COST_LIMITS } from '@/lib/agent/cost-controls';
+import {
+  reserveCostBudget,
+  finalizeCostReservation,
+  cancelCostReservation,
+} from '@/lib/agent/cost-controls';
 import type { SnapshotElement } from '@/components/walkthrough/snapshotDom';
 import type { AppRole } from '@/lib/roles';
 
@@ -78,49 +82,6 @@ const MAX_ELEMENTS_TO_CLAUDE = 60;
 // Per-call cap headroom — bail early if a step would push the user past
 // today's cap.
 const PER_STEP_ESTIMATE_USD = 0.03;
-
-// ─── Cost-cap pre-check ──────────────────────────────────────────────────
-
-interface DayStart {
-  iso: string;
-}
-function dayStart(): DayStart {
-  const d = new Date();
-  d.setUTCHours(0, 0, 0, 0);
-  return { iso: d.toISOString() };
-}
-
-async function userSpendToday(userId: string): Promise<number> {
-  const { data, error } = await supabaseAdmin
-    .from('agent_costs')
-    .select('cost_usd')
-    .eq('user_id', userId)
-    .eq('kind', 'request')
-    .gte('created_at', dayStart().iso);
-  if (error) {
-    log.error('[walkthrough/step] userSpendToday failed', { userId, error });
-    return 0;
-  }
-  let total = 0;
-  for (const r of data ?? []) total += Number((r as { cost_usd: number }).cost_usd) || 0;
-  return total;
-}
-
-async function propertySpendToday(propertyId: string): Promise<number> {
-  const { data, error } = await supabaseAdmin
-    .from('agent_costs')
-    .select('cost_usd')
-    .eq('property_id', propertyId)
-    .eq('kind', 'request')
-    .gte('created_at', dayStart().iso);
-  if (error) {
-    log.error('[walkthrough/step] propertySpendToday failed', { propertyId, error });
-    return 0;
-  }
-  let total = 0;
-  for (const r of data ?? []) total += Number((r as { cost_usd: number }).cost_usd) || 0;
-  return total;
-}
 
 // ─── Anthropic client ────────────────────────────────────────────────────
 
@@ -266,10 +227,10 @@ export async function POST(req: NextRequest): Promise<Response> {
     return Response.json({ ok: false, error: 'no access to this property', requestId }, { status: 403 });
   }
 
-  // ── Load account ──────────────────────────────────────────────────────
+  // ── Load account (role only; tier handled by reserveCostBudget) ───────
   const { data: account, error: accountErr } = await supabaseAdmin
     .from('accounts')
-    .select('id, role, ai_cost_tier')
+    .select('id, role')
     .eq('data_user_id', auth.userId)
     .maybeSingle();
   if (accountErr || !account) {
@@ -277,122 +238,162 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
   const accountId = account.id as string;
   const role = (account.role as AppRole) ?? 'staff';
-  const tier = (account.ai_cost_tier as 'free' | 'pro' | 'enterprise' | null) ?? 'free';
-  const userDailyCap = ({ free: 10, pro: 50, enterprise: 200 } as const)[tier] ?? 10;
 
-  // ── Cost-cap pre-check ────────────────────────────────────────────────
-  // Sums kind='request' to match staxis_reserve_agent_spend behavior (INV-17).
-  // Unified across all features: walkthrough + chatbot + voice all write
-  // kind='request' rows so the user's $10/day budget is shared.
-  const [userSpend, propSpend] = await Promise.all([
-    userSpendToday(accountId),
-    propertySpendToday(body.propertyId),
-  ]);
-
-  if (userSpend + PER_STEP_ESTIMATE_USD > userDailyCap) {
+  // ── Atomic cost reservation (RC1 root-cause fix) ──────────────────────
+  // Routes through the canonical agent-layer reservation system:
+  //   - serializes user + property + global caps under a Postgres advisory
+  //     lock (no more racing concurrent steps)
+  //   - reads the per-tier user cap from `accounts.ai_cost_tier` (no more
+  //     hardcoded $10 that drifts from the canonical $5 free tier)
+  //   - inserts a 'reserved' agent_costs row that subsequent cap-check
+  //     sums can see (kind='request', state='reserved')
+  //
+  // We pass a smaller estimate ($0.03) than the chatbot's worst-case
+  // (~$1.50) since walkthrough steps are single-iteration Sonnet calls.
+  // Reconcile-to-actual in the finally block below.
+  const reservation = await reserveCostBudget({
+    userId: accountId,
+    propertyId: body.propertyId,
+    estimatedUsd: PER_STEP_ESTIMATE_USD,
+  });
+  if (!reservation.ok) {
+    log.warn('[walkthrough/step] cap_hit', { requestId, reason: reservation.reason, accountId });
     return Response.json(
-      {
-        ok: false,
-        code: 'user_cap',
-        error: `You've hit today's AI usage cap ($${userDailyCap}). Try again tomorrow, or ask an admin to upgrade your tier.`,
-        requestId,
-      },
-      { status: 429 },
-    );
-  }
-  if (propSpend + PER_STEP_ESTIMATE_USD > COST_LIMITS.propertyDailyUsd) {
-    return Response.json(
-      {
-        ok: false,
-        code: 'property_cap',
-        error: `This property has hit today's AI usage cap ($${COST_LIMITS.propertyDailyUsd}). Ask the owner to raise the limit or wait until tomorrow.`,
-        requestId,
-      },
+      { ok: false, code: reservation.reason, error: reservation.message, requestId },
       { status: 429 },
     );
   }
 
-  // ── Call Claude ───────────────────────────────────────────────────────
+  // ── Call Claude (Sonnet for multi-step reasoning) ─────────────────────
+  // History — RC1: Haiku looped on multi-step cases; Sonnet plans
+  // coherently across steps and recognizes "this element was already
+  // actioned" from the history. Per-step cost ~$0.02 vs Haiku's $0.005.
   const systemPrompt = buildSystemPrompt(role, body.task.trim());
   const userContent = buildUserContent(body, role);
 
-  // Sonnet, not Haiku — multi-step walkthroughs need stronger reasoning to
-  // (a) understand app structure, (b) avoid re-targeting the same element
-  // when a step has already been completed, (c) recover from dead-ends.
-  // Haiku looped on simple cases ("clicked Housekeeping → still says click
-  // Housekeeping next"). Per-step cost ~$0.02 vs $0.005 — still cheap.
-  let response: Awaited<ReturnType<Anthropic['messages']['create']>>;
+  let action: StepAction | null = null;
+  let actualUsd = 0;
+  let usageMeta: {
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens: number;
+    modelId: string;
+  } | null = null;
+
   try {
-    response = await client().messages.create({
-      model: MODELS.sonnet,
-      max_tokens: MAX_OUTPUT_TOKENS,
-      system: systemPrompt,
-      tools: [EMIT_STEP_TOOL],
-      tool_choice: { type: 'tool', name: 'emit_step' },
-      messages: [{ role: 'user', content: userContent }],
-    });
-  } catch (err) {
-    log.error('[walkthrough/step] Anthropic call failed', { requestId, err });
-    return Response.json(
-      { ok: false, error: 'AI service is temporarily unavailable. Try again in a moment.', requestId },
-      { status: 502 },
+    let response: Awaited<ReturnType<Anthropic['messages']['create']>>;
+    try {
+      response = await client().messages.create(
+        {
+          model: MODELS.sonnet,
+          max_tokens: MAX_OUTPUT_TOKENS,
+          system: systemPrompt,
+          tools: [EMIT_STEP_TOOL],
+          tool_choice: { type: 'tool', name: 'emit_step' },
+          messages: [{ role: 'user', content: userContent }],
+        },
+        // RC1/CX4 fix: forward the request's AbortSignal into the SDK so
+        // client Stop actually cancels the Anthropic call (the agent layer
+        // does the same thing in /api/agent/command).
+        { signal: req.signal },
+      );
+    } catch (err) {
+      log.error('[walkthrough/step] Anthropic call failed', { requestId, err });
+      return Response.json(
+        { ok: false, error: 'AI service is temporarily unavailable. Try again in a moment.', requestId },
+        { status: 502 },
+      );
+    }
+
+    // ── Parse the tool_use block ────────────────────────────────────────
+    const toolUseBlocks = response.content.filter(
+      (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === 'emit_step',
     );
+    if (toolUseBlocks.length === 0) {
+      log.error('[walkthrough/step] no emit_step tool_use in response', { requestId, content: response.content });
+      return Response.json(
+        { ok: false, error: 'AI returned an unexpected response. Try again.', requestId },
+        { status: 500 },
+      );
+    }
+    if (toolUseBlocks.length > 1) {
+      // tool_choice forces one tool call, but log it if Claude misbehaves
+      // so we notice. (Findings N10.)
+      log.warn('[walkthrough/step] multiple emit_step tool_use blocks; using first', {
+        requestId, count: toolUseBlocks.length,
+      });
+    }
+
+    const raw = toolUseBlocks[0].input as { type?: string; elementId?: string; narration?: string };
+    const parsed = validateAction(raw, body.snapshot.elements);
+    if (!parsed) {
+      log.warn('[walkthrough/step] AI returned invalid action shape', { requestId, raw });
+      return Response.json(
+        { ok: false, error: 'AI returned an invalid action. Try again.', requestId },
+        { status: 500 },
+      );
+    }
+    action = parsed;
+
+    // ── Compute actual cost for the reconcile ───────────────────────────
+    const usage = response.usage;
+    const inputTokens = usage.input_tokens;
+    const outputTokens = usage.output_tokens;
+    const cachedInputTokens =
+      ('cache_read_input_tokens' in usage ? (usage.cache_read_input_tokens as number) : 0) ?? 0;
+    const pricing = PRICING.sonnet;
+    actualUsd =
+      ((inputTokens - cachedInputTokens) / 1_000_000) * pricing.input +
+      (cachedInputTokens / 1_000_000) * pricing.cachedInput +
+      (outputTokens / 1_000_000) * pricing.output;
+    usageMeta = {
+      inputTokens,
+      outputTokens,
+      cachedInputTokens,
+      modelId: response.model,
+    };
+  } finally {
+    // RC1: reconcile to actual. If we made the Claude call and got usage,
+    // finalize. Otherwise (early validation failure, parse failure, abort)
+    // cancel the reservation to release the budget hold. This replaces the
+    // old fire-and-forget `void ... .then()` insert (Codex CX3).
+    if (usageMeta) {
+      try {
+        await finalizeCostReservation({
+          reservationId: reservation.reservationId,
+          conversationId: null, // walkthroughs have no agent_conversations row
+          actualUsd: Math.round(actualUsd * 1_000_000) / 1_000_000,
+          model: 'sonnet',
+          modelId: usageMeta.modelId,
+          tokensIn: usageMeta.inputTokens,
+          tokensOut: usageMeta.outputTokens,
+          cachedInputTokens: usageMeta.cachedInputTokens,
+          userId: accountId,
+          propertyId: body.propertyId,
+        });
+      } catch (finalizeErr) {
+        log.error('[walkthrough/step] finalize failed; attempting cancel', {
+          requestId, reservationId: reservation.reservationId, finalizeErr,
+        });
+        await cancelCostReservation(reservation.reservationId).catch(cancelErr =>
+          log.error('[walkthrough/step] cancel also failed; reservation stranded', {
+            requestId, reservationId: reservation.reservationId, cancelErr,
+          }),
+        );
+      }
+    } else {
+      await cancelCostReservation(reservation.reservationId);
+    }
   }
 
-  // ── Parse the tool_use block ──────────────────────────────────────────
-  const toolBlock = response.content.find(
-    (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === 'emit_step',
-  );
-  if (!toolBlock) {
-    log.error('[walkthrough/step] no emit_step tool_use in response', { requestId, content: response.content });
-    return Response.json(
-      { ok: false, error: 'AI returned an unexpected response. Try again.', requestId },
-      { status: 500 },
-    );
-  }
-
-  const raw = toolBlock.input as { type?: string; elementId?: string; narration?: string };
-  const action = validateAction(raw, body.snapshot.elements);
   if (!action) {
-    log.warn('[walkthrough/step] AI returned invalid action shape', { requestId, raw });
+    // Defensive — finally already returned a non-2xx response if we got here,
+    // but TypeScript can't see that the early-returns above prevent this.
     return Response.json(
-      { ok: false, error: 'AI returned an invalid action. Try again.', requestId },
+      { ok: false, error: 'walkthrough step failed', requestId },
       { status: 500 },
     );
   }
-
-  // ── Record actual cost (kind='request', state='finalized') ───────────
-  const usage = response.usage;
-  const inputTokens = usage.input_tokens;
-  const outputTokens = usage.output_tokens;
-  const cachedInputTokens =
-    ('cache_read_input_tokens' in usage ? (usage.cache_read_input_tokens as number) : 0) ?? 0;
-  const pricing = PRICING.sonnet;
-  const costUsd =
-    ((inputTokens - cachedInputTokens) / 1_000_000) * pricing.input +
-    (cachedInputTokens / 1_000_000) * pricing.cachedInput +
-    (outputTokens / 1_000_000) * pricing.output;
-
-  // Best-effort insert. If this fails we still return the action — losing
-  // the cost row is bad but blocking the user mid-walkthrough is worse.
-  void supabaseAdmin
-    .from('agent_costs')
-    .insert({
-      user_id: accountId,
-      property_id: body.propertyId,
-      conversation_id: null,
-      model: 'sonnet',
-      model_id: response.model,
-      tokens_in: inputTokens,
-      tokens_out: outputTokens,
-      cached_input_tokens: cachedInputTokens,
-      cost_usd: Math.round(costUsd * 1_000_000) / 1_000_000,
-      kind: 'request',
-    })
-    .then(({ error }) => {
-      if (error) log.error('[walkthrough/step] cost insert failed', { requestId, error });
-    });
-
   return Response.json({ ok: true, action, requestId });
 }
 
