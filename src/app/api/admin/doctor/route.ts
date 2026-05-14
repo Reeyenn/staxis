@@ -1297,6 +1297,9 @@ const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // 0113 Round-12 T12.2: restore RPC counters=0 + recompute (no double-count).
   // 0114 Round-12 T12.9/T12.11/T12.12: invariant CHECKs + tool-result orphan
   //   trigger + heal RPC + T12.7 active prompt update.
+  // 0115 Round-12 hotfix: relax INV-7 upper bound (CHECK can't be deferred;
+  //   trigger ordering creates transient violations on DELETE). The heal
+  //   RPC + daily cron are the safety net for commit-time drift.
   '0079', '0080', '0081', '0082', '0083',
   '0084', '0085', '0086', '0087', '0088', '0089',
   '0090', '0091', '0092', '0093', '0094',
@@ -1304,6 +1307,7 @@ const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   '0100', '0101', '0102', '0103', '0104',
   '0105', '0106', '0107', '0108', '0109',
   '0110', '0111', '0112', '0113', '0114',
+  '0115',
 ];
 
 /**

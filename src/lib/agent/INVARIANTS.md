@@ -84,11 +84,12 @@ Each invariant has:
 - **Assumed by:** memory.ts replay, summarizer
 - **History:** Round-10 F7
 
-### INV-7: agent_conversations.message_count >= 0 AND unsummarized_message_count <= message_count
+### INV-7: agent_conversations.message_count >= 0 AND unsummarized_message_count >= 0
 
-- **Enforced by:** CHECK constraints `agent_conversations_msg_count_nonneg` + `agent_conversations_unsummarized_bounds` (migration 0114)
+- **Enforced by:** CHECK constraints `agent_conversations_msg_count_nonneg` + `agent_conversations_unsummarized_nonneg` (migration 0114 + 0115 hotfix)
 - **Assumed by:** Summarization candidate filter, /admin/agent KPI
 - **History:** Round-12 META analysis. The bump triggers from 0100/0105 had no bound — could go negative under weird interleavings.
+- **Note:** The original 0114 also enforced `unsummarized_message_count <= message_count`, but Postgres triggers fire in alphabetical order and the message-count trigger fires BEFORE the unsummarized trigger. On DELETE: message_count drops first, creating a transient state where unsummarized > message_count. CHECK constraints aren't DEFERRABLE in Postgres, so the upper bound had to be relaxed. The `staxis_heal_conversation_counters` cron (T12.12) is the safety net that catches commit-time drift.
 
 ### INV-8: agent_messages.role is in ('user','assistant','tool','system')
 

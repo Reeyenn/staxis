@@ -162,4 +162,53 @@ describe('trimTrailingOrphanToolUses', () => {
     assert.equal(trimmed.length, 49);
     assert.equal(trimmed[48].id, 'u48');
   });
+
+  // T12.13 (Round 12) — replay correctness: the trim function exists
+  // precisely so the replay layer doesn't have to handle orphans.
+  // These tests verify the trim's GUARANTEE: after trim, the last row
+  // is never an assistant tool_use without its matching tool_result
+  // also in the result. This is the invariant memory.ts toClaudeMessages
+  // relies on.
+  test('post-trim invariant: last row is never an orphan tool_use', () => {
+    const fixtures: MessageRow[][] = [
+      [userRow('1', 'a'), asstToolUseRow('2', 'tool', 'c1')],
+      [asstToolUseRow('1', 'a', 'c1'), asstToolUseRow('2', 'b', 'c2')],
+      [
+        userRow('1', 'q'),
+        asstToolUseRow('2', 'tool_a', 'c1'),
+        toolResultRow('3', 'c1'),
+        asstToolUseRow('4', 'tool_b', 'c2'),  // orphan at end
+      ],
+    ];
+
+    for (const rows of fixtures) {
+      const trimmed = trimTrailingOrphanToolUses(rows);
+      if (trimmed.length === 0) continue;  // degenerate case ok
+      const last = trimmed[trimmed.length - 1];
+      if (last.role === 'assistant' && last.tool_name) {
+        // It's a tool_use; its result must be in the batch.
+        const hasResult = trimmed.some(r => r.role === 'tool' && r.tool_call_id === last.tool_call_id);
+        assert.ok(
+          hasResult,
+          `Post-trim invariant violated: trailing tool_use ${last.tool_call_id} has no result in batch`,
+        );
+      }
+    }
+  });
+
+  test('post-trim invariant: trimmed batch is a prefix of input', () => {
+    // The trim only ever drops from the END. It must not reorder or
+    // skip earlier rows. This guarantees the summary's date range
+    // (firstTs..lastTs) is contiguous.
+    const rows: MessageRow[] = [
+      userRow('1', 'a'),
+      asstTextRow('2', 'b'),
+      userRow('3', 'c'),
+      asstToolUseRow('4', 'orphan_tool', 'c1'),
+    ];
+    const trimmed = trimTrailingOrphanToolUses(rows);
+    for (let i = 0; i < trimmed.length; i++) {
+      assert.equal(trimmed[i].id, rows[i].id, `prefix invariant: trimmed[${i}].id should match rows[${i}].id`);
+    }
+  });
 });

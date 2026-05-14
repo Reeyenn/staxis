@@ -14,6 +14,7 @@
     "seed:reset": "node scripts/seed-supabase.js --reset",
     "agent:evals": "tsx scripts/run-agent-evals.ts",
     "agent:summarizer-evals": "tsx scripts/run-summarizer-evals.ts",
+    "agent:invariant-evals": "tsx scripts/run-agent-invariant-evals.ts",
     "test": "node --test scraper/__tests__/*.test.js && NEXT_PUBLIC_SUPABASE_URL=https://placeholder.supabase.co SUPABASE_SERVICE_ROLE_KEY=placeholder NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder npx tsx --test src/lib/__tests__/*.test.ts",
     "test:scraper": "node --test scraper/__tests__/*.test.js"
   },
@@ -40,11 +41,13 @@
   },
   "devDependencies": {
     "@types/node": "^20",
+    "@types/pg": "^8.20.0",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "autoprefixer": "^10.0.1",
     "eslint": "^8",
     "eslint-config-next": "15.2.4",
+    "pg": "^8.20.0",
     "postcss": "^8",
     "tailwindcss": "^3.4.1",
     "tsx": "^4.21.0",
