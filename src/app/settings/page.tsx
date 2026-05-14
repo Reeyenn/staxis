@@ -6,7 +6,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { useLang } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { t } from '@/lib/translations';
-import { Wifi, Users, ChevronRight } from 'lucide-react';
+import { Wifi, Users, Volume2, ChevronRight } from 'lucide-react';
 import { canManageTeam } from '@/lib/roles';
 
 export default function SettingsPage() {
@@ -18,6 +18,12 @@ export default function SettingsPage() {
   // PMS-connection card today.
   const sections = [
     { href:'/settings/pms', icon:Wifi, label:t('pmsConnection', lang), desc: lang === 'es' ? 'Sincronización automática con tu sistema de gestión hotelera' : 'Auto-sync data from your property management system' },
+    {
+      href:'/settings/voice',
+      icon: Volume2,
+      label: lang === 'es' ? 'Voz' : 'Voice',
+      desc: lang === 'es' ? 'Activa o desactiva las respuestas habladas de Staxis' : 'Tune how Staxis listens and speaks',
+    },
     ...(user && canManageTeam(user.role)
       ? [{
           href:'/settings/accounts',

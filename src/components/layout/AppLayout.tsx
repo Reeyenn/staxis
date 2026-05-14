@@ -5,6 +5,11 @@ import { Header } from './Header';
 import { ActivityTracker } from './ActivityTracker';
 import { FeedbackButton } from './FeedbackButton';
 import { FloatingChatButton } from '@/components/agent/FloatingChatButton';
+import { FloatingMicButton } from '@/components/agent/FloatingMicButton';
+import { WakeWord } from '@/components/agent/WakeWord';
+import { VoicePanelProvider } from '@/components/agent/VoicePanelContext';
+import { useAuth } from '@/contexts/AuthContext';
+import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { useSyncContext } from '@/contexts/SyncContext';
 import { t } from '@/lib/translations';
@@ -13,6 +18,9 @@ import { WifiOff, RefreshCw } from 'lucide-react';
 export function AppLayout({ children }: { children: React.ReactNode }) {
   const { lang } = useLang();
   const { isOnline, pendingCount, isSyncing } = useSyncContext();
+  const { user } = useAuth();
+  const { activePropertyId } = useProperty();
+  const voiceSurfaceAvailable = Boolean(user && activePropertyId);
 
   /* ── Determine which banner (if any) to show ── */
   const showOffline  = !isOnline;
@@ -40,6 +48,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
+    <VoicePanelProvider>
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg)' }}>
       <Header />
       <ActivityTracker />
@@ -80,6 +89,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       </main>
       <FeedbackButton />
       <FloatingChatButton />
+      <FloatingMicButton available={voiceSurfaceAvailable} />
+      {voiceSurfaceAvailable && <WakeWord />}
     </div>
+    </VoicePanelProvider>
   );
 }

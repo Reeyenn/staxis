@@ -50,8 +50,8 @@ const ESTIMATED_REQUEST_USD =
 // ─── Configurable limits ──────────────────────────────────────────────────
 
 export const COST_LIMITS = {
-  userDailyUsd:     10,
-  propertyDailyUsd: 50,
+  userDailyUsd:     5,
+  propertyDailyUsd: 25,
   globalDailyUsd:   500,
   userRateLimitPerMin: 10,
   // Worst-case per-request reservation, derived from MAX_OUTPUT_TOKENS and
@@ -71,12 +71,12 @@ export const COST_LIMITS = {
 export type AccountTier = 'free' | 'pro' | 'enterprise';
 
 const TIER_USER_DAILY_USD: Record<AccountTier, number> = {
-  free:       10,
+  free:       5,
   pro:        50,
   enterprise: 200,
 };
 
-async function getUserDailyCapUsd(userId: string): Promise<number> {
+export async function getUserDailyCapUsd(userId: string): Promise<number> {
   const { data, error } = await supabaseAdmin
     .from('accounts')
     .select('ai_cost_tier')
@@ -313,7 +313,7 @@ export async function recordNonRequestCost(opts: {
   tokensOut: number;
   cachedInputTokens?: number;
   costUsd: number;
-  kind: 'eval' | 'background';
+  kind: 'eval' | 'background' | 'audio';
 }): Promise<void> {
   if (opts.costUsd <= 0) return;
   const { error } = await supabaseAdmin.from('agent_costs').insert({
@@ -339,6 +339,121 @@ export async function recordNonRequestCost(opts: {
     console.error('[cost-controls] non-request cost insert failed', error);
     throw new Error(`non-request cost insert failed: ${error.message}`);
   }
+}
+
+// ─── Audio pre-flight budget gate (master prompt 2026-05-13) ─────────────
+//
+// Audio (Whisper STT + TTS) costs are recorded *after* the API call returns,
+// not reserved up front like text chat. Without a pre-flight check a user
+// could blow past their daily cap because the ledger only catches up at
+// the end of each call.
+//
+// `assertAudioBudget` sums TODAY's `agent_costs.cost_usd` for the user
+// (and property) across **all kinds** — no `kind` filter — and rejects if
+// the sum is already at or above the cap. Reeyen's clarification:
+//
+//   The reservation flow on text chat stays as-is (only sums 'request',
+//   per INV-17). The audio gate is total-spend-aware so $5 of voice + $5
+//   of text doesn't add up to $10 effective. Asymmetric by design.
+//
+// Returns a result type rather than throwing, mirroring `reserveCostBudget`.
+// Route handlers convert the failure into a 429 with the user-facing message.
+
+export type AudioBudgetResult =
+  | { ok: true; userSpendUsd: number; propertySpendUsd: number }
+  | {
+      ok: false;
+      reason: 'user_cap' | 'property_cap' | 'global_cap';
+      message: string;
+      userSpendUsd: number;
+      propertySpendUsd: number;
+    };
+
+async function sumTodayCostUsd(opts: {
+  column: 'user_id' | 'property_id';
+  value: string;
+}): Promise<number> {
+  // Day boundary aligned with the reservation RPC (which uses UTC midnight
+  // server-side). Off-by-one risk if the route's clock and the DB clock
+  // drift — Supabase serves both, so this is fine.
+  const dayStart = new Date();
+  dayStart.setUTCHours(0, 0, 0, 0);
+
+  const { data, error } = await supabaseAdmin
+    .from('agent_costs')
+    .select('cost_usd')
+    .eq(opts.column, opts.value)
+    .gte('created_at', dayStart.toISOString());
+
+  if (error) {
+    console.error('[cost-controls] audio-budget sum failed', error);
+    // Fail closed — when the ledger query fails we'd rather block voice
+    // than risk uncapped audio spend.
+    throw error;
+  }
+  return (data ?? []).reduce((acc, r) => acc + Number(r.cost_usd ?? 0), 0);
+}
+
+export async function assertAudioBudget(opts: {
+  userId: string;
+  propertyId: string;
+}): Promise<AudioBudgetResult> {
+  const [userSpendUsd, propertySpendUsd, userCapUsd] = await Promise.all([
+    sumTodayCostUsd({ column: 'user_id', value: opts.userId }),
+    sumTodayCostUsd({ column: 'property_id', value: opts.propertyId }),
+    getUserDailyCapUsd(opts.userId),
+  ]);
+
+  if (userSpendUsd >= userCapUsd) {
+    return {
+      ok: false,
+      reason: 'user_cap',
+      message: capMessage('user_cap', userCapUsd),
+      userSpendUsd,
+      propertySpendUsd,
+    };
+  }
+
+  if (propertySpendUsd >= COST_LIMITS.propertyDailyUsd) {
+    return {
+      ok: false,
+      reason: 'property_cap',
+      message: capMessage('property_cap', userCapUsd),
+      userSpendUsd,
+      propertySpendUsd,
+    };
+  }
+
+  // Global cap protects against runaway audio spend even when text
+  // reservations are quiet. The reservation RPC also enforces it for text;
+  // here we double-check from the audio side. Index `agent_costs_day_idx`
+  // (0080) covers this scan; at $500 global cap with $0.006/min Whisper +
+  // $0.015/1k char TTS this query touches a few thousand rows max per day.
+  const dayStart = new Date();
+  dayStart.setUTCHours(0, 0, 0, 0);
+  const { data: globalRows, error: globalErr } = await supabaseAdmin
+    .from('agent_costs')
+    .select('cost_usd')
+    .gte('created_at', dayStart.toISOString());
+  if (globalErr) {
+    console.error('[cost-controls] audio-budget global sum failed', globalErr);
+    throw globalErr;
+  }
+  const globalSpendUsd = (globalRows ?? []).reduce(
+    (acc, r) => acc + Number(r.cost_usd ?? 0),
+    0,
+  );
+  if (globalSpendUsd >= COST_LIMITS.globalDailyUsd) {
+    return {
+      ok: false,
+      reason: 'global_cap',
+      message: capMessage('global_cap', userCapUsd),
+      userSpendUsd,
+      propertySpendUsd,
+    };
+  }
+
+  return { ok: true, userSpendUsd, propertySpendUsd };
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────

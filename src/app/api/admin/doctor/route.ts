@@ -242,6 +242,13 @@ const REQUIRED_ENV_VARS: Array<{ name: string; altNames?: string[]; group: strin
   // alert + the new captureException in llm.ts's getClient() are the
   // detection layers; THIS list is what makes both possible.
   { name: 'ANTHROPIC_API_KEY',                 group: 'anthropic' },
+  // Voice surface (2026-05-13)
+  // OPENAI_API_KEY backs Whisper STT + Nova TTS. PICOVOICE_ACCESS_KEY
+  // backs the "Hey Staxis" wake word — the feature is also gated on
+  // public/wake-words/*.ppn files existing, but the key being unset
+  // is reported here so an operator notices before training keywords.
+  { name: 'OPENAI_API_KEY',                    group: 'voice' },
+  { name: 'PICOVOICE_ACCESS_KEY',              group: 'voice' },
   // Billing — these are checked for SHAPE in checkStripeBillingConfigured.
   // Listing here so the env_vars check reports a clean "missing" message
   // when none are set, but the billing-configured check is the source of
@@ -1308,6 +1315,8 @@ const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // 0115 Round-12 hotfix: relax INV-7 upper bound (CHECK can't be deferred;
   //   trigger ordering creates transient violations on DELETE). The heal
   //   RPC + daily cron are the safety net for commit-time drift.
+  // 0116 Voice surface (2026-05-13): account voice prefs +
+  //   agent_costs.kind='audio' + voice_recordings 7-day retention table.
   '0079', '0080', '0081', '0082', '0083',
   '0084', '0085', '0086', '0087', '0088', '0089',
   '0090', '0091', '0092', '0093', '0094',
@@ -1315,7 +1324,7 @@ const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   '0100', '0101', '0102', '0103', '0104',
   '0105', '0106', '0107', '0108', '0109',
   '0110', '0111', '0112', '0113', '0114',
-  '0115',
+  '0115', '0116',
 ];
 
 /**
@@ -1743,6 +1752,7 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'expire-trials',                 cadenceHours: 24,    description: 'daily trial-expiration flip' },
   { name: 'agent-archive-stale-conversations', cadenceHours: 24, description: 'daily 3am archival of stale agent conversations (L4 part A)' },
   { name: 'agent-heal-counters',           cadenceHours: 24,    description: 'daily 4am counter-drift heal (Round 12 T12.12, invariant doctrine safety net)' },
+  { name: 'voice-recordings-purge',        cadenceHours: 24,    description: 'daily 4:30am purge of voice recordings older than 7 days (INV-19)' },
   // Weekly
   { name: 'ml-train-demand',               cadenceHours: 168,   description: 'weekly demand training (Sunday)' },
   { name: 'ml-train-supply',               cadenceHours: 168,   description: 'weekly supply training (Sunday)' },

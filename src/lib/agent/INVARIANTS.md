@@ -151,6 +151,31 @@ Each invariant has:
 - **Enforced by:** Filter in `staxis_reserve_agent_spend` RPC (migration 0082) — `WHERE kind = 'request'`
 - **Assumed by:** /admin/agent KPI separation, summarizer cost-tracking expectation
 - **History:** Round-11 T2 (verified by review)
+- **Note (2026-05-13 voice surface):** `assertAudioBudget` ([cost-controls.ts](src/lib/agent/cost-controls.ts)) deliberately deviates from INV-17 — it sums ALL kinds for the audio pre-flight check. Per Reeyen 2026-05-13: voice + text should share one $5/day total cap, not $5 + $5 = $10 effective. The reservation RPC for text stays kind='request' filtered (covers itself); the audio gate is total-spend-aware so audio doesn't stack on top of text.
+
+### INV-18: voice_recordings.expires_at = created_at + interval '7 days'
+
+- **Enforced by:** Column `DEFAULT (now() + interval '7 days')` on `voice_recordings.expires_at` + CHECK constraint `voice_recordings_expires_after_created` (migration 0116). The check enforces `expires_at > created_at` so any caller that overrides the default with an earlier value fails the insert.
+- **Assumed by:** `/api/cron/voice-recordings-purge` (deletes rows past expiry); privacy contract surfaced to users in the wake-word/voice-replies onboarding copy.
+- **History:** Voice surface build 2026-05-13.
+
+### INV-19: voice_recordings rows past expires_at are deleted within 24h
+
+- **Enforced by:** Daily cron `/api/cron/voice-recordings-purge` (vercel.json, 04:30 UTC) + heartbeat row in `cron_heartbeats` checked by the doctor route's `EXPECTED_CRONS`. NOT enforced at the DB level — pg_cron isn't available on Supabase, so this is the code-side enforcement and the heartbeat is the drift detector. If the cron stops firing, the doctor route's cadence check goes red within 24h.
+- **Assumed by:** The 7-day privacy promise in the voice onboarding copy and Settings page.
+- **History:** Voice surface build 2026-05-13.
+
+### INV-20: agent_costs.kind='audio' rows have cost_usd > 0
+
+- **Enforced by:** Code — `recordNonRequestCost` ([cost-controls.ts](src/lib/agent/cost-controls.ts)) short-circuits when `costUsd <= 0`. Audio routes only call `recordNonRequestCost` *after* a successful OpenAI Whisper/TTS response with a measurable duration or character count, so a zero-cost row would represent a logic bug. NOT enforced at DB level — `cost_usd >= 0` is in the column CHECK but `> 0` for `kind='audio'` would require a partial CHECK we judged not worth the schema noise.
+- **Assumed by:** Audio-spend KPI in `/admin/agent` (counts `kind='audio'` rows as billable usage).
+- **History:** Voice surface build 2026-05-13.
+
+### INV-21: Wake-word detection runs only when document.visibilityState === 'visible'
+
+- **Enforced by:** Code in `<WakeWord />` ([WakeWord.tsx](src/components/agent/WakeWord.tsx)) — `document.addEventListener('visibilitychange', ...)` starts the `PorcupineWorker` on visible and calls `release()` on hidden. NOT enforced at DB level (browser-only invariant). The doctor route's `REQUIRED_ENV_VARS` includes `PICOVOICE_ACCESS_KEY` so a misconfigured deploy fails the green check rather than silently leaving the worker idle.
+- **Assumed by:** Battery / mic-permission story for the wake word being defensible — a tab in the background can't burn cycles. If this drifts, every backgrounded Staxis tab continues listening, which is a real user complaint vector.
+- **History:** Voice surface build 2026-05-13.
 
 ### INV-22: Any "API key / required env var is missing" throw inside the agent layer also fires `captureException` to Sentry
 
