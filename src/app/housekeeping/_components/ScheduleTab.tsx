@@ -17,6 +17,7 @@
 // modal later if the user misses them.
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -28,10 +29,11 @@ import {
   saveScheduleAssignments,
   subscribeToWorkOrders,
   subscribeToDashboardByDate,
+  updateStaffMember,
 } from '@/lib/db';
 import type { PlanSnapshot, ScheduleAssignments, DashboardNumbers } from '@/lib/db';
 import { autoAssignRooms } from '@/lib/calculations';
-import type { ShiftConfirmation, WorkOrder, StaffMember } from '@/types';
+import type { ShiftConfirmation, WorkOrder, StaffMember, SchedulePriority } from '@/types';
 import {
   defaultShiftDate, addDays, formatDisplayDate, snapshotToShiftRooms, formatPulledAt,
 } from './_shared';
@@ -82,6 +84,28 @@ export function ScheduleTab() {
   // re-fixed.
   const hydratedDate = useRef<string | null>(null);
 
+  // Tracks the (assignments, crew) snapshot we last persisted. Realtime
+  // echoes our own writes back through the subscription, which without
+  // this guard would re-trigger the persist effect and create a save
+  // loop — the cause of the "Auto-assign is laggy / kind of works" bug.
+  // Compared as JSON strings since both are plain objects/arrays.
+  const lastWrittenRef = useRef<{ a: string; c: string } | null>(null);
+
+  // Click-to-move: tapping a room pill picks it up (floatingRoomId set);
+  // a follow-up tap on a housekeeper row drops it on that housekeeper,
+  // a tap on the unassigned strip drops it back to unassigned, and a
+  // second tap on the same pill cancels. ESC also cancels.
+  const [floatingRoomId, setFloatingRoomId] = useState<string | null>(null);
+
+  // Staff Priority modal — frozen order captured at open so re-saving
+  // doesn't re-sort the list under the user's cursor.
+  const [showPriority, setShowPriority] = useState(false);
+  const frozenStaffOrder = useRef<string[]>([]);
+
+  // Swap dropdown: which housekeeper's name was clicked to open the
+  // "swap with..." menu. Keyed by staff ID.
+  const [swapOpenFor, setSwapOpenFor] = useState<string | null>(null);
+
   const uid = user?.uid ?? '';
   const pid = activePropertyId ?? '';
 
@@ -90,10 +114,13 @@ export function ScheduleTab() {
   // subscription callback re-fires for the new date.
   useEffect(() => {
     hydratedDate.current = null;
+    lastWrittenRef.current = null;
     setAssignments({});
     setCrewIds([]);
     setCrewExplicit(false);
     setSendResults(new Map());
+    setFloatingRoomId(null);
+    setSwapOpenFor(null);
   }, [shiftDate]);
 
   // ── Subscriptions ─────────────────────────────────────────────────────
@@ -118,20 +145,39 @@ export function ScheduleTab() {
   // Hydrate from saved doc inside the subscription callback so we know
   // exactly when the doc for the current date has loaded — required by
   // the persist guard above.
+  //
+  // Anti-echo: realtime fires after our own writes, delivering the same
+  // data we just saved with a brand-new object reference. Without the
+  // JSON-key compare below, setAssignments(newRef) re-renders → persist
+  // effect re-fires → another save → another echo → save loop ("Auto-
+  // assign laggy" bug). The setState callback form lets React bail out
+  // when the payload hasn't actually changed.
   useEffect(() => {
     if (!uid || !pid) return;
     return subscribeToScheduleAssignments(uid, pid, shiftDate, (doc) => {
-      if (doc) {
-        setAssignments(doc.roomAssignments ?? {});
-        setCrewIds(doc.crew ?? []);
-        // A saved doc is by definition an explicit choice — respect the
-        // crew list even when it's empty.
-        setCrewExplicit(true);
-      } else {
-        setAssignments({});
-        setCrewIds([]);
-        setCrewExplicit(false);
-      }
+      const newAssignments = doc?.roomAssignments ?? {};
+      const newCrew = doc?.crew ?? [];
+
+      setAssignments(prev => {
+        const prevKey = JSON.stringify(prev);
+        const nextKey = JSON.stringify(newAssignments);
+        return prevKey === nextKey ? prev : newAssignments;
+      });
+      setCrewIds(prev => {
+        const prevKey = JSON.stringify(prev);
+        const nextKey = JSON.stringify(newCrew);
+        return prevKey === nextKey ? prev : newCrew;
+      });
+      // A saved doc is by definition an explicit choice — respect the
+      // crew list even when it's empty.
+      setCrewExplicit(!!doc);
+
+      // Seed lastWrittenRef so the persist effect doesn't immediately
+      // try to save what we just hydrated.
+      lastWrittenRef.current = {
+        a: JSON.stringify(newAssignments),
+        c: JSON.stringify(newCrew),
+      };
       hydratedDate.current = shiftDate;
     });
   }, [uid, pid, shiftDate]);
@@ -204,6 +250,19 @@ export function ScheduleTab() {
     [housekeepingStaff, activeCrew],
   );
 
+  // Rooms not currently assigned to a member of the active crew. Catches
+  // both genuinely unassigned rooms (assignments[id] is undefined) and
+  // orphaned rooms whose previously-assigned housekeeper has been
+  // removed from today's roster — both flavours need to show up in the
+  // "Unassigned" strip so the user can re-place them.
+  const unassignedRooms = useMemo(() => {
+    const activeIds = new Set(activeCrew.map(s => s.id));
+    return assignableRooms.filter(r => {
+      const assigned = assignments[r.id];
+      return !assigned || !activeIds.has(assigned);
+    });
+  }, [assignableRooms, assignments, activeCrew]);
+
   const fmtTime = (mins: number) => {
     const h = Math.floor(mins / 60);
     const m = mins % 60;
@@ -218,13 +277,24 @@ export function ScheduleTab() {
     // has loaded. Without this, the initial-mount empty state would
     // clobber an existing doc within 500ms of opening the tab.
     if (hydratedDate.current !== shiftDate) return;
+
+    // Skip if state hasn't changed since the last save. Realtime echoes
+    // our own writes back through the subscription; without this check
+    // we'd save → echo → setState → persist effect re-fires → save…
+    // (the "Auto-assign laggy" infinite loop).
+    const crewIdList = activeCrew.map(s => s.id);
+    const aKey = JSON.stringify(assignments);
+    const cKey = JSON.stringify(crewIdList);
+    if (lastWrittenRef.current?.a === aKey && lastWrittenRef.current?.c === cKey) return;
+
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       const staffNames: Record<string, string> = {};
       activeCrew.forEach(s => { staffNames[s.id] = s.name; });
+      lastWrittenRef.current = { a: aKey, c: cKey };
       saveScheduleAssignments(uid, pid, shiftDate, {
         roomAssignments: assignments,
-        crew: activeCrew.map(s => s.id),
+        crew: crewIdList,
         staffNames,
         // Skip the optional csv snapshot fields — saving without them
         // is fine. PlanSnapshot.rooms has a `roomType` field while the
@@ -332,6 +402,90 @@ export function ScheduleTab() {
     toastTimer.current = setTimeout(() => setToast(null), 4000);
   };
 
+  // Mint a single-use magic-link URL for a housekeeper. Goes through the
+  // /api/staff-link endpoint so the URL carries a fresh token. Falls
+  // back to the tokenless route if the API fails — Maria can still open
+  // the page on a signed-in device.
+  const mintLink = useCallback(async (staffId: string): Promise<string> => {
+    try {
+      const res = await fetchWithAuth('/api/staff-link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ staffId, pid }),
+      });
+      const json = (await res.json().catch(() => null)) as { ok?: boolean; data?: { url?: string } } | null;
+      if (json?.data?.url) return json.data.url;
+    } catch (err) {
+      console.error('[Schedule] mintLink failed:', err);
+    }
+    return `${window.location.origin}/housekeeper/${staffId}?pid=${pid}`;
+  }, [pid]);
+
+  // Click-to-move handlers. The floating room is the one the user just
+  // tapped; the next tap on a housekeeper card or the unassigned strip
+  // commits the move. Tapping the same pill again cancels; ESC also
+  // cancels.
+  const moveRoomTo = useCallback((roomId: string, targetStaffId: string | null) => {
+    setAssignments(prev => {
+      const next = { ...prev };
+      if (targetStaffId) next[roomId] = targetStaffId;
+      else delete next[roomId];
+      return next;
+    });
+    setFloatingRoomId(null);
+  }, []);
+
+  // Swap one housekeeper for another. ALL of A's rooms transfer to B,
+  // and B replaces A in the crew list. If B was off-crew today they
+  // join the crew automatically.
+  const swapStaff = useCallback((oldId: string, newId: string) => {
+    setAssignments(prev => {
+      const next: Record<string, string> = {};
+      for (const [roomId, staffId] of Object.entries(prev)) {
+        next[roomId] = staffId === oldId ? newId : staffId;
+      }
+      return next;
+    });
+    const baseline = crewExplicit ? crewIds : housekeepingStaff.map(s => s.id);
+    const swapped = baseline.includes(newId)
+      ? baseline.filter(id => id !== oldId)
+      : baseline.map(id => id === oldId ? newId : id);
+    setCrewIds(swapped);
+    setCrewExplicit(true);
+    setSwapOpenFor(null);
+  }, [crewExplicit, crewIds, housekeepingStaff]);
+
+  // ESC cancels a floating room, closes the swap dropdown, and closes
+  // the priority modal — keyboard escape hatch out of any open overlay.
+  useEffect(() => {
+    if (!floatingRoomId && !swapOpenFor && !showPriority) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setFloatingRoomId(null);
+      setSwapOpenFor(null);
+      setShowPriority(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [floatingRoomId, swapOpenFor, showPriority]);
+
+  // Click outside the open swap dropdown closes it. Detected by walking
+  // the event target's ancestors looking for `data-swap-dropdown` (the
+  // dropdown itself) or `data-swap-trigger` (the name button — that
+  // button toggles via its own onClick, so we must let it through).
+  useEffect(() => {
+    if (!swapOpenFor) return;
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      if (target.closest('[data-swap-dropdown]')) return;
+      if (target.closest('[data-swap-trigger]')) return;
+      setSwapOpenFor(null);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [swapOpenFor]);
+
   // Clear any pending toast timer on unmount so a delayed setToast(null)
   // can't fire after the component is gone (React warns + leaks state).
   useEffect(() => () => {
@@ -357,14 +511,17 @@ export function ScheduleTab() {
     ? formatPulledAt(pulledAtIso, lang)
     : (lang === 'es' ? 'sin datos' : 'no data');
 
-  // Confirmation status pill helper
+  // Confirmation status pill helper. Returns null when the status is
+  // unknown / no confirmation row exists — the old "No reply" fallback
+  // was a defensive pill that just added visual noise (Reeyen never wants
+  // to see it).
   const confPill = (staffId: string) => {
     const conf = confirmations.find(c => c.staffId === staffId);
     if (!conf) return null;
     if (conf.status === 'confirmed') return <Pill tone="sage">✓ {lang === 'es' ? 'Confirmado' : 'Confirmed'}</Pill>;
     if (conf.status === 'declined')  return <Pill tone="warm">{lang === 'es' ? 'Rechazado' : 'Declined'}</Pill>;
     if (conf.status === 'pending')   return <Pill tone="neutral">{lang === 'es' ? 'Pendiente' : 'Pending'}</Pill>;
-    return <Pill tone="caramel">{lang === 'es' ? 'Sin respuesta' : 'No reply'}</Pill>;
+    return null;
   };
 
   // Send result badge
@@ -462,6 +619,72 @@ export function ScheduleTab() {
         </div>
       </div>
 
+      {/* UNASSIGNED STRIP — sits between the PMS strip and the crew so
+          rooms that come off Reset, or rooms whose previously-assigned
+          housekeeper got removed from today's crew, always have a
+          visible home. Also acts as a drop zone when a room is floating:
+          tapping it returns the floating room to the pool. Hidden when
+          there's nothing unassigned AND no room is floating (so the page
+          stays clean for the common case). */}
+      {(unassignedRooms.length > 0 || floatingRoomId) && (
+        <div
+          onClick={() => {
+            if (floatingRoomId) {
+              moveRoomTo(floatingRoomId, null);
+              flashToast(lang === 'es' ? 'Cuarto sin asignar' : 'Room moved to Unassigned');
+            }
+          }}
+          style={{
+            background: T.paper,
+            border: `1px ${floatingRoomId ? 'dashed' : 'solid'} ${floatingRoomId ? T.caramelDeep : T.rule}`,
+            borderRadius: 16, padding: '14px 22px', marginBottom: 10,
+            display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap',
+            cursor: floatingRoomId ? 'pointer' : 'default',
+          }}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 140 }}>
+            <Caps size={9}>{lang === 'es' ? 'Sin asignar' : 'Unassigned'}</Caps>
+            <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.ink2 }}>
+              {unassignedRooms.length} {lang === 'es' ? 'cuartos' : 'rooms'}
+            </span>
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', flex: 1 }}>
+            {unassignedRooms.length === 0 ? (
+              <span style={{ fontFamily: FONT_SERIF, fontSize: 14, color: T.ink2, fontStyle: 'italic' }}>
+                {lang === 'es'
+                  ? 'Toca aquí para devolver el cuarto al grupo.'
+                  : 'Tap here to drop the room back to the pool.'}
+              </span>
+            ) : unassignedRooms.map(r => {
+              const floating = floatingRoomId === r.id;
+              return (
+                <button
+                  key={r.id}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setFloatingRoomId(prev => prev === r.id ? null : r.id);
+                  }}
+                  style={{
+                    padding: '5px 11px', borderRadius: 8,
+                    background: floating ? "rgba(215,176,126,0.14)" : T.bg,
+                    border: `${floating ? 2 : 1}px solid ${floating ? T.caramelDeep : T.rule}`,
+                    color: T.ink, fontFamily: FONT_MONO, fontSize: 13, fontWeight: 600,
+                    letterSpacing: '-0.02em', whiteSpace: 'nowrap', cursor: 'pointer',
+                  }}
+                  title={floating
+                    ? (lang === 'es' ? 'Toca un nombre para mover, o toca aquí para cancelar' : 'Tap a name to move, or tap again to cancel')
+                    : (lang === 'es' ? 'Toca para levantar' : 'Tap to pick up')}
+                >
+                  {r.number}
+                  {r.type === 'checkout' && <span style={{ color: T.ink3, fontWeight: 400 }}> ↗</span>}
+                  {r.type === 'stayover' && <span style={{ color: T.ink3, fontWeight: 400 }}> ◐</span>}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* CREW ROWS */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {activeCrew.map(c => {
@@ -476,13 +699,27 @@ export function ScheduleTab() {
           const isNear = !isOver && minsLoaded > SHIFT_MINS * 0.85;
           const status = myRooms.length === 0 ? 'available' : isOver ? 'over' : isNear ? 'near' : 'assigned';
           const dotColor = status === 'over' ? T.warm : status === 'near' ? T.caramelDeep : status === 'available' ? T.sageDeep : T.ink2;
+          const isDropTarget = !!floatingRoomId;
+          const swapOpen = swapOpenFor === c.id;
 
           return (
-            <div key={c.id} style={{
-              background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 16,
-              padding: '18px 22px', display: 'grid',
-              gridTemplateColumns: 'auto 1fr auto', gap: 20, alignItems: 'center',
-            }}>
+            <div
+              key={c.id}
+              onClick={() => {
+                if (floatingRoomId) {
+                  moveRoomTo(floatingRoomId, c.id);
+                  flashToast(lang === 'es' ? `Cuarto movido a ${c.name}` : `Room moved to ${c.name}`);
+                }
+              }}
+              style={{
+                background: T.paper,
+                border: `1px ${isDropTarget ? 'dashed' : 'solid'} ${isDropTarget ? T.caramelDeep : T.rule}`,
+                borderRadius: 16, padding: '18px 22px', display: 'grid',
+                gridTemplateColumns: 'auto 1fr auto', gap: 20, alignItems: 'center',
+                cursor: isDropTarget ? 'pointer' : 'default',
+                position: 'relative',
+              }}
+            >
               {/* Avatar + name + capacity */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
                 <span style={{ position: 'relative' }}>
@@ -494,10 +731,96 @@ export function ScheduleTab() {
                   }} />
                 </span>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 160 }}>
-                  <span style={{ fontFamily: FONT_SANS, fontSize: 15, color: T.ink, fontWeight: 600 }}>{c.name}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, position: 'relative' }}>
+                    {/* Name button — click to open the swap dropdown.
+                        Tap the same name again (or anywhere outside the
+                        dropdown) to close it. */}
+                    <button
+                      data-swap-trigger
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSwapOpenFor(prev => prev === c.id ? null : c.id);
+                      }}
+                      title={lang === 'es' ? 'Cambiar por otro' : 'Swap with another'}
+                      style={{
+                        background: 'transparent', border: 'none', cursor: 'pointer',
+                        padding: 0, fontFamily: FONT_SANS, fontSize: 15, color: T.ink,
+                        fontWeight: 600, textAlign: 'left',
+                      }}
+                    >
+                      {c.name}
+                    </button>
+                    {/* Open the housekeeper's personal page in a new tab.
+                        Uses the per-staff magic link if /api/staff-link
+                        is healthy, otherwise falls back to the tokenless
+                        route. */}
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        const url = await mintLink(c.id);
+                        window.open(url, '_blank', 'noopener,noreferrer');
+                      }}
+                      title={lang === 'es' ? 'Abrir página personal' : 'Open personal page'}
+                      style={{
+                        background: 'transparent', border: 'none', cursor: 'pointer',
+                        padding: 2, borderRadius: 4, color: T.ink3,
+                        display: 'inline-flex', alignItems: 'center',
+                      }}
+                    >
+                      <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                      </svg>
+                    </button>
+
+                    {/* Swap dropdown — anchored to the name. Lists every
+                        housekeeping staff member NOT already on the
+                        crew. Picking one transfers all of c's rooms to
+                        the new person and replaces them in the crew. */}
+                    {swapOpen && (
+                      <div
+                        data-swap-dropdown
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                          position: 'absolute', top: '100%', left: 0, marginTop: 4,
+                          background: T.paper, border: `1px solid ${T.rule}`,
+                          borderRadius: 12, boxShadow: '0 8px 24px rgba(0,0,0,0.10)',
+                          padding: 6, zIndex: 60, minWidth: 220, maxHeight: 280, overflow: 'auto',
+                        }}
+                      >
+                        <div style={{ padding: '6px 10px 4px' }}>
+                          <Caps size={9}>{lang === 'es' ? 'Cambiar por' : 'Swap with'}</Caps>
+                        </div>
+                        {offCrew.length === 0 ? (
+                          <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, margin: 0, padding: '8px 10px' }}>
+                            {lang === 'es' ? 'No hay personal disponible.' : 'No staff available.'}
+                          </p>
+                        ) : offCrew.map(s => (
+                          <button
+                            key={s.id}
+                            onClick={() => {
+                              swapStaff(c.id, s.id);
+                              flashToast(lang === 'es' ? `${c.name} → ${s.name}` : `${c.name} → ${s.name}`);
+                            }}
+                            style={{
+                              display: 'flex', alignItems: 'center', gap: 10,
+                              width: '100%', padding: '6px 10px', border: 'none',
+                              background: 'transparent', cursor: 'pointer', borderRadius: 8,
+                              fontFamily: FONT_SANS, fontSize: 13, color: T.ink,
+                            }}
+                            onMouseEnter={e => { e.currentTarget.style.background = T.bg; }}
+                            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                          >
+                            <HousekeeperDot staff={s} size={24} />
+                            <span>{s.name}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2, whiteSpace: 'nowrap' }}>
-                      {myRooms.length} {lang === 'es' ? 'cuartos' : 'rooms'} · {fmtTime(minsLoaded)} / 8h
+                      {myRooms.length} {lang === 'es' ? 'cuartos' : 'rooms'} · {fmtTime(minsLoaded)} / {Math.floor(SHIFT_MINS / 60)}h
                     </span>
                     {status === 'over'      && <Pill tone="warm">{lang === 'es' ? 'Sobre cupo' : 'Over cap'}</Pill>}
                     {status === 'near'      && <Pill tone="caramel">{lang === 'es' ? 'Casi lleno' : 'Near full'}</Pill>}
@@ -512,7 +835,7 @@ export function ScheduleTab() {
                 </div>
               </div>
 
-              {/* Room pills */}
+              {/* Room pills — tap to pick up, tap again to cancel. */}
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
                 {myRooms.length === 0 ? (
                   <span style={{ fontFamily: FONT_SERIF, fontSize: 14, color: T.ink2, fontStyle: 'italic' }}>
@@ -520,25 +843,40 @@ export function ScheduleTab() {
                       ? 'Sin asignar — toca Auto-asignar.'
                       : 'No rooms assigned yet — tap Auto-assign.'}
                   </span>
-                ) : myRooms.map(r => (
-                  <span key={r.id} style={{
-                    padding: '5px 11px', borderRadius: 8,
-                    background: T.bg, border: `1px solid ${T.rule}`, color: T.ink,
-                    fontFamily: FONT_MONO, fontSize: 13, fontWeight: 600, letterSpacing: '-0.02em',
-                    whiteSpace: 'nowrap',
-                  }}>
-                    {r.number}
-                    {r.type === 'checkout' && <span style={{ color: T.ink3, fontWeight: 400 }}> ↗</span>}
-                    {r.type === 'stayover' && <span style={{ color: T.ink3, fontWeight: 400 }}> ◐</span>}
-                  </span>
-                ))}
+                ) : myRooms.map(r => {
+                  const floating = floatingRoomId === r.id;
+                  return (
+                    <button
+                      key={r.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setFloatingRoomId(prev => prev === r.id ? null : r.id);
+                      }}
+                      title={floating
+                        ? (lang === 'es' ? 'Toca un nombre para mover, o toca aquí para cancelar' : 'Tap a name to move, or tap again to cancel')
+                        : (lang === 'es' ? 'Toca para levantar' : 'Tap to pick up')}
+                      style={{
+                        padding: '5px 11px', borderRadius: 8,
+                        background: floating ? "rgba(215,176,126,0.14)" : T.bg,
+                        border: `${floating ? 2 : 1}px solid ${floating ? T.caramelDeep : T.rule}`,
+                        color: T.ink, fontFamily: FONT_MONO, fontSize: 13, fontWeight: 600,
+                        letterSpacing: '-0.02em', whiteSpace: 'nowrap', cursor: 'pointer',
+                      }}
+                    >
+                      {r.number}
+                      {r.type === 'checkout' && <span style={{ color: T.ink3, fontWeight: 400 }}> ↗</span>}
+                      {r.type === 'stayover' && <span style={{ color: T.ink3, fontWeight: 400 }}> ◐</span>}
+                    </button>
+                  );
+                })}
               </div>
 
               {/* Status pills + per-row actions */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
                 {sendBadge(c.id) ?? confPill(c.id)}
                 <button
-                  onClick={() => {
+                  onClick={(e) => {
+                    e.stopPropagation();
                     const baseline = crewExplicit ? crewIds : housekeepingStaff.map(s => s.id);
                     setCrewIds(baseline.filter(id => id !== c.id));
                     setCrewExplicit(true);
@@ -621,6 +959,19 @@ export function ScheduleTab() {
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <Btn variant="ghost" size="md" onClick={() => {
+            // Freeze the current sort order so the list doesn't shuffle
+            // when the user toggles a priority level mid-modal.
+            frozenStaffOrder.current = [...housekeepingStaff]
+              .sort((a, b) => {
+                const order: Record<string, number> = { priority: 0, normal: 1, excluded: 2 };
+                return (order[a.schedulePriority ?? 'normal'] ?? 1) - (order[b.schedulePriority ?? 'normal'] ?? 1);
+              })
+              .map(s => s.id);
+            setShowPriority(true);
+          }}>
+            ★ {lang === 'es' ? 'Prioridad' : 'Priority'}
+          </Btn>
           <Btn variant="ghost" size="md" onClick={handleReset} disabled={!ready}>
             {lang === 'es' ? 'Resetear todo' : 'Reset all'}
           </Btn>
@@ -642,6 +993,106 @@ export function ScheduleTab() {
           border: '1px solid rgba(104,131,114,0.3)',
           borderRadius: 999, fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500,
         }}>{toast}</div>
+      )}
+
+      {/* STAFF PRIORITY MODAL — rendered via portal so it always sits
+          above the rest of the page. Tap each level to update the
+          housekeeper's schedulePriority on the staff record; the auto-
+          assign algorithm reads this field directly to gate who gets
+          rooms first ('priority'), who's backup ('normal'), and who
+          shouldn't be auto-assigned at all ('excluded'). */}
+      {showPriority && typeof document !== 'undefined' && createPortal(
+        <div
+          onClick={() => setShowPriority(false)}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
+            zIndex: 9998, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: 20,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
+              padding: '20px 24px', maxWidth: 560, width: '100%',
+              maxHeight: '80vh', overflow: 'auto',
+              boxShadow: '0 20px 60px rgba(0,0,0,0.20)',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <h2 style={{ fontFamily: FONT_SERIF, fontSize: 24, margin: 0, color: T.ink, fontWeight: 400 }}>
+                <span style={{ fontStyle: 'italic' }}>{lang === 'es' ? 'Prioridad del Personal' : 'Staff Priority'}</span>
+              </h2>
+              <button
+                onClick={() => setShowPriority(false)}
+                style={{
+                  background: 'transparent', border: 'none', cursor: 'pointer',
+                  fontSize: 20, color: T.ink3, padding: '0 6px',
+                }}
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+            <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, margin: '0 0 14px' }}>
+              {lang === 'es'
+                ? 'Prioridad = se asigna primero. Normal = respaldo. Excluido = nunca se asigna automáticamente.'
+                : 'Priority = auto-assigned first. Normal = backup. Excluded = never auto-assigned.'}
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              {frozenStaffOrder.current.map(id => {
+                const s = staff.find(x => x.id === id);
+                if (!s) return null;
+                const level: SchedulePriority = s.schedulePriority ?? 'normal';
+                const levels: Array<{ value: SchedulePriority; label: string }> = [
+                  { value: 'priority', label: lang === 'es' ? 'Prioridad' : 'Priority' },
+                  { value: 'normal',   label: lang === 'es' ? 'Normal'    : 'Normal' },
+                  { value: 'excluded', label: lang === 'es' ? 'Excluido'  : 'Excluded' },
+                ];
+                return (
+                  <div key={s.id} style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '12px 0', borderTop: `1px solid ${T.rule}`,
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <HousekeeperDot staff={s} size={32} />
+                      <span style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink, fontWeight: 500 }}>{s.name}</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 4 }}>
+                      {levels.map(lvl => {
+                        const active = level === lvl.value;
+                        return (
+                          <button
+                            key={lvl.value}
+                            onClick={async () => {
+                              if (!uid || !pid) return;
+                              try {
+                                await updateStaffMember(uid, pid, s.id, { schedulePriority: lvl.value });
+                              } catch (err) {
+                                console.error('[Schedule] priority update failed:', err);
+                                flashToast(lang === 'es' ? 'Error al guardar' : 'Save failed');
+                              }
+                            }}
+                            style={{
+                              padding: '5px 11px', borderRadius: 999, cursor: 'pointer',
+                              fontFamily: FONT_SANS, fontSize: 11, fontWeight: 500,
+                              background: active ? T.sageDeep : 'transparent',
+                              color: active ? '#fff' : T.ink2,
+                              border: `1px solid ${active ? T.sageDeep : T.rule}`,
+                            }}
+                          >
+                            {lvl.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>,
+        document.body,
       )}
 
     </div>
