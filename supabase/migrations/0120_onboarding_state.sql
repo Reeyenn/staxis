@@ -44,5 +44,5 @@ CREATE INDEX IF NOT EXISTS properties_onboarding_in_flight_idx
   WHERE onboarding_completed_at IS NULL;
 
 INSERT INTO public.applied_migrations (version, description)
-VALUES ('0119', 'Phase M1.5: properties.onboarding_state + onboarding_completed_at for unified wizard')
+VALUES ('0120', 'Phase M1.5: properties.onboarding_state + onboarding_completed_at for unified wizard')
 ON CONFLICT (version) DO NOTHING;
