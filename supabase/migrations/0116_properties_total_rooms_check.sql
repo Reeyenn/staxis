@@ -41,3 +41,7 @@ alter table public.properties
 
 alter table public.properties
   add constraint properties_total_rooms_positive check (total_rooms > 0);
+
+INSERT INTO public.applied_migrations (version, description)
+VALUES ('0116', 'Phase K: properties.total_rooms must be > 0 (CHECK constraint + drop bogus DEFAULT 0)')
+ON CONFLICT (version) DO NOTHING;
