@@ -50,3 +50,32 @@ def test_empty_string_still_raises():
         require_property_timezone(None, "p")
     with pytest.raises(PropertyMisconfiguredError):
         require_property_timezone("   ", "p")
+
+
+# ── Phase L: edge cases that Phase K's `except ZoneInfoNotFoundError`
+# did NOT catch. Verified empirically against stdlib zoneinfo:
+#   '../../etc/passwd' -> ValueError (path traversal guard)
+#   '\x00abc'          -> ValueError (embedded null byte)
+#   'a' * 1000         -> OSError    (filename too long)
+# All three crashed inference with generic exceptions before this fix.
+
+
+def test_path_traversal_raises_property_misconfigured():
+    """ZoneInfo raises ValueError for keys outside TZPATH; we catch it."""
+    with pytest.raises(PropertyMisconfiguredError) as exc_info:
+        require_property_timezone("../../etc/passwd", "test-prop")
+    assert exc_info.value.field == "timezone"
+
+
+def test_embedded_null_byte_raises_property_misconfigured():
+    """ZoneInfo raises ValueError for embedded \\x00; we catch it."""
+    with pytest.raises(PropertyMisconfiguredError) as exc_info:
+        require_property_timezone("\x00abc", "test-prop")
+    assert exc_info.value.field == "timezone"
+
+
+def test_over_long_name_raises_property_misconfigured():
+    """ZoneInfo raises OSError [Errno 63] for over-long filenames; we catch it."""
+    with pytest.raises(PropertyMisconfiguredError) as exc_info:
+        require_property_timezone("a" * 1000, "test-prop")
+    assert exc_info.value.field == "timezone"
