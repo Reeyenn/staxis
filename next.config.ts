@@ -117,11 +117,17 @@ const securityHeaders = [
     key: 'Strict-Transport-Security',
     value: 'max-age=63072000; includeSubDomains; preload',
   },
-  // Disable browser features we don't use, so a future XSS can't request
-  // microphone / camera / geolocation prompts in the user's name.
+  // Disable browser features we don't use; allow microphone for same-origin
+  // only (the voice surface shipped 2026-05-13 needs this). Without
+  // `microphone=(self)` Chrome refuses every getUserMedia() call on
+  // getstaxis.com regardless of the user's site permissions, because the
+  // browser obeys this server-side Permissions-Policy ahead of the per-site
+  // setting. Cross-origin iframes still can't request it; an XSS on our
+  // origin could prompt for mic, but XSS already has worse capabilities
+  // (cookies, API calls), so this policy was redundant cover.
   {
     key: 'Permissions-Policy',
-    value: 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
+    value: 'camera=(), microphone=(self), geolocation=(), payment=(), usb=()',
   },
 ];
 
