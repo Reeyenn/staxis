@@ -131,22 +131,38 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
               and p.curr_stock is not null
         ),
         per_pair as (
+            -- Codex round-5 META J2.1 (2026-05-13): the prior version
+            -- computed `rate_per_day` as ABSOLUTE units/day for the
+            -- property, but stored the result into a column named
+            -- `prior_rate_per_room_per_day`. Then trainer + inference
+            -- did `mu_0 = prior_rate * room_count` — turning it into
+            -- 60 × room_count for a 200-room hotel = 60×60×200 = ~720k.
+            -- Latent bug: doesn't fire today because Beaumont is the
+            -- only property and falls back to industry seeds. Would
+            -- explode the day a 5th hotel onboards in any cohort.
+            -- Fix: divide by the property's total_rooms so the column
+            -- name matches the column units. Skip rows where total_rooms
+            -- is missing or zero (those properties are misconfigured —
+            -- handled elsewhere by Phase 3.3).
             select
-                property_id,
-                item_id,
+                w.property_id,
+                w.item_id,
                 greatest(
-                    (prev_stock + orders_in_window - discards_in_window - curr_stock),
+                    (w.prev_stock + w.orders_in_window - w.discards_in_window - w.curr_stock),
                     0
-                ) / days as rate_per_day
-            from with_window
-            where days > 0
+                ) / w.days / nullif(p.total_rooms, 0)::float8 as rate_per_room_per_day
+            from with_window w
+            join public.properties p on p.id = w.property_id
+            where w.days > 0
+              and p.total_rooms > 0
         )
         select
             property_id,
             item_id,
-            percentile_cont(0.5) within group (order by rate_per_day)::float8 as median_rate,
+            percentile_cont(0.5) within group (order by rate_per_room_per_day)::float8 as median_rate,
             count(*)::int as n_pairs
         from per_pair
+        where rate_per_room_per_day is not null
         group by property_id, item_id
     """
 

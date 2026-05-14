@@ -173,6 +173,14 @@ const checks: Array<[string, CheckFn]> = [
   // to read training logs. Phase B's len(X_test)>=30 gate silently
   // rejects models — this makes that visible.
   ['ml_models_holdout_size',         checkMlModelsHoldoutSize],
+  // Codex round-5 META J2.1 (2026-05-13): the cohort prior aggregator
+  // had a units-mismatch bug for 5+ months — emitted ABSOLUTE
+  // units/day into a column named per-room-per-day. Latent today
+  // (Beaumont = 1 hotel, falls back to industry seeds) but would
+  // explode the day a 5th hotel onboards in any cohort. The aggregator
+  // SQL has been fixed; this check warns LOUDLY if any row in
+  // inventory_rate_priors falls outside a sane range.
+  ['inventory_priors_in_range',      checkInventoryPriorsInRange],
   // HSTS preload list status — submitted 2026-05-13. Today the only
   // signal that Google rejected the preload submission is a hand-curl
   // to hstspreload.org. This check folds that into the operator's
@@ -2143,6 +2151,76 @@ async function checkMlModelsHoldoutSize(): Promise<Omit<Check, 'name' | 'duratio
     };
   } catch (err) {
     return { status: 'warn', detail: `holdout-size check threw: ${errToString(err)}` };
+  }
+}
+
+/**
+ * Codex round-5 META J2.1 (2026-05-13): the cohort-prior aggregator
+ * was emitting absolute units/day into a column named per-room-per-day
+ * for 5+ months. Bug was latent because Beaumont is the only property
+ * (n=1, falls back to industry seeds). The day a 5th hotel onboards
+ * in any cohort, every NEW property's cold-start predictions get
+ * scaled 100x-200x off → inventory cockpit shows nonsense numbers.
+ *
+ * The aggregator SQL is now fixed (divides by total_rooms in the CTE).
+ * This check is the loud-warning belt-and-suspenders: if any prior
+ * row is outside a sane per-room-per-day range, surface it
+ * immediately. Industry-benchmark seeds for typical inventory items
+ * (toilet paper, shampoo, towels) sit in [0.05, 2.5]/room/day. Use
+ * a wider safety band to avoid false positives from genuinely
+ * heavy-use items.
+ */
+async function checkInventoryPriorsInRange(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const SANE_MIN = 0.001;  // below this is essentially zero usage — suspicious
+  const SANE_MAX = 10.0;   // above this is implausible per-room-per-day usage
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('inventory_rate_priors')
+      .select('cohort_key, item_canonical_name, prior_rate_per_room_per_day, n_hotels, source')
+      .order('prior_rate_per_room_per_day', { ascending: false })
+      .limit(50);
+    if (error) {
+      return { status: 'warn', detail: `inventory_rate_priors read failed: ${errToString(error)}` };
+    }
+    const rows = (data ?? []) as Array<{
+      cohort_key: string;
+      item_canonical_name: string;
+      prior_rate_per_room_per_day: number | null;
+      n_hotels: number | null;
+      source: string | null;
+    }>;
+    if (rows.length === 0) {
+      return { status: 'ok', detail: 'No inventory_rate_priors rows yet — informational only.' };
+    }
+    const offenders: string[] = [];
+    for (const r of rows) {
+      const rate = r.prior_rate_per_room_per_day;
+      if (rate === null || Number.isNaN(rate)) continue;
+      if (rate < SANE_MIN || rate > SANE_MAX) {
+        offenders.push(
+          `${r.cohort_key}/${r.item_canonical_name} = ${rate.toFixed(3)} (n=${r.n_hotels ?? '?'}, source=${r.source ?? '?'})`,
+        );
+      }
+    }
+    if (offenders.length === 0) {
+      return {
+        status: 'ok',
+        detail: `${rows.length} prior(s) all in sane range [${SANE_MIN}, ${SANE_MAX}] /room/day.`,
+      };
+    }
+    return {
+      status: 'warn',
+      detail:
+        `${offenders.length} cohort prior(s) outside sane range [${SANE_MIN}, ${SANE_MAX}] /room/day. ` +
+        `This is a regression of the J2.1 unit-mismatch bug. Top offenders: ${offenders.slice(0, 5).join('; ')}` +
+        `${offenders.length > 5 ? ' ...' : ''}`,
+      fix:
+        'Inspect ml-service/src/training/inventory_priors.py — verify the per_pair CTE divides by ' +
+        'properties.total_rooms. A regression here scales every cold-start prediction for new ' +
+        'properties by the wrong factor.',
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `inventory_priors_in_range check threw: ${errToString(err)}` };
   }
 }
 
