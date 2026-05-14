@@ -45,7 +45,17 @@ export interface UseVoiceRecordingReturn {
 }
 
 const MAX_RECORDING_MS = 60_000;
-const SILENCE_TIMEOUT_MS = 5_000;
+// Time of continuous silence before we treat the user as "done speaking" and
+// fire /transcribe. Was 5s in the first cut — felt agonizing in real use,
+// added 5s on top of every turn. 800ms is the ChatGPT/Claude-voice norm.
+// If users complain about mid-sentence cutoffs (pause-for-breath), raise to
+// 1200ms before touching SILENCE_THRESHOLD.
+const SILENCE_TIMEOUT_MS = 800;
+// Anything below this RMS counts as silence. Kept conservative (0.012) so a
+// quiet-room speaker doesn't get clipped mid-sentence. In a noisy hotel
+// lobby this could under-detect silence (vacuum / PA / ice machine clear
+// 0.012 routinely) — Phase 2 work is adaptive thresholding (rolling p95
+// floor). For Phase 1 a fixed conservative threshold is the safer trade.
 const SILENCE_THRESHOLD = 0.012;
 
 function shouldUseRecordrtcFallback(): boolean {
@@ -241,7 +251,19 @@ export function useVoiceRecording(opts: UseVoiceRecordingOpts): UseVoiceRecordin
 
     let stream: MediaStream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Explicit AEC / NS / AGC. Browser defaults usually enable these but
+      // the spec leaves it to the implementation, and without echoCancellation
+      // on a laptop the mic picks up Nova's TTS audio from the speakers and
+      // re-transcribes it — Nova ends up talking to herself. Forcing the
+      // constraints here closes that feedback path even on browsers that
+      // default them off (some Android Chromium builds).
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
     } catch (e) {
       const errName = (e as { name?: string })?.name;
       if (errName === 'NotAllowedError' || errName === 'PermissionDeniedError') {

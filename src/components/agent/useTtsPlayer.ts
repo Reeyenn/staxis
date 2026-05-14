@@ -199,20 +199,40 @@ export function useTtsPlayer(opts: UseTtsPlayerOpts): UseTtsPlayerReturn {
     }
 
     a.src = next.url;
+    a.onplay = () => {
+      // Logged once per sentence so a silent-TTS regression can be
+      // diagnosed from the browser console without server logs. The
+      // "Speaking…" status in the overlay reflects fetch+play, not
+      // strictly onplay — see comment on setIsSpeaking call below.
+      console.log('[tts] audio playback started', next.url);
+    };
     a.onended = () => {
       try { URL.revokeObjectURL(next.url); } catch { /* ignore */ }
       playNext();
     };
-    a.onerror = () => {
-      console.error('[tts] audio playback error');
+    a.onerror = (e) => {
+      // MediaError can be CSP blocking blob:, codec-not-supported, or
+      // a 4xx on the blob URL itself. Include the MediaError code so
+      // future regressions are diagnosable from the console.
+      const code = (a.error as MediaError | null)?.code;
+      console.error('[tts] audio playback error', { code, event: e, url: next.url });
       try { URL.revokeObjectURL(next.url); } catch { /* ignore */ }
       playNext();
     };
     a.play().catch(e => {
-      // Autoplay-blocked: surface to console; the user can tap the
-      // panel to unblock. We don't surface an error toast because this
-      // is a recoverable state (user gesture re-enables audio).
-      console.warn('[tts] audio.play() rejected', e);
+      // Most common causes (in order): (1) CSP missing media-src 'self'
+      // blob: — the browser refuses to load the blob URL silently with
+      // a NotSupportedError. (2) Autoplay policy when the audio element
+      // was created outside a user gesture — NotAllowedError. (3) The
+      // active document is hidden. We surface as error (not warn) since
+      // the user gets the silent-TTS experience otherwise. Recovery:
+      // re-tap the phone icon to re-enter voice mode under a fresh
+      // gesture frame.
+      console.error('[tts] audio.play() rejected', {
+        name: (e as { name?: string })?.name,
+        message: (e as { message?: string })?.message,
+        url: next.url,
+      });
       try { URL.revokeObjectURL(next.url); } catch { /* ignore */ }
       playNext();
     });

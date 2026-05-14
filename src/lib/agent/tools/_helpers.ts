@@ -23,6 +23,34 @@ export interface RoomRow {
 }
 
 /**
+ * Pick the property's "current" rooms-table date.
+ *
+ * The `rooms` table is composite-keyed on (property_id, date, number) — one
+ * row per room per day. Any agent-facing query that wants "today's room
+ * state" MUST filter by a single date or it will sum every historical day
+ * together and report e.g. "557 dirty rooms" for a 100-room hotel.
+ *
+ * We deliberately use "most recent date that has rows" instead of
+ * `new Date().toISOString().slice(0,10)` (UTC today) because:
+ *   - The daily seeding job may not have run yet at the moment we query.
+ *   - UTC today disagrees with the property's local date for ~5 hours of
+ *     every evening in CST/CDT (where most pilot hotels live).
+ * Picking the latest seeded date sidesteps both classes of drift.
+ *
+ * Returns null when the property has zero rooms in the DB.
+ */
+export async function getCurrentRoomsDate(propertyId: string): Promise<string | null> {
+  const { data } = await supabaseAdmin
+    .from('rooms')
+    .select('date')
+    .eq('property_id', propertyId)
+    .order('date', { ascending: false })
+    .limit(1);
+  const d = data?.[0]?.date;
+  return typeof d === 'string' ? d : null;
+}
+
+/**
  * Find the canonical room row for a given (property, room number). If multiple
  * date-bucketed rows exist (e.g. rooms.date='2026-05-12' and '2026-05-13'),
  * prefer today's. If today's isn't there, fall back to the most recent.

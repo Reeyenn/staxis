@@ -8,6 +8,7 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import type { AppRole } from '@/lib/roles';
+import { getCurrentRoomsDate } from './tools/_helpers';
 
 export interface HotelSnapshot {
   /** ISO date string YYYY-MM-DD in the property's local time. */
@@ -67,26 +68,41 @@ export async function buildHotelSnapshot(
     return cached.snapshot;
   }
 
-  const today = new Date().toISOString().slice(0, 10);
-
-  // Property name + timezone (cheap, sometimes missing for new orgs).
+  // Property name + timezone + total_rooms (cheap, sometimes missing for new orgs).
   let propertyName: string | null = null;
   let timezone: string | null = null;
+  let configuredTotalRooms = 0;
   try {
     const { data } = await supabaseAdmin
       .from('properties')
-      .select('name, timezone')
+      .select('name, timezone, total_rooms')
       .eq('id', propertyId)
       .maybeSingle();
     if (data) {
       propertyName = (data.name as string) ?? null;
       timezone = (data.timezone as string) ?? null;
+      configuredTotalRooms = Number(data.total_rooms ?? 0);
     }
   } catch {
     // non-fatal — snapshot continues with nulls
   }
 
-  // Room summary — all rooms for the property today. One query, group in JS.
+  // Pick the rooms.date to query against — see getCurrentRoomsDate for why
+  // this isn't just `new Date().toISOString().slice(0,10)`. If the property
+  // has no rooms at all (brand-new account, pre-seed) the helper returns
+  // null and the rooms summary stays zeroed.
+  const roomsDate = await getCurrentRoomsDate(propertyId);
+  const today = roomsDate ?? new Date().toISOString().slice(0, 10);
+
+  // Room summary — only the rows for the chosen date.
+  //
+  // 2026-05-14 root cause: this query previously had no date filter, so
+  // for a hotel with N rooms and D days of seeded history it returned
+  // N×D rows and reported them all as "today's rooms." Result: the
+  // voice mode replied "557 dirty rooms, 432 clean…" for a ~100-room
+  // property. The composite key on (property_id, date, number) makes
+  // multi-day accumulation the default behavior — the date filter is
+  // mandatory for any "today" summary.
   const rooms = {
     total: 0,
     dirty: 0,
@@ -96,25 +112,39 @@ export async function buildHotelSnapshot(
     issuesFlagged: 0,
     helpRequested: 0,
   };
-  try {
-    const { data } = await supabaseAdmin
-      .from('rooms')
-      .select('status, is_dnd, issue_note, help_requested')
-      .eq('property_id', propertyId);
-    if (data) {
-      rooms.total = data.length;
-      for (const r of data) {
-        const status = (r.status as string) ?? 'dirty';
-        if (r.is_dnd) rooms.dnd++;
-        else if (status === 'dirty') rooms.dirty++;
-        else if (status === 'in_progress') rooms.in_progress++;
-        else if (status === 'clean' || status === 'inspected') rooms.clean++;
-        if (r.issue_note) rooms.issuesFlagged++;
-        if (r.help_requested) rooms.helpRequested++;
+  if (roomsDate) {
+    try {
+      const { data } = await supabaseAdmin
+        .from('rooms')
+        .select('status, is_dnd, issue_note, help_requested')
+        .eq('property_id', propertyId)
+        .eq('date', roomsDate);
+      if (data) {
+        rooms.total = data.length;
+        for (const r of data) {
+          const status = (r.status as string) ?? 'dirty';
+          if (r.is_dnd) rooms.dnd++;
+          else if (status === 'dirty') rooms.dirty++;
+          else if (status === 'in_progress') rooms.in_progress++;
+          else if (status === 'clean' || status === 'inspected') rooms.clean++;
+          if (r.issue_note) rooms.issuesFlagged++;
+          if (r.help_requested) rooms.helpRequested++;
+        }
       }
+    } catch {
+      // non-fatal
     }
-  } catch {
-    // non-fatal
+  }
+
+  // Sanity check: rooms.total should not exceed the configured property size
+  // (which the manager set at onboarding). If it does, the data layer is
+  // somehow returning multi-day rows again — log loudly so we can spot it
+  // before the agent reports inflated numbers to a user.
+  if (configuredTotalRooms > 0 && rooms.total > configuredTotalRooms) {
+    console.warn(
+      `[agent/context] rooms.total=${rooms.total} exceeds properties.total_rooms=${configuredTotalRooms} ` +
+      `for property=${propertyId} date=${roomsDate} — possible date-filter regression`,
+    );
   }
 
   // Active staff (today). is_active=true; the housekeeper public-link flow
@@ -138,14 +168,17 @@ export async function buildHotelSnapshot(
   }
 
   // For housekeeping role, also include their assigned rooms so they can ask
-  // "what's next" without an extra tool call.
+  // "what's next" without an extra tool call. Same date filter applies —
+  // without it, a housekeeper sees every room they've ever been assigned
+  // to instead of the rooms on the active date.
   let myRooms: HotelSnapshot['myRooms'] | undefined;
-  if (role === 'housekeeping' && staffId) {
+  if (role === 'housekeeping' && staffId && roomsDate) {
     try {
       const { data } = await supabaseAdmin
         .from('rooms')
         .select('id, number, status, is_dnd, issue_note, help_requested')
         .eq('property_id', propertyId)
+        .eq('date', roomsDate)
         .eq('assigned_to', staffId)
         .order('number');
       if (data) {

@@ -3,7 +3,7 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { registerTool, type ToolResult } from '../tools';
-import { findRoomByNumber } from './_helpers';
+import { findRoomByNumber, getCurrentRoomsDate } from './_helpers';
 
 // ─── list_my_rooms ────────────────────────────────────────────────────────
 // Housekeeper-only. Their assigned rooms with current status.
@@ -20,10 +20,17 @@ registerTool<Record<string, never>>({
     if (!ctx.staffId) {
       return { ok: false, error: 'Your account isn\'t linked to a staff record on this property. Ask the manager to link it before using the chat.' };
     }
+    // Date filter required — rooms is keyed (property, date, number) and
+    // without scoping the user sees every day they've ever been assigned.
+    const roomsDate = await getCurrentRoomsDate(ctx.propertyId);
+    if (!roomsDate) {
+      return { ok: true, data: { count: 0, rooms: [] } };
+    }
     const { data, error } = await supabaseAdmin
       .from('rooms')
       .select('number, status, is_dnd, issue_note, help_requested, type')
       .eq('property_id', ctx.propertyId)
+      .eq('date', roomsDate)
       .eq('assigned_to', ctx.staffId)
       .order('number');
     if (error) return { ok: false, error: 'Failed to fetch assigned rooms.' };
@@ -58,10 +65,15 @@ registerTool<Record<string, never>>({
     if (!ctx.staffId) {
       return { ok: false, error: 'Your account isn\'t linked to a staff record on this property. Ask the manager to link it before using the chat.' };
     }
+    const roomsDate = await getCurrentRoomsDate(ctx.propertyId);
+    if (!roomsDate) {
+      return { ok: true, data: { hasNext: false, message: 'No rooms scheduled yet for today.' } };
+    }
     const { data, error } = await supabaseAdmin
       .from('rooms')
       .select('number, status, is_dnd, type')
       .eq('property_id', ctx.propertyId)
+      .eq('date', roomsDate)
       .eq('assigned_to', ctx.staffId)
       .in('status', ['dirty', 'in_progress'])
       .eq('is_dnd', false)
@@ -139,12 +151,23 @@ registerTool<Record<string, never>>({
   inputSchema: { type: 'object', properties: {} },
   allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk'],
   handler: async (_, ctx): Promise<ToolResult> => {
-    const today = new Date().toISOString().slice(0, 10);
+    // Use the property's most-recent rooms-date for both the rooms summary
+    // AND the cleaning_events join so the rollup is internally consistent.
+    // (Falling back to UTC today for events when no rooms exist; the rollup
+    // is meaningless in that case anyway.)
+    const roomsDate = await getCurrentRoomsDate(ctx.propertyId);
+    const today = roomsDate ?? new Date().toISOString().slice(0, 10);
 
-    const { data: rooms } = await supabaseAdmin
-      .from('rooms')
-      .select('status, is_dnd, issue_note, help_requested, completed_at')
-      .eq('property_id', ctx.propertyId);
+    type RoomRow = { status: string | null; is_dnd: boolean | null; issue_note: string | null; help_requested: boolean | null; completed_at: string | null };
+    let rooms: RoomRow[] = [];
+    if (roomsDate) {
+      const { data } = await supabaseAdmin
+        .from('rooms')
+        .select('status, is_dnd, issue_note, help_requested, completed_at')
+        .eq('property_id', ctx.propertyId)
+        .eq('date', roomsDate);
+      rooms = (data ?? []) as RoomRow[];
+    }
     const { data: events } = await supabaseAdmin
       .from('cleaning_events')
       .select('staff_id, duration_minutes, status')

@@ -5,6 +5,7 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { registerTool, type ToolResult } from '../tools';
+import { getCurrentRoomsDate } from './_helpers';
 
 // ─── get_occupancy ────────────────────────────────────────────────────────
 
@@ -15,10 +16,18 @@ registerTool<Record<string, never>>({
   inputSchema: { type: 'object', properties: {} },
   allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk'],
   handler: async (_, ctx): Promise<ToolResult> => {
+    // Date filter required — rooms is keyed (property, date, number).
+    // Without it the query returned every historical day, which produced
+    // the "1000+ rooms at a 100-room hotel" hallucination on 2026-05-14.
+    const roomsDate = await getCurrentRoomsDate(ctx.propertyId);
+    if (!roomsDate) {
+      return { ok: true, data: { total: 0, occupied: 0, vacant: 0, occupancyPercent: 0 } };
+    }
     const { data, error } = await supabaseAdmin
       .from('rooms')
       .select('status, type, is_dnd')
-      .eq('property_id', ctx.propertyId);
+      .eq('property_id', ctx.propertyId)
+      .eq('date', roomsDate);
     if (error) return { ok: false, error: 'Failed to read occupancy.' };
 
     const total = data?.length ?? 0;
@@ -34,6 +43,7 @@ registerTool<Record<string, never>>({
         occupied,
         vacant,
         occupancyPercent: occupancyPct,
+        asOfDate: roomsDate,
       },
     };
   },

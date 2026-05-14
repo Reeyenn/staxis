@@ -66,6 +66,14 @@ function buildCsp(): string {
     `style-src 'self' 'unsafe-inline' ${googleFontsCss}`,
     `img-src 'self' data: https:`,
     `font-src 'self' data: ${googleFontsFile}`,
+    // Voice mode fetches TTS audio from /api/agent/speak, wraps the response
+    // in a Blob, and plays it via URL.createObjectURL(blob). Without an
+    // explicit media-src, the directive falls back to default-src 'self',
+    // which rejects blob: URLs and silently kills audio playback (the
+    // browser logs a CSP violation but the page itself stays silent).
+    // blob: here is same-origin only — URL.createObjectURL can't mint
+    // cross-origin URLs — so this doesn't broaden the attack surface.
+    `media-src 'self' blob:`,
     `connect-src 'self' ${supabaseConnect}`,
     // `frame-src` defaults to `default-src 'self'` when unset, which would
     // block Stripe Elements, Calendly, etc. if/when we embed them. Set it

@@ -36,10 +36,16 @@ export function getOpenAIClient(): OpenAI {
 }
 
 /**
- * Pricing constants for the audio APIs (Sept 2024 rates, in USD).
+ * Pricing constants for the audio APIs (in USD).
  * Update if OpenAI changes their published rates.
+ *
+ * Transcription per-minute:
+ *   - whisper-1 (legacy):           $0.006 / minute
+ *   - gpt-4o-transcribe:            $0.006 / minute (faster, same price)
+ *   - gpt-4o-mini-transcribe (us):  $0.003 / minute (faster + half price)
  */
 export const OPENAI_AUDIO_PRICING = {
-  whisperPerMinute: 0.006,        // $0.006 / minute of audio
-  tts1PerThousandChars: 0.015,    // $0.015 / 1000 characters of input text
+  whisperPerMinute: 0.006,            // legacy; left in for back-reference
+  gpt4oMiniTranscribePerMinute: 0.003,
+  tts1PerThousandChars: 0.015,        // $0.015 / 1000 characters of input text
 } as const;
