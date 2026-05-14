@@ -12,30 +12,20 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { verifyTeamManager, canManageHotel } from '@/lib/team-auth';
 import { writeAudit } from '@/lib/audit';
+import {
+  generateJoinCode,
+  STAFF_CODE_TTL_HOURS as CODE_TTL_HOURS,
+  STAFF_CODE_MAX_USES as CODE_MAX_USES,
+} from '@/lib/join-codes';
 
 // New-flow defaults: codes don't pre-bind a role; the staff member chooses
 // their own role at /signup. Validity is fixed at 7 days and up to 100
 // signups per code — enough for a hotel-wide share without being unlimited.
-const CODE_TTL_HOURS = 24 * 7;       // 7 days
-const CODE_MAX_USES = 100;
+// (Constants moved to @/lib/join-codes in Phase M1 so the admin
+// property-create route mints codes from the same source.)
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-// Generate a code like "BEAU-K9F2": 4 letters + 4 alphanum.
-const CODE_LETTERS = 'ABCDEFGHJKMNPQRSTUVWXYZ'; // no I/L/O for clarity
-const CODE_ALPHANUM = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-function randomCharsFrom(set: string, n: number): string {
-  let s = '';
-  for (let i = 0; i < n; i++) s += set[Math.floor(Math.random() * set.length)];
-  return s;
-}
-function generateJoinCode(hotelName?: string): string {
-  const prefix = hotelName
-    ? hotelName.replace(/[^A-Za-z]/g, '').slice(0, 4).toUpperCase().padEnd(4, 'X')
-    : randomCharsFrom(CODE_LETTERS, 4);
-  return `${prefix}-${randomCharsFrom(CODE_ALPHANUM, 4)}`;
-}
 
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
