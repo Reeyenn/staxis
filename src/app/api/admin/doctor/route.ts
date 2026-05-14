@@ -1824,8 +1824,18 @@ async function checkPropertyMisconfiguredRecent(): Promise<Omit<Check, 'name' | 
     const fields = new Set<string>();
     const propertyIds = new Set<string>();
     for (const row of rows) {
-      const md = (row as { metadata?: { field?: string } }).metadata;
-      if (md?.field) fields.add(md.field);
+      // Codex round-4 G3: when the parser remapped to 'unknown_field',
+      // E2 stores the original Python typo in metadata.original_field.
+      // Surface that instead of just 'unknown_field' so the operator
+      // sees the actual mistake without grepping app_events.
+      const md = (row as { metadata?: { field?: string; original_field?: string } }).metadata;
+      if (md?.field) {
+        if (md.field === 'unknown_field' && md.original_field) {
+          fields.add(`unknown(${md.original_field})`);
+        } else {
+          fields.add(md.field);
+        }
+      }
       const pid = (row as { property_id?: string }).property_id;
       if (pid) propertyIds.add(pid);
     }
@@ -2027,14 +2037,21 @@ async function checkMlModelsHoldoutSize(): Promise<Omit<Check, 'name' | 'duratio
     // care about non-shadow non-item rows for housekeeping (demand +
     // supply); inventory has per-item models which is too granular for
     // this check.
+    // Codex round-4 G1: filter `is_active=true` so a property whose
+    // latest training failed activation but whose previous activation
+    // had a healthy holdout doesn't surface as a false positive.
+    // Codex round-4 G2: bumped 50 → 200 to match
+    // checkPropertyMisconfiguredRecent's limit; at fleet scale the
+    // 50-row ceiling truncated BEFORE dedupe.
     const { data, error } = await supabaseAdmin
       .from('model_runs')
       .select('id, property_id, layer, validation_holdout_n, trained_at')
       .in('layer', ['demand', 'supply'])
       .is('item_id', null)
+      .eq('is_active', true)
       .eq('is_shadow', false)
       .order('trained_at', { ascending: false })
-      .limit(50);  // small ceiling — at fleet scale, dedupe by (property, layer) below
+      .limit(200);
     if (error) {
       return { status: 'warn', detail: `model_runs read failed: ${errToString(error)}` };
     }

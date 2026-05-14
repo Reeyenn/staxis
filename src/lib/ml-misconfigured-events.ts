@@ -110,6 +110,17 @@ export async function emitPropertyMisconfiguredEvent(
 const KNOWN_MISCONFIGURED_FIELDS = ['timezone', 'total_rooms'] as const;
 
 /**
+ * Statuses that count as "misconfigured property" for cron-heartbeat
+ * purposes. Each cron filters its results array using this set so
+ * `degraded` heartbeats only fire on real misconfigurations — NOT on
+ * intentional admin states (e.g. `'skipped_ai_off'` from the inventory
+ * predict cron). Codex round-4 review 2026-05-13 (G4): single source
+ * of truth so a future skipped reason added to the ML service must be
+ * acknowledged here, not silently miscounted.
+ */
+export const MISCONFIG_STATUSES: ReadonlySet<string> = new Set(['skipped']);
+
+/**
  * Sentinel values that mean "missing" across the TS/Python boundary.
  * Codex follow-up 2026-05-13 (C2): TS-detected skips wrote `null`,
  * Python's repr() preserved `None`, `''`, `"NULL"`, etc. — operators

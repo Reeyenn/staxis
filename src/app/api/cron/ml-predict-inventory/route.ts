@@ -21,6 +21,7 @@ import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import {
   emitPropertyMisconfiguredEvent,
   parsePropertyMisconfiguredError,
+  MISCONFIG_STATUSES,
 } from '@/lib/ml-misconfigured-events';
 
 export const runtime = 'nodejs';
@@ -155,12 +156,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   ];
 
   const anyError = results.some((r) => r.status === 'error');
-  // Codex follow-up 2026-05-13 (A1) + round-3 (E3): explicit set so the
-  // contract isn't implicit. 'skipped' = misconfigured (degraded
-  // heartbeat). 'skipped_ai_off' = intentional admin setting (NOT
-  // degraded). If a future ML-service path adds a new skipped reason,
-  // add it explicitly here so the dev sees the contract.
-  const MISCONFIG_STATUSES: ReadonlySet<string> = new Set(['skipped']);
+  // Codex round-4 (G4): MISCONFIG_STATUSES now lives in the shared
+  // helper module so all 4 ML crons (this + 3 training crons) read
+  // the same contract. Adding a new skipped reason there forces an
+  // update in one place.
   const propertiesMisconfigured = results.filter((r) => MISCONFIG_STATUSES.has(r.status)).length;
   if (!anyError) {
     await writeCronHeartbeat('ml-predict-inventory', {

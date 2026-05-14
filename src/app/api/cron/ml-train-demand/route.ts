@@ -34,6 +34,7 @@ import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import {
   emitPropertyMisconfiguredEvent,
   parsePropertyMisconfiguredError,
+  MISCONFIG_STATUSES,
 } from '@/lib/ml-misconfigured-events';
 
 export const runtime = 'nodejs';
@@ -145,11 +146,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   });
 
   const anyError = results.some((r) => r.status === 'error');
-  // Codex round-3 review 2026-05-13 (D2): match ml-predict-inventory's
-  // pattern — flip heartbeat to 'degraded' when any property was skipped
-  // for misconfiguration. Was missing here; cron looked green even when
-  // every property was misconfigured.
-  const propertiesMisconfigured = results.filter((r) => r.status === 'skipped').length;
+  // Codex round-3 (D2) + round-4 (G4): heartbeat-degraded on misconfig.
+  // MISCONFIG_STATUSES is the shared single source of truth across
+  // all 4 ML crons.
+  const propertiesMisconfigured = results.filter((r) => MISCONFIG_STATUSES.has(r.status)).length;
   if (!anyError) {
     await writeCronHeartbeat('ml-train-demand', {
       requestId,
