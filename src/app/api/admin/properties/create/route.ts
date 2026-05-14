@@ -45,6 +45,7 @@ import {
   OWNER_CODE_MAX_USES,
 } from '@/lib/join-codes';
 import { sendOnboardingInvite } from '@/lib/email/onboarding-invite';
+import { DEFAULT_INVENTORY_ITEMS } from '@/lib/inventory/default-items';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -244,6 +245,41 @@ export async function POST(req: NextRequest) {
       `Failed to create property: ${insErr?.message ?? 'unknown error'}`,
       { requestId, status: 500, code: ApiErrorCode.InternalError },
     );
+  }
+
+  // Phase M1.5: seed the 16 default inventory items immediately so the
+  // wizard can confidently say "your inventory is set up" at Step 9 and
+  // ML cold-start training can begin as soon as the first count event
+  // arrives (instead of waiting for the owner to open the inventory
+  // page once to trigger the auto-seed). Idempotent — the unique index
+  // (property_id, lower(name)) makes re-running this a no-op.
+  //
+  // Best-effort: a failure here doesn't roll back the property. The
+  // inventory page's existing client-side seed (page.tsx:38) is the
+  // backstop — if the server-side seed flakes, the owner gets the same
+  // items the next time they open the page.
+  try {
+    const inventoryRows = DEFAULT_INVENTORY_ITEMS.map((item) => ({
+      property_id: created.id,
+      name: item.name,
+      category: item.category,
+      current_stock: item.currentStock,
+      par_level: item.parLevel,
+      unit: item.unit,
+    }));
+    const { error: seedErr } = await supabaseAdmin
+      .from('inventory')
+      .insert(inventoryRows);
+    if (seedErr && !String(seedErr.message ?? '').toLowerCase().includes('duplicate')) {
+      // Non-duplicate errors are real; log them so ops can investigate.
+      console.error('[admin/properties/create] inventory seed failed (non-fatal)', {
+        requestId, propertyId: created.id, error: seedErr.message,
+      });
+    }
+  } catch (e) {
+    console.error('[admin/properties/create] inventory seed threw (non-fatal)', {
+      requestId, propertyId: created.id, error: e instanceof Error ? e.message : String(e),
+    });
   }
 
   // Mint an owner-role join code so the admin has something to send the
