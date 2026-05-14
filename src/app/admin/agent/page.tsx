@@ -11,7 +11,7 @@ import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import { Activity, AlertTriangle, Archive, ChevronRight, DollarSign, Hammer, Inbox, Users } from 'lucide-react';
+import { Activity, AlertTriangle, Archive, ChevronRight, DollarSign, Hammer, Inbox, Sparkles, Users } from 'lucide-react';
 
 const C = {
   bg:       'var(--snow-bg, #FFFFFF)',
@@ -114,7 +114,7 @@ export default function AdminAgentPage() {
         minHeight: '100vh',
       }}>
         {/* Header */}
-        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 36 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 36, gap: 16 }}>
           <div>
             <div style={{
               fontFamily: FONT_SERIF,
@@ -136,19 +136,44 @@ export default function AdminAgentPage() {
               Monitoring · {lastFetchedAt ? `updated ${formatRelative(lastFetchedAt)}` : 'loading'}
             </div>
           </div>
-          {error && (
-            <div style={{
-              padding: '6px 12px',
-              background: 'rgba(184, 92, 61, 0.08)',
-              border: `1px solid rgba(184, 92, 61, 0.20)`,
-              borderRadius: 6,
-              color: C.warm,
-              fontFamily: FONT_MONO,
-              fontSize: 11,
-            }}>
-              {error}
-            </div>
-          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            {error && (
+              <div style={{
+                padding: '6px 12px',
+                background: 'rgba(184, 92, 61, 0.08)',
+                border: `1px solid rgba(184, 92, 61, 0.20)`,
+                borderRadius: 6,
+                color: C.warm,
+                fontFamily: FONT_MONO,
+                fontSize: 11,
+              }}>
+                {error}
+              </div>
+            )}
+            <Link
+              href="/admin/agent/prompts"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '10px 16px',
+                background: '#364262',
+                color: '#FFFFFF',
+                borderRadius: 8,
+                textDecoration: 'none',
+                fontFamily: FONT_SANS,
+                fontSize: 13,
+                fontWeight: 500,
+                whiteSpace: 'nowrap',
+                transition: 'opacity 0.15s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.opacity = '0.88'; }}
+              onMouseLeave={e => { e.currentTarget.style.opacity = '1'; }}
+            >
+              <Sparkles size={14} />
+              Edit AI prompts
+            </Link>
+          </div>
         </div>
 
         {/* Top KPIs */}

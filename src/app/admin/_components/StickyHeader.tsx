@@ -16,13 +16,14 @@ import React, { useEffect, useRef, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { AlertsBell } from './AlertsBell';
 
-export type AdminTab = 'onboarding' | 'live' | 'system' | 'money';
+export type AdminTab = 'onboarding' | 'live' | 'system' | 'money' | 'agent';
 
 const TABS: { id: AdminTab; label: string }[] = [
   { id: 'onboarding', label: 'Onboarding' },
   { id: 'live', label: 'Live hotels' },
   { id: 'system', label: 'System' },
   { id: 'money', label: 'Money' },
+  { id: 'agent', label: 'Agent' },
 ];
 
 interface Stats {

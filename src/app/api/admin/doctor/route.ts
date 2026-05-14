@@ -1274,12 +1274,15 @@ export const EXPECTED_MIGRATIONS: ReadonlyArray<string> = [
   // 0107 ML: atomic housekeeping model install RPC (parallel chat).
   // 0108 Round-11 T3: drop unused agent_prompts.canary_pct column.
   // 0109 Round-11 T1: add 'summarizer' role to agent_prompts + seed.
+  // 0110 ML: atomic inventory model install (parallel chat).
+  // 0111 ML: RPC unknown-field notice (parallel chat).
   '0079', '0080', '0081', '0082', '0083',
   '0084', '0085', '0086', '0087', '0088', '0089',
   '0090', '0091', '0092', '0093', '0094',
   '0095', '0096', '0097', '0098', '0099',
   '0100', '0101', '0102', '0103', '0104',
   '0105', '0106', '0107', '0108', '0109',
+  '0110', '0111',
 ];
 async function checkAppliedMigrations(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {

@@ -30,8 +30,9 @@ import { OnboardingTab } from '@/app/admin/_components/tabs/OnboardingTab';
 import { LiveHotelsTab } from '@/app/admin/_components/tabs/LiveHotelsTab';
 import { SystemTab } from '@/app/admin/_components/tabs/SystemTab';
 import { MoneyTab } from '@/app/admin/_components/tabs/MoneyTab';
+import { AgentTab } from '@/app/admin/_components/tabs/AgentTab';
 
-const VALID_TABS: AdminTab[] = ['onboarding', 'live', 'system', 'money'];
+const VALID_TABS: AdminTab[] = ['onboarding', 'live', 'system', 'money', 'agent'];
 
 function readHashTab(): AdminTab {
   if (typeof window === 'undefined') return 'onboarding';
@@ -90,6 +91,7 @@ export default function AdminPropertiesPage() {
         {activeTab === 'live' && <LiveHotelsTab />}
         {activeTab === 'system' && <SystemTab />}
         {activeTab === 'money' && <MoneyTab />}
+        {activeTab === 'agent' && <AgentTab />}
 
         <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
       </div>
