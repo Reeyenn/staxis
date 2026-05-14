@@ -147,6 +147,115 @@ const SCENARIOS: Scenario[] = [
     },
   },
 
+  // ── T12.14: concurrent summarizer + new user message ──────────────────
+  {
+    name: 'concurrent_summary_apply_with_new_message',
+    description: 'Simulate the race: summarizer reads 50 messages, a new user message lands during the Haiku call, then summarizer applies. The summary must sort BEFORE the new message; replay order must be chronological.',
+    run: async (pg) => {
+      // Pick an admin account to attribute the conversation to.
+      const adminRow = await pg.query(`SELECT id FROM accounts WHERE role='admin' LIMIT 1`);
+      if (adminRow.rows.length === 0) {
+        return { pass: false, details: 'no admin account found' };
+      }
+      const adminId = adminRow.rows[0].id;
+
+      const conv = await pg.query(`
+        INSERT INTO agent_conversations (user_id, property_id, role)
+        VALUES ($1, $2, 'admin')
+        RETURNING id;
+      `, [adminId, process.env.STAXIS_EVAL_PROPERTY_ID]);
+      const convId = conv.rows[0].id;
+
+      // Insert 50 fake messages, alternating user/assistant, all in the past.
+      // Each one is 1 minute older than the previous so created_at is strictly ordered.
+      const batchIds: string[] = [];
+      for (let i = 0; i < 50; i++) {
+        const role = i % 2 === 0 ? 'user' : 'assistant';
+        const r = await pg.query(`
+          INSERT INTO agent_messages (conversation_id, role, content, created_at)
+          VALUES ($1, $2, $3, now() - ($4 || ' minutes')::interval)
+          RETURNING id;
+        `, [convId, role, `msg-${i}`, (60 - i).toString()]);
+        batchIds.push(r.rows[0].id);
+      }
+
+      // Capture the max created_at across the batch.
+      const maxBatchTs = await pg.query(`
+        SELECT MAX(created_at) AS m FROM agent_messages WHERE id = ANY($1::uuid[])
+      `, [batchIds]);
+
+      // RACE STEP: a new user message lands BEFORE the summarizer applies.
+      // (In production, this would happen during Haiku's 5-15s call.)
+      const newMsg = await pg.query(`
+        INSERT INTO agent_messages (conversation_id, role, content)
+        VALUES ($1, 'user', '__new-user-msg-during-haiku__')
+        RETURNING id, created_at;
+      `, [convId]);
+      const newMsgTs = newMsg.rows[0].created_at;
+
+      // Now the summarizer's apply RPC fires. It pins the summary's
+      // created_at to max(batch)+1µs. The new message has created_at=now()
+      // which is AFTER max(batch)+1µs.
+      const applyResult = await pg.query(`
+        SELECT staxis_apply_conversation_summary(
+          $1, '(summary content)', $2::uuid[], 0, 0, 'haiku', 'test', 0
+        ) AS summary_id;
+      `, [convId, batchIds]);
+      const summaryId = applyResult.rows[0].summary_id;
+
+      // Read the summary's created_at.
+      const summary = await pg.query(`
+        SELECT created_at FROM agent_messages WHERE id = $1
+      `, [summaryId]);
+      const summaryTs = summary.rows[0].created_at;
+
+      // Invariant 1: summary timestamp == max(batch) + 1µs
+      const expectedSummaryTs = new Date(maxBatchTs.rows[0].m.getTime() + 0.001);
+      // Compare as milliseconds (PG returns Date with µs lost; +1µs becomes +0.001ms which we tolerate as same ms)
+      const sameMs = Math.abs(summaryTs.getTime() - maxBatchTs.rows[0].m.getTime()) < 2;
+      if (!sameMs) {
+        return {
+          pass: false,
+          details: `summary timestamp ${summaryTs.toISOString()} not within 2ms of max(batch) ${maxBatchTs.rows[0].m.toISOString()}`,
+        };
+      }
+      void expectedSummaryTs;  // documented but not asserted directly
+
+      // Invariant 2: new message's timestamp is AFTER the summary's.
+      if (newMsgTs <= summaryTs) {
+        return {
+          pass: false,
+          details: `new message ts ${newMsgTs.toISOString()} should be > summary ts ${summaryTs.toISOString()}`,
+        };
+      }
+
+      // Invariant 3: replay order (is_summarized=false ORDER BY created_at)
+      // returns [summary, new_message]. The 50 batch rows are filtered out.
+      const replay = await pg.query(`
+        SELECT id, role, is_summary FROM agent_messages
+        WHERE conversation_id = $1 AND is_summarized = false
+        ORDER BY created_at ASC
+      `, [convId]);
+      if (replay.rows.length !== 2) {
+        return {
+          pass: false,
+          details: `replay returned ${replay.rows.length} rows, expected 2 (summary + new message)`,
+        };
+      }
+      if (!replay.rows[0].is_summary) {
+        return { pass: false, details: 'first replay row should be the summary' };
+      }
+      if (replay.rows[1].id !== newMsg.rows[0].id) {
+        return { pass: false, details: 'second replay row should be the new user message' };
+      }
+
+      return {
+        pass: true,
+        details: `summary @ max(batch)+1µs, new msg after; replay = [summary, new_msg]`,
+      };
+    },
+  },
+
   // ── T12.13: orphan tool_result trigger blocks bad inserts ──────────────
   {
     name: 'orphan_tool_result_trigger_blocks',

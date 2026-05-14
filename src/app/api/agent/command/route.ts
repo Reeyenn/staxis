@@ -60,6 +60,8 @@ import {
 // Side-effect import — registers all tools against the catalog.
 import '@/lib/agent/tools/index';
 
+import { handleToolCallFinished } from './_tool-result-handler';
+
 import type { AppRole } from '@/lib/roles';
 
 export const runtime = 'nodejs';
@@ -300,40 +302,25 @@ export async function POST(req: NextRequest): Promise<Response> {
               pendingToolCallIds.add(call.id);
             }
           } else if (event.type === 'tool_call_finished') {
-            // L8B (2026-05-13): isError persisted so /admin/agent can
-            // compute per-tool error rate.
-            // F3a (Round 10): clear pendingToolCallIds only on successful
-            // persistence. If recordToolResult fails (transient Supabase
-            // outage), keep the id in the set so the finally block's
-            // synthetic-abort path inserts a fallback row via
-            // recordSyntheticAbortToolResult (upsert+ignoreDuplicates from
-            // round 8 B7 makes a late-landing original safe). Without this,
-            // a missing tool_result row is silently counted as success.
-            //
-            // Round 12 T12.8 (2026-05-13): make tool_result persistence
-            // critical-path. If the insert fails (after Supabase's
-            // own retries), don't let the model proceed to the next
-            // iteration — its NEXT turn would replay the synthetic
-            // abort from finally, diverging from THIS turn's "success"
-            // view. Better to surface the error and abort the stream;
-            // user can retry. The id stays in pendingToolCallIds so
-            // the finally block synthesizes correctly.
-            let toolResultPersisted = false;
-            try {
-              await recordToolResult(finalConversationId, event.call.id, event.result, event.isError);
-              pendingToolCallIds.delete(event.call.id);
-              toolResultPersisted = true;
-            } catch (err) {
-              log.error('[agent/command] failed to persist tool result; aborting stream', {
-                requestId, conversationId: finalConversationId, callId: event.call.id, err,
-              });
-              send({
-                type: 'error',
-                message: 'A tool result could not be saved. Your conversation is preserved; please retry.',
-              });
-            }
-            if (!toolResultPersisted) break;
-            send(event);
+            // Round 12 T12.8 (2026-05-13): extracted to a testable
+            // helper. See ./_tool-result-handler.ts for the encoded
+            // invariants. Behavior: persist tool_result; on success
+            // forward the event; on failure send an error event and
+            // abort the stream so the next turn's replay doesn't
+            // diverge from this turn's "success" view.
+            const { shouldBreak } = await handleToolCallFinished({
+              conversationId: finalConversationId,
+              event,
+              pendingToolCallIds,
+              recordToolResult,
+              send,
+              onPersistenceFailure: (err) => {
+                log.error('[agent/command] failed to persist tool result; aborting stream', {
+                  requestId, conversationId: finalConversationId, callId: event.call.id, err,
+                });
+              },
+            });
+            if (shouldBreak) break;
           } else if (event.type === 'done') {
             finalUsage = event.usage;
             lastDoneText = event.finalText;
