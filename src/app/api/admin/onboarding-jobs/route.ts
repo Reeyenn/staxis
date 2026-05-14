@@ -2,8 +2,8 @@
  * GET /api/admin/onboarding-jobs
  *
  * Returns recent onboarding_jobs rows (most-recent first) joined with
- * the property name and current pms_type. Powers /admin/jobs — Reeyen's
- * "where do hotels get stuck" view.
+ * the property name and current pms_type. Powers the Onboarding tab on
+ * /admin/properties — Reeyen's "where do hotels get stuck" view.
  *
  * Per-row fields:
  *   - jobId, propertyId, propertyName
