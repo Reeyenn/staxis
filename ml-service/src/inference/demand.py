@@ -292,7 +292,15 @@ async def predict_demand(
         "predicted_minutes_p25": float(predictions[0.25][0]),
         "predicted_minutes_p50": float(predictions[0.5][0]),
         "predicted_minutes_p75": float(predictions[0.75][0]),
-        "predicted_minutes_p80": float(predictions[0.8][0]),
+        # Phase L (2026-05-14): predicted_minutes_p80 was being written
+        # but `demand_predictions` schema (migration 0021) has no such
+        # column — only p10/p25/p50/p75/p90/p95 minutes columns exist.
+        # PostgREST raised "column does not exist" on every insert; the
+        # `except Exception` below caught it and returned an error JSON
+        # that nobody was reading. Result: ZERO demand_predictions rows
+        # in prod. Verified `select count(*) from demand_predictions` = 0
+        # before this fix. The headcount p80 written below IS in the
+        # schema and IS read by the Schedule tab — that line stays.
         "predicted_minutes_p90": float(predictions[0.9][0]),
         "predicted_minutes_p95": float(predictions[0.95][0]),
         "predicted_headcount_p50": float(
@@ -333,6 +341,18 @@ async def predict_demand(
             "model_version": model_run.get("model_version"),
         }
     except Exception as e:
+        # Phase L discipline rule #3: never swallow silently. Returning
+        # an error dict is not enough — the cron caller may or may not
+        # surface it. Emit a structured event so a future column-name
+        # mismatch (or any PostgREST error) shows up in Vercel logs
+        # within one cron cycle.
+        print(json.dumps({
+            "evt": "demand_prediction_write_failed",
+            "property_id": property_id,
+            "date": str(prediction_date),
+            "model_run_id": model_run_id,
+            "error": str(e)[:200],
+        }))
         return {
             "error": f"Failed to write prediction: {e}",
             "property_id": property_id,
