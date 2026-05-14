@@ -217,9 +217,25 @@ def _train_supply_inner(
     # demand (0.20) because per-room cleaning-time variance is inherently
     # noisier than per-day total demand variance.
     # Codex follow-up 2026-05-13 (B2): sample-size guard (>=30 holdout).
+    #
+    # Phase M3.2 (2026-05-14) — root-cause fix for the activation gap.
+    # Previously this required `len(df) >= training_row_count_activation`
+    # (=500). Properties with 200-499 events were trapped in a no-active-
+    # model state: cold-start fired only at <200, Bayesian activated only
+    # at >=500. Beaumont (201 events, MAE 1.09 min, beats baseline 76%)
+    # had GREAT metrics but never went live.
+    #
+    # First-principles: the row-count guard was redundant. A model that
+    # passes ALL of {holdout >=30, mae_ratio under threshold, beats_baseline
+    # >= 5%, consecutive_passing_runs >= 2} has empirically demonstrated
+    # itself trustworthy — the row count was paternalism that ignored the
+    # other gates' work. Dropping it lets quality, not quantity, decide
+    # activation. Still-noisy models can't squeak through because the
+    # other 4 gates do the work. XGBoost algorithm selection at line 178
+    # keeps the row-count threshold (XGBoost overfits at low N) — that's
+    # an algorithm-choice gate, not an activation gate.
     passes_gates = (
-        len(df) >= settings.training_row_count_activation
-        and len(X_test) >= 30
+        len(X_test) >= 30
         and mae_ratio < settings.validation_mae_ratio_threshold
         and beats_baseline_pct >= 0.05
     )
@@ -242,11 +258,11 @@ def _train_supply_inner(
     for prior_run in (recent_runs or []):
         # Check if this prior run passed gates. Legacy absolute MAE
         # threshold (10 min for supply) because prior rows don't carry
-        # mae_ratio.
+        # mae_ratio. Phase M3.2: row-count guard removed for the same
+        # root-cause reason as the current-run gate above.
         prior_passes = (
             prior_run.get("beats_baseline_pct", 0) >= 0.05
             and prior_run.get("validation_mae", float("inf")) < 10.0
-            and prior_run.get("training_row_count", 0) >= settings.training_row_count_activation
         )
         if prior_passes and consecutive_passes > 0:
             consecutive_passes += 1

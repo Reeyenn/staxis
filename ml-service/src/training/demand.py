@@ -280,9 +280,19 @@ def _train_demand_inner(
     # at least 30 holdout points so a single freak good week doesn't
     # flip a model active. Inventory training has the equivalent guard
     # at training/inventory_rate.py:513; demand+supply were missing it.
+    # Phase M3.2 (2026-05-14) — root-cause fix for the activation gap.
+    # Previously this required `len(df) >= training_row_count_activation`
+    # (=500). Properties between training_row_count_min (200) and
+    # activation (500) were trapped in a no-active-model state: cold-start
+    # fired only at <200, Bayesian activated only at >=500. The row-count
+    # guard was redundant — the OTHER gates ({holdout >=30, mae_ratio
+    # under threshold, beats_baseline >= 20%, consecutive_passing_runs >= 2})
+    # already prevent unreliable models from activating. Quality, not
+    # quantity, decides activation. See training/supply.py for the longer
+    # comment. XGBoost algorithm-selection at line 228 keeps the row-count
+    # threshold (XGBoost overfits at low N) — algorithm choice, not gate.
     passes_gates = (
-        len(df) >= settings.training_row_count_activation
-        and len(X_test) >= 30
+        len(X_test) >= 30
         and mae_ratio < settings.validation_mae_ratio_threshold
         and beats_baseline_pct >= settings.baseline_beat_pct_threshold
     )
@@ -311,10 +321,11 @@ def _train_demand_inner(
     for prior_run in (recent_runs or []):
         # Check if this prior run passed gates. Use the LEGACY absolute
         # MAE threshold here because prior rows don't carry mae_ratio.
+        # Phase M3.2: row-count guard removed for the same root-cause
+        # reason as the current-run gate above.
         prior_passes = (
             prior_run.get("beats_baseline_pct", 0) >= settings.baseline_beat_pct_threshold
             and prior_run.get("validation_mae", float("inf")) < settings.validation_mae_threshold
-            and prior_run.get("training_row_count", 0) >= settings.training_row_count_activation
         )
         if prior_passes and consecutive_passes > 0:
             consecutive_passes += 1
