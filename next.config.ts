@@ -52,10 +52,19 @@ function buildCsp(): string {
   // HMR) to reconstruct call stacks from worker / RSC contexts. Without it
   // the browser surfaces a red "eval() is not supported" overlay on every
   // page load. Scoped to dev only — production builds never include it.
+  //
+  // 'wasm-unsafe-eval' is the narrowest CSP allowance that lets the browser
+  // compile + instantiate WebAssembly. The ElevenLabs Conversational AI
+  // SDK loads `libsamplerate-js` (resampling for the mic input pipeline)
+  // which is shipped as a WASM module. Without this, the AudioWorklet
+  // initialization throws and the conversation socket never opens.
+  // 'wasm-unsafe-eval' is the modern split out from 'unsafe-eval': it
+  // permits WASM compilation but NOT arbitrary string-to-JS eval(), so
+  // it's safe to enable in production.
   const isDev = process.env.NODE_ENV !== 'production';
   const scriptSrc = isDev
-    ? `script-src 'self' 'unsafe-inline' 'unsafe-eval'`
-    : `script-src 'self' 'unsafe-inline'`;
+    ? `script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'`
+    : `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'`;
 
   return [
     `default-src 'self'`,
@@ -66,15 +75,37 @@ function buildCsp(): string {
     `style-src 'self' 'unsafe-inline' ${googleFontsCss}`,
     `img-src 'self' data: https:`,
     `font-src 'self' data: ${googleFontsFile}`,
-    // Voice mode fetches TTS audio from /api/agent/speak, wraps the response
-    // in a Blob, and plays it via URL.createObjectURL(blob). Without an
-    // explicit media-src, the directive falls back to default-src 'self',
-    // which rejects blob: URLs and silently kills audio playback (the
-    // browser logs a CSP violation but the page itself stays silent).
+    // The Clicky walkthrough's Nova narration fetches MP3 from /api/agent/speak,
+    // wraps the response in a Blob, and plays via URL.createObjectURL(blob).
+    // Without an explicit media-src, the directive falls back to default-src
+    // 'self' which rejects blob: URLs and silently kills audio playback.
     // blob: here is same-origin only — URL.createObjectURL can't mint
     // cross-origin URLs — so this doesn't broaden the attack surface.
     `media-src 'self' blob:`,
-    `connect-src 'self' ${supabaseConnect}`,
+    // connect-src governs every XHR / fetch / WebSocket the page opens.
+    //   - 'self' covers our own /api/* routes
+    //   - supabaseConnect covers Supabase REST + realtime
+    //   - api.elevenlabs.io (https + wss) is the ElevenLabs Conversational
+    //     AI SDK's primary gateway. Browser opens a direct WebSocket using
+    //     a signed URL minted by /api/agent/voice-session. Without these
+    //     two entries the WS handshake fails with the opaque "socket
+    //     error" Reeyen surfaced 2026-05-14.
+    //   - livekit.rtc.elevenlabs.io is the SDK's WebRTC fallback when the
+    //     WS path can't open (some corporate networks). Allowed defensively
+    //     even though we hard-pick connectionType='websocket' today.
+    //   - cdn.jsdelivr.net serves `libsamplerate.worklet.js` — the SDK
+    //     loads it via audioWorklet.addModule() to resample mic input.
+    //     CSP treats AudioWorklet module loads under worker-src (see
+    //     below); the worklet itself then fetches its WASM payload
+    //     from the same CDN, which is governed by connect-src.
+    `connect-src 'self' ${supabaseConnect} https://api.elevenlabs.io wss://api.elevenlabs.io wss://livekit.rtc.elevenlabs.io https://cdn.jsdelivr.net`,
+    // worker-src governs Web Worker + AudioWorklet module sources. The
+    // ElevenLabs SDK calls audioWorklet.addModule() with a cdn.jsdelivr.net
+    // URL for the libsamplerate resampling worklet — without this entry
+    // the AudioWorklet load fails and the conversation socket never
+    // initializes. blob: is permitted so any locally-generated worklets
+    // (audio processors built inline by the SDK) keep working.
+    `worker-src 'self' blob: https://cdn.jsdelivr.net`,
     // `frame-src` defaults to `default-src 'self'` when unset, which would
     // block Stripe Elements, Calendly, etc. if/when we embed them. Set it
     // explicitly so the limit is visible and adding a third party is a
