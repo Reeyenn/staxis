@@ -28,6 +28,7 @@ import { fetchWithAuth } from '@/lib/api-fetch';
 import { Cursor, TargetHighlight } from './Cursor';
 import { snapshotInteractiveElements, serializeSnapshot, type SnapshotElement } from './snapshotDom';
 import { WalkthroughErrorBoundary } from './WalkthroughErrorBoundary';
+import { useWalkthroughVoice } from './useWalkthroughVoice';
 
 // ─── Constants ───────────────────────────────────────────────────────────
 
@@ -88,6 +89,10 @@ function WalkthroughOverlayInner() {
   const [step, setStep] = useState(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isTouch, setIsTouch] = useState(false);
+  // Per-run voice-narration choice. After /start succeeds we render the
+  // permission prompt and PAUSE runLoop on voiceModeResolveRef until the
+  // user picks. 'on' → Nova TTS per step. 'off' → captions only.
+  const [voiceMode, setVoiceMode] = useState<'asking' | 'on' | 'off' | null>(null);
 
   // Refs — don't trigger re-render.
   // runIdRef is the IN-MEMORY loop generation (incremented to invalidate
@@ -102,6 +107,14 @@ function WalkthroughOverlayInner() {
   // property switch (RC2 N9) without trusting the live activePropertyId from
   // context (which changes asynchronously).
   const runPropertyIdRef = useRef<string | null>(null);
+  // Resolves when the user picks "Yes, narrate" or "Just show me" in the
+  // permission prompt. runLoop awaits this BEFORE entering the for-loop.
+  // Cleared after each pick + on stop/unmount (which resolves 'off').
+  const voiceModeResolveRef = useRef<((m: 'on' | 'off') => void) | null>(null);
+  // Mirror of voiceMode state in a ref so the `speak` callback can read the
+  // current value without being recreated on every voiceMode change (which
+  // would invalidate the closure runLoop captured).
+  const voiceModeRef = useRef<'asking' | 'on' | 'off' | null>(null);
 
   // ── Touch detection ──────────────────────────────────────────────────
   // `(hover: none)` is the standard signal for "no precise pointer." Also
@@ -117,36 +130,27 @@ function WalkthroughOverlayInner() {
     return () => mq.removeEventListener('change', handler);
   }, []);
 
-  // ── TTS helper — fire-and-forget. iOS Safari sometimes drops the new
-  //    utterance when speechSynthesis.cancel() hasn't fully settled. The
-  //    60ms post-cancel delay below works around that — verified-clean
-  //    pattern from W3C and Safari issue reports.
-  //    (RC5 N14.)
+  // ── TTS helper — Nova via /api/agent/speak (voice chat's TTS surface) ──
+  // Was browser speechSynthesis until 2026-05-14. The default voices sound
+  // robotic and quality varies wildly by browser/device; Nova is consistent.
+  // Honors the per-walkthrough opt-in: speak() is a no-op when voiceMode is
+  // anything other than 'on'. Audio fetch is fire-and-forget — the next
+  // step's /step call kicks off in parallel.
+  const voice = useWalkthroughVoice();
   const speak = useCallback((text: string) => {
-    if (typeof window === 'undefined' || !window.speechSynthesis) return;
+    // Read from the ref — voiceModeRef.current is updated synchronously when
+    // the user picks. If we depended on the voiceMode state directly, runLoop's
+    // captured closure would see a STALE value because runLoop is captured
+    // mid-iteration when the React state flips from 'asking' → 'on'.
+    if (voiceModeRef.current !== 'on') return;
+    if (!activePropertyId) return;
     if (!text?.trim()) return;
-    try {
-      const synth = window.speechSynthesis;
-      synth.cancel();
-      const utt = new SpeechSynthesisUtterance(text);
-      utt.rate = 1.0;
-      utt.pitch = 1.0;
-      utt.volume = 1.0;
-      // Safari race: queue the utterance on a microtask after a short
-      // delay so cancel can settle. On Chrome this is just an extra
-      // setTimeout(0)-ish; harmless.
-      setTimeout(() => {
-        try { synth.speak(utt); } catch { /* ignore */ }
-      }, 60);
-    } catch {
-      // Best effort — TTS isn't critical
-    }
-  }, []);
+    void voice.speak(text, activePropertyId);
+  }, [activePropertyId, voice]);
 
   const stopSpeech = useCallback(() => {
-    if (typeof window === 'undefined' || !window.speechSynthesis) return;
-    try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
-  }, []);
+    voice.stop();
+  }, [voice]);
 
   // ── /api/walkthrough/end helper (RC2) ───────────────────────────────
   // Idempotent client-side: clear serverRunIdRef immediately so a second
@@ -171,11 +175,28 @@ function WalkthroughOverlayInner() {
     }
   }, []);
 
+  // ── Voice prompt resolver ────────────────────────────────────────────
+  // The permission prompt calls this. Resolves the pending promise so
+  // runLoop unblocks. If no promise is waiting (rare race) we still set
+  // the state so subsequent renders are consistent.
+  const handleVoiceChoice = useCallback((choice: 'on' | 'off') => {
+    voiceModeRef.current = choice;
+    setVoiceMode(choice);
+    const resolve = voiceModeResolveRef.current;
+    voiceModeResolveRef.current = null;
+    resolve?.(choice);
+  }, []);
+
   // ── Stop / cleanup ──────────────────────────────────────────────────
   const stop = useCallback(() => {
     runIdRef.current += 1;          // invalidate any in-flight loop
     abortRef.current?.abort();
     abortRef.current = null;
+    // Resolve any pending voice-permission prompt as 'off' so the runLoop
+    // doesn't dangle on a promise that will never settle.
+    const pending = voiceModeResolveRef.current;
+    voiceModeResolveRef.current = null;
+    pending?.('off');
     stopSpeech();
     void endRun('stopped'); // best-effort; the loop above is already gone
     setMode('idle');
@@ -183,6 +204,8 @@ function WalkthroughOverlayInner() {
     setCaption('');
     setStep(0);
     setErrorMsg(null);
+    setVoiceMode(null);
+    voiceModeRef.current = null;
     historyRef.current = [];
   }, [stopSpeech, endRun]);
 
@@ -244,6 +267,24 @@ function WalkthroughOverlayInner() {
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('walkthrough:start', { detail: { task } }));
     }
+
+    // ── Voice permission prompt ──────────────────────────────────────
+    // PAUSE here until the user picks "Yes, narrate" or "Just show me".
+    // The prompt UI renders when voiceMode === 'asking'. Resolver lives in
+    // voiceModeResolveRef; handleVoiceChoice() resolves it. stop()/unmount
+    // resolves 'off' so we never dangle.
+    voiceModeRef.current = 'asking';
+    setVoiceMode('asking');
+    setCaption('');
+    setMode('running');
+    const chosenMode = await new Promise<'on' | 'off'>((resolve) => {
+      voiceModeResolveRef.current = resolve;
+    });
+    if (myRunId !== runIdRef.current) return;
+    // Note: chosenMode is also kept in React state via handleVoiceChoice.
+    // The for-loop reads from `chosenMode` (closure-captured) so a stale
+    // state update doesn't matter here.
+    void chosenMode; // reserved for future per-step use (e.g. log it)
 
     for (let i = 0; i < MAX_STEPS; i++) {
       if (myRunId !== runIdRef.current) return;
@@ -477,6 +518,13 @@ function WalkthroughOverlayInner() {
 
   const hintLabel = isTouch ? 'Tap here' : 'Click here';
 
+  // While we're asking permission, show ONLY the prompt — no cursor, no
+  // target highlight, no caption. The user shouldn't have anything to look
+  // at except the choice.
+  if (voiceMode === 'asking') {
+    return <VoicePermissionPrompt onChoose={handleVoiceChoice} />;
+  }
+
   return (
     <>
       {/* Target outline — always rendered when we have a target. */}
@@ -516,6 +564,93 @@ function WalkthroughOverlayInner() {
 }
 
 // ─── Sub-components ──────────────────────────────────────────────────────
+
+function VoicePermissionPrompt({ onChoose }: { onChoose: (m: 'on' | 'off') => void }) {
+  // Auto-focus the "Yes, narrate" button so Enter takes the recommended path.
+  // Esc anywhere resolves 'off' — same as picking "Just show me".
+  const yesRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    yesRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onChoose('off');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onChoose]);
+
+  return (
+    <div
+      role="dialog"
+      aria-label="Walkthrough voice narration"
+      aria-modal="false"
+      style={{
+        position: 'fixed',
+        bottom: 'max(24px, env(safe-area-inset-bottom, 24px))',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        maxWidth: 'min(560px, 92vw)',
+        background: 'var(--snow-ink, #1F231C)',
+        color: 'white',
+        padding: '14px 18px',
+        borderRadius: 14,
+        boxShadow: '0 12px 32px rgba(31, 35, 28, 0.22), 0 3px 8px rgba(31, 35, 28, 0.12)',
+        zIndex: 9999,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 14,
+        fontFamily: "var(--font-geist), -apple-system, sans-serif",
+      }}
+    >
+      <div style={{ flex: 1, fontSize: 14, lineHeight: 1.4, fontWeight: 500 }}>
+        Want me to narrate this out loud?
+      </div>
+      <button
+        onClick={() => onChoose('off')}
+        style={{
+          flexShrink: 0,
+          height: 32,
+          padding: '0 14px',
+          borderRadius: 8,
+          border: 'none',
+          background: 'rgba(255, 255, 255, 0.12)',
+          color: 'white',
+          cursor: 'pointer',
+          fontFamily: 'inherit',
+          fontSize: 13,
+          fontWeight: 500,
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.22)'; }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.12)'; }}
+      >
+        Just show me
+      </button>
+      <button
+        ref={yesRef}
+        onClick={() => onChoose('on')}
+        style={{
+          flexShrink: 0,
+          height: 32,
+          padding: '0 14px',
+          borderRadius: 8,
+          border: 'none',
+          background: 'var(--snow-sage-deep, #5C7A60)',
+          color: 'white',
+          cursor: 'pointer',
+          fontFamily: 'inherit',
+          fontSize: 13,
+          fontWeight: 600,
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.filter = 'brightness(1.08)'; }}
+        onMouseLeave={(e) => { e.currentTarget.style.filter = 'none'; }}
+      >
+        Yes, narrate
+      </button>
+    </div>
+  );
+}
 
 function HintPill({ rect, label }: { rect: { x: number; y: number; width: number; height: number }; label: string }) {
   // Anchor below the target if there's room; otherwise above.
