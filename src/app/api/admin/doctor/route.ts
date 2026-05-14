@@ -2178,7 +2178,7 @@ async function checkInventoryPriorsInRange(): Promise<Omit<Check, 'name' | 'dura
   try {
     const { data, error } = await supabaseAdmin
       .from('inventory_rate_priors')
-      .select('cohort_key, item_canonical_name, prior_rate_per_room_per_day, n_hotels, source')
+      .select('cohort_key, item_canonical_name, prior_rate_per_room_per_day, n_hotels_contributing, source')
       .order('prior_rate_per_room_per_day', { ascending: false })
       .limit(50);
     if (error) {
@@ -2188,7 +2188,7 @@ async function checkInventoryPriorsInRange(): Promise<Omit<Check, 'name' | 'dura
       cohort_key: string;
       item_canonical_name: string;
       prior_rate_per_room_per_day: number | null;
-      n_hotels: number | null;
+      n_hotels_contributing: number | null;
       source: string | null;
     }>;
     if (rows.length === 0) {
@@ -2200,7 +2200,7 @@ async function checkInventoryPriorsInRange(): Promise<Omit<Check, 'name' | 'dura
       if (rate === null || Number.isNaN(rate)) continue;
       if (rate < SANE_MIN || rate > SANE_MAX) {
         offenders.push(
-          `${r.cohort_key}/${r.item_canonical_name} = ${rate.toFixed(3)} (n=${r.n_hotels ?? '?'}, source=${r.source ?? '?'})`,
+          `${r.cohort_key}/${r.item_canonical_name} = ${rate.toFixed(3)} (n=${r.n_hotels_contributing ?? '?'}, source=${r.source ?? '?'})`,
         );
       }
     }
