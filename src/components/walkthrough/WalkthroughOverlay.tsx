@@ -56,11 +56,13 @@ type StepAction =
 interface StepResponseOk {
   ok: true;
   action: StepAction;
+  requestId?: string;
 }
 interface StepResponseErr {
   ok: false;
   error: string;
   code?: string;
+  requestId?: string;
 }
 type StepResponse = StepResponseOk | StepResponseErr;
 
@@ -291,6 +293,13 @@ function WalkthroughOverlayInner() {
       }
       if (myRunId !== runIdRef.current) return;
 
+      // Surface the server requestId so a user-reported issue ("walkthrough
+      // got stuck mid-step") can be grep'd against Vercel logs end-to-end.
+      // (RC6 N19.)
+      if (body.ok) {
+        console.info('[walkthrough]', body.requestId, body.action.type);
+      }
+
       if (!body.ok) {
         await endRun('errored');
         showError(body.error);
@@ -454,11 +463,16 @@ function WalkthroughOverlayInner() {
   if (mode === 'idle') return null;
   if (!user || !activePropertyId) return null;
 
-  // The cursor tip lives roughly 4px in from the top-left of the SVG; we
-  // want it to land near the center of the target's left edge so the
-  // arrow "points at" the button without obscuring its label.
+  // Park the cursor tip near the LEFT edge mid-height of the target instead
+  // of dead center. Center anchoring obscured the label on wide buttons
+  // like "Save changes" / "Add Staff Member" (N16 / R9). Offset ~8px in
+  // from the left so the arrow is visibly pointing AT the button, not
+  // sitting inside its text.
   const cursorAnchor = target
-    ? { x: target.rect.x + target.rect.width / 2, y: target.rect.y + target.rect.height / 2 }
+    ? {
+        x: target.rect.x + Math.min(8, target.rect.width * 0.18),
+        y: target.rect.y + target.rect.height / 2,
+      }
     : { x: window.innerWidth / 2, y: window.innerHeight / 2 };
 
   const hintLabel = isTouch ? 'Tap here' : 'Click here';

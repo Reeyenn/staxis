@@ -29,6 +29,8 @@ import {
   finalizeCostReservation,
   cancelCostReservation,
 } from '@/lib/agent/cost-controls';
+import { buildHotelSnapshot, formatSnapshotForPrompt } from '@/lib/agent/context';
+import { escapeTrustMarkerContent } from '@/lib/agent/llm';
 import type { SnapshotElement } from '@/components/walkthrough/snapshotDom';
 import type { AppRole } from '@/lib/roles';
 
@@ -99,12 +101,24 @@ function client(): Anthropic {
 
 // ─── System prompt ───────────────────────────────────────────────────────
 
-function buildSystemPrompt(role: AppRole, task: string): string {
-  return [
+function buildSystemPrompt(role: AppRole, task: string, hotelContext: string | null): string {
+  const lines = [
     'You are directing a teaching walkthrough inside the Staxis hotel housekeeping web app.',
     `The user (role: ${role}) asked you: "${task}".`,
     'You see the live interactive elements visible on their screen right now (as id + role + accessible name + bounding rect), plus past steps you already walked them through.',
     '',
+  ];
+  if (hotelContext) {
+    // Domain context (occupancy, dirty rooms, etc.) so Claude can answer
+    // questions like "show me how to mark room 302 clean" with confidence
+    // that 302 exists. Trust-marker boundary mirrors the agent layer's
+    // pattern (escapeTrustMarkerContent is applied inside formatSnapshotForPrompt).
+    lines.push('Live hotel context (for grounding domain questions, may be ignored if not relevant):');
+    lines.push(hotelContext);
+    lines.push('');
+  }
+  return [
+    ...lines,
     'Your job each call: pick the SINGLE next action the user should do, by calling the `emit_step` tool ONCE. Three action types:',
     '  - click       — the user should click a specific button/link. You MUST set elementId to one of the ids in the elements list. Narration is 1 sentence saying what to click and why.',
     '  - done        — the task is complete. The user is at the destination they wanted. Narration is a brief closing line.',
@@ -133,15 +147,22 @@ function buildUserContent(body: StepRequestBody, role: AppRole): string {
   });
 
   const history = (body.history ?? []).slice(-MAX_HISTORY_ENTRIES);
+  // RC6 N24: history fields are untrusted client input. Trim + escape each
+  // string so a crafted `narration` or `deviatedTo` can't bury HTML/markup
+  // that breaks the prompt structure. (escapeTrustMarkerContent escapes
+  // <, >, & — the only characters that can syntactically interfere with
+  // any trust-marker wrapping we layer above.)
+  const cleanHistoryField = (s: string | undefined, cap: number): string =>
+    escapeTrustMarkerContent((s ?? '').toString().slice(0, cap));
   const historyLines = history.length
     ? history.map((h, i) => {
         const tag = h.deviated
-          ? `[step ${i + 1}, user deviated → clicked "${h.deviatedTo ?? 'unknown'}"]`
+          ? `[step ${i + 1}, user deviated → clicked "${cleanHistoryField(h.deviatedTo, 120)}"]`
           : `[step ${i + 1}, user clicked target]`;
         const targetTag = h.targetName
-          ? ` (you targeted "${h.targetName}")`
+          ? ` (you targeted "${cleanHistoryField(h.targetName, 160)}")`
           : '';
-        return `  ${tag} ${h.narration}${targetTag}`;
+        return `  ${tag} ${cleanHistoryField(h.narration, 280)}${targetTag}`;
       })
     : ['  (none yet — this is step 1)'];
 
@@ -341,11 +362,27 @@ export async function POST(req: NextRequest): Promise<Response> {
     );
   }
 
+  // ── Build the per-turn context ────────────────────────────────────────
+  // Hotel snapshot (RC6 N21): same buildHotelSnapshot helper the chatbot
+  // uses. 30-second in-process cache so per-step DB cost is amortized
+  // across the walkthrough. Skip staffId lookup for walkthroughs — the
+  // myRooms detail is housekeeper-specific and not relevant for teaching
+  // navigation. Property name + room counts is the useful general context.
+  let hotelContextStr: string | null = null;
+  try {
+    const snap = await buildHotelSnapshot(body.propertyId, role, null);
+    hotelContextStr = formatSnapshotForPrompt(snap);
+  } catch (err) {
+    // Non-fatal — Claude can still walk the user through navigation
+    // without domain context.
+    log.warn('[walkthrough/step] hotel snapshot failed; continuing without', { requestId, err });
+  }
+
   // ── Call Claude (Sonnet for multi-step reasoning) ─────────────────────
   // History — RC1: Haiku looped on multi-step cases; Sonnet plans
   // coherently across steps and recognizes "this element was already
   // actioned" from the history. Per-step cost ~$0.02 vs Haiku's $0.005.
-  const systemPrompt = buildSystemPrompt(role, body.task.trim());
+  const systemPrompt = buildSystemPrompt(role, body.task.trim(), hotelContextStr);
   const userContent = buildUserContent(body, role);
 
   let action: StepAction | null = null;
