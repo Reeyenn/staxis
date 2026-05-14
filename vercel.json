@@ -48,6 +48,10 @@
     {
       "path": "/api/cron/walkthrough-health-alert",
       "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/cron/seed-rooms-daily",
+      "schedule": "10 * * * *"
     }
   ]
 }

@@ -38,6 +38,7 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   { heartbeatName: 'doctor-check',                      source: { kind: 'vercel', cronPath: '/api/cron/doctor-check' },                       cronExpr: '0 * * * *' },
   { heartbeatName: 'walkthrough-heal-stale',            source: { kind: 'vercel', cronPath: '/api/cron/walkthrough-heal-stale' },             cronExpr: '*/30 * * * *' },
   { heartbeatName: 'walkthrough-health-alert',          source: { kind: 'vercel', cronPath: '/api/cron/walkthrough-health-alert' },           cronExpr: '*/10 * * * *' },
+  { heartbeatName: 'seed-rooms-daily',                  source: { kind: 'vercel', cronPath: '/api/cron/seed-rooms-daily' },                   cronExpr: '10 * * * *' },
   // seal-daily stays on GH Actions — hourly cadence is well within
   // GH's reliable range.
   { heartbeatName: 'seal-daily',            source: { kind: 'github', workflowFile: 'seal-daily-cron.yml' },         cronExpr: '5 * * * *' },
