@@ -234,6 +234,14 @@ const REQUIRED_ENV_VARS: Array<{ name: string; altNames?: string[]; group: strin
   { name: 'MANAGER_PHONE',      altNames: ['OPS_ALERT_PHONE'],      group: 'alerts' },
   // Shared secret for cron auth
   { name: 'CRON_SECRET',                       group: 'cron' },
+  // Anthropic — required for the entire agent layer (chatbot, tool calls,
+  // summarization, voice TTS routing). Round 13 (2026-05-13): added after
+  // a silent prod outage where the key was missing for an unknown duration
+  // and the doctor reported "all required env vars present" the entire
+  // time because the list didn't include it. The cron-driven doctor-check
+  // alert + the new captureException in llm.ts's getClient() are the
+  // detection layers; THIS list is what makes both possible.
+  { name: 'ANTHROPIC_API_KEY',                 group: 'anthropic' },
   // Billing — these are checked for SHAPE in checkStripeBillingConfigured.
   // Listing here so the env_vars check reports a clean "missing" message
   // when none are set, but the billing-configured check is the source of
@@ -1723,6 +1731,7 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'agent-nudges-check',            cadenceHours: 5/60,  description: 'every-5-min nudge engine (Vercel native cron) — Codex 2026-05-13' },
   { name: 'agent-sweep-reservations',      cadenceHours: 5/60,  description: 'every-5-min reserved-row sweeper (Vercel native cron, Codex round-5 R2)' },
   { name: 'agent-summarize-long-conversations', cadenceHours: 30/60, description: 'every-30-min summarization of long agent conversations (L4 part B)' },
+  { name: 'doctor-check',                  cadenceHours: 1,     description: 'hourly health check — runs the doctor battery + alerts Sentry/SMS on any fail (Round 13)' },
   { name: 'seal-daily',                    cadenceHours: 1,     description: 'hourly per-property daily-seal' },
   // Daily
   { name: 'ml-run-inference',              cadenceHours: 24,    description: 'daily demand+supply+optimizer predictions' },
@@ -2278,7 +2287,9 @@ async function checkLayerPredictionsFresh(opts: {
 
 // ─── Handler ─────────────────────────────────────────────────────────────
 
-async function runAllChecks(): Promise<DoctorReport> {
+// Exported so the hourly doctor-check cron route can reuse the exact
+// same check battery the admin GET handler uses. Round 13, 2026-05-13.
+export async function runAllChecks(): Promise<DoctorReport> {
   const startedAt = Date.now();
 
   // Run every check in parallel. Each check catches its own errors so one
