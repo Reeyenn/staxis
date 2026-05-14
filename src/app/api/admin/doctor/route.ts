@@ -64,7 +64,26 @@ import { errToString } from '@/lib/utils';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 30;
+// Phase M2 (2026-05-14): bumped 30 → 60. At fleet scale (50+ hotels)
+// the per-property checks (occupancy_capture_failures, model_holdout,
+// scraper_pull_latency) start exceeding 30s. The per-check in-memory
+// cache below means most polls return in <100ms anyway, but a
+// cold-cache cycle needs the headroom.
+export const maxDuration = 60;
+
+// Phase M2: in-memory per-check cache. The watchdog polls this route
+// every 5min, sometimes alongside an admin browsing /admin/properties
+// + the hourly doctor-check cron. Without this, every poll re-runs all
+// 33+ checks, hammering Postgres with the same queries. With it, the
+// first poll runs everything fresh, subsequent polls within 60s return
+// cached results. Cold starts (new Vercel instance) bypass the cache
+// naturally because the Map is empty.
+//
+// Cache key = check name; TTL = 60s. Bypass with ?nocache=1 query arg
+// (used by doctor-check cron + manual debugging).
+type CachedCheck = { result: Omit<Check, 'name' | 'durationMs'>; expiresAt: number };
+const checkResultCache = new Map<string, CachedCheck>();
+const CHECK_CACHE_TTL_MS = 60_000;
 
 // ─── Types ───────────────────────────────────────────────────────────────
 
@@ -2309,24 +2328,42 @@ async function checkLayerPredictionsFresh(opts: {
 
 // Exported so the hourly doctor-check cron route can reuse the exact
 // same check battery the admin GET handler uses. Round 13, 2026-05-13.
-export async function runAllChecks(): Promise<DoctorReport> {
+//
+// Phase M2: when `useCache` is true (default), each check's result is
+// served from the per-check cache if it's <60s old. The watchdog polls
+// every 5min and most checks don't need re-running that often; a stale-
+// by-1-min health snapshot is much better than a 30s+ doctor request.
+export async function runAllChecks(useCache: boolean = true): Promise<DoctorReport> {
   const startedAt = Date.now();
+  const now = Date.now();
 
   // Run every check in parallel. Each check catches its own errors so one
   // exploding check can't kill the rest.
   const results = await Promise.all(
     checks.map(async ([name, fn]): Promise<Check> => {
+      // Cache hit?
+      if (useCache) {
+        const cached = checkResultCache.get(name);
+        if (cached && cached.expiresAt > now) {
+          return { name, durationMs: 0, ...cached.result };
+        }
+      }
       const t0 = Date.now();
       try {
         const res = await fn();
+        // Store fresh result for the next 60s.
+        checkResultCache.set(name, { result: res, expiresAt: Date.now() + CHECK_CACHE_TTL_MS });
         return { name, durationMs: Date.now() - t0, ...res };
       } catch (err) {
-        return {
-          name,
-          status: 'fail',
+        const failResult = {
+          status: 'fail' as const,
           detail: `check threw: ${errToString(err)}`,
-          durationMs: Date.now() - t0,
         };
+        // Cache failures too — re-running a check that just threw within
+        // 60s is unlikely to give a different answer + costs DB cycles.
+        // The next cache miss (after TTL) will retry naturally.
+        checkResultCache.set(name, { result: failResult, expiresAt: Date.now() + CHECK_CACHE_TTL_MS });
+        return { name, ...failResult, durationMs: Date.now() - t0 };
       }
     })
   );
@@ -2635,7 +2672,12 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const report = await runAllChecks();
+    // Phase M2: ?nocache=1 bypasses the per-check cache. Used by the
+    // hourly doctor-check cron + manual debugging when an admin needs
+    // a guaranteed-fresh snapshot. Watchdog polls without this flag and
+    // gets cached results within 60s — fast and stable at fleet scale.
+    const useCache = new URL(req.url).searchParams.get('nocache') !== '1';
+    const report = await runAllChecks(useCache);
     // Status code: 200 if all green/warn, 503 if any fail. This lets
     // `curl --fail` in CI work correctly without JSON parsing.
     return NextResponse.json(report, { status: report.ok ? 200 : 503 });
