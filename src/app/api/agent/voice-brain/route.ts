@@ -139,7 +139,7 @@ function resolveContext(body: OpenAIChatRequest): ResolvedContext | { error: str
  * before it is history. System messages from ElevenLabs are ignored —
  * we build our own system prompt from the hotel snapshot + role prompt.
  */
-function translateMessages(messages: OpenAIMessage[]): { history: AgentMessage[]; newUserMessage: string } | { error: string } {
+function translateMessages(messages: OpenAIMessage[]): { history: AgentMessage[]; newUserMessage: string } {
   // Find the index of the last user message. Anything after it is
   // discarded — ElevenLabs should not be sending trailing assistant text
   // that hasn't been spoken yet, but we tolerate it for robustness.
@@ -147,13 +147,23 @@ function translateMessages(messages: OpenAIMessage[]): { history: AgentMessage[]
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role === 'user') { lastUserIdx = i; break; }
   }
-  if (lastUserIdx === -1) return { error: 'no user message in payload' };
 
-  const newUserMessage = (messages[lastUserIdx].content ?? '').trim();
-  if (!newUserMessage) return { error: 'empty user message' };
+  // ElevenLabs sends a "session init" custom-LLM call BEFORE the user
+  // speaks — often messages contains only a system role (or is empty)
+  // and there's no user content yet. Earlier the route rejected this
+  // with 400, which ElevenLabs surfaces as "custom_llm_error" and the
+  // overlay shows ERROR before the user even talks. Now: synthesize a
+  // placeholder "hi" so the brain produces a friendly opener Jessica
+  // can speak as the session greeting. The brain's system prompt + role
+  // addendum handle the rest.
+  let newUserMessage =
+    lastUserIdx === -1
+      ? 'hi'
+      : (messages[lastUserIdx].content ?? '').trim() || 'hi';
 
   const history: AgentMessage[] = [];
-  for (let i = 0; i < lastUserIdx; i++) {
+  const upTo = lastUserIdx === -1 ? messages.length : lastUserIdx;
+  for (let i = 0; i < upTo; i++) {
     const m = messages[i];
     const text = (m.content ?? '').trim();
     if (!text) continue;
@@ -236,9 +246,11 @@ export async function POST(req: NextRequest): Promise<Response> {
   } catch {
     return NextResponse.json({ error: 'invalid json' }, { status: 400 });
   }
-  if (!Array.isArray(body.messages) || body.messages.length === 0) {
-    return NextResponse.json({ error: 'messages required' }, { status: 400 });
-  }
+  // Don't reject on empty messages — ElevenLabs sends a session-init
+  // call with messages=[] or messages=[{role:'system',...}] BEFORE
+  // the user speaks. translateMessages handles the no-user-message
+  // case by synthesizing a greeting prompt.
+  if (!Array.isArray(body.messages)) body.messages = [];
 
   // ── Reconstruct Staxis context from ElevenLabs dynamic_variables ──────
   const ctxResult = resolveContext(body);
@@ -265,11 +277,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   const ctx = ctxResult;
 
   // ── Translate messages → AgentMessage[] ───────────────────────────────
-  const translated = translateMessages(body.messages);
-  if ('error' in translated) {
-    return NextResponse.json({ error: translated.error }, { status: 400 });
-  }
-  const { history, newUserMessage } = translated;
+  const { history, newUserMessage } = translateMessages(body.messages);
 
   // NB: We DON'T build the hotel snapshot or system prompt here. Snapshot
   // builds (Supabase round-trips) can take 3–8s on a cold property and
