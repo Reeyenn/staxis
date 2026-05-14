@@ -30,8 +30,9 @@ import {
   subscribeToWorkOrders,
   subscribeToDashboardByDate,
   updateStaffMember,
+  updateProperty,
 } from '@/lib/db';
-import type { PlanSnapshot, ScheduleAssignments, DashboardNumbers } from '@/lib/db';
+import type { PlanSnapshot, ScheduleAssignments, DashboardNumbers, CsvRoomSnapshot } from '@/lib/db';
 import { autoAssignRooms } from '@/lib/calculations';
 import type { ShiftConfirmation, WorkOrder, StaffMember, SchedulePriority } from '@/types';
 import {
@@ -46,7 +47,7 @@ type SendResult = { status: 'sent' | 'skipped' | 'failed'; reason?: string };
 
 export function ScheduleTab() {
   const { user } = useAuth();
-  const { activeProperty, activePropertyId, staff } = useProperty();
+  const { activeProperty, activePropertyId, staff, refreshProperty } = useProperty();
   const { lang } = useLang();
 
   const [shiftDate, setShiftDate] = useState(defaultShiftDate);
@@ -106,6 +107,28 @@ export function ScheduleTab() {
   // "swap with..." menu. Keyed by staff ID.
   const [swapOpenFor, setSwapOpenFor] = useState<string | null>(null);
 
+  // Frozen room snapshot from the last save. Used to detect overnight
+  // CSV changes — if today's planSnapshot.rooms differs from what was
+  // captured when Maria last saved (typically yesterday at 7pm), the
+  // PMS strip surfaces an "overnight" badge with the +/− counts so
+  // she knows to re-run auto-assign.
+  const [savedCsvSnapshot, setSavedCsvSnapshot] = useState<CsvRoomSnapshot[]>([]);
+
+  // Prediction Settings modal — lets the user tune per-property cleaning
+  // minutes (checkout / stayover Day 1 / stayover Day 2 / prep) and the
+  // shift cap, which all feed the auto-assign algorithm and the per-HK
+  // capacity bars. Form state is seeded from activeProperty when the
+  // modal opens so the inputs always reflect the current persisted values.
+  const [showSettings, setShowSettings] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsForm, setSettingsForm] = useState({
+    checkoutMinutes: 30,
+    stayoverDay1Minutes: 15,
+    stayoverDay2Minutes: 20,
+    prepMinutesPerActivity: 5,
+    shiftMinutes: 420,
+  });
+
   const uid = user?.uid ?? '';
   const pid = activePropertyId ?? '';
 
@@ -121,6 +144,7 @@ export function ScheduleTab() {
     setSendResults(new Map());
     setFloatingRoomId(null);
     setSwapOpenFor(null);
+    setSavedCsvSnapshot([]);
   }, [shiftDate]);
 
   // ── Subscriptions ─────────────────────────────────────────────────────
@@ -157,6 +181,7 @@ export function ScheduleTab() {
     return subscribeToScheduleAssignments(uid, pid, shiftDate, (doc) => {
       const newAssignments = doc?.roomAssignments ?? {};
       const newCrew = doc?.crew ?? [];
+      const newSnapshot = doc?.csvRoomSnapshot ?? [];
 
       setAssignments(prev => {
         const prevKey = JSON.stringify(prev);
@@ -167,6 +192,11 @@ export function ScheduleTab() {
         const prevKey = JSON.stringify(prev);
         const nextKey = JSON.stringify(newCrew);
         return prevKey === nextKey ? prev : newCrew;
+      });
+      setSavedCsvSnapshot(prev => {
+        const prevKey = JSON.stringify(prev);
+        const nextKey = JSON.stringify(newSnapshot);
+        return prevKey === nextKey ? prev : newSnapshot;
       });
       // A saved doc is by definition an explicit choice — respect the
       // crew list even when it's empty.
@@ -201,9 +231,14 @@ export function ScheduleTab() {
     return set;
   }, [workOrders]);
 
-  // Rooms eligible for cleaning (excludes blocked rooms)
+  // Rooms eligible for cleaning. Excludes:
+  //   1. Blocked rooms (open work orders with blockedRoom=true).
+  //   2. DND rooms — guest flagged "do not disturb" so the housekeeper
+  //      can't enter. They re-appear next refresh once the HK clears
+  //      DND from their phone. Without this filter, auto-assign would
+  //      hand someone a room they physically can't service today.
   const assignableRooms = useMemo(
-    () => shiftRooms.filter(r => !blockedRoomNumbers.has(r.number)),
+    () => shiftRooms.filter(r => !blockedRoomNumbers.has(r.number) && !r.isDnd),
     [shiftRooms, blockedRoomNumbers],
   );
 
@@ -250,6 +285,35 @@ export function ScheduleTab() {
     [housekeepingStaff, activeCrew],
   );
 
+  // Overnight diff. Compares the room list from the current planSnapshot
+  // against the snapshot Maria captured the last time she saved (typically
+  // the prior evening's plan). Returns null when there's nothing to flag —
+  // either no saved snapshot exists yet, or the lists are identical — so
+  // the strip stays clean on a normal day.
+  const morningDiff = useMemo(() => {
+    if (!planSnapshot || savedCsvSnapshot.length === 0) return null;
+    const current = new Map<string, 'checkout' | 'stayover'>(
+      planSnapshot.rooms.map(r => [
+        r.number,
+        r.stayType === 'C/O' ? 'checkout' : 'stayover',
+      ]),
+    );
+    const saved = new Map<string, 'checkout' | 'stayover'>(
+      savedCsvSnapshot.map(r => [r.number, r.type]),
+    );
+    const added: string[] = [];
+    const removed: string[] = [];
+    const changed: string[] = [];
+    for (const [num] of current) if (!saved.has(num)) added.push(num);
+    for (const [num] of saved) if (!current.has(num)) removed.push(num);
+    for (const [num, t] of current) {
+      const prev = saved.get(num);
+      if (prev && prev !== t) changed.push(num);
+    }
+    if (added.length === 0 && removed.length === 0 && changed.length === 0) return null;
+    return { added, removed, changed };
+  }, [planSnapshot, savedCsvSnapshot]);
+
   // Rooms not currently assigned to a member of the active crew. Catches
   // both genuinely unassigned rooms (assignments[id] is undefined) and
   // orphaned rooms whose previously-assigned housekeeper has been
@@ -291,21 +355,35 @@ export function ScheduleTab() {
     saveTimer.current = setTimeout(() => {
       const staffNames: Record<string, string> = {};
       activeCrew.forEach(s => { staffNames[s.id] = s.name; });
+      // Capture the room list at save time so the next morning's diff
+      // can detect which rooms were added/removed/type-flipped between
+      // last night's plan and the morning's fresh CSV pull. Map from
+      // PlanSnapshot's `stayType` field to the CsvRoomSnapshot enum
+      // the schedule_assignments table expects.
+      const csvSnapshot: CsvRoomSnapshot[] = (planSnapshot?.rooms ?? []).map(r => ({
+        number: r.number,
+        type: r.stayType === 'C/O' ? 'checkout' : 'stayover',
+      }));
+      const csvPulledAtIso = planSnapshot?.pulledAt
+        ? (planSnapshot.pulledAt instanceof Date
+            ? planSnapshot.pulledAt.toISOString()
+            : String(planSnapshot.pulledAt))
+        : null;
       lastWrittenRef.current = { a: aKey, c: cKey };
       saveScheduleAssignments(uid, pid, shiftDate, {
         roomAssignments: assignments,
         crew: crewIdList,
         staffNames,
-        // Skip the optional csv snapshot fields — saving without them
-        // is fine. PlanSnapshot.rooms has a `roomType` field while the
-        // schedule_assignments table expects CsvRoomSnapshot's `type`,
-        // and mapping isn't worth the noise here.
+        csvRoomSnapshot: csvSnapshot,
+        csvPulledAt: csvPulledAtIso,
       }).catch(err => console.error('[Schedule] save failed:', err));
     }, 500);
-    // planSnapshot intentionally not in deps — we no longer save the
-    // CSV snapshot fields (see comment inside), so referencing it would
-    // re-trigger debounced saves on every scraper tick for nothing.
-  }, [uid, pid, shiftDate, assignments, activeCrew]);
+    // planSnapshot IS in the dep array — when the CSV refreshes mid-edit
+    // we want a subsequent save (triggered by an assignment change) to
+    // capture the latest room list. The lastWrittenRef check above
+    // means a CSV-only refresh (no assignment change) re-creates this
+    // callback but bails out at save time, so no spurious writes.
+  }, [uid, pid, shiftDate, assignments, activeCrew, planSnapshot]);
 
   useEffect(() => {
     persist();
@@ -583,7 +661,36 @@ export function ScheduleTab() {
         display: 'flex', alignItems: 'center', gap: 24, flexWrap: 'wrap',
       }}>
         <div style={{ display: 'flex', flexDirection: 'column', minWidth: 160 }}>
-          <Caps size={9}>{lang === 'es' ? 'Última carga PMS' : 'Latest PMS pull'}</Caps>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Caps size={9}>{lang === 'es' ? 'Última carga PMS' : 'Latest PMS pull'}</Caps>
+            {/* Cleaning-time settings live behind the gear so the strip
+                stays uncluttered. Opens the Prediction Settings modal,
+                seeded from activeProperty. */}
+            <button
+              onClick={() => {
+                setSettingsForm({
+                  checkoutMinutes:        activeProperty?.checkoutMinutes        ?? 30,
+                  stayoverDay1Minutes:    activeProperty?.stayoverDay1Minutes    ?? 15,
+                  stayoverDay2Minutes:    activeProperty?.stayoverDay2Minutes    ?? 20,
+                  prepMinutesPerActivity: activeProperty?.prepMinutesPerActivity ?? 5,
+                  shiftMinutes:           activeProperty?.shiftMinutes           ?? 420,
+                });
+                setShowSettings(true);
+              }}
+              title={lang === 'es' ? 'Ajustes de cuartos / turno' : 'Cleaning-time settings'}
+              style={{
+                background: 'transparent', border: 'none', cursor: 'pointer',
+                padding: 2, borderRadius: 4, color: T.ink3,
+                display: 'inline-flex', alignItems: 'center',
+              }}
+              aria-label={lang === 'es' ? 'Ajustes' : 'Settings'}
+            >
+              <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+              </svg>
+            </button>
+          </div>
           <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 500, marginTop: 2 }}>
             {planLoaded ? pulledAtLabel : (lang === 'es' ? 'Cargando…' : 'Loading…')}
           </span>
@@ -616,6 +723,31 @@ export function ScheduleTab() {
               }}>{n.loaded && n.v != null ? n.v : '—'}</span>
             </div>
           ))}
+          {/* Overnight diff — only renders when today's CSV differs from
+              the room list captured at last save. Shows compact +/− counts
+              with a hover-tooltip listing the affected room numbers, so
+              Maria knows whether to re-run auto-assign without scanning
+              the rooms by eye. Stays absent on a normal day. */}
+          {morningDiff && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 110 }}>
+              <Caps size={9}>{lang === 'es' ? 'Cambio nocturno' : 'Overnight'}</Caps>
+              <span
+                title={[
+                  morningDiff.added.length   ? `+${morningDiff.added.length}: ${morningDiff.added.join(', ')}` : null,
+                  morningDiff.removed.length ? `−${morningDiff.removed.length}: ${morningDiff.removed.join(', ')}` : null,
+                  morningDiff.changed.length ? `↔${morningDiff.changed.length}: ${morningDiff.changed.join(', ')}` : null,
+                ].filter(Boolean).join('   ')}
+                style={{
+                  fontFamily: FONT_SANS, fontSize: 14, color: T.caramelDeep,
+                  fontWeight: 600, whiteSpace: 'nowrap', marginTop: 6,
+                }}
+              >
+                {morningDiff.added.length   > 0 && <span>+{morningDiff.added.length}</span>}
+                {morningDiff.removed.length > 0 && <span style={{ marginLeft: morningDiff.added.length ? 8 : 0 }}>−{morningDiff.removed.length}</span>}
+                {morningDiff.changed.length > 0 && <span style={{ marginLeft: 8 }}>↔{morningDiff.changed.length}</span>}
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -993,6 +1125,140 @@ export function ScheduleTab() {
           border: '1px solid rgba(104,131,114,0.3)',
           borderRadius: 999, fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500,
         }}>{toast}</div>
+      )}
+
+      {/* PREDICTION SETTINGS MODAL — Maria's per-property cleaning-time
+          knobs. Saves directly to the property record; auto-assign and
+          the per-HK capacity bars both read these fields, so changes
+          propagate the moment refreshProperty() finishes. Triggered by
+          the gear next to "Latest PMS pull" in the strip above. */}
+      {showSettings && typeof document !== 'undefined' && createPortal(
+        <div
+          onClick={() => { if (!settingsSaving) setShowSettings(false); }}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
+            zIndex: 9998, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: 20,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
+              padding: '20px 24px', maxWidth: 480, width: '100%',
+              maxHeight: '85vh', overflow: 'auto',
+              boxShadow: '0 20px 60px rgba(0,0,0,0.20)',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <h2 style={{ fontFamily: FONT_SERIF, fontSize: 24, margin: 0, color: T.ink, fontWeight: 400 }}>
+                <span style={{ fontStyle: 'italic' }}>{lang === 'es' ? 'Ajustes de Predicción' : 'Cleaning-time Settings'}</span>
+              </h2>
+              <button
+                onClick={() => setShowSettings(false)}
+                disabled={settingsSaving}
+                style={{
+                  background: 'transparent', border: 'none', cursor: settingsSaving ? 'default' : 'pointer',
+                  fontSize: 20, color: T.ink3, padding: '0 6px',
+                }}
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+            <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, margin: '0 0 14px' }}>
+              {lang === 'es'
+                ? 'Estos minutos definen cuánto tarda cada tipo de limpieza. Auto-asignar y las barras de capacidad usan estos valores.'
+                : 'How long each clean takes, by type. Auto-assign and the per-housekeeper capacity bars both read these values.'}
+            </p>
+            {/* 4 minute fields + 1 hour-cap field. shiftMinutes is shown
+                in hours for sanity, converted to minutes on save. */}
+            {([
+              { key: 'checkoutMinutes',        label: lang === 'es' ? 'Salida (limpieza completa)'  : 'Checkout (full clean)',      unit: 'min', step: 1,    min: 1,   max: 240 },
+              { key: 'stayoverDay1Minutes',    label: lang === 'es' ? 'Estadía día 1 (ligera)'      : 'Stayover Day 1 (light)',      unit: 'min', step: 1,    min: 1,   max: 240 },
+              { key: 'stayoverDay2Minutes',    label: lang === 'es' ? 'Estadía día 2+ (completa)'   : 'Stayover Day 2+ (full)',      unit: 'min', step: 1,    min: 1,   max: 240 },
+              { key: 'prepMinutesPerActivity', label: lang === 'es' ? 'Preparación entre cuartos'   : 'Prep between rooms',          unit: 'min', step: 1,    min: 0,   max: 60  },
+              { key: 'shiftMinutes',           label: lang === 'es' ? 'Turno máximo por persona'    : 'Max shift hours per person',   unit: 'h',   step: 0.25, min: 1,   max: 24, asHours: true },
+            ] as Array<{ key: keyof typeof settingsForm; label: string; unit: string; step: number; min: number; max: number; asHours?: boolean }>).map(f => {
+              const raw = settingsForm[f.key];
+              const display = f.asHours ? raw / 60 : raw;
+              return (
+                <div key={f.key} style={{
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  padding: '12px 0', borderTop: `1px solid ${T.rule}`, gap: 12,
+                }}>
+                  <label htmlFor={`pred-${f.key}`} style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, flex: 1 }}>
+                    {f.label}
+                  </label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <input
+                      id={`pred-${f.key}`}
+                      type="number"
+                      step={f.step}
+                      min={f.min}
+                      max={f.max}
+                      value={display}
+                      onChange={(e) => {
+                        const n = Number(e.target.value);
+                        if (Number.isNaN(n)) return;
+                        setSettingsForm(prev => ({
+                          ...prev,
+                          [f.key]: f.asHours ? Math.round(n * 60) : Math.round(n),
+                        }));
+                      }}
+                      style={{
+                        width: 70, padding: '6px 8px', borderRadius: 8,
+                        border: `1px solid ${T.rule}`, background: T.bg,
+                        fontFamily: FONT_MONO, fontSize: 13, color: T.ink, textAlign: 'right',
+                      }}
+                    />
+                    <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2, minWidth: 24 }}>{f.unit}</span>
+                  </div>
+                </div>
+              );
+            })}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 18 }}>
+              <Btn variant="ghost" size="sm" onClick={() => setShowSettings(false)} disabled={settingsSaving}>
+                {lang === 'es' ? 'Cancelar' : 'Cancel'}
+              </Btn>
+              <Btn
+                variant="primary"
+                size="sm"
+                disabled={settingsSaving || !uid || !pid}
+                onClick={async () => {
+                  if (!uid || !pid) return;
+                  setSettingsSaving(true);
+                  try {
+                    await updateProperty(uid, pid, {
+                      checkoutMinutes:        settingsForm.checkoutMinutes,
+                      stayoverDay1Minutes:    settingsForm.stayoverDay1Minutes,
+                      stayoverDay2Minutes:    settingsForm.stayoverDay2Minutes,
+                      // Mirror Day 2 to the legacy stayoverMinutes field
+                      // so older callers (DND/over-time fallbacks) still
+                      // get a sensible value.
+                      stayoverMinutes:        settingsForm.stayoverDay2Minutes,
+                      prepMinutesPerActivity: settingsForm.prepMinutesPerActivity,
+                      shiftMinutes:           settingsForm.shiftMinutes,
+                    });
+                    await refreshProperty();
+                    flashToast(lang === 'es' ? 'Ajustes guardados' : 'Settings saved');
+                    setShowSettings(false);
+                  } catch (err) {
+                    console.error('[Schedule] settings save failed:', err);
+                    flashToast(lang === 'es' ? 'Error al guardar' : 'Save failed');
+                  } finally {
+                    setSettingsSaving(false);
+                  }
+                }}
+              >
+                {settingsSaving
+                  ? (lang === 'es' ? 'Guardando…' : 'Saving…')
+                  : (lang === 'es' ? 'Guardar' : 'Save')}
+              </Btn>
+            </div>
+          </div>
+        </div>,
+        document.body,
       )}
 
       {/* STAFF PRIORITY MODAL — rendered via portal so it always sits
