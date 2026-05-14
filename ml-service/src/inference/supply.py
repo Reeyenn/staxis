@@ -288,19 +288,14 @@ async def predict_supply(
     quantiles = [0.25, 0.5, 0.75, 0.9]
     predictions = []
 
-    # The trained model's feature_names list is the column order we MUST
-    # build X with. build_supply_features() aligns one-hot columns
-    # (room_<number>, staff_<uuid>) to this list — rooms / staff that
-    # weren't seen at training time silently fall to all-zero rows
-    # (i.e. the baseline intercept + day/occupancy/type effects).
-    saved_feature_names = list(model.feature_names) if model.feature_names else None
-    if not saved_feature_names:
-        return {
-            "error": "Active supply model has no feature_names — retrain needed",
-            "property_id": property_id,
-            "date": str(prediction_date),
-            "model_version": model_run.get("model_version"),
-        }
+    # Phase M3.1 (2026-05-14): saved_feature_names is bayesian-only — it
+    # only matters for build_supply_features() at line ~388. The cold-start
+    # path bypasses model.predict_quantile entirely (line 364) so it has
+    # no model and no feature_names. Computing it here unconditionally
+    # crashed every cold-start invocation with NoneType.feature_names —
+    # caught by test_supply_inference_cold_start.py. Defer the computation
+    # into the bayesian-only branch.
+    saved_feature_names = None
 
     # Build the full per-(room, staff) context dataframe up front. Doing
     # the fanout in one pass lets us shape-validate ALL predictions against
@@ -379,6 +374,22 @@ async def predict_supply(
             })
     else:
         # Standard Bayesian / posterior-fitted path.
+        # The trained model's feature_names list is the column order we MUST
+        # build X with. build_supply_features() aligns one-hot columns
+        # (room_<number>, staff_<uuid>) to this list — rooms / staff that
+        # weren't seen at training time silently fall to all-zero rows
+        # (i.e. the baseline intercept + day/occupancy/type effects).
+        # Computed here (not at the top of the function) so the cold-start
+        # branch above doesn't trip on model=None — Phase M3.1.
+        saved_feature_names = list(model.feature_names) if model.feature_names else None
+        if not saved_feature_names:
+            return {
+                "error": "Active supply model has no feature_names — retrain needed",
+                "property_id": property_id,
+                "date": str(prediction_date),
+                "model_version": model_run.get("model_version"),
+            }
+
         # Single matrix build → single shape check. If feature_names is
         # incompatible (e.g. an old v1 model is still active and we trained
         # the page expecting v2 columns), this raises and we bail before
