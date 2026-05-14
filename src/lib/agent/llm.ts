@@ -17,6 +17,7 @@ import {
   type ToolContext,
   type ToolDefinition,
 } from './tools';
+import { captureException } from '@/lib/sentry';
 
 // ─── Configuration ─────────────────────────────────────────────────────────
 
@@ -213,10 +214,24 @@ function getClient(): Anthropic {
   if (cachedClient) return cachedClient;
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) {
-    throw new Error(
+    // Round 13 (2026-05-13): captureException so a silent prod outage
+    // can't sit undetected. The 2026-05-13 incident had this code path
+    // throwing a polite user-facing error for an unknown duration with
+    // ZERO operator notification — Reeyen only discovered it by typing
+    // "hi" into the chat himself. Now: the FIRST user to hit this fires
+    // a Sentry event → existing SMS pipeline → phone buzz within ~1
+    // minute. The hourly doctor-check cron is the proactive safety net;
+    // this is the reactive one. See INV-22 in INVARIANTS.md.
+    const err = new Error(
       'ANTHROPIC_API_KEY is not set. The agent layer requires it. ' +
       'Set in Vercel → Project Settings → Environment Variables and redeploy.',
     );
+    captureException(err, {
+      subsystem: 'agent-llm',
+      failure_mode: 'missing_env_var',
+      env_var: 'ANTHROPIC_API_KEY',
+    });
+    throw err;
   }
   // maxRetries: SDK-level retry on transient 5xx / 408 / 429 / connection
   // errors. The Anthropic SDK applies `timeout` PER-ATTEMPT, so total

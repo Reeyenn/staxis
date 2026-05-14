@@ -152,6 +152,12 @@ Each invariant has:
 - **Assumed by:** /admin/agent KPI separation, summarizer cost-tracking expectation
 - **History:** Round-11 T2 (verified by review)
 
+### INV-22: Any "API key / required env var is missing" throw inside the agent layer also fires `captureException` to Sentry
+
+- **Enforced by:** Code (`getClient()` in [llm.ts](src/lib/agent/llm.ts) calls `captureException` before throwing; future OpenAI client init in `src/lib/openai-client.ts` must do the same). The hourly `/api/cron/doctor-check` is the proactive safety net.
+- **Assumed by:** Alerting infrastructure — silent UI errors are the exact failure mode this invariant exists to eliminate.
+- **History:** Round 13 (2026-05-13). The 2026-05-13 incident: `ANTHROPIC_API_KEY` was missing in prod for an unknown duration; the chat showed a polite user-facing error but no operator notification fired. Discovered only because the founder typed "hi" into the chat. Going forward: every "API key missing" code path must `captureException` so the FIRST user to hit it triggers an SMS within ~1 minute, AND the new doctor-check cron catches it within ~1 hour even if no user hits it.
+
 ## Counter-heal mechanism
 
 `staxis_heal_conversation_counters(p_dry_run boolean)` runs daily via
