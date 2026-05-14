@@ -5,7 +5,7 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { registerTool, type ToolResult } from '../tools';
-import { getCurrentRoomsDate } from './_helpers';
+import { getCurrentRoomsDate, computeOccupancySummary } from './_helpers';
 
 // ─── get_occupancy ────────────────────────────────────────────────────────
 
@@ -16,35 +16,48 @@ registerTool<Record<string, never>>({
   inputSchema: { type: 'object', properties: {} },
   allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk'],
   handler: async (_, ctx): Promise<ToolResult> => {
-    // Date filter required — rooms is keyed (property, date, number).
-    // Without it the query returned every historical day, which produced
-    // the "1000+ rooms at a 100-room hotel" hallucination on 2026-05-14.
-    const roomsDate = await getCurrentRoomsDate(ctx.propertyId);
+    // Round 14 (2026-05-14): total comes from `properties.room_inventory`
+    // (the truth, set at onboarding from the floor plan) — NOT from
+    // count(rooms today). Choice Advantage's CSV omits vacant-clean rooms,
+    // so seed-from-CSV produces a partial `rooms` table; reading
+    // count(rooms today) as the denominator made the agent report
+    // "100% occupancy, 0 vacant" when really 4 rooms simply weren't in
+    // today's seed. Treating any missing room as vacant is the safe
+    // default — absence of data means no guest in the room.
+    const [{ data: propRow }, roomsDate] = await Promise.all([
+      supabaseAdmin
+        .from('properties')
+        .select('room_inventory')
+        .eq('id', ctx.propertyId)
+        .maybeSingle(),
+      getCurrentRoomsDate(ctx.propertyId),
+    ]);
+    const inventory = (propRow?.room_inventory as string[] | null) ?? [];
+    const inventoryLength = inventory.length;
+
     if (!roomsDate) {
-      return { ok: true, data: { total: 0, occupied: 0, vacant: 0, occupancyPercent: 0 } };
+      // No seed at all yet today. computeOccupancySummary with an empty
+      // rooms array returns total = inventoryLength, vacant = total,
+      // occupied = 0, percent = 0, seedingGap = inventoryLength.
+      const summary = computeOccupancySummary(inventoryLength, []);
+      return { ok: true, data: { ...summary } };
     }
+
     const { data, error } = await supabaseAdmin
       .from('rooms')
-      .select('status, type, is_dnd')
+      .select('type')
       .eq('property_id', ctx.propertyId)
       .eq('date', roomsDate);
     if (error) return { ok: false, error: 'Failed to read occupancy.' };
 
-    const total = data?.length ?? 0;
-    // Occupied: anything that's NOT 'vacant' type. DND rooms count as occupied (guest is in).
-    const occupied = (data ?? []).filter(r => r.type !== 'vacant').length;
-    const vacant = total - occupied;
-    const occupancyPct = total > 0 ? Math.round((occupied / total) * 1000) / 10 : 0;
+    const summary = computeOccupancySummary(
+      inventoryLength,
+      (data ?? []).map(r => r.type as string | null),
+    );
 
     return {
       ok: true,
-      data: {
-        total,
-        occupied,
-        vacant,
-        occupancyPercent: occupancyPct,
-        asOfDate: roomsDate,
-      },
+      data: { ...summary, asOfDate: roomsDate },
     };
   },
 });

@@ -26,6 +26,10 @@ export interface HotelSnapshot {
     dnd: number;
     issuesFlagged: number;
     helpRequested: number;
+    /** When > 0, today's rooms table has fewer rows than the property's
+     *  master inventory. Surfaced to the agent so it doesn't claim
+     *  "100% occupancy" while silently looking at a partial picture. */
+    seedingGap: number;
   };
   staff: {
     activeToday: number;
@@ -68,20 +72,31 @@ export async function buildHotelSnapshot(
     return cached.snapshot;
   }
 
-  // Property name + timezone + total_rooms (cheap, sometimes missing for new orgs).
+  // Property name + timezone + total_rooms + room_inventory (cheap; one query).
+  //
+  // Round 14 (2026-05-14): room_inventory is the truth about how many rooms
+  // a property has. The `rooms` table is a per-day operational view that
+  // may be partially seeded (Choice Advantage's CSV omits vacant-clean
+  // rooms — see migration 0025). Reading inventory length here means the
+  // agent reports the correct total even when today's seed is incomplete;
+  // missing rooms surface as vacant in `get_occupancy` (which is the safe
+  // default — absence of data means no guest).
   let propertyName: string | null = null;
   let timezone: string | null = null;
   let configuredTotalRooms = 0;
+  let inventoryLength = 0;
   try {
     const { data } = await supabaseAdmin
       .from('properties')
-      .select('name, timezone, total_rooms')
+      .select('name, timezone, total_rooms, room_inventory')
       .eq('id', propertyId)
       .maybeSingle();
     if (data) {
       propertyName = (data.name as string) ?? null;
       timezone = (data.timezone as string) ?? null;
       configuredTotalRooms = Number(data.total_rooms ?? 0);
+      const inv = data.room_inventory as string[] | null;
+      inventoryLength = Array.isArray(inv) ? inv.length : 0;
     }
   } catch {
     // non-fatal — snapshot continues with nulls
@@ -111,7 +126,9 @@ export async function buildHotelSnapshot(
     dnd: 0,
     issuesFlagged: 0,
     helpRequested: 0,
+    seedingGap: 0,
   };
+  let seededRowCount = 0;
   if (roomsDate) {
     try {
       const { data } = await supabaseAdmin
@@ -120,7 +137,7 @@ export async function buildHotelSnapshot(
         .eq('property_id', propertyId)
         .eq('date', roomsDate);
       if (data) {
-        rooms.total = data.length;
+        seededRowCount = data.length;
         for (const r of data) {
           const status = (r.status as string) ?? 'dirty';
           if (r.is_dnd) rooms.dnd++;
@@ -136,13 +153,20 @@ export async function buildHotelSnapshot(
     }
   }
 
-  // Sanity check: rooms.total should not exceed the configured property size
-  // (which the manager set at onboarding). If it does, the data layer is
+  // rooms.total = inventory length when configured (truth), else fall back
+  // to the seeded count. seedingGap surfaces partial seeds to the agent.
+  rooms.total = inventoryLength > 0 ? inventoryLength : seededRowCount;
+  rooms.seedingGap = inventoryLength > 0
+    ? Math.max(0, inventoryLength - seededRowCount)
+    : 0;
+
+  // Sanity check: seeded rows shouldn't exceed the configured property size
+  // (which the manager set at onboarding). If they do, the data layer is
   // somehow returning multi-day rows again — log loudly so we can spot it
   // before the agent reports inflated numbers to a user.
-  if (configuredTotalRooms > 0 && rooms.total > configuredTotalRooms) {
+  if (configuredTotalRooms > 0 && seededRowCount > configuredTotalRooms) {
     console.warn(
-      `[agent/context] rooms.total=${rooms.total} exceeds properties.total_rooms=${configuredTotalRooms} ` +
+      `[agent/context] seededRowCount=${seededRowCount} exceeds properties.total_rooms=${configuredTotalRooms} ` +
       `for property=${propertyId} date=${roomsDate} — possible date-filter regression`,
     );
   }
@@ -350,6 +374,16 @@ export function formatSnapshotForPrompt(snap: HotelSnapshot): string {
     (snap.rooms.issuesFlagged ? `, ${snap.rooms.issuesFlagged} with issue notes` : '') +
     (snap.rooms.helpRequested ? `, ${snap.rooms.helpRequested} requesting help` : ''),
   );
+  if (snap.rooms.seedingGap > 0) {
+    // The agent needs to know it's looking at a partial picture so it
+    // doesn't claim "100% occupancy" or "all rooms occupied" when really
+    // some rooms simply haven't been seeded into today's view yet.
+    const seeded = snap.rooms.total - snap.rooms.seedingGap;
+    lines.push(
+      `Heads-up: today's housekeeping data has ${seeded} of ${snap.rooms.total} rooms seeded; ` +
+      `the missing ${snap.rooms.seedingGap} are reported as vacant.`,
+    );
+  }
   lines.push(
     `Staff active today: ${snap.staff.activeToday} ` +
     `(${snap.staff.assignedHousekeepers} housekeepers)`,

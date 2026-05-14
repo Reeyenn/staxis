@@ -23,6 +23,50 @@ export interface RoomRow {
 }
 
 /**
+ * Compute an occupancy summary from a property's room inventory and the
+ * seeded rooms-for-today rows.
+ *
+ * Round 14 (2026-05-14). `total` always equals the inventory length when
+ * the inventory is configured — that's the truth about how many rooms
+ * the property has. The seeded `rooms` table is a per-day operational
+ * view that the CSV/scraper may have only partially populated.
+ *
+ *   • Inventory configured (length > 0):
+ *       total = inventoryLength
+ *       seedingGap = max(0, inventoryLength - seededRoomTypes.length)
+ *       Missing rooms count as vacant (the safe default — absence of
+ *       data means no guest is in the room).
+ *
+ *   • Inventory empty (legacy / pre-onboarding):
+ *       total = seededRoomTypes.length (preserves the old behavior
+ *       so a property without inventory configured doesn't crash).
+ *       seedingGap = 0 (we have nothing to compare against).
+ *
+ * Exported for unit testing — the get_occupancy tool calls this and
+ * mutates nothing else.
+ */
+export interface OccupancySummary {
+  total: number;
+  occupied: number;
+  vacant: number;
+  occupancyPercent: number;
+  seedingGap: number;
+}
+
+export function computeOccupancySummary(
+  inventoryLength: number,
+  seededRoomTypes: ReadonlyArray<'checkout' | 'stayover' | 'vacant' | null | undefined | string>,
+): OccupancySummary {
+  const seededRowCount = seededRoomTypes.length;
+  const occupied = seededRoomTypes.filter(t => t === 'checkout' || t === 'stayover').length;
+  const total = inventoryLength > 0 ? inventoryLength : seededRowCount;
+  const seedingGap = inventoryLength > 0 ? Math.max(0, inventoryLength - seededRowCount) : 0;
+  const vacant = Math.max(0, total - occupied);
+  const occupancyPercent = total > 0 ? Math.round((occupied / total) * 1000) / 10 : 0;
+  return { total, occupied, vacant, occupancyPercent, seedingGap };
+}
+
+/**
  * Pick the property's "current" rooms-table date.
  *
  * The `rooms` table is composite-keyed on (property_id, date, number) — one

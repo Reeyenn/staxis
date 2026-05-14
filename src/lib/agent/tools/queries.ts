@@ -155,8 +155,20 @@ registerTool<Record<string, never>>({
     // AND the cleaning_events join so the rollup is internally consistent.
     // (Falling back to UTC today for events when no rooms exist; the rollup
     // is meaningless in that case anyway.)
-    const roomsDate = await getCurrentRoomsDate(ctx.propertyId);
+    // Round 14: also pull room_inventory so `total` reflects the truth even
+    // when today's seed is partial. See reports.ts get_occupancy for the
+    // full rationale — same principle here.
+    const [roomsDate, { data: propRow }] = await Promise.all([
+      getCurrentRoomsDate(ctx.propertyId),
+      supabaseAdmin
+        .from('properties')
+        .select('room_inventory')
+        .eq('id', ctx.propertyId)
+        .maybeSingle(),
+    ]);
     const today = roomsDate ?? new Date().toISOString().slice(0, 10);
+    const inventory = (propRow?.room_inventory as string[] | null) ?? [];
+    const inventoryLength = inventory.length;
 
     type RoomRow = { status: string | null; is_dnd: boolean | null; issue_note: string | null; help_requested: boolean | null; completed_at: string | null };
     let rooms: RoomRow[] = [];
@@ -185,6 +197,10 @@ registerTool<Record<string, never>>({
       if (r.help_requested) helpRequests++;
     }
 
+    const seededRowCount = rooms?.length ?? 0;
+    const total = inventoryLength > 0 ? inventoryLength : seededRowCount;
+    const seedingGap = inventoryLength > 0 ? Math.max(0, inventoryLength - seededRowCount) : 0;
+
     const eventCount = events?.length ?? 0;
     const totalDuration = (events ?? []).reduce(
       (acc, e) => acc + Number(e.duration_minutes ?? 0),
@@ -197,7 +213,7 @@ registerTool<Record<string, never>>({
       ok: true,
       data: {
         today,
-        rooms: { dirty, inProgress, clean, dnd, total: rooms?.length ?? 0 },
+        rooms: { dirty, inProgress, clean, dnd, total, seedingGap },
         issues,
         helpRequests,
         cleaningEvents: {
