@@ -47,12 +47,20 @@ def _hydrate_bayesian_from_run(model_run: dict):
     """
     from src.layers.bayesian_regression import BayesianRegression
 
-    pp_json = model_run.get("posterior_params")
-    if not pp_json:
+    pp_raw = model_run.get("posterior_params")
+    if not pp_raw:
         return None
 
+    # Phase M3.3 (2026-05-14) — root-cause fix for supply Bayesian inference.
+    # Supabase returns JSONB columns as already-parsed Python dicts in
+    # supabase-py, NOT as JSON strings. The previous `json.loads(pp_raw)`
+    # assumption silently rejected EVERY Bayesian-active supply property
+    # (TypeError → except → return None → predict_supply returns
+    # "Active supply model has no usable posterior_params (retrain needed)"
+    # → cron 502s). Latent since whenever the JSONB switch happened.
+    # Inventory inference already has this guard (inventory_rate.py:237).
     try:
-        pp = json.loads(pp_json)
+        pp = json.loads(pp_raw) if isinstance(pp_raw, str) else pp_raw
     except Exception as exc:
         print(json.dumps({
             "evt": "supply_posterior_json_invalid",

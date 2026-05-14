@@ -241,11 +241,22 @@ async def predict_demand(
 
         model = BayesianRegression()
 
-        # Load posterior params if available, else fall back to prior
-        posterior_params_json = model_run.get("posterior_params")
-        if posterior_params_json:
+        # Load posterior params if available, else fall back to prior.
+        # Phase M3.3 (2026-05-14) — same root-cause fix as supply.py:54.
+        # Supabase JSONB columns deserialize to dicts in supabase-py;
+        # json.loads() on a dict throws TypeError. The except below
+        # caught it and silently fell back to prior — masking the bug
+        # entirely (every Bayesian-active demand property silently used
+        # the cold-start prior instead of its trained posterior).
+        # Mirrors the inventory_rate.py:237 defensive pattern.
+        posterior_params_raw = model_run.get("posterior_params")
+        if posterior_params_raw:
             try:
-                posterior_params = json.loads(posterior_params_json)
+                posterior_params = (
+                    json.loads(posterior_params_raw)
+                    if isinstance(posterior_params_raw, str)
+                    else posterior_params_raw
+                )
                 # Reconstruct posterior parameters from JSON
                 model.mu_n = (
                     np.array(posterior_params["mu_n"]) if posterior_params["mu_n"] else None
