@@ -28,7 +28,7 @@
  * owner's session — RLS isolates them from Beaumont automatically.
  */
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { Loader2, Check, AlertCircle, Building2, Mail, KeyRound, Settings as SettingsIcon, Users, Sparkles } from 'lucide-react';
@@ -72,6 +72,18 @@ function deriveSizeTier(totalRooms: number | null): string {
 // ─── Main wizard ────────────────────────────────────────────────────────
 
 export default function OnboardPage() {
+  // Suspense wrap is required by Next.js 14+ when using useSearchParams
+  // in a client component that gets statically prerendered. Without
+  // this the build fails: "useSearchParams should be wrapped in a
+  // suspense boundary".
+  return (
+    <Suspense fallback={<FullPage><Loader2 size={28} className="spin" color="var(--text-muted)" /></FullPage>}>
+      <OnboardWizard />
+    </Suspense>
+  );
+}
+
+function OnboardWizard() {
   const router = useRouter();
   const sp = useSearchParams();
   const code = sp.get('code')?.toUpperCase().trim() ?? '';
