@@ -249,8 +249,14 @@ def test_lookup_works_for_supply_priors_with_different_value_col():
 
 
 def test_install_returns_active_cold_start_on_rpc_success():
-    """RPC returns a UUID → result is active cold-start with model_run_id."""
-    client = _make_client(rpc_response_data="new-model-uuid")
+    """RPC returns TABLE(ok=true, reason=null, model_run_id=...) → active cold-start.
+
+    Phase M3.1 (migration 0123) changed the RPC return from bare uuid to
+    TABLE(ok, reason, model_run_id). Helper unpacks list-of-dicts shape.
+    """
+    client = _make_client(rpc_response_data=[
+        {"ok": True, "reason": None, "model_run_id": "new-model-uuid"},
+    ])
     result = install_cold_start(
         client, "p1",
         layer="demand",
@@ -269,13 +275,15 @@ def test_install_returns_active_cold_start_on_rpc_success():
 
 
 def test_install_skipped_when_real_model_already_active():
-    """RPC returns NULL = real model exists, refused to clobber.
+    """RPC returns (ok=false, reason='graduated_model_active') = refused to clobber.
 
-    This is the load-bearing assertion. A graduated Bayesian model must
-    NOT be replaced by a cold-start prior even if local data later drops
-    (e.g., transient view glitch returning fewer rows).
+    Load-bearing assertion: a graduated Bayesian model must NOT be replaced
+    by a cold-start prior even if local data later drops (e.g., transient
+    view glitch returning fewer rows).
     """
-    client = _make_client(rpc_response_data=None)
+    client = _make_client(rpc_response_data=[
+        {"ok": False, "reason": "graduated_model_active", "model_run_id": None},
+    ])
     result = install_cold_start(
         client, "p1",
         layer="demand",
@@ -285,10 +293,31 @@ def test_install_skipped_when_real_model_already_active():
         value_param_name="prior_minutes_per_room_per_day",
     )
     assert result["skipped"] is True
-    assert result["reason"] == "real_model_already_active"
+    # Phase M3.1: reason now comes from the RPC, not invented in Python.
+    assert result["reason"] == "graduated_model_active"
     assert result["is_active"] is False
     assert result["cold_start"] is False
     # Critically: no error key — this is a normal flow, not a failure.
+    assert "error" not in result
+
+
+def test_install_handles_empty_rpc_response_as_skipped():
+    """Defensive: empty data array (e.g. supabase-py shape drift) → skipped.
+
+    The unpack idiom `rows[0] if rows else {}` returns {} for empty data;
+    {}.get('ok') is None which is falsy, so we treat as a skipped install
+    rather than crashing.
+    """
+    client = _make_client(rpc_response_data=[])
+    result = install_cold_start(
+        client, "p1",
+        layer="supply",
+        prior_value=30.0, prior_strength=0.5,
+        source="industry-benchmark", cohort_key="industry-default",
+        local_rows_observed=0,
+        value_param_name="prior_minutes_per_event",
+    )
+    assert result["skipped"] is True
     assert "error" not in result
 
 
@@ -317,7 +346,9 @@ def test_install_returns_error_dict_on_rpc_exception():
 def test_install_passes_correct_layer_to_rpc():
     """Both demand + supply share the RPC; layer must be passed correctly."""
     for layer in ("demand", "supply"):
-        client = _make_client(rpc_response_data=f"id-{layer}")
+        client = _make_client(rpc_response_data=[
+            {"ok": True, "reason": None, "model_run_id": f"id-{layer}"},
+        ])
         result = install_cold_start(
             client, "p1",
             layer=layer,
@@ -334,7 +365,9 @@ def test_install_passes_correct_layer_to_rpc():
 
 def test_install_handles_missing_property_metadata_gracefully():
     """Property fetch returning None must not crash the install path."""
-    client = _make_client(prop_row=None, rpc_response_data="new-id")
+    client = _make_client(prop_row=None, rpc_response_data=[
+        {"ok": True, "reason": None, "model_run_id": "new-id"},
+    ])
     result = install_cold_start(
         client, "p1",
         layer="demand",

@@ -59,9 +59,11 @@ async function fetchLayerFromModelRuns(
 ): Promise<ActiveModel | null> {
   // model_runs has a partial unique index on (property_id, layer) WHERE
   // is_active=true so this returns at most one row.
+  // Phase M3.1: read is_cold_start as the canonical flag (was: string match
+  // on algorithm). Migration 0123 added the column + backfilled existing rows.
   const { data } = await supabaseAdmin
     .from('model_runs')
-    .select('id, algorithm, model_version, trained_at, training_row_count, validation_mae, beats_baseline_pct, consecutive_passing_runs')
+    .select('id, algorithm, model_version, trained_at, training_row_count, validation_mae, beats_baseline_pct, consecutive_passing_runs, is_cold_start')
     .eq('property_id', propertyId)
     .eq('layer', layer)
     .eq('is_active', true)
@@ -74,7 +76,7 @@ async function fetchLayerFromModelRuns(
     algorithm: data.algorithm as string,
     modelVersion: data.model_version as string,
     trainedAt: data.trained_at as string,
-    isColdStart: (data.algorithm as string) === 'cold-start-cohort-prior',
+    isColdStart: (data.is_cold_start as boolean) === true,
     trainingRowCount: (data.training_row_count as number) ?? 0,
     validationMae: data.validation_mae as number | null,
     beatsBaselinePct: data.beats_baseline_pct as number | null,

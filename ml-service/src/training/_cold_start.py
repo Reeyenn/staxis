@@ -155,20 +155,27 @@ def install_cold_start(
                 "p_hyperparameters": hyperparameters,
             },
         ).execute()
-        new_id = rpc_result.data
-        if new_id is None:
+        # Phase M3.1: RPC now returns TABLE(ok, reason, model_run_id) instead
+        # of bare uuid. Defensive unpack mirrors inventory_rate.py:904-905
+        # which has been hardened against supabase-py shape drift (some
+        # versions wrap scalar returns in a single-element list-of-dicts).
+        rows = rpc_result.data or []
+        row = rows[0] if isinstance(rows, list) and rows else (rows if isinstance(rows, dict) else {})
+        if not row.get("ok"):
+            reason = row.get("reason") or "real_model_already_active"
             print(json.dumps({
                 "evt": f"{layer}_cold_start_skipped",
-                "reason": "real_model_already_active",
+                "reason": reason,
                 "property_id": property_id,
             }))
             return {
                 "skipped": True,
-                "reason": "real_model_already_active",
+                "reason": reason,
                 "model_run_id": None,
                 "is_active": False,
                 "cold_start": False,
             }
+        new_id = row.get("model_run_id")
         return {
             "model_run_id": new_id,
             "is_active": True,
