@@ -19,9 +19,10 @@ import Link from 'next/link';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import {
   CheckCircle2, AlertCircle, Clock, Loader2,
-  AlertTriangle,
+  AlertTriangle, Plus,
 } from 'lucide-react';
 import { ProspectsSection } from '@/app/admin/_components/ProspectsSection';
+import { CreateHotelModal } from '@/app/admin/_components/CreateHotelModal';
 
 const RUNNING = new Set(['queued', 'running', 'mapping', 'extracting']);
 
@@ -66,6 +67,7 @@ export function OnboardingTab() {
   const [liveJobs, setLiveJobs] = useState<JobRow[] | null>(null);
   const [pms, setPms] = useState<PMSCoverage[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = async () => {
@@ -132,12 +134,45 @@ export function OnboardingTab() {
   const learnedPms = pms.filter((p) => p.recipe !== null);
 
   return (
-    <div style={{
-      display: 'grid',
-      gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-      gap: '20px',
-      alignItems: 'start',
-    }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+
+      {/* Phase M1 (2026-05-14) — primary CTA: start onboarding a new hotel.
+          Lives at the top of THIS tab (not Live Hotels) because hotels
+          enter the system here, then graduate to Live Hotels once their
+          first PMS sync completes. */}
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        gap: '12px', padding: '16px 20px',
+        background: 'var(--surface-primary)',
+        border: '1px solid var(--border)',
+        borderRadius: '12px',
+      }}>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <h2 style={{ fontSize: '15px', fontWeight: 700, marginBottom: '2px' }}>
+            Onboard a new hotel
+          </h2>
+          <p style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.4 }}>
+            Creates the property, generates a single-use owner signup link valid for 7 days, and surfaces it for you to send.
+          </p>
+        </div>
+        <button
+          onClick={() => setCreateOpen(true)}
+          className="btn btn-primary"
+          style={{
+            padding: '10px 16px', fontSize: '13px', fontWeight: 600,
+            display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap',
+          }}
+        >
+          <Plus size={14} /> New hotel
+        </button>
+      </div>
+
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+        gap: '20px',
+        alignItems: 'start',
+      }}>
 
       {/* Column 1: Onboarding (sales pipeline) */}
       <ProspectsSection />
@@ -184,6 +219,13 @@ export function OnboardingTab() {
         )}
       </section>
 
+      </div>
+
+      <CreateHotelModal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onCreated={() => { void load(); }}
+      />
     </div>
   );
 }

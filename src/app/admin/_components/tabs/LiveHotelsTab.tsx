@@ -16,9 +16,8 @@ import Link from 'next/link';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import {
   Building2, ChevronRight, WifiOff, Wifi, AlertCircle,
-  MessageSquare, ChevronDown, Plus,
+  MessageSquare, ChevronDown,
 } from 'lucide-react';
-import { CreateHotelModal } from '../CreateHotelModal';
 
 const STALE_THRESHOLD_MIN = 12 * 60; // 12 hours
 
@@ -75,7 +74,6 @@ export function LiveHotelsTab() {
   const [sms, setSms] = useState<SmsHealthRow[] | null>(null);
   const [feedback, setFeedback] = useState<FeedbackItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [createOpen, setCreateOpen] = useState(false);
 
   const load = async () => {
     setError(null);
@@ -169,17 +167,7 @@ export function LiveHotelsTab() {
 
         {/* Column 1: Hotels */}
         <section style={columnStyle}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-            <h2 style={sectionTitle}>Hotels</h2>
-            <button
-              onClick={() => setCreateOpen(true)}
-              className="btn btn-secondary"
-              style={{ padding: '4px 10px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}
-              title="Create a new hotel — Phase M1"
-            >
-              <Plus size={12} /> New
-            </button>
-          </div>
+          <h2 style={sectionTitle}>Hotels</h2>
 
           {enriched.length === 0 ? (
             <div style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--text-muted)' }}>
@@ -264,12 +252,6 @@ export function LiveHotelsTab() {
         </section>
 
       </div>
-
-      <CreateHotelModal
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        onCreated={() => { void load(); }}
-      />
     </div>
   );
 }
