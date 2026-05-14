@@ -23,6 +23,7 @@ import {
   Pencil, X,
 } from 'lucide-react';
 import { ASSIGNABLE_ROLES, roleLabel, type AppRole, type AssignableRole } from '@/lib/roles';
+import { JoinCodesSection } from '@/app/admin/_components/JoinCodesSection';
 
 interface HealthData {
   property: {
@@ -268,6 +269,7 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
               gap: '20px',
               alignItems: 'start',
             }}>
+              <JoinCodesSection propertyId={id} />
               <PeopleWithAccessSection propertyId={id} />
               <GmActivitySection propertyId={id} />
               <AuditLogSection propertyId={id} />
