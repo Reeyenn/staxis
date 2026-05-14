@@ -16,9 +16,18 @@ from src.supabase_client import SupabaseServiceClient
 def _build_wrapper_with_fake_client():
     """Construct a SupabaseServiceClient with a mocked underlying client.
 
-    Bypasses __init__ to avoid create_client() and the singleton state
-    that would otherwise leak between tests.
+    Phase L fix 7: SupabaseServiceClient is a singleton — _instance and
+    _client are class attrs, so __new__ returns the SAME object across
+    calls. The previous docstring claimed __new__ "bypasses singleton
+    state that would otherwise leak between tests"; that was wrong.
+    Now we explicitly reset both class attrs first so each test gets a
+    truly fresh wrapper, eliminating a tripwire where a future test
+    that forgets to overwrite `_client` would silently use whatever the
+    previous test wired up.
     """
+    SupabaseServiceClient._instance = None
+    SupabaseServiceClient._client = None
+
     fake_table = MagicMock()
     # The chain is: client.table(t).upsert(data, **kw).execute()
     # .execute() returns an object with a `data` attribute (list of rows).
