@@ -193,18 +193,39 @@ async def predict_supply(
             "date": str(prediction_date),
         }
 
-    # Fetch schedule for prediction_date (assigned rooms)
+    # Fetch schedule for prediction_date (assigned rooms).
+    #
+    # Phase M3.3 (2026-05-14) — root-cause fix. The previous query joined
+    # `schedule_rooms` which DOES NOT EXIST in the schema (verified via
+    # `\d schedule_rooms` against prod — relation does not exist). Room
+    # assignments live inside schedule_assignments.room_assignments (jsonb
+    # mapping {"<date>_<room_number>": "<staff_id_uuid>"}).
+    #
+    # Latent bug: every supply Bayesian inference call has been throwing
+    # `relation "schedule_rooms" does not exist` since whenever this query
+    # was written. Never observed because no Bayesian-active supply model
+    # had ever existed in prod (M3.2 was the first activation).
+    #
+    # The new query unpacks the jsonb pairs, strips the date prefix from
+    # the key (`2026-05-14_315` → `315`), and aggregates back to staff →
+    # rooms. Matches the existing TS reader at src/lib/feature-derivation.ts:167
+    # which treats room_assignments as Record<string, string>.
     schedule_query = f"""
+        with pairs as (
+            select
+                ra.value::uuid as staff_id,
+                regexp_replace(ra.key, '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}_', '') as room_number
+            from schedule_assignments sa,
+                 jsonb_each_text(sa.room_assignments) as ra
+            where sa.property_id = '{property_id}'
+              and sa.date = '{prediction_date}'::date
+        )
         select
-            s.id as staff_id,
-            array_agg(sr.room_number) as assigned_rooms,
-            count(sr.room_number) as room_count
-        from schedule_assignments sa
-        join staff s on s.id = any(sa.crew)
-        left join schedule_rooms sr on sr.schedule_assignment_id = sa.id
-        where sa.property_id = '{property_id}'
-          and sa.date = '{prediction_date}'::date
-        group by s.id
+            p.staff_id,
+            array_agg(p.room_number) as assigned_rooms,
+            count(*) as room_count
+        from pairs p
+        group by p.staff_id
     """
 
     try:
