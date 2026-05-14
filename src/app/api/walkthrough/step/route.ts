@@ -50,6 +50,9 @@ interface HistoryEntry {
 }
 
 interface StepRequestBody {
+  /** Walkthrough run id from POST /api/walkthrough/start. Required for
+   * server-side step-cap enforcement and concurrent-run dedup (RC2). */
+  runId: string;
   task: string;
   propertyId: string;
   history?: HistoryEntry[];
@@ -209,6 +212,9 @@ export async function POST(req: NextRequest): Promise<Response> {
   } catch {
     return Response.json({ ok: false, error: 'invalid json', requestId }, { status: 400 });
   }
+  if (!body.runId) {
+    return Response.json({ ok: false, error: 'runId is required (call POST /api/walkthrough/start first)', requestId }, { status: 400 });
+  }
   if (!body.task?.trim()) {
     return Response.json({ ok: false, error: 'task is required', requestId }, { status: 400 });
   }
@@ -238,6 +244,57 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
   const accountId = account.id as string;
   const role = (account.role as AppRole) ?? 'staff';
+
+  // ── Server-side step gate (RC2 root-cause fix) ────────────────────────
+  // Atomically: (a) verify the run is still active and belongs to this
+  // user's property, (b) increment step_count, (c) reject if MAX_STEPS=12
+  // was hit. Returns:
+  //   -1 → run not active / not found / cap hit
+  //   -2 → property mismatch (user switched property mid-walkthrough)
+  //   1..12 → the new step count
+  //
+  // This is the only place server-side that enforces a step cap. The
+  // client cap is advisory; this one is canonical.
+  const { data: stepRpc, error: stepRpcErr } = await supabaseAdmin.rpc('staxis_walkthrough_step', {
+    p_run_id: body.runId,
+    p_expected_property_id: body.propertyId,
+  });
+  if (stepRpcErr) {
+    log.error('[walkthrough/step] step RPC failed', { requestId, runId: body.runId, err: stepRpcErr });
+    return Response.json({ ok: false, error: 'failed to advance walkthrough', requestId }, { status: 500 });
+  }
+  const stepCount = (stepRpc as number) ?? -1;
+  if (stepCount === -2) {
+    return Response.json(
+      {
+        ok: false,
+        code: 'property_mismatch',
+        error: 'You switched properties — restart the walkthrough on the new one.',
+        requestId,
+      },
+      { status: 400 },
+    );
+  }
+  if (stepCount < 0) {
+    // Not active, not found, or cap hit. Mark the run as 'capped' (the RPC
+    // is idempotent if the run was already in a terminal state).
+    try {
+      await supabaseAdmin.rpc('staxis_walkthrough_end', {
+        p_run_id: body.runId, p_status: 'capped',
+      });
+    } catch {
+      /* best-effort; the run may already be terminal */
+    }
+    return Response.json(
+      {
+        ok: false,
+        code: 'step_cap',
+        error: "I got a bit lost after several steps — try rephrasing your question and I'll start over.",
+        requestId,
+      },
+      { status: 429 },
+    );
+  }
 
   // ── Atomic cost reservation (RC1 root-cause fix) ──────────────────────
   // Routes through the canonical agent-layer reservation system:

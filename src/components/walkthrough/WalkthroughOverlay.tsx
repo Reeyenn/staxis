@@ -76,10 +76,18 @@ export function WalkthroughOverlay() {
   const [isTouch, setIsTouch] = useState(false);
 
   // Refs — don't trigger re-render.
+  // runIdRef is the IN-MEMORY loop generation (incremented to invalidate
+  // stale closures); serverRunIdRef holds the UUID from POST /api/walkthrough/start
+  // that the server uses to dedupe concurrent runs + enforce step cap (RC2).
   const runIdRef = useRef(0);
+  const serverRunIdRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const taskRef = useRef<string>('');
   const historyRef = useRef<HistoryEntry[]>([]);
+  // Pin the property the walkthrough started on so we can detect a mid-flight
+  // property switch (RC2 N9) without trusting the live activePropertyId from
+  // context (which changes asynchronously).
+  const runPropertyIdRef = useRef<string | null>(null);
 
   // ── Touch detection ──────────────────────────────────────────────────
   // `(hover: none)` is the standard signal for "no precise pointer." Also
@@ -117,19 +125,43 @@ export function WalkthroughOverlay() {
     try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
   }, []);
 
+  // ── /api/walkthrough/end helper (RC2) ───────────────────────────────
+  // Idempotent client-side: clear serverRunIdRef immediately so a second
+  // call (e.g. user hits Stop right as Claude returns done) is a no-op.
+  // The server-side RPC is also idempotent so double-fire is safe either way.
+  const endRun = useCallback(async (status: 'done' | 'stopped' | 'errored' | 'capped' | 'timeout') => {
+    const runId = serverRunIdRef.current;
+    if (!runId) return;
+    serverRunIdRef.current = null;
+    runPropertyIdRef.current = null;
+    try {
+      await fetchWithAuth('/api/walkthrough/end', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runId, status }),
+      });
+    } catch {
+      // Best-effort. The server-side heal cron closes stale runs after 30 min.
+    }
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('walkthrough:end', { detail: { runId, status } }));
+    }
+  }, []);
+
   // ── Stop / cleanup ──────────────────────────────────────────────────
   const stop = useCallback(() => {
     runIdRef.current += 1;          // invalidate any in-flight loop
     abortRef.current?.abort();
     abortRef.current = null;
     stopSpeech();
+    void endRun('stopped'); // best-effort; the loop above is already gone
     setMode('idle');
     setTarget(null);
     setCaption('');
     setStep(0);
     setErrorMsg(null);
     historyRef.current = [];
-  }, [stopSpeech]);
+  }, [stopSpeech, endRun]);
 
   const showError = useCallback((msg: string) => {
     setMode('error');
@@ -154,7 +186,38 @@ export function WalkthroughOverlay() {
     setStep(0);
     setTarget(null);
 
-    // Tell the chat panel to minimize.
+    // ── Open the server-side run FIRST (RC2 N1 fix) ────────────────────
+    // If the user has another walkthrough open in another tab, the
+    // partial unique index returns 409. In that case we keep the chat
+    // panel open and surface a friendly message — no walkthrough:start
+    // dispatch, no torn-down chat state for a walkthrough that never
+    // started.
+    try {
+      const startRes = await fetchWithAuth('/api/walkthrough/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task, propertyId: activePropertyId }),
+        signal: abort.signal,
+      });
+      if (myRunId !== runIdRef.current) return;
+      if (!startRes.ok) {
+        const errBody = (await startRes.json().catch(() => null)) as { error?: string; code?: string } | null;
+        const msg = errBody?.code === 'already_active'
+          ? "You already have a walkthrough running in another tab — close it first."
+          : (errBody?.error ?? `Couldn't start walkthrough (${startRes.status})`);
+        showError(msg);
+        return;
+      }
+      const startBody = (await startRes.json()) as { ok: true; runId: string };
+      serverRunIdRef.current = startBody.runId;
+      runPropertyIdRef.current = activePropertyId;
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError') return;
+      showError(err instanceof Error ? err.message : 'Network error starting walkthrough');
+      return;
+    }
+
+    // Server says we're good — NOW it's safe to close the chat panel.
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('walkthrough:start', { detail: { task } }));
     }
@@ -175,6 +238,7 @@ export function WalkthroughOverlay() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            runId: serverRunIdRef.current,
             task: taskRef.current,
             propertyId: activePropertyId,
             history: historyRef.current,
@@ -185,6 +249,14 @@ export function WalkthroughOverlay() {
         if (myRunId !== runIdRef.current) return;
         if (!res.ok) {
           const errBody = (await res.json().catch(() => null)) as StepResponseErr | null;
+          // The server marks the run terminal for these codes BEFORE replying,
+          // so clear our local runId reference to avoid a spurious /end call.
+          if (errBody?.code === 'step_cap' || errBody?.code === 'property_mismatch') {
+            serverRunIdRef.current = null;
+            runPropertyIdRef.current = null;
+          } else {
+            await endRun('errored');
+          }
           const msg = errBody?.error ?? `Step request failed (${res.status})`;
           showError(msg);
           return;
@@ -192,29 +264,36 @@ export function WalkthroughOverlay() {
         body = (await res.json()) as StepResponse;
       } catch (err) {
         if ((err as Error)?.name === 'AbortError') return;
+        await endRun('errored');
         showError(err instanceof Error ? err.message : 'Network error');
         return;
       }
       if (myRunId !== runIdRef.current) return;
 
       if (!body.ok) {
+        await endRun('errored');
         showError(body.error);
         return;
       }
 
       const action = body.action;
       if (action.type === 'done') {
+        await endRun('done');
         setMode('done');
         setCaption(action.narration);
         speak(action.narration);
         setTarget(null);
         // Auto-clear after a brief moment so the cursor doesn't linger.
         setTimeout(() => {
-          if (myRunId === runIdRef.current) stop();
+          if (myRunId === runIdRef.current) {
+            // Already ended above; stop() will see no serverRunId and skip /end.
+            stop();
+          }
         }, 3500);
         return;
       }
       if (action.type === 'cannot_help') {
+        await endRun('errored');
         setMode('error');
         setErrorMsg(action.narration);
         setCaption(action.narration);
@@ -226,6 +305,7 @@ export function WalkthroughOverlay() {
       const node = snapshot.byId.get(action.elementId);
       const meta = snapshot.elements.find(e => e.id === action.elementId);
       if (!node || !meta) {
+        await endRun('errored');
         showError("I couldn't find that button on the page anymore — try asking again.");
         return;
       }
@@ -274,14 +354,17 @@ export function WalkthroughOverlay() {
       // Claude adapt. Either way we just continue the loop.
     }
 
-    // Step cap hit.
+    // Client-side MAX_STEPS exhausted. Normally the server's step RPC
+    // returns step_cap first (and ends the run); this fallback handles
+    // any edge case where we reached MAX_STEPS without the server saying so.
+    await endRun('capped');
     const msg = "I got a bit lost — try rephrasing your question and I'll start over.";
     setCaption(msg);
     setMode('error');
     setErrorMsg(msg);
     speak(msg);
     setTarget(null);
-  }, [activePropertyId, speak, stop, showError]);
+  }, [activePropertyId, speak, stop, showError, endRun]);
 
   // ── Listen for the agent firing walk_user_through ──────────────────
   useEffect(() => {
@@ -309,6 +392,22 @@ export function WalkthroughOverlay() {
       stopSpeech();
     };
   }, [stopSpeech]);
+
+  // ── Property-switch guard (RC2 N9) ───────────────────────────────────
+  // If a walkthrough is running and the user switches the active property
+  // (via PropertyContext / property picker), abort. The server-side step
+  // RPC ALSO catches this (returns -2 / property_mismatch) as a backstop,
+  // but client-side aborting first gives a snappier UX.
+  useEffect(() => {
+    if (!runPropertyIdRef.current) return;
+    if (runPropertyIdRef.current === activePropertyId) return;
+    // Property changed mid-walkthrough.
+    void endRun('errored');
+    runIdRef.current += 1;
+    abortRef.current?.abort();
+    stopSpeech();
+    showError("You switched properties mid-walkthrough — ask me again on the new one.");
+  }, [activePropertyId, endRun, stopSpeech, showError]);
 
   // ── Render ──────────────────────────────────────────────────────────
   if (mode === 'idle') return null;
