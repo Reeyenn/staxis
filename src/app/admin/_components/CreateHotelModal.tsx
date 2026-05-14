@@ -34,7 +34,13 @@ interface CreatedResult {
   signupUrl: string | null;
   expiresAt: string | null;
   warning?: string;
+  // Phase M1.5 additions:
+  emailSent?: boolean;
+  emailError?: string | null;
+  inviteRole?: 'owner' | 'general_manager';
 }
+
+type DeliveryMode = 'copy' | 'email';
 
 // Browser default timezone (admin's local) is the right initial guess —
 // most Staxis admins create hotels in their own timezone or near-by.
@@ -79,6 +85,9 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
   const [propertyKind, setPropertyKind] = useState('limited_service');
   const [ownerEmail, setOwnerEmail] = useState('');
   const [isTest, setIsTest] = useState(false);
+  // Phase M1.5: invite role + delivery mode
+  const [inviteRole, setInviteRole] = useState<'owner' | 'general_manager'>('owner');
+  const [deliveryMode, setDeliveryMode] = useState<DeliveryMode>('copy');
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -91,6 +100,7 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
     setName(''); setTotalRooms(''); setTimezone(initialTz); setTzMode('preset');
     setCustomTz(''); setPmsType(''); setBrand(''); setPropertyKind('limited_service');
     setOwnerEmail(''); setIsTest(false);
+    setInviteRole('owner'); setDeliveryMode('copy');
     setSubmitting(false); setError(null); setResult(null); setCopied(null);
   };
 
@@ -102,6 +112,14 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
     if (!name.trim() || name.trim().length < 3) { setError('Name must be at least 3 characters.'); return; }
     if (typeof totalRooms !== 'number' || totalRooms < 1) { setError('Total rooms must be at least 1.'); return; }
     if (!finalTz) { setError('Timezone is required.'); return; }
+    // Phase M1.5: if delivery is "email", the email field is required.
+    if (deliveryMode === 'email') {
+      const emailTrimmed = ownerEmail.trim();
+      if (!emailTrimmed || !emailTrimmed.includes('@')) {
+        setError('Email is required when sending the invite by email.');
+        return;
+      }
+    }
 
     setSubmitting(true);
     try {
@@ -117,6 +135,8 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
           propertyKind,
           isTest,
           ownerEmail: ownerEmail.trim() || undefined,
+          inviteRole,
+          sendEmail: deliveryMode === 'email',
         }),
       });
       const json = await res.json();
@@ -278,10 +298,48 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
                 </select>
               </Field>
 
-              <Field label="Owner email (for the welcome message)">
+              <div style={{ height: '1px', background: 'var(--border)', margin: '14px 0' }} />
+              <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '12px' }}>
+                Invite the {inviteRole === 'owner' ? 'owner' : 'general manager'}
+              </p>
+
+              <Field label="Their role at the hotel *">
+                <select
+                  value={inviteRole}
+                  onChange={(e) => setInviteRole(e.target.value as 'owner' | 'general_manager')}
+                  className="input"
+                >
+                  <option value="owner">Owner</option>
+                  <option value="general_manager">General manager</option>
+                </select>
+              </Field>
+
+              <Field label="How to send the invite *">
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    type="button"
+                    onClick={() => setDeliveryMode('copy')}
+                    className={`btn ${deliveryMode === 'copy' ? 'btn-primary' : 'btn-secondary'}`}
+                    style={{ flex: 1, justifyContent: 'center' }}
+                  >
+                    Copy link
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDeliveryMode('email')}
+                    className={`btn ${deliveryMode === 'email' ? 'btn-primary' : 'btn-secondary'}`}
+                    style={{ flex: 1, justifyContent: 'center' }}
+                  >
+                    Send by email
+                  </button>
+                </div>
+              </Field>
+
+              <Field label={deliveryMode === 'email' ? 'Their email * (we\'ll send the invite here)' : 'Their email (optional — for the audit log)'}>
                 <input
                   type="email" value={ownerEmail} onChange={(e) => setOwnerEmail(e.target.value)}
                   className="input" placeholder="owner@hotel.com"
+                  required={deliveryMode === 'email'}
                 />
               </Field>
 
@@ -334,8 +392,20 @@ function SuccessView({
         color: 'var(--green)', fontSize: '13px',
       }}>
         <Check size={16} />
-        Hotel created. Send the owner the signup link below — it expires in 7 days.
+        {result.emailSent
+          ? 'Hotel created and invite emailed. Link below is a copyable backup — expires in 7 days.'
+          : 'Hotel created. Send the owner the signup link below — it expires in 7 days.'}
       </div>
+
+      {result.emailSent === false && result.emailError && (
+        <div style={{
+          padding: '10px 12px', marginBottom: '12px',
+          background: 'var(--amber-dim, rgba(245,158,11,0.1))', borderRadius: '8px',
+          color: 'var(--amber)', fontSize: '12px',
+        }}>
+          ⚠ Email send failed ({result.emailError}). The link below still works — copy and send it manually.
+        </div>
+      )}
 
       {result.warning && (
         <div style={{
