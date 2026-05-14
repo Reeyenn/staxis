@@ -56,6 +56,17 @@ interface MetricsPayload {
   staleReservations: number;
   sweptToday: number;
   finalizeFailuresToday: number;
+  walkthroughsToday: {
+    total: number;
+    completed: number;
+    userStopped: number;
+    hitStepCap: number;
+    errored: number;
+    timedOut: number;
+    stillActive: number;
+    avgStepsToDone: number | null;
+    badOutcomePct: number;
+  } | null;
 }
 
 export default function AdminAgentPage() {
@@ -457,10 +468,109 @@ export default function AdminAgentPage() {
                 Background work today: ${data.today.backgroundCostUsd.toFixed(2)} (summarizer + auto-pilot, not counted against caps)
               </div>
             )}
+
+            {/* AI walkthroughs (Clicky) outcome breakdown — sourced from
+                walkthrough_runs_daily view (migration 0118). 2026-05-14. */}
+            {data && (
+              <WalkthroughSection data={data.walkthroughsToday} />
+            )}
           </div>
         </div>
       </div>
     </AppLayout>
+  );
+}
+
+function WalkthroughSection({ data }: { data: MetricsPayload['walkthroughsToday'] }) {
+  return (
+    <div style={{
+      marginTop: 24,
+      padding: '16px 18px',
+      background: C.ruleSoft,
+      border: `1px solid ${C.rule}`,
+      borderRadius: 12,
+    }}>
+      <div style={{
+        fontFamily: FONT_MONO,
+        fontSize: 9,
+        textTransform: 'uppercase',
+        letterSpacing: '0.14em',
+        color: C.ink3,
+        marginBottom: 10,
+      }}>
+        AI walkthroughs (today)
+      </div>
+      {!data || data.total === 0 ? (
+        <div style={{ fontFamily: FONT_SANS, fontSize: 13, color: C.ink2 }}>
+          No walkthroughs yet today.
+        </div>
+      ) : (
+        <>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'baseline' }}>
+            <Stat label="Total" value={data.total.toString()} tone="ok" />
+            <Stat label="Completed" value={data.completed.toString()} tone="ok" />
+            <Stat label="User stopped" value={data.userStopped.toString()} tone="muted" />
+            <Stat
+              label="Hit step cap"
+              value={data.hitStepCap.toString()}
+              tone={data.hitStepCap > 0 ? 'warm' : 'muted'}
+            />
+            <Stat
+              label="Errored"
+              value={data.errored.toString()}
+              tone={data.errored > 0 ? 'warm' : 'muted'}
+            />
+            <Stat
+              label="Timed out"
+              value={data.timedOut.toString()}
+              tone={data.timedOut > 0 ? 'warm' : 'muted'}
+            />
+            {data.stillActive > 0 && (
+              <Stat label="Still active" value={data.stillActive.toString()} tone="muted" />
+            )}
+            <Stat
+              label="Avg steps to done"
+              value={data.avgStepsToDone ? data.avgStepsToDone.toFixed(1) : '—'}
+              tone="muted"
+            />
+            <Stat
+              label="Bad-outcome rate"
+              value={`${data.badOutcomePct}%`}
+              tone={data.badOutcomePct > 25 ? 'warm' : 'ok'}
+            />
+          </div>
+          {data.badOutcomePct > 25 && data.total >= 5 && (
+            <div style={{
+              marginTop: 10,
+              fontFamily: FONT_MONO,
+              fontSize: 11,
+              color: C.warm,
+            }}>
+              <AlertTriangle size={12} style={{ marginRight: 6, verticalAlign: 'middle' }} />
+              Bad-outcome rate above 25% — health-alert cron should be firing to Sentry.
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, value, tone }: { label: string; value: string; tone: 'ok' | 'muted' | 'warm' }) {
+  const color = tone === 'warm' ? C.warm : tone === 'muted' ? C.ink3 : C.ink;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <div style={{ fontFamily: FONT_SERIF, fontSize: 24, lineHeight: 1, color, fontWeight: 400 }}>{value}</div>
+      <div style={{
+        fontFamily: FONT_MONO,
+        fontSize: 9,
+        textTransform: 'uppercase',
+        letterSpacing: '0.1em',
+        color: C.ink3,
+      }}>
+        {label}
+      </div>
+    </div>
   );
 }
 

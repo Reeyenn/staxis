@@ -206,8 +206,9 @@ export function ChatPanel({ open, onClose, propertyId }: ChatPanelProps) {
             emptyHint={
               <>
                 Ask anything. Try{' '}
-                <em style={{ color: C.ink2 }}>&ldquo;what&rsquo;s the occupancy&rdquo;</em> or{' '}
-                <em style={{ color: C.ink2 }}>&ldquo;mark 302 clean&rdquo;</em>.
+                <em style={{ color: C.ink2 }}>&ldquo;what&rsquo;s the occupancy&rdquo;</em>,{' '}
+                <em style={{ color: C.ink2 }}>&ldquo;mark 302 clean&rdquo;</em>, or{' '}
+                <em style={{ color: C.ink2 }}>&ldquo;show me how to add a housekeeper&rdquo;</em>.
               </>
             }
           />

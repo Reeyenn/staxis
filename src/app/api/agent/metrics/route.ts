@@ -73,6 +73,20 @@ interface MetricsPayload {
   /** L4 part A: archival metrics. Longevity 2026-05-13. */
   archivedTotal: number;
   archivedToday: number;
+  /** AI walkthrough (Clicky) per-day outcomes. Sourced from the
+   *  walkthrough_runs_daily view created in migration 0118. Drives the
+   *  "AI walkthroughs" section on /admin/agent. 2026-05-14. */
+  walkthroughsToday: {
+    total: number;
+    completed: number;
+    userStopped: number;
+    hitStepCap: number;
+    errored: number;
+    timedOut: number;
+    stillActive: number;
+    avgStepsToDone: number | null;
+    badOutcomePct: number;
+  } | null;
 }
 
 export async function GET(req: NextRequest): Promise<Response> {
@@ -270,6 +284,42 @@ export async function GET(req: NextRequest): Promise<Response> {
     // L4 part A: archived conversation counts.
     const { archivedTotal, archivedToday } = await archivalMetrics();
 
+    // ── AI walkthrough (Clicky) per-day rollup ─────────────────────────
+    // Reads the walkthrough_runs_daily view (migration 0118). View is
+    // cheap (single GROUP BY over a small table) so this adds <5ms.
+    // 2026-05-14, scale-readiness Phase 2A.
+    const today = new Date().toISOString().slice(0, 10);
+    const { data: wtRow } = await supabaseAdmin
+      .from('walkthrough_runs_daily')
+      .select('total, completed, user_stopped, hit_step_cap, errored, timed_out, still_active, avg_steps_to_done')
+      .eq('day', today)
+      .maybeSingle<{
+        total: number;
+        completed: number;
+        user_stopped: number;
+        hit_step_cap: number;
+        errored: number;
+        timed_out: number;
+        still_active: number;
+        avg_steps_to_done: number | null;
+      }>();
+    const walkthroughsToday: MetricsPayload['walkthroughsToday'] = wtRow
+      ? {
+          total: wtRow.total,
+          completed: wtRow.completed,
+          userStopped: wtRow.user_stopped,
+          hitStepCap: wtRow.hit_step_cap,
+          errored: wtRow.errored,
+          timedOut: wtRow.timed_out,
+          stillActive: wtRow.still_active,
+          avgStepsToDone: wtRow.avg_steps_to_done,
+          badOutcomePct:
+            wtRow.total > 0
+              ? Math.round(((wtRow.hit_step_cap + wtRow.errored + wtRow.timed_out) / wtRow.total) * 1000) / 10
+              : 0,
+        }
+      : null;
+
     const payload: MetricsPayload = {
       caps: {
         user: COST_LIMITS.userDailyUsd,
@@ -297,6 +347,7 @@ export async function GET(req: NextRequest): Promise<Response> {
       toolIncompleteToday,
       archivedTotal,
       archivedToday,
+      walkthroughsToday,
     };
 
     return ok(payload, { requestId });
