@@ -8,11 +8,15 @@
 // closed rows). Safe to retry from the client.
 //
 // Possible terminal statuses:
-//   done    — Claude returned `done` for the task
-//   stopped — user hit the Stop (×) button
-//   capped  — server-side MAX_STEPS=12 hit (set by /step, not here)
-//   errored — overlay caught an exception
-//   timeout — 90-second wait-for-click expired (RC5; future Phase E)
+//   done        — Claude returned `done` for the task
+//   stopped     — user hit the Stop (×) button
+//   capped      — server-side MAX_STEPS=12 hit (set by /step, not here)
+//   errored     — overlay caught an actual exception (network drop, parse fail, etc.)
+//   timeout     — 90-second wait-for-click expired (RC5; future Phase E)
+//   cannot_help — Sonnet returned action.type='cannot_help' (legitimate refusal,
+//                 NOT an error — separated from 'errored' in migration 0119 so
+//                 the walkthrough-health-alert metric doesn't count AI-honest
+//                 refusals as bad outcomes).
 //
 // RC2 root-cause fix (2026-05-14).
 
@@ -25,11 +29,11 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 10;
 
-const ALLOWED_STATUSES = new Set(['done', 'stopped', 'capped', 'errored', 'timeout']);
+const ALLOWED_STATUSES = new Set(['done', 'stopped', 'capped', 'errored', 'timeout', 'cannot_help']);
 
 interface EndRequestBody {
   runId: string;
-  status: 'done' | 'stopped' | 'capped' | 'errored' | 'timeout';
+  status: 'done' | 'stopped' | 'capped' | 'errored' | 'timeout' | 'cannot_help';
 }
 
 export async function POST(req: NextRequest): Promise<Response> {

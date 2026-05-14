@@ -156,7 +156,7 @@ function WalkthroughOverlayInner() {
   // Idempotent client-side: clear serverRunIdRef immediately so a second
   // call (e.g. user hits Stop right as Claude returns done) is a no-op.
   // The server-side RPC is also idempotent so double-fire is safe either way.
-  const endRun = useCallback(async (status: 'done' | 'stopped' | 'errored' | 'capped' | 'timeout') => {
+  const endRun = useCallback(async (status: 'done' | 'stopped' | 'errored' | 'capped' | 'timeout' | 'cannot_help') => {
     const runId = serverRunIdRef.current;
     if (!runId) return;
     serverRunIdRef.current = null;
@@ -364,7 +364,12 @@ function WalkthroughOverlayInner() {
         return;
       }
       if (action.type === 'cannot_help') {
-        await endRun('errored');
+        // Sonnet honestly says "I can't accomplish this task" — legitimate
+        // refusal, NOT an error. Migration 0119 split this out from the
+        // 'errored' bucket so the walkthrough-health-alert cron doesn't
+        // count AI-honest refusals as bad outcomes (same exclusion as
+        // user_stopped).
+        await endRun('cannot_help');
         setMode('error');
         setErrorMsg(action.narration);
         setCaption(action.narration);

@@ -4,12 +4,14 @@
  * Every 10 minutes. Queries the `walkthrough_runs_daily` view for today
  * and fires a Sentry alert if the bad-outcome rate is unhealthy.
  *
- * "Bad outcomes" = hit_step_cap + errored + timed_out. Deliberately EXCLUDES
- * user_stopped — a user clicking the Stop button is normal product behavior,
- * not a bug.
+ * "Bad outcomes" = hit_step_cap + errored + timed_out. Deliberately EXCLUDES:
+ *   - user_stopped — a user clicking the Stop button is normal product behavior
+ *   - cannot_help  — Sonnet honestly refusing an unreachable task is legitimate;
+ *                    counting it as a bad outcome made the alert page on healthy
+ *                    AI behavior. Split out in migration 0119 (Phase 1D).
  *
  * Alert threshold: (hit_step_cap + errored + timed_out) / total > 0.25
- *                  AND total >= 5  (avoid alert spam on low-traffic mornings)
+ *                  AND total >= MIN_TOTAL_FOR_ALERT (low-volume noise gate).
  *
  * Without this cron, a regression — bad Sonnet snapshot, prompt drift,
  * a deployed bug — would only surface through user support tickets days
@@ -17,7 +19,7 @@
  *
  * Auth: CRON_SECRET bearer.
  *
- * Scale-readiness Phase 1C (2026-05-14).
+ * Scale-readiness Phase 1C (2026-05-14), Phase 1D follow-up (cannot_help split + threshold tune).
  */
 
 import { NextRequest } from 'next/server';
@@ -33,7 +35,13 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 15;
 
 const BAD_OUTCOME_THRESHOLD = 0.25;   // 25% bad-outcome rate triggers the alert
-const MIN_TOTAL_FOR_ALERT = 5;        // need at least 5 walkthroughs to alert
+// Phase 1D (2026-05-14) — raised from 5 → 20. With min=5 a solo dev-test
+// session that hit 2 unrelated infra blips (deploy churn, Anthropic timeout)
+// trips the alarm at 40%. 20 is the rough threshold where a single bad
+// outcome can't dominate the rate (5%) and the daily signal becomes about
+// systemic issues, not single-session noise. Reduce back to 5–10 once daily
+// volume stabilizes above ~50 across the fleet.
+const MIN_TOTAL_FOR_ALERT = 20;       // need at least 20 walkthroughs to alert
 
 interface DailyRow {
   day: string;
@@ -42,6 +50,7 @@ interface DailyRow {
   hit_step_cap: number;
   errored: number;
   timed_out: number;
+  cannot_help: number;
   still_active: number;
   total: number;
   avg_steps_to_done: number | null;
@@ -85,6 +94,7 @@ export async function GET(req: NextRequest) {
           hit_step_cap: row.hit_step_cap,
           errored: row.errored,
           timed_out: row.timed_out,
+          cannot_help: row.cannot_help,
           still_active: row.still_active,
         },
       });
@@ -120,6 +130,7 @@ export async function GET(req: NextRequest) {
               hit_step_cap: row.hit_step_cap,
               errored: row.errored,
               timed_out: row.timed_out,
+              cannot_help: row.cannot_help,
               still_active: row.still_active,
               avg_steps_to_done: row.avg_steps_to_done,
             }
