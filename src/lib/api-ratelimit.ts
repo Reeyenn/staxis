@@ -59,7 +59,12 @@ export type RateLimitEndpoint =
   // work; codes/tokens are low-entropy enough that brute-force or
   // token-spray attacks matter. (Codex audit 2026-05-12.)
   | 'auth-use-join-code'
-  | 'auth-accept-invite';
+  | 'auth-accept-invite'
+  // Phase M1.5 (2026-05-14) — transactional email send via Resend.
+  // Keyed on the recipient (normalized email, plus-addressing collapsed)
+  // so an admin can't accidentally spam alice@hotel.com by re-clicking
+  // "send invite". 5/hour matches our most conservative outbound caps.
+  | 'email-transactional';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -110,6 +115,12 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // Invite acceptance — 10/hour per source IP. One-shot per token in
   // normal use; the cap exists to bound token-spray brute force.
   'auth-accept-invite':         10,
+  // Phase M1.5 transactional email — keyed on recipient. 5/hour stops
+  // an admin click-spamming "send invite" from blasting one inbox; a
+  // legitimate admin re-sending after a typo has 4 retries before they
+  // need to wait. Per-recipient (not per-property) so different hotels'
+  // invites don't compete with each other.
+  'email-transactional':         5,
 };
 
 /**
