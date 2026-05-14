@@ -8,6 +8,7 @@ Phase 3.3 (total_rooms) and 3.5 (timezone) — Codex post-merge review
 misconfigured property can't take down ML for the whole fleet.
 """
 from typing import Any, Dict, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 class PropertyMisconfiguredError(ValueError):
@@ -63,13 +64,23 @@ def require_total_rooms(property_meta: Optional[Dict[str, Any]], property_id: st
 
 
 def require_property_timezone(tz_value: Optional[str], property_id: str) -> str:
-    """Return a non-empty IANA timezone string or raise.
+    """Return a non-empty, IANA-validated timezone string or raise.
 
     Replaces the `DEFAULT_PROPERTY_TIMEZONE = "America/Chicago"` fallback
     in the four inference/optimizer modules. A property east or west of
     Texas with a missing timezone was silently rolling "tomorrow" at the
     wrong UTC hour — predictions for the wrong operational date.
+
+    Phase K (2026-05-13): also reject names that aren't in the IANA tz
+    database. Pre-fix, "Mars/Olympus" or "Chicago" (continent prefix
+    missing) passed this guard and crashed inside ZoneInfo() at the
+    call site instead of surfacing as a structured event.
     """
     if not tz_value or not isinstance(tz_value, str) or not tz_value.strip():
         raise PropertyMisconfiguredError(property_id, "timezone", tz_value)
-    return tz_value.strip()
+    cleaned = tz_value.strip()
+    try:
+        ZoneInfo(cleaned)
+    except ZoneInfoNotFoundError:
+        raise PropertyMisconfiguredError(property_id, "timezone", tz_value)
+    return cleaned
