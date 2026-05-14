@@ -62,6 +62,32 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: 'placeholder-service-role-key'
         run: npx tsx --test src/lib/__tests__/*.test.ts
 
+      # Codex round-5 META J1.4 (2026-05-13): warn on overgrown ML files.
+      # The `_train_single_item` function in inventory_rate.py grew from
+      # 908 → 979 lines across 5 review rounds, mostly comments
+      # explaining what the prior round got wrong. Each new edit lands
+      # in a function too big for any reviewer to keep in head. This is
+      # a SOFT WARN — doesn't fail the build — to surface the problem
+      # before it blocks the next reviewer. Threshold tuned to current
+      # state (inventory_rate.py is ~960 lines today; aim to get under
+      # 600 by extracting modules, NOT by inflating the threshold).
+      - name: Warn on oversized ML files
+        run: |
+          # Find ML-layer source files over the threshold; emit GH
+          # workflow warnings (yellow annotation in the PR view).
+          THRESHOLD=600
+          OVERSIZED=$(find ml-service/src src/lib/db src/app/api/cron/ml-* \
+            \( -name '*.py' -o -name '*.ts' \) -type f 2>/dev/null \
+            | xargs -I{} sh -c 'lines=$(wc -l < "$1"); [ "$lines" -gt '"$THRESHOLD"' ] && echo "$lines $1"' _ {} \
+            | sort -rn || true)
+          if [ -n "$OVERSIZED" ]; then
+            echo "$OVERSIZED" | while IFS=' ' read -r lines file; do
+              echo "::warning file=${file},line=1::ML file is ${lines} lines (>${THRESHOLD}). Extract a module before adding more logic — see Phase J in the plan history."
+            done
+          else
+            echo "All ML files are under ${THRESHOLD} lines. ✓"
+          fi
+
       # Final guard: actually build the app. Catches Next.js bundler errors
       # (missing client/server boundaries, dynamic-import paths, etc.) that
       # tsc happily ignores. Without this, a "type-clean" PR can still break
