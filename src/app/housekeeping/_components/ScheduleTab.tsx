@@ -92,11 +92,16 @@ export function ScheduleTab() {
   // Compared as JSON strings since both are plain objects/arrays.
   const lastWrittenRef = useRef<{ a: string; c: string } | null>(null);
 
-  // Click-to-move: tapping a room pill picks it up (floatingRoomId set);
-  // a follow-up tap on a housekeeper row drops it on that housekeeper,
-  // a tap on the unassigned strip drops it back to unassigned, and a
-  // second tap on the same pill cancels. ESC also cancels.
+  // Click-to-move + drag-to-move. floatingRoomId is the picked-up room
+  // (a tap or a drag on a pill sets it). cursorPos drives the floating
+  // ghost that follows the pointer so Maria sees what she's holding.
+  // dragStartRef tracks the press so we can distinguish a tap (no move)
+  // from a drag (>8px move) — taps stay floating until the next tap on
+  // a target; drags commit at the element under the cursor on release.
   const [floatingRoomId, setFloatingRoomId] = useState<string | null>(null);
+  const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
+  const [floatingRoomMeta, setFloatingRoomMeta] = useState<{ number: string; type: string } | null>(null);
+  const dragStartRef = useRef<{ x: number; y: number; roomId: string; meta: { number: string; type: string }; crossed: boolean } | null>(null);
 
   // Staff Priority modal — frozen order captured at open so re-saving
   // doesn't re-sort the list under the user's cursor.
@@ -143,6 +148,8 @@ export function ScheduleTab() {
     setCrewExplicit(false);
     setSendResults(new Map());
     setFloatingRoomId(null);
+    setFloatingRoomMeta(null);
+    setCursorPos(null);
     setSwapOpenFor(null);
     setSavedCsvSnapshot([]);
   }, [shiftDate]);
@@ -500,9 +507,9 @@ export function ScheduleTab() {
   }, [pid]);
 
   // Click-to-move handlers. The floating room is the one the user just
-  // tapped; the next tap on a housekeeper card or the unassigned strip
-  // commits the move. Tapping the same pill again cancels; ESC also
-  // cancels.
+  // tapped or started dragging; the next tap on a housekeeper card or
+  // the unassigned strip (or releasing a drag over one) commits the
+  // move. Tapping the same pill again cancels; ESC also cancels.
   const moveRoomTo = useCallback((roomId: string, targetStaffId: string | null) => {
     setAssignments(prev => {
       const next = { ...prev };
@@ -511,6 +518,8 @@ export function ScheduleTab() {
       return next;
     });
     setFloatingRoomId(null);
+    setFloatingRoomMeta(null);
+    setCursorPos(null);
   }, []);
 
   // Swap one housekeeper for another. ALL of A's rooms transfer to B,
@@ -540,12 +549,91 @@ export function ScheduleTab() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       setFloatingRoomId(null);
+      setFloatingRoomMeta(null);
+      setCursorPos(null);
       setSwapOpenFor(null);
       setShowPriority(false);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [floatingRoomId, swapOpenFor, showPriority]);
+
+  // Document-level pointer tracking. Drives the floating ghost (so the
+  // pill follows the cursor while held / floating) AND the drag-and-drop
+  // commit (release over a target hands the room off; release over
+  // empty space leaves it floating for a click-to-drop). Watches for
+  // both the in-progress drag (dragStartRef) and the standing floating
+  // state (when the user just clicked a pill).
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      // While floating (after a click), keep the ghost glued to the cursor.
+      if (floatingRoomId) {
+        setCursorPos({ x: e.clientX, y: e.clientY });
+      }
+      // While a press is in progress, watch for the threshold crossing —
+      // 8px of movement promotes the press into a drag, which seeds the
+      // floating state and lights up the ghost without waiting for the
+      // user to release.
+      const start = dragStartRef.current;
+      if (!start) return;
+      if (!start.crossed) {
+        const dx = e.clientX - start.x;
+        const dy = e.clientY - start.y;
+        if (Math.hypot(dx, dy) > 8) {
+          start.crossed = true;
+          setFloatingRoomId(start.roomId);
+          setFloatingRoomMeta(start.meta);
+          setCursorPos({ x: e.clientX, y: e.clientY });
+        }
+      } else {
+        setCursorPos({ x: e.clientX, y: e.clientY });
+      }
+    };
+
+    const onUp = (e: PointerEvent) => {
+      const start = dragStartRef.current;
+      dragStartRef.current = null;
+      if (!start) return;
+
+      if (start.crossed) {
+        // Drag end. Resolve the drop target via what the cursor is over.
+        // We tag valid targets with data-drop-target=<staffId> (or the
+        // sentinel "__unassigned__") so this lookup needs no React refs.
+        const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+        const dropEl = el?.closest('[data-drop-target]') as HTMLElement | null;
+        const targetAttr = dropEl?.getAttribute('data-drop-target') ?? null;
+        if (targetAttr) {
+          const targetId = targetAttr === '__unassigned__' ? null : targetAttr;
+          moveRoomTo(start.roomId, targetId);
+          flashToast(targetId === null
+            ? (lang === 'es' ? 'Cuarto sin asignar' : 'Room moved to Unassigned')
+            : (lang === 'es' ? 'Cuarto movido' : 'Room moved'));
+        }
+        // else: dropped on empty space — keep floating so the next
+        // tap on a card commits.
+      } else {
+        // Pure tap (no drag). Toggle floating; if picking up, seed the
+        // cursor at the click point so the ghost appears immediately.
+        setFloatingRoomId(prev => {
+          if (prev === start.roomId) {
+            setFloatingRoomMeta(null);
+            setCursorPos(null);
+            return null;
+          }
+          setFloatingRoomMeta(start.meta);
+          setCursorPos({ x: e.clientX, y: e.clientY });
+          return start.roomId;
+        });
+      }
+    };
+
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+    return () => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+    };
+  }, [floatingRoomId, moveRoomTo, lang]);
 
   // Click outside the open swap dropdown closes it. Detected by walking
   // the event target's ancestors looking for `data-swap-dropdown` (the
@@ -760,6 +848,7 @@ export function ScheduleTab() {
           stays clean for the common case). */}
       {(unassignedRooms.length > 0 || floatingRoomId) && (
         <div
+          data-drop-target="__unassigned__"
           onClick={() => {
             if (floatingRoomId) {
               moveRoomTo(floatingRoomId, null);
@@ -767,11 +856,12 @@ export function ScheduleTab() {
             }
           }}
           style={{
-            background: T.paper,
-            border: `1px ${floatingRoomId ? 'dashed' : 'solid'} ${floatingRoomId ? T.caramelDeep : T.rule}`,
+            background: floatingRoomId ? T.sageDim : T.paper,
+            border: `${floatingRoomId ? 2 : 1}px solid ${floatingRoomId ? T.sageDeep : T.rule}`,
             borderRadius: 16, padding: '14px 22px', marginBottom: 10,
             display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap',
             cursor: floatingRoomId ? 'pointer' : 'default',
+            transition: 'background 120ms ease, border-color 120ms ease',
           }}
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 140 }}>
@@ -792,20 +882,36 @@ export function ScheduleTab() {
               return (
                 <button
                   key={r.id}
-                  onClick={(e) => {
+                  onPointerDown={(e) => {
                     e.stopPropagation();
-                    setFloatingRoomId(prev => prev === r.id ? null : r.id);
+                    e.preventDefault();
+                    dragStartRef.current = {
+                      x: e.clientX, y: e.clientY,
+                      roomId: r.id,
+                      meta: { number: r.number, type: r.type },
+                      crossed: false,
+                    };
                   }}
+                  // Click bubbles AFTER pointerup, by which time the
+                  // document onUp may have just set floatingRoomId. If
+                  // we let it bubble to the parent card / unassigned
+                  // strip, that container's onClick would immediately
+                  // commit the room back onto itself. Stop here.
+                  onClick={(e) => e.stopPropagation()}
                   style={{
                     padding: '5px 11px', borderRadius: 8,
-                    background: floating ? "rgba(215,176,126,0.14)" : T.bg,
-                    border: `${floating ? 2 : 1}px solid ${floating ? T.caramelDeep : T.rule}`,
+                    background: floating ? T.sageDim : T.bg,
+                    border: `${floating ? 2 : 1}px solid ${floating ? T.sageDeep : T.rule}`,
                     color: T.ink, fontFamily: FONT_MONO, fontSize: 13, fontWeight: 600,
-                    letterSpacing: '-0.02em', whiteSpace: 'nowrap', cursor: 'pointer',
+                    letterSpacing: '-0.02em', whiteSpace: 'nowrap',
+                    cursor: floating ? 'grabbing' : 'grab',
+                    opacity: floating ? 0.4 : 1,
+                    touchAction: 'none',
+                    transition: 'background 120ms ease, border-color 120ms ease, opacity 120ms ease',
                   }}
                   title={floating
-                    ? (lang === 'es' ? 'Toca un nombre para mover, o toca aquí para cancelar' : 'Tap a name to move, or tap again to cancel')
-                    : (lang === 'es' ? 'Toca para levantar' : 'Tap to pick up')}
+                    ? (lang === 'es' ? 'Toca un destino o suelta sobre uno para mover' : 'Tap or drop on a target to move')
+                    : (lang === 'es' ? 'Toca o arrastra para mover' : 'Tap or drag to move')}
                 >
                   {r.number}
                   {r.type === 'checkout' && <span style={{ color: T.ink3, fontWeight: 400 }}> ↗</span>}
@@ -837,6 +943,7 @@ export function ScheduleTab() {
           return (
             <div
               key={c.id}
+              data-drop-target={c.id}
               onClick={() => {
                 if (floatingRoomId) {
                   moveRoomTo(floatingRoomId, c.id);
@@ -844,12 +951,13 @@ export function ScheduleTab() {
                 }
               }}
               style={{
-                background: T.paper,
-                border: `1px ${isDropTarget ? 'dashed' : 'solid'} ${isDropTarget ? T.caramelDeep : T.rule}`,
+                background: isDropTarget ? T.sageDim : T.paper,
+                border: `${isDropTarget ? 2 : 1}px solid ${isDropTarget ? T.sageDeep : T.rule}`,
                 borderRadius: 16, padding: '18px 22px', display: 'grid',
                 gridTemplateColumns: 'auto 1fr auto', gap: 20, alignItems: 'center',
                 cursor: isDropTarget ? 'pointer' : 'default',
                 position: 'relative',
+                transition: 'background 120ms ease, border-color 120ms ease',
               }}
             >
               {/* Avatar + name + capacity */}
@@ -980,19 +1088,29 @@ export function ScheduleTab() {
                   return (
                     <button
                       key={r.id}
-                      onClick={(e) => {
+                      onPointerDown={(e) => {
                         e.stopPropagation();
-                        setFloatingRoomId(prev => prev === r.id ? null : r.id);
+                        e.preventDefault();
+                        dragStartRef.current = {
+                          x: e.clientX, y: e.clientY,
+                          roomId: r.id,
+                          meta: { number: r.number, type: r.type },
+                          crossed: false,
+                        };
                       }}
                       title={floating
-                        ? (lang === 'es' ? 'Toca un nombre para mover, o toca aquí para cancelar' : 'Tap a name to move, or tap again to cancel')
-                        : (lang === 'es' ? 'Toca para levantar' : 'Tap to pick up')}
+                        ? (lang === 'es' ? 'Toca un destino o suelta sobre uno para mover' : 'Tap or drop on a target to move')
+                        : (lang === 'es' ? 'Toca o arrastra para mover' : 'Tap or drag to move')}
                       style={{
                         padding: '5px 11px', borderRadius: 8,
-                        background: floating ? "rgba(215,176,126,0.14)" : T.bg,
-                        border: `${floating ? 2 : 1}px solid ${floating ? T.caramelDeep : T.rule}`,
+                        background: floating ? T.sageDim : T.bg,
+                        border: `${floating ? 2 : 1}px solid ${floating ? T.sageDeep : T.rule}`,
                         color: T.ink, fontFamily: FONT_MONO, fontSize: 13, fontWeight: 600,
-                        letterSpacing: '-0.02em', whiteSpace: 'nowrap', cursor: 'pointer',
+                        letterSpacing: '-0.02em', whiteSpace: 'nowrap',
+                        cursor: floating ? 'grabbing' : 'grab',
+                        opacity: floating ? 0.4 : 1,
+                        touchAction: 'none',
+                        transition: 'background 120ms ease, border-color 120ms ease, opacity 120ms ease',
                       }}
                     >
                       {r.number}
@@ -1115,6 +1233,38 @@ export function ScheduleTab() {
           </Btn>
         </div>
       </div>
+
+      {/* FLOATING GHOST — follows the cursor while a room is held.
+          pointerEvents: 'none' so the cursor still hits drop targets
+          underneath; positioned via fixed coords from cursorPos. Only
+          renders when both the room is floating AND we have a cursor
+          position (set by either the click-pick or the drag threshold). */}
+      {floatingRoomId && floatingRoomMeta && cursorPos && typeof document !== 'undefined' && createPortal(
+        <div
+          style={{
+            position: 'fixed',
+            top: cursorPos.y,
+            left: cursorPos.x,
+            transform: 'translate(8px, 8px)',
+            pointerEvents: 'none',
+            zIndex: 9999,
+          }}
+        >
+          <span style={{
+            padding: '5px 11px', borderRadius: 8,
+            background: T.paper, border: `2px solid ${T.sageDeep}`, color: T.ink,
+            fontFamily: FONT_MONO, fontSize: 13, fontWeight: 600,
+            letterSpacing: '-0.02em', whiteSpace: 'nowrap',
+            boxShadow: '0 6px 18px rgba(0,0,0,0.15)',
+            display: 'inline-block',
+          }}>
+            {floatingRoomMeta.number}
+            {floatingRoomMeta.type === 'checkout' && <span style={{ color: T.ink3, fontWeight: 400 }}> ↗</span>}
+            {floatingRoomMeta.type === 'stayover' && <span style={{ color: T.ink3, fontWeight: 400 }}> ◐</span>}
+          </span>
+        </div>,
+        document.body,
+      )}
 
       {/* TOAST */}
       {toast && (
