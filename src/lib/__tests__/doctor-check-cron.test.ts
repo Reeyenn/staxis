@@ -58,7 +58,7 @@ describe('decideDoctorCheckAlert', () => {
     assert.equal(decision.message, undefined);
   });
 
-  it('alerts on a single failing check with singular message', () => {
+  it('alerts on a single failing check with name in message', () => {
     const report = makeReport([
       { name: 'env_vars', status: 'ok', detail: 'all set' },
       {
@@ -72,7 +72,7 @@ describe('decideDoctorCheckAlert', () => {
     assert.equal(decision.shouldAlert, true);
     assert.equal(decision.failCount, 1);
     assert.equal(decision.warnCount, 0);
-    assert.equal(decision.message, 'doctor: 1 check failing');
+    assert.equal(decision.message, 'doctor: 1 failing — cron_heartbeats');
     assert.deepEqual(decision.failingChecks, [
       {
         name: 'cron_heartbeats',
@@ -82,7 +82,7 @@ describe('decideDoctorCheckAlert', () => {
     ]);
   });
 
-  it('alerts on multiple failing checks with plural message', () => {
+  it('alerts on multiple failing checks with all names in message', () => {
     const report = makeReport([
       {
         name: 'env_vars',
@@ -102,13 +102,32 @@ describe('decideDoctorCheckAlert', () => {
     assert.equal(decision.shouldAlert, true);
     assert.equal(decision.failCount, 2);
     assert.equal(decision.warnCount, 1);
-    assert.equal(decision.message, 'doctor: 2 checks failing');
+    assert.equal(decision.message, 'doctor: 2 failing — env_vars, rpc_health');
     assert.deepEqual(
       decision.failingChecks.map(c => c.name),
       ['env_vars', 'rpc_health'],
     );
     // fix is optional — make sure undefined is preserved, not dropped.
     assert.equal(decision.failingChecks[1].fix, undefined);
+  });
+
+  it('truncates the message with "+N more" when names would overflow', () => {
+    // Build 30 failing checks with long names so the message must truncate.
+    const longName = (i: number) => `very_long_check_name_index_${i}_with_extra_padding`;
+    const checks: DoctorCheckSummary['checks'] = [];
+    for (let i = 0; i < 30; i++) {
+      checks.push({ name: longName(i), status: 'fail', detail: 'broken' });
+    }
+    const decision = decideDoctorCheckAlert(makeReport(checks));
+    assert.equal(decision.shouldAlert, true);
+    assert.equal(decision.failCount, 30);
+    assert.ok(decision.message, 'message must be set');
+    // Title stays under the 180-char cap.
+    assert.ok(decision.message!.length <= 180, `message too long: ${decision.message!.length}`);
+    // Title ends with "+N more" because we couldn't fit all 30 names.
+    assert.match(decision.message!, /\+\d+ more$/);
+    // The "extra.failing" payload still has the full list — names are not lost.
+    assert.equal(decision.failingChecks.length, 30);
   });
 
   it('skipped checks never count as failures', () => {

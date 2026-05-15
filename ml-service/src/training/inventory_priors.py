@@ -224,7 +224,16 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
     cohorts_updated = 0
     cohorts_skipped_low_n = 0
     cohorts_with_outliers_clipped = 0
+    cohorts_skipped_out_of_range = 0
     errors: List[str] = []
+    # Round 16 (2026-05-15): doctor.inventory_priors_in_range fires when a
+    # cohort prior lands outside [0.001, 10] /room/day — single-hotel
+    # cohorts with sparse incident logs were rounding down to 0.000 and
+    # poisoning every new-hotel cold-start prediction in that cohort.
+    # Match the doctor's sane range here so the trainer simply refuses
+    # to write a prior the doctor would immediately flag.
+    SANE_PRIOR_LO = 0.001
+    SANE_PRIOR_HI = 10.0
     for (cohort_key, canonical), rates in cohort_buckets.items():
         if not rates:
             continue
@@ -296,6 +305,26 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
             mid = len(sorted_rates) // 2
             cohort_median = (sorted_rates[mid] if len(sorted_rates) % 2 == 1
                              else (sorted_rates[mid - 1] + sorted_rates[mid]) / 2.0)
+
+        # Refuse to persist priors outside the doctor's sane range. A
+        # single hotel with one or two sparse incident logs can compute a
+        # median rate of 0.000 (or absurdly high) — writing that as the
+        # cohort prior poisons every future new-hotel onboarding in that
+        # cohort. Keep the industry-benchmark seed instead.
+        if not (SANE_PRIOR_LO <= cohort_median <= SANE_PRIOR_HI):
+            cohorts_skipped_out_of_range += 1
+            print(json.dumps({
+                "level": "warn",
+                "event": "cohort_prior_out_of_sane_range",
+                "cohort_key": cohort_key,
+                "canonical": canonical,
+                "n_hotels": n_hotels,
+                "n_rates": int(len(rates)),
+                "cohort_median": cohort_median,
+                "sane_range": [SANE_PRIOR_LO, SANE_PRIOR_HI],
+                "ts": datetime.utcnow().isoformat(),
+            }))
+            continue
         try:
             client.client.table("inventory_rate_priors").upsert({
                 "cohort_key": cohort_key,
@@ -310,14 +339,23 @@ async def aggregate_inventory_priors() -> Dict[str, Any]:
         except Exception as exc:
             errors.append(f"upsert failed for ({cohort_key}, {canonical}): {exc}")
 
+    notes: List[str] = []
+    if cohorts_skipped_low_n:
+        notes.append(
+            f"skipped {cohorts_skipped_low_n} global rows with n_hotels<5 "
+            "(kept industry-benchmark seeds)"
+        )
+    if cohorts_skipped_out_of_range:
+        notes.append(
+            f"skipped {cohorts_skipped_out_of_range} cohort rows with "
+            f"median outside [{SANE_PRIOR_LO}, {SANE_PRIOR_HI}] /room/day "
+            "(kept industry-benchmark seeds)"
+        )
     return {
         "cohorts_updated": cohorts_updated,
         "items_canonical": len(set(c[1] for c in cohort_buckets.keys())),
         "cohorts_with_outliers_clipped": cohorts_with_outliers_clipped,
+        "cohorts_skipped_out_of_range": cohorts_skipped_out_of_range,
         "errors": errors,
-        "note": (
-            f"skipped {cohorts_skipped_low_n} global rows with n_hotels<5 "
-            "(kept industry-benchmark seeds)"
-            if cohorts_skipped_low_n else None
-        ),
+        "note": "; ".join(notes) if notes else None,
     }

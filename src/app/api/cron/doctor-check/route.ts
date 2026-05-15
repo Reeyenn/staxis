@@ -55,9 +55,36 @@ export function decideDoctorCheckAlert(report: DoctorCheckSummary): AlertDecisio
   const warnCount = report.checks.filter(c => c.status === 'warn').length;
   const failCount = failingChecks.length;
   const shouldAlert = failCount > 0;
-  const message = shouldAlert
-    ? `doctor: ${failCount} check${failCount === 1 ? '' : 's'} failing`
-    : undefined;
+  // Include the failing check names in the alert title (not just the count)
+  // so Sentry/email/Slack lists are scannable. Round 16, 2026-05-15: the
+  // previous "doctor: 2 checks failing" gave zero signal about WHICH checks
+  // broke — operators had to click into Sentry "extra" to find out.
+  // Cap at MESSAGE_MAX so we don't overflow Sentry's title field (typical
+  // truncation around 200 chars).
+  const MESSAGE_MAX = 180;
+  let message: string | undefined;
+  if (shouldAlert) {
+    const prefix = `doctor: ${failCount} failing — `;
+    const names = failingChecks.map(c => c.name);
+    let joined = names.join(', ');
+    if (prefix.length + joined.length > MESSAGE_MAX) {
+      // Walk the list and stop once we'd exceed the budget; report the rest
+      // as "+N more". Sentry's "extra.failing" still has the full list.
+      const budget = MESSAGE_MAX - prefix.length;
+      const shown: string[] = [];
+      let used = 0;
+      for (let i = 0; i < names.length; i++) {
+        const sep = shown.length === 0 ? 0 : 2; // ", "
+        const tail = `, +${names.length - i} more`;
+        if (used + sep + names[i].length + tail.length > budget) break;
+        shown.push(names[i]);
+        used += sep + names[i].length;
+      }
+      const hidden = names.length - shown.length;
+      joined = shown.join(', ') + (hidden > 0 ? `, +${hidden} more` : '');
+    }
+    message = prefix + joined;
+  }
   return { shouldAlert, failCount, warnCount, failingChecks, message };
 }
 

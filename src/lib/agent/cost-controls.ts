@@ -23,6 +23,7 @@
 // being rate-limited.
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { log } from '@/lib/log';
 import { MAX_OUTPUT_TOKENS, MAX_TOOL_ITERATIONS, PRICING } from './llm';
 
 // ─── Reservation sizing (Codex review fix H1 + round-5 R3) ────────────────
@@ -320,10 +321,10 @@ export async function recordNonRequestCost(opts: {
   kind: 'eval' | 'background' | 'audio';
 }): Promise<void> {
   if (opts.costUsd <= 0) return;
-  const { error } = await supabaseAdmin.from('agent_costs').insert({
+  const insertRow = (conversationId: string | null) => ({
     user_id: opts.userId,
     property_id: opts.propertyId,
-    conversation_id: opts.conversationId,
+    conversation_id: conversationId,
     model: opts.model,
     model_id: opts.modelId,
     tokens_in: opts.tokensIn,
@@ -333,7 +334,34 @@ export async function recordNonRequestCost(opts: {
     kind: opts.kind,
     state: 'finalized',
   });
+  const { error } = await supabaseAdmin.from('agent_costs').insert(insertRow(opts.conversationId));
   if (error) {
+    // The conversation FK is nullable on purpose (0080_agent_cost_controls.sql:
+    // `on delete set null`) — long-lived ElevenLabs voice sessions can
+    // outlive the agent_conversations row when admins delete the
+    // conversation mid-session, so the webhook arrives with a stale id.
+    // Retry once with conversation_id=null so we still book the spend
+    // against (user, property) — the global cap depends on this. This
+    // only applies to the conversation FK, not user/property FKs (which
+    // are NOT NULL — those still throw).
+    if (
+      error.code === '23503' &&
+      opts.conversationId !== null &&
+      error.message.includes('agent_costs_conversation_id_fkey')
+    ) {
+      log.warn('[cost-controls] conversation gone, recording cost with null conversation_id', {
+        conversation_id: opts.conversationId,
+        user_id: opts.userId,
+        property_id: opts.propertyId,
+        kind: opts.kind,
+      });
+      const retry = await supabaseAdmin.from('agent_costs').insert(insertRow(null));
+      if (retry.error) {
+        console.error('[cost-controls] non-request cost insert failed on null retry', retry.error);
+        throw new Error(`non-request cost insert failed: ${retry.error.message}`);
+      }
+      return;
+    }
     // Codex post-merge review 2026-05-13 (N9): previously this just logged
     // and returned. An FK violation (deleted user/property) silently lost
     // the cost record — eval reports "success" but the spend never appears
