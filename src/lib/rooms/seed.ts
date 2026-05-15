@@ -144,11 +144,24 @@ export async function seedRoomsForDate(
       patch.stayover_minutes = csv.stayoverMinutes ?? null;
       patch.arrival = csv.arrival ?? null;
 
+      // Round 15 (2026-05-14): precondition the UPDATE on the read-time
+      // status. The patch above was computed assuming the row was in
+      // `row.status` when we SELECTed it. If a housekeeper raced ahead
+      // (e.g., status: 'dirty' → 'in_progress' between SELECT and UPDATE),
+      // applying the precomputed patch would clobber `started_at` and
+      // reset `status` back to dirty — the exact 95a90a3 "70 of 76
+      // sub-3-min events" bug. With `.eq('status', row.status)` the
+      // racing UPDATE silently affects 0 rows; the next seeder pass
+      // (manual click or next hourly cron tick) re-reads the live state
+      // and computes the right patch. Eventual consistency on type /
+      // stayover_day / arrival is acceptable; agent reads live so users
+      // never see stale.
       updates.push(
         supabaseAdmin
           .from('rooms')
           .update(patch)
           .eq('id', row.id)
+          .eq('status', row.status as string)
           .then(({ error }) => { if (error) throw error; }),
       );
       updated++;
