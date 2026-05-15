@@ -1772,13 +1772,24 @@ async function checkMlSupplyPredictionsFresh(): Promise<Omit<Check, 'name' | 'du
   // returns predicted_rooms: 0 and writes nothing). Without this guard
   // the check would scream "supply broken" every day before the manager
   // has saved tomorrow's schedule — even though nothing is actually
-  // broken. Gate on the upstream input existing first.
+  // broken.
+  //
+  // The supply cron only predicts for TOMORROW (see
+  // src/app/api/cron/ml-run-inference/route.ts → tomorrowInTz). So the
+  // right gate is "does a schedule exist for tomorrow?", not "does any
+  // future schedule exist?". A schedule for today that the manager
+  // built this morning won't have generated supply_predictions —
+  // yesterday's cron, which would have written them, had nothing to
+  // work with.
   try {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = new Date();
+    const tomorrow = new Date(today);
+    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+    const tomorrowStr = tomorrow.toISOString().slice(0, 10);
     const { data: schedules, error: schedErr } = await supabaseAdmin
       .from('schedule_assignments')
       .select('property_id')
-      .gte('date', today)
+      .eq('date', tomorrowStr)
       .limit(1);
     if (schedErr) {
       // If the read itself errors we can't tell — fall through to the
@@ -1786,7 +1797,7 @@ async function checkMlSupplyPredictionsFresh(): Promise<Omit<Check, 'name' | 'du
     } else if (!schedules || schedules.length === 0) {
       return {
         status: 'skipped',
-        detail: `No schedule_assignments rows for ${today} or later — supply predictions can't exist until a manager builds the schedule in the Housekeeping → Schedule tab. Not an ML pipeline failure.`,
+        detail: `No schedule_assignments for tomorrow (${tomorrowStr}) — supply predictions can't land until a manager builds the schedule in Housekeeping → Schedule. Not an ML pipeline failure.`,
       };
     }
   } catch {
@@ -1796,7 +1807,7 @@ async function checkMlSupplyPredictionsFresh(): Promise<Omit<Check, 'name' | 'du
     layer: 'supply',
     table: 'supply_predictions',
     dateCol: 'date',
-    fix: 'Schedule exists for today/tomorrow but supply_predictions are missing. Check /api/cron/ml-run-inference latest run + ML service /predict/supply logs.',
+    fix: 'A schedule for tomorrow exists but no supply_predictions for today or later. Check /api/cron/ml-run-inference latest run + ML service /predict/supply logs for that property.',
   });
 }
 
