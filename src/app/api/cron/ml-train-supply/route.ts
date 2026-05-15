@@ -15,8 +15,9 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { runWithConcurrency, applyShardFilter } from '@/lib/parallel';
-import { listMlShardUrls, resolveMlShardUrl } from '@/lib/ml-routing';
+import { listMlShardUrls } from '@/lib/ml-routing';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
+import { triggerMlTraining } from '@/lib/ml-invoke';
 import {
   emitPropertyMisconfiguredEvent,
   parsePropertyMisconfiguredError,
@@ -55,24 +56,20 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   log.info('ml-train-supply: start', { requestId, shardHeader: sharded.header });
 
   // Parallel fan-out (concurrency 5) — see ml-train-demand route header.
+  // Phase M3.5 (2026-05-14): the inline fetch was migrated to the shared
+  // triggerMlTraining helper (src/lib/ml-invoke.ts) so the same network
+  // contract (Bearer auth, timeout, shard routing, structured logging)
+  // is enforced from one place across all 4 ml-train callers + the
+  // M3.1 on-onboard hook. Cron-specific error mapping (the
+  // property_misconfigured event emit + heartbeat status shape) stays
+  // here — that's load-bearing for the doctor's degraded-heartbeat check.
   const outcomes = await runWithConcurrency(sharded.items, async (property) => {
-    const mlServiceUrl = resolveMlShardUrl(property.id)!;
-    const res = await fetch(`${mlServiceUrl.replace(/\/$/, '')}/train/supply`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${mlServiceSecret}`,
-        'Content-Type': 'application/json',
-        'x-request-id': requestId,
-      },
-      body: JSON.stringify({ property_id: property.id }),
-      signal: AbortSignal.timeout(45_000),
-    });
-    const json = await res.json().catch(() => ({ status: 'non_json_response', http: res.status }));
+    const result = await triggerMlTraining(property.id, 'supply', { requestId });
 
     // Codex follow-up 2026-05-13 (A2 + A6): persist property_misconfigured
     // events from training; map error responses to status: 'error' so
     // the heartbeat is suppressed correctly.
-    const errStr = (json as { error?: string }).error;
+    const errStr = result.error;
     if (typeof errStr === 'string' && errStr.startsWith('property_misconfigured:')) {
       const parsed = parsePropertyMisconfiguredError(errStr);
       if (parsed) {
@@ -87,13 +84,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       }
       return { status: 'skipped', detail: errStr };
     }
-    if (typeof errStr === 'string' || !res.ok) {
+    if (typeof errStr === 'string' || !result.ok) {
       return {
         status: 'error',
-        detail: errStr ?? (json as { http?: number }).http ?? `HTTP ${res.status}`,
+        detail: errStr ?? result.http ?? `HTTP ${result.http}`,
       };
     }
-    return { status: (json as { status?: string }).status ?? 'unknown', detail: json };
+    return { status: result.status, detail: result.detail };
   }, 5);
 
   const results = outcomes.map((o) => {
