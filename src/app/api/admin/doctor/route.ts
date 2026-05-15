@@ -2312,7 +2312,7 @@ async function checkMlModelsHoldoutSize(): Promise<Omit<Check, 'name' | 'duratio
     // 50-row ceiling truncated BEFORE dedupe.
     const { data, error } = await supabaseAdmin
       .from('model_runs')
-      .select('id, property_id, layer, algorithm, validation_holdout_n, trained_at')
+      .select('id, property_id, layer, algorithm, cold_start, validation_holdout_n, trained_at')
       .in('layer', ['demand', 'supply'])
       .is('item_id', null)
       .eq('is_active', true)
@@ -2327,9 +2327,9 @@ async function checkMlModelsHoldoutSize(): Promise<Omit<Check, 'name' | 'duratio
       return { status: 'ok', detail: 'No demand/supply model_runs yet — informational only.' };
     }
     // Dedupe by (property, layer) keeping the most recent.
-    const mostRecent = new Map<string, { layer: string; algorithm: string; n: number; trained_at: string }>();
+    const mostRecent = new Map<string, { layer: string; algorithm: string; coldStart: boolean; n: number; trained_at: string }>();
     for (const r of rows as Array<{
-      property_id: string; layer: string; algorithm: string;
+      property_id: string; layer: string; algorithm: string; cold_start: boolean | null;
       validation_holdout_n: number | null; trained_at: string;
     }>) {
       const key = `${r.property_id}:${r.layer}`;
@@ -2337,6 +2337,11 @@ async function checkMlModelsHoldoutSize(): Promise<Omit<Check, 'name' | 'duratio
         mostRecent.set(key, {
           layer: r.layer,
           algorithm: r.algorithm,
+          // Round 18: prefer the explicit boolean over algorithm-string
+          // matching. Falls back to the prior name-startsWith heuristic
+          // for runs that pre-date migration 0130 (defense in depth).
+          coldStart: r.cold_start === true
+            || (r.algorithm?.startsWith('cold-start') ?? false),
           n: r.validation_holdout_n ?? 0,
           trained_at: r.trained_at,
         });
@@ -2346,14 +2351,11 @@ async function checkMlModelsHoldoutSize(): Promise<Omit<Check, 'name' | 'duratio
     const tooSmall: string[] = [];
     let coldStartSkipped = 0;
     for (const [key, info] of mostRecent.entries()) {
-      // Cold-start models legitimately have no validation holdout — they
-      // run on a synthetic cohort prior, not on historical training rows.
-      // Counting them against HOLDOUT_FLOOR fires a false-positive warn
-      // every day for any new property until it has 200+ days of complete
-      // labels. The real concern is when a TRAINED model has a tiny
-      // holdout (real training data exists but the gate would reject it
-      // on activation).
-      if (info.algorithm && info.algorithm.startsWith('cold-start')) {
+      // Cold-start models legitimately have no validation holdout —
+      // they run on a synthetic cohort prior, not on historical training
+      // rows. Doctor's job is to flag a TRAINED model with a tiny
+      // holdout (real data exists but the activation gate rejects it).
+      if (info.coldStart) {
         coldStartSkipped++;
         continue;
       }

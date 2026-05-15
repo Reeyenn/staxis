@@ -26,6 +26,40 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
 import { MAX_OUTPUT_TOKENS, MAX_TOOL_ITERATIONS, PRICING } from './llm';
 
+/**
+ * Canonical name of the FK constraint that protects agent_costs.
+ * conversation_id from referencing a deleted agent_conversations row.
+ *
+ * Exported as a named constant (not a string literal) so the retry path
+ * in recordNonRequestCost stays in sync with the actual constraint name.
+ * If a future migration renames or recreates the constraint, update this
+ * constant in lock-step. The test in cost-controls-fk-retry.test.ts
+ * synthesizes a 23503 error with this exact name and asserts retry
+ * fires — meaning a name drift breaks the test loudly instead of
+ * silently regressing voice-traffic Sentry noise.
+ *
+ * Defined here rather than imported from a schema file because:
+ *   - PostgREST doesn't expose constraint names in its error shape via
+ *     a separate field; the only signal we get is error.message text.
+ *   - String-matching on a typed constant beats string-matching on an
+ *     inline literal: the type checker, grep, and IDE refactor all
+ *     follow the constant.
+ */
+export const AGENT_COSTS_CONVERSATION_FK = 'agent_costs_conversation_id_fkey';
+
+/** Pure discriminator: does this Supabase/PostgREST error look like a
+ *  conversation FK violation specifically? Lifts the "what counts as
+ *  retry-able" decision out of recordNonRequestCost so it can be
+ *  unit-tested without spinning up a fake supabaseAdmin. */
+export function isConversationFkViolation(
+  error: { code?: string; message?: string } | null | undefined,
+): boolean {
+  if (!error) return false;
+  if (error.code !== '23503') return false;
+  if (!error.message) return false;
+  return error.message.includes(AGENT_COSTS_CONVERSATION_FK);
+}
+
 // ─── Reservation sizing (Codex review fix H1 + round-5 R3) ────────────────
 // The cost gate is only safe if the reservation is bigger than the
 // worst-case actual cost.
@@ -344,11 +378,7 @@ export async function recordNonRequestCost(opts: {
     // against (user, property) — the global cap depends on this. This
     // only applies to the conversation FK, not user/property FKs (which
     // are NOT NULL — those still throw).
-    if (
-      error.code === '23503' &&
-      opts.conversationId !== null &&
-      error.message.includes('agent_costs_conversation_id_fkey')
-    ) {
+    if (opts.conversationId !== null && isConversationFkViolation(error)) {
       log.warn('[cost-controls] conversation gone, recording cost with null conversation_id', {
         conversation_id: opts.conversationId,
         user_id: opts.userId,

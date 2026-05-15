@@ -319,11 +319,33 @@ export async function GET(req: NextRequest) {
       requestId, target: targetParam, propertyCount: propertyJobs.length,
     });
 
+    // Round 18 fleet-scale finding: a single slow Supabase query inside
+    // autoFillForProperty would block one of the 5 concurrency slots
+    // indefinitely. At 50+ properties that compounds — one stuck slot
+    // means the run-inference budget shrinks by 20%. Cap each property
+    // at 8s wall-clock; outside that, mark it as an error so the slot
+    // is freed and the next property can run. 8s is generous: a healthy
+    // property completes the full read + RPC + persist sequence in ~200ms.
+    const PER_PROPERTY_TIMEOUT_MS = 8_000;
     const outcomes = await runWithConcurrency(
       propertyJobs,
       async (p) => {
         const targetDate = localDate(now, p.timezone, offsetDays);
-        return await autoFillForProperty(p, targetDate, requestId);
+        return await Promise.race<PerPropertyResult>([
+          autoFillForProperty(p, targetDate, requestId),
+          new Promise<PerPropertyResult>((resolve) =>
+            setTimeout(
+              () => resolve({
+                propertyId: p.id,
+                propertyName: p.name,
+                date: targetDate,
+                outcome: 'error',
+                detail: `per-property timeout after ${PER_PROPERTY_TIMEOUT_MS}ms — likely slow Supabase query or hung RPC`,
+              }),
+              PER_PROPERTY_TIMEOUT_MS,
+            ),
+          ),
+        ]);
       },
       5,
     );
