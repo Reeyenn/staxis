@@ -5,6 +5,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
 from src.auth import verify_bearer_token
@@ -504,20 +505,36 @@ async def predict_inventory_rate_endpoint(
 
 
 # Error handlers
+#
+# Round 16 (2026-05-15): these handlers used to return a raw dict, which
+# is NOT a valid ASGI response. Starlette's ServerErrorMiddleware then
+# tried to call the dict as an ASGI app and crashed with
+#   TypeError: 'dict' object is not callable
+# That secondary error replaced the original exception in the logs and
+# made every 5xx in the ML service unreadable. It also made the cron's
+# /api/cron/ml-run-inference look like a Vercel 502 (the ML service was
+# returning a broken response body that the TS route couldn't parse).
+# FastAPI exception handlers MUST return a Response — wrap the dict.
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
-    """Handle HTTP exceptions."""
-    return {
-        "error": exc.detail,
-        "status_code": exc.status_code,
-    }
+    """Handle HTTP exceptions — return JSON with the proper status code."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": exc.detail,
+            "status_code": exc.status_code,
+        },
+    )
 
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request, exc):
-    """Handle general exceptions."""
-    return {
-        "error": str(exc),
-        "status_code": 500,
-    }
+    """Handle unexpected exceptions — return 500 JSON, not a raw dict."""
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": str(exc),
+            "status_code": 500,
+        },
+    )
