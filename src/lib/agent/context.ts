@@ -8,7 +8,7 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import type { AppRole } from '@/lib/roles';
-import { getCurrentRoomsDate } from './tools/_helpers';
+import { getCurrentRoomsDate, computeRoomTotal } from './tools/_helpers';
 
 export interface HotelSnapshot {
   /** ISO date string YYYY-MM-DD in the property's local time. */
@@ -153,12 +153,14 @@ export async function buildHotelSnapshot(
     }
   }
 
-  // rooms.total = inventory length when configured (truth), else fall back
-  // to the seeded count. seedingGap surfaces partial seeds to the agent.
-  rooms.total = inventoryLength > 0 ? inventoryLength : seededRowCount;
-  rooms.seedingGap = inventoryLength > 0
-    ? Math.max(0, inventoryLength - seededRowCount)
-    : 0;
+  // Round 14: total comes from inventory when configured. Round 15 (Codex
+  // finding A): also consider properties.total_rooms — take the max of the
+  // three signals so a stale or empty inventory can't silently under-report.
+  // The doctor check fails loud when inventory and total_rooms disagree
+  // (INV-24).
+  const totalDerived = computeRoomTotal(inventoryLength, configuredTotalRooms, seededRowCount);
+  rooms.total = totalDerived.total;
+  rooms.seedingGap = totalDerived.seedingGap;
 
   // Sanity check: seeded rows shouldn't exceed the configured property size
   // (which the manager set at onboarding). If they do, the data layer is

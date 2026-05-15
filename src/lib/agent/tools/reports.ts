@@ -22,24 +22,26 @@ registerTool<Record<string, never>>({
     // so seed-from-CSV produces a partial `rooms` table; reading
     // count(rooms today) as the denominator made the agent report
     // "100% occupancy, 0 vacant" when really 4 rooms simply weren't in
-    // today's seed. Treating any missing room as vacant is the safe
-    // default — absence of data means no guest in the room.
+    // today's seed. Round 15 (Codex finding A): also read `total_rooms`
+    // and use the max of the three signals so a stale-inventory or
+    // empty-inventory state can't silently under-report. The doctor
+    // check fails loud on disagreement (INV-24).
     const [{ data: propRow }, roomsDate] = await Promise.all([
       supabaseAdmin
         .from('properties')
-        .select('room_inventory')
+        .select('room_inventory, total_rooms')
         .eq('id', ctx.propertyId)
         .maybeSingle(),
       getCurrentRoomsDate(ctx.propertyId),
     ]);
     const inventory = (propRow?.room_inventory as string[] | null) ?? [];
     const inventoryLength = inventory.length;
+    const configuredTotalRooms = Number(propRow?.total_rooms ?? 0);
 
     if (!roomsDate) {
-      // No seed at all yet today. computeOccupancySummary with an empty
-      // rooms array returns total = inventoryLength, vacant = total,
-      // occupied = 0, percent = 0, seedingGap = inventoryLength.
-      const summary = computeOccupancySummary(inventoryLength, []);
+      // No seed at all yet today. Helper returns total from inventory
+      // or total_rooms (whichever is larger), all vacant.
+      const summary = computeOccupancySummary(inventoryLength, configuredTotalRooms, []);
       return { ok: true, data: { ...summary } };
     }
 
@@ -52,6 +54,7 @@ registerTool<Record<string, never>>({
 
     const summary = computeOccupancySummary(
       inventoryLength,
+      configuredTotalRooms,
       (data ?? []).map(r => r.type as string | null),
     );
 

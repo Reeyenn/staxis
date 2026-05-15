@@ -23,27 +23,28 @@ export interface RoomRow {
 }
 
 /**
- * Compute an occupancy summary from a property's room inventory and the
- * seeded rooms-for-today rows.
+ * Compute an occupancy summary from three signals about hotel size and
+ * the seeded rooms-for-today rows.
  *
- * Round 14 (2026-05-14). `total` always equals the inventory length when
- * the inventory is configured — that's the truth about how many rooms
- * the property has. The seeded `rooms` table is a per-day operational
- * view that the CSV/scraper may have only partially populated.
+ * Round 14 (2026-05-14) read total from `properties.room_inventory.length`.
+ * Round 15 (2026-05-14, Codex finding A) added `configuredTotalRooms` —
+ * `properties.total_rooms` — as a second authoritative signal. The schema
+ * has both columns and nothing forces them to agree; INV-24 enforces the
+ * invariant via the doctor check, but the agent must still produce a
+ * safe answer during a transient drift.
  *
- *   • Inventory configured (length > 0):
- *       total = inventoryLength
- *       seedingGap = max(0, inventoryLength - seededRoomTypes.length)
- *       Missing rooms count as vacant (the safe default — absence of
- *       data means no guest is in the room).
+ * `total = max(inventoryLength, configuredTotalRooms, seededRowCount)`.
+ * Whichever source claims the LARGEST hotel wins. The reasoning:
+ *   • under-reporting (saying "we have 70" when really 74) is a silent
+ *     lie that the user can't audit
+ *   • over-reporting (saying "we have 74" when one source says 70) makes
+ *     the missing rooms appear as "vacant" — visibly checkable, and the
+ *     doctor check pages SMS on the disagreement so it gets fixed fast
  *
- *   • Inventory empty (legacy / pre-onboarding):
- *       total = seededRoomTypes.length (preserves the old behavior
- *       so a property without inventory configured doesn't crash).
- *       seedingGap = 0 (we have nothing to compare against).
+ * Missing rooms (in the chosen total but not in the seeded set) count
+ * as vacant — the safe default, since absence of data means no guest.
  *
- * Exported for unit testing — the get_occupancy tool calls this and
- * mutates nothing else.
+ * Exported for unit testing — the agent tools call this and mutate nothing.
  */
 export interface OccupancySummary {
   total: number;
@@ -53,14 +54,36 @@ export interface OccupancySummary {
   seedingGap: number;
 }
 
+/** Three-signal total derivation. Shared between buildHotelSnapshot,
+ *  get_today_summary, and computeOccupancySummary so the agent's "total
+ *  rooms" answer is consistent across surfaces (INV-23 + INV-24). */
+export interface RoomTotal {
+  total: number;
+  seedingGap: number;
+}
+
+export function computeRoomTotal(
+  inventoryLength: number,
+  configuredTotalRooms: number,
+  seededRowCount: number,
+): RoomTotal {
+  const total = Math.max(
+    Math.max(0, inventoryLength),
+    Math.max(0, configuredTotalRooms),
+    seededRowCount,
+  );
+  const seedingGap = Math.max(0, total - seededRowCount);
+  return { total, seedingGap };
+}
+
 export function computeOccupancySummary(
   inventoryLength: number,
+  configuredTotalRooms: number,
   seededRoomTypes: ReadonlyArray<'checkout' | 'stayover' | 'vacant' | null | undefined | string>,
 ): OccupancySummary {
   const seededRowCount = seededRoomTypes.length;
   const occupied = seededRoomTypes.filter(t => t === 'checkout' || t === 'stayover').length;
-  const total = inventoryLength > 0 ? inventoryLength : seededRowCount;
-  const seedingGap = inventoryLength > 0 ? Math.max(0, inventoryLength - seededRowCount) : 0;
+  const { total, seedingGap } = computeRoomTotal(inventoryLength, configuredTotalRooms, seededRowCount);
   const vacant = Math.max(0, total - occupied);
   const occupancyPercent = total > 0 ? Math.round((occupied / total) * 1000) / 10 : 0;
   return { total, occupied, vacant, occupancyPercent, seedingGap };

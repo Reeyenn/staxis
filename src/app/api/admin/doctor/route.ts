@@ -2613,42 +2613,69 @@ async function checkPicovoiceWakeWordConfig(): Promise<Omit<Check, 'name' | 'dur
 }
 
 /**
- * rooms_today_seeded — every active property's `rooms` table for today
- * should have one row per `properties.room_inventory` entry.
+ * rooms_today_seeded — three-part check:
  *
- * Why this matters (Round 14, 2026-05-14): the AI tools now compute
- * totals from room_inventory directly (Layer 1), so a partial seed
- * doesn't lie about the room count. But operational rollups
- * (get_today_summary's dirty/in_progress/clean counts) and the
- * housekeeper Rooms tab still depend on the seeded rows existing.
- * Missing rows mean those rooms invisibly don't appear — which is the
- * exact failure the 2026-05-14 user report flagged.
+ *   1. (INV-24, Round 15) total_rooms must agree with array_length(room_inventory).
+ *      Drift between the two sources means the AI could under-report.
+ *   2. (INV-24) When total_rooms > 0 but room_inventory is empty,
+ *      phantom-seed can't run → warn so the operator backfills inventory.
+ *   3. (INV-23, Round 14) Today's rooms row count must equal the
+ *      expected total (max of inventory length and total_rooms).
+ *      Gap >= 4 or > 10% → fail. 1-3 → warn.
  *
- * Status:
- *   ok    — every property has gap = 0
- *   warn  — at least one property has gap 1-3 (transient — scraper has
- *           pulled but the seed-rooms-daily cron hasn't run yet)
- *   fail  — at least one property has gap ≥ 4 OR gap > 10% of inventory
+ * Codex round-2 review (2026-05-14) flagged that the original Round-14
+ * version only used `room_inventory` and SKIPPED empty-inventory
+ * properties, so a stale or empty inventory passed status=ok while the
+ * AI still reported a wrong total. This expansion closes that gap.
  *
- * INV-23 doctrine: this check is the third leg of the Round 14 tripod
- * (agent reads inventory → cron heals seed → doctor alerts on drift).
+ * INV-23 + INV-24 doctrine.
  */
 async function checkRoomsTodaySeeded(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {
     const { data: properties, error: propsErr } = await supabaseAdmin
       .from('properties')
-      .select('id, name, timezone, room_inventory');
+      .select('id, name, timezone, room_inventory, total_rooms');
     if (propsErr) {
       return { status: 'warn', detail: `Could not read properties: ${propsErr.message}` };
     }
 
-    type GapEntry = { id: string; name: string; gap: number; inventory: number; seeded: number; pct: number };
+    type DriftEntry = { id: string; name: string; inventoryLength: number; totalRooms: number };
+    type EmptyEntry = { id: string; name: string; totalRooms: number };
+    type GapEntry = { id: string; name: string; gap: number; expected: number; seeded: number; pct: number };
+
+    const drifts: DriftEntry[] = [];
+    const missingInventory: EmptyEntry[] = [];
     const gaps: GapEntry[] = [];
 
     for (const propRaw of (properties ?? [])) {
-      const prop = propRaw as { id: string; name: string | null; timezone: string | null; room_inventory: string[] | null };
+      const prop = propRaw as {
+        id: string;
+        name: string | null;
+        timezone: string | null;
+        room_inventory: string[] | null;
+        total_rooms: number | null;
+      };
       const inv = Array.isArray(prop.room_inventory) ? prop.room_inventory : [];
-      if (inv.length === 0) continue;  // skip pre-onboarding properties
+      const inventoryLength = inv.length;
+      const totalRooms = Number(prop.total_rooms ?? 0);
+      const propName = prop.name ?? prop.id;
+
+      // Pre-onboarding: both sources empty/zero. Skip — no seeding expected.
+      if (inventoryLength === 0 && totalRooms === 0) continue;
+
+      // Branch 1: drift between the two sources (both populated, they disagree).
+      if (inventoryLength > 0 && totalRooms > 0 && inventoryLength !== totalRooms) {
+        drifts.push({ id: prop.id, name: propName, inventoryLength, totalRooms });
+      }
+      // Branch 2: total_rooms set, inventory not yet configured.
+      else if (inventoryLength === 0 && totalRooms > 0) {
+        missingInventory.push({ id: prop.id, name: propName, totalRooms });
+      }
+
+      // Branch 3: seed gap. expected = max of the two signals so we catch
+      // under-seeding regardless of which source is authoritative.
+      const expected = Math.max(inventoryLength, totalRooms);
+      if (expected === 0) continue;
 
       // property-local today
       let date: string;
@@ -2668,36 +2695,69 @@ async function checkRoomsTodaySeeded(): Promise<Omit<Check, 'name' | 'durationMs
         .eq('property_id', prop.id)
         .eq('date', date);
       if (cntErr) {
-        return { status: 'warn', detail: `Could not count rooms for ${prop.name ?? prop.id}: ${cntErr.message}` };
+        return { status: 'warn', detail: `Could not count rooms for ${propName}: ${cntErr.message}` };
       }
       const seeded = count ?? 0;
-      const gap = Math.max(0, inv.length - seeded);
-      const pct = inv.length > 0 ? gap / inv.length : 0;
+      const gap = Math.max(0, expected - seeded);
+      const pct = expected > 0 ? gap / expected : 0;
       if (gap > 0) {
-        gaps.push({ id: prop.id, name: prop.name ?? prop.id, gap, inventory: inv.length, seeded, pct });
+        gaps.push({ id: prop.id, name: propName, gap, expected, seeded, pct });
       }
     }
 
-    if (gaps.length === 0) {
-      return { status: 'ok', detail: 'Every property has today\'s rooms fully seeded against its inventory.' };
-    }
-
-    const worst = gaps.reduce((a, b) => (b.gap > a.gap ? b : a));
-    const summary = gaps
-      .map(g => `${g.name}: ${g.seeded}/${g.inventory} (gap ${g.gap})`)
-      .join('; ');
-
-    if (worst.gap >= 4 || worst.pct > 0.10) {
+    // Priority 1: drift between total_rooms and inventory (INV-24 fail).
+    if (drifts.length > 0) {
+      const detail = drifts
+        .map(d => `${d.name}: total_rooms=${d.totalRooms}, inventory.length=${d.inventoryLength}`)
+        .join('; ');
       return {
         status: 'fail',
-        detail: `${gaps.length} ${gaps.length === 1 ? 'property has' : 'properties have'} a seeding gap. Worst: ${worst.name} missing ${worst.gap} of ${worst.inventory} rooms. All: ${summary}`,
-        fix: 'Hit /api/cron/seed-rooms-daily with CRON_SECRET to heal now, or check the scraper\'s plan_snapshots table for today.',
+        detail: `INV-24 drift: ${drifts.length} ${drifts.length === 1 ? 'property has' : 'properties have'} total_rooms ≠ array_length(room_inventory). ${detail}.`,
+        fix: 'Either update properties.room_inventory to match total_rooms, or update total_rooms to match the inventory length (whichever reflects the real floor plan).',
       };
     }
-    return {
-      status: 'warn',
-      detail: `Minor seeding drift in ${gaps.length} ${gaps.length === 1 ? 'property' : 'properties'}: ${summary}. The seed-rooms-daily cron will heal on its next run.`,
-    };
+
+    // Priority 2: gap (INV-23 fail/warn). Done before missing-inventory because
+    // a gap is a more pressing operational issue than an unconfigured inventory.
+    if (gaps.length > 0) {
+      const worst = gaps.reduce((a, b) => (b.gap > a.gap ? b : a));
+      const summary = gaps
+        .map(g => `${g.name}: ${g.seeded}/${g.expected} (gap ${g.gap})`)
+        .join('; ');
+      if (worst.gap >= 4 || worst.pct > 0.10) {
+        return {
+          status: 'fail',
+          detail: `${gaps.length} ${gaps.length === 1 ? 'property has' : 'properties have'} a seeding gap. Worst: ${worst.name} missing ${worst.gap} of ${worst.expected} rooms. All: ${summary}`,
+          fix: 'Hit /api/cron/seed-rooms-daily with CRON_SECRET to heal now, or check the scraper\'s plan_snapshots table for today.',
+        };
+      }
+      // Fall through to warn-level if only minor gaps.
+      const gapWarn = `Minor seeding drift in ${gaps.length} ${gaps.length === 1 ? 'property' : 'properties'}: ${summary}.`;
+      if (missingInventory.length === 0) {
+        return { status: 'warn', detail: `${gapWarn} The seed-rooms-daily cron will heal on its next run.` };
+      }
+      // Continue to combine with missing-inventory warn below.
+      const inv = missingInventory.map(m => `${m.name} (total_rooms=${m.totalRooms})`).join('; ');
+      return {
+        status: 'warn',
+        detail: `${gapWarn} Also, ${missingInventory.length} ${missingInventory.length === 1 ? 'property has' : 'properties have'} no room_inventory configured: ${inv}.`,
+      };
+    }
+
+    // Priority 3: missing inventory only (warn, no fail — phantom-seed
+    // can't run but the agent's max-of-three formula still reports
+    // total_rooms, so the AI doesn't lie. Operator action needed but
+    // not urgent enough for a phone buzz at 3am.).
+    if (missingInventory.length > 0) {
+      const detail = missingInventory.map(m => `${m.name} (total_rooms=${m.totalRooms})`).join('; ');
+      return {
+        status: 'warn',
+        detail: `${missingInventory.length} ${missingInventory.length === 1 ? 'property has' : 'properties have'} total_rooms set but no room_inventory configured: ${detail}. Phantom-seed cannot populate vacant-clean rooms for these properties.`,
+        fix: 'Populate properties.room_inventory with the master list of room numbers for these properties (see migration 0025 for the Comfort Suites example).',
+      };
+    }
+
+    return { status: 'ok', detail: 'Every property has today\'s rooms fully seeded, and total_rooms agrees with inventory length.' };
   } catch (e) {
     return { status: 'warn', detail: `rooms_today_seeded check errored: ${e instanceof Error ? e.message : String(e)}` };
   }

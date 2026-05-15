@@ -190,6 +190,15 @@ Each invariant has:
 - **Assumed by:** Every AI surface that reports "X total rooms" or computes an occupancy percentage. The CSV from Choice Advantage omits vacant-clean rooms entirely (see migration `0025_property_room_inventory.sql`), so `count(rooms today)` is structurally a partial picture; reading it as truth produced the 2026-05-14 incident.
 - **History:** Round 14 (2026-05-14). User asked "how many people do we have in-house?" and the chat replied "100% occupancy, all 70 rooms occupied, 0 vacant" for a 74-room property. The 4 missing rooms were vacant-clean and got omitted by the CSV. Going forward: any new code that computes "total rooms" inside the agent must source it from `room_inventory.length` and surface a `seedingGap` so the agent can warn the user when it's looking at a partial seed.
 
+### INV-24: properties.total_rooms == array_length(properties.room_inventory, 1) for every active property
+
+- **Enforced by:**
+  - Doctor: `rooms_today_seeded` check fails when `total_rooms` and `array_length(room_inventory)` disagree (both nonzero).
+  - Code backstop: [`computeRoomTotal`](src/lib/agent/tools/_helpers.ts) and [`computeOccupancySummary`](src/lib/agent/tools/_helpers.ts) take the MAX of inventory length, configured total, and seeded count — so a transient drift never under-reports to the user. The doctor's SMS alert is what drives the fix.
+- **NOT enforced at DB level:** a generated column for `total_rooms` would fight the existing CHECK > 0 constraint (migration 0116) and break legacy writes from the ML stack + onboarding wizard. The cost of keeping it loose at the schema level is acceptable given the doctor catches drift within ~1 hour.
+- **Assumed by:** Every AI surface that reports "X total rooms" — the agent reads the max signal, so under-reporting is impossible even mid-drift. Also the ML stack which reads `total_rooms` for property sizing.
+- **History:** Codex round-2 adversarial review of Round 14 (2026-05-14). Round 14 chose `room_inventory` as the single source for the agent layer and added a doctor check that ONLY read inventory — so a stale or empty inventory (with `total_rooms` still 74) silently passed status=ok while the AI under-reported.
+
 ## Counter-heal mechanism
 
 `staxis_heal_conversation_counters(p_dry_run boolean)` runs daily via

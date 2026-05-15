@@ -3,7 +3,7 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { registerTool, type ToolResult } from '../tools';
-import { findRoomByNumber, getCurrentRoomsDate } from './_helpers';
+import { findRoomByNumber, getCurrentRoomsDate, computeRoomTotal } from './_helpers';
 
 // ─── list_my_rooms ────────────────────────────────────────────────────────
 // Housekeeper-only. Their assigned rooms with current status.
@@ -155,20 +155,23 @@ registerTool<Record<string, never>>({
     // AND the cleaning_events join so the rollup is internally consistent.
     // (Falling back to UTC today for events when no rooms exist; the rollup
     // is meaningless in that case anyway.)
-    // Round 14: also pull room_inventory so `total` reflects the truth even
-    // when today's seed is partial. See reports.ts get_occupancy for the
-    // full rationale — same principle here.
+    // Round 14: pull room_inventory so `total` reflects the truth even when
+    // today's seed is partial. Round 15 (Codex finding A): also pull
+    // `total_rooms` and let computeRoomTotal take the max — so a stale or
+    // empty inventory can't silently under-report. See reports.ts
+    // get_occupancy for the full rationale. INV-23 + INV-24.
     const [roomsDate, { data: propRow }] = await Promise.all([
       getCurrentRoomsDate(ctx.propertyId),
       supabaseAdmin
         .from('properties')
-        .select('room_inventory')
+        .select('room_inventory, total_rooms')
         .eq('id', ctx.propertyId)
         .maybeSingle(),
     ]);
     const today = roomsDate ?? new Date().toISOString().slice(0, 10);
     const inventory = (propRow?.room_inventory as string[] | null) ?? [];
     const inventoryLength = inventory.length;
+    const configuredTotalRooms = Number(propRow?.total_rooms ?? 0);
 
     type RoomRow = { status: string | null; is_dnd: boolean | null; issue_note: string | null; help_requested: boolean | null; completed_at: string | null };
     let rooms: RoomRow[] = [];
@@ -198,8 +201,7 @@ registerTool<Record<string, never>>({
     }
 
     const seededRowCount = rooms?.length ?? 0;
-    const total = inventoryLength > 0 ? inventoryLength : seededRowCount;
-    const seedingGap = inventoryLength > 0 ? Math.max(0, inventoryLength - seededRowCount) : 0;
+    const { total, seedingGap } = computeRoomTotal(inventoryLength, configuredTotalRooms, seededRowCount);
 
     const eventCount = events?.length ?? 0;
     const totalDuration = (events ?? []).reduce(
