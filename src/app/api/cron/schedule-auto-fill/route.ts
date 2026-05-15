@@ -30,6 +30,7 @@ import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { autoAssignRooms } from '@/lib/calculations';
 import { runWithConcurrency } from '@/lib/parallel';
+import { propertyLocalDateOffset } from '@/lib/schedule/local-date';
 import type { StaffMember } from '@/types';
 
 export const runtime = 'nodejs';
@@ -64,27 +65,10 @@ interface RoomRow {
   stayover_day: number | null;
 }
 
-/** Compute property's local YYYY-MM-DD for now + offsetDays. */
-function localDate(now: Date, timezone: string | null, offsetDays: number): string {
-  const tz = timezone ?? 'UTC';
-  try {
-    const fmt = new Intl.DateTimeFormat('en-CA', {
-      timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
-    });
-    const todayStr = fmt.format(now);
-    if (offsetDays === 0) return todayStr;
-    // Anchor at noon UTC to avoid DST edge cases when adding days.
-    const anchor = new Date(`${todayStr}T12:00:00Z`);
-    anchor.setUTCDate(anchor.getUTCDate() + offsetDays);
-    return fmt.format(anchor);
-  } catch {
-    const utcStr = now.toISOString().slice(0, 10);
-    if (offsetDays === 0) return utcStr;
-    const anchor = new Date(`${utcStr}T12:00:00Z`);
-    anchor.setUTCDate(anchor.getUTCDate() + offsetDays);
-    return anchor.toISOString().slice(0, 10);
-  }
-}
+// Round 18: pulled into src/lib/schedule/local-date.ts so it has unit
+// tests covering DST + high-positive-offset timezones (Pacific/Kiritimati
+// was off-by-one in the prior UTC-round-trip implementation).
+const localDate = propertyLocalDateOffset;
 
 interface PerPropertyResult {
   propertyId: string;
@@ -101,21 +85,20 @@ async function autoFillForProperty(
   targetDate: string,
   requestId: string,
 ): Promise<PerPropertyResult> {
-  // 1. Skip if a row already exists — never overwrite manager intent.
-  const { data: existing, error: existingErr } = await supabaseAdmin
+  // Round 18: the existence check moved into the atomic RPC at the end
+  // of this function. A pre-check here would re-introduce the race that
+  // Codex flagged (cron reads empty → Maria saves → cron overwrites).
+  // We still want to short-circuit BEFORE doing expensive work, so a
+  // light "is there a row?" peek is fine — but the AUTHORITATIVE
+  // skip-existing decision is the RPC's `on conflict do nothing`.
+  const { data: existingPeek } = await supabaseAdmin
     .from('schedule_assignments')
     .select('property_id')
     .eq('property_id', property.id)
     .eq('date', targetDate)
+    .limit(1)
     .maybeSingle();
-  if (existingErr) {
-    return {
-      propertyId: property.id, propertyName: property.name, date: targetDate,
-      outcome: 'error',
-      detail: `existing-row check failed: ${existingErr.message}`,
-    };
-  }
-  if (existing) {
+  if (existingPeek) {
     return {
       propertyId: property.id, propertyName: property.name, date: targetDate,
       outcome: 'skipped_existing',
@@ -215,30 +198,78 @@ async function autoFillForProperty(
     };
   }
 
-  // 6. Persist.
+  // 6. Persist the schedule + the CSV-snapshot baseline for overnight-diff.
+  // The UI uses schedule_assignments.csv_room_snapshot to warn Maria
+  // when the morning CSV differs from the saved evening plan. Without
+  // it, Codex review found that cron-built schedules silently disable
+  // that signal. Pull the most-recent plan_snapshot for this
+  // (property, target_date) and persist its rooms array alongside the
+  // assignments.
+  const { data: planRow } = await supabaseAdmin
+    .from('plan_snapshots')
+    .select('rooms, pulled_at')
+    .eq('property_id', property.id)
+    .eq('date', targetDate)
+    .order('pulled_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  // Mirror the UI's `csvRoomSnapshot` shape:  { number, type }[]
+  // The full plan_snapshot rooms array has more fields; the diff cares
+  // only about the room number + type, so reshape here.
+  type SnapshotRoom = { number?: string; type?: string; stayType?: string; status?: string };
+  let csvRoomSnapshot: Array<{ number: string; type: 'checkout' | 'stayover' }> | null = null;
+  if (planRow?.rooms) {
+    const rooms = (planRow.rooms as SnapshotRoom[] | null) ?? [];
+    csvRoomSnapshot = rooms
+      .map((r) => {
+        const num = r.number;
+        if (!num) return null;
+        // Match seed.ts mapRoomType: C/O stayType OR OCC status → checkout/stayover
+        const type: 'checkout' | 'stayover' =
+          r.stayType === 'C/O' ? 'checkout'
+          : r.status === 'OCC' ? 'stayover'
+          : 'stayover';
+        return { number: num, type };
+      })
+      .filter((x): x is { number: string; type: 'checkout' | 'stayover' } => x !== null);
+  }
+
   const staffNames: Record<string, string> = {};
   for (const s of activeCrew) staffNames[s.id] = s.name;
-  const { error: writeErr } = await supabaseAdmin
-    .from('schedule_assignments')
-    .upsert(
-      {
-        property_id: property.id,
-        date: targetDate,
-        room_assignments: roomAssignments,
-        crew: activeCrew.map((s) => s.id),
-        staff_names: staffNames,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'property_id,date' },
-    );
-  if (writeErr) {
-    log.error('[schedule-auto-fill] write failed', {
-      requestId, propertyId: property.id, date: targetDate, error: writeErr.message,
+
+  // Atomic insert-if-absent. The RPC returns true iff THIS call inserted
+  // the row. If false, Maria (or a concurrent cron worker) got there first
+  // and we leave the existing row alone.
+  const { data: inserted, error: rpcErr } = await supabaseAdmin.rpc(
+    'staxis_schedule_auto_fill_if_absent',
+    {
+      p_property: property.id,
+      p_date: targetDate,
+      p_room_assignments: roomAssignments,
+      p_crew: activeCrew.map((s) => s.id),
+      p_staff_names: staffNames,
+      p_csv_room_snapshot: csvRoomSnapshot,
+      p_csv_pulled_at: planRow?.pulled_at ?? null,
+    },
+  );
+  if (rpcErr) {
+    log.error('[schedule-auto-fill] atomic insert failed', {
+      requestId, propertyId: property.id, date: targetDate, error: rpcErr.message,
     });
     return {
       propertyId: property.id, propertyName: property.name, date: targetDate,
       outcome: 'error',
-      detail: `write failed: ${writeErr.message}`,
+      detail: `RPC failed: ${rpcErr.message}`,
+    };
+  }
+  // RPC returned false → row already existed (race winner: not us).
+  // Surface this as `skipped_existing` to preserve "never overwrite"
+  // invariant even when the early peek missed it.
+  if (inserted === false) {
+    return {
+      propertyId: property.id, propertyName: property.name, date: targetDate,
+      outcome: 'skipped_existing',
+      detail: 'Concurrent writer (manager save or sibling cron) inserted first — leaving it alone.',
     };
   }
   return {

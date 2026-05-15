@@ -13,19 +13,15 @@ name: Check migrations applied
 # files and the exact command to apply each one via scripts/apply-migration.ts.
 
 on:
+  # Round 18 (2026-05-15, Codex high finding): runs on EVERY PR to main,
+  # not just PRs that touch supabase/migrations/**. The path-filtered
+  # version missed the most dangerous case — a code-only PR that consumes
+  # a column whose migration was added in a prior PR and never applied to
+  # prod. Cost of running on every PR: one psql round-trip per PR (~200ms).
   pull_request:
     branches: [main]
-    paths:
-      - 'supabase/migrations/**'
-      - 'scripts/check-migrations-applied.ts'
-      - '.github/workflows/check-migrations-applied.yml'
-  # Also run on push to main so a direct-push (bypassing PR) still surfaces
-  # drift fast, but doesn't block the deploy (post-deploy smoke test already
-  # blocks that path). For PRs, exit 1 here is what gates the merge.
   push:
     branches: [main]
-    paths:
-      - 'supabase/migrations/**'
 
 permissions:
   contents: read
