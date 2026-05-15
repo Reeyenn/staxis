@@ -16,8 +16,9 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { runWithConcurrency } from '@/lib/parallel';
-import { listMlShardUrls, resolveMlShardUrl } from '@/lib/ml-routing';
+import { listMlShardUrls } from '@/lib/ml-routing';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
+import { triggerMlTraining } from '@/lib/ml-invoke';
 import {
   emitPropertyMisconfiguredEvent,
   parsePropertyMisconfiguredError,
@@ -65,24 +66,18 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
   // Parallel fan-out (concurrency 3 — inventory training is the heaviest
   // stage; one call iterates every inventory.id in the property).
+  // Phase M3.5 (2026-05-14): inline fetch migrated to triggerMlTraining
+  // helper. Inventory uses a longer 75s timeout (vs demand/supply's 45s)
+  // because per-item training fans out to N items per property.
   const outcomes = await runWithConcurrency(eligible, async (property) => {
-    const t0 = Date.now();
-    const mlServiceUrl = resolveMlShardUrl(property.id)!;
-    const res = await fetch(`${mlServiceUrl.replace(/\/$/, '')}/train/inventory-rate`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${mlServiceSecret}`,
-        'Content-Type': 'application/json',
-        'x-request-id': requestId,
-      },
-      body: JSON.stringify({ property_id: property.id }),
-      signal: AbortSignal.timeout(75_000),
+    const result = await triggerMlTraining(property.id, 'inventory-rate', {
+      requestId, timeoutMs: 75_000,
     });
-    const json = await res.json().catch(() => ({ error: 'non_json_response', http: res.status }));
+    const json = (result.detail ?? {}) as Record<string, unknown>;
     log.info('ml-train-inventory: result', {
       requestId,
       property_id: property.id,
-      elapsedMs: Date.now() - t0,
+      elapsedMs: result.elapsedMs,
       items_trained: (json as { items_trained?: number }).items_trained ?? null,
     });
 
@@ -91,7 +86,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // the heartbeat is suppressed correctly. Inventory training catches
     // total_rooms misconfiguration before the per-item loop, so this is
     // where we hear about it.
-    const errStr = (json as { error?: string }).error;
+    const errStr = result.error;
     if (typeof errStr === 'string' && errStr.startsWith('property_misconfigured:')) {
       const parsed = parsePropertyMisconfiguredError(errStr);
       if (parsed) {
@@ -106,7 +101,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       }
       return { ...json, status: 'skipped' };
     }
-    if (typeof errStr === 'string' || !res.ok) {
+    if (typeof errStr === 'string' || !result.ok) {
       return { ...json, status: 'error' };
     }
     return json;

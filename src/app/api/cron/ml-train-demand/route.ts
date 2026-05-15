@@ -29,8 +29,9 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { runWithConcurrency, applyShardFilter } from '@/lib/parallel';
-import { listMlShardUrls, resolveMlShardUrl } from '@/lib/ml-routing';
+import { listMlShardUrls } from '@/lib/ml-routing';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
+import { triggerMlTraining } from '@/lib/ml-invoke';
 import {
   emitPropertyMisconfiguredEvent,
   parsePropertyMisconfiguredError,
@@ -79,31 +80,21 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // the Railway ML side (XGBoost fit), so going wide-open isn't actually
   // faster and risks OOM on the small instance. Cap at 5 — gives ~5x
   // speedup vs the old sequential loop while keeping memory bounded.
+  // Phase M3.5 (2026-05-14): inline fetch migrated to triggerMlTraining
+  // helper. The helper centralizes Bearer auth, AbortSignal timeout, shard
+  // routing (resolveMlShardUrl per-property), and structured logging into
+  // one tested primitive shared with the M3.1 on-onboard hook + the other
+  // 3 ml-train cron callers. Cron-specific error mapping (the
+  // property_misconfigured event emit + heartbeat-status shaping) stays
+  // here — that's load-bearing for the doctor's degraded-heartbeat check.
   const outcomes = await runWithConcurrency(sharded.items, async (property) => {
-    const t0 = Date.now();
-    // Resolve per-property so multi-shard deploys route to the right
-    // Railway service. Falls back to ML_SERVICE_URL on single-shard.
-    // resolveMlShardUrl can return null but the early-return above
-    // guarantees at least one URL is configured here.
-    const mlServiceUrl = resolveMlShardUrl(property.id)!;
-    const res = await fetch(`${mlServiceUrl.replace(/\/$/, '')}/train/demand`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${mlServiceSecret}`,
-        'Content-Type': 'application/json',
-        'x-request-id': requestId,
-      },
-      body: JSON.stringify({ property_id: property.id }),
-      signal: AbortSignal.timeout(45_000),
-    });
-    const json = await res.json().catch(() => ({ status: 'non_json_response', http: res.status }));
-    const elapsedMs = Date.now() - t0;
+    const result = await triggerMlTraining(property.id, 'demand', { requestId });
     log.info('ml-train-demand: result', {
       requestId,
       property_id: property.id,
       property_name: property.name,
-      elapsedMs,
-      mlStatus: (json as { status?: string }).status ?? 'unknown',
+      elapsedMs: result.elapsedMs,
+      mlStatus: result.status,
     });
 
     // Codex follow-up 2026-05-13 (A2): persist property_misconfigured to
@@ -111,7 +102,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // timezone during training (otherwise the only signal is a Vercel
     // log line). Plus map the error response to status: 'skipped' so
     // the heartbeat-degraded logic can surface it.
-    const errStr = (json as { error?: string }).error;
+    const errStr = result.error;
     if (typeof errStr === 'string' && errStr.startsWith('property_misconfigured:')) {
       const parsed = parsePropertyMisconfiguredError(errStr);
       if (parsed) {
@@ -128,13 +119,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     }
     // Codex follow-up A6 (training-cron error mapping): non-2xx + any
     // error body → status: 'error' so the heartbeat is suppressed.
-    if (typeof errStr === 'string' || !res.ok) {
+    if (typeof errStr === 'string' || !result.ok) {
       return {
         status: 'error',
-        detail: errStr ?? (json as { http?: number }).http ?? `HTTP ${res.status}`,
+        detail: errStr ?? result.http ?? `HTTP ${result.http}`,
       };
     }
-    return { status: (json as { status?: string }).status ?? 'unknown', detail: json };
+    return { status: result.status, detail: result.detail };
   }, 5);
 
   const results = outcomes.map((o) => {

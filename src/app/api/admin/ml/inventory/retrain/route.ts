@@ -17,7 +17,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/admin-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { resolveMlShardUrl } from '@/lib/ml-routing';
+import { triggerMlTraining } from '@/lib/ml-invoke';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -44,9 +44,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ ok: false, error: 'invalid_item_id' }, { status: 400 });
   }
 
-  const mlServiceUrl = resolveMlShardUrl(body.propertyId);
-  const mlServiceSecret = process.env.ML_SERVICE_SECRET;
-  if (!mlServiceUrl || !mlServiceSecret) {
+  // Phase M3.5 (2026-05-14): inline fetch migrated to triggerMlTraining
+  // helper. Helper handles env-var check (returns status='not_configured'
+  // when missing — we map that to HTTP 503 to preserve the prior contract).
+  const result = await triggerMlTraining(body.propertyId, 'inventory-rate', {
+    requestId, itemId: body.itemId as string | undefined, timeoutMs: 55_000,
+  });
+  if (result.status === 'not_configured') {
     log.warn('ml-inventory-retrain: ML service not configured', { requestId });
     return NextResponse.json({
       ok: false,
@@ -54,31 +58,21 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       requestId,
     }, { status: 503 });
   }
-
-  try {
-    const res = await fetch(`${mlServiceUrl.replace(/\/$/, '')}/train/inventory-rate`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${mlServiceSecret}`,
-        'Content-Type': 'application/json',
-        'x-request-id': requestId,
-      },
-      body: JSON.stringify({
-        property_id: body.propertyId,
-        item_id: body.itemId ?? null,
-      }),
-      signal: AbortSignal.timeout(55_000),
+  log.info('ml-inventory-retrain: result', {
+    requestId,
+    property_id: body.propertyId,
+    item_id: body.itemId ?? null,
+    mlStatus: result.http,
+  });
+  if (!result.ok) {
+    log.error('ml-inventory-retrain: ML service call failed', {
+      requestId, err: errToString(result.error ?? `HTTP ${result.http}`),
     });
-    const json = await res.json().catch(() => ({ error: 'non_json_response', http: res.status }));
-    log.info('ml-inventory-retrain: result', {
+    return NextResponse.json({
+      ok: false,
+      error: result.error ?? `HTTP ${result.http}`,
       requestId,
-      property_id: body.propertyId,
-      item_id: body.itemId ?? null,
-      mlStatus: res.status,
-    });
-    return NextResponse.json({ ok: true, requestId, result: json }, { status: 200 });
-  } catch (e) {
-    log.error('ml-inventory-retrain: ML service call failed', { requestId, err: e as Error });
-    return NextResponse.json({ ok: false, error: errToString(e), requestId }, { status: 502 });
+    }, { status: 502 });
   }
+  return NextResponse.json({ ok: true, requestId, result: result.detail ?? {} }, { status: 200 });
 }
