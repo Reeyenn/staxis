@@ -68,17 +68,41 @@ def _hydrate_bayesian_from_run(model_run: dict):
         }))
         return None
 
+    # Phase M3.4 (2026-05-14) — hard-validate the 5 required posterior fields
+    # BEFORE constructing the BayesianRegression. Codex adversarial finding #2:
+    # the previous code used pp.get(field) which returns None for missing fields.
+    # BayesianRegression.predict_quantile (bayesian_regression.py:159-178) has
+    # an explicit branch for `mu_n is None` that re-initializes the prior and
+    # serves PRIOR predictions. So an active "Bayesian" model row with partial
+    # JSONB corruption silently served cold-start-shaped predictions while
+    # reporting itself as a fitted Bayesian — operator saw plausible numbers
+    # instead of the explicit "retrain needed" failure this path is designed
+    # to surface. Fail loud with structured log so operator sees it.
+    #
+    # mu_0 / sigma_0 / alpha / beta are PRE-FIT priors used in
+    # _initialize_prior() before fit. A fitted model legitimately doesn't
+    # need them re-loaded — the posterior fields supersede. Don't gate on those.
+    REQUIRED_POSTERIOR_FIELDS = ("mu_n", "sigma_n", "alpha_n", "beta_n", "feature_names")
+    missing = [k for k in REQUIRED_POSTERIOR_FIELDS if pp.get(k) is None]
+    if missing:
+        print(json.dumps({
+            "evt": "supply_posterior_partial_corruption",
+            "model_run_id": model_run.get("id"),
+            "missing_fields": missing,
+        }))
+        return None
+
     model = BayesianRegression()
     try:
-        model.mu_n     = np.array(pp["mu_n"])     if pp.get("mu_n") is not None else None
-        model.sigma_n  = np.array(pp["sigma_n"])  if pp.get("sigma_n") is not None else None
-        model.alpha_n  = pp.get("alpha_n")
-        model.beta_n   = pp.get("beta_n")
+        model.mu_n     = np.array(pp["mu_n"])
+        model.sigma_n  = np.array(pp["sigma_n"])
+        model.alpha_n  = pp["alpha_n"]
+        model.beta_n   = pp["beta_n"]
         model.mu_0     = np.array(pp["mu_0"])     if pp.get("mu_0") is not None else None
         model.sigma_0  = np.array(pp["sigma_0"])  if pp.get("sigma_0") is not None else None
         model.alpha    = pp.get("alpha", 2.0)
         model.beta     = pp.get("beta", 1.0)
-        model.feature_names = pp.get("feature_names")
+        model.feature_names = pp["feature_names"]
         return model
     except Exception as exc:
         print(json.dumps({

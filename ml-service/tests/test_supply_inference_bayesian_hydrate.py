@@ -164,3 +164,182 @@ def test_bayesian_hydrate_returns_none_for_truly_corrupt_posterior():
     # M3.3 fix is narrow (handle dict shape) and doesn't paper over
     # actual data corruption.
     assert result.get("error") == "Active supply model has no usable posterior_params (retrain needed)"
+
+
+# ─── Phase M3.4 — anti-regression for partial-posterior silent-prior bug ────
+
+
+def _posterior_missing(*field_names):
+    """Build a posterior dict with the named required fields removed.
+
+    Used to verify hard-validation of REQUIRED_POSTERIOR_FIELDS.
+    """
+    posterior = _minimal_valid_posterior_dict()
+    for f in field_names:
+        del posterior[f]
+    return posterior
+
+
+def test_hydrate_rejects_partial_posterior_missing_mu_n():
+    """Phase M3.4 anti-regression for Codex finding #2.
+
+    On main pre-M3.4: an active Bayesian with mu_n absent silently fell
+    through to BayesianRegression.predict_quantile's `mu_n is None`
+    branch (bayesian_regression.py:159-162) which RE-INITIALIZES the
+    prior and serves prior predictions. Operator saw plausible numbers
+    instead of the explicit "retrain needed" failure.
+
+    M3.4: hard-validate mu_n is present BEFORE constructing the model.
+    Missing → return None from hydrate → predict_supply surfaces
+    "no usable posterior_params (retrain needed)".
+    """
+    from src.inference.supply import predict_supply
+
+    fake = make_fake_supabase(
+        fetch_many={"model_runs": [_make_bayesian_active_model_run(
+            property_id=PROPERTY_ID,
+            posterior_params=_posterior_missing("mu_n"),
+        )]},
+        execute_sql={
+            "schedule_assignments": [
+                make_schedule_assignment(staff_id="s1", assigned_rooms=["101"]),
+            ],
+            "plan_snapshots": [make_plan_snapshot(
+                total_rooms=30, checkout_room_numbers=["101"])],
+        },
+    )
+
+    with patch("src.inference.supply.get_supabase_client", return_value=fake):
+        result = _run(predict_supply(PROPERTY_ID, date(2026, 5, 15)))
+
+    assert result.get("error") == "Active supply model has no usable posterior_params (retrain needed)", (
+        f"Partial-posterior corruption (mu_n missing) silently served prior predictions: {result!r}"
+    )
+
+
+def test_hydrate_rejects_partial_posterior_missing_sigma_n():
+    """Same as mu_n test but for sigma_n. Each required field must trip the validator."""
+    from src.inference.supply import predict_supply
+
+    fake = make_fake_supabase(
+        fetch_many={"model_runs": [_make_bayesian_active_model_run(
+            property_id=PROPERTY_ID,
+            posterior_params=_posterior_missing("sigma_n"),
+        )]},
+        execute_sql={
+            "schedule_assignments": [
+                make_schedule_assignment(staff_id="s1", assigned_rooms=["101"]),
+            ],
+            "plan_snapshots": [make_plan_snapshot(total_rooms=30, checkout_room_numbers=["101"])],
+        },
+    )
+
+    with patch("src.inference.supply.get_supabase_client", return_value=fake):
+        result = _run(predict_supply(PROPERTY_ID, date(2026, 5, 15)))
+
+    assert result.get("error") == "Active supply model has no usable posterior_params (retrain needed)"
+
+
+def test_hydrate_rejects_partial_posterior_missing_alpha_n():
+    """alpha_n is part of the t-distribution noise estimate; missing = no usable posterior."""
+    from src.inference.supply import predict_supply
+
+    fake = make_fake_supabase(
+        fetch_many={"model_runs": [_make_bayesian_active_model_run(
+            property_id=PROPERTY_ID,
+            posterior_params=_posterior_missing("alpha_n"),
+        )]},
+        execute_sql={
+            "schedule_assignments": [
+                make_schedule_assignment(staff_id="s1", assigned_rooms=["101"]),
+            ],
+            "plan_snapshots": [make_plan_snapshot(total_rooms=30, checkout_room_numbers=["101"])],
+        },
+    )
+
+    with patch("src.inference.supply.get_supabase_client", return_value=fake):
+        result = _run(predict_supply(PROPERTY_ID, date(2026, 5, 15)))
+
+    assert result.get("error") == "Active supply model has no usable posterior_params (retrain needed)"
+
+
+def test_hydrate_rejects_partial_posterior_missing_beta_n():
+    """beta_n is the second t-distribution param. Same gating."""
+    from src.inference.supply import predict_supply
+
+    fake = make_fake_supabase(
+        fetch_many={"model_runs": [_make_bayesian_active_model_run(
+            property_id=PROPERTY_ID,
+            posterior_params=_posterior_missing("beta_n"),
+        )]},
+        execute_sql={
+            "schedule_assignments": [
+                make_schedule_assignment(staff_id="s1", assigned_rooms=["101"]),
+            ],
+            "plan_snapshots": [make_plan_snapshot(total_rooms=30, checkout_room_numbers=["101"])],
+        },
+    )
+
+    with patch("src.inference.supply.get_supabase_client", return_value=fake):
+        result = _run(predict_supply(PROPERTY_ID, date(2026, 5, 15)))
+
+    assert result.get("error") == "Active supply model has no usable posterior_params (retrain needed)"
+
+
+def test_hydrate_rejects_partial_posterior_missing_feature_names():
+    """Missing feature_names → can't align inference X with posterior → reject."""
+    from src.inference.supply import predict_supply
+
+    fake = make_fake_supabase(
+        fetch_many={"model_runs": [_make_bayesian_active_model_run(
+            property_id=PROPERTY_ID,
+            posterior_params=_posterior_missing("feature_names"),
+        )]},
+        execute_sql={
+            "schedule_assignments": [
+                make_schedule_assignment(staff_id="s1", assigned_rooms=["101"]),
+            ],
+            "plan_snapshots": [make_plan_snapshot(total_rooms=30, checkout_room_numbers=["101"])],
+        },
+    )
+
+    with patch("src.inference.supply.get_supabase_client", return_value=fake):
+        result = _run(predict_supply(PROPERTY_ID, date(2026, 5, 15)))
+
+    assert result.get("error") == "Active supply model has no usable posterior_params (retrain needed)"
+
+
+def test_hydrate_accepts_complete_posterior_with_optional_priors_missing():
+    """mu_0/sigma_0/alpha/beta are PRE-FIT priors. A fitted model legitimately
+    doesn't need them re-loaded — the posterior fields supersede. Validating
+    them would over-reject. Test pins that the validator is not over-broad.
+    """
+    from src.inference.supply import predict_supply
+
+    posterior = _minimal_valid_posterior_dict()
+    # Remove the OPTIONAL pre-fit prior fields. These should not trip validation.
+    for f in ("mu_0", "sigma_0", "alpha", "beta"):
+        posterior.pop(f, None)
+
+    fake = make_fake_supabase(
+        fetch_many={"model_runs": [_make_bayesian_active_model_run(
+            property_id=PROPERTY_ID,
+            posterior_params=posterior,
+        )]},
+        execute_sql={
+            "schedule_assignments": [
+                make_schedule_assignment(staff_id="s1", assigned_rooms=["101"]),
+            ],
+            "plan_snapshots": [make_plan_snapshot(
+                total_rooms=30, checkout_room_numbers=["101"])],
+        },
+    )
+
+    with patch("src.inference.supply.get_supabase_client", return_value=fake):
+        result = _run(predict_supply(PROPERTY_ID, date(2026, 5, 15)))
+
+    # Should succeed — fitted posterior is complete; optional priors absent is fine.
+    assert "error" not in result, (
+        f"Validator over-rejected: optional pre-fit priors absent should still hydrate: {result!r}"
+    )
+    assert result["predicted_rooms"] == 1

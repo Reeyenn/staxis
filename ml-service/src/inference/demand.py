@@ -242,13 +242,20 @@ async def predict_demand(
         model = BayesianRegression()
 
         # Load posterior params if available, else fall back to prior.
-        # Phase M3.3 (2026-05-14) — same root-cause fix as supply.py:54.
-        # Supabase JSONB columns deserialize to dicts in supabase-py;
-        # json.loads() on a dict throws TypeError. The except below
-        # caught it and silently fell back to prior — masking the bug
-        # entirely (every Bayesian-active demand property silently used
-        # the cold-start prior instead of its trained posterior).
-        # Mirrors the inventory_rate.py:237 defensive pattern.
+        # Phase M3.3 (2026-05-14) — supabase JSONB columns deserialize to
+        # dicts in supabase-py, NOT JSON strings; json.loads() on a dict
+        # threw TypeError → except below silently fell back to prior →
+        # every Bayesian-active demand property invisibly served cold-start
+        # prior predictions instead of its trained posterior.
+        #
+        # Phase M3.4 (2026-05-14) — Codex adversarial finding #2: a partial
+        # corruption (mu_n missing but other fields present) had the SAME
+        # silent-prior-fallback failure mode. BayesianRegression.predict_quantile
+        # re-initializes the prior when mu_n is None and serves prior
+        # predictions. Hard-validate required fields BEFORE constructing
+        # the posterior and return an explicit error if any are missing —
+        # operator must see "retrain needed" instead of plausible-looking
+        # prior numbers from an "active Bayesian" model.
         posterior_params_raw = model_run.get("posterior_params")
         if posterior_params_raw:
             try:
@@ -257,34 +264,68 @@ async def predict_demand(
                     if isinstance(posterior_params_raw, str)
                     else posterior_params_raw
                 )
-                # Reconstruct posterior parameters from JSON
-                model.mu_n = (
-                    np.array(posterior_params["mu_n"]) if posterior_params["mu_n"] else None
-                )
-                model.sigma_n = (
-                    np.array(posterior_params["sigma_n"]) if posterior_params["sigma_n"] else None
-                )
-                model.alpha_n = posterior_params["alpha_n"]
-                model.beta_n = posterior_params["beta_n"]
-                model.mu_0 = np.array(posterior_params["mu_0"]) if posterior_params["mu_0"] else None
-                model.sigma_0 = (
-                    np.array(posterior_params["sigma_0"]) if posterior_params["sigma_0"] else None
-                )
-                model.alpha = posterior_params["alpha"]
-                model.beta = posterior_params["beta"]
-                model.feature_names = posterior_params["feature_names"]
             except Exception as exc:
-                # Posterior JSON was corrupt — fall back to prior so we still
-                # return a reasonable number, but log loudly so the issue
-                # surfaces in the model_runs cockpit.
                 print(json.dumps({
-                    "evt": "demand_posterior_load_failed",
+                    "evt": "demand_posterior_json_invalid",
                     "model_run_id": model_run_id,
                     "error": str(exc),
                 }))
-                model._initialize_prior(X)
+                return {
+                    "error": "Active demand model has unparseable posterior_params (retrain needed)",
+                    "property_id": property_id,
+                    "date": str(prediction_date),
+                    "model_version": model_run.get("model_version"),
+                }
+
+            # Hard-validate the 5 required fields. mu_0/sigma_0/alpha/beta
+            # are PRE-FIT priors (used by _initialize_prior before fit);
+            # a fitted model legitimately doesn't need them re-loaded.
+            REQUIRED_POSTERIOR_FIELDS = ("mu_n", "sigma_n", "alpha_n", "beta_n", "feature_names")
+            missing = [k for k in REQUIRED_POSTERIOR_FIELDS if posterior_params.get(k) is None]
+            if missing:
+                print(json.dumps({
+                    "evt": "demand_posterior_partial_corruption",
+                    "model_run_id": model_run_id,
+                    "missing_fields": missing,
+                }))
+                return {
+                    "error": f"Active demand model has incomplete posterior_params (missing: {','.join(missing)}) — retrain needed",
+                    "property_id": property_id,
+                    "date": str(prediction_date),
+                    "model_version": model_run.get("model_version"),
+                }
+
+            try:
+                model.mu_n = np.array(posterior_params["mu_n"])
+                model.sigma_n = np.array(posterior_params["sigma_n"])
+                model.alpha_n = posterior_params["alpha_n"]
+                model.beta_n = posterior_params["beta_n"]
+                model.mu_0 = (
+                    np.array(posterior_params["mu_0"])
+                    if posterior_params.get("mu_0") is not None else None
+                )
+                model.sigma_0 = (
+                    np.array(posterior_params["sigma_0"])
+                    if posterior_params.get("sigma_0") is not None else None
+                )
+                model.alpha = posterior_params.get("alpha", 2.0)
+                model.beta = posterior_params.get("beta", 1.0)
+                model.feature_names = posterior_params["feature_names"]
+            except Exception as exc:
+                print(json.dumps({
+                    "evt": "demand_posterior_construct_failed",
+                    "model_run_id": model_run_id,
+                    "error": str(exc),
+                }))
+                return {
+                    "error": f"Failed to construct demand posterior from saved params: {exc}",
+                    "property_id": property_id,
+                    "date": str(prediction_date),
+                    "model_version": model_run.get("model_version"),
+                }
         else:
-            # No posterior saved; use prior-only inference
+            # No posterior saved; use prior-only inference. This is the
+            # legitimate "model was just installed, never fit" path.
             model._initialize_prior(X)
 
         try:
