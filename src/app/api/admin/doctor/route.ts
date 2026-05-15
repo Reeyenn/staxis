@@ -146,6 +146,7 @@ const checks: Array<[string, CheckFn]> = [
   ['scraper_csv_pull',               checkScraperCsvPull],
   ['scraper_health_cron',            checkScraperHealthCronLiveness],
   ['twilio_credentials',             checkTwilioCredentials],
+  ['twilio_balance',                 checkTwilioBalance],
   // Twilio FROM-number registration: existing twilio_credentials check
   // only verifies the account is alive and not suspended. It does NOT
   // verify that TWILIO_FROM_NUMBER is actually a phone number owned by
@@ -740,6 +741,86 @@ async function checkTwilioCredentials(): Promise<Omit<Check, 'name' | 'durationM
     };
   } catch (err) {
     return { status: 'fail', detail: `Twilio API call failed: ${errToString(err)}` };
+  }
+}
+
+/**
+ * Twilio prepaid balance freshness. Yesterday (2026-05-14) the balance
+ * dropped to $4.51 with no autopay configured and no warning until the
+ * scheduled weekly digest noticed — a fully-burnt balance silently
+ * disables every outbound SMS (shift confirmations, watchdog SOS,
+ * doctor alert texts), and the only way to learn about it is when a
+ * housekeeper says "I never got the text." Cap the warn threshold
+ * conservatively because the watchdog SMS is the priority queue and
+ * needs runway.
+ */
+async function checkTwilioBalance(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const sid = process.env.TWILIO_ACCOUNT_SID;
+  const tok = process.env.TWILIO_AUTH_TOKEN;
+  if (!sid || !tok) {
+    return { status: 'skipped', detail: 'Twilio env vars missing (reported by env_vars check)' };
+  }
+  // Thresholds in USD. Tune by replaying real outage: a typical day
+  // burns ~$1–2 in SMS sends, so $10 leaves 5+ days of runway after the
+  // first warn and $5 leaves ~2 days before sends start failing.
+  const WARN_BELOW = 10;
+  const FAIL_BELOW = 5;
+  try {
+    const res = await fetch(
+      `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(sid)}/Balance.json`,
+      {
+        headers: {
+          Authorization: `Basic ${Buffer.from(`${sid}:${tok}`).toString('base64')}`,
+        },
+        signal: AbortSignal.timeout(10_000),
+      },
+    );
+    if (res.status === 401) {
+      return {
+        status: 'fail',
+        detail: 'Twilio rejected credentials when reading balance (401)',
+        fix: 'See checkTwilioCredentials fix — token rotation likely.',
+      };
+    }
+    if (!res.ok) {
+      return {
+        status: 'warn',
+        detail: `Twilio balance API returned ${res.status} ${res.statusText}`,
+      };
+    }
+    const json = await res.json() as { balance?: string; currency?: string };
+    const balanceNum = parseFloat(json.balance ?? '0');
+    const currency = json.currency ?? 'USD';
+    if (!Number.isFinite(balanceNum)) {
+      return {
+        status: 'warn',
+        detail: `Twilio balance API returned non-numeric balance "${json.balance}"`,
+      };
+    }
+    const fixHint =
+      'Top up at https://console.twilio.com/ → Billing → Add Funds. ' +
+      'To prevent the next occurrence, enable Auto-Recharge on the same page ' +
+      '(adds $20 whenever balance falls below $10).';
+    if (balanceNum < FAIL_BELOW) {
+      return {
+        status: 'fail',
+        detail: `Twilio balance is $${balanceNum.toFixed(2)} ${currency} — below the $${FAIL_BELOW} hard floor. SMS sends are at risk of starting to fail.`,
+        fix: fixHint,
+      };
+    }
+    if (balanceNum < WARN_BELOW) {
+      return {
+        status: 'warn',
+        detail: `Twilio balance is $${balanceNum.toFixed(2)} ${currency} — below the $${WARN_BELOW} warn threshold.`,
+        fix: fixHint,
+      };
+    }
+    return {
+      status: 'ok',
+      detail: `Twilio balance $${balanceNum.toFixed(2)} ${currency} (warn at <$${WARN_BELOW}, fail at <$${FAIL_BELOW})`,
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `Twilio balance check raised: ${errToString(err)}` };
   }
 }
 
