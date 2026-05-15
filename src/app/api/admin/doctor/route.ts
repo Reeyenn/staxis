@@ -1494,14 +1494,25 @@ async function checkScraperPullLatency(): Promise<Omit<Check, 'name' | 'duration
     const NON_DAILY_TYPES = new Set(['dashboard', 'ooo', 'csv_evening']);
     const SCRAPER_WINDOW_START = 5;   // local hour, inclusive
     const SCRAPER_WINDOW_END   = 23;  // local hour, exclusive (so 22:59 is in)
+    const WARMUP_GRACE_MIN = 30;      // first 30 min of the window — scraper just woke up
     const TZ = 'America/Chicago';
     const nowMs = Date.now();
     // Mirror scraper's localHour() exactly. Intl handles CDT/CST DST.
-    const localHourNow = parseInt(
-      new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: TZ }).format(new Date()),
-      10,
-    );
+    const localTimeParts = new Intl.DateTimeFormat('en-US', {
+      hour: 'numeric', minute: 'numeric', hour12: false, timeZone: TZ,
+    }).formatToParts(new Date());
+    const localHourNow = parseInt(localTimeParts.find(p => p.type === 'hour')?.value ?? '0', 10);
+    const localMinuteNow = parseInt(localTimeParts.find(p => p.type === 'minute')?.value ?? '0', 10);
     const inScraperWindow = localHourNow >= SCRAPER_WINDOW_START && localHourNow < SCRAPER_WINDOW_END;
+    // The comment in the original version of this check promised a 5:00–5:30
+    // grace window for the scraper's first tick of the day, but never
+    // implemented it — so the doctor fired a false-positive 'fail' SMS at
+    // 5am every morning. Compute the grace explicitly: within the first
+    // WARMUP_GRACE_MIN minutes of SCRAPER_WINDOW_START, ignore stale pulls
+    // (the previous evening's last pull is naturally ~6h old until the
+    // first new tick lands).
+    const inWarmupGrace =
+      localHourNow === SCRAPER_WINDOW_START && localMinuteNow < WARMUP_GRACE_MIN;
     type Row = { pull_type: string; total_ms: number; ok: boolean; pulled_at: string };
     const rows = data as Row[];
     let mostRecentPullMs = 0;
@@ -1523,6 +1534,15 @@ async function checkScraperPullLatency(): Promise<Omit<Check, 'name' | 'duration
           return {
             status: 'ok',
             detail: `Off-hours (${localHourNow}:00 Central, scraper window ${SCRAPER_WINDOW_START}am–${SCRAPER_WINDOW_END}:00). Most recent ${mostRecentPullType} pull was ${ageMin.toFixed(1)}m ago — expected during this window.`,
+          };
+        }
+        // WARMUP GRACE — first 30 min of the window. The scraper just
+        // resumed; the previous evening's last pull is ~6h stale until
+        // the new day's first tick completes. Don't false-positive.
+        if (inWarmupGrace) {
+          return {
+            status: 'ok',
+            detail: `Warmup (${localHourNow}:${String(localMinuteNow).padStart(2,'0')} Central, first ${WARMUP_GRACE_MIN}m of scraper window). Most recent ${mostRecentPullType} pull was ${ageMin.toFixed(1)}m ago — waiting for first tick of the day.`,
           };
         }
         // Cross-reference heartbeat to distinguish "scraper is dead" from
@@ -1746,11 +1766,37 @@ async function checkMlDemandPredictionsFresh(): Promise<Omit<Check, 'name' | 'du
 }
 
 async function checkMlSupplyPredictionsFresh(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  // Supply has a precondition demand doesn't: the manager must build a
+  // schedule in the Schedule tab before supply_predictions can land for
+  // that date (predict_supply iterates schedule_assignments → if empty,
+  // returns predicted_rooms: 0 and writes nothing). Without this guard
+  // the check would scream "supply broken" every day before the manager
+  // has saved tomorrow's schedule — even though nothing is actually
+  // broken. Gate on the upstream input existing first.
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const { data: schedules, error: schedErr } = await supabaseAdmin
+      .from('schedule_assignments')
+      .select('property_id')
+      .gte('date', today)
+      .limit(1);
+    if (schedErr) {
+      // If the read itself errors we can't tell — fall through to the
+      // standard check so the real issue surfaces.
+    } else if (!schedules || schedules.length === 0) {
+      return {
+        status: 'skipped',
+        detail: `No schedule_assignments rows for ${today} or later — supply predictions can't exist until a manager builds the schedule in the Housekeeping → Schedule tab. Not an ML pipeline failure.`,
+      };
+    }
+  } catch {
+    // Defensive — never let the precondition check break the real check.
+  }
   return checkLayerPredictionsFresh({
     layer: 'supply',
     table: 'supply_predictions',
     dateCol: 'date',
-    fix: 'No supply predictions for today. Likely root cause matches demand (shared training prereqs). See checkMlDemandPredictionsFresh "fix" guidance.',
+    fix: 'Schedule exists for today/tomorrow but supply_predictions are missing. Check /api/cron/ml-run-inference latest run + ML service /predict/supply logs.',
   });
 }
 
