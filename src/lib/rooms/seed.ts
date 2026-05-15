@@ -51,7 +51,7 @@ export interface SeedResult {
 
 // CSV `stayType` / `status` → rooms.type. Mirrors the Send-Shift logic so
 // both code paths land on the same answer for the same CSV input.
-function mapRoomType(
+export function mapRoomType(
   stayType: string | null | undefined,
   status: string | null | undefined,
 ): 'checkout' | 'stayover' | 'vacant' {
@@ -61,8 +61,99 @@ function mapRoomType(
 }
 
 // CSV `condition` → rooms.status. Anything not literal "Clean" is dirty.
-function mapRoomStatus(condition: string | null | undefined): 'clean' | 'dirty' {
+export function mapRoomStatus(condition: string | null | undefined): 'clean' | 'dirty' {
   return condition === 'Clean' ? 'clean' : 'dirty';
+}
+
+/**
+ * Decide the merge for a single existing room when the CSV mentions it.
+ *
+ * Pure function — takes the CSV row and the existing row's read-time state,
+ * returns the patch to apply and the precondition status to attach to the
+ * UPDATE's WHERE clause. The precondition is what closes the seeder race
+ * (Round 15, Codex finding B): if the live status changed between read
+ * and write, the UPDATE will affect 0 rows and the next seeder pass will
+ * pick up the new state.
+ *
+ * Exported for unit testing.
+ */
+export interface RoomPatchPlan {
+  patch: Record<string, unknown>;
+  /** WHERE-clause precondition. UPDATE only lands if rooms.status equals
+   *  this value at write time. Matches the snapshot status we read. */
+  preconditionStatus: string;
+}
+
+export function planRoomPatch(csv: PlanRoom, existingStatus: string | null): RoomPatchPlan {
+  const type = mapRoomType(csv.stayType, csv.status);
+  const csvStatus = mapRoomStatus(csv.condition);
+  const isMidClean = existingStatus === 'in_progress';
+  const preconditionStatus = existingStatus ?? 'dirty';
+
+  const patch: Record<string, unknown> = {
+    type,
+    status: csvStatus,
+    issue_note: null,
+    help_requested: false,
+  };
+  if (csvStatus === 'dirty' && !isMidClean) {
+    patch.started_at = null;
+    patch.completed_at = null;
+  }
+  if (isMidClean) {
+    patch.status = 'in_progress';
+  }
+  patch.stayover_day = csv.stayoverDay ?? null;
+  patch.stayover_minutes = csv.stayoverMinutes ?? null;
+  patch.arrival = csv.arrival ?? null;
+
+  return { patch, preconditionStatus };
+}
+
+/**
+ * Decide the payload for a brand-new room (CSV mentions it, no existing
+ * DB row). Pure function — exported for unit testing.
+ */
+export function planNewRoomInsert(csv: PlanRoom, propertyId: string, date: string): Record<string, unknown> {
+  const type = mapRoomType(csv.stayType, csv.status);
+  const status = mapRoomStatus(csv.condition);
+  const payload: Record<string, unknown> = {
+    property_id: propertyId,
+    number: csv.number,
+    date,
+    type,
+    status,
+    priority: 'standard',
+  };
+  if (csv.stayoverDay !== null && csv.stayoverDay !== undefined) {
+    payload.stayover_day = csv.stayoverDay;
+  }
+  if (csv.stayoverMinutes !== null && csv.stayoverMinutes !== undefined) {
+    payload.stayover_minutes = csv.stayoverMinutes;
+  }
+  if (csv.arrival) {
+    payload.arrival = csv.arrival;
+  }
+  return payload;
+}
+
+/**
+ * Decide which inventory rooms get phantom-seeded as vacant + clean.
+ * Pure function — takes the inventory + CSV-mentioned set + existing-rows
+ * set, returns the list of room numbers to seed.
+ */
+export function planPhantomSeed(
+  inventory: ReadonlyArray<string>,
+  csvNumbers: ReadonlySet<string>,
+  existingNumbers: ReadonlySet<string>,
+): string[] {
+  const phantoms: string[] = [];
+  for (const num of inventory) {
+    if (csvNumbers.has(num)) continue;
+    if (existingNumbers.has(num)) continue;
+    phantoms.push(num);
+  }
+  return phantoms;
 }
 
 export async function seedRoomsForDate(
@@ -111,6 +202,16 @@ export async function seedRoomsForDate(
   let updated = 0;
   let phantomCreated = 0;
 
+  // Note on seeder-vs-seeder concurrency (Round 15 follow-up):
+  // We do NOT take an advisory lock here. Two simultaneous seeders for
+  // the same (property, date) would read identical state and compute
+  // identical patches; the conditional UPDATEs below (.eq('status', ...))
+  // make both writes idempotent — second one matches the same precondition
+  // and writes the same payload. Adding a Postgres advisory lock would
+  // add complexity (requires either a wrapping function or a lock table
+  // with crash-recovery) without closing any new race. Seeder-vs-
+  // housekeeper IS race-prone and IS closed by the conditional UPDATE.
+
   // ─── CSV branch: insert OR update each CSV row ──────────────────────────
   const toInsert: Array<Record<string, unknown>> = [];
   const updates: PromiseLike<unknown>[] = [];
@@ -119,71 +220,23 @@ export async function seedRoomsForDate(
     const num = csv.number;
     if (!num) continue;
 
-    const type = mapRoomType(csv.stayType, csv.status);
-    const status = mapRoomStatus(csv.condition);
-
     const row = existingByNumber.get(num);
     if (row) {
-      // Preserve assigned_to / is_dnd. Preserve started_at/completed_at
-      // when room is mid-clean (the PMS doesn't know our Start tap).
-      const patch: Record<string, unknown> = {
-        type,
-        status,
-        issue_note: null,
-        help_requested: false,
-      };
-      const isMidClean = row.status === 'in_progress';
-      if (status === 'dirty' && !isMidClean) {
-        patch.started_at = null;
-        patch.completed_at = null;
-      }
-      if (isMidClean) {
-        patch.status = 'in_progress';
-      }
-      patch.stayover_day = csv.stayoverDay ?? null;
-      patch.stayover_minutes = csv.stayoverMinutes ?? null;
-      patch.arrival = csv.arrival ?? null;
-
-      // Round 15 (2026-05-14): precondition the UPDATE on the read-time
-      // status. The patch above was computed assuming the row was in
-      // `row.status` when we SELECTed it. If a housekeeper raced ahead
-      // (e.g., status: 'dirty' → 'in_progress' between SELECT and UPDATE),
-      // applying the precomputed patch would clobber `started_at` and
-      // reset `status` back to dirty — the exact 95a90a3 "70 of 76
-      // sub-3-min events" bug. With `.eq('status', row.status)` the
-      // racing UPDATE silently affects 0 rows; the next seeder pass
-      // (manual click or next hourly cron tick) re-reads the live state
-      // and computes the right patch. Eventual consistency on type /
-      // stayover_day / arrival is acceptable; agent reads live so users
-      // never see stale.
+      // Pure planning logic — see planRoomPatch for the merge semantics.
+      // Round 15 (Codex finding B): the precondition closes the
+      // 95a90a3 "started_at wiped to null" race.
+      const { patch, preconditionStatus } = planRoomPatch(csv, row.status);
       updates.push(
         supabaseAdmin
           .from('rooms')
           .update(patch)
           .eq('id', row.id)
-          .eq('status', row.status as string)
+          .eq('status', preconditionStatus)
           .then(({ error }) => { if (error) throw error; }),
       );
       updated++;
     } else {
-      const payload: Record<string, unknown> = {
-        property_id: propertyId,
-        number: num,
-        date,
-        type,
-        status,
-        priority: 'standard',
-      };
-      if (csv.stayoverDay !== null && csv.stayoverDay !== undefined) {
-        payload.stayover_day = csv.stayoverDay;
-      }
-      if (csv.stayoverMinutes !== null && csv.stayoverMinutes !== undefined) {
-        payload.stayover_minutes = csv.stayoverMinutes;
-      }
-      if (csv.arrival) {
-        payload.arrival = csv.arrival;
-      }
-      toInsert.push(payload);
+      toInsert.push(planNewRoomInsert(csv, propertyId, date));
       created++;
     }
   }
@@ -204,20 +257,17 @@ export async function seedRoomsForDate(
     const csvNumbers = new Set(
       csvRooms.map((r) => r.number).filter((n): n is string => !!n),
     );
-    const phantomRows: Array<Record<string, unknown>> = [];
-    for (const num of inventory) {
-      if (csvNumbers.has(num)) continue;
-      if (existingByNumber.has(num)) continue;
-      phantomRows.push({
+    const existingNumbers = new Set(existingByNumber.keys());
+    const phantomNumbers = planPhantomSeed(inventory, csvNumbers, existingNumbers);
+    if (phantomNumbers.length > 0) {
+      const phantomRows = phantomNumbers.map((num) => ({
         property_id: propertyId,
         number: num,
         date,
         type: 'vacant',
         status: 'clean',
         priority: 'standard',
-      });
-    }
-    if (phantomRows.length > 0) {
+      }));
       const { error: phantomErr } = await supabaseAdmin
         .from('rooms')
         .upsert(phantomRows, { onConflict: 'property_id,date,number' });
