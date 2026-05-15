@@ -44,6 +44,49 @@ type Scope = ReturnType<typeof Sentry.getCurrentScope>;
 const TAG_VALUE_MAX = 200;
 
 /**
+ * SENTRY_TITLE_MAX: conservative cap below Sentry's stated 200-char
+ * title truncation. Round 18 callers (doctor-check + walkthrough-health-
+ * alert) embed dynamic content (failing check names, walkthrough task
+ * names) in their captureMessage titles, which can blow past Sentry's
+ * limit for long tasks/checks. We truncate at the application layer with
+ * "+N more" overflow so titles stay scannable and Sentry's grouping/
+ * fingerprinting stays stable. Lower than 200 because mid-word cuts
+ * make titles cryptic.
+ */
+export const SENTRY_TITLE_MAX = 180;
+
+/** Embed a list of dynamic items into a "<prefix><items joined>" title
+ *  with a hard cap. Items that don't fit get summarized as "+N more".
+ *  Returns just the joined-and-truncated tail string — caller prepends
+ *  the prefix. Pure for testability.
+ *
+ *  Example:
+ *    truncateListForSentryTitle('doctor: 5 failing — ', ['a','b','c','d','e'], 30)
+ *      → 'a, b, c, +2 more'
+ */
+export function truncateListForSentryTitle(
+  prefix: string,
+  items: ReadonlyArray<string>,
+  max: number = SENTRY_TITLE_MAX,
+): string {
+  if (items.length === 0) return '';
+  const joined = items.join(', ');
+  if (prefix.length + joined.length <= max) return joined;
+  const budget = Math.max(0, max - prefix.length);
+  const shown: string[] = [];
+  let used = 0;
+  for (let i = 0; i < items.length; i++) {
+    const sep = shown.length === 0 ? 0 : 2; // ", "
+    const tail = `, +${items.length - i} more`;
+    if (used + sep + items[i].length + tail.length > budget) break;
+    shown.push(items[i]);
+    used += sep + items[i].length;
+  }
+  const hidden = items.length - shown.length;
+  return shown.join(', ') + (hidden > 0 ? `, +${hidden} more` : '');
+}
+
+/**
  * Normalize a value before setting it as a Sentry tag:
  *   - Strip newlines/tabs (Sentry doesn't render them and some
  *     transports reject the value).

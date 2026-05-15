@@ -28,7 +28,7 @@ import { requireCronSecret } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
-import { captureMessage } from '@/lib/sentry';
+import { captureMessage, truncateListForSentryTitle } from '@/lib/sentry';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -105,10 +105,16 @@ export async function GET(req: NextRequest) {
         .sort((a, b) => b[1] - a[1])
         .slice(0, 3)
         .map(([t, n]) => `"${t}" (${n})`);
-      const topTaskSummary = topTasks.length > 0 ? topTasks.join(', ') : 'no tasks identified';
-
-      const alertTitle =
-        `walkthrough bad-outcome rate ${Math.round(rate * 100)}% — top failing: ${topTaskSummary}`;
+      // Round 18: tasks are LLM-generated and can hit the 200-char DB
+      // constraint. Three of those in the title would overflow Sentry's
+      // ~200-char truncation, splitting fingerprints. Cap the title at
+      // SENTRY_TITLE_MAX with "+N more" overflow; full task list stays
+      // in extra.top_failing_tasks for the operator to drill into.
+      const prefix = `walkthrough bad-outcome rate ${Math.round(rate * 100)}% — top failing: `;
+      const tailWithCap = topTasks.length > 0
+        ? truncateListForSentryTitle(prefix, topTasks)
+        : 'no tasks identified';
+      const alertTitle = prefix + tailWithCap;
 
       log.warn('[walkthrough-health-alert] bad-outcome rate above threshold', {
         requestId,
