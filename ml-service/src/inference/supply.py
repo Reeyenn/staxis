@@ -1,8 +1,9 @@
 """Inference pipeline for Layer 2 Supply predictions."""
 import json
+import re
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -11,6 +12,89 @@ from src.config import get_settings
 from src.errors import PropertyMisconfiguredError, require_property_timezone
 from src.features.supply_matrix import build_supply_features
 from src.supabase_client import get_supabase_client
+
+
+# Phase M3.4 (2026-05-14) — date prefix that the GM-facing UI prepends to
+# room_assignments JSONB keys (e.g. "2026-05-14_315"). Stripped at read time.
+_DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_")
+
+
+def _parse_schedule_for_inference(
+    sa_row: Optional[Dict[str, Any]],
+    *,
+    property_id: str,
+    prediction_date: date,
+) -> List[Dict[str, Any]]:
+    """Build the per-(staff, rooms) aggregation predict_supply needs.
+
+    Phase M3.4 (2026-05-14) — root-cause fix for the supply schedule fetch
+    (Codex adversarial finding #3).
+
+    Replaces the previous SQL-side approach that:
+      - Cast every room_assignments value to uuid in the SELECT (any malformed
+        value threw and 502'd the whole property's inference).
+      - Removed the crew JOIN, so stale assignments for staff no longer in
+        the day's crew produced ghost predictions for non-existent staff.
+
+    In-memory parsing is the right architectural call: Beaumont has ~70
+    entries (negligible wire cost), we get explicit per-entry validation,
+    skip-and-log on bad data, and the crew filter becomes a trivial set
+    membership check.
+
+    Inputs:
+      sa_row: schedule_assignments row dict (from fetch_one), or None.
+        Expected shape: {"crew": [<uuid_str>, ...],
+                         "room_assignments": {"<date>_<room>": "<staff_uuid>", ...}}
+      property_id, prediction_date: passed through to log lines for
+        observability.
+
+    Returns:
+      List of {"staff_id", "assigned_rooms", "room_count"} aggregations.
+      Empty list when sa_row is None or has no usable assignments.
+    """
+    if not sa_row:
+        return []
+
+    crew_set = {str(s) for s in (sa_row.get("crew") or [])}
+    room_assignments = sa_row.get("room_assignments") or {}
+
+    by_staff: Dict[str, List[str]] = {}
+    skipped_invalid_uuid = 0
+    skipped_non_crew = 0
+    for key, raw_staff_id in room_assignments.items():
+        # Validate the value parses as a UUID. Skip + log; do NOT error
+        # the whole property's inference. Pre-M3.4 SQL would 502 here.
+        try:
+            staff_id = str(uuid.UUID(str(raw_staff_id)))
+        except (ValueError, TypeError, AttributeError):
+            skipped_invalid_uuid += 1
+            continue
+        # Filter to staff currently in the day's crew. Pre-M3.4 SQL
+        # had this as a JOIN; M3.3b dropped it (introduced ghost
+        # predictions). Restored in-memory.
+        if staff_id not in crew_set:
+            skipped_non_crew += 1
+            continue
+        room_number = _DATE_PREFIX_RE.sub("", str(key))
+        by_staff.setdefault(staff_id, []).append(room_number)
+
+    if skipped_invalid_uuid or skipped_non_crew:
+        # Surface skips so the operator can investigate stale assignments
+        # without grepping for silence. Non-fatal — predictions still write
+        # for the valid entries.
+        print(json.dumps({
+            "evt": "supply_schedule_skipped_entries",
+            "property_id": property_id,
+            "date": str(prediction_date),
+            "skipped_invalid_uuid": skipped_invalid_uuid,
+            "skipped_non_crew": skipped_non_crew,
+            "kept": sum(len(rooms) for rooms in by_staff.values()),
+        }))
+
+    return [
+        {"staff_id": staff_id, "assigned_rooms": rooms, "room_count": len(rooms)}
+        for staff_id, rooms in by_staff.items()
+    ]
 
 
 # Phase 3.5 (2026-05-13): the America/Chicago fallback is gone — see
@@ -68,17 +152,41 @@ def _hydrate_bayesian_from_run(model_run: dict):
         }))
         return None
 
+    # Phase M3.4 (2026-05-14) — hard-validate the 5 required posterior fields
+    # BEFORE constructing the BayesianRegression. Codex adversarial finding #2:
+    # the previous code used pp.get(field) which returns None for missing fields.
+    # BayesianRegression.predict_quantile (bayesian_regression.py:159-178) has
+    # an explicit branch for `mu_n is None` that re-initializes the prior and
+    # serves PRIOR predictions. So an active "Bayesian" model row with partial
+    # JSONB corruption silently served cold-start-shaped predictions while
+    # reporting itself as a fitted Bayesian — operator saw plausible numbers
+    # instead of the explicit "retrain needed" failure this path is designed
+    # to surface. Fail loud with structured log so operator sees it.
+    #
+    # mu_0 / sigma_0 / alpha / beta are PRE-FIT priors used in
+    # _initialize_prior() before fit. A fitted model legitimately doesn't
+    # need them re-loaded — the posterior fields supersede. Don't gate on those.
+    REQUIRED_POSTERIOR_FIELDS = ("mu_n", "sigma_n", "alpha_n", "beta_n", "feature_names")
+    missing = [k for k in REQUIRED_POSTERIOR_FIELDS if pp.get(k) is None]
+    if missing:
+        print(json.dumps({
+            "evt": "supply_posterior_partial_corruption",
+            "model_run_id": model_run.get("id"),
+            "missing_fields": missing,
+        }))
+        return None
+
     model = BayesianRegression()
     try:
-        model.mu_n     = np.array(pp["mu_n"])     if pp.get("mu_n") is not None else None
-        model.sigma_n  = np.array(pp["sigma_n"])  if pp.get("sigma_n") is not None else None
-        model.alpha_n  = pp.get("alpha_n")
-        model.beta_n   = pp.get("beta_n")
+        model.mu_n     = np.array(pp["mu_n"])
+        model.sigma_n  = np.array(pp["sigma_n"])
+        model.alpha_n  = pp["alpha_n"]
+        model.beta_n   = pp["beta_n"]
         model.mu_0     = np.array(pp["mu_0"])     if pp.get("mu_0") is not None else None
         model.sigma_0  = np.array(pp["sigma_0"])  if pp.get("sigma_0") is not None else None
         model.alpha    = pp.get("alpha", 2.0)
         model.beta     = pp.get("beta", 1.0)
-        model.feature_names = pp.get("feature_names")
+        model.feature_names = pp["feature_names"]
         return model
     except Exception as exc:
         print(json.dumps({
@@ -193,49 +301,37 @@ async def predict_supply(
             "date": str(prediction_date),
         }
 
-    # Fetch schedule for prediction_date (assigned rooms).
+    # Fetch schedule for prediction_date.
     #
-    # Phase M3.3 (2026-05-14) — root-cause fix. The previous query joined
-    # `schedule_rooms` which DOES NOT EXIST in the schema (verified via
-    # `\d schedule_rooms` against prod — relation does not exist). Room
-    # assignments live inside schedule_assignments.room_assignments (jsonb
-    # mapping {"<date>_<room_number>": "<staff_id_uuid>"}).
+    # Phase M3.4 (2026-05-14) — Codex adversarial finding #3 root-cause fix.
+    # The M3.3b SQL had two structural problems:
+    #   (a) ra.value::uuid cast inside the SELECT threw on any malformed
+    #       value (empty string, null, non-UUID string from a buggy writer)
+    #       → predict_supply returned "Failed to fetch schedule" → route 502s
+    #       for the WHOLE property even when 99% of assignments were valid.
+    #   (b) Removed the crew JOIN that the original (broken) SQL had, so
+    #       stale assignments referencing a staff member no longer in the
+    #       day's crew now produced ghost predictions for non-existent staff.
     #
-    # Latent bug: every supply Bayesian inference call has been throwing
-    # `relation "schedule_rooms" does not exist` since whenever this query
-    # was written. Never observed because no Bayesian-active supply model
-    # had ever existed in prod (M3.2 was the first activation).
-    #
-    # The new query unpacks the jsonb pairs, strips the date prefix from
-    # the key (`2026-05-14_315` → `315`), and aggregates back to staff →
-    # rooms. Matches the existing TS reader at src/lib/feature-derivation.ts:167
-    # which treats room_assignments as Record<string, string>.
-    schedule_query = f"""
-        with pairs as (
-            select
-                ra.value::uuid as staff_id,
-                regexp_replace(ra.key, '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}_', '') as room_number
-            from schedule_assignments sa,
-                 jsonb_each_text(sa.room_assignments) as ra
-            where sa.property_id = '{property_id}'
-              and sa.date = '{prediction_date}'::date
-        )
-        select
-            p.staff_id,
-            array_agg(p.room_number) as assigned_rooms,
-            count(*) as room_count
-        from pairs p
-        group by p.staff_id
-    """
-
+    # Architectural fix: pull the schedule_assignments row as JSON and parse
+    # in Python. Beaumont has ~70 entries (negligible wire cost), gets us
+    # explicit per-entry validation + skip-and-log on bad data + crew filter
+    # as a trivial set lookup + zero remaining brittle SQL. Fully unit-testable
+    # without mocking SQL strings.
     try:
-        schedule_data = client.execute_sql(schedule_query)
+        sa_row = client.fetch_one(
+            "schedule_assignments",
+            filters={"property_id": property_id, "date": str(prediction_date)},
+        )
     except Exception as e:
         return {
             "error": f"Failed to fetch schedule: {e}",
             "property_id": property_id,
             "date": str(prediction_date),
         }
+    schedule_data = _parse_schedule_for_inference(
+        sa_row, property_id=property_id, prediction_date=prediction_date,
+    )
 
     # Pull tomorrow's day-level features AND per-room status arrays. The
     # per-room arrays let us pick the right room_type / stayover_day for

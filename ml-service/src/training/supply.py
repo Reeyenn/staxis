@@ -17,6 +17,9 @@ from src.layers.xgboost_quantile import XGBoostQuantile, XGBOOST_INFERENCE_READY
 from src.supabase_client import get_supabase_client
 
 
+from src.training._streak_utils import parse_iso_datetime as _parse_iso_datetime  # noqa: E402
+
+
 # Feature set version. Bump when build_supply_features() changes its output
 # columns so old models (trained with a smaller feature set) get retrained
 # rather than producing shape-mismatch errors at inference time.
@@ -253,23 +256,52 @@ def _train_supply_inner(
         limit=5,
     )
 
-    # Count consecutive passing runs (from most recent backwards)
+    # Count consecutive passing runs (from most recent backwards).
+    #
+    # Phase M3.4 (2026-05-14) — Codex adversarial finding #1: each prior
+    # run that counts toward the streak must represent a DISTINCT
+    # training window. Pre-M3.4 the loop counted any 5 prior model_runs
+    # by metric value alone, so 5 retries on identical data minutes
+    # apart (e.g. manual cron dispatches during incident replay,
+    # onboarding script, dev verification) all counted toward the
+    # streak as if they were 5 weekly windows of stability. That's
+    # how Beaumont activated instantly on rapid-fire dispatch.
+    #
+    # Two semantic changes:
+    #   1. Distinctness check: a prior run only counts if its trained_at
+    #      is at least min_hours_between_passing_runs (default 24h)
+    #      before the previously-counted run.
+    #   2. continue (not break) on non-distinct: a same-window retry
+    #      is neither evidence FOR nor evidence AGAINST stability — it
+    #      doesn't add to the streak but doesn't erase prior evidence.
+    #      Failed runs still break (genuine failure breaks the streak).
+    min_gap_seconds = settings.min_hours_between_passing_runs * 3600
     consecutive_passes = 1 if passes_gates else 0
+    last_counted_trained_at = _parse_iso_datetime(
+        datetime.utcnow().isoformat() if passes_gates else None
+    )
     for prior_run in (recent_runs or []):
+        prior_trained_at = _parse_iso_datetime(prior_run.get("trained_at"))
+        if prior_trained_at is None:
+            break
+        # Distinctness: must be older than the last-counted run by min_gap.
+        if last_counted_trained_at is not None:
+            gap = (last_counted_trained_at - prior_trained_at).total_seconds()
+            if gap < min_gap_seconds:
+                continue  # same training window → skip but don't break
         # Check if this prior run passed gates. Legacy absolute MAE
         # threshold (10 min for supply) because prior rows don't carry
-        # mae_ratio. Phase M3.2: row-count guard removed for the same
-        # root-cause reason as the current-run gate above.
+        # mae_ratio. Phase M3.2: row-count guard removed.
         prior_passes = (
             prior_run.get("beats_baseline_pct", 0) >= 0.05
             and prior_run.get("validation_mae", float("inf")) < 10.0
         )
-        if prior_passes and consecutive_passes > 0:
-            consecutive_passes += 1
-            if consecutive_passes > 5:
-                consecutive_passes = 5  # Cap at 5
-        else:
-            break  # Stop counting at first non-passing run
+        if not prior_passes:
+            break  # Genuine failure → streak broken
+        consecutive_passes += 1
+        last_counted_trained_at = prior_trained_at
+        if consecutive_passes >= 5:
+            break  # Cap at 5
 
     should_activate = passes_gates and consecutive_passes >= settings.consecutive_passing_runs_required
 

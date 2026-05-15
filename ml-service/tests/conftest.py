@@ -204,13 +204,39 @@ def make_plan_snapshot(
     }
 
 
-def make_schedule_assignment(*, staff_id, assigned_rooms):
-    """Single row from the supply schedule_assignments aggregation query.
+def make_schedule_assignment(*, staff_id, assigned_rooms, date_prefix="2026-05-15"):
+    """Build a schedule_assignments-table-shaped helper for ONE staff member.
 
-    Matches the SELECT shape at supply.py:189-200.
+    Phase M3.4 (2026-05-14): predict_supply now uses
+    `client.fetch_one("schedule_assignments", filters=...)` (Python-side
+    parsing of the JSONB) instead of `client.execute_sql(...)` (SQL-side
+    aggregation). This factory returns the raw row shape that fetch_one
+    yields — `{crew, room_assignments}` — NOT the old SQL-aggregation
+    shape `{staff_id, assigned_rooms, room_count}`.
+
+    Tests should seed this via `fetch_one={"schedule_assignments": <row>}`,
+    not `execute_sql`. For multi-staff scenarios use
+    make_schedule_assignment_multi.
+
+    `date_prefix` is what the GM-facing UI prepends to room keys; the
+    inference parser strips it. Defaults to "2026-05-15" matching the
+    typical predict_supply call signature in these tests.
     """
     return {
-        "staff_id": staff_id,
-        "assigned_rooms": list(assigned_rooms),
-        "room_count": len(assigned_rooms),
+        "crew": [staff_id],
+        "room_assignments": {
+            f"{date_prefix}_{room}": staff_id for room in assigned_rooms
+        },
+    }
+
+
+def make_schedule_assignment_multi(*, staff_to_rooms, date_prefix="2026-05-15"):
+    """Multi-staff variant. `staff_to_rooms` is a dict of {staff_id: [rooms]}."""
+    return {
+        "crew": list(staff_to_rooms.keys()),
+        "room_assignments": {
+            f"{date_prefix}_{room}": staff_id
+            for staff_id, rooms in staff_to_rooms.items()
+            for room in rooms
+        },
     }

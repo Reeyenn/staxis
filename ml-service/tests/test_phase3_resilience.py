@@ -420,6 +420,73 @@ def test_supply_prior_passes_does_not_require_activation_row_count():
     )
 
 
+def test_demand_prior_passes_loop_uses_distinctness_check():
+    """Phase M3.4 (2026-05-14) — Codex adversarial finding #1.
+
+    Pre-M3.4 the consecutive_passing_runs counter only checked metric values
+    on prior runs. 5 retries on identical data minutes apart counted as 5
+    weekly windows of stability. Beaumont activated INSTANTLY on rapid-fire
+    dispatch this way.
+
+    Fix: each prior run that counts toward the streak must be at least
+    `min_hours_between_passing_runs` (default 24h) before the previously-
+    counted run.
+
+    This is a structural invariant test that pins the prior_passes loop
+    contains a `parse_iso_datetime` call (to extract the timestamp) AND
+    references `min_hours_between_passing_runs` (the gating setting).
+    A future refactor that drops either silently re-introduces the
+    rapid-fire activation bug.
+    """
+    import re
+
+    src = _read_module_source("training/demand.py")
+    block = re.search(
+        r"for prior_run in.*?\n(.*?)should_activate\s*=",
+        src, flags=re.DOTALL,
+    )
+    assert block, "couldn't locate prior_passes loop body in training/demand.py"
+    body = block.group(1)
+    assert "parse_iso_datetime" in body, (
+        "Phase M3.4 reverted: training/demand.py prior_passes loop no "
+        "longer parses prior runs' trained_at — distinctness check is gone."
+    )
+    assert "min_hours_between_passing_runs" in body or "min_gap" in body, (
+        "Phase M3.4 reverted: training/demand.py prior_passes loop no "
+        "longer references min_hours_between_passing_runs — rapid-fire "
+        "retries can again manufacture an activation streak."
+    )
+
+
+def test_supply_prior_passes_loop_uses_distinctness_check():
+    """Same structural invariant for supply (Phase M3.4 #1)."""
+    import re
+
+    src = _read_module_source("training/supply.py")
+    block = re.search(
+        r"for prior_run in.*?\n(.*?)should_activate\s*=",
+        src, flags=re.DOTALL,
+    )
+    assert block, "couldn't locate prior_passes loop body in training/supply.py"
+    body = block.group(1)
+    assert "parse_iso_datetime" in body, (
+        "Phase M3.4 reverted: training/supply.py prior_passes loop no "
+        "longer parses prior runs' trained_at — distinctness check is gone."
+    )
+    assert "min_hours_between_passing_runs" in body or "min_gap" in body, (
+        "Phase M3.4 reverted: training/supply.py prior_passes loop no "
+        "longer references min_hours_between_passing_runs — rapid-fire "
+        "retries can again manufacture an activation streak."
+    )
+
+
+def test_config_exposes_min_hours_between_passing_runs():
+    """Phase M3.4: the streak distinctness setting must be exposed in
+    config.py so staging/dev can override via env var."""
+    src = _read_module_source("config.py")
+    assert "min_hours_between_passing_runs" in src
+
+
 def test_use_xgboost_keeps_activation_row_count_threshold():
     """Phase M3.2 sanity check: while the activation GATE drops the row
     count, the algorithm-CHOICE gate (use_xgboost) should keep it.
