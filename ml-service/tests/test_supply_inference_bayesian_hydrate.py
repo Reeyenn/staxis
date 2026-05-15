@@ -31,6 +31,9 @@ def _run(coro):
 
 
 PROPERTY_ID = "8a041d6e-d881-4f19-83e0-7250f0e36eaa"
+# Phase M3.4 — predict_supply parses room_assignments client-side and
+# rejects non-UUID staff values. Tests use real UUID literals.
+STAFF_S1 = "11111111-1111-1111-1111-111111111111"
 
 
 def _make_bayesian_active_model_run(*, property_id, posterior_params):
@@ -82,10 +85,9 @@ def test_bayesian_hydrate_accepts_dict_posterior_params_supabase_jsonb_shape():
             property_id=PROPERTY_ID,
             posterior_params=_minimal_valid_posterior_dict(),  # DICT not string
         )]},
+        fetch_one={"schedule_assignments": make_schedule_assignment(
+            staff_id=STAFF_S1, assigned_rooms=["101"])},
         execute_sql={
-            "schedule_assignments": [
-                make_schedule_assignment(staff_id="s1", assigned_rooms=["101"]),
-            ],
             "plan_snapshots": [make_plan_snapshot(
                 total_rooms=30, checkout_room_numbers=["101"])],
         },
@@ -117,10 +119,9 @@ def test_bayesian_hydrate_still_accepts_string_posterior_params_backward_compat(
             property_id=PROPERTY_ID,
             posterior_params=json_mod.dumps(_minimal_valid_posterior_dict()),  # STRING
         )]},
+        fetch_one={"schedule_assignments": make_schedule_assignment(
+            staff_id=STAFF_S1, assigned_rooms=["101"])},
         execute_sql={
-            "schedule_assignments": [
-                make_schedule_assignment(staff_id="s1", assigned_rooms=["101"]),
-            ],
             "plan_snapshots": [make_plan_snapshot(
                 total_rooms=30, checkout_room_numbers=["101"])],
         },
@@ -147,10 +148,9 @@ def test_bayesian_hydrate_returns_none_for_truly_corrupt_posterior():
             property_id=PROPERTY_ID,
             posterior_params="this is not valid json{",  # corrupt STRING
         )]},
+        fetch_one={"schedule_assignments": make_schedule_assignment(
+            staff_id=STAFF_S1, assigned_rooms=["101"])},
         execute_sql={
-            "schedule_assignments": [
-                make_schedule_assignment(staff_id="s1", assigned_rooms=["101"]),
-            ],
             "plan_snapshots": [make_plan_snapshot(
                 total_rooms=30, checkout_room_numbers=["101"])],
         },
@@ -200,10 +200,9 @@ def test_hydrate_rejects_partial_posterior_missing_mu_n():
             property_id=PROPERTY_ID,
             posterior_params=_posterior_missing("mu_n"),
         )]},
+        fetch_one={"schedule_assignments": make_schedule_assignment(
+            staff_id=STAFF_S1, assigned_rooms=["101"])},
         execute_sql={
-            "schedule_assignments": [
-                make_schedule_assignment(staff_id="s1", assigned_rooms=["101"]),
-            ],
             "plan_snapshots": [make_plan_snapshot(
                 total_rooms=30, checkout_room_numbers=["101"])],
         },
@@ -226,10 +225,9 @@ def test_hydrate_rejects_partial_posterior_missing_sigma_n():
             property_id=PROPERTY_ID,
             posterior_params=_posterior_missing("sigma_n"),
         )]},
+        fetch_one={"schedule_assignments": make_schedule_assignment(
+            staff_id=STAFF_S1, assigned_rooms=["101"])},
         execute_sql={
-            "schedule_assignments": [
-                make_schedule_assignment(staff_id="s1", assigned_rooms=["101"]),
-            ],
             "plan_snapshots": [make_plan_snapshot(total_rooms=30, checkout_room_numbers=["101"])],
         },
     )
@@ -249,10 +247,9 @@ def test_hydrate_rejects_partial_posterior_missing_alpha_n():
             property_id=PROPERTY_ID,
             posterior_params=_posterior_missing("alpha_n"),
         )]},
+        fetch_one={"schedule_assignments": make_schedule_assignment(
+            staff_id=STAFF_S1, assigned_rooms=["101"])},
         execute_sql={
-            "schedule_assignments": [
-                make_schedule_assignment(staff_id="s1", assigned_rooms=["101"]),
-            ],
             "plan_snapshots": [make_plan_snapshot(total_rooms=30, checkout_room_numbers=["101"])],
         },
     )
@@ -272,10 +269,9 @@ def test_hydrate_rejects_partial_posterior_missing_beta_n():
             property_id=PROPERTY_ID,
             posterior_params=_posterior_missing("beta_n"),
         )]},
+        fetch_one={"schedule_assignments": make_schedule_assignment(
+            staff_id=STAFF_S1, assigned_rooms=["101"])},
         execute_sql={
-            "schedule_assignments": [
-                make_schedule_assignment(staff_id="s1", assigned_rooms=["101"]),
-            ],
             "plan_snapshots": [make_plan_snapshot(total_rooms=30, checkout_room_numbers=["101"])],
         },
     )
@@ -295,10 +291,9 @@ def test_hydrate_rejects_partial_posterior_missing_feature_names():
             property_id=PROPERTY_ID,
             posterior_params=_posterior_missing("feature_names"),
         )]},
+        fetch_one={"schedule_assignments": make_schedule_assignment(
+            staff_id=STAFF_S1, assigned_rooms=["101"])},
         execute_sql={
-            "schedule_assignments": [
-                make_schedule_assignment(staff_id="s1", assigned_rooms=["101"]),
-            ],
             "plan_snapshots": [make_plan_snapshot(total_rooms=30, checkout_room_numbers=["101"])],
         },
     )
@@ -326,10 +321,9 @@ def test_hydrate_accepts_complete_posterior_with_optional_priors_missing():
             property_id=PROPERTY_ID,
             posterior_params=posterior,
         )]},
+        fetch_one={"schedule_assignments": make_schedule_assignment(
+            staff_id=STAFF_S1, assigned_rooms=["101"])},
         execute_sql={
-            "schedule_assignments": [
-                make_schedule_assignment(staff_id="s1", assigned_rooms=["101"]),
-            ],
             "plan_snapshots": [make_plan_snapshot(
                 total_rooms=30, checkout_room_numbers=["101"])],
         },

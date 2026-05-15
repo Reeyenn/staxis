@@ -16,6 +16,7 @@ from tests.conftest import (
     make_fake_supabase,
     make_plan_snapshot,
     make_schedule_assignment,
+    make_schedule_assignment_multi,
     make_supply_cold_start_model_run,
 )
 
@@ -25,6 +26,11 @@ def _run(coro):
 
 
 PROPERTY_ID = "8a041d6e-d881-4f19-83e0-7250f0e36eaa"
+# Phase M3.4: predict_supply now validates room_assignments staff_ids as
+# UUIDs and filters to the day's crew. Tests use real UUID literals
+# (the M3.3-era "s1"/"s2" strings would be rejected by the parser).
+STAFF_S1 = "11111111-1111-1111-1111-111111111111"
+STAFF_S2 = "22222222-2222-2222-2222-222222222222"
 
 
 def test_cold_start_inference_writes_predictions_per_room_staff():
@@ -35,16 +41,15 @@ def test_cold_start_inference_writes_predictions_per_room_staff():
     """
     from src.inference.supply import predict_supply
 
-    # 2 staff, 3 rooms total (s1: rooms 101 + 102; s2: room 201).
+    # 2 staff, 3 rooms total (S1: rooms 101 + 102; S2: room 201).
     # Plan marks 101 + 201 as checkout, 102 as stayover-day-1.
     fake = make_fake_supabase(
         fetch_many={"model_runs": [make_supply_cold_start_model_run(
             property_id=PROPERTY_ID, prior=30.0, cohort_key="industry-default")]},
+        fetch_one={"schedule_assignments": make_schedule_assignment_multi(
+            staff_to_rooms={STAFF_S1: ["101", "102"], STAFF_S2: ["201"]},
+        )},
         execute_sql={
-            "schedule_assignments": [
-                make_schedule_assignment(staff_id="s1", assigned_rooms=["101", "102"]),
-                make_schedule_assignment(staff_id="s2", assigned_rooms=["201"]),
-            ],
             "plan_snapshots": [make_plan_snapshot(
                 total_rooms=30,
                 checkout_room_numbers=["101", "201"],
@@ -80,7 +85,7 @@ def test_cold_start_inference_writes_predictions_per_room_staff():
 
     # All 3 expected (room, staff) pairs covered.
     pairs = {(u["data"]["room_number"], u["data"]["staff_id"]) for u in fake.upserts}
-    assert pairs == {("101", "s1"), ("102", "s1"), ("201", "s2")}
+    assert pairs == {("101", STAFF_S1), ("102", STAFF_S1), ("201", STAFF_S2)}
 
 
 def test_cold_start_inference_does_not_dereference_model_feature_names():
@@ -95,10 +100,9 @@ def test_cold_start_inference_does_not_dereference_model_feature_names():
     fake = make_fake_supabase(
         fetch_many={"model_runs": [make_supply_cold_start_model_run(
             property_id=PROPERTY_ID, prior=30.0)]},
+        fetch_one={"schedule_assignments": make_schedule_assignment(
+            staff_id=STAFF_S1, assigned_rooms=["101"])},
         execute_sql={
-            "schedule_assignments": [
-                make_schedule_assignment(staff_id="s1", assigned_rooms=["101"]),
-            ],
             "plan_snapshots": [make_plan_snapshot(
                 total_rooms=30, checkout_room_numbers=["101"])],
         },
@@ -130,13 +134,17 @@ def test_cold_start_no_active_model_returns_error_no_crash():
 
 
 def test_cold_start_empty_schedule_returns_zero_predictions():
-    """Active cold-start model but no scheduled rooms → predicted_rooms=0, no upserts."""
+    """No schedule_assignments row for the date → predicted_rooms=0, no upserts.
+
+    Phase M3.4: this is the typical state of a property whose GM hasn't
+    built tomorrow's schedule yet (most days at most properties).
+    """
     from src.inference.supply import predict_supply
 
     fake = make_fake_supabase(
         fetch_many={"model_runs": [make_supply_cold_start_model_run(property_id=PROPERTY_ID)]},
+        fetch_one={"schedule_assignments": None},
         execute_sql={
-            "schedule_assignments": [],
             "plan_snapshots": [make_plan_snapshot(total_rooms=30)],
         },
     )
@@ -158,11 +166,10 @@ def test_cold_start_room_not_in_plan_falls_back_to_stayover_day1():
 
     fake = make_fake_supabase(
         fetch_many={"model_runs": [make_supply_cold_start_model_run(property_id=PROPERTY_ID)]},
+        fetch_one={"schedule_assignments": make_schedule_assignment(
+            # Room 999 isn't in any plan array → fallback path.
+            staff_id=STAFF_S1, assigned_rooms=["999"])},
         execute_sql={
-            "schedule_assignments": [
-                # Room 999 isn't in any plan array → fallback path.
-                make_schedule_assignment(staff_id="s1", assigned_rooms=["999"]),
-            ],
             "plan_snapshots": [make_plan_snapshot(total_rooms=30)],
         },
     )
