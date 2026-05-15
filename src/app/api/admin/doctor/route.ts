@@ -2307,7 +2307,7 @@ async function checkMlModelsHoldoutSize(): Promise<Omit<Check, 'name' | 'duratio
     // 50-row ceiling truncated BEFORE dedupe.
     const { data, error } = await supabaseAdmin
       .from('model_runs')
-      .select('id, property_id, layer, validation_holdout_n, trained_at')
+      .select('id, property_id, layer, algorithm, validation_holdout_n, trained_at')
       .in('layer', ['demand', 'supply'])
       .is('item_id', null)
       .eq('is_active', true)
@@ -2322,15 +2322,16 @@ async function checkMlModelsHoldoutSize(): Promise<Omit<Check, 'name' | 'duratio
       return { status: 'ok', detail: 'No demand/supply model_runs yet — informational only.' };
     }
     // Dedupe by (property, layer) keeping the most recent.
-    const mostRecent = new Map<string, { layer: string; n: number; trained_at: string }>();
+    const mostRecent = new Map<string, { layer: string; algorithm: string; n: number; trained_at: string }>();
     for (const r of rows as Array<{
-      property_id: string; layer: string;
+      property_id: string; layer: string; algorithm: string;
       validation_holdout_n: number | null; trained_at: string;
     }>) {
       const key = `${r.property_id}:${r.layer}`;
       if (!mostRecent.has(key)) {
         mostRecent.set(key, {
           layer: r.layer,
+          algorithm: r.algorithm,
           n: r.validation_holdout_n ?? 0,
           trained_at: r.trained_at,
         });
@@ -2338,27 +2339,45 @@ async function checkMlModelsHoldoutSize(): Promise<Omit<Check, 'name' | 'duratio
     }
     const HOLDOUT_FLOOR = 30;
     const tooSmall: string[] = [];
+    let coldStartSkipped = 0;
     for (const [key, info] of mostRecent.entries()) {
+      // Cold-start models legitimately have no validation holdout — they
+      // run on a synthetic cohort prior, not on historical training rows.
+      // Counting them against HOLDOUT_FLOOR fires a false-positive warn
+      // every day for any new property until it has 200+ days of complete
+      // labels. The real concern is when a TRAINED model has a tiny
+      // holdout (real training data exists but the gate would reject it
+      // on activation).
+      if (info.algorithm && info.algorithm.startsWith('cold-start')) {
+        coldStartSkipped++;
+        continue;
+      }
       if (info.n < HOLDOUT_FLOOR) {
-        tooSmall.push(`${key} (n=${info.n})`);
+        tooSmall.push(`${key} algorithm=${info.algorithm} (n=${info.n})`);
       }
     }
     if (tooSmall.length === 0) {
+      const coldStartNote =
+        coldStartSkipped > 0
+          ? ` ${coldStartSkipped} cold-start model(s) intentionally skipped — they use cohort priors, not historical holdouts.`
+          : '';
       return {
         status: 'ok',
-        detail: `${mostRecent.size} (property, layer) pair(s) all have validation_holdout_n >= ${HOLDOUT_FLOOR}.`,
+        detail: `${mostRecent.size - coldStartSkipped} trained (property, layer) pair(s) all have validation_holdout_n >= ${HOLDOUT_FLOOR}.${coldStartNote}`,
       };
     }
     return {
       status: 'warn',
       detail:
-        `${tooSmall.length} (property, layer) pair(s) have most-recent training run with ` +
+        `${tooSmall.length} TRAINED (property, layer) pair(s) have most-recent run with ` +
         `validation_holdout_n < ${HOLDOUT_FLOOR} — gate silently rejects activation. ` +
         `Affected: ${tooSmall.slice(0, 5).join(', ')}${tooSmall.length > 5 ? ', ...' : ''}.`,
       fix:
-        'Check that the property has 200+ training rows after the SQL filters ' +
-        '(labels_complete=true AND total_recorded_minutes>0). Maria may be missing ' +
-        'day-confirmations; have her catch up on the housekeeping log.',
+        'Property has crossed the cold-start cutoff but its training set is still ' +
+        'thin. Check that the property has 200+ rows in cleaning_minutes_per_day_view ' +
+        'where total_recorded_minutes > 0 AND headcount_actuals_view.labels_complete = true. ' +
+        'If labels_complete is false on many days, schedule_assignments are missing crew ' +
+        'for those days (manager built a schedule with empty crew, or never built one).',
     };
   } catch (err) {
     return { status: 'warn', detail: `holdout-size check threw: ${errToString(err)}` };
