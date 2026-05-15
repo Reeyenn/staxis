@@ -18,9 +18,10 @@
  * the URL out-of-band (Slack, email — admin's choice).
  */
 
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { X, Building2, Check, Copy, AlertCircle } from 'lucide-react';
+import { parseRoomList } from '@/lib/api-validate';
 
 interface Props {
   open: boolean;
@@ -76,6 +77,7 @@ function buildTimezoneOptions(detected: string): string[] {
 export function CreateHotelModal({ open, onClose, onCreated }: Props) {
   const [name, setName] = useState('');
   const [totalRooms, setTotalRooms] = useState<number | ''>('');
+  const [roomNumbersInput, setRoomNumbersInput] = useState('');
   const initialTz = defaultTimezone();
   const [timezone, setTimezone] = useState(initialTz);
   const [tzMode, setTzMode] = useState<'preset' | 'custom'>('preset');
@@ -94,10 +96,28 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
   const [result, setResult] = useState<CreatedResult | null>(null);
   const [copied, setCopied] = useState<'code' | 'url' | null>(null);
 
+  // Live preview of the parsed room list. Empty input → null preview
+  // (nothing shown). Parse error → red helper text. Match/mismatch
+  // with totalRooms → green/amber feedback.
+  //
+  // MUST be declared before the `if (!open)` early return — Rules of
+  // Hooks require hook calls in the exact same order each render.
+  const roomNumbersPreview = useMemo(() => {
+    const trimmed = roomNumbersInput.trim();
+    if (!trimmed) return null;
+    const parsed = parseRoomList(trimmed);
+    if (parsed.error) return { kind: 'error' as const, message: parsed.error };
+    const list = parsed.value ?? [];
+    const dupes = list.length - new Set(list).size;
+    if (dupes > 0) return { kind: 'error' as const, message: `${dupes} duplicate room number${dupes === 1 ? '' : 's'} — remove the duplicates.` };
+    return { kind: 'ok' as const, list };
+  }, [roomNumbersInput]);
+
   if (!open) return null;
 
   const reset = () => {
-    setName(''); setTotalRooms(''); setTimezone(initialTz); setTzMode('preset');
+    setName(''); setTotalRooms(''); setRoomNumbersInput('');
+    setTimezone(initialTz); setTzMode('preset');
     setCustomTz(''); setPmsType(''); setBrand(''); setPropertyKind('limited_service');
     setOwnerEmail(''); setIsTest(false);
     setInviteRole('owner'); setDeliveryMode('copy');
@@ -121,6 +141,22 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
       }
     }
 
+    // Room numbers — optional. If provided, must parse cleanly and match
+    // totalRooms. Server re-validates so we can't bypass; this is the
+    // first-line UX so the operator gets feedback before hitting submit.
+    let roomNumbers: string[] = [];
+    if (roomNumbersInput.trim().length > 0) {
+      if (!roomNumbersPreview || roomNumbersPreview.kind === 'error') {
+        setError(`Fix the room number list: ${roomNumbersPreview?.message ?? 'invalid input'}`);
+        return;
+      }
+      roomNumbers = roomNumbersPreview.list;
+      if (roomNumbers.length !== totalRooms) {
+        setError(`Room numbers list has ${roomNumbers.length} entries but Total rooms is ${totalRooms}. They must match.`);
+        return;
+      }
+    }
+
     setSubmitting(true);
     try {
       const res = await fetchWithAuth('/api/admin/properties/create', {
@@ -137,6 +173,7 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
           ownerEmail: ownerEmail.trim() || undefined,
           inviteRole,
           sendEmail: deliveryMode === 'email',
+          ...(roomNumbers.length > 0 ? { roomNumbers } : {}),
         }),
       });
       const json = await res.json();
@@ -230,6 +267,40 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
                   className="input" placeholder="e.g. 80"
                   min={1} max={2000}
                 />
+              </Field>
+
+              <Field label="Room numbers (optional)">
+                <textarea
+                  value={roomNumbersInput}
+                  onChange={(e) => setRoomNumbersInput(e.target.value)}
+                  className="input"
+                  placeholder="e.g. 101-112, 114-122, 201-222 (commas + ranges OK; leave blank to capture later via PMS)"
+                  rows={3}
+                  style={{ resize: 'vertical', minHeight: '60px', fontFamily: 'monospace', fontSize: '12px' }}
+                />
+                {roomNumbersPreview && (
+                  <div style={{
+                    marginTop: '6px',
+                    fontSize: '11px',
+                    color:
+                      roomNumbersPreview.kind === 'error'
+                        ? 'var(--red, #ef4444)'
+                        : (typeof totalRooms === 'number' && roomNumbersPreview.list.length === totalRooms
+                            ? 'var(--green, #22c55e)'
+                            : 'var(--amber, #f59e0b)'),
+                  }}>
+                    {roomNumbersPreview.kind === 'error'
+                      ? roomNumbersPreview.message
+                      : typeof totalRooms === 'number' && roomNumbersPreview.list.length === totalRooms
+                        ? `✓ ${roomNumbersPreview.list.length} rooms — matches Total rooms`
+                        : `Parsed ${roomNumbersPreview.list.length} rooms${typeof totalRooms === 'number' ? ` — Total rooms says ${totalRooms} (must match)` : ''}`}
+                  </div>
+                )}
+                <p style={{ marginTop: '4px', fontSize: '11px', color: 'var(--text-muted)' }}>
+                  Master list of every room number at this property. Without it, vacant-clean rooms
+                  won&apos;t render on the Rooms tab until the PMS syncs. Most US hotels skip 13s:
+                  101&ndash;112, 114&ndash;122 etc.
+                </p>
               </Field>
 
               <Field label="Timezone *">

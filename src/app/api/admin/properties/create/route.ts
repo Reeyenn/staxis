@@ -47,6 +47,7 @@ import {
 } from '@/lib/join-codes';
 import { sendOnboardingInvite } from '@/lib/email/onboarding-invite';
 import { DEFAULT_INVENTORY_ITEMS } from '@/lib/inventory/default-items';
+import { validateRoomNumbers } from '@/lib/api-validate';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -63,6 +64,11 @@ interface CreateBody {
   // Phase M1.5 additions:
   inviteRole?: unknown;  // 'owner' | 'general_manager' (default 'owner')
   sendEmail?: unknown;   // boolean (default false). Requires ownerEmail.
+  // Round 15 follow-up: capture the master room list at creation time so
+  // phantom-seed has something to work with from day 1. Optional —
+  // omitted means inventory stays empty and the doctor warns until
+  // it's populated (e.g., via PMS sync).
+  roomNumbers?: unknown;
 }
 
 interface ValidationResult {
@@ -78,6 +84,7 @@ interface ValidationResult {
     ownerEmail: string | null;
     inviteRole: 'owner' | 'general_manager';
     sendEmail: boolean;
+    roomNumbers: string[];  // [] when omitted
   };
 }
 
@@ -185,6 +192,23 @@ export function validateBody(body: CreateBody): ValidationResult | { ok: false; 
     return { ok: false, reason: 'sendEmail=true requires ownerEmail' };
   }
 
+  // Room numbers — optional. If provided, must be an array of strings
+  // and the length must equal totalRooms (otherwise INV-24 would fire
+  // the moment the row lands; better to reject at the API).
+  let roomNumbers: string[] = [];
+  if (body.roomNumbers !== undefined && body.roomNumbers !== null) {
+    const r = validateRoomNumbers(body.roomNumbers, { label: 'roomNumbers' });
+    if (r.error) return { ok: false, reason: r.error };
+    roomNumbers = r.value!;
+    if (roomNumbers.length > 0 && roomNumbers.length !== body.totalRooms) {
+      return {
+        ok: false,
+        reason: `roomNumbers count (${roomNumbers.length}) must match totalRooms (${body.totalRooms}). ` +
+                `Either fix the list or change totalRooms.`,
+      };
+    }
+  }
+
   return {
     ok: true,
     values: {
@@ -198,6 +222,7 @@ export function validateBody(body: CreateBody): ValidationResult | { ok: false; 
       ownerEmail,
       inviteRole,
       sendEmail,
+      roomNumbers,
     },
   };
 }
@@ -236,6 +261,14 @@ export async function POST(req: NextRequest) {
       property_kind: v.propertyKind,
       is_test: v.isTest,
       onboarding_source: 'admin',
+      // Round 15 follow-up: when the admin provided a room list, write it
+      // here so phantom-seed can run from day 1. Migration 0125's trigger
+      // re-derives total_rooms from this if non-empty (defense against
+      // a typed totalRooms ≠ list-length mismatch); the API validation
+      // above already enforces equality, so the trigger normally no-ops.
+      // Empty array means "capture later" (e.g., via PMS sync); the
+      // doctor warns in that state.
+      ...(v.roomNumbers.length > 0 ? { room_inventory: v.roomNumbers } : {}),
     })
     .select('id, name, created_at')
     .single();
@@ -356,6 +389,7 @@ export async function POST(req: NextRequest) {
       is_test: v.isTest,
       owner_email_invited: v.ownerEmail,
       join_code_minted: Boolean(joinCodeRow),
+      room_inventory_count: v.roomNumbers.length,
     },
   });
 

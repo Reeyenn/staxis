@@ -143,6 +143,91 @@ export function sanitizeForSms(s: string): string {
 }
 
 /**
+ * Parse a free-form room-number string into an array of room numbers.
+ *
+ * Supports:
+ *   "101"               → ["101"]
+ *   "101, 102, 103"     → ["101","102","103"]
+ *   "101-103"           → ["101","102","103"]
+ *   "101-103, 200"      → ["101","102","103","200"]
+ *   "101-112, 114-122"  → expands both ranges, skips 113 (US "no 13" convention)
+ *
+ * Newlines, commas, and semicolons are all treated as separators.
+ *
+ * Does NOT support: "except", "skip", "Suite-A" inside a range. Operator
+ * with non-contiguous numbering enumerates each range explicitly. Range
+ * form is numeric only — alphanumeric room numbers ("L1-201") must be
+ * listed individually.
+ *
+ * Returns an array that may include duplicates produced by overlapping
+ * ranges; validateRoomNumbers catches duplicates as a separate step.
+ */
+export function parseRoomList(input: string): { error?: string; value?: string[] } {
+  const tokens = input
+    .split(/[\s,;]+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
+
+  if (tokens.length === 0) return { value: [] };
+
+  const out: string[] = [];
+  for (const tok of tokens) {
+    const rangeMatch = tok.match(/^(\d+)-(\d+)$/);
+    if (rangeMatch) {
+      const start = parseInt(rangeMatch[1], 10);
+      const end = parseInt(rangeMatch[2], 10);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) {
+        return { error: `Range "${tok}" is not numeric` };
+      }
+      if (start > end) {
+        return { error: `Range "${tok}" goes backwards (start > end)` };
+      }
+      if (end - start > 5000) {
+        return { error: `Range "${tok}" is too large (max 5000 rooms per range)` };
+      }
+      for (let n = start; n <= end; n++) out.push(String(n));
+      continue;
+    }
+    if (!/^[A-Za-z0-9_-]+$/.test(tok)) {
+      return { error: `Room number "${tok}" contains invalid characters` };
+    }
+    out.push(tok);
+  }
+  return { value: out };
+}
+
+/**
+ * Validate an array of room numbers — what `properties.room_inventory`
+ * stores. Each entry: non-empty, under LIMITS.ROOM_NUMBER_MAX chars,
+ * unique within the list, no whitespace inside. Total cap at 2000
+ * entries to match total_rooms's max.
+ */
+export function validateRoomNumbers(
+  v: unknown,
+  opts: { label?: string } = {},
+): { error?: string; value?: string[] } {
+  const label = opts.label ?? 'roomNumbers';
+  if (!Array.isArray(v)) return { error: `${label} must be an array of strings` };
+  if (v.length > 2000) return { error: `${label} too long (max 2000 rooms)` };
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (let i = 0; i < v.length; i++) {
+    const raw = v[i];
+    if (typeof raw !== 'string') return { error: `${label}[${i}] must be a string` };
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) return { error: `${label}[${i}] is empty` };
+    if (trimmed.length > LIMITS.ROOM_NUMBER_MAX) {
+      return { error: `${label}[${i}] too long (max ${LIMITS.ROOM_NUMBER_MAX} chars)` };
+    }
+    if (/\s/.test(trimmed)) return { error: `${label}[${i}] contains whitespace` };
+    if (seen.has(trimmed)) return { error: `${label} has duplicate: "${trimmed}"` };
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return { value: out };
+}
+
+/**
  * Whitelist a base URL — used to keep `baseUrl` from request bodies from
  * pointing to phishing sites in the SMS link.
  */
