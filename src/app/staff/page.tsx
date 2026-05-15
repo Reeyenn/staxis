@@ -16,6 +16,7 @@ import {
 import type { PlanSnapshot } from '@/lib/db';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import type { StaffMember, StaffDepartment, ShiftConfirmation, ManagerNotification, ConfirmationStatus } from '@/types';
+import { checkCrewEligibility } from '@/lib/schedule/active-crew';
 import {
   Users, Plus, Pencil, Trash2, Star, Clock,
   Calendar, ChevronLeft, ChevronRight, Bell, CheckCircle2, XCircle,
@@ -73,12 +74,18 @@ function formatDisplayDate(dateStr: string, lang: 'en' | 'es'): string {
 }
 
 function isEligible(s: StaffMember, date: string): boolean {
-  if (s.isActive === false) return false;
-  if (!s.phone) return false;
-  if (s.vacationDates?.includes(date)) return false;
-  if ((s.daysWorkedThisWeek ?? 0) >= (s.maxDaysPerWeek ?? 5)) return false;
-  if ((s.weeklyHours ?? 0) >= (s.maxWeeklyHours ?? 40)) return false;
-  return true;
+  // Round 18: delegate to the shared helper. The send-shift-confirmations
+  // flow needs a phone (the link goes via SMS) so requirePhone=true here;
+  // schedule-auto-fill cron uses requirePhone=false because it only
+  // persists the schedule — SMS-send is a separate manager action.
+  return checkCrewEligibility(s, {
+    targetDate: date,
+    requirePhone: true,
+    // The staff page's send-shift-confirmations dialog historically did
+    // NOT respect schedule_priority='excluded' (it's a SCHEDULE-tab
+    // concept). Keep that behavior here.
+    respectSchedulePriority: false,
+  }).eligible;
 }
 
 // 'sent' is the new default status post-Send (link went out, no reply

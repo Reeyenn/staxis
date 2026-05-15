@@ -31,6 +31,8 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { autoAssignRooms } from '@/lib/calculations';
 import { runWithConcurrency } from '@/lib/parallel';
 import { propertyLocalDateOffset } from '@/lib/schedule/local-date';
+import { selectActiveCrewWithReasons } from '@/lib/schedule/active-crew';
+import { fromStaffRow } from '@/lib/db-mappers';
 import type { StaffMember } from '@/types';
 
 export const runtime = 'nodejs';
@@ -47,14 +49,6 @@ interface PropertyRow {
   stayover_day2_minutes: number | null;
   prep_minutes_per_activity: number | null;
   shift_minutes: number | null;
-}
-
-interface StaffRow {
-  id: string;
-  name: string;
-  department: string | null;
-  is_active: boolean | null;
-  schedule_priority: 'priority' | 'normal' | 'excluded' | null;
 }
 
 interface RoomRow {
@@ -106,10 +100,16 @@ async function autoFillForProperty(
     };
   }
 
-  // 2. Load housekeeping staff (active + non-excluded).
+  // 2. Load housekeeping staff with ALL fields the eligibility check needs.
+  //    Round 18 fix: the previous version only selected id/name/department/
+  //    is_active/schedule_priority and missed vacation_dates, weekly_hours,
+  //    max_weekly_hours, max_days_per_week, days_worked_this_week. That
+  //    meant the cron assigned rooms to housekeepers on vacation and
+  //    pushed seniors into overtime. selectActiveCrewWithReasons enforces
+  //    the same rules the staff page's `isEligible` does.
   const { data: staffRows, error: staffErr } = await supabaseAdmin
     .from('staff')
-    .select('id, name, department, is_active, schedule_priority')
+    .select('*')
     .eq('property_id', property.id);
   if (staffErr) {
     return {
@@ -118,18 +118,33 @@ async function autoFillForProperty(
       detail: `staff load failed: ${staffErr.message}`,
     };
   }
-  const activeCrew = (staffRows as StaffRow[] | null ?? []).filter(
-    (s) =>
-      (s.department === 'housekeeping' || s.department === null) &&
-      s.is_active !== false &&
-      s.schedule_priority !== 'excluded',
+  const allStaff: StaffMember[] = (staffRows ?? []).map((r) =>
+    fromStaffRow(r as Record<string, unknown>),
   );
+  const { eligible: activeCrew, excluded } = selectActiveCrewWithReasons(allStaff, {
+    targetDate,
+    requirePhone: false,  // cron writes the schedule; SMS-send is separate
+    respectSchedulePriority: true,
+  });
   if (activeCrew.length === 0) {
+    const reasonSummary = excluded.length > 0
+      ? ` ${excluded.length} housekeeper(s) excluded — top reason: ${excluded[0].reason}`
+      : '';
     return {
       propertyId: property.id, propertyName: property.name, date: targetDate,
       outcome: 'skipped_no_crew',
-      detail: 'No active housekeeping staff for this property.',
+      detail: `No eligible housekeeping staff for ${targetDate}.${reasonSummary}`,
     };
+  }
+  if (excluded.length > 0) {
+    log.info('[schedule-auto-fill] partial crew exclusion', {
+      requestId, propertyId: property.id, date: targetDate,
+      eligible: activeCrew.length,
+      excludedBy: excluded.reduce<Record<string, number>>((acc, e) => {
+        acc[e.reason] = (acc[e.reason] ?? 0) + 1;
+        return acc;
+      }, {}),
+    });
   }
 
   // 3. Load rooms for the target date. Cron seed-rooms-daily seeds
@@ -159,18 +174,12 @@ async function autoFillForProperty(
     };
   }
 
-  // 4. Shape staff + rooms for autoAssignRooms.
-  const staffForAlgo: StaffMember[] = activeCrew.map((s) => ({
-    id: s.id,
-    name: s.name,
-    language: 'en' as const,
-    isSenior: false,
-    department: 'housekeeping' as const,
-    scheduledToday: true,
-    weeklyHours: 0,
-    maxWeeklyHours: 40,
-    schedulePriority: s.schedule_priority ?? 'normal',
-  }));
+  // 4. Shape rooms for autoAssignRooms. `activeCrew` is already
+  //    StaffMember[] — Round 18 fix: previous version handed the
+  //    algorithm fake stubs with weeklyHours=0/maxWeeklyHours=40 for
+  //    every housekeeper, meaning the algorithm thought everyone was
+  //    infinitely available. Real weekly hours now flow through, so
+  //    seniors near their cap don't get overscheduled into overtime.
   const roomsForAlgo = assignable.map((r) => ({
     id: r.id,
     number: r.number,
@@ -188,7 +197,7 @@ async function autoFillForProperty(
   };
 
   // 5. Compute assignments using the same algorithm Maria's button runs.
-  const roomAssignments = autoAssignRooms(roomsForAlgo, staffForAlgo, config);
+  const roomAssignments = autoAssignRooms(roomsForAlgo, activeCrew, config);
   const assignedRoomCount = Object.keys(roomAssignments).length;
   if (assignedRoomCount === 0) {
     return {
