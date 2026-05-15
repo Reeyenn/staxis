@@ -760,11 +760,12 @@ async function checkTwilioBalance(): Promise<Omit<Check, 'name' | 'durationMs'>>
   if (!sid || !tok) {
     return { status: 'skipped', detail: 'Twilio env vars missing (reported by env_vars check)' };
   }
-  // Thresholds in USD. Tune by replaying real outage: a typical day
-  // burns ~$1–2 in SMS sends, so $10 leaves 5+ days of runway after the
-  // first warn and $5 leaves ~2 days before sends start failing.
-  const WARN_BELOW = 10;
-  const FAIL_BELOW = 5;
+  // Round 18: thresholds are now env-tunable so tightening them after
+  // an outage doesn't require a code deploy. Defaults match Round 17:
+  // a typical day burns ~$1–2 in SMS sends, so $10 = 5+ days runway
+  // after warn, $5 = ~2 days before sends start failing.
+  const WARN_BELOW = parseFloat(process.env.TWILIO_BALANCE_WARN_USD ?? '10');
+  const FAIL_BELOW = parseFloat(process.env.TWILIO_BALANCE_FAIL_USD ?? '5');
   try {
     const res = await fetch(
       `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(sid)}/Balance.json`,
@@ -809,6 +810,30 @@ async function checkTwilioBalance(): Promise<Omit<Check, 'name' | 'durationMs'>>
       };
     }
     if (balanceNum < WARN_BELOW) {
+      // Round 18 #13: warn-band balance escapes to Sentry directly,
+      // independent of the alert-decision logic. The doctor's regular
+      // captureMessage path only fires on `fail`, so a warn band silently
+      // existed until balance dropped below FAIL_BELOW — exactly the
+      // failure mode that caused yesterday's $4.51 surprise.
+      // We bypass the lazy Sentry import via require because doctor/route
+      // is imported by routes that pre-date Sentry initialization. The
+      // dynamic import path matches what /lib/log.ts uses for the same
+      // reason.
+      try {
+        const sentry = await import('@/lib/sentry');
+        sentry.captureMessage(
+          `twilio balance $${balanceNum.toFixed(2)} ${currency} — below $${WARN_BELOW} warn`,
+          {
+            subsystem: 'doctor',
+            check: 'twilio_balance',
+            balance_usd: balanceNum,
+            warn_below: WARN_BELOW,
+            fail_below: FAIL_BELOW,
+          },
+        );
+      } catch {
+        // If Sentry import or capture fails, don't break the doctor check.
+      }
       return {
         status: 'warn',
         detail: `Twilio balance is $${balanceNum.toFixed(2)} ${currency} — below the $${WARN_BELOW} warn threshold.`,

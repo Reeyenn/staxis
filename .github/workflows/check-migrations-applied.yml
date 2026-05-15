@@ -30,6 +30,11 @@ jobs:
   check-migrations:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # Round 18 #15: pull SUPABASE_DB_* secrets from the 'production'
+    # environment instead of repo-level. Limits the blast radius if a
+    # future workflow gets compromised — only jobs that explicitly
+    # opt-in to this environment can read the prod DB credentials.
+    environment: production
     steps:
       - uses: actions/checkout@v4
 
