@@ -84,10 +84,37 @@ export async function GET(req: NextRequest) {
     if (alerted && row) {
       const bad = row.hit_step_cap + row.errored + row.timed_out;
       const rate = bad / row.total;
+
+      // Pull the top-failing tasks so the Sentry alert is actionable
+      // without dropping into psql. Doctor's failing-check-names trick
+      // (Round 16) made on-call triage hours faster — same idea here.
+      // We query in the same UTC day window the daily view uses.
+      const dayStart = `${row.day}T00:00:00Z`;
+      const dayEnd = `${row.day}T23:59:59.999Z`;
+      const { data: badRows } = await supabaseAdmin
+        .from('walkthrough_runs')
+        .select('task, status')
+        .in('status', ['errored', 'timeout', 'capped'])
+        .gte('started_at', dayStart)
+        .lte('started_at', dayEnd);
+      const byTask = new Map<string, number>();
+      for (const r of (badRows ?? []) as Array<{ task: string }>) {
+        byTask.set(r.task, (byTask.get(r.task) ?? 0) + 1);
+      }
+      const topTasks = [...byTask.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([t, n]) => `"${t}" (${n})`);
+      const topTaskSummary = topTasks.length > 0 ? topTasks.join(', ') : 'no tasks identified';
+
+      const alertTitle =
+        `walkthrough bad-outcome rate ${Math.round(rate * 100)}% — top failing: ${topTaskSummary}`;
+
       log.warn('[walkthrough-health-alert] bad-outcome rate above threshold', {
         requestId,
         rate: Math.round(rate * 1000) / 10,
         total: row.total,
+        topTasks,
         breakdown: {
           completed: row.completed,
           user_stopped: row.user_stopped,
@@ -98,7 +125,7 @@ export async function GET(req: NextRequest) {
           still_active: row.still_active,
         },
       });
-      captureMessage('walkthrough bad-outcome rate above threshold', {
+      captureMessage(alertTitle, {
         subsystem: 'walkthrough',
         cron: 'walkthrough-health-alert',
         day: row.day,
@@ -107,6 +134,7 @@ export async function GET(req: NextRequest) {
         hit_step_cap: row.hit_step_cap,
         errored: row.errored,
         timed_out: row.timed_out,
+        top_failing_tasks: topTasks,
       });
     }
 
