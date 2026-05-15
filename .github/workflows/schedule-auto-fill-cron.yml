@@ -1,0 +1,74 @@
+name: Schedule auto-fill
+
+# Runs Maria's "Auto-assign" algorithm on a cron so housekeeper→room
+# assignments land for tomorrow even when she doesn't open the Schedule
+# tab. Cron path is server-side; UI flow continues to work unchanged.
+#
+# Two slots, both in UTC (translated to Central Time below):
+#   - 12:00 UTC = 7 AM CT, target=today (safety net if 8 PM run failed
+#     or schedule was never built for today)
+#   - 01:00 UTC = 8 PM CT previous day, target=tomorrow (primary run —
+#     Maria wakes up to a complete draft)
+#
+# Both runs skip any property+date where schedule_assignments already
+# has a row. Manager's manual edits are never overwritten.
+
+on:
+  schedule:
+    # 7 AM Central — fill today's schedule if missing.
+    - cron: '0 12 * * *'
+    # 8 PM Central (= 01:00 UTC next day) — fill tomorrow's schedule.
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'today or tomorrow'
+        required: true
+        default: 'tomorrow'
+        type: choice
+        options: [today, tomorrow]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: schedule-auto-fill-${{ github.event.schedule || github.event.inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  auto-fill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Decide target from cron expression
+        id: pick-target
+        run: |
+          # 12:00 UTC fires at 7 AM CT → today
+          # 01:00 UTC fires at 8 PM CT previous day → tomorrow
+          # workflow_dispatch supplies its own target.
+          if [ -n "${{ github.event.inputs.target }}" ]; then
+            echo "target=${{ github.event.inputs.target }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "0 12 * * *" ]; then
+            echo "target=today" >> "$GITHUB_OUTPUT"
+          else
+            echo "target=tomorrow" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Hit /api/cron/schedule-auto-fill
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          TARGET: ${{ steps.pick-target.outputs.target }}
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 65 --retry 1 --retry-delay 5 \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "https://getstaxis.com/api/cron/schedule-auto-fill?target=${TARGET}" \
+            | tee /tmp/result.json
+          # Require ok=true. Per-property errors surface as summary.errors;
+          # report the count so a single bad property doesn't fail the whole
+          # run silently.
+          jq -e '.ok == true' /tmp/result.json
+          errors=$(jq -r '.data.summary.errors // 0' /tmp/result.json)
+          if [ "$errors" -gt 0 ]; then
+            echo "::warning::$errors per-property error(s) — see result.json"
+          fi

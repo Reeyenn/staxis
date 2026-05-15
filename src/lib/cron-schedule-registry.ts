@@ -48,6 +48,11 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   { heartbeatName: 'ml-aggregate-priors',   source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '0 12 * * *' },
   { heartbeatName: 'ml-shadow-evaluate',    source: { kind: 'github', workflowFile: 'ml-shadow-evaluate-cron.yml' }, cronExpr: '30 11 * * *' },
   { heartbeatName: 'purge-old-error-logs',  source: { kind: 'github', workflowFile: 'purge-old-error-logs-cron.yml' }, cronExpr: '30 9 * * *' },
+  // schedule-auto-fill fires from two cron slots in the same workflow.
+  // Both write the same heartbeat — the cadence stays 24h regardless of
+  // which slot fired most recently.
+  { heartbeatName: 'schedule-auto-fill',    source: { kind: 'github', workflowFile: 'schedule-auto-fill-cron.yml' }, cronExpr: '0 12 * * *' },
+  { heartbeatName: 'schedule-auto-fill',    source: { kind: 'github', workflowFile: 'schedule-auto-fill-cron.yml' }, cronExpr: '0 1 * * *' },
   // expire-trials is a Vercel native cron (vercel.json), not GH Actions.
   { heartbeatName: 'expire-trials',                     source: { kind: 'vercel', cronPath: '/api/cron/expire-trials' },                    cronExpr: '0 9 * * *' },
   { heartbeatName: 'agent-archive-stale-conversations', source: { kind: 'vercel', cronPath: '/api/cron/agent-archive-stale-conversations' },cronExpr: '0 3 * * *' },

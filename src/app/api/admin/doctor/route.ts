@@ -1928,6 +1928,11 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'walkthrough-health-alert',      cadenceHours: 10/60, description: 'every-10-min walkthrough health monitor (alerts on stuck step counts)' },
   { name: 'seed-rooms-daily',              cadenceHours: 1,     description: 'hourly heal of partial rooms-today seeds against properties.room_inventory (Round 14)' },
   { name: 'seal-daily',                    cadenceHours: 1,     description: 'hourly per-property daily-seal' },
+  // Round 17 (2026-05-15): two-slot cron that auto-builds Maria's
+  // schedule. Treated as a single heartbeat — either slot writing
+  // counts as fresh. 24h cadence so a missed 7 AM run doesn't yelp
+  // before the 8 PM run lands.
+  { name: 'schedule-auto-fill',            cadenceHours: 24,    description: 'daily schedule auto-build (7 AM + 8 PM Central via GitHub Actions cron)' },
   // Daily
   { name: 'ml-run-inference',              cadenceHours: 24,    description: 'daily demand+supply+optimizer predictions' },
   { name: 'ml-predict-inventory',          cadenceHours: 24,    description: 'daily inventory predictions for tomorrow' },
