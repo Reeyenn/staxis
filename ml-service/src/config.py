@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     baseline_beat_pct_threshold: float = 0.20
     consecutive_passing_runs_required: int = 2
 
+    # Phase M3.4 (2026-05-14) — minimum hours between two model_runs that
+    # both count toward the consecutive-passes activation streak.
+    # Codex adversarial finding #1: pre-M3.4 the streak counted ANY 5 prior
+    # runs by metric value alone, so 5 retries on identical data minutes
+    # apart looked like 5 weekly windows of stability. The weekly cron
+    # fires every 168h; 24h is a comfortable lower bound that catches
+    # rapid-fire manual retries while accommodating any reasonable
+    # scheduled replay. Override in staging/dev tests via env var.
+    min_hours_between_passing_runs: int = 24
+
     # Model architecture
     shift_cap_minutes: int = 420  # 7 hours
     target_completion_probability: float = 0.95

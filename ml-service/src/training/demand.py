@@ -316,9 +316,25 @@ def _train_demand_inner(
         limit=5,
     )
 
-    # Count consecutive passing runs (from most recent backwards)
+    # Count consecutive passing runs (from most recent backwards).
+    # Phase M3.4 (2026-05-14) — see training/supply.py for the rationale
+    # behind the distinctness check + continue-on-non-distinct semantics.
+    # Mirrors the supply implementation; both share parse_iso_datetime
+    # from _streak_utils (sklearn-free, unit-testable in isolation).
+    from src.training._streak_utils import parse_iso_datetime as _parse_iso_datetime
+    min_gap_seconds = settings.min_hours_between_passing_runs * 3600
     consecutive_passes = 1 if passes_gates else 0
+    last_counted_trained_at = _parse_iso_datetime(
+        datetime.utcnow().isoformat() if passes_gates else None
+    )
     for prior_run in (recent_runs or []):
+        prior_trained_at = _parse_iso_datetime(prior_run.get("trained_at"))
+        if prior_trained_at is None:
+            break
+        if last_counted_trained_at is not None:
+            gap = (last_counted_trained_at - prior_trained_at).total_seconds()
+            if gap < min_gap_seconds:
+                continue  # same training window → skip but don't break
         # Check if this prior run passed gates. Use the LEGACY absolute
         # MAE threshold here because prior rows don't carry mae_ratio.
         # Phase M3.2: row-count guard removed for the same root-cause
@@ -327,12 +343,12 @@ def _train_demand_inner(
             prior_run.get("beats_baseline_pct", 0) >= settings.baseline_beat_pct_threshold
             and prior_run.get("validation_mae", float("inf")) < settings.validation_mae_threshold
         )
-        if prior_passes and consecutive_passes > 0:
-            consecutive_passes += 1
-            if consecutive_passes > 5:
-                consecutive_passes = 5  # Cap at 5
-        else:
-            break  # Stop counting at first non-passing run
+        if not prior_passes:
+            break  # Genuine failure → streak broken
+        consecutive_passes += 1
+        last_counted_trained_at = prior_trained_at
+        if consecutive_passes >= 5:
+            break  # Cap at 5
 
     should_activate = passes_gates and consecutive_passes >= settings.consecutive_passing_runs_required
 
