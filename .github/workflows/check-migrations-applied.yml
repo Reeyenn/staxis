@@ -1,0 +1,52 @@
+name: Check migrations applied
+
+# Required PR gate: every supabase/migrations/*.sql file must already be
+# applied to the production database before the PR can merge. Vercel doesn't
+# auto-apply migrations, so without this gate it's possible to ship code
+# that expects a column/table/function that doesn't exist in prod yet —
+# exactly what happened with 0124 + 0125 yesterday.
+#
+# How to make this required: GitHub → Settings → Branches → main →
+# "Require status checks to pass before merging" → add "check-migrations".
+#
+# Local fix when this fails: see the workflow output. It names the missing
+# files and the exact command to apply each one via scripts/apply-migration.ts.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'supabase/migrations/**'
+      - 'scripts/check-migrations-applied.ts'
+      - '.github/workflows/check-migrations-applied.yml'
+  # Also run on push to main so a direct-push (bypassing PR) still surfaces
+  # drift fast, but doesn't block the deploy (post-deploy smoke test already
+  # blocks that path). For PRs, exit 1 here is what gates the merge.
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/migrations/**'
+
+permissions:
+  contents: read
+
+jobs:
+  check-migrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Verify every migration file is registered in prod
+        env:
+          SUPABASE_DB_HOST: ${{ secrets.SUPABASE_DB_HOST }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+        run: npx tsx scripts/check-migrations-applied.ts
