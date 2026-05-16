@@ -7,7 +7,7 @@
 // and call sendMessage().
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { fetchWithAuth } from '@/lib/api-fetch';
+import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
 import type { DisplayMessage } from './MessageList';
 
 export interface ConversationListItem {
@@ -90,6 +90,7 @@ export function useAgentChat({ propertyId, active = true }: UseAgentChatOpts): U
       }));
       setConversations(list);
     } catch (e) {
+      if (e instanceof SessionEndedError) return;  // redirect in progress
       console.error('reloadConversations failed', e);
     }
   }, []);
@@ -124,6 +125,7 @@ export function useAgentChat({ propertyId, active = true }: UseAgentChatOpts): U
       setMessages(display);
       setConversationId(id);
     } catch (e) {
+      if (e instanceof SessionEndedError) return;  // redirect in progress
       setError(e instanceof Error ? e.message : String(e));
     }
   }, []);
@@ -155,10 +157,18 @@ export function useAgentChat({ propertyId, active = true }: UseAgentChatOpts): U
       });
 
       // The 429 cap-hit / rate-limit response is JSON, not SSE.
+      // 401s with code=token_expired/malformed/etc are intercepted by
+      // fetchWithAuth (refresh+retry or signout+redirect); the only 401
+      // that reaches here is the transient `auth_unavailable` (Supabase
+      // Auth 5xx). Surface that as a try-again message rather than the
+      // raw "invalid session token" string.
       const ct = res.headers.get('content-type') ?? '';
       if (!res.ok || !ct.includes('text/event-stream') || !res.body) {
         const errBody = await res.json().catch(() => null);
-        setError(errBody?.error ?? `Request failed: ${res.status}`);
+        const friendly = errBody?.code === 'auth_unavailable'
+          ? 'Sign-in service is temporarily unavailable. Try again in a moment.'
+          : (errBody?.error ?? `Request failed: ${res.status}`);
+        setError(friendly);
         setStreaming(false);
         return;
       }
@@ -234,6 +244,7 @@ export function useAgentChat({ propertyId, active = true }: UseAgentChatOpts): U
         }
       }
     } catch (e) {
+      if (e instanceof SessionEndedError) return;  // redirect in progress; suppress error pill
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setStreaming(false);

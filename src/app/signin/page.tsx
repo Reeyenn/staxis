@@ -1,12 +1,46 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import React, { Suspense, useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { supabase } from '@/lib/supabase';
 import { t } from '@/lib/translations';
+
+/**
+ * Banner shown when fetchWithAuth signed the user out and bounced them
+ * here. Distinct from a fresh visit — they didn't choose to sign out, the
+ * app evicted them. Acknowledging that explicitly is the difference
+ * between "weird, why am I here" and "ah, session expired".
+ */
+function SessionEndedBanner() {
+  const params = useSearchParams();
+  const reason = params.get('reason');
+  if (reason !== 'session-ended' && reason !== 'config-error') return null;
+  const isConfig = reason === 'config-error';
+  return (
+    <div
+      role="status"
+      style={{
+        marginBottom: '24px',
+        padding: '12px 14px',
+        borderRadius: 'var(--radius-md)',
+        background: isConfig ? 'var(--red-dim, rgba(239,68,68,0.08))' : 'var(--bg-card)',
+        border: '1px solid ' + (isConfig ? 'var(--red-border, rgba(239,68,68,0.25))' : 'var(--border)'),
+        color: isConfig ? 'var(--red)' : 'var(--text-primary)',
+        fontFamily: 'var(--font-sans)',
+        fontSize: '13px',
+        lineHeight: 1.45,
+        textAlign: 'center',
+      }}
+    >
+      {isConfig
+        ? 'Sign-in is temporarily unavailable. Our team has been notified — please try again in a few minutes.'
+        : 'Your session ended. Sign in to continue.'}
+    </div>
+  );
+}
 
 export default function SignInPage() {
   const { user, loading, signIn } = useAuth();
@@ -119,6 +153,14 @@ export default function SignInPage() {
       padding: '32px 24px',
     }}>
       <div style={{ width: '100%', maxWidth: '360px' }}>
+
+        {/* Surfaced when fetchWithAuth signed us out due to an expired/
+            invalid session, or when project-mismatch made auth unusable.
+            Suspense wrapper keeps the page renderable during SSG since
+            useSearchParams suspends. */}
+        <Suspense fallback={null}>
+          <SessionEndedBanner />
+        </Suspense>
 
         {/* Logo */}
         <div style={{ marginBottom: '40px', textAlign: 'center' }}>

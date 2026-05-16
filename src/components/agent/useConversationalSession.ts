@@ -30,7 +30,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Conversation, Mode, Status } from '@elevenlabs/client';
-import { fetchWithAuth } from '@/lib/api-fetch';
+import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
 
 export type ConversationStatus =
   | 'idle'
@@ -128,15 +128,22 @@ export function useConversationalSession(opts: UseConversationalSessionOpts): Us
         }
         if (!res.ok) {
           const body = await res.json().catch(() => null);
+          // fetchWithAuth handles recoverable 401s (refresh+retry or hard
+          // signout); the only 401 that reaches here is `auth_unavailable`.
+          // Surface a friendlier message instead of "invalid session token".
+          const friendly = body?.code === 'auth_unavailable'
+            ? 'Sign-in service is temporarily unavailable. Try again in a moment.'
+            : ((body?.error as string) ?? 'Failed to start voice session.');
           if (!cancelled) {
             setStatus('error');
-            setError((body?.error as string) ?? 'Failed to start voice session.');
+            setError(friendly);
           }
           return;
         }
         const body: SessionMintResponse = await res.json();
         mintData = body.data ?? null;
-      } catch {
+      } catch (e) {
+        if (e instanceof SessionEndedError) return;  // redirect in progress; let it happen
         if (!cancelled) {
           setStatus('error');
           setError('Network error starting voice session.');

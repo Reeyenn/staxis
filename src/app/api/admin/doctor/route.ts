@@ -133,6 +133,14 @@ const checks: Array<[string, CheckFn]> = [
   ['env_vars',                       checkEnvVars],
   ['supabase_admin_auth',            checkSupabaseAdminAuth],
   ['supabase_jwt_expiry',            checkSupabaseJwtExpiry],
+  // Project consistency: NEXT_PUBLIC_SUPABASE_URL (where the browser
+  // logs in) MUST match the project that SUPABASE_SERVICE_ROLE_KEY belongs
+  // to. The service-role key is itself a JWT — its `iss` claim names its
+  // project. If they drift apart (common during domain migrations or
+  // manual Vercel env-var edits), every authenticated API route 401s
+  // with "invalid session token" and no other check catches it. Added
+  // 2026-05-16 after a Quick Chat / voice-mode auth incident.
+  ['supabase_project_consistency',   checkSupabaseProjectConsistency],
   ['supabase_anon_key',              checkSupabaseAnonKeyShape],
   ['supabase_rls_enabled',           checkSupabaseRlsEnabled],
   ['supabase_realtime_publication',  checkSupabaseRealtimePublication],
@@ -475,6 +483,101 @@ async function checkSupabaseJwtExpiry(): Promise<Omit<Check, 'name' | 'durationM
   }
   const parts = [...okLines, ...opaque].filter(Boolean);
   return { status: 'ok', detail: parts.join('; ') || 'keys valid' };
+}
+
+/**
+ * Decode a Supabase JWT's payload WITHOUT verifying the signature, returning
+ * the `iss` (issuer) claim. Used by the project-consistency check below to
+ * verify NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY point at
+ * the same project. Returns null for non-JWT tokens (e.g. the new opaque
+ * `sb_secret_*` API key format) or unparseable input.
+ */
+function decodeJwtIss(token: string | undefined): string | null {
+  if (!token) return null;
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  try {
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const json = Buffer.from(b64, 'base64').toString('utf8');
+    const claims = JSON.parse(json) as { iss?: unknown };
+    return typeof claims.iss === 'string' ? claims.iss : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extract the project ref (the `xxxxxxxxxxxx` subdomain in
+ * https://xxxxxxxxxxxx.supabase.co) from a URL or issuer claim. The whole
+ * point of this check is to detect when the ref on one side doesn't match
+ * the other — comparing refs directly is more robust than string-matching
+ * full URLs (issuers include `/auth/v1`, URLs don't).
+ */
+function supabaseProjectRef(urlOrIss: string | null): string | null {
+  if (!urlOrIss) return null;
+  const m = /https?:\/\/([a-z0-9-]+)\.supabase\.co/i.exec(urlOrIss);
+  return m ? m[1].toLowerCase() : null;
+}
+
+async function checkSupabaseProjectConsistency(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!url || !serviceKey) {
+    // env_vars check covers the missing case; skip rather than double-report.
+    return { status: 'skipped', detail: 'NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set' };
+  }
+
+  const urlRef = supabaseProjectRef(url);
+  if (!urlRef) {
+    return {
+      status: 'fail',
+      detail: `NEXT_PUBLIC_SUPABASE_URL "${url}" is not a *.supabase.co URL — can't extract project ref`,
+      fix: 'Set NEXT_PUBLIC_SUPABASE_URL to https://<project-ref>.supabase.co on Vercel + Railway.',
+    };
+  }
+
+  const serviceIss = decodeJwtIss(serviceKey);
+  const anonIss = decodeJwtIss(anonKey);
+
+  // New opaque keys (sb_secret_*, sb_publishable_*) don't carry an iss
+  // claim. We can't cross-check them — flag as warn so the operator knows
+  // this check is providing reduced coverage, but don't block.
+  if (!serviceIss && !anonIss) {
+    return {
+      status: 'warn',
+      detail: `Keys are opaque (sb_secret_* / sb_publishable_*) — can't verify project consistency from JWT claims. URL ref=${urlRef}.`,
+      fix: 'Manually verify Supabase Dashboard → Project Settings → API → API URL matches NEXT_PUBLIC_SUPABASE_URL.',
+    };
+  }
+
+  const mismatches: string[] = [];
+  if (serviceIss) {
+    const ref = supabaseProjectRef(serviceIss);
+    if (ref && ref !== urlRef) {
+      mismatches.push(`SUPABASE_SERVICE_ROLE_KEY signed by ref=${ref}`);
+    }
+  }
+  if (anonIss) {
+    const ref = supabaseProjectRef(anonIss);
+    if (ref && ref !== urlRef) {
+      mismatches.push(`NEXT_PUBLIC_SUPABASE_ANON_KEY signed by ref=${ref}`);
+    }
+  }
+
+  if (mismatches.length > 0) {
+    return {
+      status: 'fail',
+      detail: `Project drift: NEXT_PUBLIC_SUPABASE_URL points to ref=${urlRef}, but ${mismatches.join('; ')}. Every authenticated request will 401 with "invalid session token".`,
+      fix: 'Either set NEXT_PUBLIC_SUPABASE_URL to https://<correct-ref>.supabase.co OR pull fresh keys from the dashboard for the URL\'s project. Update Vercel (all three Supabase vars) AND Railway (SUPABASE_SERVICE_ROLE_KEY). Then redeploy.',
+    };
+  }
+
+  return {
+    status: 'ok',
+    detail: `URL + keys all point to ref=${urlRef}`,
+  };
 }
 
 /**
