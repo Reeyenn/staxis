@@ -267,3 +267,21 @@ export function redactPhone(phone: string | null | undefined): string {
   const cc = phone.startsWith('+') ? phone.split('').slice(0, 2).join('') : '';
   return `${cc}***${last4}`;
 }
+
+/**
+ * Redact an email for logs. Keeps the first character of the local-part
+ * + the domain so a triager can spot patterns (same domain across rows,
+ * obviously-test addresses) without seeing the full identity. Used by
+ * paths that fall outside the Sentry scrub (raw console.{log,error},
+ * server-side stdout) to avoid plaintext PII in Vercel function logs.
+ *   "alice@example.com" → "a***@example.com"
+ */
+export function redactEmail(email: string | null | undefined): string {
+  if (!email) return '<no-email>';
+  const at = email.indexOf('@');
+  if (at <= 0) return '<malformed>';
+  const local = email.slice(0, at);
+  const domain = email.slice(at);
+  if (local.length === 0) return '<malformed>';
+  return `${local[0]}***${domain}`;
+}

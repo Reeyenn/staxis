@@ -20,6 +20,7 @@ import { getOrMintRequestId } from '@/lib/log';
 
 import { ALL_ROLES, isValidRole, type AppRole } from '@/lib/roles';
 import { writeAudit } from '@/lib/audit';
+import { redactEmail } from '@/lib/api-validate';
 
 type AccountRole = AppRole;
 
@@ -238,7 +239,11 @@ export async function POST(req: NextRequest) {
       rollbackError = errToString(rollErr);
     }
     if (rollbackError) {
-      console.error(`[accounts:POST] AUTH ROLLBACK FAILED — orphaned auth.users row id=${authData.user.id} email=${normalizedEmail}. Insert error: ${errToString(insErr)}. Rollback error: ${rollbackError}`);
+      // Security review 2026-05-16 (P3): avoid plaintext email in raw
+      // Vercel logs (the Sentry scrub doesn't run on console.error).
+      // Mask to local-part-initial + domain, e.g. "a***@example.com".
+      const maskedEmail = redactEmail(normalizedEmail);
+      console.error(`[accounts:POST] AUTH ROLLBACK FAILED — orphaned auth.users row id=${authData.user.id} email=${maskedEmail}. Insert error: ${errToString(insErr)}. Rollback error: ${rollbackError}`);
       return err(
         `Failed to create account record. ALSO: rollback of the auth user failed — orphaned auth row remains for username "${normalizedUsername}". Have an admin delete the row manually in Supabase Authentication.`,
         { requestId, status: 500, code: ApiErrorCode.InternalError },

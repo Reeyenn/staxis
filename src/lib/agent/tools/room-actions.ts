@@ -160,19 +160,25 @@ registerTool<{ roomNumber: string; on: boolean; note?: string }>({
     const scopeError = assertFloorRoleCanMutateRoom(room, ctx);
     if (scopeError) return { ok: false, error: scopeError };
 
+    // Security review 2026-05-16 (Pattern F — cost/abuse caps shared
+    // primitive): cap the note length to match flag_issue. Without this,
+    // a prompt-injected agent could store 50 KB of attacker-controlled
+    // text in dnd_note, bloating the rooms table + the snapshot context
+    // for every subsequent agent turn. 500 chars is the same ceiling
+    // flag_issue uses for the same surface (free-text room note).
+    const cappedNote = on && note ? note.slice(0, 500) : null;
     const updates: Record<string, unknown> = { is_dnd: on };
-    if (on) updates.dnd_note = note ?? null;
-    else updates.dnd_note = null;
+    updates.dnd_note = cappedNote;
 
     // Codex post-merge review 2026-05-13 (F2): dryRun gate.
     if (ctx.dryRun) {
-      return { ok: true, data: { dryRun: true, roomNumber: room.number, dnd: on, note: note ?? null } };
+      return { ok: true, data: { dryRun: true, roomNumber: room.number, dnd: on, note: cappedNote } };
     }
 
     const { error } = await supabaseAdmin.from('rooms').update(updates).eq('id', room.id);
     if (error) return { ok: false, error: 'Failed to toggle DND.' };
 
-    return { ok: true, data: { roomNumber: room.number, dnd: on, note: note ?? null } };
+    return { ok: true, data: { roomNumber: room.number, dnd: on, note: cappedNote } };
   },
 });
 
