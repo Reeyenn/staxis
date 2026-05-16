@@ -35,19 +35,23 @@ function toE164(raw: string): string | null {
 }
 
 // Helper: lazy-import to avoid top-level coupling for routes that don't need it.
-async function gateCronSecret(req: NextRequest) {
-  const { requireCronSecret } = await import('@/lib/api-auth');
-  return requireCronSecret(req);
+async function gateAdmin(req: NextRequest) {
+  const { requireAdmin } = await import('@/lib/admin-auth');
+  return requireAdmin(req);
 }
 
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   // Sends real SMS via Twilio + writes a test shift_confirmation row.
-  // Was deliberately ungated for "easy testing" but that means anyone on
-  // the internet can run our Twilio meter to zero. Lock behind CRON_SECRET
-  // — testing is now a `curl -H "Authorization: Bearer $CRON_SECRET"` away.
-  const unauthorized = await gateCronSecret(req);
-  if (unauthorized) return unauthorized;
+  // Codex 2026-05-16 P1 fix (Pattern C): was gated on CRON_SECRET, but
+  // this is a dev debugging tool — not called by any cron — and the
+  // CRON_SECRET grants this AND every other cron-secret-only route, so a
+  // leak from any single holder of the secret lets an attacker burn Twilio
+  // credits. Switch to admin session so the auth bar matches the actual
+  // user (Reeyen). Rate-limit (50/hr/property) still applies as the
+  // cost-burn guard.
+  const admin = await gateAdmin(req);
+  if (!admin.ok) return admin.response;
   try {
     // We previously did `req.json().catch(() => ({}))` here which silently
     // turned malformed JSON into an empty object — admins debugging a
@@ -180,8 +184,8 @@ export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   // ?check=<token> → return the current state of that confirmation row.
   // Same auth gate as POST — leaks staff_phone if open.
-  const unauthorized = await gateCronSecret(req);
-  if (unauthorized) return unauthorized;
+  const admin = await gateAdmin(req);
+  if (!admin.ok) return admin.response;
   const url = new URL(req.url);
   const check = url.searchParams.get('check');
   if (!check) {

@@ -57,7 +57,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireCronSecret } from '@/lib/api-auth';
+import { requireAdminOrCron } from '@/lib/admin-auth';
 import { createHash } from 'crypto';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
@@ -3124,13 +3124,16 @@ async function checkApiLimitsWritable(): Promise<Omit<Check, 'name' | 'durationM
 }
 
 export async function GET(req: NextRequest) {
-  // Same auth pattern as cron routes. Permissive when CRON_SECRET is unset
-  // so initial bootstrap works; strict once it's configured. Timing-safe
-  // Bearer compare via the shared helper (crypto.timingSafeEqual).
-  const unauth = requireCronSecret(req);
-  if (unauth) {
-    return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
-  }
+  // Codex 2026-05-16 P1 fix (Pattern C): accept BOTH admin session AND
+  // CRON_SECRET. The post-deploy smoke test (GitHub Action) calls with
+  // CRON_SECRET, and the admin UI calls with a real session — both paths
+  // legitimate. Was previously CRON_SECRET-only, which conflates "callable
+  // by cron" with "callable by any holder of the shared bearer." Doctor
+  // returns operational health (env-var presence, RLS status, etc.); the
+  // Surface 4 review is still scheduled to walk this end-to-end for any
+  // accidental secret-value interpolation in error paths.
+  const auth = await requireAdminOrCron(req);
+  if (!auth.ok) return auth.response;
 
   try {
     // Phase M2: ?nocache=1 bypasses the per-check cache. Used by the

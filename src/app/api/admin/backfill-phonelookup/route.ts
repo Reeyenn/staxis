@@ -11,7 +11,7 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
-import { requireCronSecret } from '@/lib/api-auth';
+import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 
@@ -25,9 +25,13 @@ function toE164(raw: string): string | null {
 
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
-  // Mutates every staff row's phone_lookup. CRON_SECRET-only.
-  const unauthorized = requireCronSecret(req);
-  if (unauthorized) return unauthorized;
+  // Codex 2026-05-16 P1 fix (Pattern C): was gated on CRON_SECRET alone,
+  // but it (a) writes to staff across every tenant and (b) returns
+  // example rows with staff phone numbers. Not actually called by any
+  // cron. Switch to admin session so the auth bar matches the real
+  // caller (Reeyen via the admin dashboard).
+  const admin = await requireAdmin(req);
+  if (!admin.ok) return admin.response;
   try {
     const { data: staff, error } = await supabaseAdmin
       .from('staff')
