@@ -32,12 +32,35 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { requireSession } from '@/lib/api-auth';
+import {
+  checkAndIncrementRateLimit,
+  rateLimitedResponse,
+  ipToRateLimitKey,
+} from '@/lib/api-ratelimit';
 import { triggerMlTraining } from '@/lib/ml-invoke';
 import {
   deriveCurrentStep,
   isValidPartialState,
   type OnboardingState,
 } from '@/lib/onboarding/state';
+
+/**
+ * Extract a stable IP for rate-limit keying. Vercel sets `x-forwarded-for`;
+ * we take the first entry (the original client) and fall back through
+ * `x-real-ip` / the request's remote address. Used to scope the
+ * `onboard-wizard` bucket per-attacker, not per-property (the attacker
+ * doesn't know the property until they brute-force a code).
+ *
+ * Security review 2026-05-16 (Pattern G): without this rate limit, the
+ * ~50-bit join code is brute-forceable from a single IP. Combined with
+ * the helper this caps spray attacks at 10/hr per source IP, which
+ * stretches an exhaustive search to ~10⁴ years before a successful hit.
+ */
+function clientIp(req: NextRequest): string | null {
+  const xff = req.headers.get('x-forwarded-for');
+  if (xff) return xff.split(',')[0]?.trim() ?? null;
+  return req.headers.get('x-real-ip');
+}
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -78,6 +101,15 @@ async function resolvePropertyByCode(code: string): Promise<{
 
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
+
+  // IP-keyed rate limit BEFORE the DB lookup. The lookup leaks "code
+  // exists yes/no" via response timing and 404-vs-200 status, so we
+  // cap the spray rate at the route boundary. Security review 2026-05-16
+  // (Pattern G). Apply to GET because it also leaks hotel-name + room
+  // count for a valid code.
+  const limit = await checkAndIncrementRateLimit('onboard-wizard', ipToRateLimitKey(clientIp(req)));
+  if (!limit.allowed) return rateLimitedResponse(limit.current, limit.cap, limit.retryAfterSec);
+
   const code = new URL(req.url).searchParams.get('code') ?? '';
 
   const resolved = await resolvePropertyByCode(code);
@@ -151,6 +183,13 @@ const ALLOWED_PROPERTY_UPDATE_FIELDS = new Set([
 
 export async function PATCH(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
+
+  // IP-keyed rate limit BEFORE the DB lookup (same rationale as GET —
+  // code-existence leaks via 404-vs-200). Security review 2026-05-16
+  // (Pattern G).
+  const limit = await checkAndIncrementRateLimit('onboard-wizard', ipToRateLimitKey(clientIp(req)));
+  if (!limit.allowed) return rateLimitedResponse(limit.current, limit.cap, limit.retryAfterSec);
+
   let body: PatchBody;
   try {
     body = (await req.json()) as PatchBody;
