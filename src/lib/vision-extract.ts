@@ -167,9 +167,44 @@ export class VisionTruncatedError extends Error {
 // surface a useful message instead of opaque parse failures.
 const VISION_MAX_TOKENS = 8192;
 
+/**
+ * Usage payload emitted by the optional onUsage callback. Routes that
+ * record cost (via `recordNonRequestCost`) capture this to book the
+ * Anthropic Vision spend against the daily budget.
+ *
+ * Security review 2026-05-16 (Pattern F): without this callback, vision
+ * call sites had no clean way to record spend in `agent_costs`, so the
+ * daily cap (`assertAudioBudget`) never saw vision usage. Each scan
+ * cost ~$0.003-0.01 — small but uncapped at the $ layer (only the
+ * hourly 50-count rate limit caught abuse). Now routes assert the
+ * budget pre-flight + record the actual spend post-call.
+ */
+export interface VisionUsageReport {
+  inputTokens: number;
+  outputTokens: number;
+  model: string;
+  modelId: string | null;
+  costUsd: number;
+}
+
+// Anthropic Sonnet 4.6 vision pricing (per 1M tokens, as of 2026-05).
+// Pinned alongside MODEL so a future pricing change shows up next to
+// the model bump it's tied to. Vision input tokens include the image
+// token cost computed by the SDK.
+const VISION_PRICE_INPUT_PER_MTOK_USD = 3.0;
+const VISION_PRICE_OUTPUT_PER_MTOK_USD = 15.0;
+
+function estimateVisionCostUsd(inputTokens: number, outputTokens: number): number {
+  return (
+    (inputTokens / 1_000_000) * VISION_PRICE_INPUT_PER_MTOK_USD +
+    (outputTokens / 1_000_000) * VISION_PRICE_OUTPUT_PER_MTOK_USD
+  );
+}
+
 export async function visionExtractText(
   image: VisionImage,
   prompt: string,
+  onUsage?: (usage: VisionUsageReport) => void,
 ): Promise<string> {
   // Validate BEFORE we burn an API call. Throws VisionImageInvalidError
   // which routes catch to return a structured 400.
@@ -196,11 +231,27 @@ export async function visionExtractText(
     ],
   });
 
+  // Capture usage for the optional callback BEFORE any error-throw — so
+  // a truncation/empty-text error path STILL bills the cost (we did pay
+  // Anthropic for the tokens). The callback runs synchronously so the
+  // caller's recordNonRequestCost happens before we throw.
+  const inputTokens = response.usage?.input_tokens ?? 0;
+  const outputTokens = response.usage?.output_tokens ?? 0;
+  if (onUsage) {
+    onUsage({
+      inputTokens,
+      outputTokens,
+      model: MODEL,
+      modelId: response.model ?? null,
+      costUsd: estimateVisionCostUsd(inputTokens, outputTokens),
+    });
+  }
+
   // Detect truncation BEFORE returning partial text. The downstream JSON
   // parsers would otherwise hit unclosed braces and report a generic
   // "non-JSON output" error, hiding the real cause from the operator.
   if (response.stop_reason === 'max_tokens') {
-    throw new VisionTruncatedError(response.usage?.output_tokens ?? 0, VISION_MAX_TOKENS);
+    throw new VisionTruncatedError(outputTokens, VISION_MAX_TOKENS);
   }
 
   // Concatenate any text blocks in the response (usually one).
@@ -249,8 +300,9 @@ export async function visionExtractJSON<T>(
   image: VisionImage,
   prompt: string,
   validate?: (raw: unknown) => T,
+  onUsage?: (usage: VisionUsageReport) => void,
 ): Promise<T> {
-  const text = await visionExtractText(image, prompt);
+  const text = await visionExtractText(image, prompt, onUsage);
 
   const validated = (raw: unknown): T => {
     if (validate) return validate(raw);

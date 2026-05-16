@@ -38,7 +38,7 @@ import { streamAgent, type AgentMessage, type UsageReport } from '@/lib/agent/ll
 import { getToolsForRole } from '@/lib/agent/tools';
 import { buildHotelSnapshot } from '@/lib/agent/context';
 import { buildSystemPrompt } from '@/lib/agent/prompts';
-import { recordNonRequestCost } from '@/lib/agent/cost-controls';
+import { recordNonRequestCost, assertAudioBudget } from '@/lib/agent/cost-controls';
 import {
   resolveVoiceSession,
   VOICE_SESSION_DYNVAR_KEY,
@@ -322,10 +322,42 @@ export async function POST(req: NextRequest): Promise<Response> {
       let finalText = '';
 
       try {
+        // Security review 2026-05-16 (Surface 7 P3 — Pattern F): assert
+        // the daily $ budget at the START of every voice turn. Pre-flight
+        // at session-mint catches "new session over cap" but a long-lived
+        // session (up to the 4hr agent_voice_sessions TTL) accumulated
+        // brain + STT/TTS spend that the mint-time check couldn't see.
+        // Per-turn check closes that gap. On over-budget we emit a polite
+        // spoken sentence + finish — never silently keep billing.
+        const budget = await assertAudioBudget({
+          userId: ctx.accountId,
+          propertyId: ctx.propertyId,
+        }).catch((budgetErr) => {
+          // Don't fail the turn on a budget-check error — log loudly and
+          // proceed. Better to bill one extra turn than to brick voice
+          // on a transient Supabase hiccup.
+          log.error('[voice-brain] budget check threw — failing OPEN', { requestId, budgetErr });
+          return { ok: true as const, userSpendUsd: 0, propertySpendUsd: 0 };
+        });
+        if (!budget.ok) {
+          const id = makeOpenAiId();
+          controller.enqueue(encoder.encode(sseChunk(id, model, { role: 'assistant' }, null)));
+          for (const seg of splitForStream(budget.message)) {
+            controller.enqueue(encoder.encode(sseChunk(id, model, { content: seg }, null)));
+          }
+          controller.enqueue(encoder.encode(sseChunk(id, model, {}, 'stop')));
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+          log.info('[voice-brain] over-budget — turn declined', {
+            requestId, reason: budget.reason,
+          });
+          return;
+        }
+
         // Build the system prompt for this turn AFTER keepalive flushes.
-        // getToolsForRole(role) — second arg defaults to 'chat'. Voice
-        // shares the same tool catalog today; if we ever want a
-        // voice-restricted subset, pass surface='voice' here.
+        // surface='voice' is passed below to getToolsForRole — the voice
+        // catalog is empty today (no tool opts in via surfaces:['voice']),
+        // which is the secure-by-default posture after the Codex P0 fix.
         let systemPrompt;
         try {
           const snapshot = await buildHotelSnapshot(ctx.propertyId, ctx.role, ctx.staffId);

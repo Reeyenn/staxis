@@ -352,7 +352,7 @@ export async function recordNonRequestCost(opts: {
   tokensOut: number;
   cachedInputTokens?: number;
   costUsd: number;
-  kind: 'eval' | 'background' | 'audio';
+  kind: 'eval' | 'background' | 'audio' | 'vision';
 }): Promise<void> {
   if (opts.costUsd <= 0) return;
   const insertRow = (conversationId: string | null) => ({

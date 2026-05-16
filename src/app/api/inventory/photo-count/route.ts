@@ -13,11 +13,13 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { visionExtractJSON, VisionTruncatedError, VisionImageInvalidError, VisionSchemaError } from '@/lib/vision-extract';
+import { visionExtractJSON, VisionTruncatedError, VisionImageInvalidError, VisionSchemaError, type VisionUsageReport } from '@/lib/vision-extract';
 import { errToString } from '@/lib/utils';
 import { log } from '@/lib/log';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
+import { supabaseAdmin } from '@/lib/supabase-admin';
+import { assertAudioBudget, recordNonRequestCost } from '@/lib/agent/cost-controls';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -163,6 +165,28 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Security review 2026-05-16 (Pattern F): pre-flight daily $ budget
+  // + record spend post-call. Mirrors scan-invoice. See that route for
+  // full rationale.
+  const { data: accountRow } = await supabaseAdmin
+    .from('accounts')
+    .select('id')
+    .eq('data_user_id', session.userId)
+    .maybeSingle();
+  const accountId = accountRow?.id as string | undefined;
+  if (accountId) {
+    const budget = await assertAudioBudget({ userId: accountId, propertyId: pid });
+    if (!budget.ok) {
+      return NextResponse.json(
+        { ok: false, error: budget.message, code: budget.reason },
+        { status: 429 },
+      ) as NextResponse;
+    }
+  }
+
+  let usage: VisionUsageReport | null = null;
+  const captureUsage = (u: VisionUsageReport): void => { usage = u; };
+
   try {
     const result = await visionExtractJSON<PhotoCountResult>(
       { data: imageBase64, mediaType: mediaType as VisionMediaType },
@@ -181,6 +205,7 @@ export async function POST(req: NextRequest) {
         }
         return { counts: obj.counts as PhotoCountResult['counts'] };
       },
+      captureUsage,
     );
 
     const allowedNames = new Set(safeItemNames);
@@ -244,5 +269,29 @@ export async function POST(req: NextRequest) {
       { ok: false, error: status === 503 ? 'vision_unavailable' : 'vision_failed' },
       { status },
     );
+  } finally {
+    // Pattern F: record actual Anthropic spend even on error paths
+    // (the call already happened, the cost was already incurred).
+    if (usage && accountId) {
+      const u = usage as VisionUsageReport;
+      try {
+        await recordNonRequestCost({
+          userId: accountId,
+          propertyId: pid,
+          conversationId: null,
+          model: u.model,
+          modelId: u.modelId,
+          tokensIn: u.inputTokens,
+          tokensOut: u.outputTokens,
+          costUsd: u.costUsd,
+          kind: 'vision',
+        });
+      } catch (costErr) {
+        log.error('[photo-count] cost-ledger write failed', {
+          err: costErr instanceof Error ? costErr : new Error(String(costErr)),
+          pid,
+        });
+      }
+    }
   }
 }
