@@ -123,6 +123,7 @@ export async function runSummarizerEvals(opts: RunOpts): Promise<EvalSummary> {
           propertyId: opts.propertyId,
           staffId: null,
           requestId: `eval-summarizer-${c.name}-${Date.now()}`,
+          surface: 'chat',
         },
         model: 'haiku',
       });

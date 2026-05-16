@@ -12,13 +12,14 @@
 //   registered with ElevenLabs as a workspace secret and attached to the
 //   agent's custom_llm config. Constant-time compare via timingSafeEqual.
 //
-// User identity:
-//   ElevenLabs forwards the `dynamic_variables` we set in `/voice-session`
-//   on every webhook call. The brain pulls accountId / propertyId / role /
-//   staffId / conversationId out of `extra_body.dynamic_variables` and
-//   reconstructs the same `ToolContext` text mode uses. The browser never
-//   sends these — they were minted server-side and the user can't forge
-//   them past the bearer-secret gate.
+// User identity (Codex 2026-05-16 P0 fix — Pattern A):
+//   ElevenLabs forwards a single `staxis_voice_session_id` from
+//   `extra_body.dynamic_variables`. We look that nonce up in the
+//   `agent_voice_sessions` table, re-load the current role + property
+//   from `accounts`, and re-run `userHasPropertyAccess`. Client-supplied
+//   role/property values are NEVER used for authorization — only the
+//   server-side row is canonical. Closes the cross-tenant escape where
+//   a user could forge dynamic_variables to claim another property.
 //
 // Streaming:
 //   ElevenLabs expects an OpenAI-format streaming response. We run our
@@ -38,8 +39,12 @@ import { getToolsForRole } from '@/lib/agent/tools';
 import { buildHotelSnapshot } from '@/lib/agent/context';
 import { buildSystemPrompt } from '@/lib/agent/prompts';
 import { recordNonRequestCost } from '@/lib/agent/cost-controls';
+import {
+  resolveVoiceSession,
+  VOICE_SESSION_DYNVAR_KEY,
+  type ResolvedVoiceSession,
+} from '@/lib/agent/voice-session';
 import { getOrMintRequestId, log } from '@/lib/log';
-import type { AppRole } from '@/lib/roles';
 // Side-effect import — registers all tools against the catalog.
 import '@/lib/agent/tools/index';
 
@@ -81,15 +86,6 @@ interface OpenAIChatRequest {
   user?: string;
 }
 
-interface ResolvedContext {
-  accountId: string;
-  userId: string;
-  propertyId: string;
-  role: AppRole;
-  staffId: string | null;
-  conversationId: string;
-}
-
 function timingSafeBearerCheck(authHeader: string, expected: string): boolean {
   const a = Buffer.from(authHeader);
   const b = Buffer.from(`Bearer ${expected}`);
@@ -120,28 +116,16 @@ function asString(v: unknown): string | null {
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
 
-function resolveContext(body: OpenAIChatRequest): ResolvedContext | { error: string } {
+/**
+ * Pull ONLY the voice-session nonce from dynamic_variables. Codex 2026-05-16
+ * P0 fix (Pattern A): any other field that used to flow through here
+ * (account_id, role, property_id, staff_id) is now diagnostic-only — never
+ * used for authorization. The nonce is looked up in `agent_voice_sessions`,
+ * and identity is re-resolved from accounts on every call.
+ */
+function extractVoiceSessionId(body: OpenAIChatRequest): string | null {
   const dv = extractDynamicVariables(body);
-  const accountId = asString(dv.staxis_account_id);
-  const userId = asString(dv.staxis_user_id);
-  const propertyId = asString(dv.staxis_property_id);
-  const roleRaw = asString(dv.staxis_role);
-  const staffIdRaw = asString(dv.staxis_staff_id);
-  const conversationId = asString(dv.staxis_conversation_id);
-
-  if (!accountId || !userId || !propertyId || !roleRaw || !conversationId) {
-    return { error: 'missing dynamic variables (account/user/property/role/conversation)' };
-  }
-  return {
-    accountId,
-    userId,
-    propertyId,
-    role: roleRaw as AppRole,
-    // Empty string sentinel is what /voice-session sets when there's no
-    // staff row (manager / owner). Coerce back to null for ToolContext.
-    staffId: staffIdRaw && staffIdRaw.length > 0 ? staffIdRaw : null,
-    conversationId,
-  };
+  return asString(dv[VOICE_SESSION_DYNVAR_KEY]);
 }
 
 /**
@@ -263,9 +247,14 @@ export async function POST(req: NextRequest): Promise<Response> {
   // case by synthesizing a greeting prompt.
   if (!Array.isArray(body.messages)) body.messages = [];
 
-  // ── Reconstruct Staxis context from ElevenLabs dynamic_variables ──────
-  const ctxResult = resolveContext(body);
-  if ('error' in ctxResult) {
+  // ── Server-resolved identity from agent_voice_sessions ────────────────
+  // Codex 2026-05-16 P0 fix (Pattern A): client-supplied identity claims
+  // (role, property_id, account_id) are NEVER used for authorization. We
+  // accept only a `staxis_voice_session_id` nonce and look up the canonical
+  // identity in the DB on every webhook call. Role + property access are
+  // re-read from the `accounts` table so mid-session revocation propagates.
+  const sessionId = extractVoiceSessionId(body);
+  if (!sessionId) {
     // Log the SHAPE we received (key names only — values may contain
     // sensitive IDs). If ElevenLabs ever changes their forwarding path
     // away from `extra_body.dynamic_variables`, this log line is the
@@ -277,18 +266,26 @@ export async function POST(req: NextRequest): Promise<Response> {
       (body?.elevenlabs_extra_body?.dynamic_variables && Object.keys(body.elevenlabs_extra_body.dynamic_variables)) ??
       (body?.extra_body?.dynamic_variables && Object.keys(body.extra_body.dynamic_variables)) ??
       [];
-    log.warn('[voice-brain] context resolution failed', {
+    log.warn('[voice-brain] missing voice session id', {
       requestId,
-      error: ctxResult.error,
       bodyKeys,
       elevenlabsExtraBodyKeys: elevenKeys,
       extraBodyKeys,
       dynamicVariableKeys: dvKeys,
       topLevelDynamicVarsPresent: !!body?.dynamic_variables,
     });
-    return NextResponse.json({ error: ctxResult.error }, { status: 400 });
+    return NextResponse.json({ error: `missing ${VOICE_SESSION_DYNVAR_KEY}` }, { status: 400 });
   }
-  const ctx = ctxResult;
+  const resolved = await resolveVoiceSession(sessionId);
+  if (!resolved.ok) {
+    log.warn('[voice-brain] voice session rejected', {
+      requestId,
+      sessionId,
+      reason: resolved.reason,
+    });
+    return NextResponse.json({ error: `voice session ${resolved.reason}` }, { status: 401 });
+  }
+  const ctx: ResolvedVoiceSession = resolved.ctx;
 
   // ── Translate messages → AgentMessage[] ───────────────────────────────
   const { history, newUserMessage } = translateMessages(body.messages);
@@ -346,7 +343,13 @@ export async function POST(req: NextRequest): Promise<Response> {
           return;
         }
 
-        const tools = getToolsForRole(ctx.role);
+        // Codex 2026-05-16 P0 fix (Pattern E): pass surface='voice' so the
+        // tool registry filters down to tools that explicitly opt into the
+        // voice surface (via `surfaces: ['voice']` on their definition).
+        // Today no tool opts in → voice gets an empty tool list, which is
+        // the secure default. Curating which tools are voice-callable is a
+        // deliberate product decision tracked separately.
+        const tools = getToolsForRole(ctx.role, 'voice');
         const userCtx = {
           uid: ctx.userId,
           accountId: ctx.accountId,
@@ -367,6 +370,7 @@ export async function POST(req: NextRequest): Promise<Response> {
             propertyId: ctx.propertyId,
             staffId: ctx.staffId,
             requestId,
+            surface: 'voice',
           },
         });
 

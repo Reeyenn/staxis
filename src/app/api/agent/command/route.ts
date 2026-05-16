@@ -219,7 +219,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   // globally-active row).
   const snapshot = await buildHotelSnapshot(body.propertyId, userCtx.role, staffId);
   const systemPrompt = await buildSystemPrompt(userCtx.role, snapshot, conversationId);
-  const tools = getToolsForRole(userCtx.role);
+  const tools = getToolsForRole(userCtx.role, 'chat');
 
   // ── Stream the agent response via SSE ────────────────────────────────
   const encoder = new TextEncoder();
@@ -260,6 +260,7 @@ export async function POST(req: NextRequest): Promise<Response> {
             propertyId: body.propertyId,
             staffId,
             requestId,
+            surface: 'chat',
           },
         });
 

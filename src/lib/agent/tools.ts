@@ -36,6 +36,12 @@ export interface ToolContext {
   staffId: string | null;
   /** Request correlation id (echoed through to logs + API responses). */
   requestId: string;
+  /** Which surface is invoking this tool. REQUIRED so executeTool() can
+   *  enforce per-tool surface opt-in (a tool without `surfaces: ['voice']`
+   *  refuses a voice-surface call, etc.). Codex 2026-05-16 P0 fix
+   *  (Pattern E — surface required at the type level so the compiler
+   *  catches any caller that forgets). */
+  surface: AgentSurface;
   /** When true, mutation tools should run their pre-write validation
    *  (lookups, role checks, etc.) but SKIP the actual DB mutation —
    *  return synthetic success at the would-have-mutated boundary.
@@ -114,11 +120,13 @@ export function listAllTools(): ToolDefinition[] {
 /** Tools the given role is allowed to invoke on a given surface. This is
  *  what we hand to Claude.
  *
- *  Longevity fix L3, 2026-05-13: `surface` defaults to `'chat'` so existing
- *  callers (the /api/agent/command route) don't break. Voice + walkthrough
- *  callers will pass their surface explicitly. A tool without a `surfaces`
- *  field defaults to chat-only, matching pre-L3 behaviour. */
-export function getToolsForRole(role: AppRole, surface: AgentSurface = 'chat'): ToolDefinition[] {
+ *  Codex 2026-05-16 P0 fix (Pattern E): `surface` is REQUIRED — no default.
+ *  The compiler now refuses any caller that forgets to declare its surface,
+ *  closing the gap that let `/api/agent/voice-brain` silently inherit the
+ *  full chat tool catalog. A tool without an explicit `surfaces` field
+ *  defaults to chat-only (matching pre-L3 behaviour) so voice + walkthrough
+ *  remain toolless until tools deliberately opt in. */
+export function getToolsForRole(role: AppRole, surface: AgentSurface): ToolDefinition[] {
   return Array.from(registry.values()).filter(t => {
     if (!t.allowedRoles.includes(role)) return false;
     const allowedSurfaces = t.surfaces ?? ['chat'];
@@ -153,6 +161,18 @@ export async function executeTool(
   const tool = registry.get(name);
   if (!tool) {
     return { ok: false, error: `Tool not found: ${name}. Available tools are listed in your system prompt.` };
+  }
+  // Codex 2026-05-16 P0 fix (Pattern E): the surface gate runs BEFORE the
+  // role check. If the caller is `surface: 'voice'` and the tool didn't opt
+  // in via `surfaces: ['voice']`, refuse. This is the safety net behind
+  // `getToolsForRole`'s surface filter — even if a stale tool list leaks
+  // through, the executor itself enforces the surface boundary.
+  const allowedSurfaces = tool.surfaces ?? ['chat'];
+  if (!allowedSurfaces.includes(ctx.surface)) {
+    return {
+      ok: false,
+      error: `Tool ${name} is not available on the ${ctx.surface} surface.`,
+    };
   }
   if (!tool.allowedRoles.includes(ctx.user.role)) {
     return {

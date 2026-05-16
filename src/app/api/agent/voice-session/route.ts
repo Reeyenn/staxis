@@ -12,16 +12,18 @@
 //     and is bound to one specific agent. Even if a user copies it out of
 //     DevTools, the blast radius is one conversation.
 //
-// We bundle the user's identity + property + role + staffId into
-// ElevenLabs `dynamic_variables`. ElevenLabs forwards those to our
-// `/api/agent/voice-brain` webhook on every turn, so the brain can
-// reconstruct the same `ToolContext` text mode uses without a separate
-// session lookup.
+// Identity (Codex 2026-05-16 P0 fix — Pattern A):
+//   We write an `agent_voice_sessions` row holding the auth-verified
+//   account / property / role / staffId / conversationId, then expose
+//   ONLY the row id as `staxis_voice_session_id` in dynamicVariables.
+//   The browser cannot forge a different identity by tampering with the
+//   ElevenLabs SDK config because the webhook will look up THIS row and
+//   re-load role + property from accounts on every call. The signed URL
+//   is per-user; the nonce is per-session; identity is server-canonical.
 //
 // Also creates an `agent_conversations` row up front. The conversation_id
-// flows through dynamic_variables → brain webhook → memory writes, so
-// voice turns land in the same conversation history as text turns and
-// the user can scroll through both surfaces interleaved.
+// is captured in the voice-session row so the webhook can attribute
+// messages without trusting client input.
 
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
@@ -31,6 +33,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { createConversation } from '@/lib/agent/memory';
 import { assertAudioBudget } from '@/lib/agent/cost-controls';
 import { PROMPT_VERSION } from '@/lib/agent/prompts';
+import { mintVoiceSession, VOICE_SESSION_DYNVAR_KEY } from '@/lib/agent/voice-session';
 import type { AppRole } from '@/lib/roles';
 
 export const runtime = 'nodejs';
@@ -125,6 +128,26 @@ export async function POST(req: NextRequest): Promise<Response> {
     return NextResponse.json({ ok: false, error: 'failed to create conversation', requestId }, { status: 500 });
   }
 
+  // Mint the server-side voice-session row. Codex 2026-05-16 P0 fix
+  // (Pattern A): this row is the canonical identity for the duration of
+  // the voice session. Its id is the ONLY thing we expose to ElevenLabs;
+  // role + property are re-read from accounts on every webhook call.
+  let voiceSessionId: string;
+  try {
+    const minted = await mintVoiceSession({
+      accountId,
+      userId: auth.userId,
+      propertyId: body.propertyId,
+      role,
+      staffId,
+      conversationId,
+    });
+    voiceSessionId = minted.id;
+  } catch (e) {
+    log.error('[voice-session] failed to mint voice session row', { requestId, e });
+    return NextResponse.json({ ok: false, error: 'failed to mint voice session', requestId }, { status: 500 });
+  }
+
   // Fetch a signed WebSocket URL from ElevenLabs. The URL is single-use
   // and short-lived; the browser uses it to open the conversation socket.
   let signedUrl: string;
@@ -155,18 +178,16 @@ export async function POST(req: NextRequest): Promise<Response> {
       signedUrl,
       agentId,
       conversationId,
-      // These are forwarded by ElevenLabs to /api/agent/voice-brain on
-      // every webhook call. The brain reconstructs ToolContext from them.
-      // Values are constrained to string|number|boolean per the SDK
-      // signature; we encode the optional staffId as the empty string
-      // (instead of null) so the brain can treat it uniformly.
+      // Codex 2026-05-16 P0 fix (Pattern A): only the voice-session NONCE
+      // flows through ElevenLabs. The webhook looks it up in
+      // agent_voice_sessions and re-loads identity from the accounts
+      // table. Any other field passed via dynamic_variables is
+      // diagnostic-only and ignored for authorization. Account/property/
+      // role used to live here — they don't anymore precisely because the
+      // browser can swap them inside the ElevenLabs SDK before the WS
+      // handshake.
       dynamicVariables: {
-        staxis_account_id: accountId,
-        staxis_user_id: auth.userId,
-        staxis_property_id: body.propertyId,
-        staxis_role: role,
-        staxis_staff_id: staffId ?? '',
-        staxis_conversation_id: conversationId,
+        [VOICE_SESSION_DYNVAR_KEY]: voiceSessionId,
         staxis_request_id: requestId,
       },
     },
