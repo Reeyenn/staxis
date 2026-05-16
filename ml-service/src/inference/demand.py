@@ -9,7 +9,7 @@ import pandas as pd
 
 from src.config import get_settings
 from src.errors import PropertyMisconfiguredError, require_property_timezone
-from src.supabase_client import get_supabase_client
+from src.supabase_client import get_supabase_client, safe_uuid, safe_iso_date
 
 
 # Phase 3.5 (2026-05-13): the `DEFAULT_PROPERTY_TIMEZONE = "America/Chicago"`
@@ -130,8 +130,8 @@ async def predict_demand(
             extract(dow from date)::int as dow,
             coalesce(total_cleaning_minutes, 0) as scraper_cleaning_minutes
         from plan_snapshots
-        where property_id = '{property_id}'
-          and date = '{prediction_date}'::date
+        where property_id = '{safe_uuid(property_id)}'
+          and date = '{safe_iso_date(prediction_date)}'::date
         order by pulled_at desc
         limit 1
     """
