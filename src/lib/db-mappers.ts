@@ -29,7 +29,8 @@ import type {
   Room,
   DailyLog,
   WorkOrder,
-  Equipment,
+  WorkOrderPriority,
+  WorkOrderStatus,
   PreventiveTask,
   InventoryItem,
   InventoryCount,
@@ -37,15 +38,11 @@ import type {
   InventoryDiscard,
   InventoryReconciliation,
   InventoryBudget,
-  Inspection,
   HandoffEntry,
   GuestRequest,
   ShiftConfirmation,
   ManagerNotification,
   DeepCleanRecord,
-  LandscapingTask,
-  Vendor,
-  ServiceContract,
 } from '@/types';
 
 // ─── tiny utilities ─────────────────────────────────────────────────────────
@@ -356,30 +353,46 @@ export function fromDailyLogRow(r: Record<string, unknown>): DailyLog {
 }
 
 // ─── Work order ─────────────────────────────────────────────────────────────
+//
+// New shape (migration 0131): the UI exposes only status 'open' | 'done' and
+// priority 'urgent' | 'normal' | 'low'. The Postgres CHECK constraints still
+// use the legacy 4-value status enum + severity 'low'/'medium'/'urgent', so
+// we map at the boundary:
+//   open  ↔ 'submitted'   |   done  ↔ 'resolved'
+//   urgent/low pass through; 'normal' ↔ 'medium'.
+
+const PRIORITY_TO_SEVERITY: Record<WorkOrderPriority, string> = {
+  urgent: 'urgent',
+  normal: 'medium',
+  low:    'low',
+};
+const SEVERITY_TO_PRIORITY = (sev: unknown): WorkOrderPriority => {
+  if (sev === 'urgent') return 'urgent';
+  if (sev === 'low')    return 'low';
+  return 'normal'; // 'medium' or anything unexpected coerces to normal
+};
+
+const STATUS_TO_DB: Record<WorkOrderStatus, string> = {
+  open: 'submitted',
+  done: 'resolved',
+};
+const STATUS_FROM_DB = (s: unknown): WorkOrderStatus =>
+  s === 'resolved' ? 'done' : 'open';  // 'submitted'/'assigned'/'in_progress' all read as open
 
 export function toWorkOrderRow(o: Partial<WorkOrder>): Record<string, unknown> {
   return dropUndefined({
     property_id: o.propertyId,
-    room_number: o.roomNumber,
+    room_number: o.location,                 // DB column kept; stores free-text location
     description: o.description,
-    severity: o.severity,
-    status: o.status,
-    submitted_by: o.submittedBy,
+    severity: o.priority === undefined ? undefined : PRIORITY_TO_SEVERITY[o.priority],
+    status:   o.status   === undefined ? undefined : STATUS_TO_DB[o.status],
     submitted_by_name: o.submittedByName,
-    assigned_to: o.assignedTo,
-    assigned_name: o.assignedName,
-    photo_url: o.photoUrl,
-    notes: o.notes,
-    blocked_room: o.blockedRoom,
-    source: o.source,
-    ca_work_order_number: o.caWorkOrderNumber,
-    ca_from_date: o.caFromDate,
-    ca_to_date: o.caToDate,
-    equipment_id: o.equipmentId,
-    repair_cost: o.repairCost,
-    parts_used: o.partsUsed,
-    vendor_id: o.vendorId,
-    resolved_at: toISO(o.resolvedAt),
+    submitter_role: o.submitterRole,
+    submitter_photo_path: o.submitterPhotoPath,
+    completed_by_name: o.completedByName,
+    completion_note: o.completionNote,
+    completion_photo_path: o.completionPhotoPath,
+    resolved_at: toISO(o.completedAt),
   });
 }
 
@@ -387,78 +400,24 @@ export function fromWorkOrderRow(r: Record<string, unknown>): WorkOrder {
   return {
     id: String(r.id),
     propertyId: String(r.property_id ?? ''),
-    roomNumber: String(r.room_number ?? ''),
+    location: String(r.room_number ?? ''),
     description: String(r.description ?? ''),
-    severity: (r.severity as WorkOrder['severity']) ?? 'low',
-    status: (r.status as WorkOrder['status']) ?? 'submitted',
-    submittedBy: (r.submitted_by as string) ?? undefined,
+    priority: SEVERITY_TO_PRIORITY(r.severity),
+    status:   STATUS_FROM_DB(r.status),
     submittedByName: (r.submitted_by_name as string) ?? undefined,
-    assignedTo: (r.assigned_to as string) ?? undefined,
-    assignedName: (r.assigned_name as string) ?? undefined,
-    photoUrl: (r.photo_url as string) ?? undefined,
-    notes: (r.notes as string) ?? undefined,
-    blockedRoom: r.blocked_room == null ? undefined : Boolean(r.blocked_room),
-    source: (r.source as WorkOrder['source']) ?? undefined,
-    caWorkOrderNumber: (r.ca_work_order_number as string) ?? undefined,
-    caFromDate: (r.ca_from_date as string) ?? undefined,
-    caToDate: (r.ca_to_date as string) ?? undefined,
-    equipmentId: (r.equipment_id as string) ?? undefined,
-    repairCost: r.repair_cost == null ? undefined : Number(r.repair_cost),
-    partsUsed: (r.parts_used as string[]) ?? undefined,
-    vendorId: (r.vendor_id as string) ?? undefined,
+    submitterRole: (r.submitter_role as string) ?? undefined,
+    submitterPhotoPath: (r.submitter_photo_path as string)
+      ?? (r.photo_url as string)              // legacy column fallback for pre-0131 rows
+      ?? undefined,
+    completedByName: (r.completed_by_name as string)
+      ?? (r.assigned_name as string)           // legacy fallback
+      ?? undefined,
+    completionNote: (r.completion_note as string) ?? undefined,
+    completionPhotoPath: (r.completion_photo_path as string) ?? undefined,
+    completedAt: toDate(r.resolved_at),
     createdAt: toDate(r.created_at),
     updatedAt: toDate(r.updated_at),
-    resolvedAt: toDate(r.resolved_at),
   };
-}
-
-// ─── Equipment ──────────────────────────────────────────────────────────────
-
-export function fromEquipmentRow(r: Record<string, unknown>): Equipment {
-  return {
-    id: String(r.id),
-    propertyId: String(r.property_id ?? ''),
-    name: String(r.name ?? ''),
-    category: (r.category as Equipment['category']) ?? 'other',
-    location: (r.location as string) ?? undefined,
-    modelNumber: (r.model_number as string) ?? undefined,
-    manufacturer: (r.manufacturer as string) ?? undefined,
-    installDate: toDate(r.install_date),
-    expectedLifetimeYears: r.expected_lifetime_years == null ? undefined : Number(r.expected_lifetime_years),
-    purchaseCost: r.purchase_cost == null ? undefined : Number(r.purchase_cost),
-    replacementCost: r.replacement_cost == null ? undefined : Number(r.replacement_cost),
-    status: (r.status as Equipment['status']) ?? 'operational',
-    pmIntervalDays: r.pm_interval_days == null ? undefined : Number(r.pm_interval_days),
-    lastPmAt: toDate(r.last_pm_at),
-    notes: (r.notes as string) ?? undefined,
-    vendorId: (r.vendor_id as string) ?? undefined,
-    warrantyEndDate: toDate(r.warranty_end_date),
-    createdAt: toDate(r.created_at) ?? new Date(),
-    updatedAt: toDate(r.updated_at) ?? new Date(),
-  };
-}
-
-export function toEquipmentRow(e: Partial<Equipment>): Record<string, unknown> {
-  return dropUndefined({
-    property_id: e.propertyId,
-    name: e.name,
-    category: e.category,
-    location: e.location,
-    model_number: e.modelNumber,
-    manufacturer: e.manufacturer,
-    install_date: e.installDate ? (e.installDate instanceof Date ? e.installDate.toISOString().slice(0, 10) : e.installDate) : undefined,
-    expected_lifetime_years: e.expectedLifetimeYears,
-    purchase_cost: e.purchaseCost,
-    replacement_cost: e.replacementCost,
-    status: e.status,
-    pm_interval_days: e.pmIntervalDays,
-    last_pm_at: toISO(e.lastPmAt),
-    notes: e.notes,
-    vendor_id: e.vendorId,
-    warranty_end_date: e.warrantyEndDate
-      ? (e.warrantyEndDate instanceof Date ? e.warrantyEndDate.toISOString().slice(0, 10) : e.warrantyEndDate)
-      : (e.warrantyEndDate === null ? null : undefined),
-  });
 }
 
 // ─── Preventive ─────────────────────────────────────────────────────────────
@@ -468,11 +427,12 @@ export function fromPreventiveRow(r: Record<string, unknown>): PreventiveTask {
     id: String(r.id),
     propertyId: String(r.property_id ?? ''),
     name: String(r.name ?? ''),
+    area: (r.area as string) ?? undefined,
     frequencyDays: Number(r.frequency_days ?? 1),
     lastCompletedAt: toDate(r.last_completed_at),
     lastCompletedBy: (r.last_completed_by as string) ?? undefined,
     notes: (r.notes as string) ?? undefined,
-    equipmentId: (r.equipment_id as string) ?? undefined,
+    completionPhotoPath: (r.completion_photo_path as string) ?? undefined,
     createdAt: toDate(r.created_at),
   };
 }
@@ -481,39 +441,12 @@ export function toPreventiveRow(t: Partial<PreventiveTask>): Record<string, unkn
   return dropUndefined({
     property_id: t.propertyId,
     name: t.name,
+    area: t.area,
     frequency_days: t.frequencyDays,
     last_completed_at: toISO(t.lastCompletedAt),
     last_completed_by: t.lastCompletedBy,
     notes: t.notes,
-    equipment_id: t.equipmentId,
-  });
-}
-
-// ─── Landscaping ────────────────────────────────────────────────────────────
-
-export function fromLandscapingRow(r: Record<string, unknown>): LandscapingTask {
-  return {
-    id: String(r.id),
-    propertyId: String(r.property_id ?? ''),
-    name: String(r.name ?? ''),
-    season: (r.season as LandscapingTask['season']) ?? 'year-round',
-    frequencyDays: Number(r.frequency_days ?? 1),
-    lastCompletedAt: toDate(r.last_completed_at),
-    lastCompletedBy: (r.last_completed_by as string) ?? undefined,
-    notes: (r.notes as string) ?? undefined,
-    createdAt: toDate(r.created_at),
-  };
-}
-
-export function toLandscapingRow(t: Partial<LandscapingTask>): Record<string, unknown> {
-  return dropUndefined({
-    property_id: t.propertyId,
-    name: t.name,
-    season: t.season,
-    frequency_days: t.frequencyDays,
-    last_completed_at: toISO(t.lastCompletedAt),
-    last_completed_by: t.lastCompletedBy,
-    notes: t.notes,
+    completion_photo_path: t.completionPhotoPath,
   });
 }
 
@@ -733,35 +666,6 @@ export function toInventoryBudgetRow(b: Partial<InventoryBudget>): Record<string
   });
 }
 
-// ─── Inspection ─────────────────────────────────────────────────────────────
-
-export function fromInspectionRow(r: Record<string, unknown>): Inspection {
-  return {
-    id: String(r.id),
-    propertyId: String(r.property_id ?? ''),
-    name: String(r.name ?? ''),
-    dueMonth: String(r.due_month ?? ''),
-    frequencyMonths: Number(r.frequency_months ?? 0),
-    frequencyDays: r.frequency_days == null ? undefined : Number(r.frequency_days),
-    lastInspectedDate: (r.last_inspected_date as string) ?? undefined,
-    notes: (r.notes as string) ?? undefined,
-    createdAt: toDate(r.created_at),
-    updatedAt: toDate(r.updated_at),
-  };
-}
-
-export function toInspectionRow(i: Partial<Inspection>): Record<string, unknown> {
-  return dropUndefined({
-    property_id: i.propertyId,
-    name: i.name,
-    due_month: i.dueMonth,
-    frequency_months: i.frequencyMonths,
-    frequency_days: i.frequencyDays,
-    last_inspected_date: i.lastInspectedDate,
-    notes: i.notes,
-  });
-}
-
 // ─── Handoff ────────────────────────────────────────────────────────────────
 
 export function fromHandoffRow(r: Record<string, unknown>): HandoffEntry {
@@ -859,70 +763,3 @@ export function fromDeepCleanRecordRow(r: Record<string, unknown>): DeepCleanRec
   };
 }
 
-// ─── Vendor ─────────────────────────────────────────────────────────────────
-
-export function fromVendorRow(r: Record<string, unknown>): Vendor {
-  return {
-    id: String(r.id),
-    propertyId: String(r.property_id ?? ''),
-    name: String(r.name ?? ''),
-    category: (r.category as Vendor['category']) ?? 'other',
-    contactName: (r.contact_name as string) ?? undefined,
-    contactEmail: (r.contact_email as string) ?? undefined,
-    contactPhone: (r.contact_phone as string) ?? undefined,
-    notes: (r.notes as string) ?? undefined,
-    createdAt: toDate(r.created_at) ?? new Date(),
-    updatedAt: toDate(r.updated_at) ?? new Date(),
-  };
-}
-
-export function toVendorRow(v: Partial<Vendor>): Record<string, unknown> {
-  return dropUndefined({
-    property_id: v.propertyId,
-    name: v.name,
-    category: v.category,
-    contact_name: v.contactName,
-    contact_email: v.contactEmail,
-    contact_phone: v.contactPhone,
-    notes: v.notes,
-  });
-}
-
-// ─── Service contract ───────────────────────────────────────────────────────
-
-export function fromServiceContractRow(r: Record<string, unknown>): ServiceContract {
-  return {
-    id: String(r.id),
-    propertyId: String(r.property_id ?? ''),
-    vendorId: (r.vendor_id as string) ?? undefined,
-    name: String(r.name ?? ''),
-    category: (r.category as ServiceContract['category']) ?? 'other',
-    cadence: (r.cadence as ServiceContract['cadence']) ?? 'monthly',
-    lastServicedAt: toDate(r.last_serviced_at),
-    nextDueAt: toDate(r.next_due_at),
-    monthlyCost: r.monthly_cost == null ? undefined : Number(r.monthly_cost),
-    notes: (r.notes as string) ?? undefined,
-    createdAt: toDate(r.created_at) ?? new Date(),
-    updatedAt: toDate(r.updated_at) ?? new Date(),
-  };
-}
-
-export function toServiceContractRow(c: Partial<ServiceContract>): Record<string, unknown> {
-  const dateOnly = (d: Date | string | null | undefined): string | null | undefined => {
-    if (d === undefined) return undefined;
-    if (d === null) return null;
-    if (d instanceof Date) return d.toISOString().slice(0, 10);
-    return d;
-  };
-  return dropUndefined({
-    property_id: c.propertyId,
-    vendor_id: c.vendorId,
-    name: c.name,
-    category: c.category,
-    cadence: c.cadence,
-    last_serviced_at: dateOnly(c.lastServicedAt),
-    next_due_at: dateOnly(c.nextDueAt),
-    monthly_cost: c.monthlyCost,
-    notes: c.notes,
-  });
-}

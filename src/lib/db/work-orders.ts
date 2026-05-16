@@ -1,7 +1,8 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// Work Orders — maintenance / repair tickets created by housekeeping or
-// front desk. Tracked separately from preventive_tasks (planned recurring
-// work).
+// Work Orders — anyone-can-submit, head-housekeeper-marks-done.
+//
+// Two TS statuses only — 'open' and 'done'. The DB still uses the legacy
+// CHECK enum (submitted/assigned/in_progress/resolved); the mapper coerces.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { WorkOrder } from '@/types';
@@ -28,7 +29,7 @@ export function subscribeToWorkOrders(
 
 export async function addWorkOrder(
   _uid: string, pid: string,
-  order: Omit<WorkOrder, 'id' | 'createdAt' | 'updatedAt'>,
+  order: Omit<WorkOrder, 'id' | 'createdAt' | 'updatedAt' | 'completedAt'>,
 ): Promise<string> {
   try {
     const row = { ...toWorkOrderRow({ ...order, propertyId: pid }), property_id: pid };
@@ -51,4 +52,26 @@ export async function updateWorkOrder(
 export async function deleteWorkOrder(_uid: string, _pid: string, wid: string): Promise<void> {
   const { error } = await supabase.from('work_orders').delete().eq('id', wid);
   if (error) { logErr('deleteWorkOrder', error); throw error; }
+}
+
+// Mark a work order done in one call. Sets status, completed-by name, the
+// completion note + photo path, and resolved_at = now (we read this back as
+// the new design's completedAt timestamp).
+export async function markWorkOrderDone(
+  wid: string,
+  args: { completedByName: string; completionNote?: string; completionPhotoPath?: string },
+): Promise<void> {
+  try {
+    const { error } = await supabase
+      .from('work_orders')
+      .update({
+        status: 'resolved',
+        completed_by_name: args.completedByName,
+        completion_note: args.completionNote ?? null,
+        completion_photo_path: args.completionPhotoPath ?? null,
+        resolved_at: new Date().toISOString(),
+      })
+      .eq('id', wid);
+    if (error) throw error;
+  } catch (err) { logErr('markWorkOrderDone', err); throw err; }
 }

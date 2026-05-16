@@ -27,14 +27,13 @@ import {
   subscribeToShiftConfirmations,
   subscribeToScheduleAssignments,
   saveScheduleAssignments,
-  subscribeToWorkOrders,
   subscribeToDashboardByDate,
   updateStaffMember,
   updateProperty,
 } from '@/lib/db';
 import type { PlanSnapshot, ScheduleAssignments, DashboardNumbers, CsvRoomSnapshot } from '@/lib/db';
 import { autoAssignRooms } from '@/lib/calculations';
-import type { ShiftConfirmation, WorkOrder, StaffMember, SchedulePriority } from '@/types';
+import type { ShiftConfirmation, StaffMember, SchedulePriority } from '@/types';
 import {
   defaultShiftDate, addDays, formatDisplayDate, snapshotToShiftRooms, formatPulledAt,
 } from './_shared';
@@ -66,7 +65,6 @@ export function ScheduleTab() {
   const [dashboardNums, setDashboardNums] = useState<DashboardNumbers | null>(null);
   const [dashboardLoaded, setDashboardLoaded] = useState(false);
   const [confirmations, setConfirmations] = useState<ShiftConfirmation[]>([]);
-  const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [assignments, setAssignments] = useState<Record<string, string>>({});
   const [crewIds, setCrewIds] = useState<string[]>([]);
   // `crewExplicit` distinguishes "user has actively set the crew (even
@@ -233,11 +231,6 @@ export function ScheduleTab() {
     return subscribeToShiftConfirmations(uid, pid, shiftDate, setConfirmations);
   }, [uid, pid, shiftDate]);
 
-  useEffect(() => {
-    if (!uid || !pid) return;
-    return subscribeToWorkOrders(uid, pid, setWorkOrders);
-  }, [uid, pid]);
-
   // ── Phase M3.1 (2026-05-14): ML confidence panel data ────────────────
   // Fetches the optimizer's recommended_headcount + completion_probability_curve
   // for tomorrow, plus demand p80/p95 headcount boundaries. Both helpers exist
@@ -270,21 +263,18 @@ export function ScheduleTab() {
   // ── Derived: shift rooms from CSV pull ────────────────────────────────
   const shiftRooms = useMemo(() => snapshotToShiftRooms(planSnapshot, pid), [planSnapshot, pid]);
 
-  const blockedRoomNumbers = useMemo(() => {
-    const set = new Set<string>();
-    for (const o of workOrders) if (o.status !== 'resolved' && o.blockedRoom) set.add(o.roomNumber);
-    return set;
-  }, [workOrders]);
-
-  // Rooms eligible for cleaning. Excludes:
-  //   1. Blocked rooms (open work orders with blockedRoom=true).
-  //   2. DND rooms — guest flagged "do not disturb" so the housekeeper
-  //      can't enter. They re-appear next refresh once the HK clears
-  //      DND from their phone. Without this filter, auto-assign would
-  //      hand someone a room they physically can't service today.
+  // Rooms eligible for cleaning. Excludes DND rooms — guest flagged "do
+  // not disturb" so the housekeeper can't enter. They re-appear next
+  // refresh once the HK clears DND from their phone. Without this filter,
+  // auto-assign would hand someone a room they physically can't service.
+  //
+  // The May-2026 maintenance simplification (migration 0131) dropped the
+  // `blockedRoom` field from work_orders, so we no longer filter rooms by
+  // an open maintenance ticket here. If unsellable-room filtering comes
+  // back, it should be sourced from a dedicated room-status flag.
   const assignableRooms = useMemo(
-    () => shiftRooms.filter(r => !blockedRoomNumbers.has(r.number) && !r.isDnd),
-    [shiftRooms, blockedRoomNumbers],
+    () => shiftRooms.filter(r => !r.isDnd),
+    [shiftRooms],
   );
 
   const checkouts = assignableRooms.filter(r => r.type === 'checkout').length;

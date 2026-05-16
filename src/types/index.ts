@@ -267,37 +267,6 @@ export interface InventoryBudget {
   updatedAt: Date | null;
 }
 
-// ─── Inspections ──────────────────────────────────────────────────────────
-
-export interface Inspection {
-  id: string;
-  propertyId: string;
-  name: string;                   // e.g. "Fire Extinguisher Inspection"
-  dueMonth: string;               // "YYYY-MM" — month the inspection is due
-  frequencyMonths: number;        // legacy: months between inspections (kept for backward compat)
-  frequencyDays?: number;         // canonical: days between inspections (preferred when set, supports weekly/biweekly)
-  lastInspectedDate?: string;     // ISO date YYYY-MM-DD of last completed inspection
-  notes?: string;
-  createdAt: Date | null;
-  updatedAt: Date | null;
-}
-
-// ─── Landscaping Tasks ────────────────────────────────────────────────────
-
-export type LandscapingSeason = 'year-round' | 'spring' | 'summer' | 'fall' | 'winter';
-
-export interface LandscapingTask {
-  id: string;
-  propertyId: string;
-  name: string;                    // e.g. "Grass Mowing", "Shrub Trimming"
-  season: LandscapingSeason;       // when this task applies
-  frequencyDays: number;           // how often it recurs (e.g. 7, 10, 14, 90)
-  lastCompletedAt: Date | null;    // null = never done
-  lastCompletedBy?: string;        // name of who did it
-  notes?: string;
-  createdAt: Date | null;
-}
-
 // ─── Shift Handoff Log ─────────────────────────────────────────────────────
 
 export interface HandoffEntry {
@@ -414,109 +383,36 @@ export interface PMSSyncLog {
 }
 
 // ─── Maintenance Work Orders ────────────────────────────────────────────────
+// New shape (Claude Design handoff, migration 0131): the tab is now a
+// physical-book replacement. Two statuses only — open and done — and a
+// free-text location instead of a structured room number. The DB still
+// uses the legacy CHECK constraints; the mapper coerces:
+//   open  ↔ DB status 'submitted'
+//   done  ↔ DB status 'resolved'
+//   priority 'normal' ↔ DB severity 'medium'   (urgent/low are identity)
 
-export type WorkOrderStatus = 'submitted' | 'assigned' | 'in_progress' | 'resolved';
-export type WorkOrderSeverity = 'low' | 'medium' | 'urgent';
-export type WorkOrderSource = 'manual' | 'housekeeper' | 'ca_ooo';
+export type WorkOrderStatus = 'open' | 'done';
+export type WorkOrderPriority = 'urgent' | 'normal' | 'low';
 
 export interface WorkOrder {
   id: string;
   propertyId: string;
-  roomNumber: string;
-  description: string;
-  severity: WorkOrderSeverity;
+  location: string;             // free-text — "Room 312", "Lobby", "Hall 2F"
+  description: string;          // "AC blowing warm. Filter looked dirty."
+  priority: WorkOrderPriority;
   status: WorkOrderStatus;
-  submittedBy?: string;       // staffId or free-text name
-  submittedByName?: string;
-  assignedTo?: string;        // staffId
-  assignedName?: string;
-  photoUrl?: string;          // optional photo attachment
-  notes?: string;             // manager notes
-  blockedRoom?: boolean;      // true = room is blocked from being rented due to maintenance
-  source?: WorkOrderSource;   // 'ca_ooo' = auto-synced from Choice Advantage Out-of-Order list
-  caWorkOrderNumber?: string; // CA's stable work order number, used to dedup ca_ooo docs
-  caFromDate?: string;        // CA's "fromDate" string (e.g. "4/20/2026") for context
-  caToDate?: string;          // CA's "toDate" string
-  // ── Asset linkage + cost (added 2026-05-08, migration 0030) ─────────────
-  equipmentId?: string;       // optional link to the equipment asset that broke
-  repairCost?: number;        // dollars spent fixing this issue
-  partsUsed?: string[];       // free-text list of parts/supplies consumed
-  // ── Vendor (added 2026-05-09, migration 0043) ───────────────────────────
-  vendorId?: string;          // optional link to the vendor who performed the repair
+
+  submittedByName?: string;     // display name auto-filled from the logged-in user
+  submitterRole?: string;       // free-text role label — "Front desk", "Head housekeeper"
+  submitterPhotoPath?: string;  // Storage path in maintenance-photos bucket
+
+  completedByName?: string;     // who clicked Mark Done
+  completionNote?: string;      // optional free-text — "Replaced filter, unit is old"
+  completionPhotoPath?: string;
+  completedAt: Date | null;     // null until status === 'done'
+
   createdAt: Date | null;
   updatedAt: Date | null;
-  resolvedAt?: Date | null;
-}
-
-// ─── Equipment / Asset Registry ────────────────────────────────────────────
-
-export type EquipmentCategory =
-  | 'hvac' | 'plumbing' | 'electrical' | 'appliance' | 'structural'
-  | 'elevator' | 'pool' | 'laundry' | 'kitchen' | 'other';
-
-export type EquipmentStatus =
-  | 'operational' | 'degraded' | 'failed' | 'replaced' | 'decommissioned';
-
-export interface Equipment {
-  id: string;
-  propertyId: string;
-  name: string;
-  category: EquipmentCategory;
-  location?: string;
-  modelNumber?: string;
-  manufacturer?: string;
-  installDate?: Date | null;
-  expectedLifetimeYears?: number;
-  purchaseCost?: number;
-  replacementCost?: number;
-  status: EquipmentStatus;
-  pmIntervalDays?: number;
-  lastPmAt?: Date | null;
-  notes?: string;
-  // ── Vendor + warranty (added 2026-05-09, migration 0043) ────────────────
-  vendorId?: string;             // optional link to vendor who installs/services this asset
-  warrantyEndDate?: Date | null; // manufacturer/installer warranty end (null = none tracked)
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-// ─── Vendors ───────────────────────────────────────────────────────────────
-
-export type VendorCategory =
-  | 'hvac' | 'plumbing' | 'electrical' | 'appliance' | 'pool'
-  | 'landscaping' | 'pest' | 'fire' | 'elevator' | 'laundry'
-  | 'kitchen' | 'structural' | 'other';
-
-export interface Vendor {
-  id: string;
-  propertyId: string;
-  name: string;
-  category: VendorCategory;
-  contactName?: string;
-  contactEmail?: string;
-  contactPhone?: string;
-  notes?: string;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-// ─── Service Contracts ─────────────────────────────────────────────────────
-
-export type ServiceContractCadence = 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'annual';
-
-export interface ServiceContract {
-  id: string;
-  propertyId: string;
-  vendorId?: string;             // who performs the service (optional)
-  name: string;                  // e.g. "Pool service - Bayou Pools"
-  category: VendorCategory;      // shares the vendor category vocabulary
-  cadence: ServiceContractCadence;
-  lastServicedAt?: Date | null;  // YYYY-MM-DD anchored
-  nextDueAt?: Date | null;       // computed from last+cadence on insert; user can override
-  monthlyCost?: number;          // dollars per month (annualized for non-monthly cadences when summed)
-  notes?: string;
-  createdAt: Date;
-  updatedAt: Date;
 }
 
 // ─── Preventive Maintenance ────────────────────────────────────────────────
@@ -524,12 +420,13 @@ export interface ServiceContract {
 export interface PreventiveTask {
   id: string;
   propertyId: string;
-  name: string;
+  name: string;                 // "Elevator inspection", "HVAC filter swap"
+  area?: string;                // "Floor 2", "Building", "Pool"
   frequencyDays: number;        // how often it recurs
   lastCompletedAt: Date | null; // null = never done
-  lastCompletedBy?: string;     // name of who did it
+  lastCompletedBy?: string;     // display name of who completed it last
   notes?: string;
-  equipmentId?: string;         // optional link to the equipment asset (added migration 0030)
+  completionPhotoPath?: string;
   createdAt: Date | null;
 }
 

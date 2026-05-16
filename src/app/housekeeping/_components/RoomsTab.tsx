@@ -120,10 +120,17 @@ export function RoomsTab() {
   }, [rooms, activeProperty?.roomInventory, activePropertyId, today]);
 
   // Open-WO set keyed by room number, used to flag tiles with a red dot.
+  // After the May-2026 maintenance simplification (migration 0131),
+  // `WorkOrder.location` is a free-text field — we strip a leading
+  // "Room "/"Rm "/"#" and only stash entries that look like a numeric
+  // room id so the common cases ("Room 312", "312", "Rm 312") still mark
+  // the right tile and free-text locations like "Lobby" are ignored.
   const openWoRooms = useMemo(() => {
     const set = new Set<string>();
     for (const o of workOrders) {
-      if (o.status !== 'resolved') set.add(o.roomNumber);
+      if (o.status !== 'open') continue;
+      const cleaned = (o.location || '').trim().replace(/^(room|rm\.?|#)\s*/i, '').trim();
+      if (/^\d{1,5}$/.test(cleaned)) set.add(cleaned);
     }
     return set;
   }, [workOrders]);

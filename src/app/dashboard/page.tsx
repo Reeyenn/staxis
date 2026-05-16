@@ -99,9 +99,13 @@ export default function DashboardPage() {
     }
   }, [dashboardNums, editingField]);
 
-  // Derived tallies
-  const openOrders   = workOrders.filter(o => o.status !== 'resolved');
-  const blockedRooms = openOrders.filter(o => o.blockedRoom).length;
+  // Derived tallies. After the May-2026 maintenance simplification
+  // (migration 0131) the work_orders schema only carries 'open' / 'done'
+  // — the blocked-room concept that used to mark a room unsellable via a
+  // work order is gone. If we need to track unsellable rooms again later
+  // it should come from a dedicated room-status field, not work_orders.
+  const openOrders   = workOrders.filter(o => o.status === 'open');
+  const blockedRooms = 0;
   const clean        = rooms.filter(r => r.status === 'clean' || r.status === 'inspected').length;
   const inProgress   = rooms.filter(r => r.status === 'in_progress').length;
   const dirty        = rooms.filter(r => r.status === 'dirty').length;
@@ -188,8 +192,11 @@ export default function DashboardPage() {
       // ranking it as "right now" caused old work orders to crowd out
       // genuinely fresh handoffs in the briefing.
       if (!d) return;
-      const tone: 'warm' | 'caramel' = o.severity === 'urgent' ? 'warm' : 'caramel';
-      items.push({ id: `wo-${o.id}`, time: d, tone, text: `Rm ${o.roomNumber}: ${o.description}` });
+      const tone: 'warm' | 'caramel' = o.priority === 'urgent' ? 'warm' : 'caramel';
+      // Match the Maintenance tab's displayLoc helper: bare digits get a
+      // "Rm " prefix; anything with letters (e.g. "Lobby") shows verbatim.
+      const where = /^\d{1,4}$/.test(o.location.trim()) ? `Rm ${o.location.trim()}` : o.location;
+      items.push({ id: `wo-${o.id}`, time: d, tone, text: `${where}: ${o.description}` });
     });
 
     return items.sort((a, b) => b.time.getTime() - a.time.getTime()).slice(0, 4);

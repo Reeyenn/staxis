@@ -1,6 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// Preventive Maintenance Tasks — planned recurring work (HVAC filter
-// changes, deep mattress flip, etc.). Distinct from work_orders (reactive).
+// Preventive Maintenance Tasks — recurring inspections / filter swaps / etc.
+// Distinct from work_orders (which are reactive). Next-due is computed
+// client-side from last_completed_at + frequency_days.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { PreventiveTask } from '@/types';
@@ -44,4 +45,27 @@ export async function updatePreventiveTask(
 export async function deletePreventiveTask(_uid: string, _pid: string, tid: string): Promise<void> {
   const { error } = await supabase.from('preventive_tasks').delete().eq('id', tid);
   if (error) { logErr('deletePreventiveTask', error); throw error; }
+}
+
+// Complete a preventive task. Caller picks the completed date (today or
+// a backfill); next-due is reconstructed client-side from
+// last_completed_at + frequencyDays whenever the row is read back. The
+// task's permanent `notes` are NOT overwritten — per-completion notes are
+// transient (the design also discards them) and a future audit-log table
+// would be the right place to store them long-term.
+export async function completePreventiveTask(
+  tid: string,
+  args: { completedISO: string; completedByName: string; photoPath?: string },
+): Promise<void> {
+  try {
+    const { error } = await supabase
+      .from('preventive_tasks')
+      .update({
+        last_completed_at: new Date(args.completedISO).toISOString(),
+        last_completed_by: args.completedByName,
+        completion_photo_path: args.photoPath ?? null,
+      })
+      .eq('id', tid);
+    if (error) throw error;
+  } catch (err) { logErr('completePreventiveTask', err); throw err; }
 }
