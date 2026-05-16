@@ -6,7 +6,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
-import { supabase } from '@/lib/supabase';
+import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
 import { ArrowLeft, CheckCircle2, Sparkles, AlertCircle } from 'lucide-react';
 
 type AiMode = 'off' | 'auto' | 'always-on';
@@ -55,14 +55,12 @@ export default function AiHelperPage() {
     (async () => {
       setLoading(true);
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const res = await fetch(`/api/inventory/ai-status?propertyId=${activePropertyId}`, {
-          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
-        });
+        const res = await fetchWithAuth(`/api/inventory/ai-status?propertyId=${activePropertyId}`);
         const json = await res.json();
         if (!res.ok || !json.ok) throw new Error(json.error || `HTTP ${res.status}`);
         setStatus(json.data);
       } catch (e) {
+        if (e instanceof SessionEndedError) return;  // redirect in progress; suppress error
         setErrorMsg((e as Error).message);
       } finally {
         setLoading(false);
@@ -75,19 +73,16 @@ export default function AiHelperPage() {
     setSaving(true);
     setErrorMsg(null);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch('/api/inventory/ai-mode', {
+      const res = await fetchWithAuth('/api/inventory/ai-mode', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ propertyId: activePropertyId, mode }),
       });
       const json = await res.json();
       if (!res.ok || !json.ok) throw new Error(json.error || `HTTP ${res.status}`);
       setStatus((s) => (s ? { ...s, aiMode: mode } : s));
     } catch (e) {
+      if (e instanceof SessionEndedError) return;  // redirect in progress; suppress error
       setErrorMsg((e as Error).message);
     } finally {
       setSaving(false);

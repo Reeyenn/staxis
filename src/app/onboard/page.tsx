@@ -31,6 +31,7 @@
 import React, { useEffect, useState, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
+import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
 import { Loader2, Check, AlertCircle, Building2, Mail, KeyRound, Settings as SettingsIcon, Users, Sparkles } from 'lucide-react';
 
 // ─── Types mirroring the wizard API response ───────────────────────────
@@ -427,7 +428,7 @@ function Step4HotelDetails({ code, wizard, onNext }: { code: string; wizard: Wiz
     if (totalRooms < 1) { setErr('Total rooms must be at least 1.'); return; }
     setSubmitting(true);
     try {
-      const res = await fetch('/api/onboard/wizard', {
+      const res = await fetchWithAuth('/api/onboard/wizard', {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -449,6 +450,7 @@ function Step4HotelDetails({ code, wizard, onNext }: { code: string; wizard: Wiz
       if (!res.ok || !json.ok) { setErr(json.error || 'Save failed'); return; }
       await onNext();
     } catch (e) {
+      if (e instanceof SessionEndedError) return;  // redirect in progress; suppress error
       setErr(e instanceof Error ? e.message : 'Save failed');
     } finally {
       setSubmitting(false);
@@ -522,7 +524,7 @@ function Step5Services({ code, onNext }: { code: string; wizard: WizardStateResp
     setErr(null);
     setSubmitting(true);
     try {
-      const res = await fetch('/api/onboard/wizard', {
+      const res = await fetchWithAuth('/api/onboard/wizard', {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -535,6 +537,7 @@ function Step5Services({ code, onNext }: { code: string; wizard: WizardStateResp
       if (!res.ok || !json.ok) { setErr(json.error || 'Save failed'); return; }
       await onNext();
     } catch (e) {
+      if (e instanceof SessionEndedError) return;  // redirect in progress; suppress error
       setErr(e instanceof Error ? e.message : 'Save failed');
     } finally {
       setSubmitting(false);
@@ -586,7 +589,7 @@ function Step6ConnectPms({ code, wizard, onNext }: { code: string; wizard: Wizar
     setSubmitting(true);
     try {
       // 1. Save credentials
-      const credRes = await fetch('/api/pms/save-credentials', {
+      const credRes = await fetchWithAuth('/api/pms/save-credentials', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ propertyId: wizard.propertyId, pmsType, loginUrl, username, password }),
@@ -595,7 +598,7 @@ function Step6ConnectPms({ code, wizard, onNext }: { code: string; wizard: Wizar
       if (!credRes.ok || !credJson.ok) { setErr(credJson.error || 'Credentials save failed'); return; }
 
       // 2. Queue onboarding job
-      const jobRes = await fetch('/api/pms/onboard', {
+      const jobRes = await fetchWithAuth('/api/pms/onboard', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ propertyId: wizard.propertyId }),
@@ -617,6 +620,7 @@ function Step6ConnectPms({ code, wizard, onNext }: { code: string; wizard: Wizar
       });
       await onNext();
     } catch (e) {
+      if (e instanceof SessionEndedError) return;  // redirect in progress; suppress error
       setErr(e instanceof Error ? e.message : 'Connection failed');
     } finally {
       setSubmitting(false);
@@ -666,7 +670,7 @@ function Step7Mapping({ code, wizard, onNext }: { code: string; wizard: WizardSt
     let active = true;
     const poll = async () => {
       try {
-        const res = await fetch(`/api/pms/job-status?id=${jobId}`);
+        const res = await fetchWithAuth(`/api/pms/job-status?id=${jobId}`);
         const json = await res.json();
         if (!active || !json.ok) return;
         const d = json.data;
@@ -686,7 +690,8 @@ function Step7Mapping({ code, wizard, onNext }: { code: string; wizard: WizardSt
         } else if (d.status === 'failed') {
           setError(d.error ?? 'Mapping failed. Reeyen has been notified.');
         }
-      } catch {
+      } catch (e) {
+        if (e instanceof SessionEndedError) return;  // redirect in progress; stop polling
         // ignore transient network errors; next tick will retry
       }
     };
@@ -746,7 +751,7 @@ function Step8AddTeam({ code, wizard, onNext }: { code: string; wizard: WizardSt
     try {
       const filtered = staff.filter((s) => s.name.trim());
       if (filtered.length > 0) {
-        const res = await fetch('/api/onboarding/complete', {
+        const res = await fetchWithAuth('/api/onboarding/complete', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
@@ -768,6 +773,7 @@ function Step8AddTeam({ code, wizard, onNext }: { code: string; wizard: WizardSt
       });
       await onNext();
     } catch (e) {
+      if (e instanceof SessionEndedError) return;  // redirect in progress; suppress error
       setErr(e instanceof Error ? e.message : 'Save failed');
     } finally {
       setSubmitting(false);
@@ -811,12 +817,17 @@ function Step9AllSet({ code, wizard }: { code: string; wizard: WizardStateRespon
   const [going, setGoing] = useState(false);
   const finalize = async () => {
     setGoing(true);
-    await fetch('/api/onboard/wizard', {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ code, finalize: true }),
-    });
-    router.push('/dashboard');
+    try {
+      await fetchWithAuth('/api/onboard/wizard', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code, finalize: true }),
+      });
+      router.push('/dashboard');
+    } catch (e) {
+      if (e instanceof SessionEndedError) return;  // redirect in progress
+      setGoing(false);
+    }
   };
 
   return (
