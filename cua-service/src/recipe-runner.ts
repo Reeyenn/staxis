@@ -15,6 +15,7 @@
 import type { Browser, Page } from 'playwright';
 import { chromium } from 'playwright';
 import { log } from './log.js';
+import { safeGoto } from './browser-utils/navigate.js';
 import type {
   ActionRecipe,
   PMSArrival,
@@ -26,6 +27,14 @@ import type {
   Recipe,
   RecipeStep,
 } from './types.js';
+
+/** Derive the allowed-host bound from a recipe's login.startUrl. Used
+ *  for every navigation AFTER the login startUrl itself — keeps replay
+ *  pinned to the PMS domain that was recorded at mapping-time. Closes
+ *  Codex 2026-05-16 P1 (Pattern B). */
+function allowedHostFromRecipe(login: Recipe['login']): string {
+  return new URL(login.startUrl).host;
+}
 
 interface RunOptions {
   recipe: Recipe;
@@ -110,6 +119,12 @@ export async function runRecipeExtraction(opts: RunOptions): Promise<ExtractionR
       };
     }
 
+    // Codex 2026-05-16 P1 fix (Pattern B): allowed-host bound for every
+    // post-login goto in this run. Derived from the recipe's recorded
+    // startUrl host; any action step trying to navigate off this site
+    // (off-domain SSRF or attacker-injected URL) is refused by safeGoto.
+    const allowedHost = allowedHostFromRecipe(opts.recipe.login);
+
     // ─── Run each supported action ────────────────────────────────────────
     const data: ExtractedData = {
       rooms: [],
@@ -123,31 +138,31 @@ export async function runRecipeExtraction(opts: RunOptions): Promise<ExtractionR
     if (opts.recipe.actions.getRoomLayout) {
       opts.onProgress?.('Pulling room list…', 72);
       data.rooms = await runActionAsTable<PMSRoomDescriptor>(
-        page, 'getRoomLayout', opts.recipe.actions.getRoomLayout, opts.credentials,
+        page, 'getRoomLayout', opts.recipe.actions.getRoomLayout, opts.credentials, allowedHost,
       );
     }
     if (opts.recipe.actions.getStaffRoster) {
       opts.onProgress?.('Pulling staff roster…', 78);
       data.staff = await runActionAsTable<PMSStaffMember>(
-        page, 'getStaffRoster', opts.recipe.actions.getStaffRoster, opts.credentials,
+        page, 'getStaffRoster', opts.recipe.actions.getStaffRoster, opts.credentials, allowedHost,
       );
     }
     if (opts.recipe.actions.getArrivals) {
       opts.onProgress?.('Pulling today\'s arrivals…', 82);
       data.arrivalsToday = await runActionAsTable<PMSArrival>(
-        page, 'getArrivals', opts.recipe.actions.getArrivals, opts.credentials,
+        page, 'getArrivals', opts.recipe.actions.getArrivals, opts.credentials, allowedHost,
       );
     }
     if (opts.recipe.actions.getDepartures) {
       opts.onProgress?.('Pulling today\'s departures…', 85);
       data.departuresToday = await runActionAsTable<PMSDeparture>(
-        page, 'getDepartures', opts.recipe.actions.getDepartures, opts.credentials,
+        page, 'getDepartures', opts.recipe.actions.getDepartures, opts.credentials, allowedHost,
       );
     }
     if (opts.recipe.actions.getRoomStatus) {
       opts.onProgress?.('Pulling room status…', 88);
       data.roomStatus = await runActionAsTable<PMSRoomStatus>(
-        page, 'getRoomStatus', opts.recipe.actions.getRoomStatus, opts.credentials,
+        page, 'getRoomStatus', opts.recipe.actions.getRoomStatus, opts.credentials, allowedHost,
       );
     }
     if (opts.recipe.actions.getHistoricalOccupancy) {
@@ -155,7 +170,7 @@ export async function runRecipeExtraction(opts: RunOptions): Promise<ExtractionR
       // History rows: { date, occupied, totalRooms }
       type HistoryRow = { date: string; occupied: number; totalRooms: number };
       data.history = await runActionAsTable<HistoryRow>(
-        page, 'getHistoricalOccupancy', opts.recipe.actions.getHistoricalOccupancy, opts.credentials,
+        page, 'getHistoricalOccupancy', opts.recipe.actions.getHistoricalOccupancy, opts.credentials, allowedHost,
       );
     }
 
@@ -211,10 +226,22 @@ function humanizeAction(actionName: string): string {
 
 // ─── Step execution ───────────────────────────────────────────────────────
 
-async function runStep(page: Page, step: RecipeStep, creds: PMSCredentials): Promise<void> {
+async function runStep(
+  page: Page,
+  step: RecipeStep,
+  creds: PMSCredentials,
+  allowedHost: string,
+): Promise<void> {
   switch (step.kind) {
     case 'goto':
-      await page.goto(step.url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      // Codex 2026-05-16 P1 fix (Pattern B): every recipe goto is bound
+      // to the recipe's registered host. A poisoned recipe row pointing
+      // at attacker.example throws UnsafeNavigationError here BEFORE
+      // the authenticated PMS session ever touches the network.
+      await safeGoto(page, step.url, {
+        allowedHost,
+        context: 'recipe-runner:step:goto',
+      });
       return;
     case 'fill': {
       const value = step.value === '$username' ? creds.username
@@ -269,9 +296,17 @@ async function runLogin(
   creds: PMSCredentials,
 ): Promise<{ ok: true } | { ok: false; detail: Record<string, unknown> }> {
   try {
-    await page.goto(login.startUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    // The login startUrl IS the trust anchor — every subsequent goto is
+    // pinned to ITS host. The startUrl itself doesn't need an allowedHost
+    // check, but safeGoto still rejects javascript:/file:/private-IP URLs
+    // so even a poisoned recipe row can't establish a malicious session.
+    const allowedHost = allowedHostFromRecipe(login);
+    await safeGoto(page, login.startUrl, {
+      allowedHost: null,
+      context: 'recipe-runner:login:startUrl',
+    });
     for (const step of login.steps) {
-      await runStep(page, step, creds);
+      await runStep(page, step, creds, allowedHost);
     }
     // Confirm login by waiting for any of the success selectors.
     const selectors = login.successSelectors.length > 0 ? login.successSelectors : ['body'];
@@ -291,6 +326,7 @@ async function runActionAsTable<T>(
   actionName: string,
   action: ActionRecipe,
   creds: PMSCredentials,
+  allowedHost: string,
 ): Promise<T[]> {
   // Codex audit pass-6 P0 — old behavior was: catch any error, log a
   // warn, return []. The job marked as success with empty data and
@@ -302,7 +338,7 @@ async function runActionAsTable<T>(
   let rows: unknown[];
   try {
     for (const step of action.steps) {
-      await runStep(page, step, creds);
+      await runStep(page, step, creds, allowedHost);
     }
 
     if (action.parse.mode !== 'table') {
