@@ -256,6 +256,11 @@ export function ScheduleTab() {
       if (cancelled) return;
       setOptimizerPanel(opt);
       setDemandPanel(dem);
+    }).catch((e) => {
+      // Either helper rejecting would otherwise surface as an unhandled
+      // promise rejection. Panel just stays hidden — non-blocking.
+      if (cancelled) return;
+      console.warn('[ScheduleTab] panel fetch failed', e);
     });
     return () => { cancelled = true; };
   }, [pid, activeProperty, shiftDate]);

@@ -24,7 +24,7 @@ import {
 } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 
 function toE164(raw: string): string | null {
   const digits = raw.replace(/\D/g, '');
@@ -171,7 +171,7 @@ export async function POST(req: NextRequest) {
     // Log full detail server-side, generic 500 to caller — even though the
     // route is admin-gated, the err string can include staff_phone or PG
     // schema names that have no business in a response body.
-    console.error('test-sms-flow error:', errToString(caughtErr));
+    log.error('test-sms-flow error', { err: caughtErr, requestId });
     return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }
@@ -193,7 +193,7 @@ export async function GET(req: NextRequest) {
     .eq('token', check)
     .maybeSingle();
   if (error) {
-    console.error('test-sms-flow GET error:', errToString(error));
+    log.error('test-sms-flow GET error', { err: error, requestId });
     return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   if (!data) return err('not found', { requestId, status: 404, code: ApiErrorCode.NotFound });

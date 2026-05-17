@@ -26,6 +26,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
+import { log } from '@/lib/log';
 import { safeBaseUrl, redactPhone } from '@/lib/api-validate';
 import { parseStringField, parseUnionField } from '@/lib/db-mappers';
 import twilio from 'twilio';
@@ -148,7 +149,7 @@ async function logHit(payload: Record<string, unknown>): Promise<void> {
       payload: redacted,
     });
   } catch (e) {
-    console.error('logHit failed:', errToString(e));
+    log.warn('sms-reply logHit failed', { err: e });
   }
 }
 
@@ -394,12 +395,22 @@ export async function POST(req: NextRequest) {
       // the staff row (canonical — what the admin Staff modal reads/writes
       // and what the HK personal page seeds from) and the current
       // shift_confirmation row.
-      const [{ error: staffUpdErr }, { error: confUpdErr }] = await Promise.all([
-        supabaseAdmin.from('staff').update({ language: next }).eq('id', staff!.id),
-        supabaseAdmin.from('shift_confirmations').update({ language: next }).eq('token', conf.token),
-      ]);
-      if (staffUpdErr) console.error('[sms-reply] staff language update failed:', staffUpdErr.message);
-      if (confUpdErr) console.error('[sms-reply] confirmation language update failed:', confUpdErr.message);
+      //
+      // Audit P0.3 (2026-05-17): previously these were two parallel
+      // .update()s with errors only logged. One could land and the other
+      // fail silently, then tomorrow's outgoing SMS picks the stale
+      // language from whichever side won the race. Now atomic via RPC —
+      // both rows update or neither does. See
+      // supabase/migrations/0134_rpc_set_staff_language.sql.
+      //
+      // M3 (type-safety audit): conf.token is already typed `string` by
+      // parseStringField above, so no inline cast is needed.
+      const { error: rpcErr } = await supabaseAdmin.rpc('staxis_set_staff_language', {
+        p_staff: staff!.id,
+        p_conf_token: conf.token,
+        p_lang: next,
+      });
+      if (rpcErr) log.warn('[sms-reply] set_staff_language RPC failed', { err: rpcErr });
     };
 
     // ── ESPAÑOL — switch to Spanish and resend the link ─────────────────────
@@ -426,10 +437,14 @@ export async function POST(req: NextRequest) {
     return twimlOk();
   } catch (err) {
     const msg = errToString(err);
-    console.error('sms-reply error:', msg);
+    log.error('sms-reply error', { err });
     try {
       await logHit({ stage: 'handler_error', error: msg });
-    } catch {}
+    } catch (logErr) {
+      log.warn('sms-reply: logHit failed in error path', {
+        err: logErr instanceof Error ? logErr : new Error(String(logErr)),
+      });
+    }
     // Always 200 so Twilio doesn't retry
     return twimlOk();
   }

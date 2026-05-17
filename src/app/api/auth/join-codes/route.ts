@@ -9,7 +9,7 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 import { verifyTeamManager, canManageHotel } from '@/lib/team-auth';
 import { writeAudit } from '@/lib/audit';
 import {
@@ -46,7 +46,7 @@ export async function GET(req: NextRequest) {
     .is('revoked_at', null)
     .order('created_at', { ascending: false });
   if (qErr) {
-    console.error('[join-codes:GET] failed', qErr);
+    log.error('[join-codes:GET] failed', { err: qErr, requestId });
     return err('Failed to load codes', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   return ok({ codes: data ?? [] }, { requestId });
@@ -71,7 +71,10 @@ export async function POST(req: NextRequest) {
   // Pull hotel name for the code prefix.
   const { data: prop } = await supabaseAdmin.from('properties').select('name').eq('id', hotelId).maybeSingle();
 
-  // Try a few times in case of collision.
+  // Try a few times in case of collision on hotel_join_codes.code (UNIQUE
+  // per migration 0064). Audit P3.1 (2026-05-17): switched from substring
+  // match on the error message to the SQLSTATE code 23505 — error messages
+  // can change between Postgres versions; SQLSTATEs are stable.
   let lastErr: unknown = null;
   for (let i = 0; i < 5; i++) {
     const code = generateJoinCode(prop?.name);
@@ -97,9 +100,11 @@ export async function POST(req: NextRequest) {
       return ok({ joinCode: ins }, { requestId });
     }
     lastErr = insErr;
-    if (insErr && !String(insErr.message ?? '').toLowerCase().includes('duplicate')) break;
+    // Only retry on unique_violation (23505) — anything else is a real
+    // failure that won't get better with a fresh code.
+    if (insErr && insErr.code !== '23505') break;
   }
-  console.error('[join-codes:POST] insert failed after retries', lastErr);
+  log.error('[join-codes:POST] insert failed after retries', { err: lastErr, requestId });
   return err('Failed to create join code', { requestId, status: 500, code: ApiErrorCode.InternalError });
 }
 
@@ -123,7 +128,7 @@ export async function DELETE(req: NextRequest) {
     .update({ revoked_at: new Date().toISOString() })
     .eq('id', id);
   if (updErr) {
-    console.error('[join-codes:DELETE] failed', updErr);
+    log.error('[join-codes:DELETE] failed', { err: updErr, requestId });
     return err('Failed to revoke', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   await writeAudit({

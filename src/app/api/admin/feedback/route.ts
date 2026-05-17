@@ -13,8 +13,8 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
-import { ok, err } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { log, getOrMintRequestId } from '@/lib/log';
 import { writeAuditLog } from '@/lib/admin-audit';
 
 export const runtime = 'nodejs';
@@ -23,6 +23,11 @@ export const maxDuration = 15;
 
 const VALID_STATUSES = new Set(['new', 'in_progress', 'resolved', 'wontfix']);
 
+// user_feedback schema per migration 0052. Audit follow-up 2026-05-17.
+const FEEDBACK_FIELDS =
+  'id, property_id, user_id, user_email, user_display_name, message, category, ' +
+  'status, admin_note, resolved_at, created_at';
+
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const auth = await requireAdmin(req);
@@ -30,11 +35,15 @@ export async function GET(req: NextRequest) {
 
   const { data, error } = await supabaseAdmin
     .from('user_feedback')
-    .select('*')
+    .select(FEEDBACK_FIELDS)
     .order('created_at', { ascending: false })
-    .limit(200);
+    .limit(200)
+    .returns<Record<string, unknown>[]>();
 
-  if (error) return err(`feedback list failed: ${error.message}`, { requestId, status: 500 });
+  if (error) {
+    log.error('admin-feedback list failed', { err: error, requestId });
+    return err('feedback list failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  }
 
   // Resolve property names
   const propertyIds = Array.from(new Set((data ?? []).map((r) => (r as { property_id: string | null }).property_id).filter((v): v is string => !!v)));
@@ -96,10 +105,13 @@ export async function PATCH(req: NextRequest) {
     .from('user_feedback')
     .update(update)
     .eq('id', id)
-    .select('*')
+    .select(FEEDBACK_FIELDS)
     .single();
 
-  if (error) return err(`feedback update failed: ${error.message}`, { requestId, status: 500 });
+  if (error) {
+    log.error('admin-feedback update failed', { err: error, requestId });
+    return err('feedback update failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  }
 
   await writeAuditLog({
     actorUserId: auth.userId,

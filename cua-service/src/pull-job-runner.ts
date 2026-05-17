@@ -46,13 +46,21 @@ export async function runPullJob(jobId: string, workerId: string): Promise<void>
   const startedAt = Date.now();
   let timedOut = false;
 
-  // Hard timeout — same pattern as onboarding job-runner.
+  // Hard timeout — same pattern as onboarding job-runner. The awaited
+  // markFailed is wrapped in try/catch so a rejection doesn't sink into
+  // the microtask queue as an unhandled rejection.
   const timeout = setTimeout(async () => {
     timedOut = true;
     log.warn('pull job exceeded time limit', { jobId, limitMs: PULL_TIMEOUT_MS });
-    await markFailed(jobId, workerId, 'Pull exceeded time limit', {
-      kind: 'timeout', limitMs: PULL_TIMEOUT_MS,
-    });
+    try {
+      await markFailed(jobId, workerId, 'Pull exceeded time limit', {
+        kind: 'timeout', limitMs: PULL_TIMEOUT_MS,
+      });
+    } catch (e) {
+      log.error('pull timeout handler: markFailed threw', {
+        jobId, err: e instanceof Error ? e : new Error(String(e)),
+      });
+    }
   }, PULL_TIMEOUT_MS);
 
   try {

@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 
 /**
  * POST /api/save-fcm-token — stamp the staff member's `last_paired_at`.
@@ -60,7 +60,7 @@ export async function POST(req: NextRequest) {
     .eq('id', staffId)
     .maybeSingle();
   if (lookupErr) {
-    console.error('[save-fcm-token] staff lookup failed', errToString(lookupErr));
+    log.error('[save-fcm-token] staff lookup failed', { err: lookupErr, requestId });
     return err('internal error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   if (!staffRow) {
@@ -77,7 +77,7 @@ export async function POST(req: NextRequest) {
     .update({ last_paired_at: new Date().toISOString() })
     .eq('id', staffId);
   if (updateErr) {
-    console.error('[save-fcm-token] update failed', errToString(updateErr));
+    log.error('[save-fcm-token] update failed', { err: updateErr, requestId });
     return err('internal error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 

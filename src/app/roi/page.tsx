@@ -38,7 +38,7 @@ export default function ROIPage() {
   useEffect(() => {
     if (!user || !activePropertyId) return;
 
-    (async () => {
+    void (async () => {
       try {
         const dailyLogs = await getRecentDailyLogs(user.uid, activePropertyId, 90);
         setLogs(dailyLogs);

@@ -13,7 +13,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { requireCronSecret } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
@@ -120,7 +120,7 @@ export async function GET(req: NextRequest) {
     return ok({ webhookLogs, confirmations, twilioNumbers, twilioMessages }, { requestId });
   } catch (caughtErr) {
     const msg = errToString(caughtErr);
-    console.error('[admin/diagnose] error:', msg);
+    log.error('[admin/diagnose] error', { err: caughtErr, requestId });
     return err(msg, { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

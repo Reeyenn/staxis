@@ -11,7 +11,7 @@ import type { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 import { invalidatePromptsCache } from '@/lib/agent/prompts-store';
 
 export const runtime = 'nodejs';
@@ -60,7 +60,8 @@ export async function PATCH(
     .eq('id', id);
 
   if (error) {
-    return err(`failed to update prompt: ${error.message}`, {
+    log.error('agent-prompts update failed', { err: error, requestId, promptId: id });
+    return err('failed to update prompt', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
   }

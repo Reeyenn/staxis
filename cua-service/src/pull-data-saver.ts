@@ -108,29 +108,40 @@ export async function savePullData(args: {
   // manual edits with 'unknown').
   let roomStatusUpdates = 0;
   if (args.data.roomStatus.length > 0) {
-    // Batch update via individual UPDATEs. Postgres has no batch UPDATE
-    // by-key syntax over different values without a CTE; for ~100 rooms
-    // per property, sequential updates are fine (~50ms total).
-    for (const r of args.data.roomStatus) {
-      if (!r.roomNumber) continue;
-      const mapped = mapRoomStatus(r.status);
-      if (!mapped) continue;
-      const { error: rErr } = await supabase
-        .from('rooms')
-        .update({ status: mapped, last_synced_at: nowIso })
-        .eq('property_id', args.propertyId)
-        .eq('room_number', r.roomNumber);
-      if (rErr) {
-        log.warn('room status update failed (non-fatal)', {
+    // Audit follow-up (CUA P1, 2026-05-17): replaced the per-row loop with
+    // a single RPC. The original loop was both slow (N round-trips) AND
+    // silently broken — it filtered on `room_number` (column doesn't
+    // exist; the column is `number`), wrote `last_synced_at` (also
+    // doesn't exist), and had no date scope (would have updated all
+    // dates for that number if it had worked). The RPC fixes all three
+    // and runs in one round-trip via a bulk UPDATE … FROM (VALUES …).
+    // See supabase/migrations/0138_rpc_bulk_update_room_status.sql.
+    const updates = args.data.roomStatus
+      .filter(r => !!r.roomNumber)
+      .map(r => ({ number: r.roomNumber, status: mapRoomStatus(r.status) }))
+      .filter((r): r is { number: string; status: 'clean' | 'dirty' } => r.status === 'clean' || r.status === 'dirty');
+    if (updates.length > 0) {
+      const { data: rpcData, error: rpcErr } = await supabase.rpc('staxis_bulk_update_room_status', {
+        p_property: args.propertyId,
+        p_date:     localDate,
+        p_updates:  updates,
+      });
+      if (rpcErr) {
+        log.warn('bulk room status update failed (non-fatal)', {
           propertyId: args.propertyId,
-          roomNumber: r.roomNumber,
-          err: rErr.message,
+          attempted: updates.length,
+          err: rpcErr.message,
         });
       } else {
-        roomStatusUpdates++;
+        const result = (rpcData ?? {}) as { updated_count?: number };
+        roomStatusUpdates = Number(result.updated_count ?? 0);
       }
     }
   }
+  // nowIso captured at the top of the function is now only used by the
+  // dashboard_by_date upsert above; reference it here so TS doesn't flag
+  // it as unused on the audit follow-up rewrite.
+  void nowIso;
 
   // ─── 4. pull_metrics row (observability) ──────────────────────────────────
   // Best-effort — never fail the pull on a metrics insert. The pull

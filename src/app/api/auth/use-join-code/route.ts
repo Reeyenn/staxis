@@ -17,7 +17,7 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 import { writeAudit } from '@/lib/audit';
 import { checkAndIncrementRateLimit, rateLimitedResponse, ipToRateLimitKey } from '@/lib/api-ratelimit';
 import type { AppRole } from '@/lib/roles';
@@ -146,12 +146,11 @@ export async function POST(req: NextRequest) {
 
   const normalizedPhone = normalizePhone(phone);
 
+  // Audit P3.1 (2026-05-17): dropped the SELECT-then-INSERT pre-check
+  // loop. We now trust the UNIQUE constraint on accounts.username
+  // (migration 0001) and retry the INSERT below with a digit suffix on
+  // SQLSTATE 23505 — saves N round-trips on the no-collision path.
   let username = deriveUsername(normalizedEmail);
-  for (let i = 0; i < 5; i++) {
-    const { data: ex } = await supabaseAdmin.from('accounts').select('id').eq('username', username).maybeSingle();
-    if (!ex) break;
-    username = (username + Math.floor(Math.random() * 10000)).slice(0, 40);
-  }
 
   // email_confirm:true so signInWithOtp (called by /signup right after)
   // triggers Supabase's MAGIC-LINK template — the one we customized to
@@ -189,21 +188,31 @@ export async function POST(req: NextRequest) {
     user_metadata: { username, displayName },
   });
   if (authErr || !authData.user) {
-    console.error('[use-join-code] createUser failed', authErr);
+    log.error('[use-join-code] createUser failed', { err: authErr, requestId });
     await releaseSlot();
-    return err(authErr?.message ?? 'Failed to create account', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return err('Failed to create account', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  const { error: insErr } = await supabaseAdmin.from('accounts').insert({
-    username,
-    display_name: displayName,
-    role: finalRole,
-    property_access: [row.hotel_id],
-    data_user_id: authData.user.id,
-    phone: normalizedPhone,
-  });
+  // Insert with collision-retry against accounts.username UNIQUE. On any
+  // non-unique-violation error, bail to the cleanup path below (release
+  // slot + delete auth user).
+  let insErr: { code?: string; message?: string } | null = null;
+  for (let i = 0; i < 5; i++) {
+    const { error } = await supabaseAdmin.from('accounts').insert({
+      username,
+      display_name: displayName,
+      role: finalRole,
+      property_access: [row.hotel_id],
+      data_user_id: authData.user.id,
+      phone: normalizedPhone,
+    });
+    if (!error) { insErr = null; break; }
+    insErr = error;
+    if (error.code !== '23505') break;
+    username = (username + Math.floor(Math.random() * 10000)).slice(0, 40);
+  }
   if (insErr) {
-    console.error('[use-join-code] accounts insert failed', insErr);
+    log.error('[use-join-code] accounts insert failed', { err: insErr, requestId });
     await supabaseAdmin.auth.admin.deleteUser(authData.user.id).catch(() => {});
     await releaseSlot();
     return err('Failed to create account', { requestId, status: 500, code: ApiErrorCode.InternalError });
@@ -227,11 +236,11 @@ export async function POST(req: NextRequest) {
       // Non-fatal: account is created; owner_id semantic is wrong but
       // the user can still operate the hotel via property_access.
       // Log so ops can repair manually.
-      console.error('[use-join-code] owner_id transfer failed (non-fatal)', {
+      log.warn('[use-join-code] owner_id transfer failed (non-fatal)', {
         requestId,
         hotelId: row.hotel_id,
         newOwner: authData.user.id,
-        error: ownerXferErr.message,
+        err: ownerXferErr,
       });
     }
   }

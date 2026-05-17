@@ -43,7 +43,7 @@ import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratel
 import { enqueueSms, processSmsJobs } from '@/lib/sms-jobs';
 import { buildHousekeeperLink } from '@/lib/staff-auth';
 import { buildOkBody, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 
 interface StaffEntry {
   staffId: string;
@@ -65,21 +65,6 @@ interface RequestBody {
 }
 
 type PlanRoom = { number: string; stayType?: string | null };
-
-/**
- * Pull room type from the CSV plan_snapshot so we can seed rooms rows with
- * the correct checkout/stayover flag. Default to 'checkout' when unknown so
- * workload estimates err on the heavier side.
- */
-function deriveRoomType(
-  number: string,
-  planRooms: PlanRoom[] | null,
-): 'checkout' | 'stayover' {
-  if (!planRooms) return 'checkout';
-  const match = planRooms.find(r => r.number === number);
-  if (!match) return 'checkout';
-  return match.stayType === 'Stay' ? 'stayover' : 'checkout';
-}
 
 function toE164(raw: string): string | null {
   const digits = raw.replace(/\D/g, '');
@@ -218,7 +203,7 @@ export async function POST(req: NextRequest) {
     const hotelName = sanitizeForSms(propRes.data?.name || 'Your Hotel');
     const planRooms = (planRes.data?.rooms as PlanRoom[] | null) ?? null;
 
-    // ── Seed rooms rows with assignments so the HK link page finds them.
+    // ── Seed rooms + mirror schedule_assignments in one atomic RPC. ────────
     //
     // The HK link page queries `rooms where assigned_to = hkId and date = today`.
     // For future dates (tomorrow) the 15-min scraper hasn't written these rows
@@ -226,126 +211,34 @@ export async function POST(req: NextRequest) {
     // the shift date, it merges new live data in without touching assigned_to,
     // so Maria's assignments survive the refresh.
     //
-    // Also CLEARS assignments on any rooms that used to be assigned but aren't
-    // in this Send (so unassigning works when Maria re-sends after tweaks).
+    // The RPC also CLEARS assignments on any rooms that used to be assigned
+    // but aren't in this Send (so unassigning works when Maria re-sends after
+    // tweaks), and mirrors the assignments into schedule_assignments/{date}.
+    //
+    // Audit P0.1 (2026-05-17): previously the rooms-seed, rooms-updates, and
+    // schedule_assignments-upsert were three separate phases with no
+    // transaction. Partial failure left rooms updated but schedule_assignments
+    // stale — split-brain between what Maria sees on the Schedule tab and
+    // what the housekeeper sees on their personal page. The RPC bundles all
+    // three writes into one BEGIN…COMMIT so either everything lands or
+    // nothing does. See supabase/migrations/0132_rpc_seed_shift_assignments.sql.
     {
-      const assignmentMap = new Map<string, { staffId: string; staffName: string }>();
-      for (const entry of staff) {
-        for (const num of (entry.assignedRooms ?? [])) {
-          assignmentMap.set(num, { staffId: entry.staffId, staffName: entry.name });
-        }
-      }
-
-      const { data: existingRooms, error: roomsErr } = await supabaseAdmin
-        .from('rooms')
-        .select('id, number, assigned_to')
-        .eq('property_id', pid)
-        .eq('date', shiftDate);
-      if (roomsErr) throw roomsErr;
-
-      const existingByNumber = new Map<string, { id: string; number: string; assigned_to: string | null }>();
-      for (const r of existingRooms ?? []) {
-        if (r.number) existingByNumber.set(r.number as string, r as { id: string; number: string; assigned_to: string | null });
-      }
-
-      // Build an upsert batch: every room Maria is assigning, keyed on
-      // (property_id, date, number) — the table's unique constraint.
-      const upsertRows = Array.from(assignmentMap.entries()).map(([num, who]) => {
-        const existing = existingByNumber.get(num);
-        if (existing) {
-          // Preserve the existing row's id + type + priority + status etc; we
-          // only change the assignment fields via a direct update below.
-          return null;
-        }
-        // Fresh seed — no row exists yet for this number on this date.
-        return {
-          property_id: pid,
-          number: num,
-          date: shiftDate,
-          type: deriveRoomType(num, planRooms),
-          status: 'dirty',
-          priority: 'standard',
-          assigned_to: who.staffId,
-          assigned_name: who.staffName,
-        };
-      }).filter(Boolean) as Array<{
-        property_id: string; number: string; date: string;
-        type: 'checkout' | 'stayover'; status: 'dirty'; priority: 'standard';
-        assigned_to: string; assigned_name: string;
-      }>;
-
-      if (upsertRows.length > 0) {
-        const { error: insertErr } = await supabaseAdmin
-          .from('rooms')
-          .upsert(upsertRows, { onConflict: 'property_id,date,number' });
-        if (insertErr) throw insertErr;
-      }
-
-      // Update existing rooms that have a new assignment (in parallel — Supabase
-      // doesn't support bulk update-by-filter-with-different-values in one call).
-      // PromiseLike (not Promise) — Supabase query-builder chains are
-      // thenables; Promise.all accepts PromiseLike.
-      const updates: PromiseLike<unknown>[] = [];
-      for (const [num, who] of assignmentMap) {
-        const existing = existingByNumber.get(num);
-        if (!existing) continue;
-        // Skip if no change (saves a write).
-        if (existing.assigned_to === who.staffId) continue;
-        updates.push(
-          supabaseAdmin
-            .from('rooms')
-            .update({ assigned_to: who.staffId, assigned_name: who.staffName })
-            .eq('id', existing.id)
-            .then(({ error }) => { if (error) throw error; }),
-        );
-      }
-
-      // Clear assignments on rooms that used to be assigned but aren't in this Send.
-      for (const [num, room] of existingByNumber) {
-        if (assignmentMap.has(num)) continue;
-        if (!room.assigned_to) continue;
-        updates.push(
-          supabaseAdmin
-            .from('rooms')
-            .update({ assigned_to: null, assigned_name: null })
-            .eq('id', room.id)
-            .then(({ error }) => { if (error) throw error; }),
-        );
-      }
-
-      if (updates.length > 0) {
-        await Promise.all(updates);
-      }
-    }
-
-    // ── Mirror the assignments into schedule_assignments/{shift_date}.
-    // The client already saves this before calling us, but doing it here too
-    // is cheap and guarantees the row exists even if the client save raced.
-    {
-      const roomAssignments: Record<string, string> = {};
-      const staffNames: Record<string, string> = {};
-      const crew: string[] = [];
-      for (const entry of staff) {
-        crew.push(entry.staffId);
-        staffNames[entry.staffId] = entry.name;
-        for (const num of (entry.assignedRooms ?? [])) {
-          // Key by the room number only (stable across dates). The old layout
-          // keyed by Firestore doc id `${date}_${num}`; we keep that format for
-          // back-compat with clients that haven't been updated.
-          roomAssignments[`${shiftDate}_${num}`] = entry.staffId;
-        }
-      }
-      const { error: schedErr } = await supabaseAdmin
-        .from('schedule_assignments')
-        .upsert({
-          property_id: pid,
-          date: shiftDate,
-          room_assignments: roomAssignments,
-          crew,
-          staff_names: staffNames,
-          updated_at: new Date().toISOString(),
-        }, { onConflict: 'property_id,date' });
-      if (schedErr) throw schedErr;
+      const rpcAssignments = staff.map(entry => ({
+        staff_id: entry.staffId,
+        staff_name: entry.name,
+        rooms: entry.assignedRooms ?? [],
+      }));
+      const rpcPlanRooms = (planRooms ?? []).map(r => ({
+        number: r.number,
+        stay_type: r.stayType ?? null,
+      }));
+      const { error: rpcErr } = await supabaseAdmin.rpc('staxis_seed_shift_assignments', {
+        p_property: pid,
+        p_date: shiftDate,
+        p_plan_rooms: rpcPlanRooms,
+        p_assignments: rpcAssignments,
+      });
+      if (rpcErr) throw rpcErr;
     }
 
     // Per-staff outcome. We always include every crew member in the response
@@ -389,7 +282,7 @@ export async function POST(req: NextRequest) {
           try {
             hkUrl = await buildHousekeeperLink(staffId, pid, baseUrl);
           } catch (linkErr) {
-            console.error('[send-shift-confirmations] magic-link mint failed, falling back to tokenless URL:', errToString(linkErr));
+            log.warn('[send-shift-confirmations] magic-link mint failed, falling back to tokenless URL', { err: linkErr, requestId });
             hkUrl = `${baseUrl}/housekeeper/${staffId}?pid=${encodeURIComponent(pid)}`;
           }
 
@@ -446,15 +339,21 @@ export async function POST(req: NextRequest) {
           if (upsertErr) throw upsertErr;
 
           // Keep the staff row's phone_lookup column in sync so /api/sms-reply
-          // can resolve an inbound number back to the staff member. Best-effort
-          // — don't fail the send if this write fails.
-          supabaseAdmin
-            .from('staff')
-            .update({ phone_lookup: phone164 })
-            .eq('id', staffId)
-            .then(({ error }) => {
-              if (error) console.warn('[send-shift-confirmations] phone_lookup update failed:', error.message);
-            });
+          // can resolve an inbound number back to the staff member. Awaited so
+          // a write failure surfaces before the SMS goes out — without this,
+          // a silent failure here means tomorrow's reply gets dropped because
+          // the lookup column never landed. Failure is still non-fatal to the
+          // SMS itself (we log + continue): the worst case is one stale reply
+          // routing, not a missed SMS to the housekeeper. Audit P3.2 (2026-05-17).
+          {
+            const { error: phoneLookupErr } = await supabaseAdmin
+              .from('staff')
+              .update({ phone_lookup: phone164 })
+              .eq('id', staffId);
+            if (phoneLookupErr) {
+              log.warn('[send-shift-confirmations] phone_lookup update failed', { err: phoneLookupErr, requestId });
+            }
+          }
 
           // `name` already passed through sanitizeForSms in the input
           // validation above, so no newlines or control chars survived.
@@ -513,7 +412,7 @@ export async function POST(req: NextRequest) {
           // Don't log the raw name — staff names are PII and any trailing
           // bytes in a malformed payload would reach our log aggregator.
           // The staffId is enough to identify the row in DB if needed.
-          console.error(`[send-shift-confirmations] failed for staffId=${staffId}: ${errToString(innerErr)}`);
+          log.error('[send-shift-confirmations] per-staff failure', { err: innerErr, requestId, staffId });
           const reason = innerErr instanceof Error ? innerErr.message : 'sms_error';
           return { staffId, status: 'failed', reason };
         }
@@ -558,13 +457,13 @@ export async function POST(req: NextRequest) {
       } catch (workerErr) {
         // Don't surface this to the user — they already got their
         // response. Log so we see it in Vercel + Sentry.
-        console.error('[send-shift-confirmations] inline drain failed:', errToString(workerErr));
+        log.error('[send-shift-confirmations] inline drain failed', { err: workerErr, requestId });
       }
     });
 
     return NextResponse.json(envelope);
   } catch (caughtErr) {
-    console.error('send-shift-confirmations error:', caughtErr);
+    log.error('send-shift-confirmations error', { err: caughtErr, requestId });
     // Persist the error so we can diagnose without shell logs.
     try {
       await supabaseAdmin.from('error_logs').insert({
@@ -572,7 +471,13 @@ export async function POST(req: NextRequest) {
         message: errToString(caughtErr),
         stack: caughtErr instanceof Error ? caughtErr.stack ?? null : null,
       });
-    } catch {}
+    } catch (logErr) {
+      // The meta-failure (failure of the failure-recording path) is exactly
+      // when we most need a Sentry event — don't swallow it silently.
+      log.warn('send-shift-confirmations: error_logs insert failed', {
+        requestId, err: logErr instanceof Error ? logErr : new Error(String(logErr)),
+      });
+    }
     return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

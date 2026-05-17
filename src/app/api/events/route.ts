@@ -21,7 +21,7 @@ import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession } from '@/lib/api-auth';
 import { ok, err } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -74,7 +74,7 @@ export async function POST(req: NextRequest) {
   if (error) {
     // Don't surface to client — they don't care, and we don't want to
     // bubble logging failures into the user's UI experience.
-    console.error('[events] insert failed', { requestId, error: error.message });
+    log.error('[events] insert failed', { err: error, requestId });
     return ok({ logged: false }, { requestId });
   }
 

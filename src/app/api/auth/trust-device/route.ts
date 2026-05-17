@@ -20,7 +20,7 @@ import {
   TRUST_DURATION_DB_MS,
 } from '@/lib/trusted-device';
 import { err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -62,7 +62,7 @@ export async function POST(req: NextRequest) {
     expires_at: expiresAt,
   });
   if (insErr) {
-    console.error('[trust-device] insert failed', insErr);
+    log.error('[trust-device] insert failed', { err: insErr, requestId });
     return err('Failed to register trusted device', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });

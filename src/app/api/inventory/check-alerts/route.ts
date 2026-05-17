@@ -23,6 +23,8 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import { err, ApiErrorCode } from '@/lib/api-response';
+import { getOrMintRequestId } from '@/lib/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -54,6 +56,7 @@ export async function POST(req: NextRequest) {
   // SMS to the property's alert phone (mitigated by 24h dedupe but the
   // first hit costs Twilio credits and pages a real human). Now requires
   // a logged-in session that owns the property.
+  const requestId = getOrMintRequestId(req);
   const session = await requireSession(req);
   if (!session.ok) return session.response;
 
@@ -61,21 +64,21 @@ export async function POST(req: NextRequest) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ ok: false, error: 'invalid_json' }, { status: 400 });
+    return err('invalid_json', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
   const { pid, criticalItemIds } = body;
   if (!isUuid(pid)) {
-    return NextResponse.json({ ok: false, error: 'invalid_pid' }, { status: 400 });
+    return err('invalid_pid', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   if (!(await userHasPropertyAccess(session.userId, pid))) {
-    return NextResponse.json({ ok: false, error: 'forbidden' }, { status: 403 });
+    return err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
   if (!Array.isArray(criticalItemIds) || criticalItemIds.length === 0) {
     return NextResponse.json({ ok: true, sent: 0, skipped: 0, reason: 'no_items' });
   }
   if (!criticalItemIds.every(isUuid)) {
-    return NextResponse.json({ ok: false, error: 'invalid_item_id' }, { status: 400 });
+    return err('invalid_item_id', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
   // ── Resolve recipient phone ────────────────────────────────────────────

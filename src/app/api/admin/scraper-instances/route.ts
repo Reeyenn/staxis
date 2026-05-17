@@ -33,9 +33,8 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdminOrCron } from '@/lib/admin-auth';
-import { ok, err } from '@/lib/api-response';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
-import { errToString } from '@/lib/utils';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -267,6 +266,6 @@ export async function GET(req: NextRequest) {
     );
   } catch (e) {
     log.error('scraper-instances: handler crashed', { requestId, err: e as Error });
-    return err(errToString(e), { requestId, status: 500 });
+    return err('scraper-instances handler failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }
