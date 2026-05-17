@@ -48,7 +48,7 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
     if (!laundryPersonId || !pid) return;
     let cancelled = false;
 
-    (async () => {
+    void (async () => {
       try {
         const s = await getStaffSelfPublic(pid, laundryPersonId);
         if (!cancelled && s && (s.language === 'es' || s.language === 'en')) {
@@ -122,7 +122,7 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
       }
     };
 
-    loadBootstrap();
+    void loadBootstrap();
     const interval = setInterval(loadBootstrap, 30_000);
     return () => { cancelled = true; clearInterval(interval); };
   }, [pid, laundryPersonId, today]);

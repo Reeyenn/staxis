@@ -118,6 +118,36 @@ async function deriveStartedAt(args: {
   roomType: 'checkout' | 'stayover';
   shiftStartedAt: string | null;
 }): Promise<string> {
+  // Server source-of-truth for the shift_start anchor (audit/concurrency
+  // #2). Pre-fix the anchor lived in the housekeeper's device-local
+  // localStorage, so switching phones mid-shift produced inconsistent
+  // anchors and skewed cleaning_events.duration_minutes for the new
+  // device's rows. Now: the first cleanable Done locks in
+  // schedule_assignments.shift_starts[staffId] via a get-or-set RPC;
+  // every subsequent Done on any device for the same shift reads the
+  // same canonical anchor. The client-passed shiftStartedAt is the
+  // first-write candidate; if the server already has one, it wins.
+  let canonicalShiftStart: string | null = args.shiftStartedAt;
+  try {
+    const candidate = args.shiftStartedAt ?? args.completedAt;
+    const { data: serverAt, error: rpcErr } = await supabaseAdmin.rpc(
+      'staxis_get_or_set_shift_start',
+      {
+        p_property: args.pid,
+        p_date: args.date,
+        p_staff: args.staffId,
+        p_default_at: candidate,
+      },
+    );
+    if (!rpcErr && typeof serverAt === 'string' && serverAt) {
+      canonicalShiftStart = serverAt;
+    }
+  } catch {
+    // Best-effort — fall back to the client's shiftStartedAt (legacy
+    // behavior). The deriveStartedAtPure helper has its own synthetic
+    // fallback when both are null.
+  }
+
   let priorCompletedAt: string | null = null;
   try {
     const { data } = await supabaseAdmin
@@ -142,7 +172,7 @@ async function deriveStartedAt(args: {
   return deriveStartedAtPure({
     completedAt: args.completedAt,
     priorCompletedAt,
-    shiftStartedAt: args.shiftStartedAt,
+    shiftStartedAt: canonicalShiftStart,
     roomType: args.roomType,
   });
 }
@@ -377,7 +407,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           });
         } catch (featureErr) {
           log.error('room-action: feature derivation threw (unexpected)', {
-            requestId, pid, staffId, action: 'finish', err: featureErr as unknown as Error
+            requestId, pid, staffId, action: 'finish', err: featureErr
           });
           // Smoke-detector: deriveCleaningEventFeatures already swallows its
           // own internal failures and returns null fields, so reaching this
@@ -424,7 +454,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         // Don't fail the whole request if audit insert fails — the room
         // update already succeeded and the housekeeper has moved on.
         if (ceErr) {
-          log.error('room-action: cleaning_events insert failed (non-fatal)', { requestId, route: 'housekeeper/room-action', pid, staffId, action: 'finish', err: ceErr as unknown as Error });
+          log.error('room-action: cleaning_events insert failed (non-fatal)', { requestId, route: 'housekeeper/room-action', pid, staffId, action: 'finish', err: ceErr });
         }
       }
       return ok({ action: 'finish', completedAt, cleaningEventInserted, deduped: isDuplicate }, { requestId, headers });
@@ -481,7 +511,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         if (discardErr) {
           log.error('room-action: cleaning_events discard failed (non-fatal)', {
             requestId, route: 'housekeeper/room-action', pid, staffId,
-            action: 'reset', err: discardErr as unknown as Error,
+            action: 'reset', err: discardErr,
           });
         } else {
           cleaningEventDiscarded = true;

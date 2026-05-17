@@ -26,6 +26,12 @@
  */
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
+// Note: this file does NOT route through @/lib/event-recorder because the
+// existing AppEventsClient injection pattern (used by tests) would be
+// lost. The helper already catches insert errors and log.warn's them,
+// which covers the same silent-failure principle for this cron-only
+// path. If you need Sentry escalation here, refactor the helper to
+// accept a captureException injection too.
 
 export type MisconfiguredLayer =
   | 'demand'
@@ -88,7 +94,7 @@ export async function emitPropertyMisconfiguredEvent(
       log.warn('emitPropertyMisconfiguredEvent: insert failed', {
         requestId: input.requestId,
         propertyId: input.propertyId,
-        err: error as unknown as Error,
+        err: error,
       });
     }
   } catch (err) {

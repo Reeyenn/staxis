@@ -160,7 +160,7 @@ function MLPageInner() {
   // Owner gating
   useEffect(() => {
     if (authLoading || propLoading || !user || !activePropertyId) return;
-    (async () => {
+    void (async () => {
       try {
         const prop = await getProperty(user.uid, activePropertyId);
         if (!prop) { setIsOwner(false); return; }
@@ -191,7 +191,7 @@ function MLPageInner() {
   useEffect(() => {
     if (isOwner !== true) return;
     let cancelled = false;
-    (async () => {
+    void (async () => {
       setCockpitLoading(true);
       setCockpitErr(null);
       try {

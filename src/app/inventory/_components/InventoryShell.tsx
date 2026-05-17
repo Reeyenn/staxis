@@ -98,7 +98,7 @@ export function InventoryShell() {
     if (!user || !activePropertyId) return;
     let cancelled = false;
 
-    (async () => {
+    void (async () => {
       try {
         const aiStatusUrl = `/api/inventory/ai-status?propertyId=${activePropertyId}`;
         const statusRes = await fetchWithAuth(aiStatusUrl, { cache: 'no-store' })

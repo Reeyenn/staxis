@@ -7,6 +7,11 @@ import type { ManagerNotification } from '@/types';
 import { supabase, logErr, subscribeTable } from './_common';
 import { fromManagerNotificationRow } from '../db-mappers';
 
+// Matches fromManagerNotificationRow in db-mappers.ts. Audit follow-up 2026-05-17.
+const MANAGER_NOTIFICATION_FIELDS =
+  'id, property_id, type, message, staff_name, replacement_name, shift_date, read, created_at';
+type ManagerNotificationRow = Record<string, unknown>;
+
 export function subscribeToManagerNotifications(
   _uid: string, pid: string,
   callback: (notifications: ManagerNotification[]) => void,
@@ -15,9 +20,10 @@ export function subscribeToManagerNotifications(
     `manager_notifications:${pid}`, 'manager_notifications', `property_id=eq.${pid}`,
     async () => {
       const { data, error } = await supabase
-        .from('manager_notifications').select('*')
+        .from('manager_notifications').select(MANAGER_NOTIFICATION_FIELDS)
         .eq('property_id', pid)
-        .order('created_at', { ascending: false });
+        .order('created_at', { ascending: false })
+        .returns<ManagerNotificationRow[]>();
       if (error) throw error;
       return (data ?? []).map(fromManagerNotificationRow);
     },

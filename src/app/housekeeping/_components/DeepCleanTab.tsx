@@ -153,7 +153,7 @@ export function DeepCleanTab() {
       // Config failure is recoverable (we fall back to defaults). Don't
       // toast — the records-fetch toast already signals if the DB is down.
     });
-    refreshRecords();
+    void refreshRecords();
     const unsub = subscribeToRooms(uid, pid, todayStrReactive, setTodayRooms);
     return () => { cancelled = true; unsub(); };
   }, [uid, pid, todayStrReactive, refreshRecords]);
@@ -163,11 +163,11 @@ export function DeepCleanTab() {
   useEffect(() => {
     if (typeof document === 'undefined') return;
     const onVisible = () => {
-      if (document.visibilityState === 'visible') refreshRecords({ silent: true });
+      if (document.visibilityState === 'visible') void refreshRecords({ silent: true });
     };
     document.addEventListener('visibilitychange', onVisible);
     const id = setInterval(() => {
-      if (document.visibilityState === 'visible') refreshRecords({ silent: true });
+      if (document.visibilityState === 'visible') void refreshRecords({ silent: true });
     }, 60_000);
     return () => {
       document.removeEventListener('visibilitychange', onVisible);

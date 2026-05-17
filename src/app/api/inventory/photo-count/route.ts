@@ -15,7 +15,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { visionExtractJSON, VisionTruncatedError, VisionImageInvalidError, VisionSchemaError } from '@/lib/vision-extract';
 import { errToString } from '@/lib/utils';
-import { log } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 
@@ -108,6 +109,7 @@ If the image contains no recognizable inventory, return { "counts": [] }.`;
 }
 
 export async function POST(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
   // Auth gate — same story as scan-invoice. Vision API has real $$ cost
   // and we don't want random callers spending the budget.
   const session = await requireSession(req);
@@ -117,24 +119,24 @@ export async function POST(req: NextRequest) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ ok: false, error: 'invalid_json' }, { status: 400 });
+    return err('invalid_json', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
   const { pid, imageBase64, mediaType, itemNames } = body;
   if (!isUuid(pid)) {
-    return NextResponse.json({ ok: false, error: 'invalid_pid' }, { status: 400 });
+    return err('invalid_pid', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   if (!(await userHasPropertyAccess(session.userId, pid))) {
-    return NextResponse.json({ ok: false, error: 'forbidden' }, { status: 403 });
+    return err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
   if (typeof imageBase64 !== 'string' || imageBase64.length < 100) {
-    return NextResponse.json({ ok: false, error: 'invalid_image' }, { status: 400 });
+    return err('invalid_image', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   if (!SUPPORTED_MEDIA_TYPES.includes(mediaType as VisionMediaType)) {
-    return NextResponse.json({ ok: false, error: 'unsupported_media_type' }, { status: 400 });
+    return err('unsupported_media_type', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   if (!Array.isArray(itemNames) || itemNames.length === 0) {
-    return NextResponse.json({ ok: false, error: 'no_items_in_scope' }, { status: 400 });
+    return err('no_items_in_scope', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
   // ── Rate limit (Codex audit pass-6) ────────────────────────────────
@@ -157,10 +159,10 @@ export async function POST(req: NextRequest) {
     .map(sanitizeItemName)
     .filter((n): n is string => n !== null);
   if (safeItemNames.length === 0) {
-    return NextResponse.json(
-      { ok: false, error: 'no_valid_item_names', detail: 'No usable item names after sanitization (names with embedded instructions or empty strings were rejected).' },
-      { status: 400 },
-    );
+    return err('no_valid_item_names', {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+      details: 'No usable item names after sanitization (names with embedded instructions or empty strings were rejected).',
+    });
   }
 
   try {
@@ -202,36 +204,31 @@ export async function POST(req: NextRequest) {
       // Drop any count for an item we don't track (model hallucinated a name).
       .filter(c => c.item_name.length > 0 && allowedNames.has(c.item_name));
 
-    return NextResponse.json({ ok: true, counts });
+    return ok({ counts }, { requestId });
   } catch (e) {
     // Truncation: more items in the photo than we can describe in one
     // response. Same actionable handling as scan-invoice (pass-4).
     if (e instanceof VisionTruncatedError) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: 'too_many_items_in_photo',
-          detail: 'This photo has more items than we can count in one pass. Try splitting it into a few separate photos and re-counting.',
-        },
-        { status: 422 },
-      );
+      return err('too_many_items_in_photo', {
+        requestId, status: 422, code: ApiErrorCode.ValidationFailed,
+        details: 'This photo has more items than we can count in one pass. Try splitting it into a few separate photos and re-counting.',
+      });
     }
     // Image rejected by validation in vision-extract.ts. The reason is
     // user-actionable and safe to surface (size/format only, no internals).
     if (e instanceof VisionImageInvalidError) {
-      return NextResponse.json(
-        { ok: false, error: 'invalid_image', detail: e.message },
-        { status: 400 },
-      );
+      return err('invalid_image', {
+        requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+        details: e.message,
+      });
     }
     if (e instanceof VisionSchemaError) {
       log.warn('[photo-count] vision JSON failed schema validation', {
         reason: e.reason, pid,
       });
-      return NextResponse.json(
-        { ok: false, error: 'photo_count_invalid_shape' },
-        { status: 422 },
-      );
+      return err('photo_count_invalid_shape', {
+        requestId, status: 422, code: ApiErrorCode.UpstreamFailure,
+      });
     }
     const msg = errToString(e);
     const status = /api[_ ]?key|ANTHROPIC_API_KEY/i.test(msg) ? 503 : 500;
@@ -240,9 +237,9 @@ export async function POST(req: NextRequest) {
       err: e instanceof Error ? e : new Error(msg),
       pid,
     });
-    return NextResponse.json(
-      { ok: false, error: status === 503 ? 'vision_unavailable' : 'vision_failed' },
-      { status },
+    return err(
+      status === 503 ? 'vision_unavailable' : 'vision_failed',
+      { requestId, status, code: status === 503 ? ApiErrorCode.UpstreamFailure : ApiErrorCode.InternalError },
     );
   }
 }

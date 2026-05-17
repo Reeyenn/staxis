@@ -16,7 +16,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { visionExtractJSON, VisionTruncatedError, VisionImageInvalidError, VisionSchemaError } from '@/lib/vision-extract';
 import { errToString } from '@/lib/utils';
-import { log } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
+import { err, ApiErrorCode } from '@/lib/api-response';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 
@@ -85,6 +86,7 @@ Return ONLY a JSON object with this exact shape, no prose, no code fences:
 If the image is not an invoice or receipt, return { "items": [] } and null vendor/date/number.`;
 
 export async function POST(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
   // Auth gate: this route hits the Anthropic Vision API on each request.
   // Without a session check, anyone with a guessed property UUID could
   // submit unlimited images and burn through ANTHROPIC_API_KEY budget.
@@ -95,21 +97,21 @@ export async function POST(req: NextRequest) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ ok: false, error: 'invalid_json' }, { status: 400 });
+    return err('invalid_json', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
   const { pid, imageBase64, mediaType } = body;
   if (!isUuid(pid)) {
-    return NextResponse.json({ ok: false, error: 'invalid_pid' }, { status: 400 });
+    return err('invalid_pid', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   if (!(await userHasPropertyAccess(session.userId, pid))) {
-    return NextResponse.json({ ok: false, error: 'forbidden' }, { status: 403 });
+    return err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
   if (typeof imageBase64 !== 'string' || imageBase64.length < 100) {
-    return NextResponse.json({ ok: false, error: 'invalid_image' }, { status: 400 });
+    return err('invalid_image', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   if (!SUPPORTED_MEDIA_TYPES.includes(mediaType as typeof SUPPORTED_MEDIA_TYPES[number])) {
-    return NextResponse.json({ ok: false, error: 'unsupported_media_type' }, { status: 400 });
+    return err('unsupported_media_type', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
   // ── Rate limit (May 2026 audit pass-5) ─────────────────────────────

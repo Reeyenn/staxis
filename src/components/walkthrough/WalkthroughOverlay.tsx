@@ -49,23 +49,13 @@ interface HistoryEntry {
   deviatedTo?: string;
 }
 
-type StepAction =
-  | { type: 'click'; elementId: string; narration: string; done?: false }
-  | { type: 'done'; narration: string }
-  | { type: 'cannot_help'; narration: string };
-
-interface StepResponseOk {
-  ok: true;
-  action: StepAction;
-  requestId?: string;
-}
-interface StepResponseErr {
-  ok: false;
-  error: string;
-  code?: string;
-  requestId?: string;
-}
-type StepResponse = StepResponseOk | StepResponseErr;
+import type {
+  WalkthroughStartResponse,
+  WalkthroughStepResponse as StepResponse,
+  WalkthroughStepResponseErr as StepResponseErr,
+} from '@/types/api';
+// Audit M6: walkthrough response shapes live in src/types/api.ts so the
+// route handler and the overlay agree on the wire format at compile time.
 
 // ─── Component ───────────────────────────────────────────────────────────
 
@@ -254,7 +244,11 @@ function WalkthroughOverlayInner() {
         showError(msg);
         return;
       }
-      const startBody = (await startRes.json()) as { ok: true; runId: string };
+      const startBody = (await startRes.json()) as WalkthroughStartResponse;
+      if (!startBody.ok) {
+        showError(startBody.error ?? 'walkthrough start returned an error');
+        return;
+      }
       serverRunIdRef.current = startBody.runId;
       runPropertyIdRef.current = activePropertyId;
     } catch (err) {

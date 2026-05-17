@@ -11,8 +11,8 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession } from '@/lib/api-auth';
-import { ok, err } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { log, getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 
 export const runtime = 'nodejs';
@@ -77,6 +77,9 @@ export async function POST(req: NextRequest) {
     .select('id')
     .single();
 
-  if (error) return err(`feedback insert failed: ${error.message}`, { requestId, status: 500 });
+  if (error) {
+    log.error('feedback insert failed', { err: error, requestId });
+    return err('feedback insert failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  }
   return ok({ id: data.id }, { requestId });
 }

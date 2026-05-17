@@ -13,7 +13,11 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { requireCronSecret } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
+import {
+  externalFetch,
+  EXTERNAL_FETCH_SHORT_TIMEOUT_MS,
+} from '@/lib/external-service-config';
 
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
@@ -36,9 +40,12 @@ export async function GET(req: NextRequest) {
         const sid = process.env.TWILIO_ACCOUNT_SID;
         const tok = process.env.TWILIO_AUTH_TOKEN;
         if (!sid || !tok) return { error: 'twilio env vars missing' };
-        const res = await fetch(
+        const res = await externalFetch(
           `https://api.twilio.com/2010-04-01/Accounts/${sid}/IncomingPhoneNumbers.json`,
-          { headers: { Authorization: `Basic ${Buffer.from(`${sid}:${tok}`).toString('base64')}` } },
+          {
+            headers: { Authorization: `Basic ${Buffer.from(`${sid}:${tok}`).toString('base64')}` },
+            timeoutMs: EXTERNAL_FETCH_SHORT_TIMEOUT_MS,
+          },
         );
         if (!res.ok) return { error: `twilio status ${res.status}` };
         const json = await res.json() as { incoming_phone_numbers?: Array<Record<string, unknown>> };
@@ -62,9 +69,12 @@ export async function GET(req: NextRequest) {
         const sid = process.env.TWILIO_ACCOUNT_SID;
         const tok = process.env.TWILIO_AUTH_TOKEN;
         if (!sid || !tok) return { error: 'twilio env vars missing' };
-        const res = await fetch(
+        const res = await externalFetch(
           `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json?PageSize=20`,
-          { headers: { Authorization: `Basic ${Buffer.from(`${sid}:${tok}`).toString('base64')}` } },
+          {
+            headers: { Authorization: `Basic ${Buffer.from(`${sid}:${tok}`).toString('base64')}` },
+            timeoutMs: EXTERNAL_FETCH_SHORT_TIMEOUT_MS,
+          },
         );
         if (!res.ok) return { error: `twilio status ${res.status}` };
         const json = await res.json() as { messages?: Array<Record<string, unknown>> };
@@ -120,7 +130,7 @@ export async function GET(req: NextRequest) {
     return ok({ webhookLogs, confirmations, twilioNumbers, twilioMessages }, { requestId });
   } catch (caughtErr) {
     const msg = errToString(caughtErr);
-    console.error('[admin/diagnose] error:', msg);
+    log.error('[admin/diagnose] error', { err: caughtErr, requestId });
     return err(msg, { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

@@ -6,7 +6,7 @@ import type { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 import { invalidatePromptsCache } from '@/lib/agent/prompts-store';
 
 export const runtime = 'nodejs';
@@ -28,7 +28,8 @@ export async function GET(req: NextRequest): Promise<Response> {
     .order('created_at', { ascending: false });
 
   if (error) {
-    return err(`failed to load prompts: ${error.message}`, {
+    log.error('agent-prompts load failed', { err: error, requestId });
+    return err('failed to load prompts', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
   }
@@ -83,7 +84,8 @@ export async function POST(req: NextRequest): Promise<Response> {
     .single();
 
   if (error) {
-    return err(`failed to create prompt: ${error.message}`, {
+    log.error('agent-prompts create failed', { err: error, requestId });
+    return err('failed to create prompt', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
   }

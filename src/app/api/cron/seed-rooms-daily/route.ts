@@ -33,6 +33,11 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { seedRoomsForDate } from '@/lib/rooms/seed';
+import {
+  parseStringField,
+  parseNumberField,
+  parseArrayField,
+} from '@/lib/db-mappers';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -43,6 +48,24 @@ interface PropertyRow {
   timezone: string | null;
   room_inventory: string[] | null;
   total_rooms: number | null;
+}
+
+/** Validate that a Supabase row matches the SELECT we issued. Returns null
+ *  on shape mismatch so the cron skips bad rows instead of silently seeding
+ *  an undefined property_id. Audit finding H3 (2026-05-17). */
+function parsePropertyRow(raw: unknown): PropertyRow | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const id = parseStringField(r.id);
+  if (!id) return null;
+  return {
+    id,
+    timezone: parseStringField(r.timezone) ?? null,
+    room_inventory: Array.isArray(r.room_inventory)
+      ? parseArrayField(r.room_inventory, parseStringField)
+      : null,
+    total_rooms: parseNumberField(r.total_rooms) ?? null,
+  };
 }
 
 /** Compute the property's local YYYY-MM-DD for a given UTC instant.
@@ -81,11 +104,14 @@ export async function GET(req: NextRequest) {
     if (propsErr) throw propsErr;
 
     const now = new Date();
-    const seedable = (properties ?? []).filter((p) => {
-      const inv = (p as unknown as PropertyRow).room_inventory;
-      const total = (p as unknown as PropertyRow).total_rooms;
-      return (Array.isArray(inv) && inv.length > 0) || (typeof total === 'number' && total > 0);
-    });
+    const seedable: PropertyRow[] = [];
+    for (const raw of properties ?? []) {
+      const p = parsePropertyRow(raw);
+      if (!p) continue;
+      const hasInventory = Array.isArray(p.room_inventory) && p.room_inventory.length > 0;
+      const hasTotal = typeof p.total_rooms === 'number' && p.total_rooms > 0;
+      if (hasInventory || hasTotal) seedable.push(p);
+    }
 
     const results: Array<{
       propertyId: string;
@@ -98,8 +124,7 @@ export async function GET(req: NextRequest) {
       error?: string;
     }> = [];
 
-    for (const propRaw of seedable) {
-      const prop = propRaw as unknown as PropertyRow;
+    for (const prop of seedable) {
       const localDate = propertyLocalDate(now, prop.timezone);
       try {
         const r = await seedRoomsForDate(prop.id, localDate);

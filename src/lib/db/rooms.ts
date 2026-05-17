@@ -5,8 +5,19 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { Room } from '@/types';
-import { supabase, logErr, subscribeTable } from './_common';
+import { supabase, logErr, subscribeTable, makeUpsertByIdReducer, asRecordRows } from './_common';
 import { toRoomRow, fromRoomRow } from '../db-mappers';
+
+// Explicit column list, in lock-step with fromRoomRow() in db-mappers.ts.
+// Replaces the old `.select('*')` queries — the old shape returned every
+// row column on every fetch, including ML feature columns (cleaning_events
+// joins, score blobs) that the housekeeping UI never reads. Audit
+// recommendation #5 / #13 in .claude/reports/cost-hotpaths-audit.md.
+const ROOM_COLS =
+  'id, property_id, number, type, priority, status, assigned_to, assigned_name, ' +
+  'started_at, completed_at, date, issue_note, inspected_by, inspected_at, ' +
+  'is_dnd, dnd_note, arrival, stayover_day, stayover_minutes, help_requested, ' +
+  'checklist, photo_url';
 
 export function subscribeToRooms(
   _uid: string, pid: string, date: string,
@@ -17,24 +28,32 @@ export function subscribeToRooms(
     // narrow on property_id at the Postgres level and use the shouldRefetch
     // predicate to gate on date — that keeps stray events for other dates
     // (yesterday's row getting an inspection update, tomorrow's plan being
-    // scraped, …) from triggering a wasteful full-table re-fetch.
+    // scraped, …) from triggering a wasteful re-fetch.
     `rooms:${pid}:${date}`, 'rooms', `property_id=eq.${pid}`,
     async () => {
       const { data, error } = await supabase
-        .from('rooms').select('*')
+        .from('rooms').select(ROOM_COLS)
         .eq('property_id', pid).eq('date', date);
       if (error) throw error;
-      return (data ?? []).map(fromRoomRow);
+      return asRecordRows(data).map(fromRoomRow);
     },
     callback,
     (payload) => {
-      // Only re-fetch when the changed row is on this slice's date. Both
+      // Only react when the changed row is on this slice's date. Both
       // `new` and `old` are checked so we still react to deletes (where
       // `new` is null) and inserts (where `old` is null).
       const newDate = (payload.new as { date?: string } | null)?.date;
       const oldDate = (payload.old as { date?: string } | null)?.date;
       return newDate === date || oldDate === date;
     },
+    // applyPayload reducer: avoids amplification of bulk updates. Migration
+    // 0133 sets REPLICA IDENTITY FULL on rooms so payload.new is complete
+    // on UPDATE. The helper returns null when payload.new lacks an id,
+    // and the caller falls back to a refetch.
+    makeUpsertByIdReducer<Room>({
+      mapRow: fromRoomRow,
+      isInSlice: (raw) => (raw as { date?: string }).date === date,
+    }),
   );
 }
 
@@ -45,9 +64,9 @@ export function subscribeToAllRooms(
   return subscribeTable<Room>(
     `rooms-all:${pid}`, 'rooms', `property_id=eq.${pid}`,
     async () => {
-      const { data, error } = await supabase.from('rooms').select('*').eq('property_id', pid);
+      const { data, error } = await supabase.from('rooms').select(ROOM_COLS).eq('property_id', pid);
       if (error) throw error;
-      return (data ?? []).map(fromRoomRow);
+      return asRecordRows(data).map(fromRoomRow);
     },
     callback,
   );
@@ -84,9 +103,9 @@ export async function bulkAddRooms(_uid: string, pid: string, rooms: Omit<Room, 
 
 export async function getRoomsForDate(_uid: string, pid: string, date: string): Promise<Room[]> {
   const { data, error } = await supabase
-    .from('rooms').select('*').eq('property_id', pid).eq('date', date);
+    .from('rooms').select(ROOM_COLS).eq('property_id', pid).eq('date', date);
   if (error) { logErr('getRoomsForDate', error); throw error; }
-  return (data ?? []).map(fromRoomRow);
+  return asRecordRows(data).map(fromRoomRow);
 }
 
 // 2026-05-07: carryOverRooms() was deleted. It had no callers and copying

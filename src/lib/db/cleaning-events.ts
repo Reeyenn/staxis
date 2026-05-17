@@ -11,7 +11,15 @@
 // re-pull, but this audit log persists forever. That's the whole point.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { supabase, logErr, subscribeTable } from './_common';
+import { supabase, logErr, subscribeTable, makeUpsertByIdReducer } from './_common';
+
+// Matches fromCleaningEventRow below. Keep in sync. Audit follow-up
+// 2026-05-17: replaces SELECT * across all read sites.
+const CLEANING_EVENT_FIELDS =
+  'id, property_id, date, room_number, room_type, stayover_day, staff_id, ' +
+  'staff_name, started_at, completed_at, duration_minutes, status, ' +
+  'flag_reason, reviewed_by, reviewed_at, created_at';
+type CleaningEventRow = Record<string, unknown>;
 
 export type CleaningEventStatus = 'recorded' | 'discarded' | 'flagged' | 'approved' | 'rejected';
 
@@ -161,8 +169,8 @@ export async function insertCleaningEvent(input: {
       onConflict: 'property_id,date,room_number,started_at,completed_at',
       ignoreDuplicates: true,
     })
-    .select()
-    .maybeSingle();
+    .select(CLEANING_EVENT_FIELDS)
+    .maybeSingle<CleaningEventRow>();
 
   if (error) {
     logErr('insertCleaningEvent', error);
@@ -193,7 +201,7 @@ export async function getCleaningEventsForRange(
   const limit = Math.max(1, Math.min(options.limit ?? 5_000, 50_000));
   let q = supabase
     .from('cleaning_events')
-    .select('*')
+    .select(CLEANING_EVENT_FIELDS)
     .eq('property_id', pid)
     .gte('date', fromDate)
     .lte('date', toDate)
@@ -204,7 +212,7 @@ export async function getCleaningEventsForRange(
     q = q.neq('status', 'discarded');
   }
 
-  const { data, error } = await q;
+  const { data, error } = await q.returns<CleaningEventRow[]>();
   if (error) { logErr('getCleaningEventsForRange', error); throw error; }
   return (data ?? []).map(fromCleaningEventRow);
 }
@@ -216,10 +224,11 @@ export async function getCleaningEventsForRange(
 export async function getFlaggedCleaningEvents(pid: string): Promise<CleaningEvent[]> {
   const { data, error } = await supabase
     .from('cleaning_events')
-    .select('*')
+    .select(CLEANING_EVENT_FIELDS)
     .eq('property_id', pid)
     .eq('status', 'flagged')
-    .order('created_at', { ascending: true });
+    .order('created_at', { ascending: true })
+    .returns<CleaningEventRow[]>();
   if (error) { logErr('getFlaggedCleaningEvents', error); throw error; }
   return (data ?? []).map(fromCleaningEventRow);
 }
@@ -311,13 +320,27 @@ export function subscribeToTodayCleaningEvents(
     async () => {
       const { data, error } = await supabase
         .from('cleaning_events')
-        .select('*')
+        .select(CLEANING_EVENT_FIELDS)
         .eq('property_id', pid)
         .eq('date', date)
-        .order('completed_at', { ascending: false });
+        .order('completed_at', { ascending: false })
+        .returns<CleaningEventRow[]>();
       if (error) throw error;
       return (data ?? []).map(fromCleaningEventRow);
     },
     callback,
+    // Single-filter realtime only scopes to property_id; filter by date here.
+    (payload) => {
+      const newDate = (payload.new as { date?: string } | null)?.date;
+      const oldDate = (payload.old as { date?: string } | null)?.date;
+      return newDate === date || oldDate === date;
+    },
+    // REPLICA IDENTITY FULL is set on cleaning_events by migration 0133 so
+    // payload.new is the complete row on UPDATE. Avoids the N events → N
+    // refetch amplification when a manager bulk-resolves flagged events.
+    makeUpsertByIdReducer<CleaningEvent>({
+      mapRow: fromCleaningEventRow,
+      isInSlice: (raw) => (raw as { date?: string }).date === date,
+    }),
   );
 }

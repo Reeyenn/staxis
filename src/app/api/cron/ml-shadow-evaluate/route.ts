@@ -35,6 +35,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
+import { parseStringField, parseNumberField } from '@/lib/db-mappers';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -57,6 +58,24 @@ type ShadowRow = {
   validation_mae: number | null;
   shadow_started_at: string | null;
 };
+
+/** Runtime shape validation for the model_runs SELECT below. Audit H3. */
+function parseShadowRow(raw: unknown): ShadowRow | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const id = parseStringField(r.id);
+  const property_id = parseStringField(r.property_id);
+  const layer = parseStringField(r.layer);
+  if (!id || !property_id || !layer) return null;
+  return {
+    id,
+    property_id,
+    layer,
+    item_id: parseStringField(r.item_id) ?? null,
+    validation_mae: parseNumberField(r.validation_mae) ?? null,
+    shadow_started_at: parseStringField(r.shadow_started_at) ?? null,
+  };
+}
 
 type ActiveRow = {
   id: string;
@@ -91,7 +110,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     .limit(500);
 
   if (shErr) {
-    log.error('ml-shadow-evaluate: shadow query failed', { requestId, err: shErr as unknown as Error });
+    log.error('ml-shadow-evaluate: shadow query failed', { requestId, err: shErr });
     return NextResponse.json({ ok: false, error: errToString(shErr) }, { status: 500 });
   }
 
@@ -103,7 +122,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     detail?: unknown;
   }> = [];
 
-  for (const shadow of (shadows ?? []) as ShadowRow[]) {
+  const parsedShadows: ShadowRow[] = [];
+  for (const raw of shadows ?? []) {
+    const s = parseShadowRow(raw);
+    if (s) parsedShadows.push(s);
+  }
+  for (const shadow of parsedShadows) {
     try {
       // Look up the corresponding active row for the same (property, layer,
       // item_id). For demand/supply/optimizer, item_id will be null on both
