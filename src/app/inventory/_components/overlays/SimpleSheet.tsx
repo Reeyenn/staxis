@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { resizeImageForVision } from '@/lib/image-resize';
 
 import { T, fonts, statusColor } from '../tokens';
 import { Caps } from '../Caps';
@@ -63,16 +64,15 @@ function ScanInvoiceSheet({ open, onClose }: { open: boolean; onClose: () => voi
     setStatus('uploading');
     setMessage('');
     try {
-      const buf = await file.arrayBuffer();
-      const bytes = new Uint8Array(buf);
-      let bin = '';
-      for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
-      const imageBase64 = btoa(bin);
-      const mediaType = file.type || 'image/jpeg';
+      // Resize before upload — Anthropic Vision bills per pixel area, so a
+      // 12 MP iPhone photo costs ~4x what a 2 MP downscale costs without
+      // hurting OCR on legible line items. 1600px on the long edge keeps
+      // small-font receipt text readable.
+      const resized = await resizeImageForVision(file);
       const res = await fetchWithAuth('/api/inventory/scan-invoice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pid: activePropertyId, imageBase64, mediaType }),
+        body: JSON.stringify({ pid: activePropertyId, imageBase64: resized.base64, mediaType: resized.mediaType }),
       });
       const json = (await res.json()) as { ok?: boolean; items?: Array<{ item_name: string; quantity: number }> };
       if (!res.ok || !json.ok) {
