@@ -226,6 +226,12 @@ const checks: Array<[string, CheckFn]> = [
   // Stripe vars are set and others aren't. Warns when none are set
   // (pre-launch trial-only mode). Fails when keys are clearly malformed.
   ['stripe_billing_configured',      checkStripeBillingConfigured],
+  // ML_SERVICE_SECRET strength check (Pattern C — security review
+  // 2026-05-16): bumped floor from 8 to 32 chars in ml-service/src/config.py.
+  // Doctor warns LOUDLY here if the deployed value is short, missing, or
+  // looks like a placeholder — so a weak secret can't silently sit in
+  // production for weeks.
+  ['ml_service_secret_strength',     checkMlServiceSecretStrength],
   // Error tracking — Sentry no-ops gracefully when DSN missing, but a
   // malformed DSN means errors silently disappear. Fail on bad shape.
   ['sentry_dsn_shape',               checkSentryDsnShape],
@@ -2772,6 +2778,60 @@ async function checkStripeBillingConfigured(): Promise<Omit<Check, 'name' | 'dur
   return {
     status: 'ok',
     detail: `Stripe fully configured (${sk.startsWith('sk_test_') ? 'TEST mode' : 'LIVE mode'})`,
+  };
+}
+
+/**
+ * ml_service_secret_strength — ML_SERVICE_SECRET length + obvious-placeholder
+ * check (Pattern C, security review 2026-05-16).
+ *
+ * The secret is a single static bearer held by Vercel + GitHub Actions cron +
+ * Reeyen's local tokens. A leak from any one of those gives an attacker
+ * unscoped access to every property's train/predict endpoints. The realistic
+ * defense is (a) make brute-force impractical via length, and (b) make sure a
+ * weak placeholder value never lands in prod. Future hardening (per-property
+ * JWT with short TTL — backlog) reduces blast radius further; this is the
+ * cheap floor that ships today.
+ *
+ * Reports presence/length/placeholder only — never the value itself.
+ */
+async function checkMlServiceSecretStrength(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const secret = process.env.ML_SERVICE_SECRET ?? '';
+  if (!secret.trim()) {
+    return {
+      status: 'fail',
+      detail: 'ML_SERVICE_SECRET not set — every cron-triggered ML train/predict call to staxis-ml will 401.',
+      fix: 'Generate with `openssl rand -hex 32`, set as ML_SERVICE_SECRET in Vercel + GitHub Actions + Fly (staxis-ml app). All three sides must match exactly.',
+    };
+  }
+  if (secret.length < 32) {
+    return {
+      status: 'fail',
+      detail: `ML_SERVICE_SECRET is ${secret.length} chars — too short. Brute-force ETA is short; ml-service refuses to boot below 32 chars after the May 2026 security review.`,
+      fix: 'Rotate: `openssl rand -hex 32`. Update Vercel + GitHub Actions + Fly atomically. Procedure: RUNBOOKS.md > ML_SERVICE_SECRET rotation.',
+    };
+  }
+  // Catch obvious placeholders that occasionally slip in via copy-paste
+  // from .env.example or a fixture. We don't try to be exhaustive — the
+  // 32-char floor already rejects most placeholders; this catches the
+  // common "long enough but obviously not random" cases.
+  const lower = secret.toLowerCase();
+  const placeholderHints = [
+    'placeholder', 'changeme', 'example', 'todo', 'secret_here',
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '00000000000000000000000000000000',
+  ];
+  for (const hint of placeholderHints) {
+    if (lower.includes(hint)) {
+      return {
+        status: 'fail',
+        detail: `ML_SERVICE_SECRET appears to be a placeholder value (matches "${hint}"). Replace before any real ML call hits prod.`,
+        fix: 'Rotate: `openssl rand -hex 32`. Procedure: RUNBOOKS.md > ML_SERVICE_SECRET rotation.',
+      };
+    }
+  }
+  return {
+    status: 'ok',
+    detail: `ML_SERVICE_SECRET set (${secret.length} chars).`,
   };
 }
 
