@@ -6,7 +6,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { useLang } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { t } from '@/lib/translations';
-import { Wifi, Users, Volume2, ChevronRight } from 'lucide-react';
+import { Wifi, Users, Volume2, Clock, ChevronRight } from 'lucide-react';
 import { canManageTeam } from '@/lib/roles';
 
 export default function SettingsPage() {
@@ -25,12 +25,20 @@ export default function SettingsPage() {
       desc: lang === 'es' ? 'Activa o desactiva las respuestas habladas de Staxis' : 'Tune how Staxis listens and speaks',
     },
     ...(user && canManageTeam(user.role)
-      ? [{
-          href:'/settings/accounts',
-          icon:Users,
-          label: lang === 'es' ? 'Cuenta y equipo' : 'Account & Team',
-          desc: lang === 'es' ? 'Tu perfil, contraseña y cuentas del equipo' : 'Your profile, password, and team accounts',
-        }]
+      ? [
+          {
+            href:'/settings/accounts',
+            icon:Users,
+            label: lang === 'es' ? 'Cuenta y equipo' : 'Account & Team',
+            desc: lang === 'es' ? 'Tu perfil, contraseña y cuentas del equipo' : 'Your profile, password, and team accounts',
+          },
+          {
+            href:'/settings/shifts',
+            icon:Clock,
+            label: lang === 'es' ? 'Turnos' : 'Shifts',
+            desc: lang === 'es' ? 'Plantillas de turnos por departamento (8a–4p, 7a–3p, etc.)' : 'Shift presets by department (8a–4p, 7a–3p, etc.)',
+          },
+        ]
       : []),
   ];
 

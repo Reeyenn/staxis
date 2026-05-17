@@ -1,21 +1,29 @@
-// useWeekShifts — read-only week-of-shifts view derived from shift_confirmations.
+// useWeekShifts — week-of-shifts view backed by `scheduled_shifts`
+// (migration 0147), with `time_off_requests` joined for ⏱ pins on the
+// manager grid and `week_publications` for the draft/published gate
+// that decides what staff see in My Shifts.
 //
-// The new Schedule grid (manager) and My Shifts strip (staff) both display a
-// 7-day Mon→Sun snapshot of who's working. The existing data layer only knows
-// about *next-day* SMS confirmations (`shift_confirmations` rows keyed by
-// (property_id, staff_id, shift_date)) — there is no separate "weekly
-// schedule" table yet. So we treat the union of confirmation rows in the
-// visible week as ground truth: a row in {sent, confirmed} = scheduled,
-// `declined` = explicitly off (rendered as empty cell), missing = day off.
-//
-// The hook is read-only. The week-grid header buttons ("Publish week",
-// "Copy last week") are disabled in this pass; persisting a forward-looking
-// weekly schedule is deferred to a follow-up that introduces a proper
-// scheduled_shifts table.
+// Returns:
+//   • days[]            — Mon..Sun metadata for the visible week
+//   • byStaff{}         — per-staff [Mon..Sun] assigned-shift cells
+//   • openShifts[]      — kind='open' rows in the visible week
+//   • torPending{}      — pending TOR rows in the visible week, indexed
+//                         by `${staffId}:${date}` for cell pin lookup
+//   • torByStaff{}      — all TOR for the visible week, indexed by
+//                         staffId (used by the My Shifts time-off card)
+//   • publishedDates    — Set of YYYY-MM-DD dates inside a published
+//                         week. Staff view hides drafts.
+//   • presets[]         — full preset list for the property (cell-edit
+//                         popover offers these as one-click picks)
 
 import { useEffect, useState } from 'react';
-import type { ShiftConfirmation } from '@/types';
-import { subscribeToShiftConfirmations } from '@/lib/db';
+import {
+  subscribeToScheduledShifts, subscribeToTimeOffRequests,
+  subscribeToWeekPublications, subscribeToShiftPresets,
+} from '@/lib/db';
+import type {
+  ScheduledShift, TimeOffRequest, WeekPublication, ShiftPreset,
+} from '@/types';
 
 export type WeekDayKey = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
 export const DAY_KEYS: readonly WeekDayKey[] = ['mon','tue','wed','thu','fri','sat','sun'];
@@ -25,45 +33,43 @@ export const DAY_LABELS: Record<WeekDayKey, string> = {
 
 export interface WeekDay {
   key: WeekDayKey;
-  label: string;        // 'Mon'
-  date: string;         // YYYY-MM-DD
-  dateLabel: string;    // 'May 11'
-  dayNum: string;       // '11'
+  label: string;
+  date: string;       // YYYY-MM-DD
+  dateLabel: string;  // 'May 11'
+  dayNum: string;     // '11'
   today: boolean;
   tomorrow: boolean;
-  past: boolean;        // strictly before today
+  past: boolean;
 }
 
 export type WeekShiftCell =
-  | { kind: 'shift'; label: string; hrs: number; status: 'sent' | 'confirmed' }
-  | { kind: 'declined'; label: string }
+  | { kind: 'shift'; shift: ScheduledShift }
   | { kind: 'off' };
 
 export interface WeekShiftsResult {
-  /** Day-index 0..6 metadata (Mon..Sun) for the requested week. */
   days: WeekDay[];
-  /** Per-staff [Mon..Sun] cells. Missing staff keys mean no rows in the week. */
   byStaff: Record<string, WeekShiftCell[]>;
+  openShifts: ScheduledShift[];
+  torPending: Record<string, TimeOffRequest>;
+  torByStaff: Record<string, TimeOffRequest[]>;
+  publishedDates: Set<string>;
+  presets: ShiftPreset[];
   loading: boolean;
 }
 
 // ── Date helpers ──────────────────────────────────────────────────────────
-// We compute the Monday-anchored week for a reference date. Everything is
-// done in local time (browser TZ); the housekeeping app already uses local
-// dates throughout (formatDisplayDate, addDays in staff/page.tsx).
 function ymd(d: Date): string {
   return d.toLocaleDateString('en-CA');
 }
-
 function parseYmd(s: string): Date {
   const [y, m, d] = s.split('-').map(Number);
   return new Date(y, m - 1, d);
 }
 
-/** Returns YYYY-MM-DD of the Monday on or before `reference`. */
+/** YYYY-MM-DD of the Monday on or before `reference`. */
 export function mondayOf(reference: Date | string): string {
   const ref = typeof reference === 'string' ? parseYmd(reference) : reference;
-  const dow = ref.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+  const dow = ref.getDay(); // 0=Sun
   const back = dow === 0 ? 6 : dow - 1;
   const mon = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate() - back);
   return ymd(mon);
@@ -101,59 +107,91 @@ function emptyWeek(): WeekShiftCell[] {
   return Array.from({ length: 7 }, () => ({ kind: 'off' as const }));
 }
 
-function bucketRows(rows: ShiftConfirmation[], days: WeekDay[]): Record<string, WeekShiftCell[]> {
-  const byStaff: Record<string, WeekShiftCell[]> = {};
-  for (const r of rows) {
-    const dayIdx = days.findIndex(d => d.date === r.shiftDate);
-    if (dayIdx === -1) continue;
-    if (!byStaff[r.staffId]) byStaff[r.staffId] = emptyWeek();
-    if (r.status === 'declined') {
-      byStaff[r.staffId][dayIdx] = { kind: 'declined', label: 'Declined' };
-    } else if (r.status === 'confirmed' || r.status === 'sent' || r.status === 'pending') {
-      // 'pending' is the legacy alias for 'sent' (link out, no reply yet).
-      const status: 'sent' | 'confirmed' = r.status === 'confirmed' ? 'confirmed' : 'sent';
-      byStaff[r.staffId][dayIdx] = { kind: 'shift', label: 'Shift', hrs: 8, status };
-    }
-  }
-  return byStaff;
-}
-
-/**
- * Subscribes to shift_confirmations for the 7-day window starting at
- * `weekStart` (a YYYY-MM-DD Monday). Returns one cell per day per staff.
- *
- * The existing realtime subscription helper streams *one date at a time*,
- * so we spin up 7 parallel subscriptions and reduce. This isn't ideal but
- * it's a strict superset of what the current schedule tab already does
- * (one per visible date) and keeps the data layer untouched.
- */
 export function useWeekShifts(
   propertyId: string | null,
   weekStart: string,
 ): WeekShiftsResult {
   const days = buildDays(weekStart);
-  const [perDay, setPerDay] = useState<Record<string, ShiftConfirmation[]>>({});
-  const [loading, setLoading] = useState(true);
+  const weekEnd = days[6].date;
+
+  const [shifts, setShifts] = useState<ScheduledShift[]>([]);
+  const [tor, setTor] = useState<TimeOffRequest[]>([]);
+  const [pubs, setPubs] = useState<WeekPublication[]>([]);
+  const [presets, setPresets] = useState<ShiftPreset[]>([]);
+  const [loadingFlags, setLoadingFlags] = useState({
+    shifts: true, tor: true, pubs: true, presets: true,
+  });
 
   useEffect(() => {
-    if (!propertyId) { setPerDay({}); setLoading(false); return; }
-    setLoading(true);
-    setPerDay({});
-    let arrived = 0;
-    const unsubs = days.map(d => {
-      return subscribeToShiftConfirmations('', propertyId, d.date, (rows) => {
-        setPerDay(prev => ({ ...prev, [d.date]: rows }));
-        arrived += 1;
-        if (arrived >= days.length) setLoading(false);
-      });
-    });
-    return () => { unsubs.forEach(u => { try { u(); } catch { /* ignore */ } }); };
-    // We intentionally re-run on weekStart change; days is recomputed from it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [propertyId, weekStart]);
+    if (!propertyId) {
+      setShifts([]); setTor([]); setPubs([]); setPresets([]);
+      setLoadingFlags({ shifts: false, tor: false, pubs: false, presets: false });
+      return;
+    }
+    setLoadingFlags({ shifts: true, tor: true, pubs: true, presets: true });
+    const unSubs = [
+      subscribeToScheduledShifts('', propertyId, weekStart, weekEnd, (rows) => {
+        setShifts(rows);
+        setLoadingFlags(f => ({ ...f, shifts: false }));
+      }),
+      subscribeToTimeOffRequests('', propertyId, (rows) => {
+        setTor(rows);
+        setLoadingFlags(f => ({ ...f, tor: false }));
+      }),
+      subscribeToWeekPublications('', propertyId, (rows) => {
+        setPubs(rows);
+        setLoadingFlags(f => ({ ...f, pubs: false }));
+      }),
+      subscribeToShiftPresets('', propertyId, (rows) => {
+        setPresets(rows);
+        setLoadingFlags(f => ({ ...f, presets: false }));
+      }),
+    ];
+    return () => { unSubs.forEach(u => { try { u(); } catch { /* ignore */ } }); };
+  }, [propertyId, weekStart, weekEnd]);
 
-  const allRows = Object.values(perDay).flat();
-  const byStaff = bucketRows(allRows, days);
+  // Bucket assigned shifts per (staff, day). Open shifts collected separately.
+  const byStaff: Record<string, WeekShiftCell[]> = {};
+  const openShifts: ScheduledShift[] = [];
+  for (const s of shifts) {
+    if (s.kind === 'open') { openShifts.push(s); continue; }
+    if (!s.staffId) continue;
+    const dayIdx = days.findIndex(d => d.date === s.shiftDate);
+    if (dayIdx === -1) continue;
+    if (!byStaff[s.staffId]) byStaff[s.staffId] = emptyWeek();
+    byStaff[s.staffId][dayIdx] = { kind: 'shift', shift: s };
+  }
 
-  return { days, byStaff, loading };
+  // TOR indices scoped to the visible week.
+  const torPending: Record<string, TimeOffRequest> = {};
+  const torByStaff: Record<string, TimeOffRequest[]> = {};
+  for (const r of tor) {
+    if (r.requestDate >= weekStart && r.requestDate <= weekEnd && r.status === 'pending') {
+      torPending[`${r.staffId}:${r.requestDate}`] = r;
+    }
+    if (!torByStaff[r.staffId]) torByStaff[r.staffId] = [];
+    torByStaff[r.staffId].push(r);
+  }
+
+  // Published dates — latest publication wins per week. We expand each
+  // week_start into its 7 days.
+  const latestByWeek = new Map<string, WeekPublication>();
+  for (const p of pubs) {
+    const existing = latestByWeek.get(p.weekStart);
+    if (!existing || p.publishedAt.getTime() > existing.publishedAt.getTime()) {
+      latestByWeek.set(p.weekStart, p);
+    }
+  }
+  const publishedDates = new Set<string>();
+  for (const p of latestByWeek.values()) {
+    for (let i = 0; i < 7; i++) publishedDates.add(addDays(p.weekStart, i));
+  }
+
+  const loading = loadingFlags.shifts || loadingFlags.tor
+    || loadingFlags.pubs || loadingFlags.presets;
+
+  return {
+    days, byStaff, openShifts, torPending, torByStaff,
+    publishedDates, presets, loading,
+  };
 }
