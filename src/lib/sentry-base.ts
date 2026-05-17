@@ -41,21 +41,33 @@ export function getBaseSentryOptions() {
  *   - 0.0   "drop" — known-no-signal transactions (healthchecks)
  *   - 0.01  "noisy" — high-QPS event hooks
  *   - 0.05  "medium" — cron + voice-brain (volume scales with hotels)
- *   - 0.1   "default" — every other route, matches the prior global rate
+ *   - default rate ("inherit") — every other route
  *
- * The sampler is duck-typed against the Sentry samplingContext to avoid
- * pulling the typings into a shared module (server and edge SDKs have
- * slightly different shapes). The runtime contract: return a number
- * 0..1, return undefined to inherit the global rate.
+ * Structurally typed against Sentry's TracesSamplerSamplingContext so it
+ * fits the SDK's `tracesSampler?: (ctx) => number | boolean` slot. We
+ * accept any extra fields the context carries so the sampler keeps
+ * compiling across SDK minor versions without a hard import dependency.
  */
-type SamplingContext = {
-  transactionContext?: { name?: string };
-  request?: { url?: string };
+type RouteSamplingContext = {
+  /** Span name as set by the SDK, e.g. "POST /api/events" or "/agent/command". */
+  name?: string;
+  /** Normalized request shape attached by the Node integration. */
+  normalizedRequest?: { url?: string };
+  /** Browser-runtime location (kept for forward-compat with the client SDK). */
+  location?: { href?: string };
+  /**
+   * Sentry's helper that returns a rate inherited from the parent trace if
+   * the parent had one, otherwise the provided fallback. We use it for the
+   * "default" branch so distributed traces stay coherent.
+   */
+  inheritOrSampleWith?: (fallback: number) => number;
 };
 
-export function shouldSampleTransaction(ctx: SamplingContext): number | undefined {
-  const name = ctx.transactionContext?.name ?? '';
-  const url = ctx.request?.url ?? '';
+const DEFAULT_FALLBACK_RATE = 0.1;
+
+export function shouldSampleTransaction(ctx: RouteSamplingContext): number {
+  const name = ctx.name ?? '';
+  const url = ctx.normalizedRequest?.url ?? ctx.location?.href ?? '';
   const path = name || url;
 
   // Strip method prefix ("GET /api/...") if present.
@@ -73,6 +85,8 @@ export function shouldSampleTransaction(ctx: SamplingContext): number | undefine
   if (route.includes('/api/agent/voice-brain')) return 0.05;
   if (route.includes('/api/agent/nudges/check')) return 0.05;
 
-  // Default — inherit the global rate (0.1 server, 0.1 edge, 0.05 client).
-  return undefined;
+  // Default — inherit parent-trace decision or fall back to the global rate.
+  return ctx.inheritOrSampleWith
+    ? ctx.inheritOrSampleWith(DEFAULT_FALLBACK_RATE)
+    : DEFAULT_FALLBACK_RATE;
 }

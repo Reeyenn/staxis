@@ -55,64 +55,102 @@ describe('getBaseSentryOptions', () => {
 describe('shouldSampleTransaction', () => {
   test('suppresses /api/events to 1%', () => {
     assert.equal(
-      shouldSampleTransaction({ transactionContext: { name: 'POST /api/events' } }),
+      shouldSampleTransaction({ name: 'POST /api/events' }),
       0.01,
     );
   });
 
   test('suppresses /api/sms-reply to 1%', () => {
     assert.equal(
-      shouldSampleTransaction({ transactionContext: { name: 'POST /api/sms-reply' } }),
+      shouldSampleTransaction({ name: 'POST /api/sms-reply' }),
       0.01,
     );
   });
 
   test('downsamples /api/cron/* to 5%', () => {
     assert.equal(
-      shouldSampleTransaction({ transactionContext: { name: 'GET /api/cron/process-sms-jobs' } }),
+      shouldSampleTransaction({ name: 'GET /api/cron/process-sms-jobs' }),
       0.05,
     );
     assert.equal(
-      shouldSampleTransaction({ transactionContext: { name: 'GET /api/cron/ml-run-inference' } }),
+      shouldSampleTransaction({ name: 'GET /api/cron/ml-run-inference' }),
       0.05,
     );
   });
 
   test('downsamples /api/agent/voice-brain and nudges/check to 5%', () => {
     assert.equal(
-      shouldSampleTransaction({ transactionContext: { name: 'POST /api/agent/voice-brain/chat/completions' } }),
+      shouldSampleTransaction({ name: 'POST /api/agent/voice-brain/chat/completions' }),
       0.05,
     );
     assert.equal(
-      shouldSampleTransaction({ transactionContext: { name: 'POST /api/agent/nudges/check' } }),
+      shouldSampleTransaction({ name: 'POST /api/agent/nudges/check' }),
       0.05,
     );
   });
 
-  test('returns undefined for routes that should inherit the global rate', () => {
+  test('falls back to global rate for routes that should inherit', () => {
+    // No inheritOrSampleWith provided → returns the hardcoded default (0.1).
     assert.equal(
-      shouldSampleTransaction({ transactionContext: { name: 'POST /api/agent/command' } }),
-      undefined,
+      shouldSampleTransaction({ name: 'POST /api/agent/command' }),
+      0.1,
     );
     assert.equal(
-      shouldSampleTransaction({ transactionContext: { name: 'GET /api/admin/doctor' } }),
-      undefined,
+      shouldSampleTransaction({ name: 'GET /api/admin/doctor' }),
+      0.1,
     );
     assert.equal(
-      shouldSampleTransaction({ transactionContext: { name: 'PUT /api/auth/team' } }),
-      undefined,
+      shouldSampleTransaction({ name: 'PUT /api/auth/team' }),
+      0.1,
     );
   });
 
-  test('falls back to request.url when transactionContext.name is unavailable', () => {
+  test('uses inheritOrSampleWith when provided (distributed-trace coherence)', () => {
+    // The Sentry SDK passes inheritOrSampleWith to keep parent-sampled
+    // children sampled. Confirm we call through to it on the default branch.
+    let receivedFallback: number | undefined;
+    const sampler = (fb: number) => {
+      receivedFallback = fb;
+      return 0.42; // parent-driven rate
+    };
+    const rate = shouldSampleTransaction({
+      name: 'POST /api/agent/command',
+      inheritOrSampleWith: sampler,
+    });
+    assert.equal(rate, 0.42);
+    assert.equal(receivedFallback, 0.1);
+  });
+
+  test('inheritOrSampleWith is NOT consulted on the explicit-rule branches', () => {
+    // /api/events is forced to 1% regardless of parent sampling — a sampled
+    // parent trace must not push it back up to 10%.
+    let called = false;
+    const rate = shouldSampleTransaction({
+      name: 'POST /api/events',
+      inheritOrSampleWith: () => {
+        called = true;
+        return 1.0;
+      },
+    });
+    assert.equal(rate, 0.01);
+    assert.equal(called, false);
+  });
+
+  test('falls back to normalizedRequest.url when name is missing', () => {
     assert.equal(
-      shouldSampleTransaction({ request: { url: 'https://getstaxis.com/api/events' } }),
+      shouldSampleTransaction({ normalizedRequest: { url: 'https://getstaxis.com/api/events' } }),
       0.01,
     );
   });
 
-  test('handles empty / unknown context gracefully (default rate inherited)', () => {
-    assert.equal(shouldSampleTransaction({}), undefined);
-    assert.equal(shouldSampleTransaction({ transactionContext: {} }), undefined);
+  test('falls back to location.href (browser SDK shape)', () => {
+    assert.equal(
+      shouldSampleTransaction({ location: { href: 'https://getstaxis.com/api/sms-reply' } }),
+      0.01,
+    );
+  });
+
+  test('handles empty / unknown context gracefully (returns global rate)', () => {
+    assert.equal(shouldSampleTransaction({}), 0.1);
   });
 });
