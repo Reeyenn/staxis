@@ -3,6 +3,11 @@
 // are consistent across the catalog.
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import {
+  parseStringField,
+  parseBoolField,
+  parseOptionalUnionField,
+} from '@/lib/db-mappers';
 import type { AppRole } from '@/lib/roles';
 import type { ToolContext } from '../tools';
 
@@ -20,6 +25,40 @@ export interface RoomRow {
   started_at: string | null;
   completed_at: string | null;
   type: 'checkout' | 'stayover' | 'vacant' | null;
+}
+
+const ROOM_TYPES = ['checkout', 'stayover', 'vacant'] as const;
+
+/**
+ * Validate that a Supabase row has the shape `findRoomByNumber` expects.
+ * Returns the typed RoomRow on success, null otherwise. Used to gate the
+ * agent tool's mutation paths so a future SELECT-vs-interface drift can't
+ * silently feed `undefined` into `assertFloorRoleCanMutateRoom`. Audit
+ * finding H2 (2026-05-17).
+ */
+function parseRoomRow(raw: unknown): RoomRow | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const id = parseStringField(r.id);
+  const property_id = parseStringField(r.property_id);
+  const number = parseStringField(r.number);
+  const status = parseStringField(r.status);
+  if (!id || !property_id || !number || !status) return null;
+  return {
+    id,
+    property_id,
+    number,
+    status,
+    date: parseStringField(r.date) ?? null,
+    assigned_to: parseStringField(r.assigned_to) ?? null,
+    is_dnd: parseBoolField(r.is_dnd) ?? false,
+    dnd_note: parseStringField(r.dnd_note) ?? null,
+    issue_note: parseStringField(r.issue_note) ?? null,
+    help_requested: parseBoolField(r.help_requested) ?? false,
+    started_at: parseStringField(r.started_at) ?? null,
+    completed_at: parseStringField(r.completed_at) ?? null,
+    type: parseOptionalUnionField(r.type, ROOM_TYPES) ?? null,
+  };
 }
 
 /**
@@ -143,7 +182,7 @@ export async function findRoomByNumber(
     .order('date', { ascending: false, nullsFirst: false })
     .limit(1);
   if (error || !data?.length) return null;
-  return data[0] as unknown as RoomRow;
+  return parseRoomRow(data[0]);
 }
 
 /**
@@ -184,6 +223,24 @@ export interface StaffRow {
   is_active: boolean;
 }
 
+/** Same shape-validation gate as parseRoomRow. Audit finding H2. */
+function parseStaffRow(raw: unknown): StaffRow | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const id = parseStringField(r.id);
+  const property_id = parseStringField(r.property_id);
+  const name = parseStringField(r.name);
+  if (!id || !property_id || !name) return null;
+  return {
+    id,
+    property_id,
+    name,
+    role: parseStringField(r.role) ?? null,
+    phone: parseStringField(r.phone) ?? null,
+    is_active: parseBoolField(r.is_active) ?? false,
+  };
+}
+
 /**
  * Find a staff member by name (case-insensitive partial match). Used by
  * tools like assign_room("302", "Maria") — pick the staff record. If
@@ -202,10 +259,12 @@ export async function findStaffByName(
     .eq('is_active', true);
   if (error || !data) return null;
   // Prefer exact case-insensitive match; otherwise first partial.
-  const exact = data.find(s => (s.name as string)?.toLowerCase() === normalized);
-  if (exact) return exact as unknown as StaffRow;
-  const partial = data.find(s => (s.name as string)?.toLowerCase().includes(normalized));
-  return (partial as unknown as StaffRow) ?? null;
+  const lcName = (s: { name?: unknown }): string =>
+    parseStringField(s.name)?.toLowerCase() ?? '';
+  const exact = data.find(s => lcName(s) === normalized);
+  if (exact) return parseStaffRow(exact);
+  const partial = data.find(s => lcName(s).includes(normalized));
+  return partial ? parseStaffRow(partial) : null;
 }
 
 /** Returns true if the role is allowed to perform manager-only actions. */

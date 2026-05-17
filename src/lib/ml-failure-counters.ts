@@ -90,13 +90,13 @@ export async function incrementMLFailureCounter(
 
     if (rpcErr) {
       log.warn('ml-failure-counter: rpc failed (non-fatal)', {
-        kind, err: rpcErr as unknown as Error,
+        kind, err: rpcErr,
       });
     }
   } catch (e) {
     // Belt-and-suspenders — counter logic must NEVER crash the parent request.
     log.warn('ml-failure-counter: unexpected exception (non-fatal)', {
-      kind, err: e as unknown as Error,
+      kind, err: e,
     });
   }
 }

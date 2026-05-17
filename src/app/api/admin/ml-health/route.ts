@@ -109,8 +109,16 @@ async function fetchPredictionStats(
     .eq('property_id', propertyId)
     .eq(dateColumn, today());
 
+  // Audit M4: the column is resolved at runtime, so TS can't help. Guard
+  // with typeof so a missing column returns null instead of `undefined as string`
+  // (which serializes to null anyway but masks the schema drift).
+  let lastPredictionAt: string | null = null;
+  if (latest && typeof latest === 'object') {
+    const v = (latest as Record<string, unknown>)[predictedAtColumn];
+    if (typeof v === 'string') lastPredictionAt = v;
+  }
   return {
-    lastPredictionAt: latest ? ((latest as unknown as Record<string, unknown>)[predictedAtColumn] as string) : null,
+    lastPredictionAt,
     predictionCountToday: count ?? 0,
   };
 }

@@ -69,7 +69,7 @@ export async function writeCronHeartbeat(
       log.warn('cron-heartbeat: upsert failed', {
         requestId: extras.requestId,
         cronName,
-        err: error as unknown as Error,
+        err: error,
       });
     }
   } catch (err) {

@@ -58,12 +58,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       .update({ inventory_ai_mode: body.mode })
       .eq('id', body.propertyId);
     if (error) {
-      log.error('inventory/ai-mode: update failed', { requestId, err: error as unknown as Error });
+      log.error('inventory/ai-mode: update failed', { requestId, err: error });
       return err('internal_error', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
     return NextResponse.json({ ok: true, requestId, data: { mode: body.mode } });
   } catch (e) {
-    log.error('inventory/ai-mode: exception', { requestId, err: e as Error });
+    log.error('inventory/ai-mode: exception', { requestId, err: e });
     return err('internal_error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }
