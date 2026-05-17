@@ -1611,9 +1611,17 @@ const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // 0140 intentionally skipped (no file on disk; legacy slot in prod).
   // 0141 audit/data-model cleanup: drop 8 dead tables + dead FK columns.
   // 0142 audit/data-model cleanup: enforce 8 missing FK constraints.
+  // 0143 agent_voice_sessions table for realtime voice session bookkeeping.
+  // 0144 maintenance_photos per-property RLS.
+  // 0145 agent_costs.kind = 'vision'.
+  // 0146 accounts.staff_id link column.
+  // 0147 staff_schedule tables (weekly schedule data layer).
+  // 0148 sms_jobs.sent_dirty status flag.
+  // 0149 audit/data-model follow-up: COMMENTs documenting polymorphic + external IDs.
   '0124', '0125', '0126', '0129', '0130', '0131', '0132', '0133',
   '0135', '0136', '0137', '0138', '0139',
-  '0141', '0142',
+  '0141', '0142', '0143', '0144', '0145', '0146', '0147', '0148',
+  '0149',
 ];
 
 /**
