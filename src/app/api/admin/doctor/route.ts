@@ -2817,7 +2817,7 @@ async function checkStripeBillingConfigured(): Promise<Omit<Check, 'name' | 'dur
  * Reports presence/length/placeholder only — never the value itself.
  */
 async function checkMlServiceSecretStrength(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  const secret = process.env.ML_SERVICE_SECRET ?? '';
+  const secret = env.ML_SERVICE_SECRET ?? '';
   if (!secret.trim()) {
     return {
       status: 'fail',

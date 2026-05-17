@@ -165,7 +165,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
       }
     };
 
-    (async () => {
+    void (async () => {
       setLoading(true);
       await loadProps();
       if (!cancelled) setLoading(false);
@@ -201,7 +201,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     });
 
     // ── Rest of property data (one-time fetch) ─────────────────────────────
-    (async () => {
+    void (async () => {
       // Load areas + laundry config in a separate try/catch so a load
       // failure never affects staff loading.
       try {

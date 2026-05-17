@@ -113,7 +113,7 @@ export function useConversationalSession(opts: UseConversationalSessionOpts): Us
     setStatus('connecting');
     setError(null);
 
-    (async () => {
+    void (async () => {
       // 1. Mint a signed URL.
       let mintData: SessionMintResponse['data'] | null = null;
       try {

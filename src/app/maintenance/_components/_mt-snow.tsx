@@ -415,14 +415,20 @@ export function StorageImage({
   const [url, setUrl] = React.useState<string | null>(null);
   React.useEffect(() => {
     let alive = true;
-    (async () => {
-      const { supabase } = await import('@/lib/supabase');
-      const { data, error } = await supabase.storage
-        .from('maintenance-photos')
-        .createSignedUrl(path, 60 * 5);
-      if (!alive) return;
-      if (error || !data?.signedUrl) setUrl(null);
-      else setUrl(data.signedUrl);
+    void (async () => {
+      try {
+        const { supabase } = await import('@/lib/supabase');
+        const { data, error } = await supabase.storage
+          .from('maintenance-photos')
+          .createSignedUrl(path, 60 * 5);
+        if (!alive) return;
+        if (error || !data?.signedUrl) setUrl(null);
+        else setUrl(data.signedUrl);
+      } catch {
+        // Thumbnail render is best-effort — dynamic import or auth failure
+        // just hides the image.
+        if (alive) setUrl(null);
+      }
     })();
     return () => { alive = false; };
   }, [path]);

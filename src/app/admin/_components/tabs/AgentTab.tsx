@@ -40,7 +40,7 @@ export function AgentTab() {
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    void (async () => {
       try {
         const res = await fetchWithAuth('/api/agent/metrics');
         if (!res.ok) {
