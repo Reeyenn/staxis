@@ -168,6 +168,43 @@ export function ipToRateLimitKey(ip: string | null | undefined): string {
 export const NO_PROPERTY_RATE_LIMIT_KEY = '00000000-0000-0000-0000-000000000000';
 
 /**
+ * Endpoints that directly cost money on every call (Twilio SMS, Claude API,
+ * Resend email). When the rate-limit RPC errors, these endpoints fail
+ * CLOSED — refuse the request — instead of falling open. Rationale: a
+ * Postgres hiccup during peak-traffic hour would otherwise leave billing
+ * uncapped fleet-wide (the cap exists precisely to bound spend during
+ * abuse / runaway-script scenarios; without it, the spend exposure is
+ * unbounded).
+ *
+ * Non-billing endpoints (read-path rate limits, schedule autosave, etc.)
+ * still fail OPEN because blocking them on a transient DB error would
+ * inconvenience legitimate users without limiting any real downside.
+ *
+ * Doctor's `api_limits_writable` check probes the same RPC every 60s, so
+ * a sustained failure of THIS path lights up the doctor BEFORE any real
+ * caller hits the fail-closed branch.
+ */
+const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<RateLimitEndpoint>([
+  // Each pms-onboard burns $1-3 of Anthropic credit on the Fly worker.
+  'pms-onboard',
+  // Recipe regeneration is the same shape as pms-onboard.
+  'admin-regenerate-recipe',
+  // Claude Vision calls.
+  'scan-invoice',
+  'photo-count',
+  // Twilio SMS fan-out (per-recipient charge).
+  'send-shift-confirmations',
+  'help-request',
+  'notify-backup',
+  'notify-housekeepers-sms',
+  'morning-resend',
+  'sms-reply-resend',
+  'test-sms-flow',
+  // Resend transactional email (per-recipient charge).
+  'email-transactional',
+]);
+
+/**
  * Check the rate limit for (property_id, endpoint) and increment the hour
  * counter atomically. Returns:
  *   { allowed: true }  → call may proceed
@@ -195,20 +232,30 @@ export async function checkAndIncrementRateLimit(
       p_hour_bucket: hourBucket,
     });
     if (error) {
-      // ── Fail-open visibility (May 2026 audit pass-3) ──────────────
-      // Production safety default: a Postgres hiccup must NOT block all
-      // SMS sends. But the old code was a console.warn — invisible in
-      // Vercel's log noise, completely undetected at fleet scale.
-      // Promoted to log.error so it lands in Sentry + the doctor's
-      // logging surface, with the endpoint + property tagged so
-      // dashboards can chart "how many fail-opens did the SMS pipeline
-      // eat today, on which routes". Paired with the doctor's new
-      // api_limits_writable check that probes the same RPC.
-      log.error('[ratelimit] rpc failed — FAILING OPEN', {
-        endpoint, pid, rpcError: error.message,
-        // Tag for Sentry dashboards (see src/lib/sentry.ts tag-lift).
-        route: `ratelimit:${endpoint}`,
-      });
+      // ── Billing endpoints fail CLOSED, others fail OPEN ────────────
+      // The original blanket fail-open was correct for "don't break the
+      // app on a DB hiccup", but for billing-impacting endpoints (Twilio
+      // SMS, Claude tokens, Resend email) failing open removes the only
+      // guardrail against fleet-wide spend abuse during a DB outage.
+      // Pair: the api_limits_writable doctor check polls the same RPC,
+      // so a sustained failure lights up monitoring before this branch
+      // ever rejects a real user request.
+      const billing = BILLING_IMPACTING_ENDPOINTS.has(endpoint);
+      log.error(
+        billing
+          ? '[ratelimit] rpc failed on billing endpoint — FAILING CLOSED'
+          : '[ratelimit] rpc failed — FAILING OPEN',
+        {
+          endpoint, pid, rpcError: error.message,
+          // Tag for Sentry dashboards (see src/lib/sentry.ts tag-lift).
+          route: `ratelimit:${endpoint}`,
+        },
+      );
+      if (billing) {
+        // Give the caller a retry-after hint. 60s matches the cache TTL
+        // the doctor uses for its probe — by then ops should know.
+        return { allowed: false, retryAfterSec: 60, current: 0, cap };
+      }
       return { allowed: true };
     }
     const current = Number(data) || 0;
@@ -223,11 +270,20 @@ export async function checkAndIncrementRateLimit(
     }
     return { allowed: true };
   } catch (e) {
-    log.error('[ratelimit] threw — FAILING OPEN', {
-      endpoint, pid,
-      err: e instanceof Error ? e : new Error(String(e)),
-      route: `ratelimit:${endpoint}`,
-    });
+    const billing = BILLING_IMPACTING_ENDPOINTS.has(endpoint);
+    log.error(
+      billing
+        ? '[ratelimit] threw on billing endpoint — FAILING CLOSED'
+        : '[ratelimit] threw — FAILING OPEN',
+      {
+        endpoint, pid,
+        err: e instanceof Error ? e : new Error(String(e)),
+        route: `ratelimit:${endpoint}`,
+      },
+    );
+    if (billing) {
+      return { allowed: false, retryAfterSec: 60, current: 0, cap };
+    }
     return { allowed: true };
   }
 }

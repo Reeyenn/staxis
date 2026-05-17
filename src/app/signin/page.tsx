@@ -7,6 +7,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { supabase } from '@/lib/supabase';
 import { t } from '@/lib/translations';
+import { parseCheckTrustResponse } from '@/lib/api-validate';
 
 /**
  * Banner shown when fetchWithAuth signed the user out and bounced them
@@ -104,8 +105,18 @@ export default function SignInPage() {
             credentials: 'include',
           });
           if (res.ok) {
-            const body = await res.json() as { data?: { trusted?: boolean } };
-            trusted = !!body.data?.trusted;
+            const raw = await res.json();
+            // Runtime parser (audit Flow 1 #4): the previous code did
+            // `body.data?.trusted` with an `as` cast that silently
+            // coerced any shape drift to false. parseCheckTrustResponse
+            // returns a typed value or an error string so we can tell
+            // "server returned trusted=false" from "server changed shape".
+            const parsed = parseCheckTrustResponse(raw);
+            if (parsed.value) {
+              trusted = parsed.value.trusted;
+            } else {
+              console.warn('check-trust response shape unexpected:', parsed.error);
+            }
           }
         } catch (err) {
           console.warn('check-trust failed', err);

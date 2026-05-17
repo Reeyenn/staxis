@@ -296,3 +296,95 @@ export function redactStripeId(id: string | null | undefined): string {
   if (underscore < 0 || id.length < underscore + 6) return '<short>';
   return `${id.slice(0, underscore + 1)}***${id.slice(-4)}`;
 }
+
+// ─── Response-shape parsers ───────────────────────────────────────────────
+//
+// Each parser takes an unknown (the raw JSON body the client got back from
+// a server route) and either returns a strongly-typed value OR an error
+// string the caller can surface in a toast. They replace `as` casts that
+// would silently coerce undefined into 0 / null / false on server-side
+// shape drift. Audit Flow 1 #4, Flow 2 #5, Flow 2 #10.
+//
+// Hand-rolled (no Zod) to match the rest of this module's pattern; see
+// the file header for the cold-start argument.
+
+export interface Parsed<T> {
+  value?: T;
+  error?: string;
+}
+
+/**
+ * Parse the `{ ok: true, data: { trusted: boolean } }` envelope returned
+ * by POST /api/auth/check-trust. The client-side cast that this replaces
+ * was `body.data?.trusted` → silently false on shape drift (which then
+ * forces the user into the OTP path with no visible signal).
+ */
+export function parseCheckTrustResponse(raw: unknown): Parsed<{ trusted: boolean }> {
+  if (!raw || typeof raw !== 'object') return { error: 'check-trust: not an object' };
+  const r = raw as Record<string, unknown>;
+  if (r.ok !== true) return { error: `check-trust: ok=${String(r.ok)}` };
+  const data = r.data;
+  if (!data || typeof data !== 'object') return { error: 'check-trust: data missing' };
+  const trusted = (data as Record<string, unknown>).trusted;
+  if (typeof trusted !== 'boolean') return { error: 'check-trust: trusted not boolean' };
+  return { value: { trusted } };
+}
+
+/**
+ * Parse the `{ ok: true, data: { status, step, progressPct, error, result } }`
+ * envelope returned by GET /api/pms/job-status. The client polls this
+ * every 3s — a silent shape drift (e.g. snake_case slipping into the
+ * response) would freeze the progress bar permanently.
+ */
+export function parsePmsJobStatusResponse(raw: unknown): Parsed<{
+  status: 'queued' | 'running' | 'mapping' | 'extracting' | 'complete' | 'failed';
+  step: string | null;
+  progressPct: number;
+  error: string | null;
+  result: Record<string, unknown> | null;
+}> {
+  if (!raw || typeof raw !== 'object') return { error: 'job-status: not an object' };
+  const r = raw as Record<string, unknown>;
+  if (r.ok !== true) return { error: `job-status: ok=${String(r.ok)}` };
+  const data = r.data;
+  if (!data || typeof data !== 'object') return { error: 'job-status: data missing' };
+  const d = data as Record<string, unknown>;
+  const statusV = validateEnum(d.status, ['queued','running','mapping','extracting','complete','failed'] as const, 'status');
+  if (statusV.error) return { error: `job-status: ${statusV.error}` };
+  if (d.step !== null && typeof d.step !== 'string') return { error: 'job-status: step not string-or-null' };
+  if (typeof d.progressPct !== 'number') return { error: 'job-status: progressPct not number' };
+  if (d.error !== null && typeof d.error !== 'string') return { error: 'job-status: error not string-or-null' };
+  if (d.result !== null && (typeof d.result !== 'object')) return { error: 'job-status: result not object-or-null' };
+  return {
+    value: {
+      status: statusV.value!,
+      step: d.step as string | null,
+      progressPct: d.progressPct,
+      error: d.error as string | null,
+      result: d.result as Record<string, unknown> | null,
+    },
+  };
+}
+
+/**
+ * Parse the success-result payload that lands in `jobStatus.result` when an
+ * onboarding job completes. The pre-fix code did
+ *   `(r.rooms_count as number) ?? 0`
+ * which silently shows "0 rooms" if the field is renamed or absent.
+ * Returning an error here lets the UI distinguish "0 rooms found"
+ * (legitimate but unusual) from "the server changed the field name."
+ */
+export function parsePmsOnboardResult(raw: unknown): Parsed<{
+  rooms_count: number;
+  staff_count: number;
+}> {
+  if (!raw || typeof raw !== 'object') return { error: 'onboard-result: not an object' };
+  const r = raw as Record<string, unknown>;
+  if (typeof r.rooms_count !== 'number') {
+    return { error: 'onboard-result: rooms_count missing or not a number' };
+  }
+  if (typeof r.staff_count !== 'number') {
+    return { error: 'onboard-result: staff_count missing or not a number' };
+  }
+  return { value: { rooms_count: r.rooms_count, staff_count: r.staff_count } };
+}

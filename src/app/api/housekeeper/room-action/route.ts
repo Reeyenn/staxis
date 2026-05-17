@@ -99,6 +99,51 @@ interface RequestBody {
 const DISCARD_UNDER_MIN = 3;
 const FLAG_OVER_MIN = 60;
 const DISCARD_OVER_MIN = 90;
+
+/**
+ * Clamp a client-supplied ISO timestamp to within `toleranceMs` of `serverNow`.
+ *
+ * Why this exists: the housekeeper page sends `cleaningContext.completedAt`
+ * as the canonical Done time so the rooms.completed_at and cleaning_events
+ * timestamps match (avoiding the network-latency drift between client tap
+ * and server receipt). But trusting the client wholesale means a wrong device
+ * clock or a tampered request becomes the recorded "fact" — and that fact
+ * drives Performance averages, supply-model labels, and any UI dashboards
+ * downstream. A housekeeper with a 6-hour clock skew (timezone misset on a
+ * new phone) would silently poison weeks of ML training data.
+ *
+ * Behavior: if the client value is missing, unparseable, or outside the
+ * tolerance window, fall back to server-now and log a warn with the delta
+ * so we can see clock skew in the field. Inside the window → trust client.
+ *
+ * 1-hour tolerance is chosen because: typical retry/queue lag is under
+ * a minute; a misset clock is usually off by hours; an hour comfortably
+ * absorbs the former without giving the latter a window to corrupt data.
+ */
+function clampClientTimestamp(
+  clientIso: string | undefined,
+  serverNowIso: string,
+  ctx: { route: string; requestId: string; staffId: string; pid: string },
+  toleranceMs = 60 * 60 * 1000,
+): string {
+  if (!clientIso) return serverNowIso;
+  const c = new Date(clientIso).getTime();
+  const s = new Date(serverNowIso).getTime();
+  if (!Number.isFinite(c)) {
+    log.warn('room-action: client timestamp unparseable, using server time', {
+      ...ctx, clientIso,
+    });
+    return serverNowIso;
+  }
+  const deltaMs = c - s;
+  if (Math.abs(deltaMs) > toleranceMs) {
+    log.warn('room-action: client timestamp out of tolerance, using server time', {
+      ...ctx, clientIso, serverNowIso, deltaMin: Math.round(deltaMs / 60_000),
+    });
+    return serverNowIso;
+  }
+  return clientIso;
+}
 /**
  * Derive a sensible started_at for a "finish" tap, server-side.
  *
@@ -244,7 +289,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // path closes the gap without breaking legitimate UI flows.
     const { data: room, error: roomErr } = await supabaseAdmin
       .from('rooms')
-      .select('id, property_id, started_at, completed_at, number, date, assigned_to')
+      .select('id, property_id, type, started_at, completed_at, number, date, assigned_to')
       .eq('id', roomId)
       .maybeSingle();
     if (roomErr || !room) {
@@ -294,15 +339,47 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // the cleaning_events row, so any UI reading "Cleaned in X min" off
     // the rooms table sees the same number as the Performance tab.
     if (action === 'finish') {
+      // ─── Audit-row guard ────────────────────────────────────────────
+      // For cleanable rooms (checkout/stayover), cleaningContext is what
+      // populates the cleaning_events audit log + ML feature derivation.
+      // If the client sends action='finish' on a cleanable room without
+      // a context object, the rooms row would flip to 'clean' but no
+      // audit row gets written — Performance tab loses the cleaning and
+      // the supply model loses a training row. Silent data loss.
+      //
+      // We trust server-side room.type (not the client's cleaningContext
+      // .roomType) so a client that lies about type can't bypass this.
+      // Vacant rooms — type is null or anything else — fall through to
+      // the existing vacant flow with no audit row required.
+      const serverRoomType = (room.type as string | null) ?? null;
+      const isCleanableServer =
+        serverRoomType === 'checkout' || serverRoomType === 'stayover';
+      if (isCleanableServer && !cleaningContext) {
+        log.warn('room-action: finish on cleanable room without cleaningContext', {
+          requestId, pid, staffId, roomId, roomType: serverRoomType,
+        });
+        return err(
+          'cleaningContext required for finish on a cleanable room',
+          { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers },
+        );
+      }
+
       // Single canonical "Done time" for both rooms.completed_at AND
       // cleaning_events.completed_at. Previously the rooms row used
       // server-now while cleaning_events used cleaningContext.completedAt
       // (client tap time) — they could differ by hundreds of ms due to
       // network latency, breaking any UI cross-referencing the two.
+      //
       // Prefer the client tap time when supplied (more accurate "moment
-      // the housekeeper hit Done"); fall back to server-now for vacant
-      // rooms or any flow without a cleaningContext.
-      const completedAt = cleaningContext?.completedAt ?? now;
+      // the housekeeper hit Done") but clamp it: a device with a wrong
+      // clock or a tampered request would otherwise become the canonical
+      // timestamp and silently poison Performance metrics + ML training
+      // labels. Within an hour of server-now → trust; outside → server-now.
+      const completedAt = clampClientTimestamp(
+        cleaningContext?.completedAt,
+        now,
+        { route: 'housekeeper/room-action', requestId, staffId, pid },
+      );
       const isCleanable = !!cleaningContext && (cleaningContext.roomType === 'checkout' || cleaningContext.roomType === 'stayover');
 
       // ─── Idempotency guard for retries ────────────────────────────
@@ -444,18 +521,43 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           weather_class: features.weatherClass,
         };
 
-        const { error: ceErr } = await supabaseAdmin
+        // upsert with ignoreDuplicates returns no rows on conflict, so a
+        // missing `data` (with no error) means "row already existed and was
+        // ignored". We use that to distinguish a fresh insert from a silent
+        // dupe-ignore — `cleaningEventInserted = !ceErr` previously
+        // returned true in BOTH cases, making it impossible for the client
+        // to tell whether the audit row actually got written.
+        const { data: insertedRows, error: ceErr } = await supabaseAdmin
           .from('cleaning_events')
           .upsert(cePayload, {
             onConflict: 'property_id,date,room_number,started_at,completed_at',
             ignoreDuplicates: true,
-          });
-        cleaningEventInserted = !ceErr;
-        // Don't fail the whole request if audit insert fails — the room
-        // update already succeeded and the housekeeper has moved on.
+          })
+          .select('id');
+        let cleaningEventOutcome: 'fresh' | 'deduped' | 'failed' = 'failed';
         if (ceErr) {
+          // Don't fail the whole request — the room update already succeeded
+          // and the housekeeper has moved on. The doctor's ML failure
+          // counter will surface sustained failures.
           log.error('room-action: cleaning_events insert failed (non-fatal)', { requestId, route: 'housekeeper/room-action', pid, staffId, action: 'finish', err: ceErr });
+        } else if (Array.isArray(insertedRows) && insertedRows.length > 0) {
+          cleaningEventOutcome = 'fresh';
+          cleaningEventInserted = true;
+        } else {
+          // No rows returned + no error = upsert conflicted on the unique
+          // index and ignoreDuplicates kicked in. The audit row already
+          // existed; we didn't write a new one. Treated as success for
+          // the housekeeper but the response carries the distinction.
+          cleaningEventOutcome = 'deduped';
+          cleaningEventInserted = true;
         }
+        return ok({
+          action: 'finish',
+          completedAt,
+          cleaningEventInserted,
+          cleaningEventOutcome,
+          deduped: isDuplicate,
+        }, { requestId, headers });
       }
       return ok({ action: 'finish', completedAt, cleaningEventInserted, deduped: isDuplicate }, { requestId, headers });
     }

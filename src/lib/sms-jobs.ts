@@ -279,23 +279,27 @@ export async function processSmsJobs(limit = 50): Promise<ProcessResult> {
     }
 
     if (!updateOk) {
-      // Last-ditch fallback: mark 'dead' so the sweep cannot requeue this
-      // row. The customer-facing status page will read 'dead' even though
-      // the SMS did arrive — acceptable trade vs. sending a duplicate.
+      // Last-ditch fallback: mark 'sent_dirty' so the sweep cannot requeue
+      // this row. Previously we marked 'dead' here, which gave Mario a red
+      // badge in the UI for messages the housekeeper actually received —
+      // the opposite of the truth. 'sent_dirty' (added in migration 0147)
+      // is a distinct status the UI can render as "Sent (database
+      // confirmation lagged)" instead of "Failed". The Twilio side did
+      // succeed; only the post-send DB write didn't.
       try {
         await supabaseAdmin
           .from('sms_jobs')
           .update({
-            status: 'dead',
+            status: 'sent_dirty',
             sent_at: sentAt,
             error_code: 'POST_SEND_DB_FAILURE',
-            error_message: 'SMS sent successfully via Twilio, but post-send DB update failed. Marked dead to prevent duplicate send on next sweep.',
+            error_message: 'SMS sent successfully via Twilio, but post-send DB update failed. Marked sent_dirty to prevent duplicate send on next sweep while still surfacing as a successful send to the UI.',
             started_at: null,
           })
           .eq('id', job.id);
       } catch (err) {
         // If even this fails, the watchdog sweep WILL requeue. Loud log.
-        log.error('[sms-jobs] CRITICAL: post-send dead fallback failed too — sweep may duplicate', {
+        log.error('[sms-jobs] CRITICAL: post-send sent_dirty fallback failed too — sweep may duplicate', {
           jobId: job.id, pid: job.property_id, msg: errToString(err),
         });
       }
