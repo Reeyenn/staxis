@@ -32,10 +32,9 @@ interface RetentionEntry {
 }
 
 const RETENTION: ReadonlyArray<RetentionEntry> = [
-  { table: 'prediction_log',                      column: 'logged_at',    days: 365 },
-  { table: 'inventory_rate_prediction_history',   column: 'predicted_at', days: 365 },
-  { table: 'app_events',                          column: 'ts',           days:  90 },
-  { table: 'agent_costs',                         column: 'created_at',   days:  90 },
+  { table: 'prediction_log', column: 'logged_at',  days: 365 },
+  { table: 'app_events',     column: 'ts',         days:  90 },
+  { table: 'agent_costs',    column: 'created_at', days:  90 },
 ];
 
 // Anomaly guard: a single table purging more than this many rows in one
