@@ -76,34 +76,41 @@ export function Header() {
     }}>
       <div style={{
         maxWidth: '1920px', margin: '0 auto',
-        padding: '0 48px', height: '64px',
+        padding: '0 clamp(16px, 3vw, 48px)', height: '64px',
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '24px',
       }}>
 
         {/* Left: Chevron + Staxis wordmark + property name */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '7px', minWidth: 0 }}>
-          <ChevronMark size={26} color="var(--snow-mark)" />
-          <span style={{
-            fontFamily: sansFont, fontSize: '18px', fontWeight: 600,
-            color: ink, letterSpacing: '-0.02em',
-          }}>
-            Staxis
-          </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '7px', minWidth: 0, flexShrink: 1 }}>
+          {/* Logo: chevron + wordmark — never shrinks */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '7px', flexShrink: 0 }}>
+            <ChevronMark size={26} color="var(--snow-mark)" />
+            <span style={{
+              fontFamily: sansFont, fontSize: '18px', fontWeight: 600,
+              color: ink, letterSpacing: '-0.02em', whiteSpace: 'nowrap',
+            }}>
+              Staxis
+            </span>
+          </div>
           {activeProperty && (
-            <>
-              <span style={{ width: 1, height: 14, background: rule, marginLeft: 7 }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '7px', minWidth: 0, marginLeft: '7px' }}>
+              <span style={{ width: 1, height: 14, background: rule, flexShrink: 0 }} />
               <span style={{
                 fontFamily: sansFont, fontSize: '13px', color: ink2,
                 whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0,
               }}>
                 {activeProperty.name}
               </span>
-            </>
+            </div>
           )}
         </div>
 
         {/* Center: Nav links */}
-        <nav style={{ display: 'flex', gap: '24px' }}>
+        <nav style={{
+          display: 'flex', gap: '24px',
+          minWidth: 0, overflowX: 'auto',
+          scrollbarWidth: 'none', msOverflowStyle: 'none',
+        }} className="header-nav-scroll">
           {navLinks.map(link => {
             const isActive = pathname.startsWith(link.href);
             return (
@@ -127,7 +134,7 @@ export function Header() {
         </nav>
 
         {/* Right: controls */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
 
           {/* Notifications bell */}
           <button

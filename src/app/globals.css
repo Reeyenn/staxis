@@ -710,13 +710,17 @@ body {
 
 /* ── Horizontal pill scrollers: clean scroll on mobile ── */
 .inv-filters::-webkit-scrollbar,
-.scroll-pills::-webkit-scrollbar {
+.scroll-pills::-webkit-scrollbar,
+.header-nav-scroll::-webkit-scrollbar {
   display: none;
 }
 .inv-filters > button,
 .scroll-pills > button,
 .scroll-pills > * {
   flex-shrink: 0 !important;
+}
+.header-nav-scroll > * {
+  flex-shrink: 0;
 }
 @media (max-width: 600px) {
   .inv-filters {
