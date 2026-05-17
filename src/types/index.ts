@@ -499,3 +499,67 @@ export interface MorningSetupForm {
   inHouse?: number;             // guests currently in-house
   adr?: number;                 // Average Daily Rate ($)
 }
+
+// ─── Staff Schedule Domain ─────────────────────────────────────────────────
+// Backed by migration 0147. The new /staff manager week grid + staff My
+// Shifts view both consume these models.
+
+/** Named shift template — manager-defined per property + department. */
+export interface ShiftPreset {
+  id: string;
+  propertyId: string;
+  name: string;
+  department: StaffDepartment;
+  startTime: string;            // 'HH:MM' (24h)
+  endTime: string;              // 'HH:MM' (24h)
+  sortOrder: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export type ScheduledShiftKind = 'shift' | 'open';
+export type ScheduledShiftStatus = 'draft' | 'published' | 'sent' | 'confirmed' | 'declined';
+
+/** One assigned or open cell on the week grid. */
+export interface ScheduledShift {
+  id: string;
+  propertyId: string;
+  staffId: string | null;       // null when kind='open' and not yet picked up
+  department: StaffDepartment;
+  shiftDate: string;            // YYYY-MM-DD
+  startTime: string;            // 'HH:MM' (24h)
+  endTime: string;              // 'HH:MM' (24h)
+  kind: ScheduledShiftKind;
+  status: ScheduledShiftStatus;
+  presetId: string | null;
+  reason: string | null;        // why this is open (e.g. "Brenda declined")
+  note: string | null;          // free-form manager note
+  filledByHistory: string[];    // prior staff_id(s) before bail
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export type TimeOffStatus = 'pending' | 'approved' | 'denied' | 'cancelled';
+
+/** Staff-submitted time-off request, manager-decided in-app. */
+export interface TimeOffRequest {
+  id: string;
+  propertyId: string;
+  staffId: string;
+  requestDate: string;          // YYYY-MM-DD
+  reason: string | null;
+  status: TimeOffStatus;
+  submittedAt: Date;
+  decidedAt: Date | null;
+  decidedBy: string | null;     // accounts.id
+  denyReason: string | null;
+}
+
+/** A single "this week is published" stamp. Latest row per (property, week) wins. */
+export interface WeekPublication {
+  id: string;
+  propertyId: string;
+  weekStart: string;            // YYYY-MM-DD (Monday)
+  publishedAt: Date;
+  publishedBy: string | null;   // accounts.id
+}

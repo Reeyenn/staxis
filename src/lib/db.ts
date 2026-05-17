@@ -48,6 +48,7 @@ export * from './db/plan-snapshots';
 export * from './db/dashboard';
 export * from './db/schedule-assignments';
 export * from './db/shift-confirmations';
+export * from './db/staff-schedule';
 export * from './db/manager-notifications';
 export * from './db/deep-cleaning';
 export * from './db/housekeeper-helpers';
