@@ -77,59 +77,47 @@ export function StickyHeader({ activeTab, onTabChange }: Props) {
       backdropFilter: 'blur(48px)',
       WebkitBackdropFilter: 'blur(48px)',
       borderBottom: `1px solid ${T.rule}`,
-      padding: '18px 48px 0',
+      padding: '10px 48px 0',
       marginLeft: '-48px',
       marginRight: '-48px',
       marginTop: '-24px',
-      marginBottom: '32px',
+      marginBottom: 20,
     }}>
-      {/* Page title row */}
+      {/* Compact stats strip — caps label + mono number on one line.
+          Bell sits inline on the right. */}
       <div style={{
-        display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between',
-        gap: 24, flexWrap: 'wrap', marginBottom: 16,
+        display: 'flex', alignItems: 'center', flexWrap: 'wrap',
+        gap: 0, marginBottom: 10,
+        border: `1px solid ${T.rule}`,
+        borderRadius: 999, background: T.paper,
+        padding: '0 6px', height: 38,
+        overflow: 'hidden',
       }}>
-        <div>
-          <Caps>Owner cockpit</Caps>
-          <h1 style={{
-            fontFamily: FONT_SERIF, fontSize: 36, fontWeight: 400,
-            letterSpacing: '-0.02em', color: T.ink, margin: '4px 0 0',
-            lineHeight: 1.15,
-          }}>
-            <span style={{ fontStyle: 'italic' }}>Staxis</span> Admin
-          </h1>
-        </div>
-        <div style={{ flexShrink: 0 }}>
+        <StatCell label="Live" value={stats?.liveHotels} />
+        <Divider />
+        <StatCell label="Onboarding" value={stats?.onboarding} />
+        <Divider />
+        <StatCell label="Errors" value={stats?.errorsToday}
+          tone={(stats?.errorsToday ?? 0) > 0 ? 'warm' : 'neutral'} />
+        <Divider />
+        <StatCell label="Jobs" value={stats?.activeJobs}
+          tone={(stats?.activeJobs ?? 0) > 0 ? 'caramel' : 'neutral'} />
+        <Divider />
+        <StatCell
+          label="MRR"
+          customValue={stats?.pilotMode
+            ? <span style={{ fontFamily: FONT_SERIF, fontSize: 14, fontStyle: 'italic', color: T.sageDeep }}>Pilot</span>
+            : stats?.mrrCents != null
+              ? <MonoNum size={13} weight={600} c={T.sageDeep}>${(stats.mrrCents / 100).toLocaleString()}</MonoNum>
+              : <MonoNum size={13} c={T.ink3}>—</MonoNum>
+          }
+        />
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', paddingRight: 4 }}>
           <AlertsBell />
         </div>
       </div>
 
-      {/* Stats row — caps label over italic-serif number, separated by hairlines */}
-      <div style={{
-        display: 'flex', flexWrap: 'wrap', alignItems: 'stretch', gap: 0,
-        marginBottom: 20,
-        border: `1px solid ${T.rule}`,
-        borderRadius: 18, background: T.paper,
-        overflow: 'hidden',
-      }}>
-        <StatCell label="Live hotels" value={stats?.liveHotels} />
-        <StatCell label="Onboarding" value={stats?.onboarding} />
-        <StatCell label="Errors today" value={stats?.errorsToday}
-          tone={(stats?.errorsToday ?? 0) > 0 ? 'warm' : 'neutral'} />
-        <StatCell label="Active jobs" value={stats?.activeJobs}
-          tone={(stats?.activeJobs ?? 0) > 0 ? 'caramel' : 'neutral'} />
-        <StatCell
-          label="MRR"
-          customValue={stats?.pilotMode
-            ? <span style={{ fontFamily: FONT_SANS, fontSize: 22, fontStyle: 'italic', color: T.ink2 }}>Pilot</span>
-            : stats?.mrrCents != null
-              ? <MonoNum size={28} weight={500}>${(stats.mrrCents / 100).toLocaleString()}</MonoNum>
-              : <MonoNum size={28} c={T.ink3}>—</MonoNum>
-          }
-          tone="sage"
-        />
-      </div>
-
-      {/* Tab buttons — Snow style: ghost ink, active = solid-ink pill */}
+      {/* Tab buttons — Snow style: ghost ink, active = sage underline */}
       <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
         {TABS.map((t) => {
           const active = t.id === activeTab;
@@ -139,7 +127,7 @@ export function StickyHeader({ activeTab, onTabChange }: Props) {
               onClick={() => onTabChange(t.id)}
               style={{
                 position: 'relative',
-                padding: '10px 18px',
+                padding: '8px 16px',
                 fontFamily: FONT_SANS,
                 fontSize: 13,
                 fontWeight: active ? 600 : 500,
@@ -162,6 +150,10 @@ export function StickyHeader({ activeTab, onTabChange }: Props) {
   );
 }
 
+function Divider() {
+  return <span style={{ width: 1, height: 18, background: T.rule, flexShrink: 0 }} />;
+}
+
 function StatCell({
   label, value, customValue, tone = 'neutral',
 }: {
@@ -178,22 +170,16 @@ function StatCell({
   }[tone];
   return (
     <div style={{
-      flex: '1 1 160px', minWidth: 140,
-      padding: '14px 18px',
-      borderRight: `1px solid ${T.rule}`,
-      display: 'flex', flexDirection: 'column', gap: 4,
+      display: 'flex', alignItems: 'center', gap: 7,
+      padding: '0 14px', height: '100%',
     }}>
       <Caps size={9}>{label}</Caps>
       {customValue ? (
-        <div>{customValue}</div>
+        customValue
       ) : (
-        <span style={{
-          fontFamily: FONT_SERIF, fontStyle: 'italic',
-          fontSize: 32, fontWeight: 400, lineHeight: 1, letterSpacing: '-0.03em',
-          color: value == null ? T.ink3 : toneColor,
-        }}>
+        <MonoNum size={13} weight={600} c={value == null ? T.ink3 : toneColor}>
           {value ?? '—'}
-        </span>
+        </MonoNum>
       )}
     </div>
   );
