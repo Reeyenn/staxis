@@ -92,10 +92,10 @@ export async function GET(req: NextRequest) {
   // pull_metrics + dashboard_by_date errors are best-effort: if either
   // query fails we still want to return what we have. Log + continue.
   if (pullsRes.error) {
-    console.error('[recent-errors] pull_metrics query failed:', pullsRes.error.message);
+    log.error('[recent-errors] pull_metrics query failed', { err: pullsRes.error, requestId });
   }
   if (dashRes.error) {
-    console.error('[recent-errors] dashboard_by_date query failed:', dashRes.error.message);
+    log.error('[recent-errors] dashboard_by_date query failed', { err: dashRes.error, requestId });
   }
 
   // Normalize every source into a common shape so the grouping pass

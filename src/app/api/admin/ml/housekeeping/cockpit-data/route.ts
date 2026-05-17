@@ -21,6 +21,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/admin-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getHKNextScheduled } from '@/lib/ml-cron-schedule';
 
 export const runtime = 'nodejs';
@@ -166,7 +167,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
   const propertyIdParam = new URL(req.url).searchParams.get('propertyId');
   if (propertyIdParam !== null && !isUuid(propertyIdParam)) {
-    return NextResponse.json({ ok: false, error: 'invalid_property_id' }, { status: 400 });
+    return err('invalid_property_id', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
   try {
@@ -185,7 +186,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       : propsList.filter((p) => !p.is_test).map((p) => p.id);
 
     if (propertyIdParam && scopeIds.length === 0) {
-      return NextResponse.json({ ok: false, error: 'property_not_found' }, { status: 404 });
+      return err('property_not_found', { requestId, status: 404, code: ApiErrorCode.NotFound });
     }
 
     const since30d = new Date(Date.now() - 30 * 86400000).toISOString();
@@ -593,20 +594,16 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       ? { id: propertyIdParam, name: propByName.get(propertyIdParam) ?? '' }
       : null;
 
-    return NextResponse.json({
-      ok: true,
-      requestId,
-      data: {
-        mode: propertyIdParam ? 'single' : 'network',
-        selectedProperty,
-        properties,
-        aggregate,
-        recentOverrides,
-        topAdoption,
-      },
-    } satisfies HKCockpitDataResponse);
+    return ok({
+      mode: propertyIdParam ? 'single' : 'network',
+      selectedProperty,
+      properties,
+      aggregate,
+      recentOverrides,
+      topAdoption,
+    } as HKCockpitDataResponse['data'], { requestId });
   } catch (e) {
     log.error('hk cockpit-data: failed', { requestId, err: e as Error });
-    return NextResponse.json({ ok: false, error: 'internal_error', requestId }, { status: 500 });
+    return err('internal_error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

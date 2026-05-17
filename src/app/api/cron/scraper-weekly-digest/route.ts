@@ -133,7 +133,7 @@ async function runDigest(): Promise<{ sent: boolean; detail: string }> {
       log.error('[scraper-weekly-digest] SMS send failed', { err });
     }
   } else {
-    console.warn('[scraper-weekly-digest] MANAGER_PHONE/OPS_ALERT_PHONE env var not set — digest would say:', message);
+    log.warn('[scraper-weekly-digest] MANAGER_PHONE/OPS_ALERT_PHONE env var not set — digest would say', { message });
   }
 
   await mergeStatus('digest_state', {

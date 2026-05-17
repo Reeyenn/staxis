@@ -453,7 +453,7 @@ export async function POST(req: NextRequest) {
             .update({ phone_lookup: phone164 })
             .eq('id', staffId)
             .then(({ error }) => {
-              if (error) console.warn('[send-shift-confirmations] phone_lookup update failed:', error.message);
+              if (error) log.warn('[send-shift-confirmations] phone_lookup update failed', { err: error, requestId });
             });
 
           // `name` already passed through sanitizeForSms in the input

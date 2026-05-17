@@ -232,7 +232,7 @@ export async function POST(req: NextRequest) {
 
     return ok({ writes }, { requestId });
   } catch (caughtErr) {
-    console.error('sync-room-assignments error:', caughtErr);
+    log.error('sync-room-assignments error', { err: caughtErr, requestId });
     try {
       await supabaseAdmin.from('error_logs').insert({
         source: '/api/sync-room-assignments',

@@ -25,7 +25,7 @@ import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratel
 import { checkIdempotency, recordIdempotency } from '@/lib/idempotency';
 import { smartAssignRooms } from '@/lib/room-assignment';
 import { buildOkBody, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -240,8 +240,8 @@ export async function POST(req: NextRequest) {
 
           try {
             await sendSms(phone164, msg);
-          } catch (err) {
-            console.error(`Morning resend SMS failed for ${hk.staff_name}:`, errToString(err));
+          } catch (smsErr) {
+            log.error('Morning resend SMS failed', { err: smsErr, staffName: hk.staff_name, requestId });
           }
         }
         updatedCount++;
@@ -250,7 +250,7 @@ export async function POST(req: NextRequest) {
 
     // Log any per-HK failures but don't fail the whole request.
     for (const r of results) {
-      if (r.status === 'rejected') console.error('[morning-resend] HK rejection:', r.reason);
+      if (r.status === 'rejected') log.error('[morning-resend] HK rejection', { err: r.reason, requestId });
     }
 
     // Mirror the new assignments into schedule_assignments so the UI stays in
@@ -279,7 +279,7 @@ export async function POST(req: NextRequest) {
           updated_at: nowIso,
         }, { onConflict: 'property_id,date' });
     } catch (e) {
-      console.error('[morning-resend] schedule_assignments mirror failed:', errToString(e));
+      log.error('[morning-resend] schedule_assignments mirror failed', { err: e, requestId });
     }
 
     // Build the envelope before recording so cache hits return the same
@@ -300,8 +300,7 @@ export async function POST(req: NextRequest) {
     // Generic 500 — `errToString(caughtErr)` may include PG schema names
     // or Supabase-internal error text. Caller is CRON_SECRET-gated, so
     // this is defense in depth, but we keep the full detail server-side.
-    const msg = errToString(caughtErr);
-    console.error('morning-resend error:', msg);
+    log.error('morning-resend error', { err: caughtErr, requestId });
     return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

@@ -209,7 +209,7 @@ export async function POST(req: NextRequest) {
 
     return ok(response, { requestId, status: 201 });
   } catch (caughtErr) {
-    console.error('/api/ml/override error:', caughtErr);
+    log.error('/api/ml/override error', { err: caughtErr, requestId });
     try {
       await supabaseAdmin.from('error_logs').insert({
         source: '/api/ml/override',

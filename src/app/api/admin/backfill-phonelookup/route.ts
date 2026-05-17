@@ -13,7 +13,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { requireCronSecret } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 
 function toE164(raw: string): string | null {
   const digits = raw.replace(/\D/g, '');
@@ -74,7 +74,7 @@ export async function POST(req: NextRequest) {
     }, { requestId });
   } catch (caughtErr) {
     const msg = errToString(caughtErr);
-    console.error('backfill-phonelookup error:', msg);
+    log.error('backfill-phonelookup error', { err: caughtErr, requestId });
     return err(msg, { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }
