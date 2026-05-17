@@ -23,6 +23,7 @@ import { chromium } from 'playwright';
 import type Anthropic from '@anthropic-ai/sdk';
 import { anthropic, BROWSER_TOOL, CLAUDE_MODEL, MAPPING_SYSTEM_PROMPT } from './anthropic-client.js';
 import { executeBrowserAction, type BrowserAction } from './browser-tool.js';
+import { safeGoto } from './browser-utils/navigate.js';
 import { log } from './log.js';
 import { logClaudeUsage, getJobCostMicros } from './usage-log.js';
 import { env } from './env.js';
@@ -292,7 +293,14 @@ async function mapLogin(
   creds: PMSCredentials,
   ctx: { propertyId: string | null; jobId: string | null; signal?: AbortSignal },
 ): Promise<LoginMapResult | LoginMapFailure> {
-  await page.goto(creds.loginUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+  // The login URL itself is the trust anchor — no allowedHost yet (we'll
+  // pin to creds.loginUrl's host for every subsequent goto). safeGoto
+  // still rejects javascript:/file:/private-IP URLs, so a misconfigured
+  // creds row can't establish a malicious session.
+  await safeGoto(page, creds.loginUrl, {
+    allowedHost: null,
+    context: 'mapper:login:startUrl',
+  });
   await page.waitForTimeout(1500);
 
   const recordedSteps: RecipeStep[] = [{ kind: 'goto', url: creds.loginUrl }];
@@ -527,7 +535,16 @@ async function mapAction(args: {
   signal?: AbortSignal;
 }): Promise<ActionMapSuccess | ActionMapFailure> {
   if (args.page.url() !== args.postLoginUrl) {
-    await args.page.goto(args.postLoginUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {});
+    // Pin to the credentials' login-URL host so a stale post-login URL
+    // from a different domain can't redirect the authenticated session
+    // off-site. The .catch(() => {}) preserves the prior best-effort
+    // semantic for transient nav failures, but safeGoto's pre-check
+    // still rejects schemes / private IPs before any network call.
+    const allowedHost = new URL(args.credentials.loginUrl).host;
+    await safeGoto(args.page, args.postLoginUrl, {
+      allowedHost,
+      context: 'mapper:action:postLoginUrl',
+    }).catch(() => {});
     await args.page.waitForTimeout(1000);
   }
 

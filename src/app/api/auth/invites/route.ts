@@ -10,7 +10,7 @@ import { NextRequest } from 'next/server';
 import { createHash, randomBytes } from 'node:crypto';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { log, getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId } from '@/lib/log';
 import { verifyTeamManager, canManageHotel } from '@/lib/team-auth';
 import { isAssignableRole } from '@/lib/roles';
 import { writeAudit } from '@/lib/audit';
@@ -48,7 +48,7 @@ export async function GET(req: NextRequest) {
     .is('accepted_at', null)
     .order('created_at', { ascending: false });
   if (qErr) {
-    log.error('[invites:GET] failed', { err: qErr, requestId });
+    console.error('[invites:GET] failed', qErr);
     return err('Failed to load invites', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   return ok({ invites: data ?? [] }, { requestId });
@@ -88,7 +88,7 @@ export async function POST(req: NextRequest) {
     invited_by: caller.accountId,
   }).select('id').single();
   if (insErr || !inserted) {
-    log.error('[invites:POST] insert failed', { err: insErr, requestId });
+    console.error('[invites:POST] insert failed', insErr);
     return err('Failed to create invite', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
@@ -114,7 +114,7 @@ export async function POST(req: NextRequest) {
       options: { redirectTo: inviteLink },
     });
   } catch (mailErr) {
-    log.warn('[invites:POST] email send failed', { err: mailErr, requestId });
+    console.error('[invites:POST] email send failed', mailErr);
     // Non-fatal — admin can copy the link from the response.
   }
 
@@ -143,7 +143,7 @@ export async function DELETE(req: NextRequest) {
 
   const { error: delErr } = await supabaseAdmin.from('account_invites').delete().eq('id', id);
   if (delErr) {
-    log.error('[invites:DELETE] failed', { err: delErr, requestId });
+    console.error('[invites:DELETE] failed', delErr);
     return err('Failed to revoke invite', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   await writeAudit({

@@ -32,12 +32,18 @@ as $$
   --   • EXISTS short-circuits per property, so this is fast even on
   --     large agent_messages tables (we have a (property_id, created_at)
   --     index — see migration 0027 onwards)
+  -- 2026-05-17 fix: agent_messages has no direct property_id column —
+  -- it joins to properties via agent_conversations.property_id. Original
+  -- draft of this migration referenced m.property_id and failed at
+  -- create-function time. The /api/agent/nudges/check route fell back
+  -- to listing all properties (rpcErr branch) until this fix landed.
   select p.id
     from properties p
    where exists (
      select 1
        from agent_messages m
-      where m.property_id = p.id
+       join agent_conversations c on c.id = m.conversation_id
+      where c.property_id = p.id
         and m.created_at >= now() - make_interval(days => p_window_days)
    );
 $$;

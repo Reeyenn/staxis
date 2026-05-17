@@ -14,8 +14,8 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
-import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { log, getOrMintRequestId } from '@/lib/log';
+import { ok, err } from '@/lib/api-response';
+import { getOrMintRequestId } from '@/lib/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -44,8 +44,7 @@ export async function GET(req: NextRequest) {
     .limit(20);
 
   if (error) {
-    log.error('active-sessions query failed', { err: error, requestId });
-    return err('active-sessions query failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    return err(`active-sessions query failed: ${error.message}`, { requestId, status: 500 });
   }
 
   // Group by branch so the UI can show "main: 2 sessions, feat/inventory: 1"

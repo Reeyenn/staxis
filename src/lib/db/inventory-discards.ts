@@ -12,12 +12,6 @@ import type { InventoryDiscard, InventoryDiscardReason } from '@/types';
 import { supabase, logErr } from './_common';
 import { toInventoryDiscardRow, fromInventoryDiscardRow } from '../db-mappers';
 
-// Matches fromInventoryDiscardRow in db-mappers.ts. Audit follow-up 2026-05-17.
-const INVENTORY_DISCARD_FIELDS =
-  'id, property_id, item_id, item_name, quantity, reason, cost_value, ' +
-  'unit_cost, discarded_at, discarded_by, notes';
-type InventoryDiscardRow = Record<string, unknown>;
-
 export async function addInventoryDiscard(
   _uid: string,
   pid: string,
@@ -45,11 +39,10 @@ export async function listInventoryDiscards(
 ): Promise<InventoryDiscard[]> {
   const { data, error } = await supabase
     .from('inventory_discards')
-    .select(INVENTORY_DISCARD_FIELDS)
+    .select('*')
     .eq('property_id', pid)
     .order('discarded_at', { ascending: false })
-    .limit(limit)
-    .returns<InventoryDiscardRow[]>();
+    .limit(limit);
   if (error) { logErr('listInventoryDiscards', error); throw error; }
   return (data ?? []).map(fromInventoryDiscardRow);
 }

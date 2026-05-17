@@ -10,9 +10,10 @@
  */
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { requireCronSecret } from '@/lib/api-auth';
+import { errToString } from '@/lib/utils';
+import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { log, getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId } from '@/lib/log';
 
 function toE164(raw: string): string | null {
   const digits = raw.replace(/\D/g, '');
@@ -24,9 +25,13 @@ function toE164(raw: string): string | null {
 
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
-  // Mutates every staff row's phone_lookup. CRON_SECRET-only.
-  const unauthorized = requireCronSecret(req);
-  if (unauthorized) return unauthorized;
+  // Codex 2026-05-16 P1 fix (Pattern C): was gated on CRON_SECRET alone,
+  // but it (a) writes to staff across every tenant and (b) returns
+  // example rows with staff phone numbers. Not actually called by any
+  // cron. Switch to admin session so the auth bar matches the real
+  // caller (Reeyen via the admin dashboard).
+  const admin = await requireAdmin(req);
+  if (!admin.ok) return admin.response;
   try {
     const { data: staff, error } = await supabaseAdmin
       .from('staff')
@@ -72,8 +77,9 @@ export async function POST(req: NextRequest) {
       examples,
     }, { requestId });
   } catch (caughtErr) {
-    log.error('backfill-phonelookup error', { err: caughtErr, requestId });
-    return err('backfill-phonelookup failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    const msg = errToString(caughtErr);
+    console.error('backfill-phonelookup error:', msg);
+    return err(msg, { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }
 

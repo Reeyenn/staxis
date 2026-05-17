@@ -127,17 +127,10 @@ async function autoFillForProperty(
   //    meant the cron assigned rooms to housekeepers on vacation and
   //    pushed seniors into overtime. selectActiveCrewWithReasons enforces
   //    the same rules the staff page's `isEligible` does.
-  // Match what fromStaffRow consumes. Audit follow-up 2026-05-17.
-  const STAFF_FIELDS =
-    'id, name, phone, language, is_senior, department, hourly_wage, ' +
-    'scheduled_today, weekly_hours, max_weekly_hours, max_days_per_week, ' +
-    'days_worked_this_week, vacation_dates, is_active, schedule_priority, ' +
-    'is_scheduling_manager, last_paired_at';
   const { data: staffRows, error: staffErr } = await supabaseAdmin
     .from('staff')
-    .select(STAFF_FIELDS)
-    .eq('property_id', property.id)
-    .returns<Record<string, unknown>[]>();
+    .select('*')
+    .eq('property_id', property.id);
   if (staffErr) {
     return {
       propertyId: property.id, propertyName: property.name, date: targetDate,

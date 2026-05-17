@@ -65,13 +65,9 @@ export async function GET(req: NextRequest) {
     // Today's row (or no row at all if no walkthroughs yet today). UTC day
     // boundary matches the rest of the cost system (agent_costs uses UTC).
     const today = new Date().toISOString().slice(0, 10);
-    // Matches DailyRow interface above. Audit follow-up 2026-05-17.
-    const DAILY_ROW_FIELDS =
-      'day, completed, user_stopped, hit_step_cap, errored, timed_out, ' +
-      'cannot_help, still_active, total, avg_steps_to_done';
     const { data, error } = await supabaseAdmin
       .from('walkthrough_runs_daily')
-      .select(DAILY_ROW_FIELDS)
+      .select('*')
       .eq('day', today)
       .maybeSingle<DailyRow>();
 

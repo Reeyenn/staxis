@@ -60,6 +60,12 @@ export type RateLimitEndpoint =
   // token-spray attacks matter. (Codex audit 2026-05-12.)
   | 'auth-use-join-code'
   | 'auth-accept-invite'
+  // Onboard wizard PATCH + GET — IP-keyed. Pre-account paths (steps 1-3)
+  // are gated only by a hotel-join-code, which is brute-forceable at
+  // ~50 bits without a rate limit. Without this cap, an attacker could
+  // enumerate codes by hammering /api/onboard/wizard. Same 10/hr bucket
+  // shape as auth-use-join-code. (Security review 2026-05-16, Pattern G.)
+  | 'onboard-wizard'
   // Phase M1.5 (2026-05-14) — transactional email send via Resend.
   // Keyed on the recipient (normalized email, plus-addressing collapsed)
   // so an admin can't accidentally spam alice@hotel.com by re-clicking
@@ -112,6 +118,7 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // Public join-code signup — 10/hour per source IP. Same logic as
   // 'signup-ip' (real signups are rare, anything higher is abuse).
   'auth-use-join-code':         10,
+  'onboard-wizard':             10,
   // Invite acceptance — 10/hour per source IP. One-shot per token in
   // normal use; the cap exists to bound token-spray brute force.
   'auth-accept-invite':         10,

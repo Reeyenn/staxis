@@ -13,8 +13,8 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
-import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { log, getOrMintRequestId } from '@/lib/log';
+import { ok, err } from '@/lib/api-response';
+import { getOrMintRequestId } from '@/lib/log';
 import { writeAuditLog } from '@/lib/admin-audit';
 
 export const runtime = 'nodejs';
@@ -23,9 +23,6 @@ export const maxDuration = 15;
 
 const VALID_STATUSES = new Set(['idea', 'planned', 'in_progress', 'done', 'dropped']);
 
-// roadmap_items schema per migration 0053. Audit follow-up 2026-05-17.
-const ROADMAP_FIELDS = 'id, title, description, status, priority, created_at, updated_at, done_at';
-
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const auth = await requireAdmin(req);
@@ -33,15 +30,12 @@ export async function GET(req: NextRequest) {
 
   const { data, error } = await supabaseAdmin
     .from('roadmap_items')
-    .select(ROADMAP_FIELDS)
+    .select('*')
     .order('priority', { ascending: false })
     .order('created_at', { ascending: false })
     .limit(500);
 
-  if (error) {
-    log.error('roadmap list failed', { err: error, requestId });
-    return err('roadmap list failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  }
+  if (error) return err(`roadmap list failed: ${error.message}`, { requestId, status: 500 });
   return ok({ items: data ?? [] }, { requestId });
 }
 
@@ -65,13 +59,10 @@ export async function POST(req: NextRequest) {
       status,
       priority: typeof body.priority === 'number' ? body.priority : 0,
     })
-    .select(ROADMAP_FIELDS)
+    .select('*')
     .single();
 
-  if (error) {
-    log.error('roadmap create failed', { err: error, requestId });
-    return err('roadmap create failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  }
+  if (error) return err(`roadmap create failed: ${error.message}`, { requestId, status: 500 });
 
   await writeAuditLog({
     actorUserId: auth.userId,
@@ -111,13 +102,10 @@ export async function PATCH(req: NextRequest) {
     .from('roadmap_items')
     .update(update)
     .eq('id', id)
-    .select(ROADMAP_FIELDS)
+    .select('*')
     .single();
 
-  if (error) {
-    log.error('roadmap update failed', { err: error, requestId });
-    return err('roadmap update failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  }
+  if (error) return err(`roadmap update failed: ${error.message}`, { requestId, status: 500 });
 
   await writeAuditLog({
     actorUserId: auth.userId,
@@ -145,10 +133,7 @@ export async function DELETE(req: NextRequest) {
     .delete()
     .eq('id', id);
 
-  if (error) {
-    log.error('roadmap delete failed', { err: error, requestId });
-    return err('roadmap delete failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  }
+  if (error) return err(`roadmap delete failed: ${error.message}`, { requestId, status: 500 });
 
   await writeAuditLog({
     actorUserId: auth.userId,

@@ -8,14 +8,6 @@ import type { DeepCleanConfig, DeepCleanRecord } from '@/types';
 import { supabase, logErr } from './_common';
 import { dropUndefined, fromDeepCleanRecordRow } from '../db-mappers';
 
-// Audit follow-up 2026-05-17 — explicit field lists in place of SELECT *.
-const DEEP_CLEAN_CONFIG_FIELDS = 'frequency_days, minutes_per_room, target_per_week';
-const DEEP_CLEAN_RECORD_FIELDS =
-  'room_number, last_deep_clean, cleaned_by, cleaned_by_team, notes, status, ' +
-  'assigned_at, completed_at';
-type DeepCleanConfigRow = { frequency_days?: number; minutes_per_room?: number; target_per_week?: number };
-type DeepCleanRecordRow = Record<string, unknown>;
-
 const DEFAULT_DEEP_CLEAN_CONFIG: DeepCleanConfig = {
   frequencyDays: 90,
   minutesPerRoom: 60,
@@ -24,7 +16,7 @@ const DEFAULT_DEEP_CLEAN_CONFIG: DeepCleanConfig = {
 
 export async function getDeepCleanConfig(_uid: string, pid: string): Promise<DeepCleanConfig> {
   const { data, error } = await supabase
-    .from('deep_clean_config').select(DEEP_CLEAN_CONFIG_FIELDS).eq('property_id', pid).maybeSingle<DeepCleanConfigRow>();
+    .from('deep_clean_config').select('*').eq('property_id', pid).maybeSingle();
   if (error) { logErr('getDeepCleanConfig', error); throw error; }
   if (!data) return { ...DEFAULT_DEEP_CLEAN_CONFIG };
   return {
@@ -47,7 +39,7 @@ export async function setDeepCleanConfig(_uid: string, pid: string, config: Deep
 
 export async function getDeepCleanRecords(_uid: string, pid: string): Promise<DeepCleanRecord[]> {
   const { data, error } = await supabase
-    .from('deep_clean_records').select(DEEP_CLEAN_RECORD_FIELDS).eq('property_id', pid).returns<DeepCleanRecordRow[]>();
+    .from('deep_clean_records').select('*').eq('property_id', pid);
   if (error) { logErr('getDeepCleanRecords', error); throw error; }
   return (data ?? []).map(fromDeepCleanRecordRow);
 }

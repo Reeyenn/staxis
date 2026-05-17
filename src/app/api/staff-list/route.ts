@@ -3,7 +3,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { log, getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId } from '@/lib/log';
 
 /**
  * Public endpoint — returns the staff scheduled to work today for a given
@@ -60,7 +60,7 @@ export async function GET(req: NextRequest) {
   if (queryError) {
     // Don't echo PG error text — leaks schema/column names. Log the full
     // detail server-side and return generic 500 to caller.
-    log.error('[staff-list] query failed', { err: queryError, requestId });
+    console.error('[staff-list] query failed', errToString(queryError));
     return err('Internal server error', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });

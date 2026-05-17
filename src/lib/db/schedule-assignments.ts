@@ -11,11 +11,6 @@
 import { supabase, logErr, subscribeTable } from './_common';
 import { toDate } from '../db-mappers';
 
-// Matches fromScheduleAssignmentsRow below. Audit follow-up 2026-05-17.
-const SCHEDULE_ASSIGNMENT_FIELDS =
-  'date, room_assignments, crew, staff_names, csv_room_snapshot, csv_pulled_at, updated_at';
-type ScheduleAssignmentRow = Record<string, unknown>;
-
 export interface CsvRoomSnapshot {
   number: string;
   type: 'checkout' | 'stayover';
@@ -52,8 +47,8 @@ export function subscribeToScheduleAssignments(
     `schedule_assignments:${pid}:${date}`, 'schedule_assignments', `property_id=eq.${pid}`,
     async () => {
       const { data, error } = await supabase
-        .from('schedule_assignments').select(SCHEDULE_ASSIGNMENT_FIELDS)
-        .eq('property_id', pid).eq('date', date).maybeSingle<ScheduleAssignmentRow>();
+        .from('schedule_assignments').select('*')
+        .eq('property_id', pid).eq('date', date).maybeSingle();
       if (error) throw error;
       return data ? [fromScheduleAssignmentsRow(data)] : [];
     },
@@ -106,8 +101,8 @@ export async function getScheduleAssignments(
   _uid: string, pid: string, date: string,
 ): Promise<ScheduleAssignments | null> {
   const { data, error } = await supabase
-    .from('schedule_assignments').select(SCHEDULE_ASSIGNMENT_FIELDS)
-    .eq('property_id', pid).eq('date', date).maybeSingle<ScheduleAssignmentRow>();
+    .from('schedule_assignments').select('*')
+    .eq('property_id', pid).eq('date', date).maybeSingle();
   if (error) { logErr('getScheduleAssignments', error); throw error; }
   return data ? fromScheduleAssignmentsRow(data) : null;
 }

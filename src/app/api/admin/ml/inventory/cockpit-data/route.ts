@@ -30,7 +30,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/admin-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
-import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getInventoryNextScheduled } from '@/lib/ml-cron-schedule';
 
 export const runtime = 'nodejs';
@@ -169,7 +168,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
   const propertyIdParam = new URL(req.url).searchParams.get('propertyId');
   if (propertyIdParam !== null && !isUuid(propertyIdParam)) {
-    return err('invalid_property_id', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return NextResponse.json({ ok: false, error: 'invalid_property_id' }, { status: 400 });
   }
 
   try {
@@ -193,7 +192,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       : propsList.filter((p) => !p.is_test).map((p) => p.id);
 
     if (propertyIdParam && scopeIds.length === 0) {
-      return err('property_not_found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+      return NextResponse.json({ ok: false, error: 'property_not_found' }, { status: 404 });
     }
 
     const since7d = new Date(Date.now() - 7 * 86400000).toISOString();
@@ -596,16 +595,20 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       ? { id: propertyIdParam, name: propByName.get(propertyIdParam) ?? '' }
       : null;
 
-    return ok({
-      mode: propertyIdParam ? 'single' : 'network',
-      selectedProperty,
-      properties: sidebarProperties,
-      aggregate,
-      recentAnomalies,
-      topCounters,
-    } as CockpitDataResponse['data'], { requestId });
+    return NextResponse.json({
+      ok: true,
+      requestId,
+      data: {
+        mode: propertyIdParam ? 'single' : 'network',
+        selectedProperty,
+        properties: sidebarProperties,
+        aggregate,
+        recentAnomalies,
+        topCounters,
+      },
+    } satisfies CockpitDataResponse);
   } catch (e) {
     log.error('cockpit-data: failed', { requestId, err: e as Error });
-    return err('internal_error', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    return NextResponse.json({ ok: false, error: 'internal_error', requestId }, { status: 500 });
   }
 }

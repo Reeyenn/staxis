@@ -50,21 +50,11 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
   // get cancelled immediately. Playwright work still finishes its
   // current page op, but the expensive runaway path is closed.
   const abortController = new AbortController();
-  // markFailed is awaited inside an async setTimeout callback — without the
-  // try/catch, a rejection (Supabase down, RLS drift) would sink into the
-  // microtask queue as an unhandled rejection and the timeout signal would
-  // disappear silently. Log it so we see it in Sentry instead.
   const timeout = setTimeout(async () => {
     timedOut = true;
     log.warn('job exceeded time limit', { jobId, limitMs: JOB_TIMEOUT_MS });
     abortController.abort('job timeout');
-    try {
-      await markFailed(jobId, workerId, 'Job exceeded time limit', { kind: 'timeout', limitMs: JOB_TIMEOUT_MS });
-    } catch (e) {
-      log.error('job timeout handler: markFailed threw', {
-        jobId, err: e instanceof Error ? e : new Error(String(e)),
-      });
-    }
+    await markFailed(jobId, workerId, 'Job exceeded time limit', { kind: 'timeout', limitMs: JOB_TIMEOUT_MS });
   }, JOB_TIMEOUT_MS);
 
   try {

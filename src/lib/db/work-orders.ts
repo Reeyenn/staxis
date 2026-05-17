@@ -9,16 +9,6 @@ import type { WorkOrder } from '@/types';
 import { supabase, logErr, subscribeTable } from './_common';
 import { toWorkOrderRow, fromWorkOrderRow } from '../db-mappers';
 
-// Matches fromWorkOrderRow in db-mappers.ts. Includes legacy fallback
-// columns (photo_url, assigned_name) so pre-0131 rows still resolve.
-// Audit follow-up 2026-05-17.
-const WORK_ORDER_FIELDS =
-  'id, property_id, room_number, description, severity, status, ' +
-  'submitted_by_name, submitter_role, submitter_photo_path, ' +
-  'completed_by_name, completion_note, completion_photo_path, ' +
-  'resolved_at, photo_url, assigned_name, created_at, updated_at';
-type WorkOrderRow = Record<string, unknown>;
-
 export function subscribeToWorkOrders(
   _uid: string, pid: string,
   callback: (orders: WorkOrder[]) => void,
@@ -27,10 +17,9 @@ export function subscribeToWorkOrders(
     `work_orders:${pid}`, 'work_orders', `property_id=eq.${pid}`,
     async () => {
       const { data, error } = await supabase
-        .from('work_orders').select(WORK_ORDER_FIELDS)
+        .from('work_orders').select('*')
         .eq('property_id', pid)
-        .order('created_at', { ascending: false })
-        .returns<WorkOrderRow[]>();
+        .order('created_at', { ascending: false });
       if (error) throw error;
       return (data ?? []).map(fromWorkOrderRow);
     },

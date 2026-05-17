@@ -51,7 +51,7 @@ export async function runOneEval(
   // ID per case for stable telemetry across runs.
   const evalConversationId = `eval-${evalCase.name}`;
   const systemPrompt = await buildSystemPrompt(evalCase.role, snapshot, evalConversationId);
-  const tools = getToolsForRole(evalCase.role);
+  const tools = getToolsForRole(evalCase.role, 'chat');
 
   const runOpts: RunAgentOpts = {
     systemPrompt,
@@ -79,6 +79,7 @@ export async function runOneEval(
       propertyId: opts.propertyId,
       staffId: null, // evals run as admin context; housekeeper-only checks fall through cleanly
       requestId: `eval-${evalCase.name}-${Date.now()}`,
+      surface: 'chat',
     },
   };
 

@@ -8,12 +8,6 @@ import type { HandoffEntry } from '@/types';
 import { supabase, logErr, subscribeTable } from './_common';
 import { toISO, dropUndefined, fromHandoffRow } from '../db-mappers';
 
-// Matches fromHandoffRow in db-mappers.ts. Audit follow-up 2026-05-17.
-const HANDOFF_LOG_FIELDS =
-  'id, property_id, shift_type, author, notes, acknowledged, acknowledged_by, ' +
-  'created_at, acknowledged_at';
-type HandoffLogRow = Record<string, unknown>;
-
 export function subscribeToHandoffLogs(
   _uid: string, pid: string,
   callback: (entries: HandoffEntry[]) => void,
@@ -22,10 +16,9 @@ export function subscribeToHandoffLogs(
     `handoff_logs:${pid}`, 'handoff_logs', `property_id=eq.${pid}`,
     async () => {
       const { data, error } = await supabase
-        .from('handoff_logs').select(HANDOFF_LOG_FIELDS)
+        .from('handoff_logs').select('*')
         .eq('property_id', pid)
-        .order('created_at', { ascending: false })
-        .returns<HandoffLogRow[]>();
+        .order('created_at', { ascending: false });
       if (error) throw error;
       return (data ?? []).map(fromHandoffRow);
     },

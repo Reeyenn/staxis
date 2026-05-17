@@ -7,7 +7,7 @@ import {
 } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { log, getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId } from '@/lib/log';
 
 /**
  * POST /api/help-request
@@ -91,7 +91,7 @@ export async function POST(req: NextRequest) {
       .eq('id', staffId)
       .maybeSingle();
     if (staffErr) {
-      log.error('[help-request] staff lookup error', { err: staffErr, requestId });
+      console.error('[help-request] staff lookup error:', staffErr.message);
       return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
     if (!staffRow || staffRow.property_id !== pid) {
@@ -113,7 +113,7 @@ export async function POST(req: NextRequest) {
     ]);
 
     if (mgrErr) {
-      log.error('[help-request] staff query failed', { err: mgrErr, requestId });
+      console.error('[help-request] staff query failed', mgrErr.message);
       return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
 
@@ -122,21 +122,21 @@ export async function POST(req: NextRequest) {
     if (!managers || managers.length === 0) {
       // Don't log staffName + roomNumber here — they're user-controlled and
       // would let us tag a property's logs by injection. Just log the pid.
-      log.warn('[help-request] No scheduling manager', { pid, requestId });
+      console.warn(`[help-request] No scheduling manager for ${pid}`);
       return ok({ sent: 0, failed: 0, reason: 'no-scheduling-manager' }, { requestId });
     }
 
     const manager = managers[0];
 
     if (!manager.phone || manager.is_active === false) {
-      log.warn('[help-request] Scheduling manager unreachable (no phone or inactive)', { pid, requestId });
+      console.warn(`[help-request] Scheduling manager unreachable for ${pid} (no phone or inactive)`);
       return ok({ sent: 0, failed: 0, reason: 'manager-unreachable' }, { requestId });
     }
 
     const e164 = toE164(manager.phone);
     if (!e164) {
       // Redact phone so we don't leak PII to log aggregators.
-      log.error('[help-request] Invalid phone for scheduling manager', { pid, phone: redactPhone(manager.phone), requestId });
+      console.error(`[help-request] Invalid phone for scheduling manager (pid=${pid}, phone=${redactPhone(manager.phone)})`);
       return ok({ sent: 0, failed: 1, reason: 'invalid-phone' }, { requestId });
     }
 
@@ -148,12 +148,14 @@ export async function POST(req: NextRequest) {
       await sendSms(e164, message);
       return ok({ sent: 1, failed: 0 }, { requestId });
     } catch (smsErr) {
-      log.error('[help-request] SMS failed', { err: smsErr, pid, mgr: redactPhone(manager.phone), requestId });
+      console.error(
+        `[help-request] SMS failed (pid=${pid}, mgr=${redactPhone(manager.phone)}): ${errToString(smsErr)}`,
+      );
       return ok({ sent: 0, failed: 1 }, { requestId });
     }
   } catch (caughtErr) {
     // Don't leak stack traces or internal field values to the caller in prod.
-    log.error('[help-request] error', { err: caughtErr, requestId });
+    console.error('[help-request] error:', errToString(caughtErr));
     return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

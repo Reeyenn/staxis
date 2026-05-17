@@ -14,7 +14,7 @@ from src.config import get_settings
 from src.features.supply_matrix import build_supply_features
 from src.layers.bayesian_regression import BayesianRegression
 from src.layers.xgboost_quantile import XGBoostQuantile, XGBOOST_INFERENCE_READY
-from src.supabase_client import get_supabase_client
+from src.supabase_client import get_supabase_client, safe_uuid
 
 
 from src.training._streak_utils import parse_iso_datetime as _parse_iso_datetime  # noqa: E402
@@ -117,7 +117,7 @@ def _train_supply_inner(
             occupancy_at_start,
             was_dnd_during_clean
         from cleaning_events
-        where property_id = '{property_id}'
+        where property_id = '{safe_uuid(property_id)}'
           and completed_at is not null
           and started_at is not null
           and status != 'discarded'

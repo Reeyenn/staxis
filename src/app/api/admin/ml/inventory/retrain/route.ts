@@ -16,7 +16,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/admin-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
-import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { errToString } from '@/lib/utils';
 import { triggerMlTraining } from '@/lib/ml-invoke';
 
@@ -36,13 +35,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   try {
     body = await req.json();
   } catch {
-    return err('invalid_json', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return NextResponse.json({ ok: false, error: 'invalid_json' }, { status: 400 });
   }
   if (!isUuid(body.propertyId)) {
-    return err('invalid_property_id', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return NextResponse.json({ ok: false, error: 'invalid_property_id' }, { status: 400 });
   }
   if (body.itemId !== undefined && body.itemId !== null && !isUuid(body.itemId)) {
-    return err('invalid_item_id', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return NextResponse.json({ ok: false, error: 'invalid_item_id' }, { status: 400 });
   }
 
   // Phase M3.5 (2026-05-14): inline fetch migrated to triggerMlTraining
@@ -53,7 +52,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   });
   if (result.status === 'not_configured') {
     log.warn('ml-inventory-retrain: ML service not configured', { requestId });
-    return err('ml_service_not_configured', { requestId, status: 503, code: ApiErrorCode.UpstreamFailure });
+    return NextResponse.json({
+      ok: false,
+      error: 'ml_service_not_configured',
+      requestId,
+    }, { status: 503 });
   }
   log.info('ml-inventory-retrain: result', {
     requestId,
@@ -62,15 +65,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     mlStatus: result.http,
   });
   if (!result.ok) {
-    // Log full upstream detail; client gets a stable string. The HTTP
-    // status from the ML service is captured in mlHttp for cross-stream
-    // log correlation (already echoed via x-request-id).
     log.error('ml-inventory-retrain: ML service call failed', {
-      requestId,
-      err: new Error(errToString(result.error ?? `HTTP ${result.http}`)),
-      mlHttp: result.http,
+      requestId, err: errToString(result.error ?? `HTTP ${result.http}`),
     });
-    return err('upstream_ml_service_failed', { requestId, status: 502, code: ApiErrorCode.UpstreamFailure });
+    return NextResponse.json({
+      ok: false,
+      error: result.error ?? `HTTP ${result.http}`,
+      requestId,
+    }, { status: 502 });
   }
-  return ok({ result: result.detail ?? {} }, { requestId });
+  return NextResponse.json({ ok: true, requestId, result: result.detail ?? {} }, { status: 200 });
 }

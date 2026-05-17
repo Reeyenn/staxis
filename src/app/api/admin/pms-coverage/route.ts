@@ -21,7 +21,7 @@ import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { log, getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId } from '@/lib/log';
 import { PMS_REGISTRY } from '@/lib/pms/registry';
 import type { PMSType } from '@/lib/pms/types';
 
@@ -71,8 +71,7 @@ export async function GET(req: NextRequest) {
     .eq('status', 'active');
 
   if (recipeErr) {
-    log.error('pms-coverage: recipes query failed', { err: recipeErr, requestId });
-    return err('Could not load recipes', {
+    return err(`Could not load recipes: ${recipeErr.message}`, {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
   }
@@ -84,8 +83,7 @@ export async function GET(req: NextRequest) {
     .select('pms_type');
 
   if (propErr) {
-    log.error('pms-coverage: properties query failed', { err: propErr, requestId });
-    return err('Could not load properties', {
+    return err(`Could not load properties: ${propErr.message}`, {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
   }
@@ -105,8 +103,7 @@ export async function GET(req: NextRequest) {
     .limit(100);
 
   if (jobErr) {
-    log.error('pms-coverage: jobs query failed', { err: jobErr, requestId });
-    return err('Could not load jobs', {
+    return err(`Could not load jobs: ${jobErr.message}`, {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
   }

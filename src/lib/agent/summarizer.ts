@@ -248,6 +248,10 @@ export async function summarizeOneConversation(conversationId: string): Promise<
       propertyId: convoRow.property_id as string,
       staffId: null,
       requestId: `summarizer-${conversationId}-${Date.now()}`,
+      // Summarizer runs with tools: [] so surface is moot for tool gating,
+      // but ToolContext now requires it. Tag as 'chat' since this is a
+      // chat-conversation background task.
+      surface: 'chat',
     },
     // Round 11 T5 (2026-05-13): the 'haiku' alias flows through
     // MODELS[model] in llm.ts and picks up MODEL_OVERRIDE.haiku if set.

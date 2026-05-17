@@ -8,8 +8,8 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
-import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { log, getOrMintRequestId } from '@/lib/log';
+import { ok, err } from '@/lib/api-response';
+import { getOrMintRequestId } from '@/lib/log';
 import { writeAuditLog } from '@/lib/admin-audit';
 
 export const runtime = 'nodejs';
@@ -46,21 +46,14 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     return err('no fields to update', { requestId, status: 400 });
   }
 
-  // prospects schema per migration 0050. Audit follow-up 2026-05-17.
-  const PROSPECT_FIELDS =
-    'id, hotel_name, contact_name, contact_email, contact_phone, pms_type, ' +
-    'expected_launch_date, status, notes, checklist, created_at, updated_at';
   const { data, error } = await supabaseAdmin
     .from('prospects')
     .update(update)
     .eq('id', id)
-    .select(PROSPECT_FIELDS)
+    .select('*')
     .single();
 
-  if (error) {
-    log.error('prospect update failed', { err: error, requestId });
-    return err('prospect update failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  }
+  if (error) return err(`prospect update failed: ${error.message}`, { requestId, status: 500 });
 
   await writeAuditLog({
     actorUserId: auth.userId,
@@ -85,10 +78,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
     .delete()
     .eq('id', id);
 
-  if (error) {
-    log.error('prospect delete failed', { err: error, requestId });
-    return err('prospect delete failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  }
+  if (error) return err(`prospect delete failed: ${error.message}`, { requestId, status: 500 });
 
   await writeAuditLog({
     actorUserId: auth.userId,

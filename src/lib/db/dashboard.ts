@@ -33,12 +33,6 @@ export interface DashboardNumbers {
   error: string | null;
 }
 
-// Matches dashboardFromRow below. Audit follow-up 2026-05-17.
-const DASHBOARD_BY_DATE_FIELDS =
-  'in_house, arrivals, departures, in_house_guests, arrivals_guests, ' +
-  'departures_guests, pulled_at, error_code, error_message, error_page, errored_at';
-type DashboardByDateRow = Record<string, unknown>;
-
 export const DASHBOARD_STALE_MINUTES = 25;
 
 export type DashboardFreshness = 'fresh' | 'stale' | 'error' | 'unknown';
@@ -145,12 +139,12 @@ export async function getDashboardForDate(
   try {
     const { data, error } = await supabase
       .from('dashboard_by_date')
-      .select(DASHBOARD_BY_DATE_FIELDS)
+      .select('*')
       .eq('date', dateStr)
       .eq('property_id', propertyId)
-      .maybeSingle<DashboardByDateRow>();
+      .maybeSingle();
     if (error) throw error;
-    return data ? dashboardFromRow(data) : null;
+    return data ? dashboardFromRow(data as Record<string, unknown>) : null;
   } catch (err) { logErr('getDashboardForDate', err); return null; }
 }
 
@@ -169,10 +163,10 @@ export function subscribeToDashboardByDate(
     `dashboard_by_date:${pid}:${date}`, 'dashboard_by_date', `property_id=eq.${pid}`,
     async () => {
       const { data, error } = await supabase
-        .from('dashboard_by_date').select(DASHBOARD_BY_DATE_FIELDS)
-        .eq('property_id', pid).eq('date', date).maybeSingle<DashboardByDateRow>();
+        .from('dashboard_by_date').select('*')
+        .eq('property_id', pid).eq('date', date).maybeSingle();
       if (error) throw error;
-      return data ? [dashboardFromRow(data)] : [];
+      return data ? [dashboardFromRow(data as Record<string, unknown>)] : [];
     },
     (rows) => callback(rows[0] ?? null),
     // Realtime can only filter on one column; skip re-fetch when another
