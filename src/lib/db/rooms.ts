@@ -5,8 +5,19 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { Room } from '@/types';
-import { supabase, logErr, subscribeTable, makeUpsertByIdReducer } from './_common';
+import { supabase, logErr, subscribeTable, makeUpsertByIdReducer, asRecordRows } from './_common';
 import { toRoomRow, fromRoomRow } from '../db-mappers';
+
+// Explicit column list, in lock-step with fromRoomRow() in db-mappers.ts.
+// Replaces the old `.select('*')` queries — the old shape returned every
+// row column on every fetch, including ML feature columns (cleaning_events
+// joins, score blobs) that the housekeeping UI never reads. Audit
+// recommendation #5 / #13 in .claude/reports/cost-hotpaths-audit.md.
+const ROOM_COLS =
+  'id, property_id, number, type, priority, status, assigned_to, assigned_name, ' +
+  'started_at, completed_at, date, issue_note, inspected_by, inspected_at, ' +
+  'is_dnd, dnd_note, arrival, stayover_day, stayover_minutes, help_requested, ' +
+  'checklist, photo_url';
 
 export function subscribeToRooms(
   _uid: string, pid: string, date: string,
@@ -21,10 +32,10 @@ export function subscribeToRooms(
     `rooms:${pid}:${date}`, 'rooms', `property_id=eq.${pid}`,
     async () => {
       const { data, error } = await supabase
-        .from('rooms').select('*')
+        .from('rooms').select(ROOM_COLS)
         .eq('property_id', pid).eq('date', date);
       if (error) throw error;
-      return (data ?? []).map(fromRoomRow);
+      return asRecordRows(data).map(fromRoomRow);
     },
     callback,
     (payload) => {
@@ -53,9 +64,9 @@ export function subscribeToAllRooms(
   return subscribeTable<Room>(
     `rooms-all:${pid}`, 'rooms', `property_id=eq.${pid}`,
     async () => {
-      const { data, error } = await supabase.from('rooms').select('*').eq('property_id', pid);
+      const { data, error } = await supabase.from('rooms').select(ROOM_COLS).eq('property_id', pid);
       if (error) throw error;
-      return (data ?? []).map(fromRoomRow);
+      return asRecordRows(data).map(fromRoomRow);
     },
     callback,
   );
@@ -92,9 +103,9 @@ export async function bulkAddRooms(_uid: string, pid: string, rooms: Omit<Room, 
 
 export async function getRoomsForDate(_uid: string, pid: string, date: string): Promise<Room[]> {
   const { data, error } = await supabase
-    .from('rooms').select('*').eq('property_id', pid).eq('date', date);
+    .from('rooms').select(ROOM_COLS).eq('property_id', pid).eq('date', date);
   if (error) { logErr('getRoomsForDate', error); throw error; }
-  return (data ?? []).map(fromRoomRow);
+  return asRecordRows(data).map(fromRoomRow);
 }
 
 // 2026-05-07: carryOverRooms() was deleted. It had no callers and copying

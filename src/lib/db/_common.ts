@@ -15,6 +15,25 @@ export { supabase };
 
 // ─── tiny utilities ─────────────────────────────────────────────────────────
 
+/**
+ * Cast a Supabase `.select(<column-list>)` result to a plain record array for
+ * mapping. supabase-js's type inference returns `GenericStringError[]` when
+ * the select string isn't a literal (we use module-level constants like
+ * ROOM_COLS); at runtime the rows are still `Record<string, unknown>` and
+ * the per-table `fromXxxRow` mapper validates the shape. The cast is the
+ * one-line bridge between "TS can't track this" and "the mapper does it
+ * correctly anyway." Audit recommendation #5 (.claude/reports/cost-hotpaths-audit.md).
+ */
+export function asRecordRows(data: unknown): Record<string, unknown>[] {
+  return (data ?? []) as unknown as Record<string, unknown>[];
+}
+
+/** Same, for `.maybeSingle()` / `.single()` selects. */
+export function asRecordRow(data: unknown): Record<string, unknown> | null {
+  if (!data) return null;
+  return data as unknown as Record<string, unknown>;
+}
+
 export function logErr(tag: string, err: unknown): void {
   // Supabase PostgrestError is a plain object ({ message, details, hint,
   // code }), not an Error subclass — String(err) returns "[object Object]"
