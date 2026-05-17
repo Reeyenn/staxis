@@ -16,7 +16,7 @@ import { fetchWithAuth } from '@/lib/api-fetch';
 import { AlertsBell } from './AlertsBell';
 import { T, FONT_SANS, FONT_SERIF, Caps, MonoNum } from './_snow';
 
-export type AdminTab = 'onboarding' | 'live' | 'system' | 'money' | 'agent';
+export type AdminTab = 'onboarding' | 'live' | 'system' | 'money' | 'agent' | 'ml';
 
 const TABS: { id: AdminTab; label: string }[] = [
   { id: 'onboarding', label: 'Onboarding' },
@@ -24,6 +24,7 @@ const TABS: { id: AdminTab; label: string }[] = [
   { id: 'system', label: 'System' },
   { id: 'money', label: 'Money' },
   { id: 'agent', label: 'Agent' },
+  { id: 'ml', label: 'ML' },
 ];
 
 interface Stats {

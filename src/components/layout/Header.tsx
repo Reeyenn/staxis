@@ -44,14 +44,13 @@ export function Header() {
     { href: '/staff',        label: lang === 'es' ? 'Personal' : 'Staff' },
   ];
 
-  // ML and Admin tabs are both admin-only. Server-side gates on
-  // /api/admin/* and /admin/* pages still enforce this independently.
+  // Admin tab is admin-only. ML now lives inside the Admin cockpit as a
+  // sub-tab — the top nav doesn't need a separate ML link.
+  // Server-side gates on /api/admin/* and /admin/* pages still enforce
+  // admin-only access independently.
   const isAdmin = user?.role === 'admin';
   const navLinks = [
     ...baseNavLinks,
-    // ML stays "ML" in both locales — it's a proper noun the team uses
-    // verbatim. Only "Admin" → "Administración" needs the swap.
-    ...(isAdmin ? [{ href: '/admin/ml', label: 'ML' }] : []),
     ...(isAdmin ? [{ href: '/admin/properties', label: lang === 'es' ? 'Admin.' : 'Admin' }] : []),
   ];
 
