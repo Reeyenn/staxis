@@ -29,8 +29,9 @@ import { supabase, verifyConnection } from './supabase.js';
 import { log, makeWorkerId } from './log.js';
 import { runJob } from './job-runner.js';
 import { runPullJob } from './pull-job-runner.js';
+import { env } from './env.js';
 
-const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS ?? '5000', 10);
+const POLL_INTERVAL_MS = env.POLL_INTERVAL_MS;
 const WORKER_ID = makeWorkerId();
 
 // Graceful-shutdown latch. Set true on SIGTERM; the poll loop checks it

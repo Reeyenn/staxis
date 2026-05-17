@@ -9,14 +9,14 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint src scraper --max-warnings 0",
+    "lint": "eslint src scraper --max-warnings 0 && node scripts/check-env-access.mjs",
     "seed": "node scripts/seed-supabase.js",
     "seed:reset": "node scripts/seed-supabase.js --reset",
     "db:types": "npx supabase gen types typescript --project-id \"$SUPABASE_PROJECT_REF\" | sed '/<claude-code-hint/d' > src/types/database.types.ts",
     "agent:evals": "tsx scripts/run-agent-evals.ts",
     "agent:summarizer-evals": "tsx scripts/run-summarizer-evals.ts",
     "agent:invariant-evals": "tsx scripts/run-agent-invariant-evals.ts",
-    "test": "npm run test:pii-logs && node --test scraper/__tests__/*.test.js && NEXT_PUBLIC_SUPABASE_URL=https://placeholder.supabase.co SUPABASE_SERVICE_ROLE_KEY=placeholder NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder npx tsx --test src/lib/__tests__/*.test.ts",
+    "test": "npm run test:pii-logs && node --test scraper/__tests__/*.test.js && NEXT_PUBLIC_SUPABASE_URL=https://placeholder.supabase.co SUPABASE_SERVICE_ROLE_KEY=placeholder-service-role-key-min-20-chars NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder-anon-key-min-20-chars CRON_SECRET=placeholder-cron-secret-min-16 npx tsx --test src/lib/__tests__/*.test.ts",
     "test:scraper": "node --test scraper/__tests__/*.test.js",
     "test:pii-logs": "bash scripts/check-no-pii-logs.sh"
   },
@@ -36,9 +36,11 @@
     "react-markdown": "^10.1.0",
     "recharts": "^3.8.1",
     "remark-gfm": "^4.0.1",
+    "server-only": "^0.0.1",
     "stripe": "^22.1.1",
     "tailwind-merge": "^3.3.0",
-    "twilio": "^6.0.2"
+    "twilio": "^6.0.2",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.0",

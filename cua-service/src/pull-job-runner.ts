@@ -22,10 +22,11 @@ import { log } from './log.js';
 import { runRecipeExtraction } from './recipe-runner.js';
 import { savePullData } from './pull-data-saver.js';
 import type { PMSCredentials, Recipe, ScraperCredentialsRow } from './types.js';
+import { env } from './env.js';
 
 // Hard timeout for a single pull. Pulls are typically 60-90s; 3 min
 // gives slack for slow PMS pages but bails before the worker is wedged.
-const PULL_TIMEOUT_MS = parseInt(process.env.PULL_TIMEOUT_MS ?? String(180_000), 10);
+const PULL_TIMEOUT_MS = env.PULL_TIMEOUT_MS;
 
 // pull_jobs lifecycle — only the running state owns DB writes. Once a
 // job is complete or failed the runner is done; first-writer-wins on

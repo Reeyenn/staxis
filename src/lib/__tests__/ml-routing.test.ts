@@ -3,11 +3,13 @@
  * the cron routes use to fan out to N Python ML services.
  *
  * Key invariants:
- *   - Single-URL config returns that URL for every property.
+ *   - Single-URL config (one comma-separated entry) returns that URL for every property.
  *   - Multi-URL config distributes deterministically: same pid → same shard.
  *   - Empty config returns null (caller's cue to skip).
- *   - ML_SERVICE_URLS overrides ML_SERVICE_URL when both are set.
  *   - Distribution is reasonably balanced across many UUIDs.
+ *
+ * Note: legacy ML_SERVICE_URL alias was dropped in the env-vars audit
+ * Phase 7. Only ML_SERVICE_URLS is read now (single-shard = one entry).
  */
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -20,18 +22,13 @@ import {
 } from '../ml-routing';
 
 // Capture and restore env so we can mutate freely inside each test.
-let savedUrl: string | undefined;
 let savedUrls: string | undefined;
 
 beforeEach(() => {
-  savedUrl = process.env.ML_SERVICE_URL;
   savedUrls = process.env.ML_SERVICE_URLS;
-  delete process.env.ML_SERVICE_URL;
   delete process.env.ML_SERVICE_URLS;
 });
 afterEach(() => {
-  if (savedUrl === undefined) delete process.env.ML_SERVICE_URL;
-  else process.env.ML_SERVICE_URL = savedUrl;
   if (savedUrls === undefined) delete process.env.ML_SERVICE_URLS;
   else process.env.ML_SERVICE_URLS = savedUrls;
 });
@@ -41,13 +38,13 @@ describe('listMlShardUrls', () => {
     assert.deepEqual(listMlShardUrls(), []);
   });
 
-  it('returns the single URL when only ML_SERVICE_URL is set', () => {
-    process.env.ML_SERVICE_URL = 'https://ml.example.com';
+  it('returns a single-element array when ML_SERVICE_URLS has one entry', () => {
+    process.env.ML_SERVICE_URLS = 'https://ml.example.com';
     assert.deepEqual(listMlShardUrls(), ['https://ml.example.com']);
   });
 
-  it('trims whitespace in the single-URL form', () => {
-    process.env.ML_SERVICE_URL = '  https://ml.example.com  ';
+  it('trims whitespace in the single-entry form', () => {
+    process.env.ML_SERVICE_URLS = '  https://ml.example.com  ';
     assert.deepEqual(listMlShardUrls(), ['https://ml.example.com']);
   });
 
@@ -68,15 +65,6 @@ describe('listMlShardUrls', () => {
       'https://c',
     ]);
   });
-
-  it('ML_SERVICE_URLS takes precedence over ML_SERVICE_URL', () => {
-    process.env.ML_SERVICE_URL = 'https://legacy';
-    process.env.ML_SERVICE_URLS = 'https://shard-0,https://shard-1';
-    assert.deepEqual(listMlShardUrls(), [
-      'https://shard-0',
-      'https://shard-1',
-    ]);
-  });
 });
 
 describe('resolveMlShardUrl', () => {
@@ -85,7 +73,7 @@ describe('resolveMlShardUrl', () => {
   });
 
   it('returns the single URL regardless of pid', () => {
-    process.env.ML_SERVICE_URL = 'https://only';
+    process.env.ML_SERVICE_URLS = 'https://only';
     assert.equal(resolveMlShardUrl('8e3a52cb-aaaa-bbbb-cccc-dddddddddddd'), 'https://only');
     assert.equal(resolveMlShardUrl('00000000-0000-0000-0000-000000000000'), 'https://only');
   });
@@ -177,8 +165,8 @@ describe('getPrimaryMlShardUrl', () => {
     assert.equal(getPrimaryMlShardUrl(), null);
   });
 
-  it('returns ML_SERVICE_URL when single', () => {
-    process.env.ML_SERVICE_URL = 'https://only';
+  it('returns the single URL when ML_SERVICE_URLS has one entry', () => {
+    process.env.ML_SERVICE_URLS = 'https://only';
     assert.equal(getPrimaryMlShardUrl(), 'https://only');
   });
 

@@ -13,7 +13,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-const ENV_KEYS = ['ML_SERVICE_URL', 'ML_SERVICE_URLS', 'ML_SERVICE_SECRET'] as const;
+const ENV_KEYS = ['ML_SERVICE_URLS', 'ML_SERVICE_SECRET'] as const;
 
 interface FetchCall {
   url: string;
@@ -63,8 +63,7 @@ async function loadHelper() {
 }
 
 describe('triggerMlTraining', () => {
-  it('returns not_configured when ML_SERVICE_URL missing', async () => {
-    delete process.env.ML_SERVICE_URL;
+  it('returns not_configured when ML_SERVICE_URLS missing', async () => {
     delete process.env.ML_SERVICE_URLS;
     process.env.ML_SERVICE_SECRET = 'secret-12345';
     const { triggerMlTraining } = await loadHelper();
@@ -77,7 +76,7 @@ describe('triggerMlTraining', () => {
   });
 
   it('returns not_configured when ML_SERVICE_SECRET missing', async () => {
-    process.env.ML_SERVICE_URL = 'https://ml.example.com';
+    process.env.ML_SERVICE_URLS = 'https://ml.example.com';
     delete process.env.ML_SERVICE_SECRET;
     const { triggerMlTraining } = await loadHelper();
 
@@ -89,7 +88,7 @@ describe('triggerMlTraining', () => {
   });
 
   it('hits /train/demand for layer=demand with Bearer auth + property_id body', async () => {
-    process.env.ML_SERVICE_URL = 'https://ml.example.com';
+    process.env.ML_SERVICE_URLS = 'https://ml.example.com';
     process.env.ML_SERVICE_SECRET = 'secret-12345';
     nextResponse = { status: 200, body: { status: 'ok', cold_start: true } };
     const { triggerMlTraining } = await loadHelper();
@@ -110,7 +109,7 @@ describe('triggerMlTraining', () => {
   });
 
   it('hits /train/supply for layer=supply', async () => {
-    process.env.ML_SERVICE_URL = 'https://ml.example.com';
+    process.env.ML_SERVICE_URLS = 'https://ml.example.com';
     process.env.ML_SERVICE_SECRET = 'secret-12345';
     const { triggerMlTraining } = await loadHelper();
 
@@ -120,7 +119,7 @@ describe('triggerMlTraining', () => {
   });
 
   it('hits /train/inventory-rate and includes item_id when provided', async () => {
-    process.env.ML_SERVICE_URL = 'https://ml.example.com';
+    process.env.ML_SERVICE_URLS = 'https://ml.example.com';
     process.env.ML_SERVICE_SECRET = 'secret-12345';
     const { triggerMlTraining } = await loadHelper();
 
@@ -136,7 +135,7 @@ describe('triggerMlTraining', () => {
   });
 
   it('forwards x-request-id header when provided', async () => {
-    process.env.ML_SERVICE_URL = 'https://ml.example.com';
+    process.env.ML_SERVICE_URLS = 'https://ml.example.com';
     process.env.ML_SERVICE_SECRET = 'secret-12345';
     const { triggerMlTraining } = await loadHelper();
 
@@ -150,7 +149,7 @@ describe('triggerMlTraining', () => {
   });
 
   it('marks ok=false when ML service returns an error field', async () => {
-    process.env.ML_SERVICE_URL = 'https://ml.example.com';
+    process.env.ML_SERVICE_URLS = 'https://ml.example.com';
     process.env.ML_SERVICE_SECRET = 'secret-12345';
     nextResponse = { status: 200, body: { error: 'property_misconfigured: timezone=null' } };
     const { triggerMlTraining } = await loadHelper();
@@ -162,7 +161,7 @@ describe('triggerMlTraining', () => {
   });
 
   it('marks ok=false when ML service returns non-2xx', async () => {
-    process.env.ML_SERVICE_URL = 'https://ml.example.com';
+    process.env.ML_SERVICE_URLS = 'https://ml.example.com';
     process.env.ML_SERVICE_SECRET = 'secret-12345';
     nextResponse = { status: 500, body: { detail: 'internal' } };
     const { triggerMlTraining } = await loadHelper();
@@ -174,7 +173,7 @@ describe('triggerMlTraining', () => {
   });
 
   it('never throws on network error — returns error result instead', async () => {
-    process.env.ML_SERVICE_URL = 'https://ml.example.com';
+    process.env.ML_SERVICE_URLS = 'https://ml.example.com';
     process.env.ML_SERVICE_SECRET = 'secret-12345';
     nextResponse = async () => { throw new Error('socket hangup'); };
     const { triggerMlTraining } = await loadHelper();
@@ -189,7 +188,6 @@ describe('triggerMlTraining', () => {
 
   it('routes via resolveMlShardUrl — multi-shard config picks deterministically', async () => {
     process.env.ML_SERVICE_URLS = 'https://ml-shard-0.example.com,https://ml-shard-1.example.com';
-    delete process.env.ML_SERVICE_URL;
     process.env.ML_SERVICE_SECRET = 'secret-12345';
     const { triggerMlTraining } = await loadHelper();
 

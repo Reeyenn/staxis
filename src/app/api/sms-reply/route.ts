@@ -31,6 +31,7 @@ import { safeBaseUrl, redactPhone } from '@/lib/api-validate';
 import { recordWebhookLog } from '@/lib/event-recorder';
 import { parseStringField, parseUnionField } from '@/lib/db-mappers';
 import twilio from 'twilio';
+import { env } from '@/lib/env';
 
 // Twilio expects TwiML (XML), not JSON. An empty <Response/> tells Twilio
 // "handled, send no auto-reply" — we've fired our own sendSms() already.
@@ -74,7 +75,7 @@ function verifyTwilioSignature(
   params: Record<string, string>,
 ): boolean {
   if (!signature) return false;
-  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  const authToken = env.TWILIO_AUTH_TOKEN;
   if (!authToken) return false;
   try {
     return twilio.validateRequest(authToken, signature, url, params);
@@ -166,12 +167,7 @@ async function logHit(payload: Record<string, unknown>): Promise<void> {
  * production URL instead of a phishing host.
  */
 function resolveBaseUrl(): string {
-  const candidate =
-    process.env.NEXT_PUBLIC_APP_URL ||
-    process.env.NEXT_PUBLIC_SITE_URL ||
-    process.env.NEXT_PUBLIC_BASE_URL ||
-    'https://getstaxis.com';
-  return safeBaseUrl(candidate);
+  return safeBaseUrl(env.NEXT_PUBLIC_APP_URL);
 }
 
 export async function POST(req: NextRequest) {
@@ -230,7 +226,7 @@ export async function POST(req: NextRequest) {
     // there's no Twilio side to spoof.
     const signatureHeader = req.headers.get('x-twilio-signature');
     const isFormEncoded = !contentType.includes('application/json');
-    if (!isFormEncoded && process.env.NODE_ENV === 'production') {
+    if (!isFormEncoded && env.NODE_ENV === 'production') {
       await logHit({
         stage: 'json_rejected_in_production',
         contentType,
@@ -239,8 +235,8 @@ export async function POST(req: NextRequest) {
       return forbidden('json payloads not accepted in production');
     }
     if (isFormEncoded) {
-      const twilioWired = !!process.env.TWILIO_ACCOUNT_SID;
-      const haveToken = !!process.env.TWILIO_AUTH_TOKEN;
+      const twilioWired = !!env.TWILIO_ACCOUNT_SID;
+      const haveToken = !!env.TWILIO_AUTH_TOKEN;
       if (twilioWired && !haveToken) {
         await logHit({
           stage: 'config_drift_missing_auth_token',

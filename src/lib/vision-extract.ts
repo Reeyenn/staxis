@@ -11,6 +11,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import Anthropic from '@anthropic-ai/sdk';
+import { env } from '@/lib/env';
 import { ANTHROPIC_MAX_RETRIES } from '@/lib/external-service-config';
 
 // Pin the model — the prompts in this file are calibrated for Sonnet 4-class
@@ -47,7 +48,7 @@ let _visionClient: Anthropic | null = null;
 /** Throws if ANTHROPIC_API_KEY is missing — caller catches and 500s the route. */
 function getClient(): Anthropic {
   if (_visionClient) return _visionClient;
-  const key = process.env.ANTHROPIC_API_KEY;
+  const key = env.ANTHROPIC_API_KEY;
   if (!key) {
     throw new Error(
       'ANTHROPIC_API_KEY is not set. Vision features (invoice OCR, photo count) require it. ' +

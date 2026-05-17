@@ -18,6 +18,7 @@ import type { NextRequest } from 'next/server';
 import { requireSession } from '@/lib/api-auth';
 import { getOrMintRequestId } from '@/lib/log';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -28,7 +29,7 @@ export async function GET(req: NextRequest): Promise<Response> {
   const auth = await requireSession(req);
   if (!auth.ok) return auth.response;
 
-  const key = process.env.PICOVOICE_ACCESS_KEY;
+  const key = env.PICOVOICE_ACCESS_KEY;
   if (!key) {
     return err('wake word not configured', {
       requestId, status: 404, code: ApiErrorCode.NotFound,

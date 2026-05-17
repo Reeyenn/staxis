@@ -16,15 +16,9 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { BROWSER_TOOL_PARAM } from './browser-tool.js';
+import { env } from './env.js';
 
-const API_KEY = process.env.ANTHROPIC_API_KEY;
-
-if (!API_KEY) {
-  throw new Error(
-    'Missing ANTHROPIC_API_KEY. Get one at https://console.anthropic.com/settings/keys ' +
-    'and set it: fly secrets set ANTHROPIC_API_KEY=sk-ant-...'
-  );
-}
+const API_KEY = env.ANTHROPIC_API_KEY;
 
 // Per-attempt timeout. CUA round-trips with screenshots can reach 60-90s
 // on slow PMS pages; 120s gives that headroom while still aborting hung

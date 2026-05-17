@@ -23,6 +23,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import { env } from '@/lib/env';
 import { err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 
@@ -96,8 +97,7 @@ export async function POST(req: NextRequest) {
 
   const recipient =
     (prop.alert_phone as string | null) ||
-    process.env.MANAGER_PHONE ||
-    process.env.OPS_ALERT_PHONE ||
+    env.OPS_ALERT_PHONE ||
     null;
 
   if (!recipient) {

@@ -27,7 +27,7 @@ interface Body { propertyId?: unknown }
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
 
-  if (!stripeIsConfigured) {
+  if (!stripeIsConfigured()) {
     return err('Billing is not yet configured.', {
       requestId, status: 503, code: ApiErrorCode.UpstreamFailure,
     });

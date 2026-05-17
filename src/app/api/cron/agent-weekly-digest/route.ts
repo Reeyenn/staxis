@@ -28,6 +28,7 @@ import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { sendSms } from '@/lib/sms';
 import { COST_LIMITS } from '@/lib/agent/cost-controls';
 import { captureException } from '@/lib/sentry';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -122,7 +123,7 @@ export async function GET(req: NextRequest) {
   try {
     const digest = await computeDigest();
 
-    const phone = (process.env.MANAGER_PHONE || process.env.OPS_ALERT_PHONE || '').trim();
+    const phone = (env.OPS_ALERT_PHONE || '').trim();
     if (!phone || !E164.test(phone)) {
       digest.smsSkippedReason = 'MANAGER_PHONE missing or invalid E.164';
       log.warn('[agent-weekly-digest] skipping SMS — phone not configured', { requestId });

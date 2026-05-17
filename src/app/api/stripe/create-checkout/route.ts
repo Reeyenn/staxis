@@ -24,6 +24,7 @@ import {
   createCheckoutSession,
   stripeIsConfigured,
 } from '@/lib/stripe';
+import { env } from '@/lib/env';
 import { parseStringField } from '@/lib/db-mappers';
 
 export const runtime = 'nodejs';
@@ -38,7 +39,7 @@ interface Body {
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
 
-  if (!stripeIsConfigured) {
+  if (!stripeIsConfigured()) {
     return err('Billing is not yet configured. Contact support.', {
       requestId, status: 503, code: ApiErrorCode.UpstreamFailure,
     });
@@ -105,7 +106,7 @@ export async function POST(req: NextRequest) {
   // post-payment redirect landed on an attacker-controlled host —
   // useful for phishing follow-on flows. Use NEXT_PUBLIC_APP_URL with
   // a hardcoded fallback; allow only relative paths in returnUrl.
-  const CANONICAL_ORIGIN = process.env.NEXT_PUBLIC_APP_URL || 'https://getstaxis.com';
+  const CANONICAL_ORIGIN = env.NEXT_PUBLIC_APP_URL || 'https://getstaxis.com';
   const safeReturn = (() => {
     const v = typeof body.returnUrl === 'string' ? body.returnUrl : null;
     // Only accept paths like /dashboard or /settings/billing — never full URLs.

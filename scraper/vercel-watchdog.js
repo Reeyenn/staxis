@@ -51,6 +51,7 @@
  */
 
 const { mergeStatus, getStatus } = require('./supabase-helpers');
+const { env } = require('./env');
 
 // How many consecutive failures before we alert. 3 * 5-min-tick = 15 min
 // of sustained failure. Tight enough that Vercel drift doesn't hide for
@@ -83,7 +84,7 @@ const HEARTBEAT_MIN_GAP_MS = 20 * 60 * 60 * 1000;
 // fetch() strips the Authorization header across that origin change —
 // the watchdog would silently report "auth_mismatch" forever. Always
 // hit the canonical host directly so the bearer token survives.
-const DOCTOR_URL = process.env.VERCEL_DOCTOR_URL
+const DOCTOR_URL = env.VERCEL_DOCTOR_URL
   || 'https://getstaxis.com/api/admin/doctor';
 
 // Max time to wait for doctor to respond. Phase M2 (2026-05-14): doctor
@@ -196,12 +197,12 @@ async function pingDoctor(cronSecret) {
  * Returns { ok: true } on success, { ok: false, detail } on failure.
  */
 async function sendTwilioSms(to, body) {
-  const sid   = process.env.TWILIO_ACCOUNT_SID;
-  const token = process.env.TWILIO_AUTH_TOKEN;
+  const sid   = env.TWILIO_ACCOUNT_SID;
+  const token = env.TWILIO_AUTH_TOKEN;
   // Support both naming conventions — TWILIO_FROM_NUMBER is the canonical
   // one used by the Next.js sms.ts lib; TWILIO_PHONE_NUMBER is the legacy
   // Railway var. Fall back to either.
-  const from  = process.env.TWILIO_FROM_NUMBER || process.env.TWILIO_PHONE_NUMBER;
+  const from  = env.TWILIO_FROM_NUMBER;
   if (!sid || !token || !from) {
     return { ok: false, detail: 'Twilio env vars missing on Railway (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM_NUMBER)' };
   }
@@ -261,8 +262,8 @@ function parseIso(v) {
  * must never crash because of watchdog issues.
  */
 async function runVercelWatchdog({ supabase, timezone }) {
-  const cronSecret = process.env.CRON_SECRET;
-  const alertPhone = process.env.MANAGER_PHONE || process.env.OPS_ALERT_PHONE;
+  const cronSecret = env.CRON_SECRET;
+  const alertPhone = env.OPS_ALERT_PHONE;
 
   if (!cronSecret) {
     log('CRON_SECRET not set on Railway — watchdog is a no-op. Add CRON_SECRET env var on Railway to enable.');

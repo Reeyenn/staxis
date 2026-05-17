@@ -39,6 +39,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { revalidateTag } from 'next/cache';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -72,10 +73,10 @@ function asStr(v: unknown, max = 500): string | null {
  * channel can be rotated without touching cron infra.
  */
 function checkLocalSyncSecret(req: NextRequest): NextResponse | null {
-  const secret = process.env.LOCAL_SYNC_SECRET;
+  const secret = env.LOCAL_SYNC_SECRET;
   if (!secret) {
-    const isVercelProd = process.env.VERCEL_ENV === 'production';
-    const isOtherProd = process.env.NODE_ENV === 'production' && !process.env.VERCEL_ENV;
+    const isVercelProd = env.VERCEL_ENV === 'production';
+    const isOtherProd = env.NODE_ENV === 'production' && !env.VERCEL_ENV;
     if (isVercelProd || isOtherProd) {
       console.error('[local-worktrees/sync] LOCAL_SYNC_SECRET unset in production — refusing');
       return NextResponse.json({ error: 'server misconfigured' }, { status: 500 });

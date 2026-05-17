@@ -20,6 +20,7 @@ import { getOrMintRequestId } from '@/lib/log';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
+import { env } from '@/lib/env';
 import {
   externalFetch,
   EXTERNAL_FETCH_TIMEOUT_MS,
@@ -152,8 +153,8 @@ async function fetchMergedBranches(): Promise<MergedBranch[]> {
   // last 25 closed PRs and keep only the ones that actually merged
   // (closed-without-merge gets dropped).
   const headers: Record<string, string> = { 'User-Agent': 'staxis-admin' };
-  if (process.env.GITHUB_TOKEN) {
-    headers['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;
+  if (env.GITHUB_TOKEN) {
+    headers['Authorization'] = `Bearer ${env.GITHUB_TOKEN}`;
   }
 
   const res = await externalFetch(
@@ -188,8 +189,8 @@ async function fetchActiveBranches(): Promise<Branch[]> {
   // "Loki branching off the sacred timeline" effect for any work that
   // hasn't merged yet.
   const headers: Record<string, string> = { 'User-Agent': 'staxis-admin' };
-  if (process.env.GITHUB_TOKEN) {
-    headers['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;
+  if (env.GITHUB_TOKEN) {
+    headers['Authorization'] = `Bearer ${env.GITHUB_TOKEN}`;
   }
 
   // per_page=50 covers most reasonable repo branch counts. The GitHub
@@ -248,8 +249,8 @@ async function fetchRecentCommits(): Promise<Commit[]> {
   // calls/hr, so the larger payload is free.
   const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/commits?sha=main&per_page=100`;
   const headers: Record<string, string> = { 'User-Agent': 'staxis-admin' };
-  if (process.env.GITHUB_TOKEN) {
-    headers['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;
+  if (env.GITHUB_TOKEN) {
+    headers['Authorization'] = `Bearer ${env.GITHUB_TOKEN}`;
   }
 
   const res = await externalFetch(url, { headers, next: { revalidate: 10, tags: ['github-data'] }, timeoutMs: EXTERNAL_FETCH_TIMEOUT_MS });
@@ -275,8 +276,8 @@ async function collectDeploys(): Promise<Deploy[]> {
   // Vercel sets VERCEL_GIT_COMMIT_SHA at build time. In dev that's empty.
   // We don't have a real "last deploy time" from Vercel without the API,
   // so we use the build timestamp baked at deploy time if present.
-  const vercelSha = process.env.VERCEL_GIT_COMMIT_SHA ?? null;
-  const vercelDeployTs = process.env.VERCEL_DEPLOYMENT_CREATED_AT ?? null;
+  const vercelSha = env.VERCEL_GIT_COMMIT_SHA ?? null;
+  const vercelDeployTs = env.VERCEL_DEPLOYMENT_CREATED_AT ?? null;
 
   // For Fly we don't have an obvious env var. Best effort: leave the
   // deploy time null and let the UI say "see Fly dashboard".
@@ -351,8 +352,8 @@ async function fetchRecentPushes(): Promise<Push[]> {
 
 async function fetchOpenPRs(): Promise<OpenPR[]> {
   const headers: Record<string, string> = { 'User-Agent': 'staxis-admin' };
-  if (process.env.GITHUB_TOKEN) {
-    headers['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;
+  if (env.GITHUB_TOKEN) {
+    headers['Authorization'] = `Bearer ${env.GITHUB_TOKEN}`;
   }
   const res = await externalFetch(
     `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/pulls?state=open&base=main&sort=updated&direction=desc&per_page=20`,
@@ -386,10 +387,10 @@ async function enrichCommitsWithCheckStatus(commits: Commit[]): Promise<Commit[]
   // pushed pass CI?" at a glance. Older commits' status would be
   // pure trivia.
   if (commits.length === 0) return commits;
-  if (!process.env.GITHUB_TOKEN) return commits;
+  if (!env.GITHUB_TOKEN) return commits;
   const headers: Record<string, string> = {
     'User-Agent': 'staxis-admin',
-    'Authorization': `Bearer ${process.env.GITHUB_TOKEN}`,
+    'Authorization': `Bearer ${env.GITHUB_TOKEN}`,
     'Accept': 'application/vnd.github+json',
   };
 
@@ -429,11 +430,11 @@ async function enrichCommitsWithCheckStatus(commits: Commit[]): Promise<Commit[]
 }
 
 async function fetchVercelDeployStatus(): Promise<Partial<Deploy> | null> {
-  const token = process.env.VERCEL_API_TOKEN;
-  const projectId = process.env.VERCEL_PROJECT_ID;
+  const token = env.VERCEL_API_TOKEN;
+  const projectId = env.VERCEL_PROJECT_ID;
   if (!token || !projectId) return null;
   try {
-    const teamParam = process.env.VERCEL_TEAM_ID ? `&teamId=${process.env.VERCEL_TEAM_ID}` : '';
+    const teamParam = env.VERCEL_TEAM_ID ? `&teamId=${env.VERCEL_TEAM_ID}` : '';
     const res = await externalFetch(
       `https://api.vercel.com/v6/deployments?projectId=${projectId}&limit=5${teamParam}`,
       {
@@ -476,8 +477,8 @@ async function fetchVercelDeployStatus(): Promise<Partial<Deploy> | null> {
 }
 
 async function fetchFlyDeployStatus(): Promise<Partial<Deploy> | null> {
-  const token = process.env.FLY_API_TOKEN;
-  const app = process.env.FLY_APP_NAME ?? 'staxis-cua';
+  const token = env.FLY_API_TOKEN;
+  const app = env.FLY_APP_NAME ?? 'staxis-cua';
   if (!token) return null;
   try {
     // The Machines REST API doesn't expose a /releases endpoint, so we
@@ -544,7 +545,7 @@ async function listWorktrees(): Promise<Worktree[]> {
   // table (synced from his machine via /api/local-worktrees/sync).
   // The timeline becomes the single source of truth without needing
   // local filesystem access.
-  if (process.env.VERCEL || process.env.VERCEL_ENV) {
+  if (env.VERCEL || env.VERCEL_ENV) {
     return readWorktreesFromDb();
   }
   // Local dev: scan the filesystem directly.

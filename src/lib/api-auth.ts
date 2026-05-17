@@ -24,6 +24,7 @@ import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
+import { env } from '@/lib/env';
 
 /**
  * Classification of session-validation failure modes. The client (fetchWithAuth)
@@ -128,7 +129,7 @@ function classifySessionFailure(
 
   // Project mismatch: JWT was signed by a different Supabase project than
   // this deploy's URL points to. Issuer is `<NEXT_PUBLIC_SUPABASE_URL>/auth/v1`.
-  const expectedUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const expectedUrl = env.NEXT_PUBLIC_SUPABASE_URL;
   if (expectedUrl && claims.iss && !claims.iss.startsWith(expectedUrl)) {
     return { code: 'project_mismatch', claims };
   }
@@ -169,7 +170,7 @@ function authFailureResponse(
  * symmetric so neither side is the weakest link.
  */
 export function requireCronSecret(req: NextRequest): NextResponse | null {
-  const secret = process.env.CRON_SECRET;
+  const secret = env.CRON_SECRET;
   if (!secret) {
     // Fail-closed in TRUE production only. A missing CRON_SECRET on a
     // real prod deploy is config drift (env var dropped during a redeploy)
@@ -179,8 +180,8 @@ export function requireCronSecret(req: NextRequest): NextResponse | null {
     // a security boundary; gating on VERCEL_ENV lets previews still pass
     // through unsigned for smoke tests. Railway/Fly prod (no VERCEL_ENV)
     // falls through to the NODE_ENV check.
-    const isVercelProd = process.env.VERCEL_ENV === 'production';
-    const isOtherProd = process.env.NODE_ENV === 'production' && !process.env.VERCEL_ENV;
+    const isVercelProd = env.VERCEL_ENV === 'production';
+    const isOtherProd = env.NODE_ENV === 'production' && !env.VERCEL_ENV;
     if (isVercelProd || isOtherProd) {
       console.error('[api-auth] CRON_SECRET unset in production — refusing request');
       return NextResponse.json({ error: 'server misconfigured' }, { status: 500 });
@@ -257,7 +258,7 @@ export async function requireSession(req: NextRequest): Promise<
         jwt_aud: claims?.aud ?? null,
         jwt_exp: claims?.exp ?? null,
         jwt_sub: claims?.sub ?? null,
-        expected_iss_prefix: process.env.NEXT_PUBLIC_SUPABASE_URL ?? null,
+        expected_iss_prefix: env.NEXT_PUBLIC_SUPABASE_URL ?? null,
       };
       if (code === 'project_mismatch') {
         log.error('requireSession: project mismatch — env-var drift', fields);
@@ -309,13 +310,13 @@ export async function requireSessionOrCron(req: NextRequest): Promise<
   const auth = req.headers.get('authorization') ?? '';
 
   // Try cron-secret first (fast path, constant time).
-  const cronSecret = process.env.CRON_SECRET;
+  const cronSecret = env.CRON_SECRET;
   // In TRUE production a missing CRON_SECRET means the cron path is
   // disabled — session validation may still succeed below. Same
   // VERCEL_ENV gating as requireCronSecret so preview deploys don't
   // spam this log line.
-  const isVercelProd = process.env.VERCEL_ENV === 'production';
-  const isOtherProd = process.env.NODE_ENV === 'production' && !process.env.VERCEL_ENV;
+  const isVercelProd = env.VERCEL_ENV === 'production';
+  const isOtherProd = env.NODE_ENV === 'production' && !env.VERCEL_ENV;
   if (!cronSecret && (isVercelProd || isOtherProd)) {
     console.error('[api-auth] CRON_SECRET unset in production — cron path disabled');
   }
@@ -368,7 +369,7 @@ export async function requireSessionOrCron(req: NextRequest): Promise<
         jwt_aud: claims?.aud ?? null,
         jwt_exp: claims?.exp ?? null,
         jwt_sub: claims?.sub ?? null,
-        expected_iss_prefix: process.env.NEXT_PUBLIC_SUPABASE_URL ?? null,
+        expected_iss_prefix: env.NEXT_PUBLIC_SUPABASE_URL ?? null,
       };
       if (code === 'project_mismatch') {
         log.error('requireSessionOrCron: project mismatch — env-var drift', fields);

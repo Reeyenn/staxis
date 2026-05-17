@@ -59,6 +59,7 @@ import { captureException, captureMessage } from '@/lib/sentry';
 import { recordAppEvent } from '@/lib/event-recorder';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { createHash } from 'node:crypto';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -85,7 +86,7 @@ export async function GET(req: NextRequest) {
   if (cronGate) return cronGate;
 
   // Kill switch — disable without a code deploy if the sweeper misbehaves.
-  if (process.env.DISABLE_ORPHAN_AUTH_SWEEP === 'true') {
+  if (env.DISABLE_ORPHAN_AUTH_SWEEP === 'true') {
     log.info('[sweep-orphan-auth-users] disabled via DISABLE_ORPHAN_AUTH_SWEEP', { requestId });
     return ok({ disabled: true }, { requestId });
   }

@@ -16,6 +16,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getPropertyOpsConfig } from '@/lib/property-config';
 import { resolveMlShardUrl } from '@/lib/ml-routing';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -46,7 +47,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   const mlServiceUrl = resolveMlShardUrl(body.propertyId);
-  const mlServiceSecret = process.env.ML_SERVICE_SECRET;
+  const mlServiceSecret = env.ML_SERVICE_SECRET;
   if (!mlServiceUrl || !mlServiceSecret) {
     return err('ml_service_not_configured', { requestId, status: 503, code: ApiErrorCode.UpstreamFailure });
   }
