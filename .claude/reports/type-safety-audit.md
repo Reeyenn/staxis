@@ -1,8 +1,34 @@
 # Type Safety Audit — HotelOps AI
 
-Read-only audit (2026-05-17). Branch: `audit/type-safety`. No source files modified — this report is the single deliverable.
+Read-only audit (2026-05-17). Branch: `audit/type-safety`.
 
 Scope: `src/`, `cua-service/src/`, `scraper/`, `scripts/`, `tools/`. `ml-service/` (Python) is out of scope. Tests (`**/__tests__/**`, `*.test.ts`) are surveyed but treated as low blast radius.
+
+## Status — fixes applied 2026-05-17
+
+| Finding | Commit | One-liner |
+|---|---|---|
+| Foundation | `631e787` | Generate `src/types/database.types.ts` from supabase schema + add `npm run db:types`. |
+| Foundation | `6baba63` | `src/lib/db-mappers.ts` gains `parseStringField`, `parseUnionField`, `parseArrayField`, `parseRecordField`, etc. — runtime narrowers with unit tests. `src/types/api.ts` created for shared client/server response shapes. |
+| H1 | `eb1cf41` | Every `fromXxxRow` mapper switched to the runtime narrowers — union/JSONB/array columns now validated, no more inline casts. |
+| H2 | `eb1cf41` | `findRoomByNumber` / `findStaffByName` now validate row shape via `parseRoomRow` / `parseStaffRow` predicates. Agent tool dispatch is no longer downstream of a double-bridge cast. |
+| H3 | `eb1cf41` | Cron routes (seed-rooms-daily, schedule-auto-fill, ml-shadow-evaluate) parse each row at the SELECT boundary; bad rows are skipped, not silently seeded. |
+| H4 | `eb1cf41` | `idempotency.ts` declares one `IdempotencyRow` interface and parses at the cache boundary. Four inline `as { ... }` casts collapsed to one validated read. |
+| M1 | `9644508` | `sync-room-assignments` reads `body.allowClearAll` directly; double-cast deleted (the field was already declared on `RequestBody`). |
+| M2 | `9644508` | `sms-reply` JSON branch uses per-field `typeof` narrowing, matching the form-encoded branch. |
+| M3 | `9644508` | `sms-reply` validates the `shift_confirmations` row at the SELECT boundary; four downstream `as string` casts removed. |
+| M4 | `9644508` | `admin/ml-health` typeof-guards the dynamic column read; missing columns now produce `null` instead of `undefined as string`. |
+| M5 | `9644508` | `inventory-accounting.ts` adds `received_at?` to `OrderRow` and `discarded_at` to a new `YtdDiscardRow`; intersection-type cast + per-iter double cast deleted. |
+| M6 | `9644508` | `WalkthroughOverlay` imports `WalkthroughStartResponse` / `WalkthroughStepResponse` from `src/types/api.ts`; client and server now share one canonical shape. Foundation in place for the other client/server pairs to follow. |
+| M7 | `9644508` | Stripped `as unknown as Error` from 22 `log.error` call sites — `LogFields`'s index signature already accepts `unknown`. |
+| M8 | `9644508` | `stripe/create-checkout` parses the `properties` SELECT once via `parseStringField`; four inline `as string` casts gone. |
+| LOW | — | All 11 LOW findings deliberately left as-is per Appendix B (documented SDK quirks: Stripe v22 pin, Picovoice, Anthropic Beta API, HMR-safe globalThis singletons, etc.). |
+
+**Verification:** `npx tsc --noEmit` clean; all 615 unit tests pass (Phase 0/1/2/3). Pre-existing lint break in `eslint.config.js` (`nextCoreWebVitalsConfig is not iterable`) is unrelated to this audit — present on main before the branch.
+
+**Deferred to follow-up:**
+- Wire `Database` type into the supabase admin client (`createClient<Database>(...)`) — exposes ~266 additional drift/typing issues not in this audit's scope (schema-drift in `github_events.created_at`, `scraper_credentials.ca_username`, `schedule_assignments.staff_id`, plus many dynamic-table-name routes). Worth a dedicated PR.
+- Migrate the remaining ~9 client `.json()` consumers to import from `src/types/api.ts` (M6 — pattern established with WalkthroughOverlay; mechanical sweep for the rest).
 
 ---
 
