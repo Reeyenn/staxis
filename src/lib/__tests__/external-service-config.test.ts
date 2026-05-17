@@ -92,6 +92,15 @@ beforeEach(() => {
     }
     // 'pending' — wait until the attached signal aborts, then throw
     // a DOMException with name='AbortError' to mimic real fetch.
+    //
+    // Why we poll instead of `addEventListener('abort', ...)`:
+    // AbortSignal.timeout() in Node 20+ schedules an UNREF'd timer.
+    // An unref'd timer alone doesn't keep the event loop alive — and
+    // an addEventListener handler doesn't either. With nothing else
+    // active, the loop exits before our 50ms timeout fires and
+    // node:test reports `Promise resolution is still pending`. A
+    // setInterval (ref'd by default) keeps the loop alive until we
+    // observe the abort, then clears itself.
     return new Promise<Response>((_, reject) => {
       const s = init?.signal;
       if (!s) {
@@ -102,9 +111,12 @@ beforeEach(() => {
         reject(new DOMException('aborted', 'AbortError'));
         return;
       }
-      s.addEventListener('abort', () => {
-        reject(new DOMException('aborted', 'AbortError'));
-      }, { once: true });
+      const tick = setInterval(() => {
+        if (s.aborted) {
+          clearInterval(tick);
+          reject(new DOMException('aborted', 'AbortError'));
+        }
+      }, 5);
     });
   }) as typeof fetch;
 });
