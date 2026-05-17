@@ -45,9 +45,6 @@ import { log } from '@/lib/log';
 
 export type MLFailureKind = 'occupancy_capture' | 'feature_derivation';
 
-const KEY_PREFIX = 'ml_failures:';
-const RECENT_CAP = 100;
-
 interface MLFailureRecord {
   /** ISO timestamp of when the failure happened. */
   at: string;
@@ -59,7 +56,7 @@ interface MLFailureRecord {
 
 /** Shape stored in scraper_status.data for `ml_failures:<kind>` rows. */
 export interface MLFailureRow {
-  /** Most-recent failures, newest first. Capped at RECENT_CAP. */
+  /** Most-recent failures, newest first. Capped at 100 in the RPC. */
   recent: MLFailureRecord[];
   /** Lifetime counter; never reset. */
   total: number;
@@ -69,56 +66,31 @@ export interface MLFailureRow {
  * Bump the counter for a given failure kind. Best-effort — never throws,
  * never blocks the parent request.
  *
- * Race tolerance: read-modify-write under concurrent failures can lose an
- * increment, but the only thing the doctor cares about is `count > 0 in
- * last 24h`. A lost increment doesn't change that signal.
+ * Implementation: atomic Postgres function `staxis_record_ml_failure`
+ * (audit/concurrency #5). The previous JS read-modify-write lost
+ * increments under concurrent failures — two simultaneous failures on
+ * the same property both read the same starting array and the later
+ * write overwrote the earlier, hiding incidents from the doctor's 24h
+ * alert window. The RPC handles the upsert + array prepend + trim
+ * atomically.
  */
 export async function incrementMLFailureCounter(
   pid: string,
   kind: MLFailureKind,
   rawErr: unknown,
 ): Promise<void> {
-  const key = `${KEY_PREFIX}${kind}`;
   const errString = rawErr instanceof Error ? rawErr.message : String(rawErr);
 
   try {
-    const { data: row, error: readErr } = await supabaseAdmin
-      .from('scraper_status')
-      .select('data')
-      .eq('key', key)
-      .maybeSingle();
+    const { error: rpcErr } = await supabaseAdmin.rpc('staxis_record_ml_failure', {
+      p_pid: pid,
+      p_kind: kind,
+      p_err: errString,
+    });
 
-    if (readErr) {
-      // Don't blow up the parent — counter writes are best-effort.
-      log.warn('ml-failure-counter: read failed (non-fatal)', {
-        kind, err: readErr,
-      });
-      return;
-    }
-
-    const current = (row?.data ?? { recent: [], total: 0 }) as Partial<MLFailureRow>;
-
-    const newRecord: MLFailureRecord = {
-      at: new Date().toISOString(),
-      pid,
-      err: errString.slice(0, 200),
-    };
-
-    const updated: MLFailureRow = {
-      recent: [newRecord, ...(current.recent ?? [])].slice(0, RECENT_CAP),
-      total: (current.total ?? 0) + 1,
-    };
-
-    const { error: writeErr } = await supabaseAdmin
-      .from('scraper_status')
-      .upsert(
-        { key, data: updated, updated_at: new Date().toISOString() },
-        { onConflict: 'key' },
-      );
-
-    if (writeErr) {
-      log.warn('ml-failure-counter: write failed (non-fatal)', {
-        kind, err: writeErr,
+    if (rpcErr) {
+      log.warn('ml-failure-counter: rpc failed (non-fatal)', {
+        kind, err: rpcErr,
       });
     }
   } catch (e) {

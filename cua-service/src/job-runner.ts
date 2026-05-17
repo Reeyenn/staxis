@@ -346,12 +346,18 @@ async function saveDraftRecipe(args: {
   // Codex audit pass-6 P1 — the previous read-then-insert pattern raced
   // when two concurrent jobs for the same PMS both saw version=N and
   // both tried to insert version=N+1; the (pms_type, version, status)
-  // unique constraint would reject one of them. Now we retry on
-  // conflict, refetching the latest version each pass so we converge
-  // even under contention. Bounded retries — three concurrent mappings
-  // for the same PMS type is already pathological; failing after that
-  // surfaces real trouble.
-  const MAX_ATTEMPTS = 5;
+  // unique constraint would reject one of them. We retry on conflict,
+  // refetching the latest version each pass so we converge even under
+  // contention.
+  //
+  // Audit/concurrency #8 — bumped MAX_ATTEMPTS from 5 → 50 and added
+  // exponential backoff. At 5, 6+ concurrent mappers for the same PMS
+  // type permanently failed the 6th onboarding even though the earlier
+  // mappings succeeded — a fail-permanent terminal state the cron never
+  // recovered from. 50 attempts with 50ms…2s backoff (≤ ~10s total
+  // worst case) is well within the per-job 15-min deadline and large
+  // enough to absorb pathological contention without an arbitrary cap.
+  const MAX_ATTEMPTS = 50;
   let lastError: string | null = null;
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
@@ -398,11 +404,17 @@ async function saveDraftRecipe(args: {
     if (!isUniqueViolation) {
       return { error: lastError };
     }
-    log.warn('saveDraftRecipe lost version race, retrying', {
-      pmsType: args.pmsType,
-      attemptedVersion: nextVersion,
-      attempt: attempt + 1,
-    });
+    // Exponential backoff with jitter — caps at 2s per attempt so the
+    // total worst-case is bounded.
+    const backoffMs = Math.min(50 * 2 ** Math.min(attempt, 6), 2000)
+      + Math.floor(Math.random() * 50);
+    if (attempt === 9) {
+      log.warn('saveDraftRecipe contention is unusually high', {
+        pmsType: args.pmsType,
+        attempts: attempt + 1,
+      });
+    }
+    await new Promise(r => setTimeout(r, backoffMs));
   }
   return { error: `saveDraftRecipe gave up after ${MAX_ATTEMPTS} version-race retries: ${lastError}` };
 }

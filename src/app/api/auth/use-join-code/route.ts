@@ -168,13 +168,16 @@ export async function POST(req: NextRequest) {
   // Helper: decrement used_count to release the slot we reserved above.
   // Used when account creation fails — without it, a transient auth
   // failure would permanently burn one slot of the join code.
+  //
+  // Atomic unconditional decrement via RPC (audit/concurrency #3). The
+  // old conditional eq('used_count', row.used_count + 1) silently no-op'd
+  // if another signup had incremented the counter in the meantime,
+  // leaking a slot forever. The CAS at the top of this route already
+  // prevents over-grant, so the release just needs to subtract one
+  // atomically (floored at zero).
   const releaseSlot = async () => {
     try {
-      await supabaseAdmin
-        .from('hotel_join_codes')
-        .update({ used_count: row.used_count })
-        .eq('id', row.id)
-        .eq('used_count', row.used_count + 1);
+      await supabaseAdmin.rpc('staxis_release_join_code_slot', { p_id: row.id });
     } catch {
       // best-effort; the slot stays consumed for the rest of the hour
       // bucket if this race-rare path also flakes

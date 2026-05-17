@@ -363,8 +363,17 @@ async function applyMetadataCallback(
  * back to 'queued' so the next tick picks them up again.
  *
  * Returns the number of rows reset.
+ *
+ * Default tightened from 300s → 120s (audit/concurrency #9). The cron
+ * runs every 60s and a single tick processes ≤50 jobs at ~1–3s each, so
+ * any healthy run finishes well under 60s. 120s is generous enough to
+ * absorb a slow Twilio response while shortening the window in which a
+ * crashed worker leaves a row "claimed" — that window allowed a
+ * subsequent tick to skip the row, then the watchdog to reset it, then a
+ * future tick to send the SMS again. 5-minute duplicates were the most
+ * common housekeeper complaint.
  */
-export async function resetStuckSmsJobs(maxSeconds = 300): Promise<number> {
+export async function resetStuckSmsJobs(maxSeconds = 120): Promise<number> {
   const { data, error } = await supabaseAdmin
     .rpc('staxis_reset_stuck_sms_jobs', { p_max_seconds: maxSeconds });
   if (error) {
