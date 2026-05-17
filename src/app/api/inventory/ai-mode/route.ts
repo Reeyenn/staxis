@@ -17,6 +17,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
+import { err, ApiErrorCode } from '@/lib/api-response';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -39,16 +40,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ ok: false, error: 'invalid_json' }, { status: 400 });
+    return err('invalid_json', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   if (!isUuid(body.propertyId)) {
-    return NextResponse.json({ ok: false, error: 'invalid_property_id' }, { status: 400 });
+    return err('invalid_property_id', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   if (!isMode(body.mode)) {
-    return NextResponse.json({ ok: false, error: 'invalid_mode' }, { status: 400 });
+    return err('invalid_mode', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   if (!(await userHasPropertyAccess(session.userId, body.propertyId))) {
-    return NextResponse.json({ ok: false, error: 'forbidden' }, { status: 403 });
+    return err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 
   try {
@@ -58,11 +59,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       .eq('id', body.propertyId);
     if (error) {
       log.error('inventory/ai-mode: update failed', { requestId, err: error as unknown as Error });
-      return NextResponse.json({ ok: false, error: 'internal_error', requestId }, { status: 500 });
+      return err('internal_error', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
     return NextResponse.json({ ok: true, requestId, data: { mode: body.mode } });
   } catch (e) {
     log.error('inventory/ai-mode: exception', { requestId, err: e as Error });
-    return NextResponse.json({ ok: false, error: 'internal_error', requestId }, { status: 500 });
+    return err('internal_error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }
