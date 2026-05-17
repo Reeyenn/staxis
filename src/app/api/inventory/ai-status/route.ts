@@ -1,7 +1,7 @@
 /**
  * GET /api/inventory/ai-status?propertyId=<uuid>
  *
- * Live status JSON for the AI Helper page (`/inventory/ai-helper`). Returns:
+ * Live status JSON for the AI Helper overlay on `/inventory`. Returns:
  *   - aiMode                     — 'off' | 'auto' | 'always-on'
  *   - daysSinceFirstCount
  *   - itemsTotal / itemsWithModel / itemsGraduated / itemsExpectedToGraduate

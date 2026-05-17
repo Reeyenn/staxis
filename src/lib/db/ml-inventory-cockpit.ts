@@ -697,7 +697,7 @@ export async function getInventoryAutoFillMap(
 }
 
 /**
- * Live status for the AI Helper page on /inventory/ai-helper.
+ * Live status for the AI Helper overlay on /inventory.
  *
  * Returns:
  *   - daysSinceFirstCount       — how long the AI has been "learning"

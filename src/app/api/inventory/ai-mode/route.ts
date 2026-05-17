@@ -10,7 +10,7 @@
  *
  * Auth: requireSession + userHasPropertyAccess. Only the owner / authorized
  * staff can flip this. (Default is 'auto' on every property; this endpoint
- * is only hit when the user explicitly changes the mode on /inventory/ai-helper.)
+ * is only hit when the user explicitly changes the mode in the AI Helper overlay on /inventory.)
  */
 
 import { NextRequest, NextResponse } from 'next/server';

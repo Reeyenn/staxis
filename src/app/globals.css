@@ -55,14 +55,20 @@
      ─────────────────────────────────────────────────────────────────── */
   --snow-bg:          #FFFFFF;
   --snow-ink:         #1F231C;
+  --snow-ink-soft:    #3A3F38;
   --snow-ink2:        #5C625C;
   --snow-ink3:        #A6ABA6;
   --snow-rule:        rgba(31, 35, 28, 0.08);
   --snow-rule-soft:   rgba(31, 35, 28, 0.04);
   --snow-sage:        #9EB7A6;
   --snow-sage-deep:   #5C7A60;
+  --snow-sage-dim:    rgba(92, 122, 96, 0.10);
   --snow-caramel:     #C99644;
+  --snow-caramel-deep: #8C6A33;
   --snow-warm:        #B85C3D;
+  --snow-warm-dim:    rgba(184, 92, 61, 0.10);
+  --snow-purple:      #7B6A97;
+  --snow-purple-dim:  rgba(123, 106, 151, 0.10);
   --snow-mark:        #1A1F1B;
 
   /* Stitch warm cream palette */
