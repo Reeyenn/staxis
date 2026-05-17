@@ -39,6 +39,7 @@ import { errToString } from '@/lib/utils';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { requireSessionOrCron, userHasPropertyAccess } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -125,8 +126,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   // ─── 1. Call the Railway scraper ─────────────────────────────────────
-  const scraperUrl = process.env.RAILWAY_SCRAPER_URL;
-  const cronSecret = process.env.CRON_SECRET;
+  const scraperUrl = env.RAILWAY_SCRAPER_URL;
+  const cronSecret = env.CRON_SECRET;
   if (!scraperUrl) {
     log.error('refresh-from-pms: RAILWAY_SCRAPER_URL not configured', { requestId, route: 'refresh-from-pms' });
     return err(
@@ -225,7 +226,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     .eq('id', pid)
     .maybeSingle();
   if (propErr) {
-    log.error('refresh-from-pms: property read failed', { requestId, route: 'refresh-from-pms', pid, err: propErr as unknown as Error });
+    log.error('refresh-from-pms: property read failed', { requestId, route: 'refresh-from-pms', pid, err: propErr });
     return err('property read failed', {
       requestId, status: 500, code: ApiErrorCode.InternalError, headers,
     });
@@ -251,7 +252,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     p_inventory: inventory,
   });
   if (rpcErr) {
-    log.error('refresh-from-pms: rpc failed', { requestId, route: 'refresh-from-pms', pid, err: rpcErr as unknown as Error });
+    log.error('refresh-from-pms: rpc failed', { requestId, route: 'refresh-from-pms', pid, err: rpcErr });
     return err('rooms refresh failed', {
       requestId, status: 500, code: ApiErrorCode.InternalError, headers,
       // Whole transaction rolled back — nothing partial to report.

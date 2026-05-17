@@ -107,68 +107,24 @@ registerTool<{ period?: 'today' | 'week' | 'month' }>({
   },
 });
 
-// ─── send_help_sms ────────────────────────────────────────────────────────
-// Manager-side: send a text to a specific staff member. Wraps the existing
-// /api/help-request route's intent. For v1, we record an outbox nudge — the
-// SMS-sender cron picks it up. This avoids embedding Twilio credentials here.
-
-registerTool<{ staffName: string; message: string }>({
-  name: 'send_help_sms',
-  description:
-    'Send a short SMS message to a specific staff member by name. Use when manager wants to ping a housekeeper directly (e.g. "tell Maria to come to the lobby"). Message will be sent via the existing SMS pipeline.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      staffName: { type: 'string', description: 'Staff member name.' },
-      message: { type: 'string', description: 'Short message to send (max 320 chars).' },
-    },
-    required: ['staffName', 'message'],
-  },
-  allowedRoles: ['admin', 'owner', 'general_manager'],
-  mutates: true,
-  handler: async ({ staffName, message }, ctx): Promise<ToolResult> => {
-    const staff = await findStaffByName(ctx.propertyId, staffName);
-    if (!staff) return { ok: false, error: `No active staff member matching "${staffName}".` };
-    if (!staff.phone) return { ok: false, error: `${staff.name} doesn't have a phone number on file.` };
-
-    const trimmed = (message ?? '').slice(0, 320);
-    if (!trimmed) return { ok: false, error: 'Message is empty.' };
-
-    // Codex post-merge review 2026-05-13 (F2): dryRun gate — skip the
-    // SMS-outbox insert (real Twilio costs $) after lookups validate.
-    if (ctx.dryRun) {
-      return {
-        ok: true,
-        data: { dryRun: true, recipient: staff.name, message: trimmed, queued: true },
-      };
-    }
-
-    // Insert as a nudge with category 'operational' so the SMS dispatcher
-    // (existing cron) can pick it up. Use a unique dedupe_key per send so
-    // repeated identical sends are allowed.
-    await supabaseAdmin.from('agent_nudges').insert({
-      user_id: ctx.user.accountId,
-      property_id: ctx.propertyId,
-      category: 'operational',
-      severity: 'info',
-      payload: {
-        summary: `Outbound SMS to ${staff.name}: ${trimmed}`,
-        type: 'sms_outbox',
-        recipient_staff_id: staff.id,
-        recipient_name: staff.name,
-        recipient_phone: staff.phone,
-        message: trimmed,
-        requested_by: ctx.user.displayName,
-      },
-      dedupe_key: null,
-    });
-
-    return {
-      ok: true,
-      data: { recipient: staff.name, message: trimmed, queued: true },
-    };
-  },
-});
+// ─── send_help_sms — REMOVED 2026-05-16 ──────────────────────────────────
+// Security review Surface 3 found this tool was a "dead-letter producer":
+// it inserted agent_nudges rows with payload type='sms_outbox', but
+// nothing in the codebase reads that payload type and dispatches via
+// Twilio. So a successful prompt injection couldn't send a real SMS
+// today (P3 — no impact).
+//
+// HOWEVER the tool's description promised the model "will be sent via
+// the existing SMS pipeline" — a future contributor who wires the
+// dispatcher without ALSO adding per-conversation / per-property /
+// per-day SMS count caps would silently turn this P3 into a P1
+// cost-burn vector. (request_help is the safe alternative: dedup'd
+// by (recipient, requester, room, msg-hash) and uses the operational
+// nudge inbox that managers actually read.)
+//
+// Deleting the tool registration removes the trap. If outbound agent-
+// initiated SMS is genuinely needed in the future, gate it on the
+// Pattern F unified cost-cap primitive BEFORE re-introducing the tool.
 
 // ─── generate_schedule ────────────────────────────────────────────────────
 // Stub for v1: explains the current state. Real schedule generation goes

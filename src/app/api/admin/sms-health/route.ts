@@ -19,8 +19,8 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
-import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { log, getOrMintRequestId } from '@/lib/log';
+import { ok, err } from '@/lib/api-response';
+import { getOrMintRequestId } from '@/lib/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -60,8 +60,7 @@ export async function GET(req: NextRequest) {
     .limit(5000);
 
   if (error) {
-    log.error('sms-health query failed', { err: error, requestId });
-    return err('sms-health query failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    return err(`sms-health query failed: ${error.message}`, { requestId, status: 500 });
   }
 
   // Per-property tally

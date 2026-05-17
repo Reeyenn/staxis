@@ -44,6 +44,7 @@ import { enqueueSms, processSmsJobs } from '@/lib/sms-jobs';
 import { buildHousekeeperLink } from '@/lib/staff-auth';
 import { buildOkBody, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
+import { writeErrorLog } from '@/lib/error-log';
 
 interface StaffEntry {
   staffId: string;
@@ -282,7 +283,14 @@ export async function POST(req: NextRequest) {
           try {
             hkUrl = await buildHousekeeperLink(staffId, pid, baseUrl);
           } catch (linkErr) {
-            log.warn('[send-shift-confirmations] magic-link mint failed, falling back to tokenless URL', { err: linkErr, requestId });
+            // Graceful fallback — SMS still sends, just without the deep-link
+            // token. Logged as warn so we see degradation without paging
+            // on-call for what's working-as-designed (audit finding L1).
+            log.warn('[send-shift-confirmations] magic-link mint failed, falling back to tokenless URL', {
+              err: linkErr,
+              staffId,
+              requestId,
+            });
             hkUrl = `${baseUrl}/housekeeper/${staffId}?pid=${encodeURIComponent(pid)}`;
           }
 
@@ -464,20 +472,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(envelope);
   } catch (caughtErr) {
     log.error('send-shift-confirmations error', { err: caughtErr, requestId });
-    // Persist the error so we can diagnose without shell logs.
-    try {
-      await supabaseAdmin.from('error_logs').insert({
-        source: '/api/send-shift-confirmations',
-        message: errToString(caughtErr),
-        stack: caughtErr instanceof Error ? caughtErr.stack ?? null : null,
-      });
-    } catch (logErr) {
-      // The meta-failure (failure of the failure-recording path) is exactly
-      // when we most need a Sentry event — don't swallow it silently.
-      log.warn('send-shift-confirmations: error_logs insert failed', {
-        requestId, err: logErr instanceof Error ? logErr : new Error(String(logErr)),
-      });
-    }
+    await writeErrorLog({
+      source: '/api/send-shift-confirmations',
+      message: errToString(caughtErr),
+      stack: caughtErr instanceof Error ? caughtErr.stack ?? null : null,
+    });
     return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

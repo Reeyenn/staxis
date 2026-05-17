@@ -36,7 +36,7 @@ import statistics
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from src.supabase_client import get_supabase_client
+from src.supabase_client import get_supabase_client, safe_iso_date
 
 
 # ─── Shared helpers ─────────────────────────────────────────────────────
@@ -108,7 +108,7 @@ async def aggregate_demand_priors() -> Dict[str, Any]:
     rows_query = f"""
         select property_id, date, total_recorded_minutes
         from cleaning_minutes_per_day_view
-        where date >= '{since}'::date
+        where date >= '{safe_iso_date(since)}'::date
         order by date desc
         limit 200000
     """
@@ -221,7 +221,7 @@ async def aggregate_supply_priors() -> Dict[str, Any]:
     rows_query = f"""
         select property_id, date, duration_minutes
         from cleaning_events
-        where date >= '{since}'::date
+        where date >= '{safe_iso_date(since)}'::date
           and status in ('recorded', 'approved')
         order by date desc
         limit 200000

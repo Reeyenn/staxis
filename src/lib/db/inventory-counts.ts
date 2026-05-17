@@ -11,12 +11,6 @@ import type { InventoryCount } from '@/types';
 import { supabase, logErr } from './_common';
 import { toInventoryCountRow, fromInventoryCountRow } from '../db-mappers';
 
-// Matches fromInventoryCountRow in db-mappers.ts. Audit follow-up 2026-05-17.
-const INVENTORY_COUNT_FIELDS =
-  'id, property_id, item_id, item_name, counted_stock, estimated_stock, ' +
-  'variance, variance_value, unit_cost, counted_at, counted_by, notes';
-type InventoryCountRow = Record<string, unknown>;
-
 export async function addInventoryCount(
   _uid: string,
   pid: string,
@@ -55,11 +49,10 @@ export async function listInventoryCounts(
 ): Promise<InventoryCount[]> {
   const { data, error } = await supabase
     .from('inventory_counts')
-    .select(INVENTORY_COUNT_FIELDS)
+    .select('*')
     .eq('property_id', pid)
     .order('counted_at', { ascending: false })
-    .limit(limit)
-    .returns<InventoryCountRow[]>();
+    .limit(limit);
   if (error) { logErr('listInventoryCounts', error); throw error; }
   return (data ?? []).map(fromInventoryCountRow);
 }

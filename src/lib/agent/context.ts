@@ -52,6 +52,19 @@ type CacheKey = string;
 const cache = new Map<CacheKey, { snapshot: HotelSnapshot; expiresAt: number }>();
 const CACHE_TTL_MS = 30_000;
 
+// In-flight dedup (audit/concurrency #11). Without it, two simultaneous
+// agent turns for the same (property, role, staff) both miss the cache,
+// both fire ~5 DB queries, and the second's write overwrites the first
+// in the cache. Coalescing concurrent misses onto a single shared
+// promise removes the stampede.
+//
+// Multi-instance SLA: each Vercel function instance has its own `cache`.
+// Stale snapshots up to CACHE_TTL_MS=30s after a write are acceptable
+// here because the agent's reply latency dominates user perception of
+// "is this current" anyway, and the snapshot's primary downstream uses
+// (room counts, today summary) tolerate brief staleness.
+const inflight = new Map<CacheKey, Promise<HotelSnapshot>>();
+
 function cacheKey(propertyId: string, role: AppRole, staffId: string | null): CacheKey {
   return `${propertyId}::${role}::${staffId ?? '-'}`;
 }
@@ -71,7 +84,21 @@ export async function buildHotelSnapshot(
   if (cached && cached.expiresAt > Date.now()) {
     return cached.snapshot;
   }
+  const existing = inflight.get(key);
+  if (existing) return existing;
 
+  const pending = buildHotelSnapshotUncached(propertyId, role, staffId, key)
+    .finally(() => inflight.delete(key));
+  inflight.set(key, pending);
+  return pending;
+}
+
+async function buildHotelSnapshotUncached(
+  propertyId: string,
+  role: AppRole,
+  staffId: string | null,
+  key: CacheKey,
+): Promise<HotelSnapshot> {
   // Property name + timezone + total_rooms + room_inventory (cheap; one query).
   //
   // Round 14 (2026-05-14): room_inventory is the truth about how many rooms
@@ -258,6 +285,108 @@ function esc(s: string | number | null | undefined): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+// ─── Voice context (Whisper prompt hint) ─────────────────────────────────
+// Whisper accepts an optional `prompt` string that biases the transcriber
+// toward the vocabulary it'll hear. Hotel-specific words and proper nouns
+// (room numbers, staff names) are the most common source of transcription
+// errors — passing them as a hint dramatically improves accuracy.
+//
+// We pull room-number range + active-staff names per property. Cached for
+// 60s because rooms and staff don't change much within a voice session, and
+// a user might fire 10 utterances in a minute.
+//
+// Whisper's prompt limit is 244 tokens, so this is intentionally compact.
+// Property name + room range + a comma-list of first names of active staff
+// fits comfortably even with a 100-room property and 30 active staff.
+
+interface VoiceContext {
+  propertyName: string | null;
+  roomNumberRange: string;   // "101–350" or "" if no rooms
+  activeStaffNames: string[];
+}
+
+const voiceContextCache = new Map<string, { ctx: VoiceContext; expiresAt: number }>();
+const VOICE_CONTEXT_TTL_MS = 60_000;
+
+async function loadVoiceContext(propertyId: string): Promise<VoiceContext> {
+  const cached = voiceContextCache.get(propertyId);
+  if (cached && cached.expiresAt > Date.now()) return cached.ctx;
+
+  let propertyName: string | null = null;
+  try {
+    const { data } = await supabaseAdmin
+      .from('properties')
+      .select('name')
+      .eq('id', propertyId)
+      .maybeSingle();
+    if (data) propertyName = (data.name as string) ?? null;
+  } catch { /* non-fatal */ }
+
+  // Room number range — min/max as integers. Some properties have
+  // non-numeric room numbers ("L1-201", "Suite-A"); skip those when
+  // computing the range to avoid garbage hints.
+  let roomNumberRange = '';
+  try {
+    const { data } = await supabaseAdmin
+      .from('rooms')
+      .select('number')
+      .eq('property_id', propertyId);
+    if (data && data.length > 0) {
+      const nums: number[] = [];
+      for (const r of data) {
+        const n = parseInt((r.number as string) ?? '', 10);
+        if (Number.isFinite(n)) nums.push(n);
+      }
+      if (nums.length > 0) {
+        const min = Math.min(...nums);
+        const max = Math.max(...nums);
+        roomNumberRange = min === max ? String(min) : `${min}–${max}`;
+      }
+    }
+  } catch { /* non-fatal */ }
+
+  let activeStaffNames: string[] = [];
+  try {
+    const { data } = await supabaseAdmin
+      .from('staff')
+      .select('name')
+      .eq('property_id', propertyId)
+      .eq('is_active', true);
+    if (data) {
+      activeStaffNames = data
+        .map(s => (s.name as string)?.trim())
+        .filter((n): n is string => !!n)
+        .slice(0, 30);  // cap to fit Whisper's 244-token prompt budget
+    }
+  } catch { /* non-fatal */ }
+
+  const ctx: VoiceContext = { propertyName, roomNumberRange, activeStaffNames };
+  voiceContextCache.set(propertyId, { ctx, expiresAt: Date.now() + VOICE_CONTEXT_TTL_MS });
+  return ctx;
+}
+
+/**
+ * Build the Whisper `prompt` string for a given property. Pass to the
+ * OpenAI Whisper API to bias transcription toward hotel-specific
+ * vocabulary. Result is a single line under ~200 tokens.
+ *
+ * Empty string is a valid return if the property has no rooms/staff yet;
+ * Whisper accepts an empty hint without changing behaviour.
+ */
+export async function getVoiceContextHint(propertyId: string): Promise<string> {
+  const ctx = await loadVoiceContext(propertyId);
+
+  const parts: string[] = [];
+  if (ctx.propertyName) parts.push(`Hotel: ${ctx.propertyName}.`);
+  if (ctx.roomNumberRange) parts.push(`Rooms ${ctx.roomNumberRange}.`);
+  if (ctx.activeStaffNames.length > 0) {
+    parts.push(`Staff: ${ctx.activeStaffNames.join(', ')}.`);
+  }
+  parts.push('Common phrases: dirty, clean, in progress, DND, deep clean, occupancy, maintenance, mark, room, hotel.');
+
+  return parts.join(' ');
 }
 
 export function formatSnapshotForPrompt(snap: HotelSnapshot): string {

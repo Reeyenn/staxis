@@ -11,7 +11,7 @@ import pandas as pd
 from src.config import get_settings
 from src.errors import PropertyMisconfiguredError, require_property_timezone
 from src.features.supply_matrix import build_supply_features
-from src.supabase_client import get_supabase_client
+from src.supabase_client import get_supabase_client, safe_uuid, safe_iso_date
 
 
 # Phase M3.4 (2026-05-14) — date prefix that the GM-facing UI prepends to
@@ -353,8 +353,8 @@ async def predict_supply(
             arrival_room_numbers,
             vacant_dirty_room_numbers
         from plan_snapshots
-        where property_id = '{property_id}'
-          and date = '{prediction_date}'::date
+        where property_id = '{safe_uuid(property_id)}'
+          and date = '{safe_iso_date(str(prediction_date))}'::date
         order by pulled_at desc
         limit 1
     """

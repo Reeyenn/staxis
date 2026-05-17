@@ -12,12 +12,6 @@ import type { InventoryOrder } from '@/types';
 import { supabase, logErr } from './_common';
 import { toInventoryOrderRow, fromInventoryOrderRow } from '../db-mappers';
 
-// Matches fromInventoryOrderRow in db-mappers.ts. Audit follow-up 2026-05-17.
-const INVENTORY_ORDER_FIELDS =
-  'id, property_id, item_id, item_name, quantity, quantity_cases, unit_cost, ' +
-  'total_cost, vendor_name, ordered_at, received_at, notes';
-type InventoryOrderRow = Record<string, unknown>;
-
 export async function addInventoryOrder(
   _uid: string,
   pid: string,
@@ -72,11 +66,10 @@ export async function listInventoryOrders(
 ): Promise<InventoryOrder[]> {
   const { data, error } = await supabase
     .from('inventory_orders')
-    .select(INVENTORY_ORDER_FIELDS)
+    .select('*')
     .eq('property_id', pid)
     .order('received_at', { ascending: false })
-    .limit(limit)
-    .returns<InventoryOrderRow[]>();
+    .limit(limit);
   if (error) { logErr('listInventoryOrders', error); throw error; }
   return (data ?? []).map(fromInventoryOrderRow);
 }

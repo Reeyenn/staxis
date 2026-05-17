@@ -10,6 +10,7 @@
  */
 
 const path = require('path');
+const { env } = require('./env');
 const fs = require('fs');
 const { goWithSettle, safeEval } = require('./page-helpers');
 const {
@@ -926,7 +927,7 @@ async function runCSVScrape(page, supabase, config, pullType, log) {
     // report, the DOM might have changed, or the download is partial. Refuse
     // to overwrite the existing plan with bad data: stale-but-right beats
     // fresh-but-wrong.
-    const MIN_EXPECTED_ROOMS = parseInt(process.env.MIN_EXPECTED_ROOMS || '60', 10);
+    const MIN_EXPECTED_ROOMS = env.MIN_EXPECTED_ROOMS;
     if (rooms.length < MIN_EXPECTED_ROOMS) {
       throw new ScraperError(
         ERROR_CODES.VALIDATION_FAILED,

@@ -23,8 +23,10 @@ import { chromium } from 'playwright';
 import type Anthropic from '@anthropic-ai/sdk';
 import { anthropic, BROWSER_TOOL, CLAUDE_MODEL, MAPPING_SYSTEM_PROMPT } from './anthropic-client.js';
 import { executeBrowserAction, type BrowserAction } from './browser-tool.js';
+import { safeGoto } from './browser-utils/navigate.js';
 import { log } from './log.js';
 import { logClaudeUsage, getJobCostMicros } from './usage-log.js';
+import { env } from './env.js';
 
 // ── Cumulative-cost circuit-breaker (May 2026 audit pass-5) ───────────
 // Each phase has its own token + wallclock budget (~$2.40 max per phase),
@@ -33,7 +35,7 @@ import { logClaudeUsage, getJobCostMicros } from './usage-log.js';
 // covers ~5 successful mappings at typical spend (~$0.30-0.80 each);
 // hitting it usually means the agent is stuck looping. Configurable via
 // CUA_JOB_COST_CAP_MICROS env (in micro-dollars; default 5_000_000 = $5).
-const JOB_COST_CAP_MICROS = Number(process.env.CUA_JOB_COST_CAP_MICROS) || 5_000_000;
+const JOB_COST_CAP_MICROS = env.CUA_JOB_COST_CAP_MICROS;
 import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe } from './types.js';
 
 const MAX_AGENT_STEPS_LOGIN = 60;
@@ -291,7 +293,14 @@ async function mapLogin(
   creds: PMSCredentials,
   ctx: { propertyId: string | null; jobId: string | null; signal?: AbortSignal },
 ): Promise<LoginMapResult | LoginMapFailure> {
-  await page.goto(creds.loginUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+  // The login URL itself is the trust anchor — no allowedHost yet (we'll
+  // pin to creds.loginUrl's host for every subsequent goto). safeGoto
+  // still rejects javascript:/file:/private-IP URLs, so a misconfigured
+  // creds row can't establish a malicious session.
+  await safeGoto(page, creds.loginUrl, {
+    allowedHost: null,
+    context: 'mapper:login:startUrl',
+  });
   await page.waitForTimeout(1500);
 
   const recordedSteps: RecipeStep[] = [{ kind: 'goto', url: creds.loginUrl }];
@@ -383,6 +392,15 @@ async function mapLogin(
     // ~10% of their input-token cost. This was the dominant fix for the
     // 400K-token-budget exhaustion on CA's deep menus. (Pattern from
     // anthropic-quickstarts/browser-use-demo loop.py.)
+    // Deterministic per-turn idempotency key (audit/concurrency #15). If
+    // the SDK's built-in retry (maxRetries=1 in anthropic-client.ts) fires
+    // after the first request already reached Anthropic, the same key
+    // goes out — giving Anthropic the option to dedupe the second
+    // billing. Harmless if unsupported.
+    const idempotencyKey = ctx.jobId
+      ? `${ctx.jobId}:login:${stepIdx}`
+      : `anon:login:${stepIdx}:${Date.now()}`;
+
     const response = await anthropic.beta.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: MAX_OUTPUT_TOKENS_PER_TURN,
@@ -396,7 +414,10 @@ async function mapLogin(
       tools: [BROWSER_TOOL as unknown as Anthropic.Beta.Messages.BetaToolUnion],
       messages: truncateOldHistory(messages, HISTORY_KEEP_RECENT) as Anthropic.Beta.Messages.BetaMessageParam[],
       betas: ['prompt-caching-2024-07-31'],
-    }, ctx.signal ? { signal: ctx.signal } : undefined);
+    }, {
+      ...(ctx.signal ? { signal: ctx.signal } : {}),
+      headers: { 'idempotency-key': idempotencyKey },
+    });
 
     totalInputTokens += response.usage?.input_tokens ?? 0;
     totalOutputTokens += response.usage?.output_tokens ?? 0;
@@ -514,7 +535,16 @@ async function mapAction(args: {
   signal?: AbortSignal;
 }): Promise<ActionMapSuccess | ActionMapFailure> {
   if (args.page.url() !== args.postLoginUrl) {
-    await args.page.goto(args.postLoginUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {});
+    // Pin to the credentials' login-URL host so a stale post-login URL
+    // from a different domain can't redirect the authenticated session
+    // off-site. The .catch(() => {}) preserves the prior best-effort
+    // semantic for transient nav failures, but safeGoto's pre-check
+    // still rejects schemes / private IPs before any network call.
+    const allowedHost = new URL(args.credentials.loginUrl).host;
+    await safeGoto(args.page, args.postLoginUrl, {
+      allowedHost,
+      context: 'mapper:action:postLoginUrl',
+    }).catch(() => {});
     await args.page.waitForTimeout(1000);
   }
 
@@ -593,6 +623,11 @@ async function mapAction(args: {
     // ~10% of their input-token cost. This was the dominant fix for the
     // 400K-token-budget exhaustion on CA's deep menus. (Pattern from
     // anthropic-quickstarts/browser-use-demo loop.py.)
+    // Deterministic per-turn idempotency key (audit/concurrency #15).
+    const idempotencyKey = args.jobId
+      ? `${args.jobId}:${args.actionName}:${stepIdx}`
+      : `anon:${args.actionName}:${stepIdx}:${Date.now()}`;
+
     const response = await anthropic.beta.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: MAX_OUTPUT_TOKENS_PER_TURN,
@@ -606,7 +641,10 @@ async function mapAction(args: {
       tools: [BROWSER_TOOL as unknown as Anthropic.Beta.Messages.BetaToolUnion],
       messages: truncateOldHistory(messages, HISTORY_KEEP_RECENT) as Anthropic.Beta.Messages.BetaMessageParam[],
       betas: ['prompt-caching-2024-07-31'],
-    }, args.signal ? { signal: args.signal } : undefined);
+    }, {
+      ...(args.signal ? { signal: args.signal } : {}),
+      headers: { 'idempotency-key': idempotencyKey },
+    });
 
     totalInputTokens += response.usage?.input_tokens ?? 0;
 

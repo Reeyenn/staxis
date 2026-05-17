@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { log, getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId, log } from '@/lib/log';
 
 // ─── Admin CRUD on the accounts table ──────────────────────────────────────
 // Guarded by the `x-account-id` header → accounts.role === 'admin' check.
@@ -20,6 +20,7 @@ import { log, getOrMintRequestId } from '@/lib/log';
 
 import { ALL_ROLES, isValidRole, type AppRole } from '@/lib/roles';
 import { writeAudit } from '@/lib/audit';
+import { captureException } from '@/lib/sentry';
 
 type AccountRole = AppRole;
 
@@ -110,7 +111,7 @@ export async function GET(req: NextRequest) {
     .order('created_at', { ascending: true });
 
   if (error) {
-    log.error('[accounts:GET] query failed', { err: error, requestId });
+    console.error('[accounts:GET] query failed', error);
     return err('Failed to load accounts', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
@@ -119,7 +120,7 @@ export async function GET(req: NextRequest) {
   const emailByUserId = new Map<string, string>();
   const { data: authPage, error: listErr } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
   if (listErr) {
-    log.error('[accounts:GET] auth listUsers failed', { err: listErr, requestId });
+    console.error('[accounts:GET] auth listUsers failed', listErr);
     // Don't fail the request — render with blank emails so the UI is still usable.
   } else {
     for (const u of authPage?.users ?? []) {
@@ -178,7 +179,7 @@ export async function POST(req: NextRequest) {
     .eq('username', normalizedUsername)
     .maybeSingle();
   if (exErr) {
-    log.error('[accounts:POST] duplicate check failed', { err: exErr, requestId });
+    console.error('[accounts:POST] duplicate check failed', exErr);
     return err('Failed to create account', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   if (existing) {
@@ -196,11 +197,10 @@ export async function POST(req: NextRequest) {
   });
 
   if (authErr || !authData.user) {
-    log.error('[accounts:POST] auth.admin.createUser failed', { err: authErr, requestId });
-    // Don't echo Supabase's error message — it can include user-existence
-    // info, rate-limit quotas, or other internals. Stable string + Sentry
-    // event carry the diagnostic detail without leaking it.
-    return err('Failed to create account', {
+    console.error('[accounts:POST] auth.admin.createUser failed', authErr);
+    // 422 is what Supabase returns for weak-password/invalid-email; surface
+    // the message so the settings UI can display it.
+    return err(authErr?.message ?? 'Failed to create auth user', {
       requestId, status: 400, code: ApiErrorCode.ValidationFailed,
     });
   }
@@ -223,7 +223,7 @@ export async function POST(req: NextRequest) {
     .single();
 
   if (insErr || !inserted) {
-    log.error('[accounts:POST] accounts insert failed, rolling back auth user', { err: insErr, requestId });
+    console.error('[accounts:POST] accounts insert failed, rolling back auth user', errToString(insErr));
     // Roll back the auth user so we don't leak orphaned auth rows.
     // Don't silently swallow the rollback failure — if the rollback ALSO
     // fails we end up with a permanent zombie auth.users row that future
@@ -239,12 +239,25 @@ export async function POST(req: NextRequest) {
       rollbackError = errToString(rollErr);
     }
     if (rollbackError) {
+      // Email deliberately omitted — see .claude/reports/logging-pii-audit.md
+      // H1 (May 2026). The auth.users.id is enough to find the orphaned row
+      // in Supabase; the caller-facing message below still names the username
+      // for the admin to clean up.
       log.error('[accounts:POST] AUTH ROLLBACK FAILED — orphaned auth.users row', {
         requestId,
         authUserId: authData.user.id,
-        email: normalizedEmail,
         insertError: errToString(insErr),
         rollbackError,
+      });
+      // Audit finding #4: page the on-call when rollback fails. The
+      // orphan auth-user sweeper cron will clean up async, but Sentry
+      // is the breadcrumb that tells us rollback flakes are happening.
+      captureException(new Error(`auth rollback failed: ${rollbackError}`), {
+        subsystem: 'auth',
+        failure_mode: 'rollback_failed',
+        auth_user_id: authData.user.id,
+        flow: 'accounts.create',
+        insert_error: errToString(insErr),
       });
       return err(
         `Failed to create account record. ALSO: rollback of the auth user failed — orphaned auth row remains for username "${normalizedUsername}". Have an admin delete the row manually in Supabase Authentication.`,
@@ -319,7 +332,7 @@ export async function PUT(req: NextRequest) {
       .update(updates)
       .eq('id', accountId);
     if (updErr) {
-      log.error('[accounts:PUT] accounts update failed', { err: updErr, requestId });
+      console.error('[accounts:PUT] accounts update failed', updErr);
       return err('Failed to update account', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
   }
@@ -341,8 +354,8 @@ export async function PUT(req: NextRequest) {
       authUpdates,
     );
     if (authErr) {
-      log.error('[accounts:PUT] auth update failed', { err: authErr, requestId });
-      return err('Failed to update account', {
+      console.error('[accounts:PUT] auth update failed', authErr);
+      return err(authErr.message ?? 'Failed to update account', {
         requestId, status: 400, code: ApiErrorCode.ValidationFailed,
       });
     }
@@ -402,7 +415,7 @@ export async function DELETE(req: NextRequest) {
   // Delete the auth user — the FK cascade removes the accounts row too.
   const { error: delErr } = await supabaseAdmin.auth.admin.deleteUser(target.data_user_id);
   if (delErr) {
-    log.error('[accounts:DELETE] auth.admin.deleteUser failed', { err: delErr, requestId });
+    console.error('[accounts:DELETE] auth.admin.deleteUser failed', errToString(delErr));
     // If auth user was already gone, at least clean up the accounts row so
     // the admin isn't stuck with a zombie. PostgrestFilterBuilder is a
     // thenable but has no .catch — wrap in try/await.

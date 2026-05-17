@@ -25,7 +25,7 @@ import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { log, getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid, validateString, validateEnum } from '@/lib/api-validate';
 
 export const runtime = 'nodejs';
@@ -39,7 +39,6 @@ const SERVICE_KEYS = [
   'deep_cleaning',
   'public_areas',
   'inventory',
-  'equipment',
 ] as const;
 
 type StaffEntry = {
@@ -169,7 +168,7 @@ export async function POST(req: NextRequest) {
       // Fall back to read-modify-write if the RPC isn't available
       // (older deploys, migration not applied). Log loudly so we
       // notice and fix the migration drift.
-      log.warn('[onboarding/complete] staxis_merge_services rpc failed — falling back', { err: mergeErr, requestId });
+      console.warn('[onboarding/complete] staxis_merge_services rpc failed — falling back', mergeErr.message);
       const { data: cur } = await supabaseAdmin
         .from('properties')
         .select('services_enabled')

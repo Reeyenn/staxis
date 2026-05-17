@@ -6,23 +6,39 @@
  *   - Last 10 shift_confirmations for the given property (status + staff_phone)
  *   - Twilio number config + recent messages (inbound + outbound)
  *
+ * Auth (Codex 2026-05-16 P1 fix — Pattern C): requireAdmin, not
+ * requireCronSecret. The previous gate let ANY caller holding the shared
+ * CRON_SECRET (Vercel cron, GitHub Actions, scripts, workers) read cross-
+ * tenant Twilio messages + cross-tenant shift confirmation tokens. The
+ * route returns no acknowledgment shape useful for cron; it's a debugging
+ * tool, so requiring a real admin session is the correct contract.
+ *
+ * The shift confirmation `token` field used to flow back in the response;
+ * it's been dropped. Tokens are capabilities (they redeem a housekeeper's
+ * SMS confirmation) and must never be serialized into an API response even
+ * when the caller is an admin — they could be logged, screenshotted, or
+ * cached downstream.
+ *
  * Legacy `uid` query param accepted but ignored.
  */
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
-import { requireCronSecret } from '@/lib/api-auth';
+import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
+import { env } from '@/lib/env';
+import {
+  externalFetch,
+  EXTERNAL_FETCH_SHORT_TIMEOUT_MS,
+} from '@/lib/external-service-config';
 
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
-  // Lock this endpoint behind CRON_SECRET. It returns recent inbound SMS,
-  // staff phone numbers, shift_confirmations, and Twilio operational
-  // metadata — all PII / sensitive ops data. Open to the internet was
-  // a real leak.
-  const unauthorized = requireCronSecret(req);
-  if (unauthorized) return unauthorized;
+  // Admin session required. Previously gated on CRON_SECRET alone — Codex
+  // 2026-05-16 P1: shared bearer + cross-tenant PII = leak.
+  const admin = await requireAdmin(req);
+  if (!admin.ok) return admin.response;
   try {
     const url = new URL(req.url);
     const pid = url.searchParams.get('pid');
@@ -33,12 +49,15 @@ export async function GET(req: NextRequest) {
     // ── Twilio REST helpers ────────────────────────────────────────────────
     async function getTwilioNumbers(): Promise<unknown> {
       try {
-        const sid = process.env.TWILIO_ACCOUNT_SID;
-        const tok = process.env.TWILIO_AUTH_TOKEN;
+        const sid = env.TWILIO_ACCOUNT_SID;
+        const tok = env.TWILIO_AUTH_TOKEN;
         if (!sid || !tok) return { error: 'twilio env vars missing' };
-        const res = await fetch(
+        const res = await externalFetch(
           `https://api.twilio.com/2010-04-01/Accounts/${sid}/IncomingPhoneNumbers.json`,
-          { headers: { Authorization: `Basic ${Buffer.from(`${sid}:${tok}`).toString('base64')}` } },
+          {
+            headers: { Authorization: `Basic ${Buffer.from(`${sid}:${tok}`).toString('base64')}` },
+            timeoutMs: EXTERNAL_FETCH_SHORT_TIMEOUT_MS,
+          },
         );
         if (!res.ok) return { error: `twilio status ${res.status}` };
         const json = await res.json() as { incoming_phone_numbers?: Array<Record<string, unknown>> };
@@ -59,12 +78,15 @@ export async function GET(req: NextRequest) {
 
     async function getTwilioMessages(): Promise<unknown> {
       try {
-        const sid = process.env.TWILIO_ACCOUNT_SID;
-        const tok = process.env.TWILIO_AUTH_TOKEN;
+        const sid = env.TWILIO_ACCOUNT_SID;
+        const tok = env.TWILIO_AUTH_TOKEN;
         if (!sid || !tok) return { error: 'twilio env vars missing' };
-        const res = await fetch(
+        const res = await externalFetch(
           `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json?PageSize=20`,
-          { headers: { Authorization: `Basic ${Buffer.from(`${sid}:${tok}`).toString('base64')}` } },
+          {
+            headers: { Authorization: `Basic ${Buffer.from(`${sid}:${tok}`).toString('base64')}` },
+            timeoutMs: EXTERNAL_FETCH_SHORT_TIMEOUT_MS,
+          },
         );
         if (!res.ok) return { error: `twilio status ${res.status}` };
         const json = await res.json() as { messages?: Array<Record<string, unknown>> };
@@ -92,7 +114,9 @@ export async function GET(req: NextRequest) {
         .limit(20),
       supabaseAdmin
         .from('shift_confirmations')
-        .select('token, staff_name, staff_phone, status, shift_date, sent_at, responded_at')
+        // Token is a capability — see route header. Don't even SELECT it
+        // so it can't accidentally leak through a future logging change.
+        .select('staff_name, staff_phone, status, shift_date, sent_at, responded_at')
         .eq('property_id', pid)
         .order('sent_at', { ascending: false, nullsFirst: false })
         .limit(10),
@@ -108,19 +132,21 @@ export async function GET(req: NextRequest) {
     }));
 
     const confirmations = (confsRes.data ?? []).map(r => ({
-      token: r.token,
       staffName: r.staff_name,
       staffPhone: r.staff_phone,
       status: r.status,
       shiftDate: r.shift_date,
       sentAt: r.sent_at,
       respondedAt: r.responded_at,
+      // token deliberately omitted — see route header. If a future
+      // debugger needs to look up a specific token, do it directly via
+      // Supabase Studio or psql, never through this API surface.
     }));
 
     return ok({ webhookLogs, confirmations, twilioNumbers, twilioMessages }, { requestId });
   } catch (caughtErr) {
     const msg = errToString(caughtErr);
-    log.error('[admin/diagnose] error', { err: caughtErr, requestId });
+    console.error('[admin/diagnose] error:', msg);
     return err(msg, { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

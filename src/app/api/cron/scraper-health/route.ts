@@ -45,6 +45,7 @@ import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { log } from '@/lib/log';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -295,7 +296,7 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
       heartbeatMinutesAgo: heartbeatMinAgo,
       errorMessage,
     };
-    const alertPhone = process.env.MANAGER_PHONE || process.env.OPS_ALERT_PHONE;
+    const alertPhone = env.OPS_ALERT_PHONE;
     if (alertPhone) {
       try {
         await sendSms(
@@ -362,7 +363,7 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
     csvPullType: isCsvCondition ? csvPullType : undefined,
   };
   const message = alertMessage(condition, ctx);
-  const alertPhone = process.env.MANAGER_PHONE || process.env.OPS_ALERT_PHONE;
+  const alertPhone = env.OPS_ALERT_PHONE;
 
   let smsSent = false;
   let suppressedReason: string | null = null;
@@ -377,7 +378,7 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
       suppressedReason = 'sms_send_failed';
     }
   } else {
-    log.warn('[scraper-health] MANAGER_PHONE env var not set — alert would fire', { message });
+    console.warn('[scraper-health] MANAGER_PHONE env var not set — alert would fire:', message);
     suppressedReason = 'no_alert_phone_on_vercel';
   }
 

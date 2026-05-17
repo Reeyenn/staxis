@@ -71,7 +71,16 @@ class Settings(BaseSettings):
     @field_validator("ml_service_secret")
     @classmethod
     def validate_secret(cls, v: str) -> str:
-        """Validate that ML_SERVICE_SECRET is set and at least 8 chars."""
+        """Validate that ML_SERVICE_SECRET is set and at least 8 chars.
+
+        Security review 2026-05-16 (Surface 5 P2 — Pattern C): the
+        deployed-target is 32+ chars (CSPRNG-grade — see RUNBOOKS.md >
+        ML_SERVICE_SECRET rotation). Enforced as a HARD FAIL at the
+        doctor's `ml_service_secret_strength` check rather than here,
+        so a short legacy value doesn't refuse-to-boot ml-service mid-
+        rotation. After Reeyen rotates, tighten this floor to 32 to
+        match.
+        """
         if not v or len(v) < 8:
             raise ValueError("ML_SERVICE_SECRET must be set and at least 8 chars")
         return v

@@ -13,12 +13,13 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { visionExtractJSON, VisionTruncatedError, VisionImageInvalidError, VisionSchemaError } from '@/lib/vision-extract';
+import { visionExtractJSON, VisionTruncatedError, VisionImageInvalidError, VisionSchemaError, type VisionUsageReport } from '@/lib/vision-extract';
 import { errToString } from '@/lib/utils';
-import { log, getOrMintRequestId } from '@/lib/log';
-import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { log } from '@/lib/log';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
+import { supabaseAdmin } from '@/lib/supabase-admin';
+import { assertAudioBudget, recordNonRequestCost } from '@/lib/agent/cost-controls';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -109,7 +110,6 @@ If the image contains no recognizable inventory, return { "counts": [] }.`;
 }
 
 export async function POST(req: NextRequest) {
-  const requestId = getOrMintRequestId(req);
   // Auth gate — same story as scan-invoice. Vision API has real $$ cost
   // and we don't want random callers spending the budget.
   const session = await requireSession(req);
@@ -119,24 +119,24 @@ export async function POST(req: NextRequest) {
   try {
     body = await req.json();
   } catch {
-    return err('invalid_json', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return NextResponse.json({ ok: false, error: 'invalid_json' }, { status: 400 });
   }
 
   const { pid, imageBase64, mediaType, itemNames } = body;
   if (!isUuid(pid)) {
-    return err('invalid_pid', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return NextResponse.json({ ok: false, error: 'invalid_pid' }, { status: 400 });
   }
   if (!(await userHasPropertyAccess(session.userId, pid))) {
-    return err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+    return NextResponse.json({ ok: false, error: 'forbidden' }, { status: 403 });
   }
   if (typeof imageBase64 !== 'string' || imageBase64.length < 100) {
-    return err('invalid_image', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return NextResponse.json({ ok: false, error: 'invalid_image' }, { status: 400 });
   }
   if (!SUPPORTED_MEDIA_TYPES.includes(mediaType as VisionMediaType)) {
-    return err('unsupported_media_type', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return NextResponse.json({ ok: false, error: 'unsupported_media_type' }, { status: 400 });
   }
   if (!Array.isArray(itemNames) || itemNames.length === 0) {
-    return err('no_items_in_scope', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return NextResponse.json({ ok: false, error: 'no_items_in_scope' }, { status: 400 });
   }
 
   // ── Rate limit (Codex audit pass-6) ────────────────────────────────
@@ -159,11 +159,33 @@ export async function POST(req: NextRequest) {
     .map(sanitizeItemName)
     .filter((n): n is string => n !== null);
   if (safeItemNames.length === 0) {
-    return err('no_valid_item_names', {
-      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
-      details: 'No usable item names after sanitization (names with embedded instructions or empty strings were rejected).',
-    });
+    return NextResponse.json(
+      { ok: false, error: 'no_valid_item_names', detail: 'No usable item names after sanitization (names with embedded instructions or empty strings were rejected).' },
+      { status: 400 },
+    );
   }
+
+  // Security review 2026-05-16 (Pattern F): pre-flight daily $ budget
+  // + record spend post-call. Mirrors scan-invoice. See that route for
+  // full rationale.
+  const { data: accountRow } = await supabaseAdmin
+    .from('accounts')
+    .select('id')
+    .eq('data_user_id', session.userId)
+    .maybeSingle();
+  const accountId = accountRow?.id as string | undefined;
+  if (accountId) {
+    const budget = await assertAudioBudget({ userId: accountId, propertyId: pid });
+    if (!budget.ok) {
+      return NextResponse.json(
+        { ok: false, error: budget.message, code: budget.reason },
+        { status: 429 },
+      ) as NextResponse;
+    }
+  }
+
+  let usage: VisionUsageReport | null = null;
+  const captureUsage = (u: VisionUsageReport): void => { usage = u; };
 
   try {
     const result = await visionExtractJSON<PhotoCountResult>(
@@ -183,6 +205,7 @@ export async function POST(req: NextRequest) {
         }
         return { counts: obj.counts as PhotoCountResult['counts'] };
       },
+      captureUsage,
     );
 
     const allowedNames = new Set(safeItemNames);
@@ -204,31 +227,36 @@ export async function POST(req: NextRequest) {
       // Drop any count for an item we don't track (model hallucinated a name).
       .filter(c => c.item_name.length > 0 && allowedNames.has(c.item_name));
 
-    return ok({ counts }, { requestId });
+    return NextResponse.json({ ok: true, counts });
   } catch (e) {
     // Truncation: more items in the photo than we can describe in one
     // response. Same actionable handling as scan-invoice (pass-4).
     if (e instanceof VisionTruncatedError) {
-      return err('too_many_items_in_photo', {
-        requestId, status: 422, code: ApiErrorCode.ValidationFailed,
-        details: 'This photo has more items than we can count in one pass. Try splitting it into a few separate photos and re-counting.',
-      });
+      return NextResponse.json(
+        {
+          ok: false,
+          error: 'too_many_items_in_photo',
+          detail: 'This photo has more items than we can count in one pass. Try splitting it into a few separate photos and re-counting.',
+        },
+        { status: 422 },
+      );
     }
     // Image rejected by validation in vision-extract.ts. The reason is
     // user-actionable and safe to surface (size/format only, no internals).
     if (e instanceof VisionImageInvalidError) {
-      return err('invalid_image', {
-        requestId, status: 400, code: ApiErrorCode.ValidationFailed,
-        details: e.message,
-      });
+      return NextResponse.json(
+        { ok: false, error: 'invalid_image', detail: e.message },
+        { status: 400 },
+      );
     }
     if (e instanceof VisionSchemaError) {
       log.warn('[photo-count] vision JSON failed schema validation', {
         reason: e.reason, pid,
       });
-      return err('photo_count_invalid_shape', {
-        requestId, status: 422, code: ApiErrorCode.UpstreamFailure,
-      });
+      return NextResponse.json(
+        { ok: false, error: 'photo_count_invalid_shape' },
+        { status: 422 },
+      );
     }
     const msg = errToString(e);
     const status = /api[_ ]?key|ANTHROPIC_API_KEY/i.test(msg) ? 503 : 500;
@@ -237,9 +265,33 @@ export async function POST(req: NextRequest) {
       err: e instanceof Error ? e : new Error(msg),
       pid,
     });
-    return err(
-      status === 503 ? 'vision_unavailable' : 'vision_failed',
-      { requestId, status, code: status === 503 ? ApiErrorCode.UpstreamFailure : ApiErrorCode.InternalError },
+    return NextResponse.json(
+      { ok: false, error: status === 503 ? 'vision_unavailable' : 'vision_failed' },
+      { status },
     );
+  } finally {
+    // Pattern F: record actual Anthropic spend even on error paths
+    // (the call already happened, the cost was already incurred).
+    if (usage && accountId) {
+      const u = usage as VisionUsageReport;
+      try {
+        await recordNonRequestCost({
+          userId: accountId,
+          propertyId: pid,
+          conversationId: null,
+          model: u.model,
+          modelId: u.modelId,
+          tokensIn: u.inputTokens,
+          tokensOut: u.outputTokens,
+          costUsd: u.costUsd,
+          kind: 'vision',
+        });
+      } catch (costErr) {
+        log.error('[photo-count] cost-ledger write failed', {
+          err: costErr instanceof Error ? costErr : new Error(String(costErr)),
+          pid,
+        });
+      }
+    }
   }
 }

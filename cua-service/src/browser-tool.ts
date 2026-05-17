@@ -34,6 +34,7 @@ import { join } from 'node:path';
 import type { Page } from 'playwright';
 import type { RecipeStep, PMSCredentials } from './types.js';
 import { log } from './log.js';
+import { safeGoto, normalizeUrl, UnsafeNavigationError } from './browser-utils/navigate.js';
 
 // ─── Tool definition (Claude-facing) ─────────────────────────────────────
 
@@ -190,31 +191,32 @@ export async function executeBrowserAction(
     switch (action.action) {
       case 'navigate': {
         const url = normalizeUrl(action.text);
-        // Domain guard — agent must stay on the PMS we're mapping. We
-        // observed an agent navigating to a different PMS provider's
-        // login page (beds24.com) when the in-domain navigation got
-        // confusing. Hard-block off-domain navigates so the agent has
-        // to recover with click/back/reload instead. (Bug fix
-        // 2026-05-09 — CA canary v5.)
+        // Codex 2026-05-16 P1 fix (Pattern B): the agent's `navigate` action
+        // now flows through `safeGoto`, the same helper recipe-runner and
+        // mapper login use. That gives us scheme rejection, private-IP
+        // rejection, AND the same-site host guard in one place — so if a
+        // PMS page prompt-injects "go check this link" Claude can't escape
+        // the PMS domain in an authenticated session.
         const allowedHost = creds.loginUrl ? new URL(creds.loginUrl).host : null;
-        if (allowedHost) {
-          let targetHost: string;
-          try {
-            targetHost = new URL(url).host;
-          } catch {
-            return { output: `Refused to navigate to non-URL "${url}". Use a full URL or click a link instead.`, isError: true };
-          }
-          if (!hostsAreSameSite(targetHost, allowedHost)) {
+        try {
+          await safeGoto(page, url, {
+            allowedHost,
+            context: 'mapper:navigate',
+          });
+        } catch (err) {
+          if (err instanceof UnsafeNavigationError) {
+            // Translate the safeGoto refusal into the agent-friendly hint
+            // that previously lived inline — gives Claude an actionable
+            // recovery path instead of an opaque error.
             return {
               output:
-                `Refused to navigate to ${targetHost}. You must stay on the ${allowedHost} domain ` +
-                `(the PMS we're mapping). If you're stuck, use \`navigate\` with "back" or \`navigate\` ` +
-                `to ${creds.loginUrl} to start fresh.`,
+                `Refused navigation: ${err.message}. You must stay on the ${allowedHost ?? 'recorded'} ` +
+                `domain. If you're stuck, use \`navigate\` with "back" or \`navigate\` to ${creds.loginUrl} to start fresh.`,
               isError: true,
             };
           }
+          throw err;
         }
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
         await page.waitForTimeout(1500);
         const screenshot = await captureScreenshot(page);
         return {
@@ -585,51 +587,9 @@ function describeElement(info: ResolvedRefSuccess): string {
   return parts.join(' ');
 }
 
-function normalizeUrl(u: string): string {
-  if (/^https?:\/\//i.test(u) || u.startsWith('about:') || u.startsWith('file://')) return u;
-  return `https://${u}`;
-}
-
-/**
- * Same-site check for the navigate domain guard. Codex audit pass-6 P1:
- * the previous version blindly took the last two hostname labels, which
- * treats `foo.co.uk` and `bar.co.uk` as the same site — same for `co.za`,
- * `com.au`, `co.jp`, etc. For multi-part public suffixes we have to take
- * three labels instead, otherwise an attacker on the same ccTLD bucket
- * (or just a same-ccTLD vendor) would pass the guard.
- *
- * We don't ship a full Public Suffix List — that's overkill for hotel
- * PMS hosts, which are nearly all `.com`. A small allow-list of common
- * multi-part suffixes covers the realistic deployment surface; new
- * suffixes can be added here as we onboard hotels in new regions.
- */
-const MULTI_PART_PUBLIC_SUFFIXES: ReadonlySet<string> = new Set([
-  'co.uk', 'org.uk', 'gov.uk', 'ac.uk', 'me.uk',
-  'com.au', 'org.au', 'net.au', 'edu.au', 'gov.au',
-  'co.nz', 'org.nz', 'net.nz',
-  'co.za', 'org.za', 'gov.za',
-  'com.br', 'net.br', 'org.br',
-  'co.jp', 'or.jp', 'ne.jp', 'ac.jp',
-  'co.kr', 'or.kr', 'ne.kr',
-  'com.mx', 'org.mx',
-  'co.in', 'net.in',
-  'com.sg', 'edu.sg',
-  'com.hk', 'org.hk',
-]);
-
-function registrableDomain(host: string): string {
-  const labels = host.toLowerCase().split('.').filter(Boolean);
-  if (labels.length < 2) return labels.join('.');
-  const lastTwo = labels.slice(-2).join('.');
-  if (labels.length >= 3 && MULTI_PART_PUBLIC_SUFFIXES.has(lastTwo)) {
-    return labels.slice(-3).join('.');
-  }
-  return lastTwo;
-}
-
-function hostsAreSameSite(a: string, b: string): boolean {
-  return registrableDomain(a) === registrableDomain(b);
-}
+// normalizeUrl + hostsAreSameSite + registrableDomain + MULTI_PART_PUBLIC_SUFFIXES
+// moved to ./browser-utils/navigate.ts so safeGoto is the single sanctioned
+// navigation entry point. Codex 2026-05-16 P1 fix (Pattern B).
 
 function normalizeKey(raw: string): string {
   const map: Record<string, string> = {

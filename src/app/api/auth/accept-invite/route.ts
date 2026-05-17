@@ -16,6 +16,7 @@ import { log, getOrMintRequestId } from '@/lib/log';
 import { writeAudit } from '@/lib/audit';
 import { checkAndIncrementRateLimit, rateLimitedResponse, ipToRateLimitKey } from '@/lib/api-ratelimit';
 import { canManageTeam, type AppRole } from '@/lib/roles';
+import { captureException } from '@/lib/sentry';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -125,7 +126,26 @@ export async function POST(req: NextRequest) {
   }
   if (insErr) {
     log.error('[accept-invite] accounts insert failed', { err: insErr, requestId });
-    await supabaseAdmin.auth.admin.deleteUser(authData.user.id).catch(() => {});
+    // Audit finding #4: pre-2026-05-17 this was `.catch(() => {})` which
+    // silently swallowed rollback failures, leaving orphan auth.users
+    // rows that future signups with the same email tripped over with no
+    // breadcrumb. Log loudly + Sentry so the orphan sweeper cron has
+    // backup observability and on-call gets paged if rollback fails
+    // routinely.
+    await supabaseAdmin.auth.admin.deleteUser(authData.user.id).catch(rollErr => {
+      log.error('[accept-invite] AUTH ROLLBACK FAILED', {
+        auth_user_id: authData.user.id,
+        email: invite.email,
+        err: rollErr,
+        requestId,
+      });
+      captureException(rollErr, {
+        subsystem: 'auth',
+        failure_mode: 'rollback_failed',
+        auth_user_id: authData.user.id,
+        flow: 'accept-invite',
+      });
+    });
     return err('Failed to create account', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 

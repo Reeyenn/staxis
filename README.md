@@ -51,18 +51,19 @@ You'll need:
   needed for end-to-end SMS flows; you can no-op `sendSms` in `src/lib/sms.ts`
   for pure UI work.
 
-### Required environment variables
+### Environment variables
+
+All env vars are declared in `src/lib/env.ts` (server) and `src/lib/env-client.ts` (client). The full annotated list with defaults lives in `.env.local.example` — copy it to `.env.local` and fill in. The schema validates every var at boot; missing required vars fail fast with an aggregated error.
+
+Required to boot:
 
 | Variable | Where used | Notes |
 |---|---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | Browser + server | Public; safe to expose |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Browser + server | Public anon key |
 | `SUPABASE_SERVICE_ROLE_KEY` | Server only | **Never** ship to client |
-| `TWILIO_ACCOUNT_SID` | Server only | |
-| `TWILIO_AUTH_TOKEN` | Server only | |
-| `TWILIO_PHONE_NUMBER` | Server only | E.164 format |
-| `CRON_SECRET` | Server only | Bearer token for `/api/cron/*` and other admin routes |
-| `SENTRY_DSN` | Server (optional) | If empty, Sentry is a no-op |
+
+Optional integrations (graceful disable when unset): Twilio (`TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_FROM_NUMBER`), Stripe, Sentry, ElevenLabs, Resend, Picovoice. CRON_SECRET is required in production; requireCronSecret() fails closed.
 
 ---
 

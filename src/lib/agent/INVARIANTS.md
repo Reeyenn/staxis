@@ -153,15 +153,15 @@ Each invariant has:
 - **History:** Round-11 T2 (verified by review)
 - **Note (2026-05-13 voice surface):** `assertAudioBudget` ([cost-controls.ts](src/lib/agent/cost-controls.ts)) deliberately deviates from INV-17 — it sums ALL kinds for the audio pre-flight check. Per Reeyen 2026-05-13: voice + text should share one $5/day total cap, not $5 + $5 = $10 effective. The reservation RPC for text stays kind='request' filtered (covers itself); the audio gate is total-spend-aware so audio doesn't stack on top of text.
 
-### INV-18 (RETIRED 2026-05-14): voice_recordings.expires_at = created_at + interval '7 days'
+### INV-18 (RETIRED 2026-05-14, table dropped in 0141): voice_recordings.expires_at = created_at + interval '7 days'
 
-- **Status:** Retired with the ElevenLabs voice-surface switch. The `voice_recordings` table is no longer written by any code path — Whisper STT and the per-clip storage upload were replaced by ElevenLabs streaming ASR (which holds the audio on their side). The column + CHECK remain in the schema for legacy data only; a future migration will drop the table.
-- **History:** Active 2026-05-13 → 2026-05-14. Retired when /api/agent/transcribe + /api/cron/voice-recordings-purge were deleted in the ElevenLabs cutover.
+- **Status:** Retired with the ElevenLabs voice-surface switch and the underlying `voice_recordings` table was dropped in migration `0141_drop_dead_schema.sql` after the data-model audit confirmed zero writers/readers. Whisper STT and the per-clip storage upload were replaced by ElevenLabs streaming ASR (audio lives on their side). Entry preserved for historical commit-message context.
+- **History:** Active 2026-05-13 → 2026-05-14. Retired when `/api/agent/transcribe` + `/api/cron/voice-recordings-purge` were deleted in the ElevenLabs cutover. Table dropped 2026-05-17 in `0141`.
 
-### INV-19 (RETIRED 2026-05-14): voice_recordings rows past expires_at are deleted within 24h
+### INV-19 (RETIRED 2026-05-14, table dropped in 0141): voice_recordings rows past expires_at are deleted within 24h
 
-- **Status:** Retired alongside INV-18. The daily purge cron `/api/cron/voice-recordings-purge` was removed (no new rows to purge). The entry stays here so historical references in commit messages and the doctor route's git history make sense.
-- **History:** Active 2026-05-13 → 2026-05-14.
+- **Status:** Retired alongside INV-18; table dropped in `0141_drop_dead_schema.sql`. The daily purge cron `/api/cron/voice-recordings-purge` was removed (no new rows to purge). Entry preserved for historical commit-message context.
+- **History:** Active 2026-05-13 → 2026-05-14. Table dropped 2026-05-17 in `0141`.
 
 ### INV-20: agent_costs.kind='audio' rows have cost_usd > 0
 

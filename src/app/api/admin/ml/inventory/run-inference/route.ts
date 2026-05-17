@@ -13,9 +13,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/admin-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
-import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { errToString } from '@/lib/utils';
 import { getPropertyOpsConfig } from '@/lib/property-config';
 import { resolveMlShardUrl } from '@/lib/ml-routing';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -36,19 +37,23 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   try {
     body = await req.json();
   } catch {
-    return err('invalid_json', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return NextResponse.json({ ok: false, error: 'invalid_json' }, { status: 400 });
   }
   if (!isUuid(body.propertyId)) {
-    return err('invalid_property_id', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return NextResponse.json({ ok: false, error: 'invalid_property_id' }, { status: 400 });
   }
   if (body.date !== undefined && body.date !== null && !isDateStr(body.date)) {
-    return err('invalid_date', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return NextResponse.json({ ok: false, error: 'invalid_date' }, { status: 400 });
   }
 
   const mlServiceUrl = resolveMlShardUrl(body.propertyId);
-  const mlServiceSecret = process.env.ML_SERVICE_SECRET;
+  const mlServiceSecret = env.ML_SERVICE_SECRET;
   if (!mlServiceUrl || !mlServiceSecret) {
-    return err('ml_service_not_configured', { requestId, status: 503, code: ApiErrorCode.UpstreamFailure });
+    return NextResponse.json({
+      ok: false,
+      error: 'ml_service_not_configured',
+      requestId,
+    }, { status: 503 });
   }
 
   // Resolve property TZ so the ML service computes "tomorrow" in the
@@ -71,9 +76,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       signal: AbortSignal.timeout(55_000),
     });
     const json = await res.json().catch(() => ({ error: 'non_json_response', http: res.status }));
-    return ok({ result: json }, { requestId });
+    return NextResponse.json({ ok: true, requestId, result: json }, { status: 200 });
   } catch (e) {
     log.error('ml-inventory-run-inference: ML service call failed', { requestId, err: e as Error });
-    return err('upstream_ml_service_failed', { requestId, status: 502, code: ApiErrorCode.UpstreamFailure });
+    return NextResponse.json({ ok: false, error: errToString(e), requestId }, { status: 502 });
   }
 }

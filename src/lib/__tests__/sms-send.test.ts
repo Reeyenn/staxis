@@ -101,12 +101,13 @@ describe('sendSms — happy path', () => {
     assert.equal(parsed.get('Body'), 'hello & world');
   });
 
-  test('From-number falls back to legacy TWILIO_PHONE_NUMBER when TWILIO_FROM_NUMBER absent', async () => {
+  test('throws when TWILIO_FROM_NUMBER is unset (legacy TWILIO_PHONE_NUMBER alias no longer accepted)', async () => {
     delete process.env.TWILIO_FROM_NUMBER;
     process.env.TWILIO_PHONE_NUMBER = '+12816669887';
-    await sendSms('+15125550100', 'hi');
-    const body = String(fetchCalls[0].init?.body);
-    assert.equal(new URLSearchParams(body).get('From'), '+12816669887');
+    await assert.rejects(
+      () => sendSms('+15125550100', 'hi'),
+      /Twilio env vars missing/,
+    );
   });
 });
 

@@ -19,13 +19,14 @@
  */
 
 import * as Sentry from '@sentry/node';
+import { env } from './env.js';
 
 let initialized = false;
 
 export function initSentry(): boolean {
   if (initialized) return true;
 
-  const dsn = process.env.SENTRY_DSN;
+  const dsn = env.SENTRY_DSN;
   if (!dsn) {
     // Local dev or misconfigured deploy — fail open. The log.ts integration
     // checks `initialized` before calling Sentry methods, so this is safe.
@@ -38,16 +39,16 @@ export function initSentry(): boolean {
     // Keeping the dependency lightweight.
     tracesSampleRate: 0,
     // environment lets us filter prod/dev errors in the Sentry UI.
-    environment: process.env.NODE_ENV ?? 'development',
+    environment: env.NODE_ENV,
     // Tag every event with the worker_id so we can pivot on which Fly
     // machine produced the error (handy for "is one machine bad, or
     // is it a global bug?").
     initialScope: {
       tags: {
         service: 'cua-worker',
-        fly_app: process.env.FLY_APP_NAME ?? 'staxis-cua',
-        fly_region: process.env.FLY_REGION ?? 'unk',
-        fly_machine: process.env.FLY_MACHINE_ID ?? 'unk',
+        fly_app: env.FLY_APP_NAME,
+        fly_region: env.FLY_REGION ?? 'unk',
+        fly_machine: env.FLY_MACHINE_ID ?? 'unk',
       },
     },
     // Defense-in-depth: redact credential-shaped strings before sending.

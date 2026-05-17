@@ -48,6 +48,7 @@ import {
 import { sendOnboardingInvite } from '@/lib/email/onboarding-invite';
 import { DEFAULT_INVENTORY_ITEMS } from '@/lib/inventory/default-items';
 import { validateRoomNumbers } from '@/lib/api-validate';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -274,7 +275,7 @@ export async function POST(req: NextRequest) {
     .single();
 
   if (insErr || !created) {
-    log.error('[admin/properties/create] insert failed', { err: insErr, requestId });
+    console.error('[admin/properties/create] insert failed', { requestId, error: insErr });
     return err(
       `Failed to create property: ${insErr?.message ?? 'unknown error'}`,
       { requestId, status: 500, code: ApiErrorCode.InternalError },
@@ -306,13 +307,13 @@ export async function POST(req: NextRequest) {
       .insert(inventoryRows);
     if (seedErr && !String(seedErr.message ?? '').toLowerCase().includes('duplicate')) {
       // Non-duplicate errors are real; log them so ops can investigate.
-      log.error('[admin/properties/create] inventory seed failed (non-fatal)', {
-        err: seedErr, requestId, propertyId: created.id,
+      console.error('[admin/properties/create] inventory seed failed (non-fatal)', {
+        requestId, propertyId: created.id, error: seedErr.message,
       });
     }
   } catch (e) {
-    log.error('[admin/properties/create] inventory seed threw (non-fatal)', {
-      err: e, requestId, propertyId: created.id,
+    console.error('[admin/properties/create] inventory seed threw (non-fatal)', {
+      requestId, propertyId: created.id, error: e instanceof Error ? e.message : String(e),
     });
   }
 
@@ -341,8 +342,8 @@ export async function POST(req: NextRequest) {
     } catch (e) {
       // Should be unreachable — triggerMlTraining never throws — but
       // belt-and-suspenders for after() context.
-      log.error('[admin/properties/create] ML kick threw (non-fatal)', {
-        err: e, requestId, propertyId,
+      console.error('[admin/properties/create] ML kick threw (non-fatal)', {
+        requestId, propertyId, error: e instanceof Error ? e.message : String(e),
       });
     }
   });
@@ -394,7 +395,7 @@ export async function POST(req: NextRequest) {
   });
 
   if (!joinCodeRow) {
-    log.error('[admin/properties/create] property created but join code failed', { err: codeErr, requestId, propertyId: created.id });
+    console.error('[admin/properties/create] property created but join code failed', { requestId, propertyId: created.id, codeErr });
     return ok(
       {
         propertyId: created.id,
@@ -413,7 +414,7 @@ export async function POST(req: NextRequest) {
   // Phase M1.5: changed path from /signup to /onboard — the new unified
   // wizard. Old /signup URLs still work via the redirect added in
   // Commit 8.
-  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://getstaxis.com';
+  const siteUrl = env.NEXT_PUBLIC_APP_URL ?? 'https://getstaxis.com';
   const signupUrl = `${siteUrl}/onboard?code=${encodeURIComponent(joinCodeRow.code)}`;
 
   // Phase M1.5: optional Resend email send. Failure is NEVER fatal —
@@ -440,7 +441,7 @@ export async function POST(req: NextRequest) {
       emailSent = true;
     } else {
       emailError = emailResult.error;
-      log.warn('[admin/properties/create] email send failed (non-fatal)', {
+      console.warn('[admin/properties/create] email send failed (non-fatal)', {
         requestId, propertyId: created.id, error: emailResult.error,
       });
     }

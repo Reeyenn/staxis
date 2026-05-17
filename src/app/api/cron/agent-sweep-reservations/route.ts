@@ -20,7 +20,7 @@ import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireCronSecret } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { log, getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId } from '@/lib/log';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 
 export const runtime = 'nodejs';
@@ -38,8 +38,7 @@ export async function GET(req: NextRequest) {
   });
 
   if (error) {
-    log.error('agent-sweep-reservations: RPC failed', { err: error, requestId });
-    return err('sweep RPC failed', {
+    return err(`sweep RPC failed: ${error.message}`, {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
   }

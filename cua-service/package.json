@@ -15,7 +15,8 @@
     "@sentry/node": "^10.53.1",
     "@supabase/supabase-js": "^2.47.0",
     "dotenv": "^17.4.2",
-    "playwright": "1.59.1"
+    "playwright": "1.59.1",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^20.17.6",

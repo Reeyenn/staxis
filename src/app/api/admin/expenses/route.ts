@@ -13,8 +13,8 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
-import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { log, getOrMintRequestId } from '@/lib/log';
+import { ok, err } from '@/lib/api-response';
+import { getOrMintRequestId } from '@/lib/log';
 import { writeAuditLog } from '@/lib/admin-audit';
 
 export const runtime = 'nodejs';
@@ -23,11 +23,6 @@ export const maxDuration = 15;
 
 // Categories are free-form strings now — Reeyen can type "GitHub Pro",
 // "Postmark", whatever. We just sanity-check shape (non-empty, not silly long).
-// expenses schema per migration 0055. Audit follow-up 2026-05-17.
-const EXPENSE_FIELDS =
-  'id, category, amount_cents, description, vendor, incurred_on, source, ' +
-  'property_id, metadata, created_at';
-
 const MAX_CATEGORY_LEN = 60;
 function normalizeCategory(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
@@ -48,15 +43,12 @@ export async function GET(req: NextRequest) {
 
   const { data, error } = await supabaseAdmin
     .from('expenses')
-    .select(EXPENSE_FIELDS)
+    .select('*')
     .gte('incurred_on', since.toISOString().slice(0, 10))
     .order('incurred_on', { ascending: false })
     .limit(500);
 
-  if (error) {
-    log.error('expenses list failed', { err: error, requestId });
-    return err('expenses list failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  }
+  if (error) return err(`expenses list failed: ${error.message}`, { requestId, status: 500 });
   return ok({ expenses: data ?? [] }, { requestId });
 }
 
@@ -90,13 +82,10 @@ export async function POST(req: NextRequest) {
       property_id: body.propertyId ?? null,
       metadata: body.metadata ?? {},
     })
-    .select(EXPENSE_FIELDS)
-    .single<Record<string, unknown>>();
+    .select('*')
+    .single();
 
-  if (error || !data) {
-    log.error('expense create failed', { err: error, requestId });
-    return err('expense create failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  }
+  if (error) return err(`expense create failed: ${error.message}`, { requestId, status: 500 });
 
   await writeAuditLog({
     actorUserId: auth.userId,
@@ -137,13 +126,10 @@ export async function PATCH(req: NextRequest) {
     .from('expenses')
     .update(update)
     .eq('id', id)
-    .select(EXPENSE_FIELDS)
+    .select('*')
     .single();
 
-  if (error) {
-    log.error('expense update failed', { err: error, requestId });
-    return err('expense update failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  }
+  if (error) return err(`expense update failed: ${error.message}`, { requestId, status: 500 });
 
   await writeAuditLog({
     actorUserId: auth.userId,
@@ -171,10 +157,7 @@ export async function DELETE(req: NextRequest) {
     .delete()
     .eq('id', id);
 
-  if (error) {
-    log.error('expense delete failed', { err: error, requestId });
-    return err('expense delete failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  }
+  if (error) return err(`expense delete failed: ${error.message}`, { requestId, status: 500 });
 
   await writeAuditLog({
     actorUserId: auth.userId,

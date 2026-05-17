@@ -18,6 +18,7 @@ import { resolve } from 'node:path';
 import { requireSession } from '@/lib/api-auth';
 import { getOrMintRequestId } from '@/lib/log';
 import { ok } from '@/lib/api-response';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -26,7 +27,7 @@ export const maxDuration = 5;
 const REQUIRED_KEYWORD_FILES = ['hey-staxis.ppn', 'oye-staxis.ppn'] as const;
 
 function wakeWordReady(): boolean {
-  if (!process.env.PICOVOICE_ACCESS_KEY) return false;
+  if (!env.PICOVOICE_ACCESS_KEY) return false;
   // Vercel builds bundle public/ at the workspace root. Resolve relative to
   // the process cwd, which is the project root in both dev and production.
   const wakeWordDir = resolve(process.cwd(), 'public', 'wake-words');

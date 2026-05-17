@@ -21,8 +21,8 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
-import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { log, getOrMintRequestId } from '@/lib/log';
+import { ok, err } from '@/lib/api-response';
+import { getOrMintRequestId } from '@/lib/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -86,16 +86,15 @@ export async function GET(req: NextRequest) {
   ]);
 
   if (logsRes.error) {
-    log.error('recent-errors query failed', { err: logsRes.error, requestId });
-    return err('recent-errors query failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    return err(`recent-errors query failed: ${logsRes.error.message}`, { requestId, status: 500 });
   }
   // pull_metrics + dashboard_by_date errors are best-effort: if either
   // query fails we still want to return what we have. Log + continue.
   if (pullsRes.error) {
-    log.error('[recent-errors] pull_metrics query failed', { err: pullsRes.error, requestId });
+    console.error('[recent-errors] pull_metrics query failed:', pullsRes.error.message);
   }
   if (dashRes.error) {
-    log.error('[recent-errors] dashboard_by_date query failed', { err: dashRes.error, requestId });
+    console.error('[recent-errors] dashboard_by_date query failed:', dashRes.error.message);
   }
 
   // Normalize every source into a common shape so the grouping pass

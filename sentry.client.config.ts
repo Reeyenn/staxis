@@ -9,9 +9,16 @@
  */
 
 import * as Sentry from '@sentry/nextjs';
-import { scrubSentryEvent, scrubString } from '@/lib/sentry-scrub';
+import { scrubString } from '@/lib/sentry-scrub';
+import { getBaseSentryOptions } from '@/lib/sentry-base';
+
+// Safety defaults (sendDefaultPii=false, beforeSend scrubber, ignoreErrors
+// list) live in getBaseSentryOptions so the three runtime configs can't
+// drift. See src/lib/sentry-base.ts and src/lib/sentry-scrub.ts.
 
 Sentry.init({
+  ...getBaseSentryOptions(),
+
   dsn: process.env.NEXT_PUBLIC_SENTRY_DSN || process.env.SENTRY_DSN,
 
   environment: process.env.NEXT_PUBLIC_VERCEL_ENV || process.env.NODE_ENV || 'development',
@@ -26,16 +33,6 @@ Sentry.init({
   // Always replay sessions where an error occurred — best signal-per-byte.
   replaysOnErrorSampleRate: 1.0,
 
-  sendDefaultPii: false,
-  debug: false,
-
-  // 2026-05-12 (Codex audit): sendDefaultPii=false sanitises the SDK's
-  // automatic IP / cookie / header capture, but does NOT scrub PII out
-  // of custom error messages, tags, breadcrumbs, or contexts. Hotel-ops
-  // errors routinely embed staff phone numbers, names, PMS payloads,
-  // and shift IDs. The shared scrubber below redacts those before
-  // ingestion so the Sentry project is GDPR/CCPA-safer by default.
-  beforeSend: scrubSentryEvent,
   // 2026-05-12 (Codex audit follow-up): use the SHARED scrubString from
   // sentry-scrub.ts so breadcrumbs and events scrub against the same set
   // of patterns. Previously the breadcrumb hook used a 3-pattern inline

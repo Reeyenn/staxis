@@ -23,6 +23,7 @@ import { log } from './log.js';
 import type { OnboardingJob, ScraperCredentialsRow, Recipe, PMSCredentials } from './types.js';
 import { mapPMS } from './mapper.js';
 import { runRecipeExtraction } from './recipe-runner.js';
+import { env } from './env.js';
 import { saveExtractedData } from './data-loader.js';
 
 // 15 minutes total per onboarding job. A full first-time mapping run
@@ -31,7 +32,7 @@ import { saveExtractedData } from './data-loader.js';
 // data-specific prompts, capped per-phase by MAPPING_WALLCLOCK_BUDGET_MS
 // in mapper.ts). 15 min comfortably fits all of that with slack for
 // recipe save + initial extraction. Override via env if needed.
-const JOB_TIMEOUT_MS = parseInt(process.env.JOB_TIMEOUT_MS ?? '900000', 10);
+const JOB_TIMEOUT_MS = env.JOB_TIMEOUT_MS;
 
 export async function runJob(jobId: string, workerId: string): Promise<void> {
   const startedAt = Date.now();
@@ -49,21 +50,11 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
   // get cancelled immediately. Playwright work still finishes its
   // current page op, but the expensive runaway path is closed.
   const abortController = new AbortController();
-  // markFailed is awaited inside an async setTimeout callback — without the
-  // try/catch, a rejection (Supabase down, RLS drift) would sink into the
-  // microtask queue as an unhandled rejection and the timeout signal would
-  // disappear silently. Log it so we see it in Sentry instead.
   const timeout = setTimeout(async () => {
     timedOut = true;
     log.warn('job exceeded time limit', { jobId, limitMs: JOB_TIMEOUT_MS });
     abortController.abort('job timeout');
-    try {
-      await markFailed(jobId, workerId, 'Job exceeded time limit', { kind: 'timeout', limitMs: JOB_TIMEOUT_MS });
-    } catch (e) {
-      log.error('job timeout handler: markFailed threw', {
-        jobId, err: e instanceof Error ? e : new Error(String(e)),
-      });
-    }
+    await markFailed(jobId, workerId, 'Job exceeded time limit', { kind: 'timeout', limitMs: JOB_TIMEOUT_MS });
   }, JOB_TIMEOUT_MS);
 
   try {
@@ -346,12 +337,18 @@ async function saveDraftRecipe(args: {
   // Codex audit pass-6 P1 — the previous read-then-insert pattern raced
   // when two concurrent jobs for the same PMS both saw version=N and
   // both tried to insert version=N+1; the (pms_type, version, status)
-  // unique constraint would reject one of them. Now we retry on
-  // conflict, refetching the latest version each pass so we converge
-  // even under contention. Bounded retries — three concurrent mappings
-  // for the same PMS type is already pathological; failing after that
-  // surfaces real trouble.
-  const MAX_ATTEMPTS = 5;
+  // unique constraint would reject one of them. We retry on conflict,
+  // refetching the latest version each pass so we converge even under
+  // contention.
+  //
+  // Audit/concurrency #8 — bumped MAX_ATTEMPTS from 5 → 50 and added
+  // exponential backoff. At 5, 6+ concurrent mappers for the same PMS
+  // type permanently failed the 6th onboarding even though the earlier
+  // mappings succeeded — a fail-permanent terminal state the cron never
+  // recovered from. 50 attempts with 50ms…2s backoff (≤ ~10s total
+  // worst case) is well within the per-job 15-min deadline and large
+  // enough to absorb pathological contention without an arbitrary cap.
+  const MAX_ATTEMPTS = 50;
   let lastError: string | null = null;
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
@@ -398,11 +395,17 @@ async function saveDraftRecipe(args: {
     if (!isUniqueViolation) {
       return { error: lastError };
     }
-    log.warn('saveDraftRecipe lost version race, retrying', {
-      pmsType: args.pmsType,
-      attemptedVersion: nextVersion,
-      attempt: attempt + 1,
-    });
+    // Exponential backoff with jitter — caps at 2s per attempt so the
+    // total worst-case is bounded.
+    const backoffMs = Math.min(50 * 2 ** Math.min(attempt, 6), 2000)
+      + Math.floor(Math.random() * 50);
+    if (attempt === 9) {
+      log.warn('saveDraftRecipe contention is unusually high', {
+        pmsType: args.pmsType,
+        attempts: attempt + 1,
+      });
+    }
+    await new Promise(r => setTimeout(r, backoffMs));
   }
   return { error: `saveDraftRecipe gave up after ${MAX_ATTEMPTS} version-race retries: ${lastError}` };
 }

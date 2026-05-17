@@ -79,6 +79,57 @@ curl -H "Authorization: Bearer $CRON_SECRET" \
 
 ---
 
+## ML_SERVICE_SECRET rotation
+
+The bearer token Vercel + GitHub Actions cron use to authenticate calls to the `staxis-ml` Fly app. Three holders (Vercel, GitHub Actions secrets, Reeyen's local `~/.config/staxis/tokens.env`); a leak from any one of those grants unscoped train/predict access to every property until rotated.
+
+### Symptom
+- Doctor `ml_service_secret_strength` check returns `fail` ("too short" or "appears to be a placeholder")
+- ML cron workflow logs `401 Unauthorized` against `https://staxis-ml.fly.dev/train/*`
+- ml-service Fly logs `Invalid API token` on every incoming request
+
+### Diagnosis
+```bash
+# 1. Is the deployed secret short / placeholder?
+curl -H "Authorization: Bearer $CRON_SECRET" \
+  https://getstaxis.com/api/admin/doctor | python3 -c \
+  "import sys,json; r=json.load(sys.stdin); print([c for c in r['checks'] if c['name']=='ml_service_secret_strength'])"
+
+# 2. Do all three sides match?
+# Vercel:   Project Settings → Environment Variables → ML_SERVICE_SECRET (length only)
+# GHA:      repo Settings → Secrets and variables → Actions → ML_SERVICE_SECRET (length only)
+# Fly:      flyctl secrets list --app staxis-ml | grep ML_SERVICE_SECRET (digest only)
+```
+
+### Fix (atomic rotation)
+1. Generate a new 32-char secret: `openssl rand -hex 32`
+2. Update all THREE sides BEFORE any service tries to use the new value. Ordering: Fly first (refuses old immediately on restart), then Vercel (so cron stops sending old), then GHA (so scheduled jobs use new):
+   - `flyctl secrets set ML_SERVICE_SECRET="<new>" --app staxis-ml` (triggers rolling restart)
+   - Vercel → `staxis` → Settings → Environment Variables → `ML_SERVICE_SECRET` → Save → Redeploy
+   - GitHub → repo Settings → Secrets and variables → Actions → `ML_SERVICE_SECRET` → Update
+3. Update local `~/.config/staxis/tokens.env` so future Claude sessions can curl ml-service directly.
+
+### Verify
+```bash
+# Doctor's check passes:
+curl -H "Authorization: Bearer $CRON_SECRET" \
+  https://getstaxis.com/api/admin/doctor | python3 -c \
+  "import sys,json; r=json.load(sys.stdin); print([c for c in r['checks'] if c['name']=='ml_service_secret_strength'])"
+
+# Manually trigger an ML cron and confirm 200:
+curl -H "Authorization: Bearer $CRON_SECRET" \
+  https://getstaxis.com/api/cron/ml-run-inference
+
+# Fly logs should show successful authenticated requests after the rolling restart finishes.
+```
+
+### Prevention
+- **Minimum length 32 chars enforced at startup** in `ml-service/src/config.py`. A short/missing secret fails ml-service to boot — Fly health check goes red within minutes, not weeks.
+- **Doctor's `ml_service_secret_strength` check** runs every cron tick and screams `fail` on `<32 chars` OR obvious-placeholder patterns (`placeholder`, `changeme`, all-zeros, etc).
+- **Per-property JWT bearer (backlog)** — replace the single static bearer with a 1-hour JWT carrying a `property_id` claim, so a leaked token has a 1hr × 1-property blast radius instead of forever × all-properties. See `docs/security-triage-2026-05-16.md` Pattern C.
+
+---
+
 ## Scraper dead (Railway)
 
 ### Symptom

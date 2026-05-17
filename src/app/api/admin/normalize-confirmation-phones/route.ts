@@ -14,9 +14,10 @@
  */
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { requireCronSecret } from '@/lib/api-auth';
+import { errToString } from '@/lib/utils';
+import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { log, getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId } from '@/lib/log';
 
 function toE164(raw: string): string | null {
   if (!raw) return null;
@@ -29,9 +30,12 @@ function toE164(raw: string): string | null {
 
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
-  // Mutates shift_confirmations + staff phone columns. CRON_SECRET-only.
-  const unauthorized = requireCronSecret(req);
-  if (unauthorized) return unauthorized;
+  // Codex 2026-05-16 P1 fix (Pattern C): was gated on CRON_SECRET alone,
+  // but it mutates shift_confirmations across every tenant and returns
+  // example rows containing `from`/`to` phone fields. Not called by any
+  // cron. Switch to admin session so the auth bar matches the real caller.
+  const admin = await requireAdmin(req);
+  if (!admin.ok) return admin.response;
   try {
     const { data: confs, error } = await supabaseAdmin
       .from('shift_confirmations')
@@ -73,8 +77,9 @@ export async function POST(req: NextRequest) {
 
     return ok({ scanned, nonPending, rewritten, skipped, examples }, { requestId });
   } catch (caughtErr) {
-    log.error('normalize-confirmation-phones error', { err: caughtErr, requestId });
-    return err('normalize-confirmation-phones failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    const msg = errToString(caughtErr);
+    console.error('normalize-confirmation-phones error:', msg);
+    return err(msg, { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }
 

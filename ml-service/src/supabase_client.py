@@ -171,9 +171,63 @@ class SupabaseServiceClient:
         (b) called a function that didn't exist in the DB. Both bugs were
         silently breaking every demand-training call. Discovered in the
         Tier 2 triple-check.
+
+        SECURITY (2026-05-16 Pattern B): callers MUST interpolate
+        user-derived values through `safe_uuid()` / `safe_iso_date()`
+        (defined below) so the validation runs at the use site, not just
+        upstream in Pydantic. The `exec_sql` RPC is service-role-only
+        per migration 0071, so SQL injection is bounded by auth — but
+        the f-string pattern is fragile and gets safer when every
+        interpolation visibly asserts the value's shape.
         """
         response = self._client.rpc("exec_sql", {"sql": sql}).execute()
         return response.data if response.data else []
+
+
+# ── SQL-value validators (Pattern B — security review 2026-05-16) ──────────
+# Wrap every user-derived value at the f-string interpolation site BEFORE
+# it lands in raw SQL. The upstream Pydantic validators ALREADY enforce
+# these types, but the f-string pattern is fragile: a future route that
+# forgets the Pydantic check would silently introduce an injection.
+# Wrapping at the use site moves the check next to the danger — the call
+# site documents itself as "this value MUST be a UUID/date or this throws."
+#
+# Cheap (microseconds) so safe to call on every query, including hot paths.
+
+import uuid as _uuid
+import re as _re
+
+_ISO_DATE_RX = _re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def safe_uuid(value: str) -> str:
+    """Return `value` if it's a valid UUID string, else raise ValueError.
+
+    Use BEFORE interpolating into f-string SQL:
+        query = f"... where property_id = '{safe_uuid(property_id)}'"
+
+    Raises ValueError with a clear message so callers can surface the
+    validation failure as a structured 400, not a 500.
+    """
+    try:
+        # uuid.UUID accepts hyphenated + non-hyphenated forms; we re-stringify
+        # the canonical hyphenated form so downstream comparisons are stable.
+        return str(_uuid.UUID(str(value)))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ValueError(f"safe_uuid: not a valid UUID: {value!r}") from exc
+
+
+def safe_iso_date(value: str) -> str:
+    """Return `value` if it's a YYYY-MM-DD date string, else raise ValueError.
+
+    Stricter than `date.fromisoformat` — refuses time components and
+    timezone suffixes so the interpolated string can't carry SQL
+    fragments past the closing quote.
+    """
+    s = str(value)
+    if not _ISO_DATE_RX.match(s):
+        raise ValueError(f"safe_iso_date: not a YYYY-MM-DD date: {value!r}")
+    return s
 
 
 def get_supabase_client() -> SupabaseServiceClient:

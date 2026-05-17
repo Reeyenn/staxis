@@ -26,6 +26,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { verifyWebhookSignature, stripeIsConfigured, type Stripe } from '@/lib/stripe';
+import { redactStripeId } from '@/lib/api-validate';
+import { log } from '@/lib/log';
 
 // Stripe sends webhooks as raw JSON in the request body. Next.js by
 // default does NOT consume the body before the route handler runs (that
@@ -40,7 +42,7 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 15;
 
 export async function POST(req: NextRequest) {
-  if (!stripeIsConfigured) {
+  if (!stripeIsConfigured()) {
     return NextResponse.json({ error: 'Billing not configured' }, { status: 503 });
   }
 
@@ -167,7 +169,14 @@ async function handleEvent(event: Stripe.Event): Promise<string | null> {
           `subscription_status CHECK constraint violation — migration 0038 may not be applied yet. Original: ${error.message}`,
         );
       }
-      console.warn(`[stripe/webhook] update by customer ${customerId} failed: ${error.message}`);
+      // customerId is correlatable to PII via the Stripe Dashboard (audit M1).
+      // Log the event ID (workflow-correlation only) and a redacted hint.
+      log.warn('[stripe/webhook] subscription update failed', {
+        eventId: event.id,
+        customerHint: redactStripeId(customerId),
+        errCode: (error as { code?: string }).code,
+        errMessage: error.message,
+      });
       return null;
     }
     return (data?.id as string) ?? null;

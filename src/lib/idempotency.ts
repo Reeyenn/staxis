@@ -36,6 +36,31 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { parseStringField, parseNumberField } from '@/lib/db-mappers';
+
+/** Shape of the idempotency_log SELECT we issue below. Declared once so
+ *  reads use a typed row instead of four ad-hoc `as { ... }` casts.
+ *  Audit finding H4 (2026-05-17). */
+interface IdempotencyRow {
+  route: string;
+  response: unknown;
+  status_code: number | null;
+  expires_at: string;
+}
+
+function parseIdempotencyRow(raw: unknown): IdempotencyRow | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const route = parseStringField(r.route);
+  const expires_at = parseStringField(r.expires_at);
+  if (!route || !expires_at) return null;
+  return {
+    route,
+    response: r.response,
+    status_code: parseNumberField(r.status_code) ?? null,
+    expires_at,
+  };
+}
 
 const KEY_HEADER = 'idempotency-key';
 const MAX_KEY_LENGTH = 256;
@@ -83,33 +108,30 @@ export async function checkIdempotency(
       // Don't fail the route if the cache lookup blows up — better to
       // possibly double-send than to refuse all sends. Log the issue
       // upstream.
-       
+
       console.warn('[idempotency] cache lookup failed:', error.message);
       return { kind: 'first', key };
     }
     if (!data) return { kind: 'first', key };
 
-    // Cache hit. Verify route matches — same key on a different route
-    // means the caller is reusing a UUID across endpoints (unlikely but
-    // possible). Treat as no-key to avoid returning the wrong shape.
-    if ((data as { route?: string }).route !== route) {
-      return { kind: 'first', key };
-    }
+    // Audit finding H4: replace four ad-hoc casts with one validated read.
+    // If any required column drifts (rename, type change), short-circuit
+    // to 'first' — better to redo the work than serve a malformed cache.
+    const row = parseIdempotencyRow(data);
+    if (!row || row.route !== route) return { kind: 'first', key };
+
     // Verify still fresh (we have an index on expires_at; cleanup runs
     // nightly, but it's possible an entry survives past expiry between
     // cleanups).
-    const expiresAt = new Date((data as { expires_at: string }).expires_at).getTime();
-    if (expiresAt < Date.now()) {
+    const expiresAt = new Date(row.expires_at).getTime();
+    if (!Number.isFinite(expiresAt) || expiresAt < Date.now()) {
       return { kind: 'first', key };
     }
 
-    const response = NextResponse.json(
-      (data as { response: unknown }).response,
-      { status: (data as { status_code?: number }).status_code ?? 200 },
-    );
+    const response = NextResponse.json(row.response, { status: row.status_code ?? 200 });
     return { kind: 'cached', response };
   } catch (err) {
-     
+
     console.warn('[idempotency] cache check raised:', err);
     return { kind: 'first', key };
   }

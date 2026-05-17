@@ -19,8 +19,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getInventoryAccountingSummary } from '@/lib/db/inventory-accounting';
-import { log, getOrMintRequestId } from '@/lib/log';
-import { err, ApiErrorCode } from '@/lib/api-response';
+import { errToString } from '@/lib/utils';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -32,7 +31,6 @@ const isMonthString = (s: unknown): s is string =>
   typeof s === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(s);
 
 export async function GET(req: NextRequest) {
-  const requestId = getOrMintRequestId(req);
   const session = await requireSession(req);
   if (!session.ok) return session.response;
 
@@ -41,13 +39,13 @@ export async function GET(req: NextRequest) {
   const monthParam = url.searchParams.get('month');
 
   if (!isUuid(propertyId)) {
-    return err('invalid_property_id', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return NextResponse.json({ ok: false, error: 'invalid_property_id' }, { status: 400 });
   }
   if (monthParam != null && !isMonthString(monthParam)) {
-    return err('invalid_month', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return NextResponse.json({ ok: false, error: 'invalid_month' }, { status: 400 });
   }
   if (!(await userHasPropertyAccess(session.userId, propertyId))) {
-    return err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+    return NextResponse.json({ ok: false, error: 'forbidden' }, { status: 403 });
   }
 
   // Resolve monthStart in UTC. The page sends YYYY-MM; we anchor to day 1.
@@ -64,15 +62,8 @@ export async function GET(req: NextRequest) {
       data: summary,
     });
   } catch (e) {
-    // Don't echo errToString(e) to the client — it can include schema
-    // names, query fragments, or upstream error text. Log full detail,
-    // return a stable string.
-    log.error('inventory-accounting-summary aggregation failed', {
-      err: e instanceof Error ? e : new Error(String(e)),
-      requestId, propertyId,
-    });
     return NextResponse.json(
-      { ok: false, error: 'aggregation_failed', requestId },
+      { ok: false, error: 'aggregation_failed', detail: errToString(e) },
       { status: 500 },
     );
   }

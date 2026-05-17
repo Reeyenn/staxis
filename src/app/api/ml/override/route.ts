@@ -38,6 +38,7 @@ import {
 } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
+import { writeErrorLog } from '@/lib/error-log';
 
 interface RequestBody {
   propertyId: string;
@@ -210,17 +211,11 @@ export async function POST(req: NextRequest) {
     return ok(response, { requestId, status: 201 });
   } catch (caughtErr) {
     log.error('/api/ml/override error', { err: caughtErr, requestId });
-    try {
-      await supabaseAdmin.from('error_logs').insert({
-        source: '/api/ml/override',
-        message: errToString(caughtErr),
-        stack: caughtErr instanceof Error ? caughtErr.stack ?? null : null,
-      });
-    } catch (logErr) {
-      log.warn('ml-override: error_logs insert failed', {
-        requestId, err: logErr instanceof Error ? logErr : new Error(String(logErr)),
-      });
-    }
+    await writeErrorLog({
+      source: '/api/ml/override',
+      message: errToString(caughtErr),
+      stack: caughtErr instanceof Error ? caughtErr.stack ?? null : null,
+    });
     return err('Internal server error', {
       requestId,
       status: 500,

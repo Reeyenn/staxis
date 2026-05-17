@@ -15,7 +15,7 @@ from src.config import get_settings
 from src.layers.bayesian_regression import BayesianRegression
 from src.layers.static_baseline import StaticBaseline
 from src.layers.xgboost_quantile import XGBoostQuantile, XGBOOST_INFERENCE_READY
-from src.supabase_client import get_supabase_client
+from src.supabase_client import get_supabase_client, safe_uuid
 
 
 # Feature columns used for demand training. Must match the columns produced by
@@ -145,7 +145,7 @@ def _train_demand_inner(
           on hav.property_id = cmpd.property_id and hav.date = cmpd.date
         left join plan_snapshots ps
           on ps.property_id = cmpd.property_id and ps.date = cmpd.date
-        where cmpd.property_id = '{property_id}'
+        where cmpd.property_id = '{safe_uuid(property_id)}'
           and hav.labels_complete = true
           and cmpd.total_recorded_minutes is not null
           and cmpd.total_recorded_minutes > 0

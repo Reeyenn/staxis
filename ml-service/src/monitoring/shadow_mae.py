@@ -9,7 +9,7 @@ from scipy import stats
 
 from src.advisory_lock import advisory_lock
 from src.config import get_settings
-from src.supabase_client import SupabaseServiceClient, get_supabase_client
+from src.supabase_client import SupabaseServiceClient, get_supabase_client, safe_uuid
 
 
 def _find_fallback_model(
@@ -158,21 +158,20 @@ async def compute_rolling_shadow_mae(
     # index added in 0104.)
     cutoff_dt = datetime.utcnow() - timedelta(days=settings.auto_rollback_window_days)
     cutoff_iso = cutoff_dt.isoformat()
-    # Defensive LIMIT — the cutoff filter scopes the read to the rollback
-    # window (default 14 days), but if cron stalls or the window is widened
-    # the result set could grow unboundedly. 50_000 rows = ~500 properties ×
-    # 100 prediction-events per day × 2 models — a fleet-wide ceiling that
-    # still preserves correctness for any single-property check. Audit
-    # follow-up 2026-05-17 (shadow_mae unbounded read).
+    # Layer is bounded to {'demand', 'supply'} at the API boundary; defense-
+    # in-depth assert here so a future caller that bypasses the boundary
+    # can't inject. cutoff_iso is server-derived (datetime.utcnow()) so it
+    # carries no user-input lineage; not wrapped.
+    if layer not in ('demand', 'supply'):
+        raise ValueError(f"safe_layer: not a valid layer: {layer!r}")
     logs_query = f"""
         select model_run_id, abs_error, date
         from prediction_log
-        where property_id = '{property_id}'
+        where property_id = '{safe_uuid(property_id)}'
           and layer = '{layer}'
           and date >= '{cutoff_iso}'
-          and model_run_id in ('{active_model_id}', '{comparator_model_id}')
+          and model_run_id in ('{safe_uuid(active_model_id)}', '{safe_uuid(comparator_model_id)}')
         order by date asc
-        limit 50000
     """
     try:
         logs = client.execute_sql(logs_query)

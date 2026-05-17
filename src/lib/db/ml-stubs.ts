@@ -43,22 +43,6 @@ export interface ModelRun {
   trainedAt: string;
 }
 
-export interface PredictionDisagreement {
-  id: string;
-  date: string;
-  layer1TotalP50: number;
-  layer2SummedP50: number;
-  disagreementPct: number;
-}
-
-export interface PredictionOverride {
-  id: string;
-  date: string;
-  optimizerRecommendation: number;
-  manualHeadcount: number;
-  overrideReason: string | null;
-}
-
 export interface DemandPrediction {
   id: string;
   date: string;
@@ -357,55 +341,6 @@ export async function getPipelineHealth(pid: string): Promise<PipelineHealthSnap
     lastInferenceRunAt: predRes.data?.predicted_at ? new Date(predRes.data.predicted_at) : undefined,
     lastShadowLogAt: logRes.data?.logged_at ? new Date(logRes.data.logged_at) : undefined,
   };
-}
-
-/**
- * Recent disagreements between Layer 1 (top-down demand) and Layer 2
- * (bottom-up supply summed). Big disagreements = something to investigate.
- */
-export async function getRecentDisagreements(pid: string, limit: number): Promise<PredictionDisagreement[]> {
-  const { data, error } = await supabase
-    .from('prediction_disagreement')
-    .select('id,date,layer1_total_p50,layer2_summed_p50,disagreement_pct')
-    .eq('property_id', pid)
-    .order('date', { ascending: false })
-    .limit(limit);
-  if (error) {
-    logErr('getRecentDisagreements', error);
-    return [];
-  }
-  return (data ?? []).map(r => ({
-    id: r.id,
-    date: r.date,
-    layer1TotalP50: Number(r.layer1_total_p50 ?? 0),
-    layer2SummedP50: Number(r.layer2_summed_p50 ?? 0),
-    disagreementPct: Number(r.disagreement_pct ?? 0),
-  }));
-}
-
-/**
- * Maria's recent overrides — when she manually changed the recommended
- * headcount. The reason field, when present, is the most useful training
- * signal we have for Layer 3.
- */
-export async function getRecentOverrides(pid: string, limit: number): Promise<PredictionOverride[]> {
-  const { data, error } = await supabase
-    .from('prediction_overrides')
-    .select('id,date,optimizer_recommendation,manual_headcount,override_reason')
-    .eq('property_id', pid)
-    .order('date', { ascending: false })
-    .limit(limit);
-  if (error) {
-    logErr('getRecentOverrides', error);
-    return [];
-  }
-  return (data ?? []).map(r => ({
-    id: r.id,
-    date: r.date,
-    optimizerRecommendation: r.optimizer_recommendation ?? 0,
-    manualHeadcount: r.manual_headcount ?? 0,
-    overrideReason: r.override_reason ?? null,
-  }));
 }
 
 /**

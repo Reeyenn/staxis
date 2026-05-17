@@ -40,6 +40,8 @@
  * maintenance window if you want zero overlap.
  */
 
+import { env } from '@/lib/env';
+
 const URL_LIST_DELIMITER = ',';
 
 /**
@@ -66,17 +68,15 @@ export function resolveMlShardUrl(propertyId: string): string | null {
  * Unconfigured:         empty array.
  */
 export function listMlShardUrls(): string[] {
-  // ML_SERVICE_URLS takes precedence so the multi-shard cutover is a
-  // single env-var addition — no need to also clear ML_SERVICE_URL.
-  const multi = process.env.ML_SERVICE_URLS;
-  if (multi && multi.trim()) {
-    return multi
-      .split(URL_LIST_DELIMITER)
-      .map((u) => u.trim())
-      .filter((u) => u.length > 0);
-  }
-  const single = process.env.ML_SERVICE_URL;
-  return single && single.trim() ? [single.trim()] : [];
+  // ML_SERVICE_URLS is the canonical name; legacy ML_SERVICE_URL is
+  // collapsed into it at env-parse time (see src/lib/env.ts). Multi-
+  // shard is just multiple comma-separated URLs in one var.
+  const raw = env.ML_SERVICE_URLS;
+  if (!raw || !raw.trim()) return [];
+  return raw
+    .split(URL_LIST_DELIMITER)
+    .map((u) => u.trim())
+    .filter((u) => u.length > 0);
 }
 
 /**

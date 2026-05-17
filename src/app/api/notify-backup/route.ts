@@ -8,7 +8,7 @@ import {
 } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { log, getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId } from '@/lib/log';
 
 /**
  * POST /api/notify-backup
@@ -86,7 +86,7 @@ export async function POST(req: NextRequest) {
     ]);
 
     if (backupErr) {
-      log.error('[notify-backup] staff query failed', { err: backupErr, requestId });
+      console.error('[notify-backup] staff query failed:', backupErr.message);
       return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
 
@@ -100,14 +100,14 @@ export async function POST(req: NextRequest) {
     const propertyName = sanitizeForSms(prop?.name || 'Your Hotel');
 
     if (!backup.phone || backup.is_active === false) {
-      log.warn('[notify-backup] Backup staff has no phone or is inactive', { backupStaffId, requestId });
+      console.warn(`[notify-backup] Backup staff (id=${backupStaffId}) has no phone or is inactive`);
       return ok({ sent: 0, failed: 0, reason: 'backup-unreachable' }, { requestId });
     }
 
     const e164 = toE164(backup.phone);
     if (!e164) {
       // Redact phone before logging.
-      log.error('[notify-backup] Invalid phone for backup', { backupStaffId, phone: redactPhone(backup.phone), requestId });
+      console.error(`[notify-backup] Invalid phone for backup (id=${backupStaffId}, phone=${redactPhone(backup.phone)})`);
       return ok({ sent: 0, failed: 1, reason: 'invalid-phone' }, { requestId });
     }
 
@@ -119,13 +119,15 @@ export async function POST(req: NextRequest) {
       await sendSms(e164, message);
       return ok({ sent: 1, failed: 0, staffName: sanitizeForSms(backup.name ?? '') }, { requestId });
     } catch (smsErr) {
-      log.error('[notify-backup] SMS failed', { err: smsErr, backupStaffId, phone: redactPhone(backup.phone), requestId });
+      console.error(
+        `[notify-backup] SMS failed (id=${backupStaffId}, phone=${redactPhone(backup.phone)}): ${errToString(smsErr)}`,
+      );
       return ok({ sent: 0, failed: 1 }, { requestId });
     }
   } catch (caughtErr) {
     // Don't echo raw error messages back — they can leak Postgres / internal
     // path info. Log full error server-side, return generic 500 to caller.
-    log.error('[notify-backup] error', { err: caughtErr, requestId });
+    console.error('[notify-backup] error:', errToString(caughtErr));
     return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

@@ -11,6 +11,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { env } from '@/lib/env';
 
 export async function requireAdmin(req: NextRequest): Promise<
   | { ok: true; userId: string; email: string | null; accountId: string }
@@ -67,7 +68,7 @@ export async function requireAdminOrCron(req: NextRequest): Promise<
   | { ok: false; response: NextResponse }
 > {
   const auth = req.headers.get('authorization') ?? '';
-  const cronSecret = process.env.CRON_SECRET;
+  const cronSecret = env.CRON_SECRET;
   if (cronSecret) {
     const expected = `Bearer ${cronSecret}`;
     const authBuf = Buffer.from(auth);

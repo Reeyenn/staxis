@@ -22,10 +22,11 @@ import { log } from './log.js';
 import { runRecipeExtraction } from './recipe-runner.js';
 import { savePullData } from './pull-data-saver.js';
 import type { PMSCredentials, Recipe, ScraperCredentialsRow } from './types.js';
+import { env } from './env.js';
 
 // Hard timeout for a single pull. Pulls are typically 60-90s; 3 min
 // gives slack for slow PMS pages but bails before the worker is wedged.
-const PULL_TIMEOUT_MS = parseInt(process.env.PULL_TIMEOUT_MS ?? String(180_000), 10);
+const PULL_TIMEOUT_MS = env.PULL_TIMEOUT_MS;
 
 // pull_jobs lifecycle — only the running state owns DB writes. Once a
 // job is complete or failed the runner is done; first-writer-wins on
@@ -46,21 +47,13 @@ export async function runPullJob(jobId: string, workerId: string): Promise<void>
   const startedAt = Date.now();
   let timedOut = false;
 
-  // Hard timeout — same pattern as onboarding job-runner. The awaited
-  // markFailed is wrapped in try/catch so a rejection doesn't sink into
-  // the microtask queue as an unhandled rejection.
+  // Hard timeout — same pattern as onboarding job-runner.
   const timeout = setTimeout(async () => {
     timedOut = true;
     log.warn('pull job exceeded time limit', { jobId, limitMs: PULL_TIMEOUT_MS });
-    try {
-      await markFailed(jobId, workerId, 'Pull exceeded time limit', {
-        kind: 'timeout', limitMs: PULL_TIMEOUT_MS,
-      });
-    } catch (e) {
-      log.error('pull timeout handler: markFailed threw', {
-        jobId, err: e instanceof Error ? e : new Error(String(e)),
-      });
-    }
+    await markFailed(jobId, workerId, 'Pull exceeded time limit', {
+      kind: 'timeout', limitMs: PULL_TIMEOUT_MS,
+    });
   }, PULL_TIMEOUT_MS);
 
   try {

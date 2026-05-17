@@ -14,12 +14,13 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { visionExtractJSON, VisionTruncatedError, VisionImageInvalidError, VisionSchemaError } from '@/lib/vision-extract';
+import { visionExtractJSON, VisionTruncatedError, VisionImageInvalidError, VisionSchemaError, type VisionUsageReport } from '@/lib/vision-extract';
 import { errToString } from '@/lib/utils';
-import { log, getOrMintRequestId } from '@/lib/log';
-import { err, ApiErrorCode } from '@/lib/api-response';
+import { log } from '@/lib/log';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
+import { supabaseAdmin } from '@/lib/supabase-admin';
+import { assertAudioBudget, recordNonRequestCost } from '@/lib/agent/cost-controls';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -86,7 +87,6 @@ Return ONLY a JSON object with this exact shape, no prose, no code fences:
 If the image is not an invoice or receipt, return { "items": [] } and null vendor/date/number.`;
 
 export async function POST(req: NextRequest) {
-  const requestId = getOrMintRequestId(req);
   // Auth gate: this route hits the Anthropic Vision API on each request.
   // Without a session check, anyone with a guessed property UUID could
   // submit unlimited images and burn through ANTHROPIC_API_KEY budget.
@@ -97,21 +97,21 @@ export async function POST(req: NextRequest) {
   try {
     body = await req.json();
   } catch {
-    return err('invalid_json', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return NextResponse.json({ ok: false, error: 'invalid_json' }, { status: 400 });
   }
 
   const { pid, imageBase64, mediaType } = body;
   if (!isUuid(pid)) {
-    return err('invalid_pid', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return NextResponse.json({ ok: false, error: 'invalid_pid' }, { status: 400 });
   }
   if (!(await userHasPropertyAccess(session.userId, pid))) {
-    return err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+    return NextResponse.json({ ok: false, error: 'forbidden' }, { status: 403 });
   }
   if (typeof imageBase64 !== 'string' || imageBase64.length < 100) {
-    return err('invalid_image', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return NextResponse.json({ ok: false, error: 'invalid_image' }, { status: 400 });
   }
   if (!SUPPORTED_MEDIA_TYPES.includes(mediaType as typeof SUPPORTED_MEDIA_TYPES[number])) {
-    return err('unsupported_media_type', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return NextResponse.json({ ok: false, error: 'unsupported_media_type' }, { status: 400 });
   }
 
   // ── Rate limit (May 2026 audit pass-5) ─────────────────────────────
@@ -126,6 +126,35 @@ export async function POST(req: NextRequest) {
   if (!rl.allowed) {
     return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec) as NextResponse;
   }
+
+  // Security review 2026-05-16 (Pattern F — unified cost cap): vision
+  // scans cost $0.003-0.01 each. Pre-flight against the daily $ budget
+  // so a property hitting (e.g.) 5,000 scans/day burns out at the cap
+  // instead of silently piling up Anthropic charges. We also need the
+  // caller's `accounts.id` to attribute the spend (auth.userId is the
+  // Supabase user, not the accounts PK that agent_costs.user_id FKs to).
+  const { data: accountRow } = await supabaseAdmin
+    .from('accounts')
+    .select('id')
+    .eq('data_user_id', session.userId)
+    .maybeSingle();
+  const accountId = accountRow?.id as string | undefined;
+  if (accountId) {
+    const budget = await assertAudioBudget({ userId: accountId, propertyId: pid });
+    if (!budget.ok) {
+      return NextResponse.json(
+        { ok: false, error: budget.message, code: budget.reason },
+        { status: 429 },
+      ) as NextResponse;
+    }
+  }
+
+  // Capture vision usage so we can book the spend post-call. The
+  // callback runs synchronously inside visionExtractJSON BEFORE any
+  // truncation/empty-text throw, so even error paths bill the cost
+  // (the Anthropic call already happened).
+  let usage: VisionUsageReport | null = null;
+  const captureUsage = (u: VisionUsageReport): void => { usage = u; };
 
   try {
     const result = await visionExtractJSON<ExtractedInvoice>(
@@ -150,6 +179,7 @@ export async function POST(req: NextRequest) {
           items: obj.items as ExtractedInvoice['items'],
         };
       },
+      captureUsage,
     );
 
     // Defensive normalization — coerce numbers, drop malformed rows. NaN
@@ -241,6 +271,35 @@ export async function POST(req: NextRequest) {
       { ok: false, error: status === 503 ? 'vision_unavailable' : 'vision_failed' },
       { status },
     );
+  } finally {
+    // Security review 2026-05-16 (Pattern F): record actual Anthropic
+    // spend even on error paths. The cost was already incurred by the
+    // time the response arrived — billing-honest = bill it. Caps
+    // depend on agent_costs being authoritative for today's spend.
+    if (usage && accountId) {
+      const u = usage as VisionUsageReport;
+      try {
+        await recordNonRequestCost({
+          userId: accountId,
+          propertyId: pid,
+          conversationId: null,
+          model: u.model,
+          modelId: u.modelId,
+          tokensIn: u.inputTokens,
+          tokensOut: u.outputTokens,
+          costUsd: u.costUsd,
+          kind: 'vision',
+        });
+      } catch (costErr) {
+        // Don't let a cost-ledger failure leak as a 500 to the user — the
+        // vision result already returned (or already errored). Log loudly
+        // so it shows up in Sentry + the doctor's surface.
+        log.error('[scan-invoice] cost-ledger write failed', {
+          err: costErr instanceof Error ? costErr : new Error(String(costErr)),
+          pid,
+        });
+      }
+    }
   }
 }
 

@@ -16,7 +16,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { hashDeviceToken, readDeviceCookie, trustCookieOptions } from '@/lib/trusted-device';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { log, getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId } from '@/lib/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
     .eq('token_hash', tokenHash)
     .maybeSingle();
   if (rowErr) {
-    log.error('[check-trust] lookup failed', { err: rowErr, requestId });
+    console.error('[check-trust] lookup failed', rowErr);
     // Fail-closed: treat as untrusted on DB errors.
     return ok({ trusted: false }, { requestId });
   }

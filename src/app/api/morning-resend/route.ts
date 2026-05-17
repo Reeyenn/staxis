@@ -165,6 +165,13 @@ export async function POST(req: NextRequest) {
     let updatedCount = 0;
     const nowIso = new Date().toISOString();
 
+    // Per-iteration SMS failures and per-rejection reasons are collected
+    // here and emitted as a single summary log after the loop — a fleet-wide
+    // carrier outage at a 30-staff property used to produce 30 named error
+    // lines (audit findings H2 / F1 / F2). One structured event per cron
+    // run is enough to triage and doesn't drag staff names through stdout.
+    const smsFailures: string[] = [];
+
     const results = await Promise.allSettled(
       confirmed.map(async (hk, idx) => {
         const newRooms = newAssignments[idx]?.rooms ?? [];
@@ -240,17 +247,33 @@ export async function POST(req: NextRequest) {
 
           try {
             await sendSms(phone164, msg);
-          } catch (smsErr) {
-            log.error('Morning resend SMS failed', { err: smsErr, staffName: hk.staff_name, requestId });
+          } catch {
+            // Audit H2 / F1: collect failures and emit one structured
+            // summary after the loop. The earlier inline `log.error(...,
+            // { staffName: hk.staff_name, ... })` leaked the name as a
+            // structured field — moving it to a field didn't make it
+            // private, just made it grep-resistant.
+            smsFailures.push(hk.staff_id as string);
           }
         }
         updatedCount++;
       })
     );
 
-    // Log any per-HK failures but don't fail the whole request.
-    for (const r of results) {
-      if (r.status === 'rejected') log.error('[morning-resend] HK rejection', { err: r.reason, requestId });
+    // Audit F2: one structured event per cron run regardless of fleet
+    // size. Replaces the prior per-rejection `for (const r) log.error`,
+    // which produced N log lines for a wide-fan-out failure.
+    const rejections = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    if (smsFailures.length > 0 || rejections.length > 0) {
+      log.error('[morning-resend] partial failures', {
+        requestId,
+        route: '/api/morning-resend',
+        pid,
+        smsFailureCount: smsFailures.length,
+        smsFailureStaffIds: smsFailures,
+        rejectionCount: rejections.length,
+        rejectionReasons: rejections.map(r => errToString(r.reason)),
+      });
     }
 
     // Mirror the new assignments into schedule_assignments so the UI stays in

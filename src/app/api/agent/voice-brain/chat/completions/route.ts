@@ -12,13 +12,14 @@
 //   registered with ElevenLabs as a workspace secret and attached to the
 //   agent's custom_llm config. Constant-time compare via timingSafeEqual.
 //
-// User identity:
-//   ElevenLabs forwards the `dynamic_variables` we set in `/voice-session`
-//   on every webhook call. The brain pulls accountId / propertyId / role /
-//   staffId / conversationId out of `extra_body.dynamic_variables` and
-//   reconstructs the same `ToolContext` text mode uses. The browser never
-//   sends these — they were minted server-side and the user can't forge
-//   them past the bearer-secret gate.
+// User identity (Codex 2026-05-16 P0 fix — Pattern A):
+//   ElevenLabs forwards a single `staxis_voice_session_id` from
+//   `extra_body.dynamic_variables`. We look that nonce up in the
+//   `agent_voice_sessions` table, re-load the current role + property
+//   from `accounts`, and re-run `userHasPropertyAccess`. Client-supplied
+//   role/property values are NEVER used for authorization — only the
+//   server-side row is canonical. Closes the cross-tenant escape where
+//   a user could forge dynamic_variables to claim another property.
 //
 // Streaming:
 //   ElevenLabs expects an OpenAI-format streaming response. We run our
@@ -37,12 +38,16 @@ import { streamAgent, type AgentMessage, type UsageReport } from '@/lib/agent/ll
 import { getToolsForRole } from '@/lib/agent/tools';
 import { buildHotelSnapshot } from '@/lib/agent/context';
 import { buildSystemPrompt } from '@/lib/agent/prompts';
-import { recordNonRequestCost } from '@/lib/agent/cost-controls';
+import { recordNonRequestCost, assertAudioBudget } from '@/lib/agent/cost-controls';
+import {
+  resolveVoiceSession,
+  VOICE_SESSION_DYNVAR_KEY,
+  type ResolvedVoiceSession,
+} from '@/lib/agent/voice-session';
 import { getOrMintRequestId, log } from '@/lib/log';
-import { err, ApiErrorCode } from '@/lib/api-response';
-import type { AppRole } from '@/lib/roles';
 // Side-effect import — registers all tools against the catalog.
 import '@/lib/agent/tools/index';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -82,15 +87,6 @@ interface OpenAIChatRequest {
   user?: string;
 }
 
-interface ResolvedContext {
-  accountId: string;
-  userId: string;
-  propertyId: string;
-  role: AppRole;
-  staffId: string | null;
-  conversationId: string;
-}
-
 function timingSafeBearerCheck(authHeader: string, expected: string): boolean {
   const a = Buffer.from(authHeader);
   const b = Buffer.from(`Bearer ${expected}`);
@@ -121,28 +117,16 @@ function asString(v: unknown): string | null {
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
 
-function resolveContext(body: OpenAIChatRequest): ResolvedContext | { error: string } {
+/**
+ * Pull ONLY the voice-session nonce from dynamic_variables. Codex 2026-05-16
+ * P0 fix (Pattern A): any other field that used to flow through here
+ * (account_id, role, property_id, staff_id) is now diagnostic-only — never
+ * used for authorization. The nonce is looked up in `agent_voice_sessions`,
+ * and identity is re-resolved from accounts on every call.
+ */
+function extractVoiceSessionId(body: OpenAIChatRequest): string | null {
   const dv = extractDynamicVariables(body);
-  const accountId = asString(dv.staxis_account_id);
-  const userId = asString(dv.staxis_user_id);
-  const propertyId = asString(dv.staxis_property_id);
-  const roleRaw = asString(dv.staxis_role);
-  const staffIdRaw = asString(dv.staxis_staff_id);
-  const conversationId = asString(dv.staxis_conversation_id);
-
-  if (!accountId || !userId || !propertyId || !roleRaw || !conversationId) {
-    return { error: 'missing dynamic variables (account/user/property/role/conversation)' };
-  }
-  return {
-    accountId,
-    userId,
-    propertyId,
-    role: roleRaw as AppRole,
-    // Empty string sentinel is what /voice-session sets when there's no
-    // staff row (manager / owner). Coerce back to null for ToolContext.
-    staffId: staffIdRaw && staffIdRaw.length > 0 ? staffIdRaw : null,
-    conversationId,
-  };
+  return asString(dv[VOICE_SESSION_DYNVAR_KEY]);
 }
 
 /**
@@ -240,15 +224,15 @@ export async function POST(req: NextRequest): Promise<Response> {
   log.info('[voice-brain] entry', { requestId });
 
   // ── Auth: shared bearer secret ────────────────────────────────────────
-  const secret = process.env.ELEVENLABS_WEBHOOK_SECRET;
+  const secret = env.ELEVENLABS_WEBHOOK_SECRET;
   if (!secret) {
     log.error('[voice-brain] ELEVENLABS_WEBHOOK_SECRET not configured', { requestId });
-    return err('server misconfigured', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    return NextResponse.json({ error: 'server misconfigured' }, { status: 500 });
   }
   const authHeader = req.headers.get('authorization') ?? '';
   if (!timingSafeBearerCheck(authHeader, secret)) {
     log.warn('[voice-brain] auth rejected', { requestId, hasHeader: authHeader.length > 0 });
-    return err('unauthorized', { requestId, status: 401, code: ApiErrorCode.Unauthorized });
+    return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 
   // ── Parse OpenAI-format body ──────────────────────────────────────────
@@ -256,7 +240,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   try {
     body = await req.json();
   } catch {
-    return err('invalid json', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return NextResponse.json({ error: 'invalid json' }, { status: 400 });
   }
   // Don't reject on empty messages — ElevenLabs sends a session-init
   // call with messages=[] or messages=[{role:'system',...}] BEFORE
@@ -264,9 +248,14 @@ export async function POST(req: NextRequest): Promise<Response> {
   // case by synthesizing a greeting prompt.
   if (!Array.isArray(body.messages)) body.messages = [];
 
-  // ── Reconstruct Staxis context from ElevenLabs dynamic_variables ──────
-  const ctxResult = resolveContext(body);
-  if ('error' in ctxResult) {
+  // ── Server-resolved identity from agent_voice_sessions ────────────────
+  // Codex 2026-05-16 P0 fix (Pattern A): client-supplied identity claims
+  // (role, property_id, account_id) are NEVER used for authorization. We
+  // accept only a `staxis_voice_session_id` nonce and look up the canonical
+  // identity in the DB on every webhook call. Role + property access are
+  // re-read from the `accounts` table so mid-session revocation propagates.
+  const sessionId = extractVoiceSessionId(body);
+  if (!sessionId) {
     // Log the SHAPE we received (key names only — values may contain
     // sensitive IDs). If ElevenLabs ever changes their forwarding path
     // away from `extra_body.dynamic_variables`, this log line is the
@@ -278,18 +267,26 @@ export async function POST(req: NextRequest): Promise<Response> {
       (body?.elevenlabs_extra_body?.dynamic_variables && Object.keys(body.elevenlabs_extra_body.dynamic_variables)) ??
       (body?.extra_body?.dynamic_variables && Object.keys(body.extra_body.dynamic_variables)) ??
       [];
-    log.warn('[voice-brain] context resolution failed', {
+    log.warn('[voice-brain] missing voice session id', {
       requestId,
-      error: ctxResult.error,
       bodyKeys,
       elevenlabsExtraBodyKeys: elevenKeys,
       extraBodyKeys,
       dynamicVariableKeys: dvKeys,
       topLevelDynamicVarsPresent: !!body?.dynamic_variables,
     });
-    return err(ctxResult.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return NextResponse.json({ error: `missing ${VOICE_SESSION_DYNVAR_KEY}` }, { status: 400 });
   }
-  const ctx = ctxResult;
+  const resolved = await resolveVoiceSession(sessionId);
+  if (!resolved.ok) {
+    log.warn('[voice-brain] voice session rejected', {
+      requestId,
+      sessionId,
+      reason: resolved.reason,
+    });
+    return NextResponse.json({ error: `voice session ${resolved.reason}` }, { status: 401 });
+  }
+  const ctx: ResolvedVoiceSession = resolved.ctx;
 
   // ── Translate messages → AgentMessage[] ───────────────────────────────
   const { history, newUserMessage } = translateMessages(body.messages);
@@ -326,10 +323,42 @@ export async function POST(req: NextRequest): Promise<Response> {
       let finalText = '';
 
       try {
+        // Security review 2026-05-16 (Surface 7 P3 — Pattern F): assert
+        // the daily $ budget at the START of every voice turn. Pre-flight
+        // at session-mint catches "new session over cap" but a long-lived
+        // session (up to the 4hr agent_voice_sessions TTL) accumulated
+        // brain + STT/TTS spend that the mint-time check couldn't see.
+        // Per-turn check closes that gap. On over-budget we emit a polite
+        // spoken sentence + finish — never silently keep billing.
+        const budget = await assertAudioBudget({
+          userId: ctx.accountId,
+          propertyId: ctx.propertyId,
+        }).catch((budgetErr) => {
+          // Don't fail the turn on a budget-check error — log loudly and
+          // proceed. Better to bill one extra turn than to brick voice
+          // on a transient Supabase hiccup.
+          log.error('[voice-brain] budget check threw — failing OPEN', { requestId, budgetErr });
+          return { ok: true as const, userSpendUsd: 0, propertySpendUsd: 0 };
+        });
+        if (!budget.ok) {
+          const id = makeOpenAiId();
+          controller.enqueue(encoder.encode(sseChunk(id, model, { role: 'assistant' }, null)));
+          for (const seg of splitForStream(budget.message)) {
+            controller.enqueue(encoder.encode(sseChunk(id, model, { content: seg }, null)));
+          }
+          controller.enqueue(encoder.encode(sseChunk(id, model, {}, 'stop')));
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+          log.info('[voice-brain] over-budget — turn declined', {
+            requestId, reason: budget.reason,
+          });
+          return;
+        }
+
         // Build the system prompt for this turn AFTER keepalive flushes.
-        // getToolsForRole(role) — second arg defaults to 'chat'. Voice
-        // shares the same tool catalog today; if we ever want a
-        // voice-restricted subset, pass surface='voice' here.
+        // surface='voice' is passed below to getToolsForRole — the voice
+        // catalog is empty today (no tool opts in via surfaces:['voice']),
+        // which is the secure-by-default posture after the Codex P0 fix.
         let systemPrompt;
         try {
           const snapshot = await buildHotelSnapshot(ctx.propertyId, ctx.role, ctx.staffId);
@@ -347,7 +376,13 @@ export async function POST(req: NextRequest): Promise<Response> {
           return;
         }
 
-        const tools = getToolsForRole(ctx.role);
+        // Codex 2026-05-16 P0 fix (Pattern E): pass surface='voice' so the
+        // tool registry filters down to tools that explicitly opt into the
+        // voice surface (via `surfaces: ['voice']` on their definition).
+        // Today no tool opts in → voice gets an empty tool list, which is
+        // the secure default. Curating which tools are voice-callable is a
+        // deliberate product decision tracked separately.
+        const tools = getToolsForRole(ctx.role, 'voice');
         const userCtx = {
           uid: ctx.userId,
           accountId: ctx.accountId,
@@ -368,6 +403,7 @@ export async function POST(req: NextRequest): Promise<Response> {
             propertyId: ctx.propertyId,
             staffId: ctx.staffId,
             requestId,
+            surface: 'voice',
           },
         });
 

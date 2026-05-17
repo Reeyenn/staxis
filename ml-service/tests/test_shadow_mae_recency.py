@@ -46,11 +46,11 @@ def _make_fake_client(seed_rows, captured_sql):
     fake = MagicMock()
     fake.fetch_many.side_effect = [
         # First call: active model lookup.
-        [{"id": "active-uuid"}],
+        [{"id": "22222222-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}],
         # Second call: prior runs lookup (one valid comparator).
         [
             {
-                "id": "comparator-uuid",
+                "id": "33333333-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
                 "deactivation_reason": None,
                 "activated_at": "2026-04-01T00:00:00Z",
             }
@@ -81,11 +81,11 @@ def test_stale_dates_are_excluded_by_the_recency_filter():
 
     seed_rows = [
         # Active model rows
-        {"model_run_id": "active-uuid", "abs_error": 5.0, "date": today},
-        {"model_run_id": "active-uuid", "abs_error": 99.0, "date": stale},
+        {"model_run_id": "22222222-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "abs_error": 5.0, "date": today},
+        {"model_run_id": "22222222-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "abs_error": 99.0, "date": stale},
         # Comparator rows
-        {"model_run_id": "comparator-uuid", "abs_error": 7.0, "date": today},
-        {"model_run_id": "comparator-uuid", "abs_error": 88.0, "date": stale},
+        {"model_run_id": "33333333-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "abs_error": 7.0, "date": today},
+        {"model_run_id": "33333333-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "abs_error": 88.0, "date": stale},
     ]
     captured_sql = []
     fake_client = _make_fake_client(seed_rows, captured_sql)
@@ -96,7 +96,7 @@ def test_stale_dates_are_excluded_by_the_recency_filter():
     with patch.object(shadow_mae, "get_supabase_client", return_value=fake_client), \
          patch.object(shadow_mae, "get_settings", return_value=fake_settings):
         result = asyncio.run(
-            shadow_mae.compute_rolling_shadow_mae("prop-123", "demand")
+            shadow_mae.compute_rolling_shadow_mae("11111111-2222-3333-4444-555555555555", "demand")
         )
 
     # The function returns early when paired_active has fewer than 10
@@ -148,10 +148,10 @@ def test_pairing_uses_date_field_for_bucketing():
     for i in range(12):
         d = today - timedelta(days=i)
         seed_rows.append(
-            {"model_run_id": "active-uuid", "abs_error": 5.0 + i * 0.1, "date": d}
+            {"model_run_id": "22222222-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "abs_error": 5.0 + i * 0.1, "date": d}
         )
         seed_rows.append(
-            {"model_run_id": "comparator-uuid", "abs_error": 7.0 + i * 0.1, "date": d}
+            {"model_run_id": "33333333-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "abs_error": 7.0 + i * 0.1, "date": d}
         )
     captured_sql = []
     fake_client = _make_fake_client(seed_rows, captured_sql)
@@ -162,7 +162,7 @@ def test_pairing_uses_date_field_for_bucketing():
     with patch.object(shadow_mae, "get_supabase_client", return_value=fake_client), \
          patch.object(shadow_mae, "get_settings", return_value=fake_settings):
         result = asyncio.run(
-            shadow_mae.compute_rolling_shadow_mae("prop-123", "demand")
+            shadow_mae.compute_rolling_shadow_mae("11111111-2222-3333-4444-555555555555", "demand")
         )
 
     # 12 paired days got through the cutoff and through the bucketing.

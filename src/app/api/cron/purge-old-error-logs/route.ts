@@ -51,8 +51,7 @@ export async function GET(req: NextRequest) {
     .select('id');
 
   if (error) {
-    log.error('purge-old-error-logs: delete failed', { err: error, requestId });
-    return err('Could not purge error_logs', {
+    return err(`Could not purge error_logs: ${error.message}`, {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
   }

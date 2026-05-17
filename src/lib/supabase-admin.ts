@@ -1,4 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { env } from '@/lib/env';
 
 // ─── Why this file is hardened ─────────────────────────────────────────────
 // The previous Firebase Admin version silently console.warn'd when env vars
@@ -10,23 +11,9 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 //
 // Supabase Admin (service_role) behaves similarly: the client constructs
 // fine with any string as a key, and the first query is where an invalid
-// key surfaces. So: missing env vars throw loudly at module load with the
-// exact var names, and `verifySupabaseAdmin()` does a cheap preflight
-// read that surfaces auth failures with a specific, actionable error.
+// key surfaces. The env module already throws at boot if either var is
+// missing; this file only handles auth-time failures via verifySupabaseAdmin().
 // ───────────────────────────────────────────────────────────────────────────
-
-const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-const missing: string[] = [];
-if (!url) missing.push('NEXT_PUBLIC_SUPABASE_URL');
-if (!serviceRoleKey) missing.push('SUPABASE_SERVICE_ROLE_KEY');
-if (missing.length) {
-  throw new Error(
-    `Supabase Admin SDK missing required env vars: ${missing.join(', ')}. ` +
-    `Fix: Vercel Project Settings → Environment Variables (and Railway for the scraper), then redeploy.`
-  );
-}
 
 // Singleton across Next.js hot reloads + serverless warm containers.
 // `__supabaseAdmin` lives on globalThis so HMR doesn't create duplicates.
@@ -34,7 +21,7 @@ const globalForSupabase = globalThis as unknown as { __supabaseAdmin?: SupabaseC
 
 export const supabaseAdmin: SupabaseClient =
   globalForSupabase.__supabaseAdmin ??
-  createClient(url!, serviceRoleKey!, {
+  createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
     auth: {
       autoRefreshToken: false,
       persistSession: false,
@@ -45,7 +32,7 @@ export const supabaseAdmin: SupabaseClient =
     },
   });
 
-if (process.env.NODE_ENV !== 'production') {
+if (env.NODE_ENV !== 'production') {
   globalForSupabase.__supabaseAdmin = supabaseAdmin;
 }
 

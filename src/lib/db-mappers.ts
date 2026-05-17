@@ -69,6 +69,94 @@ export function dropUndefined<T extends object>(obj: T): Partial<T> {
   return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as Partial<T>;
 }
 
+// ─── Runtime narrowers for unchecked column reads ───────────────────────────
+//
+// Supabase's row types come back loose (JSONB, text union columns, text[]).
+// Each `fromXxxRow` used to cast — `(r.foo as string) ?? undefined` — which
+// satisfies TypeScript but silently lies if the column drifts (rename, type
+// change). These helpers narrow at runtime so a drift produces `undefined` /
+// the fallback instead of a wrong-typed value sneaking into the domain layer.
+
+export function parseStringField(v: unknown): string | undefined {
+  return typeof v === 'string' ? v : undefined;
+}
+
+export function parseStringFieldOr(v: unknown, fallback: string): string {
+  return typeof v === 'string' ? v : fallback;
+}
+
+export function parseBoolField(v: unknown): boolean | undefined {
+  return typeof v === 'boolean' ? v : undefined;
+}
+
+export function parseNumberField(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
+export function parseUnionField<T extends string>(
+  v: unknown,
+  allowed: readonly T[],
+  fallback: T,
+): T {
+  return typeof v === 'string' && (allowed as readonly string[]).includes(v)
+    ? (v as T)
+    : fallback;
+}
+
+export function parseOptionalUnionField<T extends string>(
+  v: unknown,
+  allowed: readonly T[],
+): T | undefined {
+  return typeof v === 'string' && (allowed as readonly string[]).includes(v)
+    ? (v as T)
+    : undefined;
+}
+
+export function parseArrayField<T>(
+  v: unknown,
+  coerce: (x: unknown) => T | undefined,
+): T[] {
+  if (!Array.isArray(v)) return [];
+  const out: T[] = [];
+  for (const x of v) {
+    const y = coerce(x);
+    if (y !== undefined) out.push(y);
+  }
+  return out;
+}
+
+export function parseRecordField<V>(
+  v: unknown,
+  coerceValue: (x: unknown) => V | undefined,
+): Record<string, V> | undefined {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return undefined;
+  const out: Record<string, V> = {};
+  for (const [k, x] of Object.entries(v)) {
+    const y = coerceValue(x);
+    if (y !== undefined) out[k] = y;
+  }
+  return out;
+}
+
+// ─── Union constants ───────────────────────────────────────────────────────
+// Paired with the typed unions in src/types/index.ts. Kept here as runtime
+// arrays so the parsers can validate at runtime — TS narrowing alone doesn't
+// catch a stale DB value.
+const ROOM_STATUSES = ['dirty', 'in_progress', 'clean', 'inspected'] as const;
+const ROOM_TYPES = ['checkout', 'stayover', 'vacant'] as const;
+const ROOM_PRIORITIES = ['standard', 'vip', 'early'] as const;
+const LANGUAGES = ['en', 'es'] as const;
+const STAFF_DEPARTMENTS = ['housekeeping', 'front_desk', 'maintenance', 'other'] as const;
+const SCHEDULE_PRIORITIES = ['priority', 'normal', 'excluded'] as const;
+const INVENTORY_CATEGORIES = ['housekeeping', 'maintenance', 'breakfast'] as const;
+const INVENTORY_DISCARD_REASONS = ['stained', 'damaged', 'lost', 'theft', 'other'] as const;
+const HANDOFF_SHIFT_TYPES = ['morning', 'afternoon', 'night'] as const;
+const GUEST_REQUEST_STATUSES = ['pending', 'in_progress', 'done'] as const;
+const GUEST_REQUEST_TYPES = ['towels', 'pillows', 'blanket', 'iron', 'crib', 'toothbrush', 'amenities', 'maintenance', 'other'] as const;
+const CONFIRMATION_STATUSES = ['sent', 'pending', 'confirmed', 'declined'] as const;
+const NOTIFICATION_TYPES = ['decline', 'no_response', 'all_confirmed', 'replacement_found', 'no_replacement'] as const;
+const DEEP_CLEAN_STATUSES = ['in_progress', 'completed'] as const;
+
 // ─── Property ───────────────────────────────────────────────────────────────
 
 export function toPropertyRow(p: Partial<Property>): Record<string, unknown> {
@@ -110,20 +198,21 @@ export function fromPropertyRow(r: Record<string, unknown>): Property {
     shiftMinutes: Number(r.shift_minutes ?? 480),
     totalStaffOnRoster: Number(r.total_staff_on_roster ?? 0),
     weeklyBudget: r.weekly_budget == null ? undefined : Number(r.weekly_budget),
-    morningBriefingTime: (r.morning_briefing_time as string) ?? undefined,
-    eveningForecastTime: (r.evening_forecast_time as string) ?? undefined,
-    pmsType: (r.pms_type as string) ?? undefined,
-    pmsUrl: (r.pms_url as string) ?? undefined,
-    pmsConnected: (r.pms_connected as boolean) ?? undefined,
+    morningBriefingTime: parseStringField(r.morning_briefing_time),
+    eveningForecastTime: parseStringField(r.evening_forecast_time),
+    pmsType: parseStringField(r.pms_type),
+    pmsUrl: parseStringField(r.pms_url),
+    pmsConnected: parseBoolField(r.pms_connected),
     lastSyncedAt: toDate(r.last_synced_at),
-    alertPhone: (r.alert_phone as string) ?? undefined,
+    alertPhone: parseStringField(r.alert_phone),
     // room_inventory is a Postgres text[] of every room number in the hotel.
     // Used by the Housekeeping Rooms tab to render all rooms even when the
     // daily CA pull only mentions the dirty/occupied subset. Empty or null
     // for un-onboarded properties — caller falls back to whatever's in the
-    // rooms table for that case.
+    // rooms table for that case. We return undefined (not []) for non-array
+    // input so callers can distinguish "no inventory configured" from "empty hotel".
     roomInventory: Array.isArray(r.room_inventory)
-      ? (r.room_inventory as unknown[]).map((n) => String(n))
+      ? parseArrayField(r.room_inventory, (x) => x != null ? String(x) : undefined)
       : undefined,
     createdAt: toDate(r.created_at) ?? new Date(),
   };
@@ -167,19 +256,21 @@ export function fromStaffRow(r: Record<string, unknown>): StaffMember {
   return {
     id: String(r.id),
     name: String(r.name ?? ''),
-    phone: (r.phone as string) ?? undefined,
-    language: (r.language as 'en' | 'es') ?? 'en',
+    phone: parseStringField(r.phone),
+    language: parseUnionField(r.language, LANGUAGES, 'en'),
     isSenior: Boolean(r.is_senior),
-    department: (r.department as StaffMember['department']) ?? undefined,
+    department: parseOptionalUnionField(r.department, STAFF_DEPARTMENTS),
     hourlyWage: r.hourly_wage == null ? undefined : Number(r.hourly_wage),
     scheduledToday: Boolean(r.scheduled_today),
     weeklyHours: Number(r.weekly_hours ?? 0),
     maxWeeklyHours: Number(r.max_weekly_hours ?? 40),
     maxDaysPerWeek: r.max_days_per_week == null ? undefined : Number(r.max_days_per_week),
     daysWorkedThisWeek: r.days_worked_this_week == null ? undefined : Number(r.days_worked_this_week),
-    vacationDates: (r.vacation_dates as string[]) ?? undefined,
+    vacationDates: Array.isArray(r.vacation_dates)
+      ? parseArrayField(r.vacation_dates, parseStringField)
+      : undefined,
     isActive: r.is_active == null ? undefined : Boolean(r.is_active),
-    schedulePriority: (r.schedule_priority as StaffMember['schedulePriority']) ?? undefined,
+    schedulePriority: parseOptionalUnionField(r.schedule_priority, SCHEDULE_PRIORITIES),
     isSchedulingManager: r.is_scheduling_manager == null ? undefined : Boolean(r.is_scheduling_manager),
     lastPairedAt: toDate(r.last_paired_at),
   };
@@ -217,26 +308,26 @@ export function fromRoomRow(r: Record<string, unknown>): Room {
   return {
     id: String(r.id),
     number: String(r.number ?? ''),
-    type: (r.type as Room['type']) ?? 'checkout',
-    priority: (r.priority as Room['priority']) ?? 'standard',
-    status: (r.status as Room['status']) ?? 'dirty',
-    assignedTo: (r.assigned_to as string) ?? undefined,
-    assignedName: (r.assigned_name as string) ?? undefined,
+    type: parseUnionField(r.type, ROOM_TYPES, 'checkout'),
+    priority: parseUnionField(r.priority, ROOM_PRIORITIES, 'standard'),
+    status: parseUnionField(r.status, ROOM_STATUSES, 'dirty'),
+    assignedTo: parseStringField(r.assigned_to),
+    assignedName: parseStringField(r.assigned_name),
     startedAt: toDate(r.started_at),
     completedAt: toDate(r.completed_at),
     date: String(r.date ?? ''),
     propertyId: String(r.property_id ?? ''),
-    issueNote: (r.issue_note as string) ?? undefined,
-    inspectedBy: (r.inspected_by as string) ?? undefined,
+    issueNote: parseStringField(r.issue_note),
+    inspectedBy: parseStringField(r.inspected_by),
     inspectedAt: toDate(r.inspected_at),
     isDnd: r.is_dnd == null ? undefined : Boolean(r.is_dnd),
-    dndNote: (r.dnd_note as string) ?? undefined,
-    arrival: (r.arrival as string) ?? undefined,
+    dndNote: parseStringField(r.dnd_note),
+    arrival: parseStringField(r.arrival),
     stayoverDay: r.stayover_day == null ? undefined : Number(r.stayover_day),
     stayoverMinutes: r.stayover_minutes == null ? undefined : Number(r.stayover_minutes),
     helpRequested: r.help_requested == null ? undefined : Boolean(r.help_requested),
-    checklist: (r.checklist as Record<string, boolean>) ?? undefined,
-    photoUrl: (r.photo_url as string) ?? undefined,
+    checklist: parseRecordField(r.checklist, parseBoolField),
+    photoUrl: parseStringField(r.photo_url),
   };
 }
 
@@ -325,6 +416,17 @@ export function toDailyLogRow(l: Partial<DailyLog> & { propertyId?: string }): R
 }
 
 export function fromDailyLogRow(r: Record<string, unknown>): DailyLog {
+  // Defensive parse for the JSONB laundry_loads column — accept the shape
+  // we wrote, fall back to zeros for anything else.
+  const ll = r.laundry_loads;
+  const laundryLoads: DailyLog['laundryLoads'] =
+    typeof ll === 'object' && ll !== null && !Array.isArray(ll)
+      ? {
+          towels: parseNumberField((ll as Record<string, unknown>).towels) ?? 0,
+          sheets: parseNumberField((ll as Record<string, unknown>).sheets) ?? 0,
+          comforters: parseNumberField((ll as Record<string, unknown>).comforters) ?? 0,
+        }
+      : { towels: 0, sheets: 0, comforters: 0 };
   return {
     date: String(r.date ?? ''),
     hotelId: String(r.property_id ?? ''),
@@ -345,8 +447,8 @@ export function fromDailyLogRow(r: Record<string, unknown>): DailyLog {
     laborSaved: Number(r.labor_saved ?? 0),
     startTime: String(r.start_time ?? ''),
     completionTime: String(r.completion_time ?? ''),
-    publicAreasDueToday: (r.public_areas_due_today as string[]) ?? [],
-    laundryLoads: (r.laundry_loads as DailyLog['laundryLoads']) ?? { towels: 0, sheets: 0, comforters: 0 },
+    publicAreasDueToday: parseArrayField(r.public_areas_due_today, parseStringField),
+    laundryLoads,
     roomsCompleted: r.rooms_completed == null ? undefined : Number(r.rooms_completed),
     avgTurnaroundMinutes: r.avg_turnaround_minutes == null ? undefined : Number(r.avg_turnaround_minutes),
   };
@@ -404,16 +506,14 @@ export function fromWorkOrderRow(r: Record<string, unknown>): WorkOrder {
     description: String(r.description ?? ''),
     priority: SEVERITY_TO_PRIORITY(r.severity),
     status:   STATUS_FROM_DB(r.status),
-    submittedByName: (r.submitted_by_name as string) ?? undefined,
-    submitterRole: (r.submitter_role as string) ?? undefined,
-    submitterPhotoPath: (r.submitter_photo_path as string)
-      ?? (r.photo_url as string)              // legacy column fallback for pre-0131 rows
-      ?? undefined,
-    completedByName: (r.completed_by_name as string)
-      ?? (r.assigned_name as string)           // legacy fallback
-      ?? undefined,
-    completionNote: (r.completion_note as string) ?? undefined,
-    completionPhotoPath: (r.completion_photo_path as string) ?? undefined,
+    submittedByName: parseStringField(r.submitted_by_name),
+    submitterRole: parseStringField(r.submitter_role),
+    submitterPhotoPath: parseStringField(r.submitter_photo_path)
+      ?? parseStringField(r.photo_url),       // legacy column fallback for pre-0131 rows
+    completedByName: parseStringField(r.completed_by_name)
+      ?? parseStringField(r.assigned_name),   // legacy fallback
+    completionNote: parseStringField(r.completion_note),
+    completionPhotoPath: parseStringField(r.completion_photo_path),
     completedAt: toDate(r.resolved_at),
     createdAt: toDate(r.created_at),
     updatedAt: toDate(r.updated_at),
@@ -427,12 +527,12 @@ export function fromPreventiveRow(r: Record<string, unknown>): PreventiveTask {
     id: String(r.id),
     propertyId: String(r.property_id ?? ''),
     name: String(r.name ?? ''),
-    area: (r.area as string) ?? undefined,
+    area: parseStringField(r.area),
     frequencyDays: Number(r.frequency_days ?? 1),
     lastCompletedAt: toDate(r.last_completed_at),
-    lastCompletedBy: (r.last_completed_by as string) ?? undefined,
-    notes: (r.notes as string) ?? undefined,
-    completionPhotoPath: (r.completion_photo_path as string) ?? undefined,
+    lastCompletedBy: parseStringField(r.last_completed_by),
+    notes: parseStringField(r.notes),
+    completionPhotoPath: parseStringField(r.completion_photo_path),
     createdAt: toDate(r.created_at),
   };
 }
@@ -457,23 +557,23 @@ export function fromInventoryRow(r: Record<string, unknown>): InventoryItem {
     id: String(r.id),
     propertyId: String(r.property_id ?? ''),
     name: String(r.name ?? ''),
-    category: (r.category as InventoryItem['category']) ?? 'housekeeping',
+    category: parseUnionField(r.category, INVENTORY_CATEGORIES, 'housekeeping'),
     currentStock: Number(r.current_stock ?? 0),
     parLevel: Number(r.par_level ?? 0),
     reorderAt: r.reorder_at == null ? undefined : Number(r.reorder_at),
     unit: String(r.unit ?? ''),
-    notes: (r.notes as string) ?? undefined,
+    notes: parseStringField(r.notes),
     updatedAt: toDate(r.updated_at),
     usagePerCheckout: r.usage_per_checkout == null ? undefined : Number(r.usage_per_checkout),
     usagePerStayover: r.usage_per_stayover == null ? undefined : Number(r.usage_per_stayover),
     reorderLeadDays: r.reorder_lead_days == null ? undefined : Number(r.reorder_lead_days),
-    vendorName: (r.vendor_name as string) ?? undefined,
+    vendorName: parseStringField(r.vendor_name),
     lastOrderedAt: toDate(r.last_ordered_at),
     unitCost: r.unit_cost == null ? undefined : Number(r.unit_cost),
     lastAlertedAt: toDate(r.last_alerted_at),
     lastCountedAt: toDate(r.last_counted_at),
     packSize: r.pack_size == null ? undefined : Number(r.pack_size),
-    caseUnit: (r.case_unit as string) ?? undefined,
+    caseUnit: parseStringField(r.case_unit),
   };
 }
 
@@ -514,8 +614,8 @@ export function fromInventoryCountRow(r: Record<string, unknown>): InventoryCoun
     varianceValue: r.variance_value == null ? undefined : Number(r.variance_value),
     unitCost: r.unit_cost == null ? undefined : Number(r.unit_cost),
     countedAt: toDate(r.counted_at),
-    countedBy: (r.counted_by as string) ?? undefined,
-    notes: (r.notes as string) ?? undefined,
+    countedBy: parseStringField(r.counted_by),
+    notes: parseStringField(r.notes),
   };
 }
 
@@ -546,10 +646,10 @@ export function fromInventoryOrderRow(r: Record<string, unknown>): InventoryOrde
     quantityCases: r.quantity_cases == null ? undefined : Number(r.quantity_cases),
     unitCost: r.unit_cost == null ? undefined : Number(r.unit_cost),
     totalCost: r.total_cost == null ? undefined : Number(r.total_cost),
-    vendorName: (r.vendor_name as string) ?? undefined,
+    vendorName: parseStringField(r.vendor_name),
     orderedAt: toDate(r.ordered_at),
     receivedAt: toDate(r.received_at),
-    notes: (r.notes as string) ?? undefined,
+    notes: parseStringField(r.notes),
   };
 }
 
@@ -578,12 +678,12 @@ export function fromInventoryDiscardRow(r: Record<string, unknown>): InventoryDi
     itemId: String(r.item_id ?? ''),
     itemName: String(r.item_name ?? ''),
     quantity: Number(r.quantity ?? 0),
-    reason: (r.reason as InventoryDiscard['reason']) ?? 'other',
+    reason: parseUnionField(r.reason, INVENTORY_DISCARD_REASONS, 'other'),
     costValue: r.cost_value == null ? undefined : Number(r.cost_value),
     unitCost: r.unit_cost == null ? undefined : Number(r.unit_cost),
     discardedAt: toDate(r.discarded_at),
-    discardedBy: (r.discarded_by as string) ?? undefined,
-    notes: (r.notes as string) ?? undefined,
+    discardedBy: parseStringField(r.discarded_by),
+    notes: parseStringField(r.notes),
   };
 }
 
@@ -617,8 +717,8 @@ export function fromInventoryReconciliationRow(r: Record<string, unknown>): Inve
     unaccountedVariance: Number(r.unaccounted_variance ?? 0),
     unaccountedVarianceValue: r.unaccounted_variance_value == null ? undefined : Number(r.unaccounted_variance_value),
     unitCost: r.unit_cost == null ? undefined : Number(r.unit_cost),
-    reconciledBy: (r.reconciled_by as string) ?? undefined,
-    notes: (r.notes as string) ?? undefined,
+    reconciledBy: parseStringField(r.reconciled_by),
+    notes: parseStringField(r.notes),
   };
 }
 
@@ -644,10 +744,10 @@ export function toInventoryReconciliationRow(r: Partial<InventoryReconciliation>
 export function fromInventoryBudgetRow(r: Record<string, unknown>): InventoryBudget {
   return {
     propertyId: String(r.property_id ?? ''),
-    category: (r.category as InventoryBudget['category']) ?? 'housekeeping',
+    category: parseUnionField(r.category, INVENTORY_CATEGORIES, 'housekeeping'),
     monthStart: toDate(r.month_start),
     budgetCents: Number(r.budget_cents ?? 0),
-    notes: (r.notes as string) ?? undefined,
+    notes: parseStringField(r.notes),
     updatedAt: toDate(r.updated_at),
   };
 }
@@ -672,11 +772,11 @@ export function fromHandoffRow(r: Record<string, unknown>): HandoffEntry {
   return {
     id: String(r.id),
     propertyId: String(r.property_id ?? ''),
-    shiftType: (r.shift_type as HandoffEntry['shiftType']) ?? 'morning',
+    shiftType: parseUnionField(r.shift_type, HANDOFF_SHIFT_TYPES, 'morning'),
     author: String(r.author ?? ''),
     notes: String(r.notes ?? ''),
     acknowledged: Boolean(r.acknowledged),
-    acknowledgedBy: (r.acknowledged_by as string) ?? undefined,
+    acknowledgedBy: parseStringField(r.acknowledged_by),
     createdAt: toDate(r.created_at),
     acknowledgedAt: toDate(r.acknowledged_at),
   };
@@ -689,11 +789,11 @@ export function fromGuestRequestRow(r: Record<string, unknown>): GuestRequest {
     id: String(r.id),
     propertyId: String(r.property_id ?? ''),
     roomNumber: String(r.room_number ?? ''),
-    type: (r.type as GuestRequest['type']) ?? 'other',
-    notes: (r.notes as string) ?? undefined,
-    status: (r.status as GuestRequest['status']) ?? 'pending',
-    assignedTo: (r.assigned_to as string) ?? undefined,
-    assignedName: (r.assigned_name as string) ?? undefined,
+    type: parseUnionField(r.type, GUEST_REQUEST_TYPES, 'other'),
+    notes: parseStringField(r.notes),
+    status: parseUnionField(r.status, GUEST_REQUEST_STATUSES, 'pending'),
+    assignedTo: parseStringField(r.assigned_to),
+    assignedName: parseStringField(r.assigned_name),
     createdAt: toDate(r.created_at),
     completedAt: toDate(r.completed_at),
   };
@@ -723,12 +823,12 @@ export function fromShiftConfirmationRow(r: Record<string, unknown>): ShiftConfi
     staffName: String(r.staff_name ?? ''),
     staffPhone: String(r.staff_phone ?? ''),
     shiftDate: String(r.shift_date ?? ''),
-    status: (r.status as ShiftConfirmation['status']) ?? 'sent',
-    language: (r.language as 'en' | 'es') ?? 'en',
+    status: parseUnionField(r.status, CONFIRMATION_STATUSES, 'sent'),
+    language: parseUnionField(r.language, LANGUAGES, 'en'),
     sentAt: toDate(r.sent_at),
     respondedAt: toDate(r.responded_at),
     smsSent: Boolean(r.sms_sent),
-    smsError: (r.sms_error as string) ?? undefined,
+    smsError: parseStringField(r.sms_error),
   };
 }
 
@@ -737,10 +837,10 @@ export function fromManagerNotificationRow(r: Record<string, unknown>): ManagerN
     id: String(r.id),
     uid: '',
     pid: String(r.property_id ?? ''),
-    type: (r.type as ManagerNotification['type']) ?? 'no_response',
+    type: parseUnionField(r.type, NOTIFICATION_TYPES, 'no_response'),
     message: String(r.message ?? ''),
-    staffName: (r.staff_name as string) ?? undefined,
-    replacementName: (r.replacement_name as string) ?? undefined,
+    staffName: parseStringField(r.staff_name),
+    replacementName: parseStringField(r.replacement_name),
     shiftDate: String(r.shift_date ?? ''),
     read: Boolean(r.read),
     createdAt: toDate(r.created_at),
@@ -754,12 +854,14 @@ export function fromDeepCleanRecordRow(r: Record<string, unknown>): DeepCleanRec
     id: String(r.room_number ?? ''),
     roomNumber: String(r.room_number ?? ''),
     lastDeepClean: String(r.last_deep_clean ?? ''),
-    cleanedBy: (r.cleaned_by as string) ?? undefined,
-    cleanedByTeam: (r.cleaned_by_team as string[]) ?? undefined,
-    notes: (r.notes as string) ?? undefined,
-    status: (r.status as DeepCleanRecord['status']) ?? undefined,
-    assignedAt: (r.assigned_at as string) ?? undefined,
-    completedAt: (r.completed_at as string) ?? undefined,
+    cleanedBy: parseStringField(r.cleaned_by),
+    cleanedByTeam: Array.isArray(r.cleaned_by_team)
+      ? parseArrayField(r.cleaned_by_team, parseStringField)
+      : undefined,
+    notes: parseStringField(r.notes),
+    status: parseOptionalUnionField(r.status, DEEP_CLEAN_STATUSES),
+    assignedAt: parseStringField(r.assigned_at),
+    completedAt: parseStringField(r.completed_at),
   };
 }
 

@@ -38,7 +38,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { log, getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId } from '@/lib/log';
 import { fromRoomRow } from '@/lib/db-mappers';
 
 export const runtime = 'nodejs';
@@ -71,7 +71,7 @@ export async function GET(req: NextRequest) {
     .eq('property_id', pid)
     .maybeSingle();
   if (staffErr) {
-    log.error('[housekeeper/rooms] staff lookup failed', { err: staffErr, requestId });
+    console.error('[housekeeper/rooms] staff lookup failed', errToString(staffErr));
     return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   if (!staffRow) {
@@ -85,24 +85,14 @@ export async function GET(req: NextRequest) {
   // by date here — the page picks the right date bucket client-side so that
   // a HK who left the page open overnight rolls into tomorrow's shift
   // automatically. See housekeeper/[id]/page.tsx:158 for the rationale.
-  //
-  // Explicit field list matches what fromRoomRow consumes — avoids pulling
-  // wide JSON columns (checklist) and audit metadata that the HK page never
-  // renders. Audit follow-up 2026-05-17.
-  const ROOM_FIELDS =
-    'id, number, type, priority, status, assigned_to, assigned_name, ' +
-    'started_at, completed_at, date, property_id, issue_note, inspected_by, ' +
-    'inspected_at, is_dnd, dnd_note, arrival, stayover_day, stayover_minutes, ' +
-    'help_requested, checklist, photo_url';
   const { data, error: queryError } = await supabaseAdmin
     .from('rooms')
-    .select(ROOM_FIELDS)
+    .select('*')
     .eq('property_id', pid)
-    .eq('assigned_to', staffId)
-    .returns<Record<string, unknown>[]>();
+    .eq('assigned_to', staffId);
 
   if (queryError) {
-    log.error('[housekeeper/rooms] query failed', { err: queryError, requestId });
+    console.error('[housekeeper/rooms] query failed', errToString(queryError));
     return err('Internal server error', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
