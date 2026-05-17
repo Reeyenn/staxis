@@ -28,6 +28,7 @@ import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
 import { log } from '@/lib/log';
 import { safeBaseUrl, redactPhone } from '@/lib/api-validate';
+import { recordWebhookLog } from '@/lib/event-recorder';
 import { parseStringField, parseUnionField } from '@/lib/db-mappers';
 import twilio from 'twilio';
 
@@ -144,7 +145,7 @@ async function logHit(payload: Record<string, unknown>): Promise<void> {
         redacted[k] = v;
       }
     }
-    await supabaseAdmin.from('webhook_log').insert({
+    await recordWebhookLog({
       source: 'twilio-sms-reply',
       payload: redacted,
     });

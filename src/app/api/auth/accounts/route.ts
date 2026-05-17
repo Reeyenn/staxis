@@ -20,6 +20,7 @@ import { log, getOrMintRequestId } from '@/lib/log';
 
 import { ALL_ROLES, isValidRole, type AppRole } from '@/lib/roles';
 import { writeAudit } from '@/lib/audit';
+import { captureException } from '@/lib/sentry';
 
 type AccountRole = AppRole;
 
@@ -248,6 +249,16 @@ export async function POST(req: NextRequest) {
         authUserId: authData.user.id,
         insertError: errToString(insErr),
         rollbackError,
+      });
+      // Audit finding #4: page the on-call when rollback fails. The
+      // orphan auth-user sweeper cron will clean up async, but Sentry
+      // is the breadcrumb that tells us rollback flakes are happening.
+      captureException(new Error(`auth rollback failed: ${rollbackError}`), {
+        subsystem: 'auth',
+        failure_mode: 'rollback_failed',
+        auth_user_id: authData.user.id,
+        flow: 'accounts.create',
+        insert_error: errToString(insErr),
       });
       return err(
         `Failed to create account record. ALSO: rollback of the auth user failed — orphaned auth row remains for username "${normalizedUsername}". Have an admin delete the row manually in Supabase Authentication.`,

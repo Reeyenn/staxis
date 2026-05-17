@@ -2054,6 +2054,7 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'doctor-check',                  cadenceHours: 1,     description: 'hourly health check — runs the doctor battery + alerts Sentry/SMS on any fail (Round 13)' },
   { name: 'walkthrough-heal-stale',        cadenceHours: 30/60, description: 'every-30-min walkthrough recovery (heals stale runs left mid-walkthrough by crashed clients)' },
   { name: 'walkthrough-health-alert',      cadenceHours: 10/60, description: 'every-10-min walkthrough health monitor (alerts on stuck step counts)' },
+  { name: 'sweep-orphan-auth-users',       cadenceHours: 30/60, description: 'every-30-min orphan auth-user reconciler — deletes auth.users rows with no matching accounts row (audit fix #4)' },
   { name: 'seed-rooms-daily',              cadenceHours: 1,     description: 'hourly heal of partial rooms-today seeds against properties.room_inventory (Round 14)' },
   { name: 'seal-daily',                    cadenceHours: 1,     description: 'hourly per-property daily-seal' },
   // Round 17 (2026-05-15): two-slot cron that auto-builds Maria's

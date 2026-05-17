@@ -18,6 +18,10 @@ import {
   type ToolDefinition,
 } from './tools';
 import { captureException } from '@/lib/sentry';
+import {
+  ANTHROPIC_REQUEST_TIMEOUT_MS,
+  ANTHROPIC_MAX_RETRIES,
+} from '@/lib/external-service-config';
 
 // ─── Configuration ─────────────────────────────────────────────────────────
 
@@ -86,7 +90,11 @@ export const PRICING: Record<ModelTier, { input: number; output: number; cachedI
 // gives the route's finally block time to release the cost reservation
 // and synthesize tool_result rows for any dangling tool_use. Codex review
 // fix B5, 2026-05-13.
-const REQUEST_TIMEOUT_MS = 50_000;
+// 2026-05-17: value lifted to src/lib/external-service-config.ts so every
+// Anthropic call site shares the same ceiling. See that file's header for
+// the budget math; the comment above stays here because this is the
+// load-bearing call site (every chat turn).
+const REQUEST_TIMEOUT_MS = ANTHROPIC_REQUEST_TIMEOUT_MS;
 
 // Max output tokens per single Anthropic API call. Sonnet 4.6 supports
 // 8192. Exported so cost-controls.ts can use it to size the reservation.
@@ -245,7 +253,7 @@ function getClient(): Anthropic {
   cachedClient = new Anthropic({
     apiKey: key,
     timeout: REQUEST_TIMEOUT_MS,
-    maxRetries: 1,
+    maxRetries: ANTHROPIC_MAX_RETRIES,
   });
   return cachedClient;
 }

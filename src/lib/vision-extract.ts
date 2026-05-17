@@ -11,6 +11,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import Anthropic from '@anthropic-ai/sdk';
+import { ANTHROPIC_MAX_RETRIES } from '@/lib/external-service-config';
 
 // Pin the model — the prompts in this file are calibrated for Sonnet 4-class
 // vision quality. Bumping the version requires a re-test of both prompts.
@@ -30,6 +31,11 @@ const MODEL = 'claude-sonnet-4-6';
 // to actually cut the fetch. We keep the SDK timeout below the abort so
 // the SDK is the first to fire under happy-path slowness, but the abort
 // is guaranteed to cut the wire if anything wedges.
+//
+// Audit/external-api-hardening (May 2026): `maxRetries` was the SDK
+// default of 2, which can push worst-case wall-clock past 90s — over the
+// route's maxDuration. Now imported from external-service-config so it
+// stays in lockstep with the main agent's budget math.
 const VISION_REQUEST_TIMEOUT_MS = 30_000;
 const VISION_ABORT_MS = 35_000;
 
@@ -48,7 +54,11 @@ function getClient(): Anthropic {
       'Set in Vercel → Project Settings → Environment Variables and redeploy.',
     );
   }
-  _visionClient = new Anthropic({ apiKey: key, timeout: VISION_REQUEST_TIMEOUT_MS });
+  _visionClient = new Anthropic({
+    apiKey: key,
+    timeout: VISION_REQUEST_TIMEOUT_MS,
+    maxRetries: ANTHROPIC_MAX_RETRIES,
+  });
   return _visionClient;
 }
 

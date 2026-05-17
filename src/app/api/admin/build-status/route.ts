@@ -20,6 +20,10 @@ import { getOrMintRequestId } from '@/lib/log';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
+import {
+  externalFetch,
+  EXTERNAL_FETCH_TIMEOUT_MS,
+} from '@/lib/external-service-config';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -152,9 +156,9 @@ async function fetchMergedBranches(): Promise<MergedBranch[]> {
     headers['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;
   }
 
-  const res = await fetch(
+  const res = await externalFetch(
     `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=25`,
-    { headers, next: { revalidate: 10, tags: ['github-data'] } },
+    { headers, next: { revalidate: 10, tags: ['github-data'] }, timeoutMs: EXTERNAL_FETCH_TIMEOUT_MS },
   );
   if (!res.ok) return [];
   const json = await res.json() as Array<{
@@ -193,9 +197,9 @@ async function fetchActiveBranches(): Promise<Branch[]> {
   // option — so a small cap silently drops branches whose names sort
   // late (e.g., "hotfix-*" was being missed when capped at 8). With
   // the GITHUB_TOKEN giving 5000/hr we can afford the broader fetch.
-  const listRes = await fetch(
+  const listRes = await externalFetch(
     `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/branches?per_page=50`,
-    { headers, next: { revalidate: 10, tags: ['github-data'] } },
+    { headers, next: { revalidate: 10, tags: ['github-data'] }, timeoutMs: EXTERNAL_FETCH_TIMEOUT_MS },
   );
   if (!listRes.ok) return [];
   const branches = await listRes.json() as Array<{ name: string; commit: { sha: string } }>;
@@ -205,9 +209,9 @@ async function fetchActiveBranches(): Promise<Branch[]> {
 
   const compares = await Promise.all(nonMain.map(async (b) => {
     try {
-      const res = await fetch(
+      const res = await externalFetch(
         `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/compare/main...${encodeURIComponent(b.name)}`,
-        { headers, next: { revalidate: 10, tags: ['github-data'] } },
+        { headers, next: { revalidate: 10, tags: ['github-data'] }, timeoutMs: EXTERNAL_FETCH_TIMEOUT_MS },
       );
       if (!res.ok) return null;
       const data = await res.json() as {
@@ -248,7 +252,7 @@ async function fetchRecentCommits(): Promise<Commit[]> {
     headers['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;
   }
 
-  const res = await fetch(url, { headers, next: { revalidate: 10, tags: ['github-data'] } });
+  const res = await externalFetch(url, { headers, next: { revalidate: 10, tags: ['github-data'] }, timeoutMs: EXTERNAL_FETCH_TIMEOUT_MS });
   if (!res.ok) return [];
   const json = await res.json() as Array<{
     sha: string;
@@ -350,9 +354,9 @@ async function fetchOpenPRs(): Promise<OpenPR[]> {
   if (process.env.GITHUB_TOKEN) {
     headers['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;
   }
-  const res = await fetch(
+  const res = await externalFetch(
     `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/pulls?state=open&base=main&sort=updated&direction=desc&per_page=20`,
-    { headers, next: { revalidate: 30, tags: ['github-data'] } },
+    { headers, next: { revalidate: 30, tags: ['github-data'] }, timeoutMs: EXTERNAL_FETCH_TIMEOUT_MS },
   );
   if (!res.ok) return [];
   const json = await res.json() as Array<{
@@ -392,9 +396,9 @@ async function enrichCommitsWithCheckStatus(commits: Commit[]): Promise<Commit[]
   const targets = commits.slice(0, 3);
   const enriched = await Promise.all(targets.map(async (c) => {
     try {
-      const res = await fetch(
+      const res = await externalFetch(
         `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/commits/${c.sha}/check-runs?per_page=30`,
-        { headers, next: { revalidate: 20, tags: ['github-data'] } },
+        { headers, next: { revalidate: 20, tags: ['github-data'] }, timeoutMs: EXTERNAL_FETCH_TIMEOUT_MS },
       );
       if (!res.ok) return { ...c, checkStatus: null };
       const json = await res.json() as {
@@ -430,11 +434,12 @@ async function fetchVercelDeployStatus(): Promise<Partial<Deploy> | null> {
   if (!token || !projectId) return null;
   try {
     const teamParam = process.env.VERCEL_TEAM_ID ? `&teamId=${process.env.VERCEL_TEAM_ID}` : '';
-    const res = await fetch(
+    const res = await externalFetch(
       `https://api.vercel.com/v6/deployments?projectId=${projectId}&limit=5${teamParam}`,
       {
         headers: { 'Authorization': `Bearer ${token}` },
         next: { revalidate: 15, tags: ['deploy-status'] },
+        timeoutMs: EXTERNAL_FETCH_TIMEOUT_MS,
       },
     );
     if (!res.ok) return null;
@@ -478,7 +483,7 @@ async function fetchFlyDeployStatus(): Promise<Partial<Deploy> | null> {
     // The Machines REST API doesn't expose a /releases endpoint, so we
     // use Fly's GraphQL gateway. Returns the last 3 releases ordered
     // newest-first; we take [0] for the current state.
-    const res = await fetch(
+    const res = await externalFetch(
       `https://api.fly.io/graphql`,
       {
         method: 'POST',
@@ -490,6 +495,7 @@ async function fetchFlyDeployStatus(): Promise<Partial<Deploy> | null> {
           query: `{ app(name:"${app}") { releases(first:3) { nodes { version status createdAt } } } }`,
         }),
         next: { revalidate: 15, tags: ['deploy-status'] },
+        timeoutMs: EXTERNAL_FETCH_TIMEOUT_MS,
       },
     );
     if (!res.ok) return null;
