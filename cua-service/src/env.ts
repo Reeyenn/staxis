@@ -33,11 +33,7 @@ const Schema = z.object({
   HOSTNAME: z.string().default('local'),
 });
 
-const parsed = Schema.safeParse({
-  ...process.env,
-  // Legacy fallback. Phase 7 drops this line.
-  NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL,
-});
+const parsed = Schema.safeParse(process.env);
 
 if (!parsed.success) {
   const flat = parsed.error.flatten().fieldErrors;

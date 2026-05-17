@@ -133,18 +133,7 @@ type Env = z.infer<typeof ServerSchema>;
 
 function parseEnv(): Env {
   const rawEnv = emptyToUndef(process.env);
-  const result = ServerSchema.safeParse({
-    ...rawEnv,
-    // Legacy fallback reconciliation. Phase 7 deletes these lines after prod
-    // env vars are migrated to the canonical names.
-    NEXT_PUBLIC_APP_URL:
-      rawEnv.NEXT_PUBLIC_APP_URL ??
-      rawEnv.NEXT_PUBLIC_SITE_URL ??
-      rawEnv.NEXT_PUBLIC_BASE_URL,
-    TWILIO_FROM_NUMBER: rawEnv.TWILIO_FROM_NUMBER ?? rawEnv.TWILIO_PHONE_NUMBER,
-    OPS_ALERT_PHONE: rawEnv.OPS_ALERT_PHONE ?? rawEnv.MANAGER_PHONE,
-    ML_SERVICE_URLS: rawEnv.ML_SERVICE_URLS ?? rawEnv.ML_SERVICE_URL,
-  });
+  const result = ServerSchema.safeParse(rawEnv);
 
   if (!result.success) {
     const flat = result.error.flatten().fieldErrors;

@@ -60,13 +60,7 @@ const Schema = z.object({
 
 function parseEnv() {
   const raw = emptyToUndef(process.env);
-  const result = Schema.safeParse({
-    ...raw,
-    // Legacy fallback reconciliation. Phase 7 drops these lines.
-    NEXT_PUBLIC_SUPABASE_URL: raw.NEXT_PUBLIC_SUPABASE_URL ?? raw.SUPABASE_URL,
-    TWILIO_FROM_NUMBER: raw.TWILIO_FROM_NUMBER ?? raw.TWILIO_PHONE_NUMBER,
-    OPS_ALERT_PHONE: raw.OPS_ALERT_PHONE ?? raw.MANAGER_PHONE,
-  });
+  const result = Schema.safeParse(raw);
 
   if (!result.success) {
     const flat = result.error.flatten().fieldErrors;
