@@ -16,7 +16,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { getBaseSentryOptions } from '@/lib/sentry-base';
+import { getBaseSentryOptions, shouldSampleTransaction } from '@/lib/sentry-base';
 import { scrubSentryEvent } from '@/lib/sentry-scrub';
 
 describe('getBaseSentryOptions', () => {
@@ -42,5 +42,77 @@ describe('getBaseSentryOptions', () => {
       (e) => e instanceof RegExp && e.test('SocketError: other side closed'),
     );
     assert.ok(hasOtherSideClosed, 'expected an /other side closed/ regex in ignoreErrors');
+  });
+});
+
+/**
+ * Per-route trace sampler — logging-PII audit S2.
+ *
+ * Pins the policy: which routes are downsampled to what rate. Anyone
+ * changing the rules updates this test in the same commit; nobody can
+ * silently flip /api/events back to 10%.
+ */
+describe('shouldSampleTransaction', () => {
+  test('suppresses /api/events to 1%', () => {
+    assert.equal(
+      shouldSampleTransaction({ transactionContext: { name: 'POST /api/events' } }),
+      0.01,
+    );
+  });
+
+  test('suppresses /api/sms-reply to 1%', () => {
+    assert.equal(
+      shouldSampleTransaction({ transactionContext: { name: 'POST /api/sms-reply' } }),
+      0.01,
+    );
+  });
+
+  test('downsamples /api/cron/* to 5%', () => {
+    assert.equal(
+      shouldSampleTransaction({ transactionContext: { name: 'GET /api/cron/process-sms-jobs' } }),
+      0.05,
+    );
+    assert.equal(
+      shouldSampleTransaction({ transactionContext: { name: 'GET /api/cron/ml-run-inference' } }),
+      0.05,
+    );
+  });
+
+  test('downsamples /api/agent/voice-brain and nudges/check to 5%', () => {
+    assert.equal(
+      shouldSampleTransaction({ transactionContext: { name: 'POST /api/agent/voice-brain/chat/completions' } }),
+      0.05,
+    );
+    assert.equal(
+      shouldSampleTransaction({ transactionContext: { name: 'POST /api/agent/nudges/check' } }),
+      0.05,
+    );
+  });
+
+  test('returns undefined for routes that should inherit the global rate', () => {
+    assert.equal(
+      shouldSampleTransaction({ transactionContext: { name: 'POST /api/agent/command' } }),
+      undefined,
+    );
+    assert.equal(
+      shouldSampleTransaction({ transactionContext: { name: 'GET /api/admin/doctor' } }),
+      undefined,
+    );
+    assert.equal(
+      shouldSampleTransaction({ transactionContext: { name: 'PUT /api/auth/team' } }),
+      undefined,
+    );
+  });
+
+  test('falls back to request.url when transactionContext.name is unavailable', () => {
+    assert.equal(
+      shouldSampleTransaction({ request: { url: 'https://getstaxis.com/api/events' } }),
+      0.01,
+    );
+  });
+
+  test('handles empty / unknown context gracefully (default rate inherited)', () => {
+    assert.equal(shouldSampleTransaction({}), undefined);
+    assert.equal(shouldSampleTransaction({ transactionContext: {} }), undefined);
   });
 });

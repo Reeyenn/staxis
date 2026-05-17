@@ -12,7 +12,7 @@
  */
 
 import * as Sentry from '@sentry/nextjs';
-import { getBaseSentryOptions } from '@/lib/sentry-base';
+import { getBaseSentryOptions, shouldSampleTransaction } from '@/lib/sentry-base';
 
 // Safety defaults (sendDefaultPii=false, beforeSend scrubber, ignoreErrors
 // list for "failed to pipe response" upstream-fetch noise) live in
@@ -33,4 +33,11 @@ Sentry.init({
   // 0.1 = 10% of requests get a trace. We can crank it up if we want
   // more data, or turn it off entirely with 0 if Sentry's bill scares us.
   tracesSampleRate: 0.1,
+
+  // Logging-PII audit S2: bias the trace quota away from high-QPS
+  // endpoints (/api/events, /api/sms-reply) so a single noisy route
+  // can't crowd out the routes we actually need to debug. Falls back to
+  // tracesSampleRate when the sampler returns undefined. See
+  // shouldSampleTransaction in src/lib/sentry-base.ts.
+  tracesSampler: shouldSampleTransaction,
 });

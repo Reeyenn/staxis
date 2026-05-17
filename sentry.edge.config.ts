@@ -15,11 +15,13 @@
  */
 
 import * as Sentry from '@sentry/nextjs';
-import { getBaseSentryOptions } from '@/lib/sentry-base';
+import { getBaseSentryOptions, shouldSampleTransaction } from '@/lib/sentry-base';
 
 Sentry.init({
   ...getBaseSentryOptions(),
   dsn: process.env.SENTRY_DSN,
   environment: process.env.VERCEL_ENV || process.env.NODE_ENV || 'development',
   tracesSampleRate: 0.1,
+  // Logging-PII audit S2 — same per-route bias as the server runtime.
+  tracesSampler: shouldSampleTransaction,
 });
