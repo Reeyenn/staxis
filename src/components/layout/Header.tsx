@@ -42,7 +42,6 @@ export function Header() {
     { href: '/maintenance',  label: lang === 'es' ? 'Mantenimiento' : 'Maintenance' },
     { href: '/inventory',    label: lang === 'es' ? 'Inventario' : 'Inventory' },
     { href: '/staff',        label: lang === 'es' ? 'Personal' : 'Staff' },
-    { href: '/front-desk',   label: lang === 'es' ? 'Recepción' : 'Front desk' },
   ];
 
   // ML and Admin tabs are both admin-only. Server-side gates on
