@@ -1,4 +1,4 @@
--- 0147_sms_jobs_sent_dirty_status.sql
+-- 0148_sms_jobs_sent_dirty_status.sql
 -- Extend sms_jobs.status CHECK to include 'sent_dirty'.
 --
 -- WHY THIS EXISTS:
@@ -42,5 +42,5 @@ comment on column public.sms_jobs.status is
 
 -- ─── Bookkeeping ────────────────────────────────────────────────────
 insert into public.applied_migrations (version, description)
-values ('0147', 'sms_jobs.status check extended to include sent_dirty (audit P1: post-send DB failure must not show as Failed)')
+values ('0148', 'sms_jobs.status check extended to include sent_dirty (audit P1: post-send DB failure must not show as Failed)')
 on conflict (version) do nothing;

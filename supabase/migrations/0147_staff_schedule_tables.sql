@@ -230,3 +230,10 @@ begin
     end if;
   end if;
 end $$;
+
+-- ─── Bookkeeping ────────────────────────────────────────────────────
+-- Added by the audit-deferred-followups branch to close the
+-- migration-bookkeeping test that the staff-schedule PR (9b9e8c6) omitted.
+insert into public.applied_migrations (version, description)
+values ('0147', 'staff-schedule: presets, scheduled_shifts, time_off_requests, week_publications + RLS + realtime')
+on conflict (version) do nothing;
