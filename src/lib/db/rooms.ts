@@ -5,7 +5,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { Room } from '@/types';
-import { supabase, logErr, subscribeTable } from './_common';
+import { supabase, logErr, subscribeTable, makeUpsertByIdReducer } from './_common';
 import { toRoomRow, fromRoomRow } from '../db-mappers';
 
 export function subscribeToRooms(
@@ -17,7 +17,7 @@ export function subscribeToRooms(
     // narrow on property_id at the Postgres level and use the shouldRefetch
     // predicate to gate on date — that keeps stray events for other dates
     // (yesterday's row getting an inspection update, tomorrow's plan being
-    // scraped, …) from triggering a wasteful full-table re-fetch.
+    // scraped, …) from triggering a wasteful re-fetch.
     `rooms:${pid}:${date}`, 'rooms', `property_id=eq.${pid}`,
     async () => {
       const { data, error } = await supabase
@@ -28,13 +28,21 @@ export function subscribeToRooms(
     },
     callback,
     (payload) => {
-      // Only re-fetch when the changed row is on this slice's date. Both
+      // Only react when the changed row is on this slice's date. Both
       // `new` and `old` are checked so we still react to deletes (where
       // `new` is null) and inserts (where `old` is null).
       const newDate = (payload.new as { date?: string } | null)?.date;
       const oldDate = (payload.old as { date?: string } | null)?.date;
       return newDate === date || oldDate === date;
     },
+    // applyPayload reducer: avoids amplification of bulk updates. Migration
+    // 0133 sets REPLICA IDENTITY FULL on rooms so payload.new is complete
+    // on UPDATE. The helper returns null when payload.new lacks an id,
+    // and the caller falls back to a refetch.
+    makeUpsertByIdReducer<Room>({
+      mapRow: fromRoomRow,
+      isInSlice: (raw) => (raw as { date?: string }).date === date,
+    }),
   );
 }
 

@@ -52,3 +52,10 @@ comment on function staxis_active_property_ids_for_nudges(int) is
   'Returns property IDs with any agent_messages activity in the last N days. '
   'Used by the nudges-check cron to avoid evaluating dormant properties. '
   'Migration 0132 (2026-05-17).';
+
+insert into applied_migrations (version, description)
+values (
+  '0132',
+  'cost audit: staxis_active_property_ids_for_nudges RPC for nudges-check cron scope tightening'
+)
+on conflict (version) do nothing;
