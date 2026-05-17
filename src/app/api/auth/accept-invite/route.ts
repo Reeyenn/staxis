@@ -15,6 +15,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { writeAudit } from '@/lib/audit';
 import { checkAndIncrementRateLimit, rateLimitedResponse, ipToRateLimitKey } from '@/lib/api-ratelimit';
+import { canManageTeam, type AppRole } from '@/lib/roles';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -55,7 +56,7 @@ export async function POST(req: NextRequest) {
   const tokenHash = hashToken(token);
   const { data: invite, error: invErr } = await supabaseAdmin
     .from('account_invites')
-    .select('id, hotel_id, email, role, expires_at, accepted_at')
+    .select('id, hotel_id, email, role, expires_at, accepted_at, invited_by')
     .eq('token_hash', tokenHash)
     .maybeSingle();
   if (invErr || !invite) {
@@ -66,6 +67,23 @@ export async function POST(req: NextRequest) {
   }
   if (new Date(invite.expires_at).getTime() <= Date.now()) {
     return err('Invite has expired', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
+  }
+
+  // Re-validate that the inviter still has authority to grant this role.
+  // Without this, an admin who is later demoted to general_manager could
+  // have an in-flight invite that still grants 'owner' — a time-of-check vs.
+  // time-of-use gap. canManageTeam covers admin / owner / general_manager;
+  // the DB CHECK on account_invites.role already restricts invite.role to
+  // the assignable set, so the only new failure mode is "inviter no longer
+  // a team manager." invited_by is NOT NULL with ON DELETE CASCADE, so the
+  // account row is guaranteed to still exist if the invite does.
+  const { data: inviter } = await supabaseAdmin
+    .from('accounts')
+    .select('role')
+    .eq('id', invite.invited_by)
+    .maybeSingle();
+  if (!inviter || !canManageTeam(inviter.role as AppRole)) {
+    return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
   }
 
   // Username from email local-part, plus a tiny suffix if needed.
