@@ -69,6 +69,75 @@ export function dropUndefined<T extends object>(obj: T): Partial<T> {
   return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as Partial<T>;
 }
 
+// ─── Runtime narrowers for unchecked column reads ───────────────────────────
+//
+// Supabase's row types come back loose (JSONB, text union columns, text[]).
+// Each `fromXxxRow` used to cast — `(r.foo as string) ?? undefined` — which
+// satisfies TypeScript but silently lies if the column drifts (rename, type
+// change). These helpers narrow at runtime so a drift produces `undefined` /
+// the fallback instead of a wrong-typed value sneaking into the domain layer.
+
+export function parseStringField(v: unknown): string | undefined {
+  return typeof v === 'string' ? v : undefined;
+}
+
+export function parseStringFieldOr(v: unknown, fallback: string): string {
+  return typeof v === 'string' ? v : fallback;
+}
+
+export function parseBoolField(v: unknown): boolean | undefined {
+  return typeof v === 'boolean' ? v : undefined;
+}
+
+export function parseNumberField(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
+export function parseUnionField<T extends string>(
+  v: unknown,
+  allowed: readonly T[],
+  fallback: T,
+): T {
+  return typeof v === 'string' && (allowed as readonly string[]).includes(v)
+    ? (v as T)
+    : fallback;
+}
+
+export function parseOptionalUnionField<T extends string>(
+  v: unknown,
+  allowed: readonly T[],
+): T | undefined {
+  return typeof v === 'string' && (allowed as readonly string[]).includes(v)
+    ? (v as T)
+    : undefined;
+}
+
+export function parseArrayField<T>(
+  v: unknown,
+  coerce: (x: unknown) => T | undefined,
+): T[] {
+  if (!Array.isArray(v)) return [];
+  const out: T[] = [];
+  for (const x of v) {
+    const y = coerce(x);
+    if (y !== undefined) out.push(y);
+  }
+  return out;
+}
+
+export function parseRecordField<V>(
+  v: unknown,
+  coerceValue: (x: unknown) => V | undefined,
+): Record<string, V> | undefined {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return undefined;
+  const out: Record<string, V> = {};
+  for (const [k, x] of Object.entries(v)) {
+    const y = coerceValue(x);
+    if (y !== undefined) out[k] = y;
+  }
+  return out;
+}
+
 // ─── Property ───────────────────────────────────────────────────────────────
 
 export function toPropertyRow(p: Partial<Property>): Record<string, unknown> {
