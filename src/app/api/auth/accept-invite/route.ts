@@ -86,16 +86,14 @@ export async function POST(req: NextRequest) {
     return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
   }
 
-  // Username from email local-part, plus a tiny suffix if needed.
+  // Username from email local-part. Audit P3.1 (2026-05-17): previously
+  // a SELECT-then-INSERT loop pre-checked uniqueness; now we trust the
+  // UNIQUE constraint on accounts.username (migration 0001) and retry
+  // the INSERT itself with a digit suffix on SQLSTATE 23505 — saves
+  // N round-trips on the common no-collision path.
   let username = body.username?.toLowerCase().trim() || deriveUsername(invite.email);
   if (!/^[a-z0-9._+-]{2,40}$/.test(username)) {
     username = deriveUsername(invite.email);
-  }
-  // Resolve username collisions by appending random digits.
-  for (let i = 0; i < 5; i++) {
-    const { data: ex } = await supabaseAdmin.from('accounts').select('id').eq('username', username).maybeSingle();
-    if (!ex) break;
-    username = (username + Math.floor(Math.random() * 10000)).slice(0, 40);
   }
 
   // Create auth user.
@@ -110,13 +108,21 @@ export async function POST(req: NextRequest) {
     return err(authErr?.message ?? 'Failed to create account', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  const { error: insErr } = await supabaseAdmin.from('accounts').insert({
-    username,
-    display_name: displayName,
-    role: invite.role,
-    property_access: [invite.hotel_id],
-    data_user_id: authData.user.id,
-  });
+  // Insert with collision-retry against the UNIQUE constraint.
+  let insErr: { code?: string; message?: string } | null = null;
+  for (let i = 0; i < 5; i++) {
+    const { error } = await supabaseAdmin.from('accounts').insert({
+      username,
+      display_name: displayName,
+      role: invite.role,
+      property_access: [invite.hotel_id],
+      data_user_id: authData.user.id,
+    });
+    if (!error) { insErr = null; break; }
+    insErr = error;
+    if (error.code !== '23505') break;  // not a unique violation — won't fix itself
+    username = (username + Math.floor(Math.random() * 10000)).slice(0, 40);
+  }
   if (insErr) {
     console.error('[accept-invite] accounts insert failed', insErr);
     await supabaseAdmin.auth.admin.deleteUser(authData.user.id).catch(() => {});

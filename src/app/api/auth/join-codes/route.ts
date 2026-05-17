@@ -71,7 +71,10 @@ export async function POST(req: NextRequest) {
   // Pull hotel name for the code prefix.
   const { data: prop } = await supabaseAdmin.from('properties').select('name').eq('id', hotelId).maybeSingle();
 
-  // Try a few times in case of collision.
+  // Try a few times in case of collision on hotel_join_codes.code (UNIQUE
+  // per migration 0064). Audit P3.1 (2026-05-17): switched from substring
+  // match on the error message to the SQLSTATE code 23505 — error messages
+  // can change between Postgres versions; SQLSTATEs are stable.
   let lastErr: unknown = null;
   for (let i = 0; i < 5; i++) {
     const code = generateJoinCode(prop?.name);
@@ -97,7 +100,9 @@ export async function POST(req: NextRequest) {
       return ok({ joinCode: ins }, { requestId });
     }
     lastErr = insErr;
-    if (insErr && !String(insErr.message ?? '').toLowerCase().includes('duplicate')) break;
+    // Only retry on unique_violation (23505) — anything else is a real
+    // failure that won't get better with a fresh code.
+    if (insErr && insErr.code !== '23505') break;
   }
   console.error('[join-codes:POST] insert failed after retries', lastErr);
   return err('Failed to create join code', { requestId, status: 500, code: ApiErrorCode.InternalError });

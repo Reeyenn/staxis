@@ -367,12 +367,19 @@ export async function POST(req: NextRequest) {
       // the staff row (canonical — what the admin Staff modal reads/writes
       // and what the HK personal page seeds from) and the current
       // shift_confirmation row.
-      const [{ error: staffUpdErr }, { error: confUpdErr }] = await Promise.all([
-        supabaseAdmin.from('staff').update({ language: next }).eq('id', staff!.id),
-        supabaseAdmin.from('shift_confirmations').update({ language: next }).eq('token', conf.token as string),
-      ]);
-      if (staffUpdErr) console.error('[sms-reply] staff language update failed:', staffUpdErr.message);
-      if (confUpdErr) console.error('[sms-reply] confirmation language update failed:', confUpdErr.message);
+      //
+      // Audit P0.3 (2026-05-17): previously these were two parallel
+      // .update()s with errors only logged. One could land and the other
+      // fail silently, then tomorrow's outgoing SMS picks the stale
+      // language from whichever side won the race. Now atomic via RPC —
+      // both rows update or neither does. See
+      // supabase/migrations/0134_rpc_set_staff_language.sql.
+      const { error: rpcErr } = await supabaseAdmin.rpc('staxis_set_staff_language', {
+        p_staff: staff!.id,
+        p_conf_token: conf.token as string,
+        p_lang: next,
+      });
+      if (rpcErr) console.error('[sms-reply] set_staff_language RPC failed:', rpcErr.message);
     };
 
     // ── ESPAÑOL — switch to Spanish and resend the link ─────────────────────
