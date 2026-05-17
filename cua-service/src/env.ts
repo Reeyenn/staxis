@@ -1,9 +1,9 @@
 // Canonical env module for the cua-service worker. Mirrors the main app's
 // src/lib/env.ts: Zod schema parsed at module load with aggregated errors.
 //
-// Legacy fallback: NEXT_PUBLIC_SUPABASE_URL accepts SUPABASE_URL as fallback
-// during the migration sweep. Phase 7 drops that after Fly secrets are
-// rotated to the canonical name.
+// The legacy SUPABASE_URL fallback was dropped by commit c0f5df2. Fly
+// secrets must use NEXT_PUBLIC_SUPABASE_URL — `fly secrets set` it before
+// deploying or boot will fail with a Zod aggregated error.
 
 import { z } from 'zod';
 
