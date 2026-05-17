@@ -11,10 +11,10 @@
     "lint": "tsc --noEmit -p ."
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.95.0",
-    "@sentry/node": "^8.50.0",
+    "@anthropic-ai/sdk": "^0.96.0",
+    "@sentry/node": "^10.53.1",
     "@supabase/supabase-js": "^2.47.0",
-    "dotenv": "^16.4.5",
+    "dotenv": "^17.4.2",
     "playwright": "1.59.1"
   },
   "devDependencies": {

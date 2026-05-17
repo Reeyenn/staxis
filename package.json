@@ -19,7 +19,7 @@
     "test:scraper": "node --test scraper/__tests__/*.test.js"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "0.95.0",
+    "@anthropic-ai/sdk": "^0.96.0",
     "@elevenlabs/client": "^1.7.0",
     "@picovoice/porcupine-web": "^3.0.3",
     "@picovoice/web-voice-processor": "^4.0.10",
