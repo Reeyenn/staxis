@@ -1,4 +1,4 @@
--- Migration 0132: agent_voice_sessions — server-resolved identity for voice agent
+-- Migration 0143: agent_voice_sessions — server-resolved identity for voice agent
 --
 -- Codex adversarial review 2026-05-16 (P0): the voice path reconstructed
 -- ToolContext entirely from client-controlled `customLlmExtraBody.dynamic_variables`.
@@ -72,7 +72,7 @@ alter table public.agent_voice_sessions enable row level security;
 -- ─── Track the migration ──────────────────────────────────────────────
 
 insert into public.applied_migrations (version, description)
-values ('0132', 'agent_voice_sessions: server-resolved identity for voice agent (Codex 2026-05-16 P0 fix; Pattern A)')
+values ('0143', 'agent_voice_sessions: server-resolved identity for voice agent (Codex 2026-05-16 P0 fix; Pattern A)')
 on conflict (version) do nothing;
 
 -- ─── Schema reload notice ─────────────────────────────────────────────

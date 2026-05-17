@@ -1,4 +1,4 @@
--- Migration 0133: tighten maintenance-photos storage bucket to per-property RLS
+-- Migration 0144: tighten maintenance-photos storage bucket to per-property RLS
 --
 -- Security review 2026-05-16 (Surface 2 P2 — Pattern D): the
 -- maintenance-photos bucket policies introduced in 0131 are auth-only
@@ -69,7 +69,7 @@ begin
 end$$;
 
 insert into public.applied_migrations (version, description)
-values ('0133', 'maintenance-photos bucket: per-property RLS via user_owns_property() on path[1] — closes Surface 2 P2')
+values ('0144', 'maintenance-photos bucket: per-property RLS via user_owns_property() on path[1] — closes Surface 2 P2')
 on conflict (version) do nothing;
 
 notify pgrst, 'reload schema';

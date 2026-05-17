@@ -1,4 +1,4 @@
--- Migration 0134: extend agent_costs.kind to include 'vision'
+-- Migration 0145: extend agent_costs.kind to include 'vision'
 --
 -- Security review 2026-05-16 (Surface 3 P2 — Pattern F): vision invoice
 -- scans + shelf photo counts call Anthropic Vision but never wrote their
@@ -22,7 +22,7 @@ ALTER TABLE public.agent_costs
   CHECK (kind IN ('request', 'eval', 'background', 'audio', 'vision'));
 
 INSERT INTO public.applied_migrations (version, description)
-VALUES ('0134', 'agent_costs.kind extended to include ''vision'' — closes Surface 3 P2 Pattern F')
+VALUES ('0145', 'agent_costs.kind extended to include ''vision'' — closes Surface 3 P2 Pattern F')
 ON CONFLICT (version) DO NOTHING;
 
 NOTIFY pgrst, 'reload schema';
