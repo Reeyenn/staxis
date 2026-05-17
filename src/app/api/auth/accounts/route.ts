@@ -110,7 +110,7 @@ export async function GET(req: NextRequest) {
     .order('created_at', { ascending: true });
 
   if (error) {
-    console.error('[accounts:GET] query failed', error);
+    log.error('[accounts:GET] query failed', { err: error, requestId });
     return err('Failed to load accounts', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
@@ -119,7 +119,7 @@ export async function GET(req: NextRequest) {
   const emailByUserId = new Map<string, string>();
   const { data: authPage, error: listErr } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
   if (listErr) {
-    console.error('[accounts:GET] auth listUsers failed', listErr);
+    log.error('[accounts:GET] auth listUsers failed', { err: listErr, requestId });
     // Don't fail the request — render with blank emails so the UI is still usable.
   } else {
     for (const u of authPage?.users ?? []) {
@@ -178,7 +178,7 @@ export async function POST(req: NextRequest) {
     .eq('username', normalizedUsername)
     .maybeSingle();
   if (exErr) {
-    console.error('[accounts:POST] duplicate check failed', exErr);
+    log.error('[accounts:POST] duplicate check failed', { err: exErr, requestId });
     return err('Failed to create account', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   if (existing) {
@@ -223,7 +223,7 @@ export async function POST(req: NextRequest) {
     .single();
 
   if (insErr || !inserted) {
-    console.error('[accounts:POST] accounts insert failed, rolling back auth user', errToString(insErr));
+    log.error('[accounts:POST] accounts insert failed, rolling back auth user', { err: insErr, requestId });
     // Roll back the auth user so we don't leak orphaned auth rows.
     // Don't silently swallow the rollback failure — if the rollback ALSO
     // fails we end up with a permanent zombie auth.users row that future
@@ -239,7 +239,13 @@ export async function POST(req: NextRequest) {
       rollbackError = errToString(rollErr);
     }
     if (rollbackError) {
-      console.error(`[accounts:POST] AUTH ROLLBACK FAILED — orphaned auth.users row id=${authData.user.id} email=${normalizedEmail}. Insert error: ${errToString(insErr)}. Rollback error: ${rollbackError}`);
+      log.error('[accounts:POST] AUTH ROLLBACK FAILED — orphaned auth.users row', {
+        requestId,
+        authUserId: authData.user.id,
+        email: normalizedEmail,
+        insertError: errToString(insErr),
+        rollbackError,
+      });
       return err(
         `Failed to create account record. ALSO: rollback of the auth user failed — orphaned auth row remains for username "${normalizedUsername}". Have an admin delete the row manually in Supabase Authentication.`,
         { requestId, status: 500, code: ApiErrorCode.InternalError },
@@ -313,7 +319,7 @@ export async function PUT(req: NextRequest) {
       .update(updates)
       .eq('id', accountId);
     if (updErr) {
-      console.error('[accounts:PUT] accounts update failed', updErr);
+      log.error('[accounts:PUT] accounts update failed', { err: updErr, requestId });
       return err('Failed to update account', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
   }
@@ -396,7 +402,7 @@ export async function DELETE(req: NextRequest) {
   // Delete the auth user — the FK cascade removes the accounts row too.
   const { error: delErr } = await supabaseAdmin.auth.admin.deleteUser(target.data_user_id);
   if (delErr) {
-    console.error('[accounts:DELETE] auth.admin.deleteUser failed', errToString(delErr));
+    log.error('[accounts:DELETE] auth.admin.deleteUser failed', { err: delErr, requestId });
     // If auth user was already gone, at least clean up the accounts row so
     // the admin isn't stuck with a zombie. PostgrestFilterBuilder is a
     // thenable but has no .catch — wrap in try/await.

@@ -100,7 +100,7 @@ export async function POST(req: NextRequest) {
     data_user_id: authData.user.id,
   });
   if (insErr) {
-    console.error('[accept-invite] accounts insert failed', insErr);
+    log.error('[accept-invite] accounts insert failed', { err: insErr, requestId });
     await supabaseAdmin.auth.admin.deleteUser(authData.user.id).catch(() => {});
     return err('Failed to create account', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }

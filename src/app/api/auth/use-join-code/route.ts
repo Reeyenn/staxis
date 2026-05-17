@@ -203,7 +203,7 @@ export async function POST(req: NextRequest) {
     phone: normalizedPhone,
   });
   if (insErr) {
-    console.error('[use-join-code] accounts insert failed', insErr);
+    log.error('[use-join-code] accounts insert failed', { err: insErr, requestId });
     await supabaseAdmin.auth.admin.deleteUser(authData.user.id).catch(() => {});
     await releaseSlot();
     return err('Failed to create account', { requestId, status: 500, code: ApiErrorCode.InternalError });
@@ -227,11 +227,11 @@ export async function POST(req: NextRequest) {
       // Non-fatal: account is created; owner_id semantic is wrong but
       // the user can still operate the hotel via property_access.
       // Log so ops can repair manually.
-      console.error('[use-join-code] owner_id transfer failed (non-fatal)', {
+      log.warn('[use-join-code] owner_id transfer failed (non-fatal)', {
         requestId,
         hotelId: row.hotel_id,
         newOwner: authData.user.id,
-        error: ownerXferErr.message,
+        err: ownerXferErr,
       });
     }
   }

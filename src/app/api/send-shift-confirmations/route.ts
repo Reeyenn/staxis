@@ -389,7 +389,7 @@ export async function POST(req: NextRequest) {
           try {
             hkUrl = await buildHousekeeperLink(staffId, pid, baseUrl);
           } catch (linkErr) {
-            console.error('[send-shift-confirmations] magic-link mint failed, falling back to tokenless URL:', errToString(linkErr));
+            log.warn('[send-shift-confirmations] magic-link mint failed, falling back to tokenless URL', { err: linkErr, requestId });
             hkUrl = `${baseUrl}/housekeeper/${staffId}?pid=${encodeURIComponent(pid)}`;
           }
 
@@ -513,7 +513,7 @@ export async function POST(req: NextRequest) {
           // Don't log the raw name — staff names are PII and any trailing
           // bytes in a malformed payload would reach our log aggregator.
           // The staffId is enough to identify the row in DB if needed.
-          console.error(`[send-shift-confirmations] failed for staffId=${staffId}: ${errToString(innerErr)}`);
+          log.error('[send-shift-confirmations] per-staff failure', { err: innerErr, requestId, staffId });
           const reason = innerErr instanceof Error ? innerErr.message : 'sms_error';
           return { staffId, status: 'failed', reason };
         }
@@ -558,13 +558,13 @@ export async function POST(req: NextRequest) {
       } catch (workerErr) {
         // Don't surface this to the user — they already got their
         // response. Log so we see it in Vercel + Sentry.
-        console.error('[send-shift-confirmations] inline drain failed:', errToString(workerErr));
+        log.error('[send-shift-confirmations] inline drain failed', { err: workerErr, requestId });
       }
     });
 
     return NextResponse.json(envelope);
   } catch (caughtErr) {
-    console.error('send-shift-confirmations error:', caughtErr);
+    log.error('send-shift-confirmations error', { err: caughtErr, requestId });
     // Persist the error so we can diagnose without shell logs.
     try {
       await supabaseAdmin.from('error_logs').insert({

@@ -148,7 +148,7 @@ async function logHit(payload: Record<string, unknown>): Promise<void> {
       payload: redacted,
     });
   } catch (e) {
-    console.error('logHit failed:', errToString(e));
+    log.warn('sms-reply logHit failed', { err: e });
   }
 }
 
@@ -372,8 +372,8 @@ export async function POST(req: NextRequest) {
         supabaseAdmin.from('staff').update({ language: next }).eq('id', staff!.id),
         supabaseAdmin.from('shift_confirmations').update({ language: next }).eq('token', conf.token as string),
       ]);
-      if (staffUpdErr) console.error('[sms-reply] staff language update failed:', staffUpdErr.message);
-      if (confUpdErr) console.error('[sms-reply] confirmation language update failed:', confUpdErr.message);
+      if (staffUpdErr) log.warn('[sms-reply] staff language update failed', { err: staffUpdErr });
+      if (confUpdErr) log.warn('[sms-reply] confirmation language update failed', { err: confUpdErr });
     };
 
     // ── ESPAÑOL — switch to Spanish and resend the link ─────────────────────
@@ -400,7 +400,7 @@ export async function POST(req: NextRequest) {
     return twimlOk();
   } catch (err) {
     const msg = errToString(err);
-    console.error('sms-reply error:', msg);
+    log.error('sms-reply error', { err });
     try {
       await logHit({ stage: 'handler_error', error: msg });
     } catch (logErr) {
