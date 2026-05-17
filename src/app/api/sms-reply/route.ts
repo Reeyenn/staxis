@@ -226,13 +226,20 @@ export async function POST(req: NextRequest) {
     // there's no Twilio side to spoof.
     const signatureHeader = req.headers.get('x-twilio-signature');
     const isFormEncoded = !contentType.includes('application/json');
-    if (!isFormEncoded && env.NODE_ENV === 'production') {
+    // Accept JSON ONLY when ALLOW_UNSIGNED_SMS_WEBHOOK is explicitly
+    // set to '1' on this deploy. Previously this was gated on
+    // `NODE_ENV !== 'production'`, but Vercel preview deploys and any
+    // staging environment with NODE_ENV=production would still expose
+    // the unsigned JSON path. Defaulting to closed forces opt-in via
+    // a dedicated env var that ops can scrub from prod-shape deploys
+    // entirely. Audit Flow 3 #14.
+    if (!isFormEncoded && env.ALLOW_UNSIGNED_SMS_WEBHOOK !== '1') {
       await logHit({
-        stage: 'json_rejected_in_production',
+        stage: 'json_rejected',
         contentType,
         fromHeader: fromNumber ?? null,
       });
-      return forbidden('json payloads not accepted in production');
+      return forbidden('json payloads not accepted without ALLOW_UNSIGNED_SMS_WEBHOOK=1');
     }
     if (isFormEncoded) {
       const twilioWired = !!env.TWILIO_ACCOUNT_SID;

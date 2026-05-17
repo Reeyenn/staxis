@@ -461,7 +461,11 @@ export async function POST(req: NextRequest) {
     // within 5 min. Either way, no SMS is lost.
     after(async () => {
       try {
-        await processSmsJobs(50);
+        // Drain up to 200 (was 50). At ~150ms per Twilio call the inline
+        // drain comfortably fits inside Vercel's 60s function cap for
+        // crews of 60+ housekeepers — previously the last 10+ recipients
+        // waited up to 5 min for the GitHub Actions cron tick. Audit Flow 3 #12.
+        await processSmsJobs(200);
       } catch (workerErr) {
         // Don't surface this to the user — they already got their
         // response. Log so we see it in Vercel + Sentry.

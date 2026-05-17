@@ -131,17 +131,39 @@ describe('checkAndIncrementRateLimit — Postgres-backed counter', () => {
     }
   });
 
-  test('RPC error → fail-open (allowed) so SMS pipeline never bricks', async () => {
-    // The load-bearing assertion: if Postgres hiccups, we keep sending
-    // SMS rather than going dark across the fleet.
+  // Fail-open vs fail-closed: 2026-05-17 audit (Flow 2 #6 / Flow 3 #5)
+  // switched billing-impacting endpoints (Twilio, Claude, Resend) to
+  // fail-CLOSED on RPC error/throw, because a Postgres hiccup leaving
+  // the rate limiter wide open is fleet-wide spend exposure. Non-billing
+  // endpoints (read paths, schedule autosave) still fail OPEN because
+  // blocking them just inconveniences legitimate users without limiting
+  // a real downside. The two pairs of tests pin both behaviors so a
+  // future refactor that homogenizes the branch lands as a red diff.
+
+  test('RPC error → billing endpoint FAILS CLOSED', async () => {
     nextRpcResult = { data: null, error: { message: 'connection terminated' } };
     const result = await checkAndIncrementRateLimit('send-shift-confirmations', NO_PROPERTY_RATE_LIMIT_KEY);
+    assert.equal(result.allowed, false);
+    if (!result.allowed) {
+      assert.equal(result.retryAfterSec, 60);
+    }
+  });
+
+  test('RPC throws → billing endpoint FAILS CLOSED', async () => {
+    throwOnRpc = true;
+    const result = await checkAndIncrementRateLimit('send-shift-confirmations', NO_PROPERTY_RATE_LIMIT_KEY);
+    assert.equal(result.allowed, false);
+  });
+
+  test('RPC error → non-billing endpoint fails OPEN so read paths never brick', async () => {
+    nextRpcResult = { data: null, error: { message: 'connection terminated' } };
+    const result = await checkAndIncrementRateLimit('sync-room-assignments', NO_PROPERTY_RATE_LIMIT_KEY);
     assert.equal(result.allowed, true);
   });
 
-  test('RPC throws → fail-open (allowed)', async () => {
+  test('RPC throws → non-billing endpoint fails OPEN', async () => {
     throwOnRpc = true;
-    const result = await checkAndIncrementRateLimit('send-shift-confirmations', NO_PROPERTY_RATE_LIMIT_KEY);
+    const result = await checkAndIncrementRateLimit('sync-room-assignments', NO_PROPERTY_RATE_LIMIT_KEY);
     assert.equal(result.allowed, true);
   });
 

@@ -84,6 +84,12 @@ const ServerSchema = z.object({
   LOCAL_SYNC_SECRET: z.string().optional(),
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
 
+  // Dev/staging escape hatch for /api/sms-reply: when set to '1', the
+  // route accepts JSON payloads without a Twilio signature. Must NEVER
+  // be set on a prod deploy. Default unset → fail-closed (only signed
+  // form-encoded Twilio webhooks accepted).
+  ALLOW_UNSIGNED_SMS_WEBHOOK: z.string().optional(),
+
   // ── Voice / wake word ─────────────────────────────────
   PICOVOICE_ACCESS_KEY: z.string().optional(),
 

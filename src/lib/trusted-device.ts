@@ -53,7 +53,14 @@ export function trustCookieOptions() {
     name: TRUST_COOKIE_NAME,
     httpOnly: true,
     secure: env.NODE_ENV === 'production',
-    sameSite: 'strict' as const,
+    // `lax` instead of `strict`. The cookie is httpOnly + Secure so JS
+    // can't read or forge it; the underlying defense against CSRF lives
+    // in the bearer-JWT verification on every API route, not in this
+    // cookie. `strict` was over-defensive — it broke the common flow
+    // where a user clicks an email link, lands on getstaxis.com from a
+    // different referrer, and the trust cookie isn't sent, forcing an
+    // unnecessary OTP. Audit Flow 1 #6.
+    sameSite: 'lax' as const,
     path: '/',
     maxAge: TRUST_COOKIE_MAX_AGE_DAYS * 24 * 60 * 60,
   };

@@ -4,10 +4,10 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { AppLayout } from '@/components/layout/AppLayout';
-import { updateProperty } from '@/lib/db';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { parsePmsJobStatusResponse, parsePmsOnboardResult } from '@/lib/api-validate';
 import { PMS_DROPDOWN_OPTIONS } from '@/lib/pms';
 import { Wifi, WifiOff, Shield, Zap, AlertCircle, CheckCircle, ChevronDown, Loader2 } from 'lucide-react';
 import Link from 'next/link';
@@ -129,19 +129,21 @@ export default function PMSPage() {
       setTestStatus('error');
       setTestMessage(lang === 'es'
         ? 'Primero prueba la conexión para guardar tus credenciales.'
-        : 'Please Test Connection first so we can save your credentials.');
+        : 'Please Save Credentials first so we can use them.');
       return;
     }
     setSaving(true);
 
     try {
-      // Persist pms_type + pms_url onto the properties row (legacy field
-      // path that the rest of the app reads from). The credentials are
-      // already in scraper_credentials from handleTest.
-      await updateProperty(user.uid, activePropertyId, {
-        pmsType,
-        pmsUrl,
-      });
+      // pms_type + pms_url were already stamped atomically by the
+      // staxis_upsert_scraper_credentials RPC when handleTest succeeded
+      // (see migration 0140, src/app/api/pms/save-credentials/route.ts).
+      // We used to call updateProperty() here too, which wrote the same
+      // fields via the legacy Firestore-style db.ts path — two stores,
+      // no transaction, drift possible if one write failed. Killed in
+      // the audit-remaining-findings sweep; the Supabase write is the
+      // single source of truth. Just refresh the local state so the
+      // header card reflects the new connection.
       await refreshProperty();
 
       // Queue the onboarding job.
@@ -187,20 +189,24 @@ export default function PMSPage() {
       if (cancelled) return;
       try {
         const res = await fetchWithAuth(`/api/pms/job-status?id=${jobId}`);
-        const json = await res.json();
+        const raw = await res.json();
         if (cancelled) return;
-        if (res.ok && json.ok) {
-          setJobStatus({
-            status: json.data.status,
-            step: json.data.step,
-            progressPct: json.data.progressPct,
-            error: json.data.error,
-            result: json.data.result,
-          });
-          if (json.data.status === 'complete' || json.data.status === 'failed') {
-            setSaving(false);
-            await refreshProperty();
-            return; // stop polling
+        if (res.ok) {
+          // Runtime parser (audit Flow 2 #5): previously this code used
+          // `json.data.<field>` with no validation, so a server-side
+          // rename (snake_case slip) would freeze the progress bar at 0
+          // permanently. parsePmsJobStatusResponse returns a typed value
+          // or an error; on parse failure we keep polling but log.
+          const parsed = parsePmsJobStatusResponse(raw);
+          if (parsed.value) {
+            setJobStatus(parsed.value);
+            if (parsed.value.status === 'complete' || parsed.value.status === 'failed') {
+              setSaving(false);
+              await refreshProperty();
+              return; // stop polling
+            }
+          } else {
+            console.warn('pms job-status response shape unexpected:', parsed.error);
           }
         }
       } catch {
@@ -389,10 +395,10 @@ export default function PMSPage() {
             {testStatus === 'testing' ? (
               <>
                 <div style={{ width: '16px', height: '16px', border: '2px solid rgba(255,255,255,0.2)', borderTopColor: 'white', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-                {lang === 'es' ? 'Probando…' : 'Testing…'}
+                {lang === 'es' ? 'Guardando…' : 'Saving…'}
               </>
             ) : (
-              <><Wifi size={16} /> {lang === 'es' ? 'Probar Conexión' : 'Test Connection'}</>
+              <><Wifi size={16} /> {lang === 'es' ? 'Guardar Credenciales' : 'Save Credentials'}</>
             )}
           </button>
           <button
@@ -478,9 +484,19 @@ export default function PMSPage() {
             {jobStatus.status === 'complete' && jobStatus.result && (
               <div style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
                 {(() => {
-                  const r = jobStatus.result as Record<string, unknown>;
-                  const rooms = (r.rooms_count as number) ?? 0;
-                  const staff = (r.staff_count as number) ?? 0;
+                  // Runtime parser (audit Flow 2 #10): previously
+                  // `(r.rooms_count as number) ?? 0` silently displayed
+                  // "0 rooms" if the field name changed or was absent.
+                  // parsePmsOnboardResult separates "0 rooms found"
+                  // (legitimate but rare) from "the server sent us
+                  // something we don't recognise."
+                  const parsed = parsePmsOnboardResult(jobStatus.result);
+                  if (!parsed.value) {
+                    return lang === 'es'
+                      ? 'Conectamos correctamente, pero no pudimos leer el resumen final. Revisa tu panel.'
+                      : 'We connected successfully, but couldn’t read the final summary. Check your dashboard.';
+                  }
+                  const { rooms_count: rooms, staff_count: staff } = parsed.value;
                   return lang === 'es'
                     ? `Encontramos ${rooms} habitaciones y ${staff} miembros del personal. Tu panel está listo.`
                     : `We found ${rooms} rooms and ${staff} staff members. Your dashboard is ready.`;

@@ -22,3 +22,12 @@ alter table public.accounts
 create index if not exists idx_accounts_staff_id
   on public.accounts(staff_id)
   where staff_id is not null;
+
+-- ─── Bookkeeping ────────────────────────────────────────────────────
+-- Backfilled to match the row already present in prod's applied_migrations
+-- (migration was applied via psql before the file landed on main).
+-- Closes the migration-bookkeeping test failure that the staff page PR
+-- triggered when it merged without this INSERT.
+insert into public.applied_migrations (version, description)
+values ('0146', 'accounts.staff_id link → staff (for /staff My Shifts role-gated view)')
+on conflict (version) do nothing;

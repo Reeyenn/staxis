@@ -16,7 +16,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { hashDeviceToken, readDeviceCookie, trustCookieOptions } from '@/lib/trusted-device';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -63,8 +63,14 @@ export async function POST(req: NextRequest) {
     .eq('token_hash', tokenHash)
     .maybeSingle();
   if (rowErr) {
-    console.error('[check-trust] lookup failed', rowErr);
-    // Fail-closed: treat as untrusted on DB errors.
+    // Fail-closed on DB errors (correct security posture) but escalate
+    // visibility from console.error → log.error so Sentry sees the spike.
+    // Without this, a sustained DB hiccup quietly forces OTP on every
+    // sign-in fleet-wide with zero monitoring signal. Audit Flow 1 #10.
+    log.error('[check-trust] lookup failed — failing closed', {
+      requestId, accountId: account.id, err: rowErr.message,
+      route: 'auth/check-trust',
+    });
     return ok({ trusted: false }, { requestId });
   }
   if (!row) return ok({ trusted: false }, { requestId });
@@ -73,11 +79,20 @@ export async function POST(req: NextRequest) {
     return ok({ trusted: false }, { requestId });
   }
 
-  // Trust granted — bump last_seen_at as a side effect.
-  await supabaseAdmin
+  // Trust granted — bump last_seen_at as a side effect. Audit Flow 1 #2:
+  // the previous code didn't inspect the update result, so a DB failure
+  // here silently froze the rolling-window logic. Cookie maxAge would
+  // still tick down on its own and the user would get prompted for OTP
+  // earlier than expected with no visible signal. Now we await + warn.
+  const { error: bumpErr } = await supabaseAdmin
     .from('trusted_devices')
     .update({ last_seen_at: new Date().toISOString() })
     .eq('id', row.id);
+  if (bumpErr) {
+    log.warn('[check-trust] last_seen_at bump failed (non-fatal)', {
+      requestId, accountId: account.id, deviceId: row.id, err: bumpErr.message,
+    });
+  }
 
   // Re-issue the cookie with a fresh maxAge so the trust window rolls
   // forward on every active sign-in. Browser caps cookies at 400 days
