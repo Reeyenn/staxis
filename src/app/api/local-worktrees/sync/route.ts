@@ -26,14 +26,20 @@
  *     immediately. So `git worktree remove foo` → next sync → the row
  *     for foo is gone. No 10-minute stale window.
  *
- * No auth: same rationale as /api/claude-heartbeat — the hook fires
- * from Reeyen's machine without env-var plumbing, and the data isn't
- * sensitive (branch names, dirty counts).
+ * Auth: gated on LOCAL_SYNC_SECRET (2026-05-17 auth audit M3). The local
+ * hook sources tokens.env and attaches the bearer header; see
+ * ~/.claude/hooks/staxis-worktrees-sync.sh. Previously open — the endpoint
+ * is publicly reachable on the Vercel deploy and a stranger spamming the
+ * local_worktrees table is a pollution risk even though no tenant data
+ * lives there. Distinct env var from CRON_SECRET so this dev-tool channel
+ * can be rotated independently.
  */
 
+import { timingSafeEqual } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { revalidateTag } from 'next/cache';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -61,7 +67,37 @@ function asStr(v: unknown, max = 500): string | null {
   return trimmed.slice(0, max);
 }
 
+/**
+ * Same fail-closed-in-prod, pass-through-in-dev shape as requireCronSecret
+ * in api-auth.ts, but parameterized on LOCAL_SYNC_SECRET so this dev-tool
+ * channel can be rotated without touching cron infra.
+ */
+function checkLocalSyncSecret(req: NextRequest): NextResponse | null {
+  const secret = env.LOCAL_SYNC_SECRET;
+  if (!secret) {
+    const isVercelProd = env.VERCEL_ENV === 'production';
+    const isOtherProd = env.NODE_ENV === 'production' && !env.VERCEL_ENV;
+    if (isVercelProd || isOtherProd) {
+      console.error('[local-worktrees/sync] LOCAL_SYNC_SECRET unset in production — refusing');
+      return NextResponse.json({ error: 'server misconfigured' }, { status: 500 });
+    }
+    return null;  // dev / preview without the secret — pass through
+  }
+  const auth = req.headers.get('authorization') ?? '';
+  const expected = `Bearer ${secret}`;
+  const authBuf = Buffer.from(auth);
+  const expectedBuf = Buffer.from(expected);
+  let ok = false;
+  if (authBuf.length === expectedBuf.length) {
+    try { ok = timingSafeEqual(authBuf, expectedBuf); } catch { ok = false; }
+  }
+  return ok ? null : NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+}
+
 export async function POST(req: NextRequest) {
+  const guard = checkLocalSyncSecret(req);
+  if (guard) return guard;
+
   let body: Record<string, unknown> = {};
   try {
     body = await req.json();

@@ -17,10 +17,11 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 import { writeAudit } from '@/lib/audit';
 import { checkAndIncrementRateLimit, rateLimitedResponse, ipToRateLimitKey } from '@/lib/api-ratelimit';
 import type { AppRole } from '@/lib/roles';
+import { captureException } from '@/lib/sentry';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -146,12 +147,11 @@ export async function POST(req: NextRequest) {
 
   const normalizedPhone = normalizePhone(phone);
 
+  // Audit P3.1 (2026-05-17): dropped the SELECT-then-INSERT pre-check
+  // loop. We now trust the UNIQUE constraint on accounts.username
+  // (migration 0001) and retry the INSERT below with a digit suffix on
+  // SQLSTATE 23505 — saves N round-trips on the no-collision path.
   let username = deriveUsername(normalizedEmail);
-  for (let i = 0; i < 5; i++) {
-    const { data: ex } = await supabaseAdmin.from('accounts').select('id').eq('username', username).maybeSingle();
-    if (!ex) break;
-    username = (username + Math.floor(Math.random() * 10000)).slice(0, 40);
-  }
 
   // email_confirm:true so signInWithOtp (called by /signup right after)
   // triggers Supabase's MAGIC-LINK template — the one we customized to
@@ -169,13 +169,16 @@ export async function POST(req: NextRequest) {
   // Helper: decrement used_count to release the slot we reserved above.
   // Used when account creation fails — without it, a transient auth
   // failure would permanently burn one slot of the join code.
+  //
+  // Atomic unconditional decrement via RPC (audit/concurrency #3). The
+  // old conditional eq('used_count', row.used_count + 1) silently no-op'd
+  // if another signup had incremented the counter in the meantime,
+  // leaking a slot forever. The CAS at the top of this route already
+  // prevents over-grant, so the release just needs to subtract one
+  // atomically (floored at zero).
   const releaseSlot = async () => {
     try {
-      await supabaseAdmin
-        .from('hotel_join_codes')
-        .update({ used_count: row.used_count })
-        .eq('id', row.id)
-        .eq('used_count', row.used_count + 1);
+      await supabaseAdmin.rpc('staxis_release_join_code_slot', { p_id: row.id });
     } catch {
       // best-effort; the slot stays consumed for the rest of the hour
       // bucket if this race-rare path also flakes
@@ -189,22 +192,49 @@ export async function POST(req: NextRequest) {
     user_metadata: { username, displayName },
   });
   if (authErr || !authData.user) {
-    console.error('[use-join-code] createUser failed', authErr);
+    log.error('[use-join-code] createUser failed', { err: authErr, requestId });
     await releaseSlot();
-    return err(authErr?.message ?? 'Failed to create account', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return err('Failed to create account', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  const { error: insErr } = await supabaseAdmin.from('accounts').insert({
-    username,
-    display_name: displayName,
-    role: finalRole,
-    property_access: [row.hotel_id],
-    data_user_id: authData.user.id,
-    phone: normalizedPhone,
-  });
+  // Insert with collision-retry against accounts.username UNIQUE. On any
+  // non-unique-violation error, bail to the cleanup path below (release
+  // slot + delete auth user).
+  let insErr: { code?: string; message?: string } | null = null;
+  for (let i = 0; i < 5; i++) {
+    const { error } = await supabaseAdmin.from('accounts').insert({
+      username,
+      display_name: displayName,
+      role: finalRole,
+      property_access: [row.hotel_id],
+      data_user_id: authData.user.id,
+      phone: normalizedPhone,
+    });
+    if (!error) { insErr = null; break; }
+    insErr = error;
+    if (error.code !== '23505') break;
+    username = (username + Math.floor(Math.random() * 10000)).slice(0, 40);
+  }
   if (insErr) {
-    console.error('[use-join-code] accounts insert failed', insErr);
-    await supabaseAdmin.auth.admin.deleteUser(authData.user.id).catch(() => {});
+    log.error('[use-join-code] accounts insert failed', { err: insErr, requestId });
+    // Audit finding #4: pre-2026-05-17 this was `.catch(() => {})` which
+    // silently swallowed rollback failures, leaving orphan auth.users
+    // rows. Log loudly + Sentry so the orphan sweeper cron and on-call
+    // both have visibility if rollback fails.
+    await supabaseAdmin.auth.admin.deleteUser(authData.user.id).catch(rollErr => {
+      log.error('[use-join-code] AUTH ROLLBACK FAILED', {
+        auth_user_id: authData.user.id,
+        email: normalizedEmail,
+        err: rollErr,
+        requestId,
+      });
+      captureException(rollErr, {
+        subsystem: 'auth',
+        failure_mode: 'rollback_failed',
+        auth_user_id: authData.user.id,
+        flow: 'use-join-code',
+      });
+    });
     await releaseSlot();
     return err('Failed to create account', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
@@ -227,11 +257,11 @@ export async function POST(req: NextRequest) {
       // Non-fatal: account is created; owner_id semantic is wrong but
       // the user can still operate the hotel via property_access.
       // Log so ops can repair manually.
-      console.error('[use-join-code] owner_id transfer failed (non-fatal)', {
+      log.warn('[use-join-code] owner_id transfer failed (non-fatal)', {
         requestId,
         hotelId: row.hotel_id,
         newOwner: authData.user.id,
-        error: ownerXferErr.message,
+        err: ownerXferErr,
       });
     }
   }

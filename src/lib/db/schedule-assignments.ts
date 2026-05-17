@@ -53,6 +53,22 @@ export function subscribeToScheduleAssignments(
       return data ? [fromScheduleAssignmentsRow(data)] : [];
     },
     (rows) => callback(rows[0] ?? null),
+    // Scope on date (the realtime filter only covers property_id).
+    (payload) => {
+      const newDate = (payload.new as { date?: string } | null)?.date;
+      const oldDate = (payload.old as { date?: string } | null)?.date;
+      return newDate === date || oldDate === date;
+    },
+    // schedule_assignments is keyed (property, date) → at most one row per
+    // slice. With REPLICA IDENTITY FULL (migration 0133), payload.new is
+    // the full row on UPDATE, so we can publish without round-tripping the DB.
+    (payload) => {
+      if (payload.eventType === 'DELETE') return [];
+      if (!payload.new) return null;
+      const incomingDate = (payload.new as { date?: string }).date;
+      if (incomingDate !== date) return [];
+      return [fromScheduleAssignmentsRow(payload.new)];
+    },
   );
 }
 

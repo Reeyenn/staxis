@@ -79,6 +79,13 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
 
   const [rooms, setRooms] = useState<RoomRow[]>([]);
   const [activeDate, setActiveDate] = useState<string>(today);
+  // Suppress subscription callbacks that race a manual refetch
+  // (audit/concurrency #14). The realtime/poll callback re-fetches the
+  // same table; if its SELECT was already in flight before our refetch
+  // started, its result can land second and overwrite our fresh state.
+  // Track when the most recent refetch was initiated so the subscription
+  // callback can drop briefly-stale snapshots.
+  const lastRefetchAtRef = useRef<number>(0);
   const [loading, setLoading] = useState(true);
   const [savingRoomId, setSavingRoomId] = useState<string | null>(null);
   const [issueRoomId, setIssueRoomId] = useState<string | null>(null);
@@ -287,6 +294,13 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
     // Behavior: prefer today's rooms; else nearest upcoming shift; else the
     // most recent past date (so HKs can still see their just-completed shift).
     const unsub = subscribeToRoomsForStaff(pid, housekeeperId, (all) => {
+      // Drop callbacks that arrive in the immediate aftermath of a
+      // manual refetch (audit/concurrency #14). The subscription's own
+      // re-fetch may have started before our refetch and landed second,
+      // which would briefly revert the UI to pre-tap state until the
+      // next poll. 1500ms covers a typical end-to-end fetch round-trip.
+      if (Date.now() - lastRefetchAtRef.current < 1500) return;
+
       const byDate = new Map<string, RoomRow[]>();
       for (const r of all) {
         if (!r.date) continue;
@@ -379,6 +393,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   // new state by manually refreshing the tab.
   const refetchRooms = useCallback(async () => {
     if (!pid || !housekeeperId) return;
+    lastRefetchAtRef.current = Date.now();
     try {
       const res = await fetch(
         `/api/housekeeper/rooms?pid=${encodeURIComponent(pid)}&staffId=${encodeURIComponent(housekeeperId)}`,

@@ -20,6 +20,7 @@
 
 import { resolveMlShardUrl } from '@/lib/ml-routing';
 import { log } from '@/lib/log';
+import { env } from '@/lib/env';
 
 /** Layer name in the URL path: POST {shard}/train/{layer} */
 export type MlTrainingLayer = 'demand' | 'supply' | 'inventory-rate';
@@ -60,7 +61,7 @@ export async function triggerMlTraining(
   options: TriggerMlTrainingOptions = {},
 ): Promise<TriggerMlTrainingResult> {
   const t0 = Date.now();
-  const mlServiceSecret = process.env.ML_SERVICE_SECRET;
+  const mlServiceSecret = env.ML_SERVICE_SECRET;
   const mlServiceUrl = resolveMlShardUrl(propertyId);
 
   if (!mlServiceUrl || !mlServiceSecret) {

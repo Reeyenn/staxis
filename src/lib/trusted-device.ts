@@ -9,6 +9,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import type { NextRequest } from 'next/server';
+import { env } from '@/lib/env';
 
 export const TRUST_COOKIE_NAME = 'staxis_device';
 
@@ -51,7 +52,7 @@ export function trustCookieOptions() {
   return {
     name: TRUST_COOKIE_NAME,
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: env.NODE_ENV === 'production',
     sameSite: 'strict' as const,
     path: '/',
     maxAge: TRUST_COOKIE_MAX_AGE_DAYS * 24 * 60 * 60,

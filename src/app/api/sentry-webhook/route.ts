@@ -42,6 +42,8 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { sendSms } from '@/lib/sms';
 import { captureException } from '@/lib/sentry';
+import { env } from '@/lib/env';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -90,7 +92,7 @@ function truncate(s: string, n: number): string {
 function formatSmsForIssue(payload: SentryWebhookPayload): string {
   const issue = payload.data?.issue;
   const ev = payload.data?.event;
-  const env = ev?.environment ?? 'unknown';
+  const sentryEnv = ev?.environment ?? 'unknown';
   const project = issue?.project?.name ?? 'staxis';
   const title = issue?.title ?? ev?.message ?? '(no title)';
   const url = issue?.web_url ?? '';
@@ -99,7 +101,7 @@ function formatSmsForIssue(payload: SentryWebhookPayload): string {
 
   // Twilio SMS soft cap is 1600 chars but most carriers chunk after
   // 160. Aim for one segment.
-  const head = `[Staxis ${env}] ${level.toUpperCase()} in ${project}`;
+  const head = `[Staxis ${sentryEnv}] ${level.toUpperCase()} in ${project}`;
   const body = truncate(title, 80);
   const tail = url ? `\n${url}` : '';
   return `${head}\n${body}\nseen ${count}×${tail}`;
@@ -108,7 +110,7 @@ function formatSmsForIssue(payload: SentryWebhookPayload): string {
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
 
-  const secret = process.env.SENTRY_WEBHOOK_SECRET;
+  const secret = env.SENTRY_WEBHOOK_SECRET;
   if (!secret) {
     log.warn('[sentry-webhook] SENTRY_WEBHOOK_SECRET not set; rejecting');
     return err('webhook not configured', { requestId, status: 503, code: ApiErrorCode.InternalError });
@@ -128,6 +130,34 @@ export async function POST(req: NextRequest) {
     return err('invalid json', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
+  // Webhook dedup (audit/concurrency #17). Sentry can re-deliver the
+  // same alert on transient receiver errors — without dedup, the
+  // duplicate would buzz Reeyen's phone twice. Synthesise an event id
+  // from a stable hash of the raw body: identical re-deliveries collide
+  // and short-circuit, but a fresh occurrence of the same issue
+  // (different body — different timestamp / count) still pages.
+  const eventId = 'sentry:' + crypto.createHash('sha256').update(rawBody).digest('hex').slice(0, 48);
+  const { error: dupErr } = await supabaseAdmin
+    .from('processed_sentry_webhooks')
+    .insert({
+      event_id: eventId,
+      webhook_kind: payload.action ?? 'unknown',
+      metadata: {
+        issue_id: payload.data?.issue?.id ?? null,
+        level: payload.data?.issue?.level ?? null,
+      },
+    });
+  if (dupErr) {
+    const code = (dupErr as { code?: string }).code;
+    if (code === '23505') {
+      log.info('[sentry-webhook] duplicate delivery, skipping', { requestId, eventId });
+      return ok({ skipped: true, reason: 'duplicate delivery' }, { requestId });
+    }
+    // Dedup table unreachable — fail closed; Sentry will retry.
+    log.error('[sentry-webhook] dedup insert failed', { requestId, err: dupErr });
+    return err('dedup table unhealthy', { requestId, status: 503, code: ApiErrorCode.InternalError });
+  }
+
   // Only fire on issue.created or issue.alert. Resolved/assigned/etc
   // aren't worth a phone buzz.
   const action = payload.action ?? '';
@@ -137,7 +167,7 @@ export async function POST(req: NextRequest) {
     return ok({ skipped: true, reason: 'non-alertable action' }, { requestId });
   }
 
-  const phone = (process.env.MANAGER_PHONE || process.env.OPS_ALERT_PHONE || '').trim();
+  const phone = (env.OPS_ALERT_PHONE || '').trim();
   if (!phone || !E164.test(phone)) {
     log.warn('[sentry-webhook] MANAGER_PHONE missing or invalid; skipping SMS', { requestId, hasPhone: !!phone });
     // 200 so Sentry doesn't retry. The doctor already surfaces this
@@ -162,9 +192,9 @@ export async function POST(req: NextRequest) {
 // GET for quick health-check from a browser without spamming SMS.
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
-  const phone = (process.env.MANAGER_PHONE || process.env.OPS_ALERT_PHONE || '').trim();
+  const phone = (env.OPS_ALERT_PHONE || '').trim();
   return ok({
-    configured: !!process.env.SENTRY_WEBHOOK_SECRET,
+    configured: !!env.SENTRY_WEBHOOK_SECRET,
     phoneValid: !!phone && E164.test(phone),
   }, { requestId });
 }

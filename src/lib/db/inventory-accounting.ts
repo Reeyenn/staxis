@@ -184,11 +184,14 @@ export async function getInventoryAccountingSummary(
   }
 
   // Receipts.
+  // Audit M5: include `received_at` in the row type so the YTD loop below
+  // doesn't have to double-cast `(o as unknown as { received_at: string })`.
   type OrderRow = {
     total_cost: number | null;
     quantity: number | null;
     unit_cost: number | null;
     inventory: { category: InventoryCategory } | Array<{ category: InventoryCategory }> | null;
+    received_at?: string | null;
   };
   for (const o of (ordersRaw ?? []) as OrderRow[]) {
     const cat = Array.isArray(o.inventory) ? o.inventory[0]?.category : o.inventory?.category;
@@ -287,10 +290,11 @@ export async function getInventoryAccountingSummary(
       byCategory: { housekeeping: 0, maintenance: 0, breakfast: 0 },
     });
   }
-  for (const o of (ytdOrders ?? []) as OrderRow[] & Array<{ received_at: string }>) {
+  for (const o of (ytdOrders ?? []) as OrderRow[]) {
     const cat = Array.isArray(o.inventory) ? o.inventory[0]?.category : o.inventory?.category;
     if (!cat || !cats.includes(cat)) continue;
-    const at = new Date((o as unknown as { received_at: string }).received_at);
+    if (!o.received_at) continue;  // skip rows without a usable receipt timestamp
+    const at = new Date(o.received_at);
     const key = `${at.getUTCFullYear()}-${String(at.getUTCMonth() + 1).padStart(2, '0')}-01`;
     const bucket = ytdBuckets.get(key);
     if (!bucket) continue;
@@ -300,7 +304,8 @@ export async function getInventoryAccountingSummary(
     bucket.receiptsValue += total;
     bucket.byCategory[cat] += total;
   }
-  for (const d of (ytdDiscards ?? []) as Array<{ cost_value: number | null; discarded_at: string }>) {
+  type YtdDiscardRow = { cost_value: number | null; discarded_at: string };
+  for (const d of (ytdDiscards ?? []) as YtdDiscardRow[]) {
     const at = new Date(d.discarded_at);
     const key = `${at.getUTCFullYear()}-${String(at.getUTCMonth() + 1).padStart(2, '0')}-01`;
     const bucket = ytdBuckets.get(key);

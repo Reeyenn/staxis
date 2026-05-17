@@ -95,7 +95,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     .from('properties')
     .select('id, name, timezone');
   if (propErr) {
-    log.error('seal-daily: properties query failed', { requestId, err: propErr as unknown as Error });
+    log.error('seal-daily: properties query failed', { requestId, err: propErr });
     return NextResponse.json({ ok: false, error: errToString(propErr), requestId }, { status: 500 });
   }
 

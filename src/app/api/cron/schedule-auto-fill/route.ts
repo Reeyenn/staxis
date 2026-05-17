@@ -32,7 +32,7 @@ import { autoAssignRooms } from '@/lib/calculations';
 import { runWithConcurrency } from '@/lib/parallel';
 import { propertyLocalDateOffset } from '@/lib/schedule/local-date';
 import { selectActiveCrewWithReasons } from '@/lib/schedule/active-crew';
-import { fromStaffRow } from '@/lib/db-mappers';
+import { fromStaffRow, parseStringField, parseNumberField } from '@/lib/db-mappers';
 import type { StaffMember } from '@/types';
 
 export const runtime = 'nodejs';
@@ -49,6 +49,26 @@ interface PropertyRow {
   stayover_day2_minutes: number | null;
   prep_minutes_per_activity: number | null;
   shift_minutes: number | null;
+}
+
+/** Runtime shape check for the SELECT in GET below. Audit finding H3. */
+function parsePropertyRow(raw: unknown): PropertyRow | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const id = parseStringField(r.id);
+  const name = parseStringField(r.name);
+  if (!id || !name) return null;
+  return {
+    id,
+    name,
+    timezone: parseStringField(r.timezone) ?? null,
+    checkout_minutes: parseNumberField(r.checkout_minutes) ?? null,
+    stayover_minutes: parseNumberField(r.stayover_minutes) ?? null,
+    stayover_day1_minutes: parseNumberField(r.stayover_day1_minutes) ?? null,
+    stayover_day2_minutes: parseNumberField(r.stayover_day2_minutes) ?? null,
+    prep_minutes_per_activity: parseNumberField(r.prep_minutes_per_activity) ?? null,
+    shift_minutes: parseNumberField(r.shift_minutes) ?? null,
+  };
 }
 
 interface RoomRow {
@@ -314,7 +334,11 @@ export async function GET(req: NextRequest) {
     if (propErr) throw propErr;
 
     const now = new Date();
-    const propertyJobs = (properties ?? []) as unknown as PropertyRow[];
+    const propertyJobs: PropertyRow[] = [];
+    for (const raw of properties ?? []) {
+      const p = parsePropertyRow(raw);
+      if (p) propertyJobs.push(p);
+    }
     log.info('[schedule-auto-fill] start', {
       requestId, target: targetParam, propertyCount: propertyJobs.length,
     });

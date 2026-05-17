@@ -26,8 +26,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
+import { log } from '@/lib/log';
 import { safeBaseUrl, redactPhone } from '@/lib/api-validate';
+import { recordWebhookLog } from '@/lib/event-recorder';
+import { parseStringField, parseUnionField } from '@/lib/db-mappers';
 import twilio from 'twilio';
+import { env } from '@/lib/env';
 
 // Twilio expects TwiML (XML), not JSON. An empty <Response/> tells Twilio
 // "handled, send no auto-reply" — we've fired our own sendSms() already.
@@ -71,7 +75,7 @@ function verifyTwilioSignature(
   params: Record<string, string>,
 ): boolean {
   if (!signature) return false;
-  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  const authToken = env.TWILIO_AUTH_TOKEN;
   if (!authToken) return false;
   try {
     return twilio.validateRequest(authToken, signature, url, params);
@@ -142,12 +146,12 @@ async function logHit(payload: Record<string, unknown>): Promise<void> {
         redacted[k] = v;
       }
     }
-    await supabaseAdmin.from('webhook_log').insert({
+    await recordWebhookLog({
       source: 'twilio-sms-reply',
       payload: redacted,
     });
   } catch (e) {
-    console.error('logHit failed:', errToString(e));
+    log.warn('sms-reply logHit failed', { err: e });
   }
 }
 
@@ -163,12 +167,7 @@ async function logHit(payload: Record<string, unknown>): Promise<void> {
  * production URL instead of a phishing host.
  */
 function resolveBaseUrl(): string {
-  const candidate =
-    process.env.NEXT_PUBLIC_APP_URL ||
-    process.env.NEXT_PUBLIC_SITE_URL ||
-    process.env.NEXT_PUBLIC_BASE_URL ||
-    'https://getstaxis.com';
-  return safeBaseUrl(candidate);
+  return safeBaseUrl(env.NEXT_PUBLIC_APP_URL);
 }
 
 export async function POST(req: NextRequest) {
@@ -185,9 +184,17 @@ export async function POST(req: NextRequest) {
     if (contentType.includes('application/json')) {
       const jsonText = await req.text();
       rawBodyForLog = jsonText;
-      const body = JSON.parse(jsonText) as { fromNumber?: string; From?: string; text?: string; Body?: string };
-      fromNumber = body.fromNumber ?? body.From;
-      text = body.text ?? body.Body;
+      // Audit M2: narrow each field at runtime — a JSON body that delivers
+      // `From: 15551234567` (number) instead of a string used to slip past
+      // the cast and crash `.replace()` downstream. typeof guards make the
+      // dev-only path symmetric with the form-encoded branch below.
+      let parsedJson: unknown;
+      try { parsedJson = JSON.parse(jsonText); } catch { parsedJson = null; }
+      if (parsedJson && typeof parsedJson === 'object') {
+        const body = parsedJson as Record<string, unknown>;
+        fromNumber = parseStringField(body.fromNumber) ?? parseStringField(body.From);
+        text = parseStringField(body.text) ?? parseStringField(body.Body);
+      }
     } else {
       const rawBody = await req.text();
       rawBodyForLog = rawBody;
@@ -219,7 +226,7 @@ export async function POST(req: NextRequest) {
     // there's no Twilio side to spoof.
     const signatureHeader = req.headers.get('x-twilio-signature');
     const isFormEncoded = !contentType.includes('application/json');
-    if (!isFormEncoded && process.env.NODE_ENV === 'production') {
+    if (!isFormEncoded && env.NODE_ENV === 'production') {
       await logHit({
         stage: 'json_rejected_in_production',
         contentType,
@@ -228,8 +235,8 @@ export async function POST(req: NextRequest) {
       return forbidden('json payloads not accepted in production');
     }
     if (isFormEncoded) {
-      const twilioWired = !!process.env.TWILIO_ACCOUNT_SID;
-      const haveToken = !!process.env.TWILIO_AUTH_TOKEN;
+      const twilioWired = !!env.TWILIO_ACCOUNT_SID;
+      const haveToken = !!env.TWILIO_AUTH_TOKEN;
       if (twilioWired && !haveToken) {
         await logHit({
           stage: 'config_drift_missing_auth_token',
@@ -249,6 +256,41 @@ export async function POST(req: NextRequest) {
           });
           return forbidden('invalid twilio signature');
         }
+      }
+    }
+
+    // Webhook dedup (audit/concurrency #7). Twilio re-delivers inbound
+    // webhooks on any non-2xx response or operator request — without
+    // dedup, the second delivery would fire another language-switch /
+    // ack SMS to the housekeeper. INSERT-then-detect-conflict using
+    // the same shape as stripe_processed_events.
+    const messageSid = formParams['MessageSid']
+      ?? formParams['SmsMessageSid']
+      ?? null;
+    if (messageSid) {
+      const { error: dupErr } = await supabaseAdmin
+        .from('processed_twilio_webhooks')
+        .insert({
+          message_sid: messageSid,
+          webhook_kind: 'inbound-sms',
+          metadata: {
+            from: fromNumber ?? null,
+            text_len: text?.length ?? 0,
+          },
+        });
+      if (dupErr) {
+        const code = (dupErr as { code?: string }).code;
+        if (code === '23505') {
+          // Already processed — Twilio's retry. Ack 2xx so they stop.
+          await logHit({ stage: 'duplicate_webhook', messageSid });
+          return twimlOk();
+        }
+        // Any OTHER error means the dedup table is unreachable. Fail
+        // closed — Twilio will retry; meanwhile we don't risk a true
+        // duplicate slipping through unchecked.
+        log.error('[sms-reply] dedup insert failed', { err: dupErr, messageSid });
+        await logHit({ stage: 'dedup_table_error', messageSid });
+        return new NextResponse('', { status: 503 });
       }
     }
 
@@ -328,7 +370,25 @@ export async function POST(req: NextRequest) {
       return twimlOk();
     }
 
-    const conf = (confs ?? [])[0];
+    const confRaw = (confs ?? [])[0];
+    // Audit M3: validate the shift_confirmations row shape at the SELECT
+    // boundary so a column rename produces "no_open_confirmation" instead
+    // of building a URL with `?pid=undefined`. We need token, property_id,
+    // shift_date as strings; language must be one of the supported codes.
+    const conf = confRaw && typeof confRaw === 'object' ? (() => {
+      const r = confRaw as Record<string, unknown>;
+      const token = parseStringField(r.token);
+      const property_id = parseStringField(r.property_id);
+      const shift_date = parseStringField(r.shift_date);
+      if (!token || !property_id || !shift_date) return null;
+      return {
+        token,
+        property_id,
+        shift_date,
+        staff_name: parseStringField(r.staff_name) ?? null,
+        language: parseUnionField(r.language, ['en', 'es'] as const, 'en'),
+      };
+    })() : null;
     if (!conf) {
       await logHit({ stage: 'no_open_confirmation', staffId: staff.id });
       return twimlOk();
@@ -353,10 +413,10 @@ export async function POST(req: NextRequest) {
 
     const firstName = (conf.staff_name ?? staff.name ?? 'there').split(' ')[0];
     const baseUrl = resolveBaseUrl();
-    const hkUrl = `${baseUrl}/housekeeper/${staff.id}?pid=${encodeURIComponent(conf.property_id as string)}`;
+    const hkUrl = `${baseUrl}/housekeeper/${staff.id}?pid=${encodeURIComponent(conf.property_id)}`;
 
     const renderLinkMessage = (targetLang: 'en' | 'es'): string => {
-      const label = formatShiftDate(conf.shift_date as string, targetLang);
+      const label = formatShiftDate(conf.shift_date, targetLang);
       return targetLang === 'es'
         ? `Hola ${firstName}! Tu lista para ${label}:\n${hkUrl}\n\nFor English, reply ENGLISH\n\n– ${hotelName}`
         : `Hi ${firstName}! Your list for ${label}:\n${hkUrl}\n\nPara español, responde ESPAÑOL\n\n– ${hotelName}`;
@@ -367,12 +427,22 @@ export async function POST(req: NextRequest) {
       // the staff row (canonical — what the admin Staff modal reads/writes
       // and what the HK personal page seeds from) and the current
       // shift_confirmation row.
-      const [{ error: staffUpdErr }, { error: confUpdErr }] = await Promise.all([
-        supabaseAdmin.from('staff').update({ language: next }).eq('id', staff!.id),
-        supabaseAdmin.from('shift_confirmations').update({ language: next }).eq('token', conf.token as string),
-      ]);
-      if (staffUpdErr) console.error('[sms-reply] staff language update failed:', staffUpdErr.message);
-      if (confUpdErr) console.error('[sms-reply] confirmation language update failed:', confUpdErr.message);
+      //
+      // Audit P0.3 (2026-05-17): previously these were two parallel
+      // .update()s with errors only logged. One could land and the other
+      // fail silently, then tomorrow's outgoing SMS picks the stale
+      // language from whichever side won the race. Now atomic via RPC —
+      // both rows update or neither does. See
+      // supabase/migrations/0134_rpc_set_staff_language.sql.
+      //
+      // M3 (type-safety audit): conf.token is already typed `string` by
+      // parseStringField above, so no inline cast is needed.
+      const { error: rpcErr } = await supabaseAdmin.rpc('staxis_set_staff_language', {
+        p_staff: staff!.id,
+        p_conf_token: conf.token,
+        p_lang: next,
+      });
+      if (rpcErr) log.warn('[sms-reply] set_staff_language RPC failed', { err: rpcErr });
     };
 
     // ── ESPAÑOL — switch to Spanish and resend the link ─────────────────────
@@ -390,7 +460,7 @@ export async function POST(req: NextRequest) {
     }
 
     // ── Anything else — friendly ack, point at their link ───────────────────
-    const lang: 'en' | 'es' = (conf.language as 'en' | 'es') ?? 'en';
+    const lang = conf.language;
     const hint = lang === 'es'
       ? `¡Gracias, ${firstName}! Abre tu enlace para ver tu lista.\n– ${hotelName}`
       : `Thanks, ${firstName}! Open your link to see your list.\n– ${hotelName}`;
@@ -399,10 +469,18 @@ export async function POST(req: NextRequest) {
     return twimlOk();
   } catch (err) {
     const msg = errToString(err);
-    console.error('sms-reply error:', msg);
+    log.error('sms-reply error', { err });
     try {
       await logHit({ stage: 'handler_error', error: msg });
-    } catch {}
+    } catch (logErr) {
+      // Audit M5: the previous } catch {} swallowed the meta-failure
+      // silently. logHit already self-catches internally, but a future
+      // refactor of that helper could let an exception through — surface
+      // it here so we'd notice.
+      log.warn('sms-reply: logHit failed in error path', {
+        err: logErr instanceof Error ? logErr : new Error(String(logErr)),
+      });
+    }
     // Always 200 so Twilio doesn't retry
     return twimlOk();
   }

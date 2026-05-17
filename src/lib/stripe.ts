@@ -19,10 +19,15 @@
  */
 
 import Stripe from 'stripe';
+import { env, isStripeConfigured } from '@/lib/env';
+import {
+  STRIPE_REQUEST_TIMEOUT_MS,
+  STRIPE_MAX_NETWORK_RETRIES,
+} from '@/lib/external-service-config';
 
-const SECRET_KEY = process.env.STRIPE_SECRET_KEY;
-const WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
-const DEFAULT_PRICE_ID = process.env.STRIPE_PRICE_ID;
+const SECRET_KEY = env.STRIPE_SECRET_KEY;
+const WEBHOOK_SECRET = env.STRIPE_WEBHOOK_SECRET;
+const DEFAULT_PRICE_ID = env.STRIPE_PRICE_ID;
 
 // Stripe is "configured" only when BOTH the secret key AND the webhook
 // secret are present. The dangerous half-state is SECRET_KEY set without
@@ -31,7 +36,10 @@ const DEFAULT_PRICE_ID = process.env.STRIPE_PRICE_ID;
 // Treating that as 'not configured' (so checkout refuses) is safer than
 // taking payment we can't reconcile. (Doctor's stripe_billing_configured
 // check surfaces this so you know to fix it before opening signups.)
-export const stripeIsConfigured = Boolean(SECRET_KEY) && Boolean(WEBHOOK_SECRET);
+//
+// Function (not const) so callers see the current state — tests mutate
+// process.env between cases.
+export const stripeIsConfigured = () => isStripeConfigured();
 
 // Stripe SDK is null when not configured. Every helper checks first.
 const stripe: Stripe | null = SECRET_KEY
@@ -51,6 +59,12 @@ const stripe: Stripe | null = SECRET_KEY
       // — that's the signal to remove this directive.
       apiVersion: '2025-04-30.basil',
       typescript: true,
+      // Per src/lib/external-service-config.ts: explicit timeout overrides
+      // the Stripe SDK default of 80s, which is way too long for the
+      // checkout button to hang on. maxNetworkRetries is safe because we
+      // pass idempotency keys on customers.create + checkout.sessions.create.
+      timeout: STRIPE_REQUEST_TIMEOUT_MS,
+      maxNetworkRetries: STRIPE_MAX_NETWORK_RETRIES,
       // Build a meaningful application name in the Stripe dashboard
       // request log so we can grep easily.
       appInfo: {

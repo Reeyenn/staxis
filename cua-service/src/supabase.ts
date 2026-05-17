@@ -8,24 +8,13 @@
  */
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { env } from './env.js';
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL;
-const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+// env.ts already validated NEXT_PUBLIC_SUPABASE_URL (with legacy SUPABASE_URL
+// fallback) and SUPABASE_SERVICE_ROLE_KEY at boot — both are guaranteed to
+// be set here.
 
-if (!SUPABASE_URL) {
-  throw new Error(
-    'Missing NEXT_PUBLIC_SUPABASE_URL (or SUPABASE_URL). Set it in Fly secrets: ' +
-    'fly secrets set NEXT_PUBLIC_SUPABASE_URL=https://xxx.supabase.co'
-  );
-}
-if (!SERVICE_ROLE_KEY) {
-  throw new Error(
-    'Missing SUPABASE_SERVICE_ROLE_KEY. Set it in Fly secrets: ' +
-    'fly secrets set SUPABASE_SERVICE_ROLE_KEY=eyJ...'
-  );
-}
-
-export const supabase: SupabaseClient = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+export const supabase: SupabaseClient = createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
   auth: {
     autoRefreshToken: false,
     persistSession: false,

@@ -26,6 +26,7 @@ import { executeBrowserAction, type BrowserAction } from './browser-tool.js';
 import { safeGoto } from './browser-utils/navigate.js';
 import { log } from './log.js';
 import { logClaudeUsage, getJobCostMicros } from './usage-log.js';
+import { env } from './env.js';
 
 // ── Cumulative-cost circuit-breaker (May 2026 audit pass-5) ───────────
 // Each phase has its own token + wallclock budget (~$2.40 max per phase),
@@ -34,7 +35,7 @@ import { logClaudeUsage, getJobCostMicros } from './usage-log.js';
 // covers ~5 successful mappings at typical spend (~$0.30-0.80 each);
 // hitting it usually means the agent is stuck looping. Configurable via
 // CUA_JOB_COST_CAP_MICROS env (in micro-dollars; default 5_000_000 = $5).
-const JOB_COST_CAP_MICROS = Number(process.env.CUA_JOB_COST_CAP_MICROS) || 5_000_000;
+const JOB_COST_CAP_MICROS = env.CUA_JOB_COST_CAP_MICROS;
 import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe } from './types.js';
 
 const MAX_AGENT_STEPS_LOGIN = 60;
@@ -391,6 +392,15 @@ async function mapLogin(
     // ~10% of their input-token cost. This was the dominant fix for the
     // 400K-token-budget exhaustion on CA's deep menus. (Pattern from
     // anthropic-quickstarts/browser-use-demo loop.py.)
+    // Deterministic per-turn idempotency key (audit/concurrency #15). If
+    // the SDK's built-in retry (maxRetries=1 in anthropic-client.ts) fires
+    // after the first request already reached Anthropic, the same key
+    // goes out — giving Anthropic the option to dedupe the second
+    // billing. Harmless if unsupported.
+    const idempotencyKey = ctx.jobId
+      ? `${ctx.jobId}:login:${stepIdx}`
+      : `anon:login:${stepIdx}:${Date.now()}`;
+
     const response = await anthropic.beta.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: MAX_OUTPUT_TOKENS_PER_TURN,
@@ -404,7 +414,10 @@ async function mapLogin(
       tools: [BROWSER_TOOL as unknown as Anthropic.Beta.Messages.BetaToolUnion],
       messages: truncateOldHistory(messages, HISTORY_KEEP_RECENT) as Anthropic.Beta.Messages.BetaMessageParam[],
       betas: ['prompt-caching-2024-07-31'],
-    }, ctx.signal ? { signal: ctx.signal } : undefined);
+    }, {
+      ...(ctx.signal ? { signal: ctx.signal } : {}),
+      headers: { 'idempotency-key': idempotencyKey },
+    });
 
     totalInputTokens += response.usage?.input_tokens ?? 0;
     totalOutputTokens += response.usage?.output_tokens ?? 0;
@@ -610,6 +623,11 @@ async function mapAction(args: {
     // ~10% of their input-token cost. This was the dominant fix for the
     // 400K-token-budget exhaustion on CA's deep menus. (Pattern from
     // anthropic-quickstarts/browser-use-demo loop.py.)
+    // Deterministic per-turn idempotency key (audit/concurrency #15).
+    const idempotencyKey = args.jobId
+      ? `${args.jobId}:${args.actionName}:${stepIdx}`
+      : `anon:${args.actionName}:${stepIdx}:${Date.now()}`;
+
     const response = await anthropic.beta.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: MAX_OUTPUT_TOKENS_PER_TURN,
@@ -623,7 +641,10 @@ async function mapAction(args: {
       tools: [BROWSER_TOOL as unknown as Anthropic.Beta.Messages.BetaToolUnion],
       messages: truncateOldHistory(messages, HISTORY_KEEP_RECENT) as Anthropic.Beta.Messages.BetaMessageParam[],
       betas: ['prompt-caching-2024-07-31'],
-    }, args.signal ? { signal: args.signal } : undefined);
+    }, {
+      ...(args.signal ? { signal: args.signal } : {}),
+      headers: { 'idempotency-key': idempotencyKey },
+    });
 
     totalInputTokens += response.usage?.input_tokens ?? 0;
 

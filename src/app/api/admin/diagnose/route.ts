@@ -26,7 +26,12 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
+import { env } from '@/lib/env';
+import {
+  externalFetch,
+  EXTERNAL_FETCH_SHORT_TIMEOUT_MS,
+} from '@/lib/external-service-config';
 
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
@@ -44,12 +49,15 @@ export async function GET(req: NextRequest) {
     // ── Twilio REST helpers ────────────────────────────────────────────────
     async function getTwilioNumbers(): Promise<unknown> {
       try {
-        const sid = process.env.TWILIO_ACCOUNT_SID;
-        const tok = process.env.TWILIO_AUTH_TOKEN;
+        const sid = env.TWILIO_ACCOUNT_SID;
+        const tok = env.TWILIO_AUTH_TOKEN;
         if (!sid || !tok) return { error: 'twilio env vars missing' };
-        const res = await fetch(
+        const res = await externalFetch(
           `https://api.twilio.com/2010-04-01/Accounts/${sid}/IncomingPhoneNumbers.json`,
-          { headers: { Authorization: `Basic ${Buffer.from(`${sid}:${tok}`).toString('base64')}` } },
+          {
+            headers: { Authorization: `Basic ${Buffer.from(`${sid}:${tok}`).toString('base64')}` },
+            timeoutMs: EXTERNAL_FETCH_SHORT_TIMEOUT_MS,
+          },
         );
         if (!res.ok) return { error: `twilio status ${res.status}` };
         const json = await res.json() as { incoming_phone_numbers?: Array<Record<string, unknown>> };
@@ -70,12 +78,15 @@ export async function GET(req: NextRequest) {
 
     async function getTwilioMessages(): Promise<unknown> {
       try {
-        const sid = process.env.TWILIO_ACCOUNT_SID;
-        const tok = process.env.TWILIO_AUTH_TOKEN;
+        const sid = env.TWILIO_ACCOUNT_SID;
+        const tok = env.TWILIO_AUTH_TOKEN;
         if (!sid || !tok) return { error: 'twilio env vars missing' };
-        const res = await fetch(
+        const res = await externalFetch(
           `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json?PageSize=20`,
-          { headers: { Authorization: `Basic ${Buffer.from(`${sid}:${tok}`).toString('base64')}` } },
+          {
+            headers: { Authorization: `Basic ${Buffer.from(`${sid}:${tok}`).toString('base64')}` },
+            timeoutMs: EXTERNAL_FETCH_SHORT_TIMEOUT_MS,
+          },
         );
         if (!res.ok) return { error: `twilio status ${res.status}` };
         const json = await res.json() as { messages?: Array<Record<string, unknown>> };

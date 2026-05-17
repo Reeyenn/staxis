@@ -269,19 +269,30 @@ export function redactPhone(phone: string | null | undefined): string {
 }
 
 /**
- * Redact an email for logs. Keeps the first character of the local-part
- * + the domain so a triager can spot patterns (same domain across rows,
- * obviously-test addresses) without seeing the full identity. Used by
- * paths that fall outside the Sentry scrub (raw console.{log,error},
- * server-side stdout) to avoid plaintext PII in Vercel function logs.
- *   "alice@example.com" → "a***@example.com"
+ * Redact an email for logs. Keeps the first char of the local-part plus
+ * the domain so an oncall can tell synthetic from real and roughly
+ * which tenant the user belongs to, without exposing the full address.
+ *   "mario@hilton.com" → "m***@hilton.com"
+ *   "mario@hilton.staxis.local" → "m***@hilton.staxis.local"
  */
 export function redactEmail(email: string | null | undefined): string {
   if (!email) return '<no-email>';
   const at = email.indexOf('@');
-  if (at <= 0) return '<malformed>';
-  const local = email.slice(0, at);
-  const domain = email.slice(at);
-  if (local.length === 0) return '<malformed>';
-  return `${local[0]}***${domain}`;
+  if (at < 1) return '<bad-email>';
+  return `${email[0]}***${email.slice(at)}`;
+}
+
+/**
+ * Redact a Stripe identifier (cus_, pi_, sub_, in_, evt_, …) for logs.
+ * Keeps the prefix + last-4 so an oncall can grep against the Stripe
+ * Dashboard without the full identifier leaking to log aggregators.
+ *   "cus_NeoSb1xLpfP7gQ" → "cus_***fP7gQ"
+ * If the input doesn't look like a Stripe id (no underscore, or too
+ * short to safely tail), returns a generic marker.
+ */
+export function redactStripeId(id: string | null | undefined): string {
+  if (!id) return '<no-id>';
+  const underscore = id.indexOf('_');
+  if (underscore < 0 || id.length < underscore + 6) return '<short>';
+  return `${id.slice(0, underscore + 1)}***${id.slice(-4)}`;
 }

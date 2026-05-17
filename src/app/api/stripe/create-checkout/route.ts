@@ -24,6 +24,8 @@ import {
   createCheckoutSession,
   stripeIsConfigured,
 } from '@/lib/stripe';
+import { env } from '@/lib/env';
+import { parseStringField } from '@/lib/db-mappers';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -37,7 +39,7 @@ interface Body {
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
 
-  if (!stripeIsConfigured) {
+  if (!stripeIsConfigured()) {
     return err('Billing is not yet configured. Contact support.', {
       requestId, status: 503, code: ApiErrorCode.UpstreamFailure,
     });
@@ -53,23 +55,33 @@ export async function POST(req: NextRequest) {
   if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
 
   // Load property + verify ownership.
-  const { data: property } = await supabaseAdmin
+  // Audit M8: declare the SELECT shape once and narrow each column with
+  // parseStringField, instead of four inline `as string` casts that lie
+  // when a column drifts.
+  const { data: propertyRaw } = await supabaseAdmin
     .from('properties')
     .select('id, owner_id, name, stripe_customer_id')
     .eq('id', pidV.value!)
     .maybeSingle();
-  if (!property) return err('Property not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  if (!property.owner_id || (property.owner_id as string) !== session.userId) {
+  if (!propertyRaw || typeof propertyRaw !== 'object') {
+    return err('Property not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+  }
+  const property = {
+    owner_id: parseStringField((propertyRaw as Record<string, unknown>).owner_id),
+    name: parseStringField((propertyRaw as Record<string, unknown>).name) ?? '',
+    stripe_customer_id: parseStringField((propertyRaw as Record<string, unknown>).stripe_customer_id),
+  };
+  if (!property.owner_id || property.owner_id !== session.userId) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 
   // Ensure we have a Stripe customer. Created during /signup if Stripe
   // was configured at the time; if it wasn't, lazily create one now.
-  let customerId = property.stripe_customer_id as string | null;
+  let customerId: string | null = property.stripe_customer_id ?? null;
   if (!customerId) {
     const cust = await createStripeCustomer({
       email: session.email ?? '',
-      propertyName: property.name as string,
+      propertyName: property.name,
       propertyId: pidV.value!,
     });
     if (!('ok' in cust) || !cust.ok) {
@@ -94,7 +106,7 @@ export async function POST(req: NextRequest) {
   // post-payment redirect landed on an attacker-controlled host —
   // useful for phishing follow-on flows. Use NEXT_PUBLIC_APP_URL with
   // a hardcoded fallback; allow only relative paths in returnUrl.
-  const CANONICAL_ORIGIN = process.env.NEXT_PUBLIC_APP_URL || 'https://getstaxis.com';
+  const CANONICAL_ORIGIN = env.NEXT_PUBLIC_APP_URL || 'https://getstaxis.com';
   const safeReturn = (() => {
     const v = typeof body.returnUrl === 'string' ? body.returnUrl : null;
     // Only accept paths like /dashboard or /settings/billing — never full URLs.

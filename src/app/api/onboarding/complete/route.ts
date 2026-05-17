@@ -39,7 +39,6 @@ const SERVICE_KEYS = [
   'deep_cleaning',
   'public_areas',
   'inventory',
-  'equipment',
 ] as const;
 
 type StaffEntry = {

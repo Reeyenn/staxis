@@ -23,6 +23,7 @@ import {
   parsePropertyMisconfiguredError,
   MISCONFIG_STATUSES,
 } from '@/lib/ml-misconfigured-events';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -35,7 +36,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   if (unauth) return unauth;
 
   const shardUrls = listMlShardUrls();
-  const mlServiceSecret = process.env.ML_SERVICE_SECRET;
+  const mlServiceSecret = env.ML_SERVICE_SECRET;
   if (shardUrls.length === 0 || !mlServiceSecret) {
     log.warn('ml-train-supply: ML service not configured — skipping', { requestId });
     return NextResponse.json({ ok: true, skipped: 'ML service not configured yet', requestId });
@@ -46,7 +47,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     .select('id, name')
     .order('id');
   if (error) {
-    log.error('ml-train-supply: properties read failed', { requestId, err: error as unknown as Error });
+    log.error('ml-train-supply: properties read failed', { requestId, err: error });
     return NextResponse.json({ ok: false, error: errToString(error) }, { status: 500 });
   }
 

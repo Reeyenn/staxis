@@ -52,6 +52,19 @@ type CacheKey = string;
 const cache = new Map<CacheKey, { snapshot: HotelSnapshot; expiresAt: number }>();
 const CACHE_TTL_MS = 30_000;
 
+// In-flight dedup (audit/concurrency #11). Without it, two simultaneous
+// agent turns for the same (property, role, staff) both miss the cache,
+// both fire ~5 DB queries, and the second's write overwrites the first
+// in the cache. Coalescing concurrent misses onto a single shared
+// promise removes the stampede.
+//
+// Multi-instance SLA: each Vercel function instance has its own `cache`.
+// Stale snapshots up to CACHE_TTL_MS=30s after a write are acceptable
+// here because the agent's reply latency dominates user perception of
+// "is this current" anyway, and the snapshot's primary downstream uses
+// (room counts, today summary) tolerate brief staleness.
+const inflight = new Map<CacheKey, Promise<HotelSnapshot>>();
+
 function cacheKey(propertyId: string, role: AppRole, staffId: string | null): CacheKey {
   return `${propertyId}::${role}::${staffId ?? '-'}`;
 }
@@ -71,7 +84,21 @@ export async function buildHotelSnapshot(
   if (cached && cached.expiresAt > Date.now()) {
     return cached.snapshot;
   }
+  const existing = inflight.get(key);
+  if (existing) return existing;
 
+  const pending = buildHotelSnapshotUncached(propertyId, role, staffId, key)
+    .finally(() => inflight.delete(key));
+  inflight.set(key, pending);
+  return pending;
+}
+
+async function buildHotelSnapshotUncached(
+  propertyId: string,
+  role: AppRole,
+  staffId: string | null,
+  key: CacheKey,
+): Promise<HotelSnapshot> {
   // Property name + timezone + total_rooms + room_inventory (cheap; one query).
   //
   // Round 14 (2026-05-14): room_inventory is the truth about how many rooms

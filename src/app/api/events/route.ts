@@ -22,6 +22,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession } from '@/lib/api-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { recordAppEvent } from '@/lib/event-recorder';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -63,20 +64,15 @@ export async function POST(req: NextRequest) {
     ? body.metadata
     : {};
 
-  const { error } = await supabaseAdmin.from('app_events').insert({
+  // recordAppEvent handles insert failure (structured console.error +
+  // rate-limited Sentry escalation) — never throws.
+  await recordAppEvent({
     property_id: propertyId ?? null,
     user_id: session.userId,
     user_role: userRole,
     event_type: eventType,
     metadata,
   });
-
-  if (error) {
-    // Don't surface to client — they don't care, and we don't want to
-    // bubble logging failures into the user's UI experience.
-    console.error('[events] insert failed', { requestId, error: error.message });
-    return ok({ logged: false }, { requestId });
-  }
 
   return ok({ logged: true }, { requestId });
 }

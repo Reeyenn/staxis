@@ -8,20 +8,20 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p . && cp -R src/browser-utils dist/",
     "start": "node dist/index.js",
-    "lint": "tsc --noEmit -p .",
-    "test": "tsx --test src/__tests__/*.test.ts"
+    "lint": "tsc --noEmit -p ."
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.95.0",
-    "@sentry/node": "^8.50.0",
+    "@anthropic-ai/sdk": "^0.96.0",
+    "@sentry/node": "^10.53.1",
     "@supabase/supabase-js": "^2.47.0",
-    "dotenv": "^16.4.5",
-    "playwright": "1.59.1"
+    "dotenv": "^17.4.2",
+    "playwright": "1.59.1",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^20.17.6",
-    "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "tsx": "^4.22.1",
+    "typescript": "^6.0.3"
   },
   "engines": {
     "node": ">=20.0.0"

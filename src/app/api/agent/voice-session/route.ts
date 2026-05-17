@@ -35,6 +35,11 @@ import { assertAudioBudget } from '@/lib/agent/cost-controls';
 import { PROMPT_VERSION } from '@/lib/agent/prompts';
 import { mintVoiceSession, VOICE_SESSION_DYNVAR_KEY } from '@/lib/agent/voice-session';
 import type { AppRole } from '@/lib/roles';
+import { env } from '@/lib/env';
+import {
+  externalFetch,
+  EXTERNAL_FETCH_SHORT_TIMEOUT_MS,
+} from '@/lib/external-service-config';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -64,8 +69,8 @@ export async function POST(req: NextRequest): Promise<Response> {
     return NextResponse.json({ ok: false, error: 'no access to this property', requestId }, { status: 403 });
   }
 
-  const apiKey = process.env.ELEVENLABS_API_KEY;
-  const agentId = process.env.ELEVENLABS_AGENT_ID;
+  const apiKey = env.ELEVENLABS_API_KEY;
+  const agentId = env.ELEVENLABS_AGENT_ID;
   if (!apiKey || !agentId) {
     log.error('[voice-session] ELEVENLABS_API_KEY or ELEVENLABS_AGENT_ID not configured', { requestId });
     return NextResponse.json({ ok: false, error: 'voice service not configured', requestId }, { status: 503 });
@@ -150,11 +155,14 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   // Fetch a signed WebSocket URL from ElevenLabs. The URL is single-use
   // and short-lived; the browser uses it to open the conversation socket.
+  // 10s timeout — signed URL mint is fast (typical <1s); if ElevenLabs is
+  // hung we want to surface "voice service unavailable" rather than
+  // block the user staring at a connecting spinner. (Audit finding #6.)
   let signedUrl: string;
   try {
-    const r = await fetch(
+    const r = await externalFetch(
       `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${encodeURIComponent(agentId)}`,
-      { headers: { 'xi-api-key': apiKey } },
+      { headers: { 'xi-api-key': apiKey }, timeoutMs: EXTERNAL_FETCH_SHORT_TIMEOUT_MS },
     );
     if (!r.ok) {
       const txt = await r.text().catch(() => '');

@@ -40,6 +40,7 @@
  */
 
 require('dotenv').config();
+const { env } = require('./env');
 const http = require('http');
 const { chromium } = require('playwright');
 const path = require('path');
@@ -69,25 +70,27 @@ const {
 const CONFIG = {
   // Choice Advantage
   CA_LOGIN_URL: 'https://www.choiceadvantage.com/choicehotels/Welcome.init',
-  CA_USERNAME:  process.env.CA_USERNAME,
-  CA_PASSWORD:  process.env.CA_PASSWORD,
+  CA_USERNAME:  env.CA_USERNAME,
+  CA_PASSWORD:  env.CA_PASSWORD,
 
-  // Supabase — accept either naming convention (see supabase-helpers.js)
-  SUPABASE_URL:              process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL,
-  SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
+  // Supabase — canonical name is NEXT_PUBLIC_SUPABASE_URL; env.js collapses
+  // the legacy bare SUPABASE_URL alias automatically (Phase 7 of the
+  // env-vars audit drops the alias after Railway env is rotated).
+  SUPABASE_URL:              env.NEXT_PUBLIC_SUPABASE_URL,
+  SUPABASE_SERVICE_ROLE_KEY: env.SUPABASE_SERVICE_ROLE_KEY,
 
   // HotelOps / Staxis
   // Single property per scraper deploy. PROPERTY_ID is the uuid of the
   // properties row this scraper belongs to.
-  PROPERTY_ID: process.env.HOTELOPS_PROPERTY_ID,
+  PROPERTY_ID: env.HOTELOPS_PROPERTY_ID,
 
   // Timezone — Railway runs UTC; set to hotel's local timezone so date
   // bucketing and the 6am/7pm triggers fire at the right local time.
-  TIMEZONE: process.env.TIMEZONE || 'America/Chicago',
+  TIMEZONE: env.TIMEZONE,
 
   // How often we wake up to check "is it 6am or 7pm yet?" — 5 min is
   // frequent enough to never miss an hour boundary but light on Railway.
-  TICK_MINUTES: parseInt(process.env.TICK_MINUTES || '5'),
+  TICK_MINUTES: env.TICK_MINUTES,
 
   // Session state file (persists login cookies between runs)
   SESSION_FILE: path.join(__dirname, '.session.json'),
@@ -149,7 +152,7 @@ function log(msg) {
  * actual value if scraper_status ever gets exposed.
  */
 function cronSecretFingerprint() {
-  const secret = process.env.CRON_SECRET || '';
+  const secret = env.CRON_SECRET || '';
   if (!secret) return null;
   return crypto.createHash('sha256').update(secret).digest('hex').slice(0, 8);
 }
@@ -737,7 +740,7 @@ async function run() {
   // service (Tier 3 multi-instance fleet — admin UI lives at
   // /api/admin/scraper-instances), being able to grep the logs by
   // "instance=alpha" vs "instance=default" makes incident triage cheap.
-  log(`Instance: ${process.env.SCRAPER_INSTANCE_ID || 'default'}`);
+  log(`Instance: ${env.SCRAPER_INSTANCE_ID}`);
   log(`Property: ${CONFIG.PROPERTY_ID}`);
   log(`Timezone: ${CONFIG.TIMEZONE} | Local hour: ${localHour()} | Today: ${todayISO()}`);
   log(`Tick every ${CONFIG.TICK_MINUTES} min — CSV pulls hourly 5am–11pm, dashboard numbers + OOO work orders every 15 min 5am–11pm`);
@@ -810,7 +813,7 @@ async function run() {
   }
 
   const browser = await chromium.launch({
-    headless: process.env.HEADED !== 'true',
+    headless: !env.HEADED,
     args: ['--no-sandbox', '--disable-setuid-sandbox'], // needed on Railway/Linux
   });
 
@@ -845,7 +848,7 @@ async function run() {
   await saveScraperSession(supabase, ACTIVE.propertyId, stateBlob, log);
 
   // Optional: on startup, pull today's CSV immediately — useful for smoke tests.
-  if (process.env.CSV_TEST_ON_STARTUP === 'true') {
+  if (env.CSV_TEST_ON_STARTUP) {
     log('CSV_TEST_ON_STARTUP enabled — running immediate CSV scrape...');
     try {
       await runCSVScrape(page, supabase, {
@@ -954,7 +957,7 @@ async function run() {
       // this instance's SCRAPER_INSTANCE_ID env, skip the tick (and
       // log) instead of writing. The new owner picks up on its next
       // tick. Overlap window collapses from 60s to ~5s (next tick).
-      const ourInstance = process.env.SCRAPER_INSTANCE_ID || 'default';
+      const ourInstance = env.SCRAPER_INSTANCE_ID;
       const { data: credRow, error: credErr } = await supabase
         .from('scraper_credentials')
         .select('scraper_instance, is_active')
@@ -1091,7 +1094,7 @@ async function run() {
   // Health endpoint: GET /health. Used by Railway's own probe (and useful
   // for debugging "is the server alive but the scraper stuck?"). No auth
   // required because it returns nothing sensitive.
-  const HTTP_PORT = parseInt(process.env.PORT || '3000', 10);
+  const HTTP_PORT = env.PORT ?? 3000;
   const httpServer = http.createServer(async (req, res) => {
     const url = req.url || '/';
     const method = req.method || 'GET';
@@ -1111,8 +1114,8 @@ async function run() {
 
     // Everything else requires auth.
     const auth = req.headers.authorization || '';
-    const expected = `Bearer ${process.env.CRON_SECRET || ''}`;
-    if (!process.env.CRON_SECRET) {
+    const expected = `Bearer ${env.CRON_SECRET || ''}`;
+    if (!env.CRON_SECRET) {
       // Misconfigured. Don't allow blanket access.
       log(`[http ${requestId}] CRON_SECRET not set — refusing ${method} ${url}`);
       res.writeHead(503, { 'Content-Type': 'application/json' });

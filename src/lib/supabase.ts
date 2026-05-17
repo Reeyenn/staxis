@@ -21,19 +21,12 @@
 // user_owns_property() for the 22 per-property tables).
 
 import { createClient, processLock, type SupabaseClient } from '@supabase/supabase-js';
+import { clientEnv } from '@/lib/env-client';
 
-const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-if (!url || !anonKey) {
-  // Fail loudly in the browser console — missing env vars at build time
-  // would have silently shipped an unusable app.
-  // eslint-disable-next-line no-console
-  console.error(
-    '[Supabase] Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY. ' +
-    'Fix: Vercel Project Settings → Environment Variables, then redeploy.'
-  );
-}
+// Required vars validated in clientEnv at module load (src/lib/env-client.ts).
+// No local guard needed — schema throws if either is missing.
+const url = clientEnv.NEXT_PUBLIC_SUPABASE_URL;
+const anonKey = clientEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 // In-process lock: serialize concurrent auth calls inside a single tab.
 // Uses Supabase's own `processLock` (re-exported from supabase-js → auth-js).
@@ -62,7 +55,7 @@ if (!url || !anonKey) {
 const g = globalThis as unknown as { __supabaseBrowser?: SupabaseClient };
 export const supabase: SupabaseClient =
   g.__supabaseBrowser ??
-  createClient(url ?? '', anonKey ?? '', {
+  createClient(url, anonKey, {
     auth: {
       // Persist the session across page loads via localStorage. This is the
       // default for `createClient` but we're being explicit to prevent a

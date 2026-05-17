@@ -52,6 +52,22 @@ interface CacheEntry {
 const CACHE_TTL_MS = 60_000;
 const cache = new Map<string, CacheEntry>();
 
+// In-flight deduplication (audit/concurrency #10). Multiple concurrent
+// requests on the same Vercel instance for the same `pid` used to each
+// fire their own SELECT and stampede the cache; now the first miss
+// starts a single shared promise that all later callers await.
+//
+// Multi-instance SLA: each Vercel function instance has its own `cache`
+// Map. A write that calls `invalidateConfig(pid)` only clears the
+// in-process cache; other instances continue serving stale config for
+// up to CACHE_TTL_MS. Acceptable for the fields here (timezone,
+// scraper-window hours, dashboard-staleness) because (a) they change
+// rarely and (b) a 60-second eventual-consistency window is harmless
+// for everything that reads them. If a future field needs tighter SLA,
+// move to a cross-instance KV (Upstash) instead of bolting more in-
+// memory state on this Map.
+const inflight = new Map<string, Promise<PropertyOpsConfig>>();
+
 export function invalidateConfig(pid: string): void {
   cache.delete(pid);
 }
@@ -72,41 +88,52 @@ export async function getPropertyOpsConfig(pid: string): Promise<PropertyOpsConf
     return cached.config;
   }
 
-  try {
-    const { data, error } = await supabaseAdmin
-      .from('properties')
-      .select('timezone, dashboard_stale_minutes, scraper_window_start_hour, scraper_window_end_hour')
-      .eq('id', pid)
-      .maybeSingle();
+  // Coalesce concurrent misses onto a single DB query.
+  const existing = inflight.get(pid);
+  if (existing) return existing;
 
-    if (error || !data) {
-      // Don't cache failures — next call retries. But return defaults so
-      // the UI doesn't break.
+  const pending = (async (): Promise<PropertyOpsConfig> => {
+    try {
+      const { data, error } = await supabaseAdmin
+        .from('properties')
+        .select('timezone, dashboard_stale_minutes, scraper_window_start_hour, scraper_window_end_hour')
+        .eq('id', pid)
+        .maybeSingle();
+
+      if (error || !data) {
+        // Don't cache failures — next call retries. But return defaults so
+        // the UI doesn't break.
+        return { pid, ...DEFAULT_PROPERTY_OPS_CONFIG };
+      }
+
+      const config: PropertyOpsConfig = {
+        pid,
+        timezone: (data.timezone as string) || DEFAULT_PROPERTY_OPS_CONFIG.timezone,
+        dashboardStaleMinutes:
+          typeof data.dashboard_stale_minutes === 'number'
+            ? data.dashboard_stale_minutes
+            : DEFAULT_PROPERTY_OPS_CONFIG.dashboardStaleMinutes,
+        scraperWindowStartHour:
+          typeof data.scraper_window_start_hour === 'number'
+            ? data.scraper_window_start_hour
+            : DEFAULT_PROPERTY_OPS_CONFIG.scraperWindowStartHour,
+        scraperWindowEndHour:
+          typeof data.scraper_window_end_hour === 'number'
+            ? data.scraper_window_end_hour
+            : DEFAULT_PROPERTY_OPS_CONFIG.scraperWindowEndHour,
+      };
+
+      cache.set(pid, { config, expiresAtMs: Date.now() + CACHE_TTL_MS });
+      return config;
+    } catch {
       return { pid, ...DEFAULT_PROPERTY_OPS_CONFIG };
+    } finally {
+      inflight.delete(pid);
     }
+  })();
 
-    const config: PropertyOpsConfig = {
-      pid,
-      timezone: (data.timezone as string) || DEFAULT_PROPERTY_OPS_CONFIG.timezone,
-      dashboardStaleMinutes:
-        typeof data.dashboard_stale_minutes === 'number'
-          ? data.dashboard_stale_minutes
-          : DEFAULT_PROPERTY_OPS_CONFIG.dashboardStaleMinutes,
-      scraperWindowStartHour:
-        typeof data.scraper_window_start_hour === 'number'
-          ? data.scraper_window_start_hour
-          : DEFAULT_PROPERTY_OPS_CONFIG.scraperWindowStartHour,
-      scraperWindowEndHour:
-        typeof data.scraper_window_end_hour === 'number'
-          ? data.scraper_window_end_hour
-          : DEFAULT_PROPERTY_OPS_CONFIG.scraperWindowEndHour,
-    };
-
-    cache.set(pid, { config, expiresAtMs: Date.now() + CACHE_TTL_MS });
-    return config;
-  } catch {
-    return { pid, ...DEFAULT_PROPERTY_OPS_CONFIG };
-  }
+  inflight.set(pid, pending);
+  return pending;
 }
 
 /**

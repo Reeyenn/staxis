@@ -61,6 +61,7 @@ import { requireAdminOrCron } from '@/lib/admin-auth';
 import { createHash } from 'crypto';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -435,8 +436,8 @@ async function checkSupabaseJwtExpiry(): Promise<Omit<Check, 'name' | 'durationM
   // they finally expire, Supabase starts rejecting every admin/anon request
   // with 401 and the app looks mysteriously broken. Warn ahead of time so
   // rotation can happen on a calm Tuesday, not at 2am during an outage.
-  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const anon = env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const service = env.SUPABASE_SERVICE_ROLE_KEY;
   const now = Math.floor(Date.now() / 1000);
   const WARN_WINDOW_SEC = 30 * 86400;                  // 30 days
 
@@ -526,9 +527,9 @@ function supabaseProjectRef(urlOrIss: string | null): string | null {
 }
 
 async function checkSupabaseProjectConsistency(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const url = env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = env.SUPABASE_SERVICE_ROLE_KEY;
+  const anonKey = env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   if (!url || !serviceKey) {
     // env_vars check covers the missing case; skip rather than double-report.
@@ -809,8 +810,8 @@ async function checkScraperHealthCronLiveness(): Promise<Omit<Check, 'name' | 'd
 }
 
 async function checkTwilioCredentials(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  const sid = process.env.TWILIO_ACCOUNT_SID;
-  const tok = process.env.TWILIO_AUTH_TOKEN;
+  const sid = env.TWILIO_ACCOUNT_SID;
+  const tok = env.TWILIO_AUTH_TOKEN;
   if (!sid || !tok) {
     return { status: 'skipped', detail: 'Twilio env vars missing (reported by env_vars check)' };
   }
@@ -864,8 +865,8 @@ async function checkTwilioCredentials(): Promise<Omit<Check, 'name' | 'durationM
  * needs runway.
  */
 async function checkTwilioBalance(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  const sid = process.env.TWILIO_ACCOUNT_SID;
-  const tok = process.env.TWILIO_AUTH_TOKEN;
+  const sid = env.TWILIO_ACCOUNT_SID;
+  const tok = env.TWILIO_AUTH_TOKEN;
   if (!sid || !tok) {
     return { status: 'skipped', detail: 'Twilio env vars missing (reported by env_vars check)' };
   }
@@ -873,8 +874,8 @@ async function checkTwilioBalance(): Promise<Omit<Check, 'name' | 'durationMs'>>
   // an outage doesn't require a code deploy. Defaults match Round 17:
   // a typical day burns ~$1–2 in SMS sends, so $10 = 5+ days runway
   // after warn, $5 = ~2 days before sends start failing.
-  const WARN_BELOW = parseFloat(process.env.TWILIO_BALANCE_WARN_USD ?? '10');
-  const FAIL_BELOW = parseFloat(process.env.TWILIO_BALANCE_FAIL_USD ?? '5');
+  const WARN_BELOW = env.TWILIO_BALANCE_WARN_USD;
+  const FAIL_BELOW = env.TWILIO_BALANCE_FAIL_USD;
   try {
     const res = await fetch(
       `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(sid)}/Balance.json`,
@@ -979,9 +980,9 @@ async function checkTwilioBalance(): Promise<Omit<Check, 'name' | 'durationMs'>>
  * but not SMS-capable (a voice-only number landed in the env var).
  */
 async function checkTwilioFromNumberRegistered(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  const sid = process.env.TWILIO_ACCOUNT_SID;
-  const tok = process.env.TWILIO_AUTH_TOKEN;
-  const from = process.env.TWILIO_FROM_NUMBER || process.env.TWILIO_PHONE_NUMBER;
+  const sid = env.TWILIO_ACCOUNT_SID;
+  const tok = env.TWILIO_AUTH_TOKEN;
+  const from = env.TWILIO_FROM_NUMBER;
   if (!sid || !tok || !from) {
     return { status: 'skipped', detail: 'Twilio env vars missing (reported by env_vars check)' };
   }
@@ -1038,7 +1039,7 @@ async function checkAlertPhoneShape(): Promise<Omit<Check, 'name' | 'durationMs'
   // no-op — which is the exact class of failure the alerting system was
   // supposed to catch in the first place. env_vars already checks it's set;
   // this check validates it's *usable*.
-  const phone = process.env.MANAGER_PHONE || process.env.OPS_ALERT_PHONE;
+  const phone = env.OPS_ALERT_PHONE;
   if (!phone) {
     return {
       status: 'skipped',
@@ -1070,7 +1071,7 @@ async function checkAlertPhoneShape(): Promise<Omit<Check, 'name' | 'durationMs'
 }
 
 async function checkCronSecretShape(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  const secret = process.env.CRON_SECRET;
+  const secret = env.CRON_SECRET;
   if (!secret) {
     return {
       status: 'fail',
@@ -1115,7 +1116,7 @@ async function checkCronSecretShape(): Promise<Omit<Check, 'name' | 'durationMs'
  * characters were missing from the Vercel anon key's JWT payload.
  */
 async function checkSupabaseAnonKeyShape(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const key = env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!key) {
     return {
       status: 'fail',
@@ -1155,7 +1156,7 @@ async function checkSupabaseAnonKeyShape(): Promise<Omit<Check, 'name' | 'durati
   }
 
   // Compare project ref to the URL env var — catch mismatched projects
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
+  const url = env.NEXT_PUBLIC_SUPABASE_URL ?? '';
   const urlRef = url.match(/https:\/\/([a-z0-9]+)\.supabase\.co/)?.[1];
   if (urlRef && payload.ref && urlRef !== payload.ref) {
     return {
@@ -1195,8 +1196,8 @@ async function checkSupabaseAnonKeyShape(): Promise<Omit<Check, 'name' | 'durati
  */
 async function checkSupabaseRealtimePublication(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   const REQUIRED_TABLES = [
-    'staff', 'rooms', 'work_orders', 'preventive_tasks', 'landscaping_tasks',
-    'inventory', 'inspections', 'handoff_logs', 'guest_requests', 'plan_snapshots',
+    'staff', 'rooms', 'work_orders', 'preventive_tasks',
+    'inventory', 'handoff_logs', 'guest_requests', 'plan_snapshots',
     'schedule_assignments', 'shift_confirmations', 'manager_notifications', 'scraper_status',
   ];
   try {
@@ -1438,7 +1439,7 @@ async function checkWatchdogAlertPath(): Promise<Omit<Check, 'name' | 'durationM
 
 /**
  * Verify Vercel's CRON_SECRET matches Railway's. The doctor runs on Vercel
- * so it can read process.env.CRON_SECRET locally; Railway writes the first
+ * so it can read env.CRON_SECRET locally; Railway writes the first
  * 8 hex chars of sha256(CRON_SECRET) into scraper_status[heartbeat] every
  * tick. We hash Vercel's secret the same way and compare.
  *
@@ -1453,7 +1454,7 @@ async function checkWatchdogAlertPath(): Promise<Omit<Check, 'name' | 'durationM
  */
 async function checkCronSecretCrossPlatform(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {
-    const vercelSecret = process.env.CRON_SECRET;
+    const vercelSecret = env.CRON_SECRET;
     if (!vercelSecret) {
       // env_vars / cron_secret_shape will already flag this — don't double-report.
       return { status: 'skipped', detail: 'Vercel CRON_SECRET not set (reported elsewhere).' };
@@ -1575,7 +1576,9 @@ const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   //   trigger ordering creates transient violations on DELETE). The heal
   //   RPC + daily cron are the safety net for commit-time drift.
   // 0116 Voice surface (2026-05-13): account voice prefs +
-  //   agent_costs.kind='audio' + voice_recordings 7-day retention table.
+  //   agent_costs.kind='audio'. (voice_recordings retention table was
+  //   retired 2026-05-14 with the ElevenLabs streaming switch and dropped
+  //   in 0141.)
   '0079', '0080', '0081', '0082', '0083',
   '0084', '0085', '0086', '0087', '0088', '0089',
   '0090', '0091', '0092', '0093', '0094',
@@ -1585,6 +1588,23 @@ const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   '0110', '0111', '0112', '0113', '0114',
   '0115', '0116', '0117', '0118', '0119',
   '0120', '0121', '0122', '0123',
+  // 0124 accounts.skip_2fa flag for investor demo bypass.
+  // 0125 total-rooms ↔ inventory invariant CHECK.
+  // 0126 staxis_api_limit_cleanup recreate with hardened search_path.
+  // 0127/0128 intentionally skipped.
+  // 0129 schedule_auto_fill_if_absent RPC.
+  // 0130 model_runs.cold_start_flag.
+  // 0131 maintenance simplification (work_orders + preventive_tasks).
+  // 0132 staxis_active_property_ids_for_nudges RPC (cost audit).
+  // 0133 REPLICA IDENTITY FULL on hot realtime tables (cost audit).
+  // 0134 intentionally skipped (no file on disk; legacy slot in prod).
+  // 0135-0139 RPC batch + concurrency audit fixes (post-rebase merge).
+  // 0140 intentionally skipped (no file on disk; legacy slot in prod).
+  // 0141 audit/data-model cleanup: drop 8 dead tables + dead FK columns.
+  // 0142 audit/data-model cleanup: enforce 8 missing FK constraints.
+  '0124', '0125', '0126', '0129', '0130', '0131', '0132', '0133',
+  '0135', '0136', '0137', '0138', '0139',
+  '0141', '0142',
 ];
 
 /**
@@ -2060,6 +2080,7 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'doctor-check',                  cadenceHours: 1,     description: 'hourly health check — runs the doctor battery + alerts Sentry/SMS on any fail (Round 13)' },
   { name: 'walkthrough-heal-stale',        cadenceHours: 30/60, description: 'every-30-min walkthrough recovery (heals stale runs left mid-walkthrough by crashed clients)' },
   { name: 'walkthrough-health-alert',      cadenceHours: 10/60, description: 'every-10-min walkthrough health monitor (alerts on stuck step counts)' },
+  { name: 'sweep-orphan-auth-users',       cadenceHours: 30/60, description: 'every-30-min orphan auth-user reconciler — deletes auth.users rows with no matching accounts row (audit fix #4)' },
   { name: 'seed-rooms-daily',              cadenceHours: 1,     description: 'hourly heal of partial rooms-today seeds against properties.room_inventory (Round 14)' },
   { name: 'seal-daily',                    cadenceHours: 1,     description: 'hourly per-property daily-seal' },
   // Round 17 (2026-05-15): two-slot cron that auto-builds Maria's
@@ -2270,7 +2291,7 @@ async function checkPropertyMisconfiguredRecent(): Promise<Omit<Check, 'name' | 
  * (the inventory page won't render the band UI).
  */
 async function checkInventoryAutoFillShape(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  const propertyId = process.env.SMOKE_PROPERTY_ID;
+  const propertyId = env.SMOKE_PROPERTY_ID;
   if (!propertyId) {
     return {
       status: 'ok',
@@ -2695,9 +2716,9 @@ export async function runAllChecks(useCache: boolean = true): Promise<DoctorRepo
   return {
     ok: summary.fail === 0,
     timestamp: new Date(startedAt).toISOString(),
-    vercelRegion: process.env.VERCEL_REGION,
-    vercelEnv:    process.env.VERCEL_ENV,
-    commitSha:    process.env.VERCEL_GIT_COMMIT_SHA,
+    vercelRegion: env.VERCEL_REGION,
+    vercelEnv:    env.VERCEL_ENV,
+    commitSha:    env.VERCEL_GIT_COMMIT_SHA,
     summary,
     checks: results,
   };
@@ -2720,9 +2741,9 @@ export async function runAllChecks(useCache: boolean = true): Promise<DoctorRepo
  *   - sk_test_ in production                         → 'fail'
  */
 async function checkStripeBillingConfigured(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  const sk = process.env.STRIPE_SECRET_KEY ?? '';
-  const wh = process.env.STRIPE_WEBHOOK_SECRET ?? '';
-  const pr = process.env.STRIPE_PRICE_ID ?? '';
+  const sk = env.STRIPE_SECRET_KEY ?? '';
+  const wh = env.STRIPE_WEBHOOK_SECRET ?? '';
+  const pr = env.STRIPE_PRICE_ID ?? '';
 
   const setCount = [sk, wh, pr].filter((v) => v.trim() !== '').length;
 
@@ -2764,7 +2785,7 @@ async function checkStripeBillingConfigured(): Promise<Omit<Check, 'name' | 'dur
   if (!pr.startsWith('price_')) {
     issues.push(`STRIPE_PRICE_ID doesn't start with price_ — got "${pr.slice(0, 6)}…"`);
   }
-  if (sk.startsWith('sk_test_') && process.env.VERCEL_ENV === 'production') {
+  if (sk.startsWith('sk_test_') && env.VERCEL_ENV === 'production') {
     issues.push('STRIPE_SECRET_KEY is a TEST key but VERCEL_ENV=production — customer payments will fail in production.');
   }
   if (issues.length > 0) {
@@ -2843,8 +2864,8 @@ async function checkMlServiceSecretStrength(): Promise<Omit<Check, 'name' | 'dur
  * is a fail because errors then silently disappear into the void.
  */
 async function checkSentryDsnShape(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  const dsnServer = process.env.SENTRY_DSN ?? '';
-  const dsnClient = process.env.NEXT_PUBLIC_SENTRY_DSN ?? '';
+  const dsnServer = env.SENTRY_DSN ?? '';
+  const dsnClient = env.NEXT_PUBLIC_SENTRY_DSN ?? '';
   const serverSet = dsnServer.trim() !== '';
   const clientSet = dsnClient.trim() !== '';
 
@@ -2913,7 +2934,7 @@ async function checkSentryDsnShape(): Promise<Omit<Check, 'name' | 'durationMs'>
  * the other not — the real broken case).
  */
 async function checkPicovoiceWakeWordConfig(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  const keySet = (process.env.PICOVOICE_ACCESS_KEY ?? '').trim() !== '';
+  const keySet = (env.PICOVOICE_ACCESS_KEY ?? '').trim() !== '';
 
   let ppnPresent = false;
   let ppnReadFailed = false;

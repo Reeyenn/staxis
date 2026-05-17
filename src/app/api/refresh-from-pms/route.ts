@@ -39,6 +39,7 @@ import { errToString } from '@/lib/utils';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { requireSessionOrCron, userHasPropertyAccess } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -63,28 +64,11 @@ interface ScraperResponse {
   code?: string;
 }
 
-/**
- * Map HK Center fields → our rooms.type. The CSV-driven plan_snapshot is
- * authoritative for the morning plan, but mid-day a room can drift —
- * a guest checks out early and goes from stayover→checkout, an arrival
- * gets pre-cleaned, etc. The HK Center page reflects PMS truth at the
- * moment of pull, so we re-derive type from service + condition.
- *
- *   service "Stay Over" anywhere      → 'stayover'
- *   else, condition 'dirty'           → 'checkout' (anything dirty needs full clean)
- *   else, condition 'clean'           → 'vacant'
- *
- * This is a deliberate simplification — we don't try to distinguish
- * "vacant clean carryover" from "fresh checkout that's already been
- * cleaned." Mario's UI doesn't surface that difference and our
- * housekeeper flow doesn't care. If it ever matters, plan_snapshots
- * has the true checkout/arrival flags.
- */
-function deriveRoomType(room: HkCenterRoom): 'checkout' | 'stayover' | 'vacant' {
-  if (/stay\s*over/i.test(room.service)) return 'stayover';
-  if (room.condition === 'dirty') return 'checkout';
-  return 'vacant';
-}
+// The type/status derivation moved into the RPC
+// (staxis_refresh_rooms_from_pms) so it happens inside the same
+// transaction as the writes. Rules are unchanged: service "Stay Over"
+// → 'stayover'; else condition 'dirty' → 'checkout'; else 'vacant'.
+// Existing 'inspected' / 'in_progress' states are preserved as before.
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   // Request id rides through the whole chain: Vercel route → Railway
@@ -142,8 +126,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   // ─── 1. Call the Railway scraper ─────────────────────────────────────
-  const scraperUrl = process.env.RAILWAY_SCRAPER_URL;
-  const cronSecret = process.env.CRON_SECRET;
+  const scraperUrl = env.RAILWAY_SCRAPER_URL;
+  const cronSecret = env.CRON_SECRET;
   if (!scraperUrl) {
     log.error('refresh-from-pms: RAILWAY_SCRAPER_URL not configured', { requestId, route: 'refresh-from-pms' });
     return err(
@@ -189,7 +173,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
   } catch (fetchErr) {
     log.error('refresh-from-pms: railway fetch failed', { requestId, route: 'refresh-from-pms', pid, err: fetchErr as Error });
-    return err(`Could not reach Railway scraper: ${errToString(fetchErr)}`, {
+    return err('Could not reach Railway scraper', {
       requestId, status: 502, code: ApiErrorCode.UpstreamFailure, headers,
     });
   }
@@ -220,228 +204,70 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     });
   }
 
-  // ─── 2. Upsert into rooms table ──────────────────────────────────────
-  // For each room from HK Center, find or create the (property, date,
-  // number) row and update its status + type + is_dnd. We preserve
-  // assigned_to / assigned_name / started_at / completed_at / issue_note
-  // because those fields are owned by Mario's UI or the housekeeper app —
-  // not PMS.
-
-  // Pull existing rooms for this property+date so we know which to
-  // INSERT vs UPDATE. Same pattern as populate-rooms-from-plan.
-  const { data: existing, error: readErr } = await supabaseAdmin
-    .from('rooms')
-    .select('id, number, status, started_at, completed_at')
-    .eq('property_id', pid)
-    .eq('date', date);
-  if (readErr) {
-    log.error('refresh-from-pms: rooms read failed', { requestId, route: 'refresh-from-pms', pid, err: readErr as unknown as Error });
-    return err(`rooms read failed: ${errToString(readErr)}`, {
-      requestId, status: 500, code: ApiErrorCode.InternalError, headers,
-    });
-  }
-
-  // Pull the property's master room inventory (migration 0025). Same
-  // motivation as in /api/populate-rooms-from-plan: Choice Advantage's
-  // Housekeeping Center page only returns rooms that need attention
-  // today (dirty / occupied / checkout / arrival). Vacant-clean rooms
-  // get omitted entirely. Without phantom-seeding the missing ones, the
-  // Rooms tab would only show ~20 of 74 every time Mario hits "Load
-  // Rooms from CSV." The phantom-seed loop after the upsert below adds
-  // any inventory member that's neither in the HK Center pull nor
-  // already in the DB as vacant + clean. Empty inventory (the schema
-  // default for un-onboarded properties) skips the union, preserving
-  // the old CA-only behavior.
+  // ─── 2. Atomic refresh via RPC ────────────────────────────────────────
+  // Audit P0.2 + P1.4 (2026-05-17): previously this route did the CA-rooms
+  // insert, N parallel per-row UPDATEs, and the phantom-seed upsert as
+  // three separate phases. `Promise.allSettled` tolerated partial UPDATE
+  // failures, and the phantom-seed only ran when all updates succeeded —
+  // so a single failed UPDATE skipped phantom-seeding entirely (board
+  // showed a hole). All three writes now go through one RPC:
+  // staxis_refresh_rooms_from_pms wraps everything in a transaction and
+  // does the per-row UPDATEs as a single bulk UPDATE … FROM (VALUES …)
+  // (one round-trip instead of N). See
+  // supabase/migrations/0133_rpc_refresh_rooms_from_pms.sql.
+  //
+  // We still pre-fetch `properties.room_inventory` (the master room list)
+  // because the RPC needs it as input for the phantom-seed step — that
+  // way the RPC stays a pure function of its inputs and doesn't have to
+  // re-derive it from yet another table.
   const { data: propRow, error: propErr } = await supabaseAdmin
     .from('properties')
     .select('room_inventory')
     .eq('id', pid)
     .maybeSingle();
   if (propErr) {
-    log.error('refresh-from-pms: property read failed', { requestId, route: 'refresh-from-pms', pid, err: propErr as unknown as Error });
-    return err(`property read failed: ${errToString(propErr)}`, {
+    log.error('refresh-from-pms: property read failed', { requestId, route: 'refresh-from-pms', pid, err: propErr });
+    return err('property read failed', {
       requestId, status: 500, code: ApiErrorCode.InternalError, headers,
     });
   }
   const inventory = (propRow?.room_inventory as string[] | null) ?? [];
-  const existingByNumber = new Map<string, { id: string; status: string; started_at: string | null; completed_at: string | null }>();
-  for (const r of existing ?? []) {
-    existingByNumber.set(String(r.number), {
-      id: String(r.id),
-      status: String(r.status),
-      started_at: r.started_at as string | null,
-      completed_at: r.completed_at as string | null,
+
+  // Reshape the scraper output for the RPC. The RPC takes snake_case
+  // is_dnd and the raw 'service' / 'condition' fields so it can do the
+  // type/status derivation in SQL.
+  const rpcRooms = rooms
+    .filter(r => !!r.number)
+    .map(r => ({
+      number: r.number,
+      condition: r.condition,
+      service: r.service,
+      is_dnd: r.isDnd,
+    }));
+
+  const { data: rpcData, error: rpcErr } = await supabaseAdmin.rpc('staxis_refresh_rooms_from_pms', {
+    p_property: pid,
+    p_date: date,
+    p_rooms: rpcRooms,
+    p_inventory: inventory,
+  });
+  if (rpcErr) {
+    log.error('refresh-from-pms: rpc failed', { requestId, route: 'refresh-from-pms', pid, err: rpcErr });
+    return err('rooms refresh failed', {
+      requestId, status: 500, code: ApiErrorCode.InternalError, headers,
+      // Whole transaction rolled back — nothing partial to report.
+      details: {
+        partiallySucceeded: false,
+        partial: { createdCount: 0, updatedCount: 0, totalFromHkCenter: rooms.length, phantomCreated: 0 },
+      },
     });
   }
 
-  const toInsert: Array<Record<string, unknown>> = [];
-  const updates: PromiseLike<unknown>[] = [];
-  let createdCount = 0;
-  let updatedCount = 0;
-
-  for (const room of rooms) {
-    if (!room.number) continue;
-    const newType = deriveRoomType(room);
-
-    // For status: HK Center says CLEAN or DIRTY. We map to our
-    // 'clean' / 'dirty' enum. We DELIBERATELY don't downgrade an
-    // 'inspected' room back to 'clean' — Maria's supervisor sign-off
-    // sticks until the next dirty state. Same protection for
-    // 'in_progress' (housekeeper started but not done).
-    //
-    // CRITICAL: 'in_progress' must be preserved regardless of what PMS
-    // reports. Mid-clean state is owned by the housekeeper app — PMS
-    // doesn't know about it. If the housekeeper marks the room "Done"
-    // in PMS before tapping Finish in our app, PMS flips clean while we
-    // still want the in_progress state to live until they tap Finish
-    // (which writes a cleaning_event row). Without this guard, a refresh
-    // mid-clean would downgrade them to 'clean' and we'd lose the audit
-    // event entirely.
-    const existingRoom = existingByNumber.get(room.number);
-    let newStatus: string = room.condition; // 'clean' | 'dirty'
-    if (existingRoom) {
-      if (existingRoom.status === 'inspected' && room.condition === 'clean') {
-        newStatus = 'inspected';
-      } else if (existingRoom.status === 'in_progress') {
-        // Housekeeper is mid-clean — only THEY can move this state via
-        // /api/housekeeper/room-action (Finish/Reset/Stop). PMS state is
-        // not authoritative here. Preserve regardless of clean/dirty.
-        newStatus = 'in_progress';
-      }
-    }
-
-    if (existingRoom) {
-      const patch: Record<string, unknown> = {
-        type: newType,
-        status: newStatus,
-        is_dnd: room.isDnd,
-      };
-      // If the new status is 'dirty' AND we're transitioning out of a
-      // completed state, clear the completion timestamps so the next
-      // clean records a fresh duration. Same rule the populate-rooms-
-      // from-plan route uses.
-      if (newStatus === 'dirty' && (existingRoom.status === 'clean' || existingRoom.status === 'inspected')) {
-        patch.started_at = null;
-        patch.completed_at = null;
-      }
-      updates.push(
-        supabaseAdmin
-          .from('rooms')
-          .update(patch)
-          .eq('id', existingRoom.id)
-          .then(({ error }) => { if (error) throw error; }),
-      );
-      updatedCount++;
-    } else {
-      toInsert.push({
-        property_id: pid,
-        number: room.number,
-        date,
-        type: newType,
-        status: newStatus,
-        priority: 'standard',
-        is_dnd: room.isDnd,
-      });
-      createdCount++;
-    }
-  }
-
-  // Apply inserts first so concurrent updates don't conflict (they
-  // shouldn't — different rows — but defensive).
-  if (toInsert.length > 0) {
-    const { error: insertErr } = await supabaseAdmin.from('rooms').insert(toInsert);
-    if (insertErr) {
-      log.error('refresh-from-pms: rooms insert failed', { requestId, route: 'refresh-from-pms', pid, err: insertErr as unknown as Error, attemptedInserts: toInsert.length });
-      // Use err() with `details` carrying the partial-success info — the
-      // UI's toast layer reads details.partiallySucceeded to switch from
-      // "all-failed red" to "partial yellow."
-      return err(`rooms insert failed: ${errToString(insertErr)}`, {
-        requestId, status: 500, code: ApiErrorCode.InternalError, headers,
-        details: {
-          partiallySucceeded: true,
-          partial: { createdCount: 0, updatedCount, totalFromHkCenter: rooms.length },
-        },
-      });
-    }
-  }
-
-  // Apply updates in parallel — each is a different row.
-  let updateFailures = 0;
-  if (updates.length > 0) {
-    const results = await Promise.allSettled(updates);
-    updateFailures = results.filter(r => r.status === 'rejected').length;
-    if (updateFailures > 0) {
-      log.error('refresh-from-pms: rooms update partial failure', { requestId, route: 'refresh-from-pms', pid, updateFailures, totalUpdates: updates.length });
-      return err(`${updateFailures} rooms updates failed`, {
-        requestId, status: 500, code: ApiErrorCode.InternalError, headers,
-        details: {
-          // partiallySucceeded: tells the toast layer "some rooms WERE
-          // refreshed; a subset failed." UI can decide whether to show
-          // a warning toast (yellow) instead of an error toast (red).
-          partiallySucceeded: true,
-          partial: { createdCount, updatedCount: updatedCount - updateFailures, totalFromHkCenter: rooms.length },
-        },
-      });
-    }
-  }
-
-  // ─── 3. Phantom-seed missing inventory rooms ─────────────────────────
-  // Anything in `properties.room_inventory` that the HK Center pull
-  // didn't mention and that doesn't already have a row for this date
-  // gets seeded as vacant + clean. This is what makes the "Load Rooms
-  // from CSV" button result in all 74 rooms on the board, not just the
-  // ~20 dirty/occupied/checkout subset CA bothers to return.
-  //
-  // Reasoning is identical to populate-rooms-from-plan's phantom-seed
-  // step (lines ~281-325). Kept in lockstep so a Mario click here and
-  // the morning seeder both produce a complete board.
-  //
-  // Safety:
-  //   • upsert with onConflict='property_id,date,number' silently no-ops
-  //     if a parallel request raced us to the row.
-  //   • We diff against `existingByNumber` (rows already in the table at
-  //     the start of the request) AND against the HK Center pull (just
-  //     inserted). Together they cover every row that should NOT be
-  //     phantom-seeded.
-  let phantomCreated = 0;
-  if (inventory.length > 0) {
-    const hkCenterNumbers = new Set(rooms.map((r) => r.number).filter(Boolean));
-    const phantomRows: Array<Record<string, unknown>> = [];
-    for (const num of inventory) {
-      if (!num) continue;
-      if (hkCenterNumbers.has(num)) continue;       // CA already covered it (insert OR update path above)
-      if (existingByNumber.has(num)) continue;      // row pre-existed — leave it alone (could be in_progress, etc.)
-      phantomRows.push({
-        property_id: pid,
-        number: num,
-        date,
-        type: 'vacant',
-        status: 'clean',
-        priority: 'standard',
-        is_dnd: false,
-      });
-    }
-    if (phantomRows.length > 0) {
-      const { error: phantomErr } = await supabaseAdmin
-        .from('rooms')
-        .upsert(phantomRows, { onConflict: 'property_id,date,number' });
-      if (phantomErr) {
-        // Phantom-seed failure is degraded but not fatal — the CA-side
-        // updates already landed. Log and surface a partial success so the
-        // UI toast can warn rather than scream.
-        log.error('refresh-from-pms: phantom-seed insert failed', { requestId, route: 'refresh-from-pms', pid, err: phantomErr as unknown as Error, attempted: phantomRows.length });
-        return err(`phantom-seed insert failed: ${errToString(phantomErr)}`, {
-          requestId, status: 500, code: ApiErrorCode.InternalError, headers,
-          details: {
-            partiallySucceeded: true,
-            partial: { createdCount, updatedCount, totalFromHkCenter: rooms.length, phantomCreated: 0 },
-          },
-        });
-      }
-      phantomCreated = phantomRows.length;
-      createdCount += phantomCreated;
-    }
-  }
+  const result = (rpcData ?? {}) as { created_count?: number; updated_count?: number; phantom_created?: number };
+  let createdCount = Number(result.created_count ?? 0);
+  const updatedCount = Number(result.updated_count ?? 0);
+  const phantomCreated = Number(result.phantom_created ?? 0);
+  createdCount += phantomCreated;
 
   log.info('refresh-from-pms: ok', {
     requestId,

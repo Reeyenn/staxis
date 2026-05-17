@@ -20,7 +20,7 @@ import { getOrMintRequestId } from '@/lib/log';
 
 import { ALL_ROLES, isValidRole, type AppRole } from '@/lib/roles';
 import { writeAudit } from '@/lib/audit';
-import { redactEmail } from '@/lib/api-validate';
+import { captureException } from '@/lib/sentry';
 
 type AccountRole = AppRole;
 
@@ -239,11 +239,26 @@ export async function POST(req: NextRequest) {
       rollbackError = errToString(rollErr);
     }
     if (rollbackError) {
-      // Security review 2026-05-16 (P3): avoid plaintext email in raw
-      // Vercel logs (the Sentry scrub doesn't run on console.error).
-      // Mask to local-part-initial + domain, e.g. "a***@example.com".
-      const maskedEmail = redactEmail(normalizedEmail);
-      console.error(`[accounts:POST] AUTH ROLLBACK FAILED — orphaned auth.users row id=${authData.user.id} email=${maskedEmail}. Insert error: ${errToString(insErr)}. Rollback error: ${rollbackError}`);
+      // Email deliberately omitted — see .claude/reports/logging-pii-audit.md
+      // H1 (May 2026). The auth.users.id is enough to find the orphaned row
+      // in Supabase; the caller-facing message below still names the username
+      // for the admin to clean up.
+      log.error('[accounts:POST] AUTH ROLLBACK FAILED — orphaned auth.users row', {
+        requestId,
+        authUserId: authData.user.id,
+        insertError: errToString(insErr),
+        rollbackError,
+      });
+      // Audit finding #4: page the on-call when rollback fails. The
+      // orphan auth-user sweeper cron will clean up async, but Sentry
+      // is the breadcrumb that tells us rollback flakes are happening.
+      captureException(new Error(`auth rollback failed: ${rollbackError}`), {
+        subsystem: 'auth',
+        failure_mode: 'rollback_failed',
+        auth_user_id: authData.user.id,
+        flow: 'accounts.create',
+        insert_error: errToString(insErr),
+      });
       return err(
         `Failed to create account record. ALSO: rollback of the auth user failed — orphaned auth row remains for username "${normalizedUsername}". Have an admin delete the row manually in Supabase Authentication.`,
         { requestId, status: 500, code: ApiErrorCode.InternalError },

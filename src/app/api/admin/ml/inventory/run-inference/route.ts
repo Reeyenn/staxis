@@ -16,6 +16,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { getPropertyOpsConfig } from '@/lib/property-config';
 import { resolveMlShardUrl } from '@/lib/ml-routing';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -46,7 +47,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   const mlServiceUrl = resolveMlShardUrl(body.propertyId);
-  const mlServiceSecret = process.env.ML_SERVICE_SECRET;
+  const mlServiceSecret = env.ML_SERVICE_SECRET;
   if (!mlServiceUrl || !mlServiceSecret) {
     return NextResponse.json({
       ok: false,

@@ -94,7 +94,7 @@ export async function POST(req: NextRequest) {
       .eq('property_id', propertyId)
       .maybeSingle();
     if (readErr) {
-      log.error('scraper-assign: read failed', { requestId, propertyId, err: readErr as unknown as Error });
+      log.error('scraper-assign: read failed', { requestId, propertyId, err: readErr });
       return err('failed to read scraper_credentials', { requestId, status: 500 });
     }
     if (!existing) {
@@ -120,7 +120,7 @@ export async function POST(req: NextRequest) {
       .update({ scraper_instance: newInstance })
       .eq('property_id', propertyId);
     if (upErr) {
-      log.error('scraper-assign: update failed', { requestId, propertyId, err: upErr as unknown as Error });
+      log.error('scraper-assign: update failed', { requestId, propertyId, err: upErr });
       return err('failed to reassign property', { requestId, status: 500 });
     }
 

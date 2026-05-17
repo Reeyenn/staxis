@@ -13,8 +13,9 @@
  */
 
 import { captureException, captureMessage } from './sentry.js';
+import { env } from './env.js';
 
-const isProd = process.env.NODE_ENV === 'production';
+const isProd = env.NODE_ENV === 'production';
 
 interface LogContext {
   jobId?: string;
@@ -73,9 +74,9 @@ export const log = {
  * can attribute "which worker dropped this job" when debugging.
  */
 export function makeWorkerId(): string {
-  const prefix = process.env.WORKER_ID_PREFIX ?? 'cua';
-  const flyMachine = process.env.FLY_MACHINE_ID;
-  const flyRegion = process.env.FLY_REGION;
+  const prefix = env.WORKER_ID_PREFIX;
+  const flyMachine = env.FLY_MACHINE_ID;
+  const flyRegion = env.FLY_REGION;
   if (flyMachine) return `${prefix}-${flyRegion ?? 'unk'}-${flyMachine}`;
-  return `${prefix}-${process.env.HOSTNAME ?? 'local'}`;
+  return `${prefix}-${env.HOSTNAME}`;
 }
