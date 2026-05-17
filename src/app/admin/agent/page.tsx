@@ -94,7 +94,12 @@ export default function AdminAgentPage() {
   useEffect(() => {
     if (!user || user.role !== 'admin') return;
     void fetchMetrics();
-    const interval = setInterval(fetchMetrics, 30_000);
+    // Cost-hotpaths audit #2: admin metrics is not latency-sensitive — the
+    // HealthBanner already polls at 60s and that's the right cadence for
+    // every "watch the fleet" admin tab. Bumping 30→60s halves request
+    // volume across all open admin tabs without changing user-visible
+    // freshness.
+    const interval = setInterval(fetchMetrics, 60_000);
     return () => clearInterval(interval);
   }, [user]);
 

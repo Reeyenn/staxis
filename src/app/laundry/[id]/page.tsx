@@ -123,7 +123,12 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
     };
 
     void loadBootstrap();
-    const interval = setInterval(loadBootstrap, 30_000);
+    // Cost-hotpaths audit #2: laundry bootstrap is a wide read that the
+    // laundry tech doesn't need refreshed every 30s. 60s aligns with the
+    // admin HealthBanner cadence and roughly halves request volume for
+    // every open laundry tab — Mario rarely keeps this open across many
+    // properties simultaneously but the bootstrap query is heavy.
+    const interval = setInterval(loadBootstrap, 60_000);
     return () => { cancelled = true; clearInterval(interval); };
   }, [pid, laundryPersonId, today]);
 
