@@ -24,15 +24,19 @@
 // the user can scroll through both surfaces interleaved.
 
 import type { NextRequest } from 'next/server';
-import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { createConversation } from '@/lib/agent/memory';
 import { assertAudioBudget } from '@/lib/agent/cost-controls';
 import { PROMPT_VERSION } from '@/lib/agent/prompts';
 import type { AppRole } from '@/lib/roles';
 import { env } from '@/lib/env';
+import {
+  externalFetch,
+  EXTERNAL_FETCH_SHORT_TIMEOUT_MS,
+} from '@/lib/external-service-config';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -51,22 +55,22 @@ export async function POST(req: NextRequest): Promise<Response> {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ ok: false, error: 'invalid json', requestId }, { status: 400 });
+    return err('invalid json', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   if (!body.propertyId) {
-    return NextResponse.json({ ok: false, error: 'propertyId required', requestId }, { status: 400 });
+    return err('propertyId required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
   const hasAccess = await userHasPropertyAccess(auth.userId, body.propertyId);
   if (!hasAccess) {
-    return NextResponse.json({ ok: false, error: 'no access to this property', requestId }, { status: 403 });
+    return err('no access to this property', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 
   const apiKey = env.ELEVENLABS_API_KEY;
   const agentId = env.ELEVENLABS_AGENT_ID;
   if (!apiKey || !agentId) {
     log.error('[voice-session] ELEVENLABS_API_KEY or ELEVENLABS_AGENT_ID not configured', { requestId });
-    return NextResponse.json({ ok: false, error: 'voice service not configured', requestId }, { status: 503 });
+    return err('voice service not configured', { requestId, status: 503, code: ApiErrorCode.UpstreamFailure });
   }
 
   // Resolve account + staff context. Same shape the text /command route uses.
@@ -76,7 +80,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     .eq('data_user_id', auth.userId)
     .maybeSingle();
   if (!account) {
-    return NextResponse.json({ ok: false, error: 'account not found', requestId }, { status: 404 });
+    return err('account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
   const accountId = account.id as string;
   const role = ((account.role as string) ?? 'staff') as AppRole;
@@ -88,14 +92,11 @@ export async function POST(req: NextRequest): Promise<Response> {
   try {
     const budget = await assertAudioBudget({ userId: accountId, propertyId: body.propertyId });
     if (!budget.ok) {
-      return NextResponse.json(
-        { ok: false, error: budget.message, code: budget.reason, requestId },
-        { status: 429 },
-      );
+      return err(budget.message, { requestId, status: 429, code: budget.reason });
     }
   } catch (e) {
     log.error('[voice-session] audio budget check failed', { requestId, e });
-    return NextResponse.json({ ok: false, error: 'audio budget check failed', requestId }, { status: 500 });
+    return err('audio budget check failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
   let staffId: string | null = null;
@@ -123,54 +124,53 @@ export async function POST(req: NextRequest): Promise<Response> {
     });
   } catch (e) {
     log.error('[voice-session] failed to create conversation', { requestId, e });
-    return NextResponse.json({ ok: false, error: 'failed to create conversation', requestId }, { status: 500 });
+    return err('failed to create conversation', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
   // Fetch a signed WebSocket URL from ElevenLabs. The URL is single-use
   // and short-lived; the browser uses it to open the conversation socket.
+  // 10s timeout — signed URL mint is fast (typical <1s); if ElevenLabs is
+  // hung we want to surface "voice service unavailable" rather than
+  // block the user staring at a connecting spinner. (Audit finding #6.)
   let signedUrl: string;
   try {
-    const r = await fetch(
+    const r = await externalFetch(
       `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${encodeURIComponent(agentId)}`,
-      { headers: { 'xi-api-key': apiKey } },
+      { headers: { 'xi-api-key': apiKey }, timeoutMs: EXTERNAL_FETCH_SHORT_TIMEOUT_MS },
     );
     if (!r.ok) {
       const txt = await r.text().catch(() => '');
       log.error('[voice-session] ElevenLabs signed-url fetch failed', { requestId, status: r.status, body: txt.slice(0, 200) });
-      return NextResponse.json({ ok: false, error: 'voice service unavailable', requestId }, { status: 502 });
+      return err('voice service unavailable', { requestId, status: 502, code: ApiErrorCode.UpstreamFailure });
     }
     const payload = await r.json() as { signed_url?: string };
     if (!payload.signed_url) {
       log.error('[voice-session] ElevenLabs response missing signed_url', { requestId });
-      return NextResponse.json({ ok: false, error: 'voice service returned unexpected payload', requestId }, { status: 502 });
+      return err('voice service returned unexpected payload', { requestId, status: 502, code: ApiErrorCode.UpstreamFailure });
     }
     signedUrl = payload.signed_url;
   } catch (e) {
     log.error('[voice-session] ElevenLabs request error', { requestId, e });
-    return NextResponse.json({ ok: false, error: 'voice service unreachable', requestId }, { status: 502 });
+    return err('voice service unreachable', { requestId, status: 502, code: ApiErrorCode.UpstreamFailure });
   }
 
-  return NextResponse.json({
-    ok: true,
-    data: {
-      signedUrl,
-      agentId,
-      conversationId,
-      // These are forwarded by ElevenLabs to /api/agent/voice-brain on
-      // every webhook call. The brain reconstructs ToolContext from them.
-      // Values are constrained to string|number|boolean per the SDK
-      // signature; we encode the optional staffId as the empty string
-      // (instead of null) so the brain can treat it uniformly.
-      dynamicVariables: {
-        staxis_account_id: accountId,
-        staxis_user_id: auth.userId,
-        staxis_property_id: body.propertyId,
-        staxis_role: role,
-        staxis_staff_id: staffId ?? '',
-        staxis_conversation_id: conversationId,
-        staxis_request_id: requestId,
-      },
+  return ok({
+    signedUrl,
+    agentId,
+    conversationId,
+    // These are forwarded by ElevenLabs to /api/agent/voice-brain on
+    // every webhook call. The brain reconstructs ToolContext from them.
+    // Values are constrained to string|number|boolean per the SDK
+    // signature; we encode the optional staffId as the empty string
+    // (instead of null) so the brain can treat it uniformly.
+    dynamicVariables: {
+      staxis_account_id: accountId,
+      staxis_user_id: auth.userId,
+      staxis_property_id: body.propertyId,
+      staxis_role: role,
+      staxis_staff_id: staffId ?? '',
+      staxis_conversation_id: conversationId,
+      staxis_request_id: requestId,
     },
-    requestId,
-  });
+  }, { requestId });
 }

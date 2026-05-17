@@ -127,6 +127,10 @@ const ServerSchema = z.object({
   MODEL_OVERRIDE: z.string().optional(),
   SMOKE_PROPERTY_ID: z.string().uuid().optional(),
   TIMEZONE: z.string().default('America/Chicago'),
+
+  // Kill-switch for the cron/sweep-orphan-auth-users job — set to "true"
+  // to disable the sweep (e.g. during incident triage).
+  DISABLE_ORPHAN_AUTH_SWEEP: z.string().optional(),
 });
 
 type Env = z.infer<typeof ServerSchema>;

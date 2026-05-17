@@ -25,6 +25,10 @@ import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { MODELS, PRICING } from '@/lib/agent/llm';
 import {
+  ANTHROPIC_WALKTHROUGH_TIMEOUT_MS,
+  ANTHROPIC_MAX_RETRIES,
+} from '@/lib/external-service-config';
+import {
   reserveCostBudget,
   finalizeCostReservation,
   cancelCostReservation,
@@ -96,7 +100,17 @@ function client(): Anthropic {
   if (_client) return _client;
   const apiKey = env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set');
-  _client = new Anthropic({ apiKey });
+  // Per src/lib/external-service-config.ts: explicit timeout < route's
+  // maxDuration (30s), maxRetries=1 so a hiccup doesn't blow past the
+  // function ceiling. Pre-2026-05-17 this was `new Anthropic({ apiKey })`
+  // — no timeout, SDK default 2 retries — which the audit flagged as the
+  // highest-blast-radius finding (every onboarding user hung 60s on a
+  // bad Anthropic regional incident).
+  _client = new Anthropic({
+    apiKey,
+    timeout: ANTHROPIC_WALKTHROUGH_TIMEOUT_MS,
+    maxRetries: ANTHROPIC_MAX_RETRIES,
+  });
   return _client;
 }
 

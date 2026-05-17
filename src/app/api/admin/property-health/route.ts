@@ -33,11 +33,20 @@ export async function GET(req: NextRequest) {
   const pid = idV.value!;
 
   // ─── Property ───────────────────────────────────────────────────────────
+  // Specific fields needed for this route's response shape (different from
+  // lib/db/properties' PROPERTY_FIELDS — this one needs subscription and
+  // service columns the standard Property type doesn't include).
+  // Audit follow-up 2026-05-17.
+  const PROPERTY_HEALTH_FIELDS =
+    'id, name, total_rooms, subscription_status, trial_ends_at, ' +
+    'stripe_customer_id, stripe_subscription_id, services_enabled, ' +
+    'property_kind, onboarding_source, pms_type, pms_connected, ' +
+    'last_synced_at, timezone, created_at, owner_id';
   const { data: property } = await supabaseAdmin
     .from('properties')
-    .select('*')
+    .select(PROPERTY_HEALTH_FIELDS)
     .eq('id', pid)
-    .maybeSingle();
+    .maybeSingle<Record<string, unknown>>();
 
   if (!property) {
     return err('Property not found', { requestId, status: 404, code: ApiErrorCode.NotFound });

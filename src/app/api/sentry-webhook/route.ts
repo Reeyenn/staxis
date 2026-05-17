@@ -43,6 +43,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { sendSms } from '@/lib/sms';
 import { captureException } from '@/lib/sentry';
 import { env } from '@/lib/env';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -127,6 +128,34 @@ export async function POST(req: NextRequest) {
     payload = JSON.parse(rawBody);
   } catch {
     return err('invalid json', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  }
+
+  // Webhook dedup (audit/concurrency #17). Sentry can re-deliver the
+  // same alert on transient receiver errors — without dedup, the
+  // duplicate would buzz Reeyen's phone twice. Synthesise an event id
+  // from a stable hash of the raw body: identical re-deliveries collide
+  // and short-circuit, but a fresh occurrence of the same issue
+  // (different body — different timestamp / count) still pages.
+  const eventId = 'sentry:' + crypto.createHash('sha256').update(rawBody).digest('hex').slice(0, 48);
+  const { error: dupErr } = await supabaseAdmin
+    .from('processed_sentry_webhooks')
+    .insert({
+      event_id: eventId,
+      webhook_kind: payload.action ?? 'unknown',
+      metadata: {
+        issue_id: payload.data?.issue?.id ?? null,
+        level: payload.data?.issue?.level ?? null,
+      },
+    });
+  if (dupErr) {
+    const code = (dupErr as { code?: string }).code;
+    if (code === '23505') {
+      log.info('[sentry-webhook] duplicate delivery, skipping', { requestId, eventId });
+      return ok({ skipped: true, reason: 'duplicate delivery' }, { requestId });
+    }
+    // Dedup table unreachable — fail closed; Sentry will retry.
+    log.error('[sentry-webhook] dedup insert failed', { requestId, err: dupErr });
+    return err('dedup table unhealthy', { requestId, status: 503, code: ApiErrorCode.InternalError });
   }
 
   // Only fire on issue.created or issue.alert. Resolved/assigned/etc

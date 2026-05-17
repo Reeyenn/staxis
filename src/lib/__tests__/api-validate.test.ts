@@ -30,6 +30,8 @@ import {
   sanitizeForSms,
   safeBaseUrl,
   redactPhone,
+  redactEmail,
+  redactStripeId,
 } from '../api-validate';
 
 // ─── validateUuid ───────────────────────────────────────────────────────────
@@ -377,5 +379,74 @@ describe('LIMITS', () => {
     // 200 housekeepers per property is well above any realistic case but
     // protects us from unbounded array submissions.
     assert.equal(LIMITS.STAFF_ARRAY_MAX, 200);
+  });
+});
+
+// ─── redactPhone / redactEmail / redactStripeId ─────────────────────────────
+//
+// The three redactors sit next to each other in api-validate.ts so they
+// share a section here. They exist because logging audits keep finding
+// PII interpolated into console.* calls; the redactors give authors a
+// safer default (May 2026 audit findings H1, H2, M1).
+
+describe('redactPhone', () => {
+  test('keeps country code and last 4 digits', () => {
+    assert.equal(redactPhone('+15551234567'), '+1***4567');
+  });
+
+  test('handles unformatted 10-digit numbers (no country code)', () => {
+    assert.equal(redactPhone('5551234567'), '***4567');
+  });
+
+  test('returns a marker for nullish input', () => {
+    assert.equal(redactPhone(null), '<no-phone>');
+    assert.equal(redactPhone(undefined), '<no-phone>');
+    assert.equal(redactPhone(''), '<no-phone>');
+  });
+
+  test('returns <short> for too-few digits', () => {
+    assert.equal(redactPhone('+12'), '<short>');
+  });
+});
+
+describe('redactEmail', () => {
+  test('keeps first char of local-part plus full domain', () => {
+    assert.equal(redactEmail('mario@hilton.com'), 'm***@hilton.com');
+  });
+
+  test('works on synthetic .staxis.local addresses', () => {
+    assert.equal(redactEmail('mario@hilton.staxis.local'), 'm***@hilton.staxis.local');
+  });
+
+  test('returns a marker for nullish input', () => {
+    assert.equal(redactEmail(null), '<no-email>');
+    assert.equal(redactEmail(undefined), '<no-email>');
+    assert.equal(redactEmail(''), '<no-email>');
+  });
+
+  test('returns <bad-email> when @ is missing or leading', () => {
+    assert.equal(redactEmail('no-at-sign'), '<bad-email>');
+    assert.equal(redactEmail('@nolocalpart.com'), '<bad-email>');
+  });
+});
+
+describe('redactStripeId', () => {
+  test('keeps prefix and last 4 chars of a customer id', () => {
+    assert.equal(redactStripeId('cus_NeoSb1xLpfP7gQ'), 'cus_***P7gQ');
+  });
+
+  test('works on payment-intent ids', () => {
+    assert.equal(redactStripeId('pi_3OqEzaXcRtAbCdEfGhIj'), 'pi_***GhIj');
+  });
+
+  test('returns a marker for nullish input', () => {
+    assert.equal(redactStripeId(null), '<no-id>');
+    assert.equal(redactStripeId(undefined), '<no-id>');
+    assert.equal(redactStripeId(''), '<no-id>');
+  });
+
+  test('returns <short> when the id is missing an underscore or too short to tail', () => {
+    assert.equal(redactStripeId('cus'), '<short>');
+    assert.equal(redactStripeId('cus_ab'), '<short>');
   });
 });

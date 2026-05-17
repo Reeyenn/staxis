@@ -14,10 +14,9 @@
  */
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { errToString } from '@/lib/utils';
 import { requireCronSecret } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 
 function toE164(raw: string): string | null {
   if (!raw) return null;
@@ -74,9 +73,8 @@ export async function POST(req: NextRequest) {
 
     return ok({ scanned, nonPending, rewritten, skipped, examples }, { requestId });
   } catch (caughtErr) {
-    const msg = errToString(caughtErr);
-    console.error('normalize-confirmation-phones error:', msg);
-    return err(msg, { requestId, status: 500, code: ApiErrorCode.InternalError });
+    log.error('normalize-confirmation-phones error', { err: caughtErr, requestId });
+    return err('normalize-confirmation-phones failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }
 

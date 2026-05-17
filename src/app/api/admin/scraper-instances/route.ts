@@ -33,9 +33,8 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdminOrCron } from '@/lib/admin-auth';
-import { ok, err } from '@/lib/api-response';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
-import { errToString } from '@/lib/utils';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -89,7 +88,7 @@ export async function GET(req: NextRequest) {
       .select('property_id, scraper_instance, is_active, pms_type')
       .range(0, FLEET_HARD_CAP - 1);
     if (credsErr) {
-      log.error('scraper-instances: creds query failed', { requestId, err: credsErr as unknown as Error });
+      log.error('scraper-instances: creds query failed', { requestId, err: credsErr });
       return err('failed to load scraper_credentials', { requestId, status: 500 });
     }
     if ((creds ?? []).length >= FLEET_HARD_CAP) {
@@ -104,7 +103,7 @@ export async function GET(req: NextRequest) {
       .select('id, name')
       .range(0, FLEET_HARD_CAP - 1);
     if (propErr) {
-      log.error('scraper-instances: properties query failed', { requestId, err: propErr as unknown as Error });
+      log.error('scraper-instances: properties query failed', { requestId, err: propErr });
       return err('failed to load properties', { requestId, status: 500 });
     }
     if ((properties ?? []).length >= FLEET_HARD_CAP) {
@@ -146,7 +145,7 @@ export async function GET(req: NextRequest) {
       await supabaseAdmin.rpc('exec_sql', { sql: lastSeenSql });
     if (snapsErr) {
       log.error('scraper-instances: last-seen aggregation failed', {
-        requestId, err: snapsErr as unknown as Error,
+        requestId, err: snapsErr,
       });
       return err('failed to aggregate plan_snapshots', { requestId, status: 500 });
     }
@@ -267,6 +266,6 @@ export async function GET(req: NextRequest) {
     );
   } catch (e) {
     log.error('scraper-instances: handler crashed', { requestId, err: e as Error });
-    return err(errToString(e), { requestId, status: 500 });
+    return err('scraper-instances handler failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

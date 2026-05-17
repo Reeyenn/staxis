@@ -58,7 +58,7 @@ export function WakeWord() {
   // ── Probe availability + key on mount ──────────────────────────────────
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    void (async () => {
       try {
         // Check 1: feature-gated by file presence + env var.
         const a = await fetchWithAuth('/api/agent/wake-word-available');

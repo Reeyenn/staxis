@@ -378,7 +378,7 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
       suppressedReason = 'sms_send_failed';
     }
   } else {
-    console.warn('[scraper-health] MANAGER_PHONE env var not set — alert would fire:', message);
+    log.warn('[scraper-health] MANAGER_PHONE env var not set — alert would fire', { message });
     suppressedReason = 'no_alert_phone_on_vercel';
   }
 

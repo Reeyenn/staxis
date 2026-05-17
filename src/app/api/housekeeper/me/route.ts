@@ -23,7 +23,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -52,7 +52,7 @@ export async function GET(req: NextRequest) {
     .maybeSingle();
 
   if (queryError) {
-    console.error('[housekeeper/me] query failed', errToString(queryError));
+    log.error('[housekeeper/me] query failed', { err: queryError, requestId });
     return err('Internal server error', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });

@@ -27,6 +27,12 @@ const API_KEY = env.ANTHROPIC_API_KEY;
 // 15-min deadline. Dropped to 1 retry so a stuck call times out closer
 // to the per-attempt budget; per-turn deadline checks in mapper.ts stop
 // the whole loop before a runaway burns through the cost cap.
+//
+// Why these numbers diverge from src/lib/external-service-config.ts:
+// this worker runs on Fly with a 15-minute per-job deadline, not on
+// Vercel with a 60s function ceiling. The web-app policy doesn't apply
+// here — but it does apply to every Anthropic call in src/. Don't copy
+// these numbers into a Next.js route.
 export const anthropic = new Anthropic({
   apiKey: API_KEY,
   timeout: 120_000,

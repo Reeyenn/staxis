@@ -12,6 +12,10 @@
 // attendance_marks is what enforces auth.
 import { supabase, logErr } from './_common';
 
+// Matches fromAttendanceMarkRow below. Audit follow-up 2026-05-17.
+const ATTENDANCE_FIELDS = 'property_id, date, staff_id, attended, marked_at, marked_by, notes';
+type AttendanceRow = Record<string, unknown>;
+
 export interface AttendanceMark {
   propertyId: string;
   date: string;
@@ -66,8 +70,8 @@ export async function markAttendance(input: {
           onConflict: 'property_id,date,staff_id',
         }
       )
-      .select()
-      .maybeSingle();
+      .select(ATTENDANCE_FIELDS)
+      .maybeSingle<AttendanceRow>();
 
     if (error) {
       logErr('markAttendance', error);
@@ -93,9 +97,10 @@ export async function getAttendanceForDate(
   try {
     const { data, error } = await supabase
       .from('attendance_marks')
-      .select('*')
+      .select(ATTENDANCE_FIELDS)
       .eq('property_id', propertyId)
-      .eq('date', date);
+      .eq('date', date)
+      .returns<AttendanceRow[]>();
 
     if (error) {
       logErr('getAttendanceForDate', error);

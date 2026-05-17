@@ -12,6 +12,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { env } from '@/lib/env';
+import { ANTHROPIC_MAX_RETRIES } from '@/lib/external-service-config';
 
 // Pin the model — the prompts in this file are calibrated for Sonnet 4-class
 // vision quality. Bumping the version requires a re-test of both prompts.
@@ -23,10 +24,30 @@ const MODEL = 'claude-sonnet-4-6';
 // function until the route timeout. May 2026 audit pass-5: the SDK
 // defaults to no timeout, so an Anthropic API hiccup could pin our
 // function memory for minutes at fleet scale.
+//
+// Belt-and-suspenders (audit/concurrency #16): the SDK's `timeout` option
+// is a soft client-side deadline; under some HTTP-keepalive conditions
+// the request can keep running on the wire (and keep billing) past it.
+// Each call site also passes an `AbortSignal.timeout(VISION_ABORT_MS)`
+// to actually cut the fetch. We keep the SDK timeout below the abort so
+// the SDK is the first to fire under happy-path slowness, but the abort
+// is guaranteed to cut the wire if anything wedges.
+//
+// Audit/external-api-hardening (May 2026): `maxRetries` was the SDK
+// default of 2, which can push worst-case wall-clock past 90s — over the
+// route's maxDuration. Now imported from external-service-config so it
+// stays in lockstep with the main agent's budget math.
 const VISION_REQUEST_TIMEOUT_MS = 30_000;
+const VISION_ABORT_MS = 35_000;
+
+// Module-level singleton — matches the pattern in `src/lib/agent/llm.ts` and
+// `src/app/api/walkthrough/step/route.ts`. Re-instantiating `new Anthropic()`
+// per call burns a TLS handshake on every invoice scan.
+let _visionClient: Anthropic | null = null;
 
 /** Throws if ANTHROPIC_API_KEY is missing — caller catches and 500s the route. */
 function getClient(): Anthropic {
+  if (_visionClient) return _visionClient;
   const key = env.ANTHROPIC_API_KEY;
   if (!key) {
     throw new Error(
@@ -34,7 +55,12 @@ function getClient(): Anthropic {
       'Set in Vercel → Project Settings → Environment Variables and redeploy.',
     );
   }
-  return new Anthropic({ apiKey: key, timeout: VISION_REQUEST_TIMEOUT_MS });
+  _visionClient = new Anthropic({
+    apiKey: key,
+    timeout: VISION_REQUEST_TIMEOUT_MS,
+    maxRetries: ANTHROPIC_MAX_RETRIES,
+  });
+  return _visionClient;
 }
 
 export interface VisionImage {
@@ -176,26 +202,33 @@ export async function visionExtractText(
   // which routes catch to return a structured 400.
   validateImage(image);
   const client = getClient();
-  const response = await client.messages.create({
-    model: MODEL,
-    max_tokens: VISION_MAX_TOKENS,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: image.mediaType,
-              data: image.data,
+  const response = await client.messages.create(
+    {
+      model: MODEL,
+      max_tokens: VISION_MAX_TOKENS,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: image.mediaType,
+                data: image.data,
+              },
             },
-          },
-          { type: 'text', text: prompt },
-        ],
-      },
-    ],
-  });
+            { type: 'text', text: prompt },
+          ],
+        },
+      ],
+    },
+    // Hard wire-level abort (audit/concurrency #16). Without this an
+    // Anthropic outage could leave the underlying fetch running past
+    // VISION_REQUEST_TIMEOUT_MS, still billing tokens for a response
+    // nobody is waiting for.
+    { signal: AbortSignal.timeout(VISION_ABORT_MS) },
+  );
 
   // Detect truncation BEFORE returning partial text. The downstream JSON
   // parsers would otherwise hit unclosed braces and report a generic

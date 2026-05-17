@@ -510,7 +510,6 @@ const SERVICES = [
   { key: 'deep_cleaning', label: 'Deep cleaning', hint: 'Periodic room/area refresh' },
   { key: 'public_areas', label: 'Public areas', hint: 'Lobby, hallways, breakfast' },
   { key: 'inventory', label: 'Inventory', hint: 'Auto-reorder + counts' },
-  { key: 'equipment', label: 'Equipment', hint: 'Tools + appliances tracking' },
 ];
 
 function Step5Services({ code, onNext }: { code: string; wizard: WizardStateResponse; onNext: () => Promise<void>; }) {
@@ -695,7 +694,7 @@ function Step7Mapping({ code, wizard, onNext }: { code: string; wizard: WizardSt
         // ignore transient network errors; next tick will retry
       }
     };
-    poll();
+    void poll();
     const t = setInterval(poll, 3000);
     return () => { active = false; clearInterval(t); };
   }, [jobId, code, onNext]);

@@ -19,22 +19,35 @@ export async function POST(req: NextRequest): Promise<Response> {
   const authErr = requireCronSecret(req);
   if (authErr) return authErr;
 
-  // Pull all properties with at least one active owner/manager account.
-  // No point checking nudges for properties nobody would receive.
-  const { data: properties, error: pErr } = await supabaseAdmin
-    .from('properties')
-    .select('id');
-  if (pErr || !properties) {
-    log.error('[agent/nudges/check] failed to list properties', { requestId, err: pErr });
-    return err('failed to list properties', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  // Pull only the properties with agent activity in the last 7 days.
+  // Iterating ALL properties is wasted work — a property with zero
+  // recent agent messages can't produce nudges anyone would receive.
+  // Migration 0132 added staxis_active_property_ids_for_nudges. If the
+  // RPC isn't available (older deploy without the migration applied),
+  // fall back to listing every property so the cron stays functional.
+  let propertyIds: string[];
+  const { data: activeRows, error: rpcErr } = await supabaseAdmin
+    .rpc('staxis_active_property_ids_for_nudges', { p_window_days: 7 });
+  if (rpcErr) {
+    log.warn('[agent/nudges/check] active-property RPC unavailable; falling back to full list', { requestId, err: rpcErr.message });
+    const { data: properties, error: pErr } = await supabaseAdmin
+      .from('properties')
+      .select('id');
+    if (pErr || !properties) {
+      log.error('[agent/nudges/check] failed to list properties', { requestId, err: pErr });
+      return err('failed to list properties', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    }
+    propertyIds = properties.map(p => p.id as string);
+  } else {
+    propertyIds = (activeRows ?? []).map((r: { property_id: string }) => r.property_id);
   }
 
   const results = await Promise.allSettled(
-    properties.map(p => runNudgeChecksForProperty(p.id as string)),
+    propertyIds.map(id => runNudgeChecksForProperty(id)),
   );
 
   const totals = {
-    propertiesChecked: properties.length,
+    propertiesChecked: propertyIds.length,
     nudgesInserted: 0,
     skipped: 0,
     errors: [] as string[],

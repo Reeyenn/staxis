@@ -44,11 +44,10 @@ const ROLE_OPTIONS: Array<{ value: StaffRole; label: string }> = [
 const SERVICE_DEFS: Array<{ key: string; label: string; hint: string }> = [
   { key: 'housekeeping',  label: 'Housekeeping',     hint: 'Daily room cleaning + assignments to housekeepers' },
   { key: 'laundry',       label: 'Laundry',          hint: 'Track sheets/towels par levels and wash cycles' },
-  { key: 'maintenance',   label: 'Maintenance',      hint: 'Work orders, equipment registry, repair costs' },
+  { key: 'maintenance',   label: 'Maintenance',      hint: 'Work orders + preventive recurring tasks' },
   { key: 'deep_cleaning', label: 'Deep cleaning',    hint: 'Schedule periodic deep cleans (carpets, mattresses, etc.)' },
   { key: 'public_areas',  label: 'Public areas',     hint: 'Lobby, pool, breakfast room, hallway tasks' },
   { key: 'inventory',     label: 'Inventory',        hint: 'Cleaning supplies, amenities, restocking alerts' },
-  { key: 'equipment',     label: 'Equipment',        hint: 'Track assets — vacuums, carts, kitchen equipment' },
 ];
 
 function localId(): string {
@@ -83,7 +82,7 @@ function OnboardingForm() {
 
   const [services, setServices] = useState<Record<string, boolean>>({
     housekeeping: true, laundry: true, maintenance: true,
-    deep_cleaning: true, public_areas: true, inventory: true, equipment: true,
+    deep_cleaning: true, public_areas: true, inventory: true,
   });
   const [staff, setStaff] = useState<StaffRow[]>([
     { id: localId(), name: '', phone: '', language: 'en', role: 'housekeeping' },

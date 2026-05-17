@@ -21,7 +21,7 @@ import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
 
@@ -130,7 +130,7 @@ export async function POST(req: NextRequest) {
     .single();
 
   if (insertErr || !job) {
-    console.error('[pms/onboard] insert failed', insertErr);
+    log.error('[pms/onboard] insert failed', { err: insertErr, requestId });
     return err('Could not queue the onboarding job', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });

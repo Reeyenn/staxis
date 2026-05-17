@@ -39,6 +39,7 @@ import { buildHotelSnapshot } from '@/lib/agent/context';
 import { buildSystemPrompt } from '@/lib/agent/prompts';
 import { recordNonRequestCost } from '@/lib/agent/cost-controls';
 import { getOrMintRequestId, log } from '@/lib/log';
+import { err, ApiErrorCode } from '@/lib/api-response';
 import type { AppRole } from '@/lib/roles';
 // Side-effect import — registers all tools against the catalog.
 import '@/lib/agent/tools/index';
@@ -243,12 +244,12 @@ export async function POST(req: NextRequest): Promise<Response> {
   const secret = env.ELEVENLABS_WEBHOOK_SECRET;
   if (!secret) {
     log.error('[voice-brain] ELEVENLABS_WEBHOOK_SECRET not configured', { requestId });
-    return NextResponse.json({ error: 'server misconfigured' }, { status: 500 });
+    return err('server misconfigured', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   const authHeader = req.headers.get('authorization') ?? '';
   if (!timingSafeBearerCheck(authHeader, secret)) {
     log.warn('[voice-brain] auth rejected', { requestId, hasHeader: authHeader.length > 0 });
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+    return err('unauthorized', { requestId, status: 401, code: ApiErrorCode.Unauthorized });
   }
 
   // ── Parse OpenAI-format body ──────────────────────────────────────────
@@ -256,7 +257,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: 'invalid json' }, { status: 400 });
+    return err('invalid json', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   // Don't reject on empty messages — ElevenLabs sends a session-init
   // call with messages=[] or messages=[{role:'system',...}] BEFORE
@@ -287,7 +288,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       dynamicVariableKeys: dvKeys,
       topLevelDynamicVarsPresent: !!body?.dynamic_variables,
     });
-    return NextResponse.json({ error: ctxResult.error }, { status: 400 });
+    return err(ctxResult.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   const ctx = ctxResult;
 

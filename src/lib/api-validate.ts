@@ -267,3 +267,32 @@ export function redactPhone(phone: string | null | undefined): string {
   const cc = phone.startsWith('+') ? phone.split('').slice(0, 2).join('') : '';
   return `${cc}***${last4}`;
 }
+
+/**
+ * Redact an email for logs. Keeps the first char of the local-part plus
+ * the domain so an oncall can tell synthetic from real and roughly
+ * which tenant the user belongs to, without exposing the full address.
+ *   "mario@hilton.com" → "m***@hilton.com"
+ *   "mario@hilton.staxis.local" → "m***@hilton.staxis.local"
+ */
+export function redactEmail(email: string | null | undefined): string {
+  if (!email) return '<no-email>';
+  const at = email.indexOf('@');
+  if (at < 1) return '<bad-email>';
+  return `${email[0]}***${email.slice(at)}`;
+}
+
+/**
+ * Redact a Stripe identifier (cus_, pi_, sub_, in_, evt_, …) for logs.
+ * Keeps the prefix + last-4 so an oncall can grep against the Stripe
+ * Dashboard without the full identifier leaking to log aggregators.
+ *   "cus_NeoSb1xLpfP7gQ" → "cus_***fP7gQ"
+ * If the input doesn't look like a Stripe id (no underscore, or too
+ * short to safely tail), returns a generic marker.
+ */
+export function redactStripeId(id: string | null | undefined): string {
+  if (!id) return '<no-id>';
+  const underscore = id.indexOf('_');
+  if (underscore < 0 || id.length < underscore + 6) return '<short>';
+  return `${id.slice(0, underscore + 1)}***${id.slice(-4)}`;
+}

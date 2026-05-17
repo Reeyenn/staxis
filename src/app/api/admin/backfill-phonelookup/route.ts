@@ -10,10 +10,9 @@
  */
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { errToString } from '@/lib/utils';
 import { requireCronSecret } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 
 function toE164(raw: string): string | null {
   const digits = raw.replace(/\D/g, '');
@@ -73,9 +72,8 @@ export async function POST(req: NextRequest) {
       examples,
     }, { requestId });
   } catch (caughtErr) {
-    const msg = errToString(caughtErr);
-    console.error('backfill-phonelookup error:', msg);
-    return err(msg, { requestId, status: 500, code: ApiErrorCode.InternalError });
+    log.error('backfill-phonelookup error', { err: caughtErr, requestId });
+    return err('backfill-phonelookup failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }
 

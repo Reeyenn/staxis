@@ -12,11 +12,13 @@
     "lint": "eslint src scraper --max-warnings 0 && node scripts/check-env-access.mjs",
     "seed": "node scripts/seed-supabase.js",
     "seed:reset": "node scripts/seed-supabase.js --reset",
+    "db:types": "npx supabase gen types typescript --project-id \"$SUPABASE_PROJECT_REF\" | sed '/<claude-code-hint/d' > src/types/database.types.ts",
     "agent:evals": "tsx scripts/run-agent-evals.ts",
     "agent:summarizer-evals": "tsx scripts/run-summarizer-evals.ts",
     "agent:invariant-evals": "tsx scripts/run-agent-invariant-evals.ts",
-    "test": "node --test scraper/__tests__/*.test.js && NEXT_PUBLIC_SUPABASE_URL=https://placeholder.supabase.co SUPABASE_SERVICE_ROLE_KEY=placeholder-service-role-key-min-20-chars NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder-anon-key-min-20-chars CRON_SECRET=placeholder-cron-secret-min-16 npx tsx --test src/lib/__tests__/*.test.ts",
-    "test:scraper": "node --test scraper/__tests__/*.test.js"
+    "test": "npm run test:pii-logs && node --test scraper/__tests__/*.test.js && NEXT_PUBLIC_SUPABASE_URL=https://placeholder.supabase.co SUPABASE_SERVICE_ROLE_KEY=placeholder-service-role-key-min-20-chars NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder-anon-key-min-20-chars CRON_SECRET=placeholder-cron-secret-min-16 npx tsx --test src/lib/__tests__/*.test.ts",
+    "test:scraper": "node --test scraper/__tests__/*.test.js",
+    "test:pii-logs": "bash scripts/check-no-pii-logs.sh"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",

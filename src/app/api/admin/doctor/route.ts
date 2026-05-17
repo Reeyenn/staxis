@@ -1190,8 +1190,8 @@ async function checkSupabaseAnonKeyShape(): Promise<Omit<Check, 'name' | 'durati
  */
 async function checkSupabaseRealtimePublication(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   const REQUIRED_TABLES = [
-    'staff', 'rooms', 'work_orders', 'preventive_tasks', 'landscaping_tasks',
-    'inventory', 'inspections', 'handoff_logs', 'guest_requests', 'plan_snapshots',
+    'staff', 'rooms', 'work_orders', 'preventive_tasks',
+    'inventory', 'handoff_logs', 'guest_requests', 'plan_snapshots',
     'schedule_assignments', 'shift_confirmations', 'manager_notifications', 'scraper_status',
   ];
   try {
@@ -1570,7 +1570,9 @@ const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   //   trigger ordering creates transient violations on DELETE). The heal
   //   RPC + daily cron are the safety net for commit-time drift.
   // 0116 Voice surface (2026-05-13): account voice prefs +
-  //   agent_costs.kind='audio' + voice_recordings 7-day retention table.
+  //   agent_costs.kind='audio'. (voice_recordings retention table was
+  //   retired 2026-05-14 with the ElevenLabs streaming switch and dropped
+  //   in 0141.)
   '0079', '0080', '0081', '0082', '0083',
   '0084', '0085', '0086', '0087', '0088', '0089',
   '0090', '0091', '0092', '0093', '0094',
@@ -1580,6 +1582,23 @@ const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   '0110', '0111', '0112', '0113', '0114',
   '0115', '0116', '0117', '0118', '0119',
   '0120', '0121', '0122', '0123',
+  // 0124 accounts.skip_2fa flag for investor demo bypass.
+  // 0125 total-rooms ↔ inventory invariant CHECK.
+  // 0126 staxis_api_limit_cleanup recreate with hardened search_path.
+  // 0127/0128 intentionally skipped.
+  // 0129 schedule_auto_fill_if_absent RPC.
+  // 0130 model_runs.cold_start_flag.
+  // 0131 maintenance simplification (work_orders + preventive_tasks).
+  // 0132 staxis_active_property_ids_for_nudges RPC (cost audit).
+  // 0133 REPLICA IDENTITY FULL on hot realtime tables (cost audit).
+  // 0134 intentionally skipped (no file on disk; legacy slot in prod).
+  // 0135-0139 RPC batch + concurrency audit fixes (post-rebase merge).
+  // 0140 intentionally skipped (no file on disk; legacy slot in prod).
+  // 0141 audit/data-model cleanup: drop 8 dead tables + dead FK columns.
+  // 0142 audit/data-model cleanup: enforce 8 missing FK constraints.
+  '0124', '0125', '0126', '0129', '0130', '0131', '0132', '0133',
+  '0135', '0136', '0137', '0138', '0139',
+  '0141', '0142',
 ];
 
 /**
@@ -2055,6 +2074,7 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'doctor-check',                  cadenceHours: 1,     description: 'hourly health check — runs the doctor battery + alerts Sentry/SMS on any fail (Round 13)' },
   { name: 'walkthrough-heal-stale',        cadenceHours: 30/60, description: 'every-30-min walkthrough recovery (heals stale runs left mid-walkthrough by crashed clients)' },
   { name: 'walkthrough-health-alert',      cadenceHours: 10/60, description: 'every-10-min walkthrough health monitor (alerts on stuck step counts)' },
+  { name: 'sweep-orphan-auth-users',       cadenceHours: 30/60, description: 'every-30-min orphan auth-user reconciler — deletes auth.users rows with no matching accounts row (audit fix #4)' },
   { name: 'seed-rooms-daily',              cadenceHours: 1,     description: 'hourly heal of partial rooms-today seeds against properties.room_inventory (Round 14)' },
   { name: 'seal-daily',                    cadenceHours: 1,     description: 'hourly per-property daily-seal' },
   // Round 17 (2026-05-15): two-slot cron that auto-builds Maria's

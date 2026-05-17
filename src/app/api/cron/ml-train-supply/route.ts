@@ -47,7 +47,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     .select('id, name')
     .order('id');
   if (error) {
-    log.error('ml-train-supply: properties read failed', { requestId, err: error as unknown as Error });
+    log.error('ml-train-supply: properties read failed', { requestId, err: error });
     return NextResponse.json({ ok: false, error: errToString(error) }, { status: 500 });
   }
 

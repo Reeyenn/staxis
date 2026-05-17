@@ -25,6 +25,7 @@ import {
   stripeIsConfigured,
 } from '@/lib/stripe';
 import { env } from '@/lib/env';
+import { parseStringField } from '@/lib/db-mappers';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -54,23 +55,33 @@ export async function POST(req: NextRequest) {
   if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
 
   // Load property + verify ownership.
-  const { data: property } = await supabaseAdmin
+  // Audit M8: declare the SELECT shape once and narrow each column with
+  // parseStringField, instead of four inline `as string` casts that lie
+  // when a column drifts.
+  const { data: propertyRaw } = await supabaseAdmin
     .from('properties')
     .select('id, owner_id, name, stripe_customer_id')
     .eq('id', pidV.value!)
     .maybeSingle();
-  if (!property) return err('Property not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  if (!property.owner_id || (property.owner_id as string) !== session.userId) {
+  if (!propertyRaw || typeof propertyRaw !== 'object') {
+    return err('Property not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+  }
+  const property = {
+    owner_id: parseStringField((propertyRaw as Record<string, unknown>).owner_id),
+    name: parseStringField((propertyRaw as Record<string, unknown>).name) ?? '',
+    stripe_customer_id: parseStringField((propertyRaw as Record<string, unknown>).stripe_customer_id),
+  };
+  if (!property.owner_id || property.owner_id !== session.userId) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 
   // Ensure we have a Stripe customer. Created during /signup if Stripe
   // was configured at the time; if it wasn't, lazily create one now.
-  let customerId = property.stripe_customer_id as string | null;
+  let customerId: string | null = property.stripe_customer_id ?? null;
   if (!customerId) {
     const cust = await createStripeCustomer({
       email: session.email ?? '',
-      propertyName: property.name as string,
+      propertyName: property.name,
       propertyId: pidV.value!,
     });
     if (!('ok' in cust) || !cust.ok) {

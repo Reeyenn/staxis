@@ -250,7 +250,7 @@ export function Header() {
                     </button>
 
                     <button
-                      onClick={() => { signOut(); setShowUserMenu(false); }}
+                      onClick={() => { void signOut(); setShowUserMenu(false); }}
                       style={{
                         width: '100%', padding: '10px 16px',
                         display: 'flex', alignItems: 'center', gap: '8px',

@@ -13,6 +13,7 @@
  */
 
 import { env, isSmsConfigured } from '@/lib/env';
+import { externalFetch, EXTERNAL_FETCH_TIMEOUT_MS } from '@/lib/external-service-config';
 
 function sanitizeSmsBody(text: string): string {
   return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '').trim();
@@ -30,13 +31,19 @@ export async function sendSms(to: string, message: string): Promise<void> {
   const sanitizedBody = sanitizeSmsBody(message);
   const body = new URLSearchParams({ To: to, From: from, Body: sanitizedBody });
 
-  const res = await fetch(url, {
+  // Audit finding #2: pre-2026-05-17 this `fetch` had no signal at all,
+  // so a hung Twilio API call could block the sentry-webhook handler (or
+  // any inline sendSms caller) indefinitely. externalFetch enforces a
+  // 15s ceiling; sms-jobs queue retries handle transient failures for
+  // the cron path.
+  const res = await externalFetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
       'Authorization': `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString('base64')}`,
     },
     body: body.toString(),
+    timeoutMs: EXTERNAL_FETCH_TIMEOUT_MS,
   });
 
   if (!res.ok) {

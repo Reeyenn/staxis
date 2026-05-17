@@ -49,7 +49,27 @@ const AuthContext = createContext<AuthContextType>({
 // Fetch the accounts row for the current auth user and translate to AppUser.
 // Returns null if no accounts row exists (dangling auth user — treat as
 // unauthenticated and sign out).
+//
+// Audit P2.1 (2026-05-17): cached for 60s per authUid. Supabase fires
+// onAuthStateChange on every token refresh (~hourly) and tab focus; without
+// this cache each one hits the accounts table even though the row hardly
+// ever changes mid-session. Trade-off: a role / property_access change made
+// via admin tools won't be reflected for up to 60s — acceptable, since
+// admin role changes are rare and the user typically signs out + back in
+// to test them. Cache is invalidated on sign-out (clearAppUserCache).
+let cachedAppUser: { authUid: string; user: AppUser; expiresAt: number } | null = null;
+const APP_USER_CACHE_TTL_MS = 60_000;
+
+function clearAppUserCache() {
+  cachedAppUser = null;
+}
+
 async function loadAppUser(authUid: string): Promise<AppUser | null> {
+  const now = Date.now();
+  if (cachedAppUser && cachedAppUser.authUid === authUid && cachedAppUser.expiresAt > now) {
+    return cachedAppUser.user;
+  }
+
   const { data, error } = await supabase
     .from('accounts')
     .select('id, username, display_name, role, property_access, data_user_id')
@@ -71,7 +91,7 @@ async function loadAppUser(authUid: string): Promise<AppUser | null> {
     ? ['*']
     : (data.property_access ?? []);
 
-  return {
+  const appUser: AppUser = {
     uid: data.data_user_id,
     accountId: data.id,
     username: data.username,
@@ -79,6 +99,9 @@ async function loadAppUser(authUid: string): Promise<AppUser | null> {
     role,
     propertyAccess,
   };
+
+  cachedAppUser = { authUid, user: appUser, expiresAt: now + APP_USER_CACHE_TTL_MS };
+  return appUser;
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -92,7 +115,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Hydrate from the session Supabase restored from localStorage on page
     // load. This fires BEFORE the first onAuthStateChange event, so we get
     // an accurate initial user without a flash of logged-out state.
-    (async () => {
+    void (async () => {
       try {
         const { data: { session } } = await supabase.auth.getSession();
         if (!active) return;
@@ -154,6 +177,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (!active) return;
       // Synchronous bookkeeping is fine here; only DEFER the supabase calls.
       if (event === 'SIGNED_OUT' || !session?.user) {
+        clearAppUserCache();
         setUser(null);
         return;
       }
@@ -277,6 +301,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // ignore — private browsing / no storage
     }
+    clearAppUserCache();
     await supabase.auth.signOut();
     setUser(null);
   };
