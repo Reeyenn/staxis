@@ -282,7 +282,7 @@ export async function processSmsJobs(limit = 50): Promise<ProcessResult> {
       // Last-ditch fallback: mark 'sent_dirty' so the sweep cannot requeue
       // this row. Previously we marked 'dead' here, which gave Mario a red
       // badge in the UI for messages the housekeeper actually received —
-      // the opposite of the truth. 'sent_dirty' (added in migration 0147)
+      // the opposite of the truth. 'sent_dirty' (added in migration 0148)
       // is a distinct status the UI can render as "Sent (database
       // confirmation lagged)" instead of "Failed". The Twilio side did
       // succeed; only the post-send DB write didn't.
