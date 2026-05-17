@@ -36,6 +36,7 @@ export type IneligibilityReason =
   | 'wrong_department'
   | 'priority_excluded'
   | 'on_vacation'
+  | 'on_approved_time_off'
   | 'weekly_day_cap_reached'
   | 'weekly_hour_cap_reached';
 
@@ -55,6 +56,11 @@ export interface ActiveCrewOptions {
    *  excluded. The UI ALSO does this inside autoAssignRooms; setting it
    *  here just short-circuits earlier. */
   respectSchedulePriority?: boolean;
+  /** Set of staff.id values with an approved time_off_request for
+   *  targetDate. Callers pre-fetch this from the DB (the pure check
+   *  here doesn't query). When set, matching staff are filtered out
+   *  with reason='on_approved_time_off'. */
+  staffIdsOnApprovedTimeOff?: ReadonlySet<string>;
 }
 
 /** Single eligibility check for one staff member on one date.
@@ -75,6 +81,9 @@ export function checkCrewEligibility(
   }
   if (s.vacationDates?.includes(opts.targetDate)) {
     return { eligible: false, reason: 'on_vacation' };
+  }
+  if (opts.staffIdsOnApprovedTimeOff?.has(s.id)) {
+    return { eligible: false, reason: 'on_approved_time_off' };
   }
   const daysWorked = s.daysWorkedThisWeek ?? 0;
   const maxDays = s.maxDaysPerWeek ?? 5;

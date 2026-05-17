@@ -43,6 +43,14 @@ import type {
   ShiftConfirmation,
   ManagerNotification,
   DeepCleanRecord,
+  ShiftPreset,
+  ScheduledShift,
+  TimeOffRequest,
+  WeekPublication,
+  StaffDepartment,
+  ScheduledShiftKind,
+  ScheduledShiftStatus,
+  TimeOffStatus,
 } from '@/types';
 
 // ─── tiny utilities ─────────────────────────────────────────────────────────
@@ -862,6 +870,105 @@ export function fromDeepCleanRecordRow(r: Record<string, unknown>): DeepCleanRec
     status: parseOptionalUnionField(r.status, DEEP_CLEAN_STATUSES),
     assignedAt: parseStringField(r.assigned_at),
     completedAt: parseStringField(r.completed_at),
+  };
+}
+
+// ─── Staff schedule (migration 0147) ────────────────────────────────────────
+
+const SCHEDULED_SHIFT_KINDS = ['shift','open'] as const;
+const SCHEDULED_SHIFT_STATUSES = ['draft','published','sent','confirmed','declined'] as const;
+const TIME_OFF_STATUSES = ['pending','approved','denied','cancelled'] as const;
+
+// Postgres `time` columns come back as 'HH:MM:SS'; we normalize to 'HH:MM'.
+function normTime(v: unknown): string {
+  const s = String(v ?? '');
+  return s.length >= 5 ? s.slice(0, 5) : s;
+}
+
+export function fromShiftPresetRow(r: Record<string, unknown>): ShiftPreset {
+  return {
+    id:         String(r.id),
+    propertyId: String(r.property_id ?? ''),
+    name:       String(r.name ?? ''),
+    department: parseUnionField(r.department, STAFF_DEPARTMENTS, 'housekeeping') as StaffDepartment,
+    startTime:  normTime(r.start_time),
+    endTime:    normTime(r.end_time),
+    sortOrder:  Number(r.sort_order ?? 0),
+    createdAt:  toDate(r.created_at) ?? new Date(),
+    updatedAt:  toDate(r.updated_at) ?? new Date(),
+  };
+}
+
+export function toShiftPresetRow(p: Partial<ShiftPreset>): Record<string, unknown> {
+  return dropUndefined({
+    name:       p.name,
+    department: p.department,
+    start_time: p.startTime,
+    end_time:   p.endTime,
+    sort_order: p.sortOrder,
+  });
+}
+
+export function fromScheduledShiftRow(r: Record<string, unknown>): ScheduledShift {
+  return {
+    id:         String(r.id),
+    propertyId: String(r.property_id ?? ''),
+    staffId:    r.staff_id == null ? null : String(r.staff_id),
+    department: parseUnionField(r.department, STAFF_DEPARTMENTS, 'housekeeping') as StaffDepartment,
+    shiftDate:  String(r.shift_date ?? ''),
+    startTime:  normTime(r.start_time),
+    endTime:    normTime(r.end_time),
+    kind:       parseUnionField(r.kind, SCHEDULED_SHIFT_KINDS, 'shift') as ScheduledShiftKind,
+    status:     parseUnionField(r.status, SCHEDULED_SHIFT_STATUSES, 'draft') as ScheduledShiftStatus,
+    presetId:   r.preset_id == null ? null : String(r.preset_id),
+    reason:     parseStringField(r.reason) ?? null,
+    note:       parseStringField(r.note) ?? null,
+    filledByHistory: Array.isArray(r.filled_by_history)
+      ? (r.filled_by_history as unknown[]).map(v => String(v))
+      : [],
+    createdAt:  toDate(r.created_at) ?? new Date(),
+    updatedAt:  toDate(r.updated_at) ?? new Date(),
+  };
+}
+
+export function toScheduledShiftRow(s: Partial<ScheduledShift>): Record<string, unknown> {
+  return dropUndefined({
+    staff_id:   s.staffId,
+    department: s.department,
+    shift_date: s.shiftDate,
+    start_time: s.startTime,
+    end_time:   s.endTime,
+    kind:       s.kind,
+    status:     s.status,
+    preset_id:  s.presetId,
+    reason:     s.reason,
+    note:       s.note,
+    filled_by_history: s.filledByHistory,
+  });
+}
+
+export function fromTimeOffRequestRow(r: Record<string, unknown>): TimeOffRequest {
+  return {
+    id:           String(r.id),
+    propertyId:   String(r.property_id ?? ''),
+    staffId:      String(r.staff_id ?? ''),
+    requestDate:  String(r.request_date ?? ''),
+    reason:       parseStringField(r.reason) ?? null,
+    status:       parseUnionField(r.status, TIME_OFF_STATUSES, 'pending') as TimeOffStatus,
+    submittedAt:  toDate(r.submitted_at) ?? new Date(),
+    decidedAt:    toDate(r.decided_at),
+    decidedBy:    r.decided_by == null ? null : String(r.decided_by),
+    denyReason:   parseStringField(r.deny_reason) ?? null,
+  };
+}
+
+export function fromWeekPublicationRow(r: Record<string, unknown>): WeekPublication {
+  return {
+    id:           String(r.id),
+    propertyId:   String(r.property_id ?? ''),
+    weekStart:    String(r.week_start ?? ''),
+    publishedAt:  toDate(r.published_at) ?? new Date(),
+    publishedBy:  r.published_by == null ? null : String(r.published_by),
   };
 }
 

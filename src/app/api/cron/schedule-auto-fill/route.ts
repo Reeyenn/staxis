@@ -141,10 +141,26 @@ async function autoFillForProperty(
   const allStaff: StaffMember[] = (staffRows ?? []).map((r) =>
     fromStaffRow(r as Record<string, unknown>),
   );
+
+  // 2b. Load approved time_off_requests for this date — they're per-day,
+  //     orthogonal to the staff.vacation_dates list. Manager approving a
+  //     TOR (e.g. "doctor appt Thu") should skip that housekeeper on
+  //     auto-fill even though staff.vacation_dates wasn't edited.
+  const { data: torRows } = await supabaseAdmin
+    .from('time_off_requests')
+    .select('staff_id')
+    .eq('property_id', property.id)
+    .eq('status', 'approved')
+    .eq('request_date', targetDate);
+  const staffIdsOnApprovedTimeOff = new Set<string>(
+    (torRows ?? []).map((r) => String(r.staff_id)),
+  );
+
   const { eligible: activeCrew, excluded } = selectActiveCrewWithReasons(allStaff, {
     targetDate,
     requirePhone: false,  // cron writes the schedule; SMS-send is separate
     respectSchedulePriority: true,
+    staffIdsOnApprovedTimeOff,
   });
   if (activeCrew.length === 0) {
     const reasonSummary = excluded.length > 0
