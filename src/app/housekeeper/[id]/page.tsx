@@ -1043,7 +1043,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
               {lang === 'es' ? 'Hab.' : 'Room'} {rooms.find(r => r.id === issueRoomId)?.number}
             </p>
             <textarea
-              // eslint-disable-next-line jsx-a11y/no-autofocus
+               
               autoFocus
               placeholder={t('describeIssue', lang)}
               value={issueNote}

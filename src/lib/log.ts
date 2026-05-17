@@ -89,7 +89,7 @@ function emit(level: LogLevel, msg: string, fields?: LogFields): void {
   } catch {
     text = JSON.stringify({ level, at: line.at, msg, _serializeError: true });
   }
-  // eslint-disable-next-line no-console
+   
   (level === 'error' ? console.error : level === 'warn' ? console.warn : console.log)(text);
 
   // Ship error-level events with an attached Error to Sentry. No-op until

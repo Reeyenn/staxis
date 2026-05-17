@@ -83,7 +83,7 @@ export async function checkIdempotency(
       // Don't fail the route if the cache lookup blows up — better to
       // possibly double-send than to refuse all sends. Log the issue
       // upstream.
-      // eslint-disable-next-line no-console
+       
       console.warn('[idempotency] cache lookup failed:', error.message);
       return { kind: 'first', key };
     }
@@ -109,7 +109,7 @@ export async function checkIdempotency(
     );
     return { kind: 'cached', response };
   } catch (err) {
-    // eslint-disable-next-line no-console
+     
     console.warn('[idempotency] cache check raised:', err);
     return { kind: 'first', key };
   }
@@ -140,7 +140,7 @@ export async function recordIdempotency(
       property_id: pid ?? null,
     });
   } catch (err) {
-    // eslint-disable-next-line no-console
+     
     console.warn('[idempotency] cache write failed (non-fatal):', err);
   }
 }

@@ -343,7 +343,7 @@ async function applyMetadataCallback(
         .eq('token', token);
     }
   } catch (err) {
-    // eslint-disable-next-line no-console
+     
     console.warn(
       `[sms-jobs] shift_confirmations callback failed for token=${token}:`,
       err instanceof Error ? err.message : String(err),

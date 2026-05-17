@@ -1,8 +1,139 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap')
+layer(base);
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
+
+@theme {
+  --color-surface-0: #f0f2f5;
+  --color-surface-1: #f5f7fa;
+  --color-surface-2: #ffffff;
+  --color-surface-3: #ffffff;
+
+  --color-brand: #d49040;
+  --color-brand-bright: #f0a84e;
+  --color-brand-dim: rgba(212, 144, 64, 0.1);
+
+  --color-navy-300: #60a5fa;
+  --color-navy-400: #3b82f6;
+  --color-navy-500: #2563eb;
+  --color-navy-600: #2b5c88;
+  --color-navy-700: #234b72;
+  --color-navy-800: #1b3a5c;
+  --color-navy-900: #132e4f;
+  --color-navy-950: #0f2640;
+
+  --color-amber-50: #fff8ed;
+  --color-amber-100: #ffefd0;
+  --color-amber-200: #ffda9a;
+  --color-amber-300: #ffc063;
+  --color-amber-400: #ffa030;
+  --color-amber-500: #f08418;
+  --color-amber-600: #d49040;
+  --color-amber-700: #b06e10;
+  --color-amber-800: #8d5514;
+  --color-amber-900: #744716;
+
+  --color-hotel-green: #22c55e;
+  --color-hotel-green-dark: #16a34a;
+  --color-hotel-red: #ef4444;
+  --color-hotel-amber: #d49040;
+  --color-hotel-amber-bright: #f0a84e;
+  --color-hotel-gold: #fbbf24;
+
+  --font-display: var(--font-display), sans-serif;
+  --font-body: var(--font-body), sans-serif;
+  --font-mono: var(--font-mono), monospace;
+
+  --radius-btn: 10px;
+  --radius-card: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-2xl: 24px;
+  --radius-3xl: 28px;
+
+  --shadow-card-1: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-card-2: 0 4px 6px rgba(0, 0, 0, 0.06), 0 2px 4px rgba(0, 0, 0, 0.04);
+  --shadow-card-3:
+    0 10px 15px rgba(0, 0, 0, 0.06), 0 4px 6px rgba(0, 0, 0, 0.04);
+  --shadow-card-4:
+    0 20px 25px rgba(0, 0, 0, 0.08), 0 10px 10px rgba(0, 0, 0, 0.04);
+  --shadow-amber:
+    0 0 24px rgba(212, 144, 64, 0.15), 0 0 64px rgba(212, 144, 64, 0.05);
+  --shadow-amber-strong:
+    0 0 48px rgba(212, 144, 64, 0.25), 0 0 100px rgba(212, 144, 64, 0.1);
+  --shadow-nav: 0 -1px 0 rgba(0, 0, 0, 0.05), 0 -4px 16px rgba(0, 0, 0, 0.04);
+
+  --animate-fade-in: fade-in 200ms cubic-bezier(0.05, 0.7, 0.1, 1) both;
+  --animate-slide-up: slide-up 300ms cubic-bezier(0.05, 0.7, 0.1, 1) both;
+  --animate-count-up: count-up 450ms cubic-bezier(0.05, 0.7, 0.1, 1) both;
+  --animate-glow-pulse: glow-pulse 2.8s ease-in-out infinite;
+  --animate-spin: spin 0.75s linear infinite;
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes slide-up {
+    from {
+      opacity: 0;
+      transform: translateY(28px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  @keyframes count-up {
+    from {
+      opacity: 0;
+      transform: translateY(20px) scale(0.9);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+  @keyframes glow-pulse {
+    0%,
+    100% {
+      box-shadow:
+        0 0 24px rgba(212, 144, 64, 0.3),
+        0 0 64px rgba(212, 144, 64, 0.1);
+    }
+    50% {
+      box-shadow:
+        0 0 48px rgba(212, 144, 64, 0.5),
+        0 0 100px rgba(212, 144, 64, 0.2);
+    }
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+}
+
+/*
+  The default border color has changed to `currentcolor` in Tailwind CSS v4,
+  so we've added these compatibility styles to make sure everything still
+  looks the same as it did with Tailwind CSS v3.
+
+  If we ever want to remove these styles, we need to add an explicit border
+  color utility to any element that depends on these defaults.
+*/
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentcolor);
+  }
+}
 
 /* ─────────────────────────────────────────────────────────────────────────────
    Material Symbols — defensive FOUT prevention.

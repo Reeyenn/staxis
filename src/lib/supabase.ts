@@ -28,7 +28,7 @@ const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 if (!url || !anonKey) {
   // Fail loudly in the browser console — missing env vars at build time
   // would have silently shipped an unusable app.
-  // eslint-disable-next-line no-console
+   
   console.error(
     '[Supabase] Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY. ' +
     'Fix: Vercel Project Settings → Environment Variables, then redeploy.'

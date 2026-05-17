@@ -34,7 +34,7 @@ export function logErr(tag: string, err: unknown): void {
   } else {
     msg = String(err);
   }
-  // eslint-disable-next-line no-console
+   
   console.error(`[Supabase] ${tag}:`, msg);
 }
 

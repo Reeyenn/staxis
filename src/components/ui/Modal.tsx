@@ -32,7 +32,7 @@ export function Modal({ isOpen, onClose, title, children, className }: ModalProp
             <h2 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '1.5rem', letterSpacing: '-0.01em' }}>
               {title}
             </h2>
-            <button onClick={onClose} className="btn btn-secondary btn-sm !p-2">
+            <button onClick={onClose} className="btn btn-secondary btn-sm p-2!">
               <X size={16} />
             </button>
           </div>
