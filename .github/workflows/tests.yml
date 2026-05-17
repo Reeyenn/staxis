@@ -55,8 +55,11 @@ jobs:
       # react/no-unescaped-entities rule is disabled project-wide.
       # `--max-warnings 0` means ANY warning fails the build — keeps
       # the codebase from drifting back into the noisy state.
+      # Also runs scripts/check-env-access.mjs — fails CI if any file
+      # outside the canonical env modules (src/lib/env.ts etc.) reads
+      # process.env directly. Forces new code to import { env }.
       - name: Lint
-        run: npx eslint src/ --max-warnings 0
+        run: npm run lint
 
       # Type-check — fails on any tsc error.
       - name: Type-check
@@ -66,15 +69,16 @@ jobs:
       - name: Run scraper unit tests
         run: node --test scraper/__tests__/*.test.js
 
-      # TypeScript test suites run via tsx --test. supabase-admin.ts throws
-      # at module load if Supabase env vars are missing, and several test
-      # files transitively import it; pass placeholder env so the imports
-      # succeed. Tests don't make real Supabase calls.
+      # TypeScript test suites run via tsx --test. The env module (src/lib/env.ts)
+      # validates required vars at boot and several test files transitively
+      # import it; pass placeholder env so the imports succeed. Tests don't
+      # make real Supabase calls. Placeholder values are >= 20 chars to satisfy
+      # the schema's min length validators.
       - name: Run TypeScript unit tests
         env:
           NEXT_PUBLIC_SUPABASE_URL: 'https://placeholder.supabase.co'
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: 'placeholder-anon-key'
-          SUPABASE_SERVICE_ROLE_KEY: 'placeholder-service-role-key'
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: 'placeholder-anon-key-min-20-chars'
+          SUPABASE_SERVICE_ROLE_KEY: 'placeholder-service-role-key-min-20-chars'
         run: npx tsx --test src/lib/__tests__/*.test.ts
 
       # Phase M3.1 (2026-05-14): static check for undefined names. F821
@@ -139,6 +143,6 @@ jobs:
           # load time. We give safe placeholders here — the build doesn't
           # actually call Supabase, so wrong values are fine.
           NEXT_PUBLIC_SUPABASE_URL: 'https://placeholder.supabase.co'
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: 'placeholder-anon-key'
-          SUPABASE_SERVICE_ROLE_KEY: 'placeholder-service-role-key'
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: 'placeholder-anon-key-min-20-chars'
+          SUPABASE_SERVICE_ROLE_KEY: 'placeholder-service-role-key-min-20-chars'
         run: npm run build

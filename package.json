@@ -9,7 +9,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint src scraper --max-warnings 0",
+    "lint": "eslint src scraper --max-warnings 0 && node scripts/check-env-access.mjs",
     "seed": "node scripts/seed-supabase.js",
     "seed:reset": "node scripts/seed-supabase.js --reset",
     "agent:evals": "tsx scripts/run-agent-evals.ts",
