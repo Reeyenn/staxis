@@ -58,6 +58,7 @@
  */
 
 const { mergeStatus, incrementCounter } = require('./supabase-helpers');
+const { env } = require('./env');
 const { safeEval, safeWaitForFunction, goWithSettle } = require('./page-helpers');
 const { ScraperError, ERROR_CODES } = require('./scraper-errors');
 
@@ -327,7 +328,7 @@ async function pullDashboardNumbers(page, supabase, log, propertyId) {
   // becomes the frozen historical snapshot for that date. No separate cron or
   // append-only log needed. Dates are bucketed by the hotel's local timezone
   // so a pull at 11:45pm Central writes to today, not tomorrow-UTC.
-  const timezone = process.env.TIMEZONE || 'America/Chicago';
+  const timezone = env.TIMEZONE;
   const localDate = new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(new Date());
   const { error: dbdErr } = await supabase
     .from('dashboard_by_date')

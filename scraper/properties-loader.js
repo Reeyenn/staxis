@@ -10,7 +10,7 @@
  *   This module is wired up but NOT yet driving the scraper.js tick loop.
  *   Once `scraper.js` is refactored to iterate across multiple properties
  *   per tick (managing Playwright contexts per-property, deduping login
- *   sessions, etc.), it will switch from reading process.env.HOTELOPS_PROPERTY_ID
+ *   sessions, etc.), it will switch from reading env.HOTELOPS_PROPERTY_ID
  *   to calling `loadActiveProperties(supabase)` here.
  *
  *   See migration 0018_scraper_credentials.sql for the base schema and
@@ -42,6 +42,8 @@
  *   - Caches the result for a short window so the tick loop doesn't
  *     hammer Postgres for the property list every 5 minutes.
  */
+
+const { env } = require('./env');
 
 const ENV_FALLBACK_INSTANCE_ID = 'default';
 
@@ -82,7 +84,7 @@ async function loadActiveProperties(supabase, opts = {}) {
     return _cache;
   }
 
-  const instanceId = process.env.SCRAPER_INSTANCE_ID || ENV_FALLBACK_INSTANCE_ID;
+  const instanceId = env.SCRAPER_INSTANCE_ID;
 
   // Read from the auto-decrypting view (migration 0069). The underlying
   // scraper_credentials table stores ca_username/ca_password only as
@@ -145,9 +147,9 @@ async function loadActiveProperties(supabase, opts = {}) {
 
 /** Synthesize a single ScraperProperty from process.env. Returns null if env is incomplete. */
 function fromEnv() {
-  const propertyId = process.env.HOTELOPS_PROPERTY_ID;
-  const caUsername = process.env.CA_USERNAME;
-  const caPassword = process.env.CA_PASSWORD;
+  const propertyId = env.HOTELOPS_PROPERTY_ID;
+  const caUsername = env.CA_USERNAME;
+  const caPassword = env.CA_PASSWORD;
   if (!propertyId || !caUsername || !caPassword) return null;
   return {
     propertyId,
@@ -155,7 +157,7 @@ function fromEnv() {
     caPassword,
     caLoginUrl: 'https://www.choiceadvantage.com/choicehotels/Welcome.init',
     pmsType: 'choice_advantage',
-    scraperInstance: process.env.SCRAPER_INSTANCE_ID || ENV_FALLBACK_INSTANCE_ID,
+    scraperInstance: env.SCRAPER_INSTANCE_ID,
     isActive: true,
     fromFallback: true,
   };

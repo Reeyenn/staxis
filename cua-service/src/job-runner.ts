@@ -23,6 +23,7 @@ import { log } from './log.js';
 import type { OnboardingJob, ScraperCredentialsRow, Recipe, PMSCredentials } from './types.js';
 import { mapPMS } from './mapper.js';
 import { runRecipeExtraction } from './recipe-runner.js';
+import { env } from './env.js';
 import { saveExtractedData } from './data-loader.js';
 
 // 15 minutes total per onboarding job. A full first-time mapping run
@@ -31,7 +32,7 @@ import { saveExtractedData } from './data-loader.js';
 // data-specific prompts, capped per-phase by MAPPING_WALLCLOCK_BUDGET_MS
 // in mapper.ts). 15 min comfortably fits all of that with slack for
 // recipe save + initial extraction. Override via env if needed.
-const JOB_TIMEOUT_MS = parseInt(process.env.JOB_TIMEOUT_MS ?? '900000', 10);
+const JOB_TIMEOUT_MS = env.JOB_TIMEOUT_MS;
 
 export async function runJob(jobId: string, workerId: string): Promise<void> {
   const startedAt = Date.now();

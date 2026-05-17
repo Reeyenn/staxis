@@ -25,6 +25,7 @@ import { anthropic, BROWSER_TOOL, CLAUDE_MODEL, MAPPING_SYSTEM_PROMPT } from './
 import { executeBrowserAction, type BrowserAction } from './browser-tool.js';
 import { log } from './log.js';
 import { logClaudeUsage, getJobCostMicros } from './usage-log.js';
+import { env } from './env.js';
 
 // ── Cumulative-cost circuit-breaker (May 2026 audit pass-5) ───────────
 // Each phase has its own token + wallclock budget (~$2.40 max per phase),
@@ -33,7 +34,7 @@ import { logClaudeUsage, getJobCostMicros } from './usage-log.js';
 // covers ~5 successful mappings at typical spend (~$0.30-0.80 each);
 // hitting it usually means the agent is stuck looping. Configurable via
 // CUA_JOB_COST_CAP_MICROS env (in micro-dollars; default 5_000_000 = $5).
-const JOB_COST_CAP_MICROS = Number(process.env.CUA_JOB_COST_CAP_MICROS) || 5_000_000;
+const JOB_COST_CAP_MICROS = env.CUA_JOB_COST_CAP_MICROS;
 import type { PMSCredentials, PMSType, Recipe, RecipeStep, LoginSteps, ActionRecipe } from './types.js';
 
 const MAX_AGENT_STEPS_LOGIN = 60;
