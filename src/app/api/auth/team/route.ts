@@ -21,7 +21,7 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { log, getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId } from '@/lib/log';
 import { verifyTeamManager, canManageHotel } from '@/lib/team-auth';
 import { isAssignableRole, type AppRole } from '@/lib/roles';
 import { writeAudit } from '@/lib/audit';
@@ -47,10 +47,10 @@ export async function GET(req: NextRequest) {
 
   const { data: rows, error: qErr } = await supabaseAdmin
     .from('accounts')
-    .select('id, username, display_name, role, property_access, created_at, data_user_id')
+    .select('id, username, display_name, role, property_access, created_at, data_user_id, staff_id')
     .order('created_at', { ascending: true });
   if (qErr) {
-    log.error('[team:GET] query failed', { err: qErr, requestId });
+    console.error('[team:GET] query failed', qErr);
     return err('Failed to load team', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
@@ -67,7 +67,7 @@ export async function GET(req: NextRequest) {
   const emailByUserId = new Map<string, string>();
   const { data: authPage, error: listErr } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
   if (listErr) {
-    log.error('[team:GET] auth listUsers failed', { err: listErr, requestId });
+    console.error('[team:GET] auth listUsers failed', listErr);
   } else {
     for (const u of authPage?.users ?? []) {
       if (u.id && u.email) emailByUserId.set(u.id, u.email);
@@ -81,6 +81,7 @@ export async function GET(req: NextRequest) {
     email: emailByUserId.get(r.data_user_id) ?? '',
     role: r.role as AppRole,
     propertyAccess: r.role === 'admin' ? ['*'] : (r.property_access ?? []),
+    staffId: (r as { staff_id?: string | null }).staff_id ?? null,
     createdAt: r.created_at,
   }));
 
@@ -98,6 +99,9 @@ export async function PUT(req: NextRequest) {
     displayName?: string;
     role?: string;
     password?: string;
+    // staffId: links accounts.staff_id to the staff roster row this login
+    // represents. `null` unlinks. `undefined` (omitted) leaves it alone.
+    staffId?: string | null;
   };
   const { displayName, role, password } = body;
 
@@ -116,7 +120,7 @@ export async function PUT(req: NextRequest) {
   // Load target.
   const { data: target, error: tErr } = await supabaseAdmin
     .from('accounts')
-    .select('id, role, data_user_id, property_access, display_name')
+    .select('id, role, data_user_id, property_access, display_name, staff_id')
     .eq('id', accountId)
     .maybeSingle();
   if (tErr || !target) {
@@ -163,6 +167,56 @@ export async function PUT(req: NextRequest) {
     nextRole = role as AppRole;
   }
 
+  // ── staffId link/unlink ─────────────────────────────────────────────────
+  // The /staff page's My Shifts view scopes to accounts.staff_id. Manager
+  // sets this from the Directory edit modal. We allow null (unlink) or any
+  // staff.id that belongs to this hotel. The DB itself has no per-hotel FK,
+  // so the check happens here.
+  let staffLinkChanged = false;
+  if (body.staffId !== undefined) {
+    const currentStaffId = (target as { staff_id?: string | null }).staff_id ?? null;
+    if (body.staffId === null) {
+      if (currentStaffId !== null) {
+        updates.staff_id = null;
+        staffLinkChanged = true;
+      }
+    } else {
+      const staffIdCheck = validateUuid(body.staffId, 'staffId');
+      if (staffIdCheck.error) return err(staffIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+      const nextStaffId = staffIdCheck.value!;
+      if (nextStaffId !== currentStaffId) {
+        // Verify the staff row exists and is in this hotel.
+        const { data: staffRow, error: sErr } = await supabaseAdmin
+          .from('staff')
+          .select('id, property_id')
+          .eq('id', nextStaffId)
+          .maybeSingle();
+        if (sErr || !staffRow) {
+          return err('Staff record not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+        }
+        if (staffRow.property_id !== hotelId) {
+          return err('Staff record belongs to another hotel', {
+            requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+          });
+        }
+        // Ensure this staff row isn't already linked to a different account.
+        const { data: existing } = await supabaseAdmin
+          .from('accounts')
+          .select('id')
+          .eq('staff_id', nextStaffId)
+          .neq('id', accountId)
+          .maybeSingle();
+        if (existing) {
+          return err('That staff record is already linked to another account', {
+            requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+          });
+        }
+        updates.staff_id = nextStaffId;
+        staffLinkChanged = true;
+      }
+    }
+  }
+
   // Password reset: requires Supabase 6-char minimum.
   if (password) {
     if (password.length < 6) {
@@ -172,8 +226,8 @@ export async function PUT(req: NextRequest) {
     }
     const { error: pwErr } = await supabaseAdmin.auth.admin.updateUserById(target.data_user_id, { password });
     if (pwErr) {
-      log.error('[team:PUT] password update failed', { err: pwErr, requestId });
-      return err('Failed to update password', {
+      console.error('[team:PUT] password update failed', pwErr);
+      return err(pwErr.message || 'Failed to update password', {
         requestId, status: 500, code: ApiErrorCode.InternalError,
       });
     }
@@ -185,7 +239,7 @@ export async function PUT(req: NextRequest) {
       .update(updates)
       .eq('id', accountId);
     if (upErr) {
-      log.error('[team:PUT] update failed', { err: upErr, requestId });
+      console.error('[team:PUT] update failed', upErr);
       return err('Failed to update account', {
         requestId, status: 500, code: ApiErrorCode.InternalError,
       });
@@ -203,6 +257,7 @@ export async function PUT(req: NextRequest) {
       display_name_changed: typeof updates.display_name === 'string',
       role_changed: nextRole ?? null,
       password_reset: !!password,
+      staff_link_changed: staffLinkChanged,
     },
   });
 
@@ -234,7 +289,7 @@ export async function DELETE(req: NextRequest) {
 
   const { data: target, error: tErr } = await supabaseAdmin
     .from('accounts')
-    .select('id, role')
+    .select('id, role, property_access')
     .eq('id', accountId)
     .maybeSingle();
   if (tErr || !target) {
@@ -246,23 +301,22 @@ export async function DELETE(req: NextRequest) {
     });
   }
 
-  // Atomic remove via RPC. The previous SELECT→filter→UPDATE raced when
-  // two managers detached the same user from different hotels in parallel
-  // — the second writer's stale array could re-grant a hotel the first
-  // writer just stripped (audit/concurrency #1).
-  const { data: remainingLen, error: rpcErr } = await supabaseAdmin
-    .rpc('staxis_remove_property_access', {
-      p_account_id: accountId,
-      p_hotel_id: hotelId,
-    });
-  if (rpcErr) {
-    log.error('[team:DELETE] rpc failed', { err: rpcErr, requestId });
+  const current = Array.isArray(target.property_access) ? target.property_access : [];
+  const next = current.filter((p: string) => p !== hotelId);
+  if (next.length === current.length) {
+    // Already not on this hotel — idempotent success.
+    return ok({ success: true, alreadyRemoved: true }, { requestId });
+  }
+
+  const { error: upErr } = await supabaseAdmin
+    .from('accounts')
+    .update({ property_access: next })
+    .eq('id', accountId);
+  if (upErr) {
+    console.error('[team:DELETE] update failed', upErr);
     return err('Failed to remove access', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
-  }
-  if (remainingLen === -1) {
-    return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
 
   await writeAudit({
@@ -272,7 +326,7 @@ export async function DELETE(req: NextRequest) {
     targetType: 'account',
     targetId: accountId,
     hotelId,
-    metadata: { remaining_hotels: Number(remainingLen ?? 0) },
+    metadata: { remaining_hotels: next.length },
   });
 
   return ok({ success: true }, { requestId });
