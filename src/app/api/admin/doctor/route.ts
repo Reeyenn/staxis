@@ -222,6 +222,15 @@ const checks: Array<[string, CheckFn]> = [
   // round-trip fails here, we know the live SMS path is fail-opening
   // every request. May 2026 audit pass-3 closure.
   ['api_limits_writable',            checkApiLimitsWritable],
+  // PMS-credentials encryption integrity. Migration 0069 dropped the
+  // plaintext ca_username/ca_password columns and replaced them with
+  // Vault-backed AES-256 encrypted equivalents. Migration 0140 added the
+  // RPC the save-credentials route uses. If either is missing (or the
+  // encrypted columns somehow got dropped) we want the doctor to scream —
+  // the only alternative is silently saving plaintext credentials or
+  // every Test Connection click failing silently for weeks (which is
+  // exactly what happened pre-0140).
+  ['pms_credentials_encrypted',      checkPmsCredentialsEncrypted],
   // Billing config — fails LOUD on the half-configured state where some
   // Stripe vars are set and others aren't. Warns when none are set
   // (pre-launch trial-only mode). Fails when keys are clearly malformed.
@@ -3119,6 +3128,85 @@ async function checkApiLimitsWritable(): Promise<Omit<Check, 'name' | 'durationM
       status: 'fail',
       detail: `Rate-limit RPC probe threw: ${errToString(err)}. Live rate limiter is fail-opening on every SMS request.`,
       fix: 'Check Supabase service-role connectivity, then verify migration 0008_api_limits.sql applied.',
+    };
+  }
+}
+
+/**
+ * pms_credentials_encrypted — verify both the schema state (plaintext
+ * columns dropped, encrypted columns present) and the RPC the
+ * save-credentials route depends on.
+ *
+ * Probe shape (mirrors checkApiLimitsWritable): call the RPC with a
+ * sentinel zero-UUID. The RPC's first action is a property-existence
+ * check that raises `no_data_found` for any property_id that doesn't
+ * exist. Reaching that error proves: (1) the function exists with the
+ * expected signature, (2) the encrypt_pms_credential helper is callable,
+ * (3) the encrypted columns the function INSERTs into exist (otherwise
+ * the function body would fail to compile). Real callers pass real
+ * property_ids and never hit the sentinel branch.
+ *
+ * Pre-0132 state would have been: plaintext columns present → live route
+ * silently writes them; OR encrypted columns present + RPC missing →
+ * route writes to dropped columns and 404s silently. Either way the
+ * doctor would have caught it loudly.
+ */
+async function checkPmsCredentialsEncrypted(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const SENTINEL_PID = '00000000-0000-0000-0000-000000000000';
+  try {
+    const { error } = await supabaseAdmin.rpc('staxis_upsert_scraper_credentials', {
+      p_property_id: SENTINEL_PID,
+      p_pms_type: 'choice_advantage',  // any valid enum value; never written
+      p_login_url: 'https://doctor.example/probe',
+      p_username: 'doctor-probe',
+      p_password: 'doctor-probe',
+    });
+    if (error) {
+      // The RPC raises with errcode 'no_data_found' → PostgREST surfaces as
+      // code 'P0002' (plpgsql NO_DATA_FOUND). That's the expected healthy
+      // path — the function exists and ran all the way to the property
+      // existence check.
+      const code = (error as { code?: string }).code;
+      if (code === 'P0002' || /property .* not found/i.test(error.message ?? '')) {
+        return {
+          status: 'ok',
+          detail: 'PMS credentials RPC + encrypted columns alive (sentinel correctly rejected as missing property).',
+        };
+      }
+      // Function-not-found (PGRST202 / 42883) → migration 0140 not applied.
+      if (code === '42883' || code === 'PGRST202' || /function .* does not exist/i.test(error.message ?? '')) {
+        return {
+          status: 'fail',
+          detail: `staxis_upsert_scraper_credentials function missing: ${error.message}. Save-credentials route will 500 on every Test Connection click.`,
+          fix: 'Apply supabase/migrations/0140_upsert_scraper_credentials_rpc.sql to prod via psql.',
+        };
+      }
+      // Column-not-found inside the function body (42703) → 0069 partial.
+      if (code === '42703' || /column .* does not exist/i.test(error.message ?? '')) {
+        return {
+          status: 'fail',
+          detail: `Encrypted credential columns missing: ${error.message}. Credentials cannot be saved.`,
+          fix: 'Apply supabase/migrations/0069_encrypt_scraper_credentials.sql to prod via psql.',
+        };
+      }
+      return {
+        status: 'fail',
+        detail: `Unexpected RPC error: ${error.message} (code=${code ?? 'unknown'}).`,
+        fix: 'Inspect the staxis_upsert_scraper_credentials function and re-apply 0140 if needed.',
+      };
+    }
+    // No error at all means the sentinel UUID actually exists as a property,
+    // OR the existence check is missing from the function body. Either way
+    // surprising — flag for human review.
+    return {
+      status: 'warn',
+      detail: 'RPC returned no error for sentinel property_id — unexpected. Function may be missing the existence guard.',
+    };
+  } catch (err) {
+    return {
+      status: 'fail',
+      detail: `PMS-credentials probe threw: ${errToString(err)}.`,
+      fix: 'Verify Supabase service-role connectivity; re-apply 0069 and 0132 if migrations are missing.',
     };
   }
 }
