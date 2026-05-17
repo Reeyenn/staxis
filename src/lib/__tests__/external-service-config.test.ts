@@ -165,7 +165,6 @@ describe('externalFetch', () => {
     assert.throws(
       () =>
         externalFetch('https://example.test/', {
-          // @ts-expect-error intentionally testing the runtime guard
           signal: new AbortController().signal,
         }),
       /don't pass `signal` via init/,

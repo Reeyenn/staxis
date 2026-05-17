@@ -32,6 +32,10 @@ import { createConversation } from '@/lib/agent/memory';
 import { assertAudioBudget } from '@/lib/agent/cost-controls';
 import { PROMPT_VERSION } from '@/lib/agent/prompts';
 import type { AppRole } from '@/lib/roles';
+import {
+  externalFetch,
+  EXTERNAL_FETCH_SHORT_TIMEOUT_MS,
+} from '@/lib/external-service-config';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -127,11 +131,14 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   // Fetch a signed WebSocket URL from ElevenLabs. The URL is single-use
   // and short-lived; the browser uses it to open the conversation socket.
+  // 10s timeout — signed URL mint is fast (typical <1s); if ElevenLabs is
+  // hung we want to surface "voice service unavailable" rather than
+  // block the user staring at a connecting spinner. (Audit finding #6.)
   let signedUrl: string;
   try {
-    const r = await fetch(
+    const r = await externalFetch(
       `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${encodeURIComponent(agentId)}`,
-      { headers: { 'xi-api-key': apiKey } },
+      { headers: { 'xi-api-key': apiKey }, timeoutMs: EXTERNAL_FETCH_SHORT_TIMEOUT_MS },
     );
     if (!r.ok) {
       const txt = await r.text().catch(() => '');

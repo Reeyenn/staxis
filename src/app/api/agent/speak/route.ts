@@ -24,6 +24,10 @@ import {
   assertAudioBudget,
   recordNonRequestCost,
 } from '@/lib/agent/cost-controls';
+import {
+  externalFetch,
+  EXTERNAL_FETCH_TIMEOUT_MS,
+} from '@/lib/external-service-config';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -137,9 +141,14 @@ export async function POST(req: NextRequest): Promise<Response> {
   // Plain fetch — the realtime voice chat uses @elevenlabs/client for the
   // WebSocket Conversational AI surface, but for a one-shot TTS the REST
   // endpoint is simpler and avoids pulling SDK weight server-side.
+  //
+  // externalFetch combines `req.signal` (client disconnect cancels the
+  // upstream) with a 15s timeout (audit finding #6: pre-2026-05-17 this
+  // had only `req.signal`, so an unresponsive ElevenLabs would tie up
+  // the function until route maxDuration killed it).
   let ttsResponse: Response;
   try {
-    ttsResponse = await fetch(
+    ttsResponse = await externalFetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`,
       {
         method: 'POST',
@@ -152,7 +161,8 @@ export async function POST(req: NextRequest): Promise<Response> {
           text,
           model_id: ELEVENLABS_MODEL_ID,
         }),
-        signal: req.signal,
+        abortSignal: req.signal,
+        timeoutMs: EXTERNAL_FETCH_TIMEOUT_MS,
       },
     );
   } catch (e) {
