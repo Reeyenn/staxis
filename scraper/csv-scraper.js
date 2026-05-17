@@ -46,6 +46,32 @@ const SHIFT_MINUTES = 480; // 8-hour shift
 
 // ─── Date helpers for stayover cycle math ────────────────────────────────────
 
+/**
+ * Compute the plan_snapshots.date this pull should write to.
+ *
+ *   pullType='morning' → today in the property's local timezone.
+ *   pullType='evening' → tomorrow in the property's local timezone.
+ *
+ * Evening pulls (7pm–11pm) pre-populate tomorrow's row so the next
+ * morning's ml-run-inference cron at 5:30am CT can find a plan_snapshot
+ * for prediction_date = tomorrow. Anything else (unknown pullType) is
+ * treated as morning to fail safe — at worst we keep refining today's
+ * row, which never poisons tomorrow's plan.
+ */
+function computeTargetDate(pullType, timezone) {
+  // en-CA's locale always emits YYYY-MM-DD, the shape Postgres' date
+  // type round-trips losslessly via REST.
+  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: timezone });
+  const todayLocalISO = fmt.format(new Date());
+  if (pullType !== 'evening') return todayLocalISO;
+  // Add a day in UTC using the LOCAL date as anchor. Picking noon avoids
+  // any DST-transition edge case where "+24h" could undershoot or
+  // overshoot the next civil day.
+  const anchor = new Date(`${todayLocalISO}T12:00:00Z`);
+  anchor.setUTCDate(anchor.getUTCDate() + 1);
+  return anchor.toISOString().slice(0, 10);
+}
+
 /** Parse CSV date "M/D/YY" or "M/D/YYYY" → Date (noon UTC to avoid DST edges). */
 function parseCSVDate(str) {
   if (!str) return null;
@@ -883,10 +909,9 @@ async function writeRoomStayoverDays(supabase, config, snapshot, log) {
  * @param {import('playwright').Page} page       — authenticated CA page
  * @param {import('@supabase/supabase-js').SupabaseClient} supabase
  * @param {object} config   — { PROPERTY_ID, TIMEZONE }
- * @param {string} pullType — historically "morning" or "evening"; today the
- *                            scraper only emits "morning" since every pull
- *                            writes to today's row. Kept as the scraper_status
- *                            key for backward compatibility.
+ * @param {string} pullType — "morning" → write to today's plan_snapshot row;
+ *                            "evening" → write to tomorrow's row (consumed by
+ *                            ml-run-inference at 5:30am the next day).
  * @param {function} log
  */
 async function runCSVScrape(page, supabase, config, pullType, log) {
@@ -894,17 +919,14 @@ async function runCSVScrape(page, supabase, config, pullType, log) {
 
   const timezone = config.TIMEZONE || 'America/Chicago';
 
-  // Every pull writes to TODAY's (property_id, date) row. At midnight the
-  // local date rolls over and the next pull lands on the new day's row.
-  //
-  // Removed 2026-04-30: the old code branched on `pullType === 'evening'` to
-  // write to TOMORROW's row after 7pm. That added complexity (and a daily
-  // false-alarm "CSV pull failing" banner because today's pulledAt would
-  // freeze at the last morning pull) without proportional user value —
-  // Maria looks at tomorrow's plan tomorrow, not tonight.
-  const targetDate = new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(new Date());
+  // 'morning' → TODAY's (property_id, date) row, refined hourly through
+  // the day. 'evening' → TOMORROW's row, written 7pm–11pm so the next
+  // morning's ml-run-inference cron has a plan_snapshot to predict from
+  // (the ML service requires plan_snapshots WHERE date = prediction_date).
+  // See scraper.js header for the 2026-05-17 reintroduction history.
+  const targetDate = computeTargetDate(pullType, timezone);
 
-  log(`[CSV] Target date: ${targetDate}`);
+  log(`[CSV] Target date: ${targetDate} (pullType=${pullType})`);
 
   try {
     // Step 1: Download CSV from CA
@@ -981,5 +1003,6 @@ module.exports = {
   buildSnapshot,
   downloadCSVFromCA,
   classifyStayover,  // exported for unit testing / UI reuse
+  computeTargetDate, // exported for unit testing
   CLEANING_TIMES,
 };

@@ -4,20 +4,24 @@
  * Runs on Railway. Stays alive and runs two things off the same tick loop:
  *
  *   1. CSV pulls (hourly, 5am–11pm) — the arrivals/departures CSV from
- *      Choice Advantage. Every pull writes to TODAY's plan_snapshot row
- *      (keyed by current local date). At midnight the date rolls over and
- *      the next pull lands on the new day's row. csv-scraper upserts each
- *      pull into the same (property_id, date) row, so each hourly pull
- *      refines the plan.
+ *      Choice Advantage. Pulls before 7pm local write to TODAY's
+ *      plan_snapshot row (pullType='morning'); pulls at 7pm and later
+ *      write to TOMORROW's row (pullType='evening'). csv-scraper upserts
+ *      each pull into the (property_id, date) row, so the morning pulls
+ *      keep refining today's plan as the day progresses while the evening
+ *      pulls pre-populate tomorrow's plan.
  *
- *      History: there used to be a 7pm cutover where pulls switched to
- *      writing TOMORROW's row (pullType='evening') to pre-populate next-day
- *      planning. That added a confusing morning/evening duality without
- *      proportional user value (Maria looks at tomorrow's plan tomorrow,
- *      not tonight) and produced a daily false-alarm "CSV pull failing"
- *      banner from 9–11pm because today's pulledAt would freeze at the last
- *      morning pull. Removed 2026-04-30. The pullType='morning' literal is
- *      kept as the scraper_status key for backward compatibility.
+ *      History: the 7pm cutover was removed 2026-04-30 (everything pulled
+ *      to today's row) on the rationale that "Maria looks at tomorrow's
+ *      plan tomorrow" and that the cutover produced a false-alarm "CSV
+ *      pull failing" banner from 9-11pm. Re-introduced 2026-05-17 because
+ *      ml-run-inference at 5:30am CT predicts for TOMORROW — the ML
+ *      service queries plan_snapshots WHERE date = prediction_date, so
+ *      without an evening pull populating tomorrow's row, demand
+ *      predictions silently fail and ml_demand_predictions_fresh trips the
+ *      doctor. The "false alarm" concern no longer applies because
+ *      scraper-health now picks max(morning.at, evening.at) instead of
+ *      watching morning alone (see scraper-health/route.ts:240).
  *
  *   2. Dashboard number pulls (every 15 min, 5am–11pm) — grabs in-house,
  *      arrivals, and departures counts from Choice Advantage's View pages
@@ -720,13 +724,19 @@ async function maybeRunCSVPull(page, relogin) {
   const now = Date.now();
   if (now - lastCSVPullAt < CSV_INTERVAL_MS) return;
 
-  // Single CSV pull type. csv-scraper.js always writes to today's
-  // (property_id, date) row regardless of the literal value here. The
-  // 'morning' string is preserved purely as the scraper_status key so
-  // existing dashboards / scraper-health alerts keep reading the same row
-  // without a migration. See header comment for the morning/evening split
-  // we used to do and why we removed it.
-  const ok = await runCSVScrapeFresh(page, 'morning', relogin);
+  // Pull-type cutover at 7pm local: morning pulls (5am–6:59pm) write to
+  // TODAY's plan_snapshot row, evening pulls (7pm–10:59pm) write to
+  // TOMORROW's row. Re-introduced 2026-05-17 because ml-run-inference at
+  // 5:30am CT predicts for TOMORROW and the ML service queries
+  // plan_snapshots WHERE date = prediction_date — without an evening pull
+  // populating tomorrow's row, every demand prediction fails with "No plan
+  // snapshot for prediction date" and ml_demand_predictions_fresh trips
+  // the doctor. The earlier removal cited a "9–11pm CSV-pull-failing
+  // false-alarm" banner, but the current scraper-health route already
+  // picks max(morning.at, evening.at) — see scraper-health/route.ts:240
+  // — so that concern doesn't apply with today's monitoring code.
+  const pullType = hour >= 19 ? 'evening' : 'morning';
+  const ok = await runCSVScrapeFresh(page, pullType, relogin);
   // Only bump the timestamp on success — a failed pull should retry next tick.
   if (ok) lastCSVPullAt = now;
 }
