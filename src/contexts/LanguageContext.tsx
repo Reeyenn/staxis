@@ -21,6 +21,22 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
     if (stored === 'en' || stored === 'es') setLangState(stored);
   }, []);
 
+  // Cross-tab sync (audit/concurrency #12). The `storage` event fires
+  // in OTHER tabs when one tab calls localStorage.setItem, so a language
+  // switch in Tab A immediately propagates to Tabs B/C/… without
+  // requiring a refresh. Without this, each tab's lang state diverged
+  // from the persisted value the moment another tab changed it.
+  useEffect(() => {
+    const handler = (e: StorageEvent) => {
+      if (e.key !== 'hotelops-lang') return;
+      if (e.newValue === 'en' || e.newValue === 'es') {
+        setLangState(e.newValue as Language);
+      }
+    };
+    window.addEventListener('storage', handler);
+    return () => window.removeEventListener('storage', handler);
+  }, []);
+
   // Mirror the active language onto <html lang> so screen readers (and
   // anything else that keys off the document language) pick up the
   // switch. layout.tsx hardcodes lang="en" at SSR; this overrides it

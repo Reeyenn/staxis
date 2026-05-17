@@ -118,6 +118,36 @@ async function deriveStartedAt(args: {
   roomType: 'checkout' | 'stayover';
   shiftStartedAt: string | null;
 }): Promise<string> {
+  // Server source-of-truth for the shift_start anchor (audit/concurrency
+  // #2). Pre-fix the anchor lived in the housekeeper's device-local
+  // localStorage, so switching phones mid-shift produced inconsistent
+  // anchors and skewed cleaning_events.duration_minutes for the new
+  // device's rows. Now: the first cleanable Done locks in
+  // schedule_assignments.shift_starts[staffId] via a get-or-set RPC;
+  // every subsequent Done on any device for the same shift reads the
+  // same canonical anchor. The client-passed shiftStartedAt is the
+  // first-write candidate; if the server already has one, it wins.
+  let canonicalShiftStart: string | null = args.shiftStartedAt;
+  try {
+    const candidate = args.shiftStartedAt ?? args.completedAt;
+    const { data: serverAt, error: rpcErr } = await supabaseAdmin.rpc(
+      'staxis_get_or_set_shift_start',
+      {
+        p_property: args.pid,
+        p_date: args.date,
+        p_staff: args.staffId,
+        p_default_at: candidate,
+      },
+    );
+    if (!rpcErr && typeof serverAt === 'string' && serverAt) {
+      canonicalShiftStart = serverAt;
+    }
+  } catch {
+    // Best-effort — fall back to the client's shiftStartedAt (legacy
+    // behavior). The deriveStartedAtPure helper has its own synthetic
+    // fallback when both are null.
+  }
+
   let priorCompletedAt: string | null = null;
   try {
     const { data } = await supabaseAdmin
@@ -142,7 +172,7 @@ async function deriveStartedAt(args: {
   return deriveStartedAtPure({
     completedAt: args.completedAt,
     priorCompletedAt,
-    shiftStartedAt: args.shiftStartedAt,
+    shiftStartedAt: canonicalShiftStart,
     roomType: args.roomType,
   });
 }

@@ -423,3 +423,31 @@ These were flagged by exploration but turn out to be non-issues:
 9. Everything else — opportunistic.
 
 Patterns to apply repo-wide: **(a)** atomic SQL or RPCs for read-modify-write on shared rows; **(b)** an `Idempotency-Key` header on every outbound mutation to an external API; **(c)** event-ID dedup tables for every webhook receiver.
+
+---
+
+## Resolution status (2026-05-17)
+
+All 17 findings are resolved on branch `audit/concurrency` (migration `0139_concurrency_audit_fixes.sql` plus code changes). Plan: [/Users/reeyen/.claude/plans/work-on-a-new-mossy-tulip.md](../../plans/work-on-a-new-mossy-tulip.md).
+
+| # | Resolution |
+|---|---|
+| 1 | `staxis_remove_property_access` RPC; team/DELETE swapped to atomic SQL. |
+| 2 | `schedule_assignments.shift_starts` column + `staxis_get_or_set_shift_start`; server-side derivation now uses the canonical anchor. |
+| 3 | `staxis_release_join_code_slot` RPC; unconditional atomic decrement. |
+| 4 | Already resolved earlier by `staxis_seed_shift_assignments` (migration 0135). `staxis_apply_shift_assignments` added in 0139 as a redundant helper for future use. |
+| 5 | `staxis_record_ml_failure` RPC; JS read-modify-write removed. |
+| 6 | `Idempotency-Key` header added to every Resend send; `sendOnboardingInvite` passes a stable `invite:` key derived from `(to, signupUrl)`. |
+| 7 | `processed_twilio_webhooks` dedup table; sms-reply route inserts-or-skips on `MessageSid`. |
+| 8 | `MAX_ATTEMPTS` 5 → 50 with exponential backoff + warning log at attempt 10. |
+| 9 | `resetStuckSmsJobs` default tightened from 300s → 120s. |
+| 10 | In-flight promise dedup on `getPropertyOpsConfig` + documented 60s multi-instance SLA. |
+| 11 | Same dedup pattern on `buildHotelSnapshot`; documented 30s SLA. |
+| 12 | `window.addEventListener('storage', …)` in `LanguageContext`. |
+| 13 | Same listener in `PropertyContext`, keyed on `hotelops-active-property`. |
+| 14 | `lastRefetchAtRef` ref drops realtime callbacks that arrive within 1.5s of a manual refetch. |
+| 15 | `idempotency-key` header threaded through both `anthropic.beta.messages.create` call sites in `cua-service/src/mapper.ts`. |
+| 16 | `AbortSignal.timeout(35_000)` passed to `vision-extract`'s `messages.create`; SDK timeout retained as inner deadline. |
+| 17 | `processed_sentry_webhooks` dedup table; sentry-webhook route hashes the raw body to synthesize a per-delivery event id. |
+
+Tests added: `email-resend-idempotency.test.ts`, `ml-failure-counters-rpc.test.ts`, `property-config-dedup.test.ts`. Full suite (619 tests) passes. `npx tsc --noEmit` is clean on the Next.js project; CUA-service pre-existing playwright type errors are unchanged.

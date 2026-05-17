@@ -9,6 +9,7 @@
  * megaswitch in resend.ts.
  */
 
+import { createHash } from 'crypto';
 import { sendTransactionalEmail, type SendEmailResult } from './resend';
 
 interface OnboardingInviteParams {
@@ -118,11 +119,17 @@ export async function sendOnboardingInvite(
 </body>
 </html>`;
 
+  // Stable idempotency key derived from the unique invite URL — any
+  // retry of the same invite (network blip, double click) within Resend's
+  // 24h dedupe window collapses to a single delivery (audit/concurrency #6).
+  const idempotencyKey = `invite:${createHash('sha256').update(`${to}|${signupUrl}`).digest('hex').slice(0, 24)}`;
+
   return sendTransactionalEmail({
     to,
     subject,
     html,
     text,
+    idempotencyKey,
     tags: [
       { name: 'kind', value: 'onboarding_invite' },
       { name: 'invite_role', value: inviteRole },

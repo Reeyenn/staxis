@@ -383,6 +383,15 @@ async function mapLogin(
     // ~10% of their input-token cost. This was the dominant fix for the
     // 400K-token-budget exhaustion on CA's deep menus. (Pattern from
     // anthropic-quickstarts/browser-use-demo loop.py.)
+    // Deterministic per-turn idempotency key (audit/concurrency #15). If
+    // the SDK's built-in retry (maxRetries=1 in anthropic-client.ts) fires
+    // after the first request already reached Anthropic, the same key
+    // goes out — giving Anthropic the option to dedupe the second
+    // billing. Harmless if unsupported.
+    const idempotencyKey = ctx.jobId
+      ? `${ctx.jobId}:login:${stepIdx}`
+      : `anon:login:${stepIdx}:${Date.now()}`;
+
     const response = await anthropic.beta.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: MAX_OUTPUT_TOKENS_PER_TURN,
@@ -396,7 +405,10 @@ async function mapLogin(
       tools: [BROWSER_TOOL as unknown as Anthropic.Beta.Messages.BetaToolUnion],
       messages: truncateOldHistory(messages, HISTORY_KEEP_RECENT) as Anthropic.Beta.Messages.BetaMessageParam[],
       betas: ['prompt-caching-2024-07-31'],
-    }, ctx.signal ? { signal: ctx.signal } : undefined);
+    }, {
+      ...(ctx.signal ? { signal: ctx.signal } : {}),
+      headers: { 'idempotency-key': idempotencyKey },
+    });
 
     totalInputTokens += response.usage?.input_tokens ?? 0;
     totalOutputTokens += response.usage?.output_tokens ?? 0;
@@ -593,6 +605,11 @@ async function mapAction(args: {
     // ~10% of their input-token cost. This was the dominant fix for the
     // 400K-token-budget exhaustion on CA's deep menus. (Pattern from
     // anthropic-quickstarts/browser-use-demo loop.py.)
+    // Deterministic per-turn idempotency key (audit/concurrency #15).
+    const idempotencyKey = args.jobId
+      ? `${args.jobId}:${args.actionName}:${stepIdx}`
+      : `anon:${args.actionName}:${stepIdx}:${Date.now()}`;
+
     const response = await anthropic.beta.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: MAX_OUTPUT_TOKENS_PER_TURN,
@@ -606,7 +623,10 @@ async function mapAction(args: {
       tools: [BROWSER_TOOL as unknown as Anthropic.Beta.Messages.BetaToolUnion],
       messages: truncateOldHistory(messages, HISTORY_KEEP_RECENT) as Anthropic.Beta.Messages.BetaMessageParam[],
       betas: ['prompt-caching-2024-07-31'],
-    }, args.signal ? { signal: args.signal } : undefined);
+    }, {
+      ...(args.signal ? { signal: args.signal } : {}),
+      headers: { 'idempotency-key': idempotencyKey },
+    });
 
     totalInputTokens += response.usage?.input_tokens ?? 0;
 
