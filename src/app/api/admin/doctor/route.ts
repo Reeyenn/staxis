@@ -1615,7 +1615,11 @@ const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // 0133 REPLICA IDENTITY FULL on hot realtime tables (cost audit).
   // 0134 intentionally skipped (no file on disk; legacy slot in prod).
   // 0135-0139 RPC batch + concurrency audit fixes (post-rebase merge).
-  // 0140 intentionally skipped (no file on disk; legacy slot in prod).
+  // 0140 atomic upsert of PMS credentials + properties.pms_type/pms_url
+  //   (P0 fix, audit Flow 2 #1 — commit 04923a3). Originally drafted as
+  //   "skipped legacy slot"; the file landed mid-audit and the comment
+  //   wasn't refreshed until 2026-05-17 when the doctor began flagging
+  //   the row in applied_migrations as unexpected.
   // 0141 audit/data-model cleanup: drop 8 dead tables + dead FK columns.
   // 0142 audit/data-model cleanup: enforce 8 missing FK constraints.
   // 0143 agent_voice_sessions table for realtime voice session bookkeeping.
@@ -1626,7 +1630,7 @@ const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // 0148 sms_jobs.sent_dirty status flag.
   // 0149 audit/data-model follow-up: COMMENTs documenting polymorphic + external IDs.
   '0124', '0125', '0126', '0129', '0130', '0131', '0132', '0133',
-  '0135', '0136', '0137', '0138', '0139',
+  '0135', '0136', '0137', '0138', '0139', '0140',
   '0141', '0142', '0143', '0144', '0145', '0146', '0147', '0148',
   '0149',
 ];
