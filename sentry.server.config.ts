@@ -12,9 +12,16 @@
  */
 
 import * as Sentry from '@sentry/nextjs';
-import { scrubSentryEvent } from '@/lib/sentry-scrub';
+import { getBaseSentryOptions } from '@/lib/sentry-base';
+
+// Safety defaults (sendDefaultPii=false, beforeSend scrubber, ignoreErrors
+// list for "failed to pipe response" upstream-fetch noise) live in
+// getBaseSentryOptions so the three runtime configs (client / server / edge)
+// can't drift. See src/lib/sentry-base.ts and src/lib/sentry-scrub.ts for
+// the rationale on each default.
 
 Sentry.init({
+  ...getBaseSentryOptions(),
   dsn: process.env.SENTRY_DSN,
 
   // Bind the environment so issues are filterable in the dashboard.
@@ -26,35 +33,4 @@ Sentry.init({
   // 0.1 = 10% of requests get a trace. We can crank it up if we want
   // more data, or turn it off entirely with 0 if Sentry's bill scares us.
   tracesSampleRate: 0.1,
-
-  // Don't send PII (request bodies, cookies, headers) by default. Routes
-  // that legitimately want this can opt in per-event via withScope.
-  sendDefaultPii: false,
-
-  // 2026-05-12: drop transient upstream-fetch noise from the Sentry inbox.
-  // Routes like /api/admin/build-status fan-out to many external APIs
-  // (GitHub, Vercel, Fly) in parallel. When any of those connections is
-  // closed mid-response, undici raises SocketError: other side closed
-  // → TypeError: fetch failed → Next.js wraps it as "failed to pipe
-  // response". The caller already catches these (Promise.all(.catch())
-  // pattern) so the user sees no degradation — they're pure noise. Sentry's
-  // auto-instrumentation still captures them before our catch runs, which
-  // is what we're filtering here. If we ever stop catching upstream fetch
-  // errors at the route level, REMOVE these so we don't silently mask
-  // real outages.
-  ignoreErrors: [
-    'failed to pipe response',
-    /other side closed/,
-  ],
-
-  // 2026-05-12 (Codex audit): scrub custom error text / tags / contexts /
-  // breadcrumbs for PII (phones, emails, JWT/Bearer tokens, etc.) before
-  // ingestion. sendDefaultPii=false only handles the SDK's automatic
-  // capture; staff names and PMS payloads in custom errors slipped
-  // through. See src/lib/sentry-scrub.ts.
-  beforeSend: scrubSentryEvent,
-
-  // Reduce log noise during deploys — Vercel rebuilds churn through
-  // serverless containers and we don't need an init line per cold start.
-  debug: false,
 });
