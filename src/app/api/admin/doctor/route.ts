@@ -242,6 +242,13 @@ const checks: Array<[string, CheckFn]> = [
   // looks like a placeholder — so a weak secret can't silently sit in
   // production for weeks.
   ['ml_service_secret_strength',     checkMlServiceSecretStrength],
+  // ML routing config drift — catches the gap that ate 3 days of demand
+  // predictions in May 2026. When ML_SERVICE_SECRET was set but
+  // ML_SERVICE_URLS wasn't, every cron silently returned
+  // `{ok:true, skipped:"ML service not configured yet"}` and the
+  // workflow's jq guard passed because .ok was true. Doctor now reads the
+  // pair together so drift between them screams instead of whispering.
+  ['ml_service_urls_configured',     checkMlServiceUrlsConfigured],
   // Error tracking — Sentry no-ops gracefully when DSN missing, but a
   // malformed DSN means errors silently disappear. Fail on bad shape.
   ['sentry_dsn_shape',               checkSentryDsnShape],
@@ -2870,6 +2877,72 @@ async function checkMlServiceSecretStrength(): Promise<Omit<Check, 'name' | 'dur
   return {
     status: 'ok',
     detail: `ML_SERVICE_SECRET set (${secret.length} chars).`,
+  };
+}
+
+/**
+ * ml_service_urls_configured — catches the silent-cron drift where Vercel
+ * has ML_SERVICE_SECRET but not ML_SERVICE_URLS (or vice versa). Without
+ * URLs, listMlShardUrls() returns [], and every ml-* cron route falls into
+ * its early-exit branch returning `{ok:true, skipped:"ML service not
+ * configured yet"}`. The ml-cron workflow's jq guard accepts that as
+ * success (`.ok == true`), so no alert fires and demand_predictions stays
+ * stale until ml_demand_predictions_fresh trips a day later. This check
+ * surfaces the drift the moment a deploy lands instead.
+ *
+ * Reports presence/shape only — never the URL value (it is a public
+ * hostname, but treating routing config the same way as the paired
+ * secret keeps the output uniformly redacted-by-default).
+ */
+async function checkMlServiceUrlsConfigured(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const raw = env.ML_SERVICE_URLS;
+  const secretSet = !!(env.ML_SERVICE_SECRET ?? '').trim();
+  const urls = raw && raw.trim()
+    ? raw.split(',').map((u) => u.trim()).filter((u) => u.length > 0)
+    : [];
+
+  // Both unset → intentional disabled state (dev / unconfigured preview).
+  // The cron routes' early-exit is correct here.
+  if (urls.length === 0 && !secretSet) {
+    return {
+      status: 'skipped',
+      detail: 'ML_SERVICE_URLS + ML_SERVICE_SECRET both unset — ML pipeline intentionally disabled on this deploy.',
+    };
+  }
+
+  // Drift: one set, the other not. This is config rot — every cron call
+  // will no-op silently. Fail loudly.
+  if (urls.length === 0 && secretSet) {
+    return {
+      status: 'fail',
+      detail: 'ML_SERVICE_SECRET is set but ML_SERVICE_URLS is empty — every ml-* cron silently returns `{ok:true, skipped:"ML service not configured yet"}` and writes no predictions.',
+      fix: 'Vercel → Project Settings → Environment Variables → add `ML_SERVICE_URLS=https://staxis-production.up.railway.app` (single shard) or comma-separated list (multi-shard). Then redeploy.',
+    };
+  }
+  if (urls.length > 0 && !secretSet) {
+    return {
+      status: 'fail',
+      detail: `ML_SERVICE_URLS set (${urls.length} shard${urls.length === 1 ? '' : 's'}) but ML_SERVICE_SECRET is empty — every ml-* cron call to the service will 401.`,
+      fix: 'Vercel → Project Settings → Environment Variables → set `ML_SERVICE_SECRET` to the same 64-char value used by Fly/Railway ML service + GitHub Actions cron. Procedure: RUNBOOKS.md > ML_SERVICE_SECRET rotation.',
+    };
+  }
+
+  // Shape-check each URL — listMlShardUrls trims but never validates, so
+  // a typo'd entry (e.g. missing scheme) would land here too.
+  const malformed = urls.filter((u) => {
+    try { new URL(u); return false; } catch { return true; }
+  });
+  if (malformed.length > 0) {
+    return {
+      status: 'fail',
+      detail: `ML_SERVICE_URLS has ${malformed.length} malformed entr${malformed.length === 1 ? 'y' : 'ies'} (need full https:// URLs).`,
+      fix: 'Vercel → Project Settings → Environment Variables → fix `ML_SERVICE_URLS`. Each comma-separated entry must be a full URL like `https://staxis-production.up.railway.app`.',
+    };
+  }
+
+  return {
+    status: 'ok',
+    detail: `ML_SERVICE_URLS set (${urls.length} shard${urls.length === 1 ? '' : 's'}); paired ML_SERVICE_SECRET present.`,
   };
 }
 

@@ -18,19 +18,25 @@ import {
   resolveMlShardUrl,
   listMlShardUrls,
   getPrimaryMlShardUrl,
+  classifyMlServiceConfig,
   _internal,
 } from '../ml-routing';
 
 // Capture and restore env so we can mutate freely inside each test.
 let savedUrls: string | undefined;
+let savedSecret: string | undefined;
 
 beforeEach(() => {
   savedUrls = process.env.ML_SERVICE_URLS;
+  savedSecret = process.env.ML_SERVICE_SECRET;
   delete process.env.ML_SERVICE_URLS;
+  delete process.env.ML_SERVICE_SECRET;
 });
 afterEach(() => {
   if (savedUrls === undefined) delete process.env.ML_SERVICE_URLS;
   else process.env.ML_SERVICE_URLS = savedUrls;
+  if (savedSecret === undefined) delete process.env.ML_SERVICE_SECRET;
+  else process.env.ML_SERVICE_SECRET = savedSecret;
 });
 
 describe('listMlShardUrls', () => {
@@ -173,6 +179,60 @@ describe('getPrimaryMlShardUrl', () => {
   it('returns the first element of ML_SERVICE_URLS when multi', () => {
     process.env.ML_SERVICE_URLS = 'https://primary,https://second';
     assert.equal(getPrimaryMlShardUrl(), 'https://primary');
+  });
+});
+
+describe('classifyMlServiceConfig', () => {
+  // Regression coverage for the May 2026 silent-cron incident: prod
+  // dropped the legacy ML_SERVICE_URL fallback while only
+  // ML_SERVICE_SECRET (not ML_SERVICE_URLS) was set on Vercel. Every
+  // ml-* cron returned `{ok:true, skipped:"..."}` for three days
+  // before ml_demand_predictions_fresh tripped. This helper exists so
+  // that bug class fails closed.
+  it('returns disabled when both env vars are unset (dev / intentional skip)', () => {
+    const r = classifyMlServiceConfig();
+    assert.equal(r.state, 'disabled');
+  });
+
+  it('returns ready when both URLS and SECRET are set', () => {
+    process.env.ML_SERVICE_URLS = 'https://staxis-ml.example.com';
+    process.env.ML_SERVICE_SECRET = 'x'.repeat(32);
+    const r = classifyMlServiceConfig();
+    assert.equal(r.state, 'ready');
+    if (r.state === 'ready') {
+      assert.deepEqual(r.shardUrls, ['https://staxis-ml.example.com']);
+      assert.equal(r.secret.length, 32);
+    }
+  });
+
+  it('returns drift with missing=ML_SERVICE_URLS when only SECRET is set', () => {
+    process.env.ML_SERVICE_SECRET = 'x'.repeat(32);
+    const r = classifyMlServiceConfig();
+    assert.equal(r.state, 'drift');
+    if (r.state === 'drift') assert.equal(r.missing, 'ML_SERVICE_URLS');
+  });
+
+  it('returns drift with missing=ML_SERVICE_SECRET when only URLS is set', () => {
+    process.env.ML_SERVICE_URLS = 'https://staxis-ml.example.com';
+    const r = classifyMlServiceConfig();
+    assert.equal(r.state, 'drift');
+    if (r.state === 'drift') assert.equal(r.missing, 'ML_SERVICE_SECRET');
+  });
+
+  it('treats whitespace-only URLS the same as unset', () => {
+    process.env.ML_SERVICE_URLS = '   ';
+    process.env.ML_SERVICE_SECRET = 'x'.repeat(32);
+    const r = classifyMlServiceConfig();
+    assert.equal(r.state, 'drift');
+    if (r.state === 'drift') assert.equal(r.missing, 'ML_SERVICE_URLS');
+  });
+
+  it('treats whitespace-only SECRET the same as unset', () => {
+    process.env.ML_SERVICE_URLS = 'https://staxis-ml.example.com';
+    process.env.ML_SERVICE_SECRET = '   ';
+    const r = classifyMlServiceConfig();
+    assert.equal(r.state, 'drift');
+    if (r.state === 'drift') assert.equal(r.missing, 'ML_SERVICE_SECRET');
   });
 });
 
