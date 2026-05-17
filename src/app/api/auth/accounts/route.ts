@@ -239,10 +239,13 @@ export async function POST(req: NextRequest) {
       rollbackError = errToString(rollErr);
     }
     if (rollbackError) {
+      // Email deliberately omitted — see .claude/reports/logging-pii-audit.md
+      // H1 (May 2026). The auth.users.id is enough to find the orphaned row
+      // in Supabase; the caller-facing message below still names the username
+      // for the admin to clean up.
       log.error('[accounts:POST] AUTH ROLLBACK FAILED — orphaned auth.users row', {
         requestId,
         authUserId: authData.user.id,
-        email: normalizedEmail,
         insertError: errToString(insErr),
         rollbackError,
       });

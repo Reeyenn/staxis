@@ -446,6 +446,10 @@ export async function POST(req: NextRequest) {
     try {
       await logHit({ stage: 'handler_error', error: msg });
     } catch (logErr) {
+      // Audit M5: the previous } catch {} swallowed the meta-failure
+      // silently. logHit already self-catches internally, but a future
+      // refactor of that helper could let an exception through — surface
+      // it here so we'd notice.
       log.warn('sms-reply: logHit failed in error path', {
         err: logErr instanceof Error ? logErr : new Error(String(logErr)),
       });
