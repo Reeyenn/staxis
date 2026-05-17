@@ -113,10 +113,16 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
+// All tests pass a short `timeoutMs` even on the resolve/throw paths
+// to avoid leaving a long-lived `AbortSignal.timeout(15_000)` timer
+// queued after the test exits. In CI (Node 20 + node:test default
+// concurrency) those stray timers were enough to slow the suite past
+// the runner's overall budget and cancel later tests. Locally they
+// pass either way.
 describe('externalFetch', () => {
   test('attaches a signal even when caller passes no abortSignal', async () => {
     fetchBehavior = 'resolve';
-    await externalFetch('https://example.test/');
+    await externalFetch('https://example.test/', { timeoutMs: 100 });
     assert.ok(captured, 'fetch was not called');
     assert.ok(captured!.signal, 'no signal was attached — timeout would not apply');
   });
@@ -136,7 +142,7 @@ describe('externalFetch', () => {
     const controller = new AbortController();
     const promise = externalFetch('https://example.test/', {
       abortSignal: controller.signal,
-      timeoutMs: 30_000, // far longer than the test
+      timeoutMs: 200, // short enough to not outlive the test
     });
     // Fire the caller's abort right away.
     controller.abort();
@@ -166,6 +172,7 @@ describe('externalFetch', () => {
       () =>
         externalFetch('https://example.test/', {
           signal: new AbortController().signal,
+          timeoutMs: 100,
         }),
       /don't pass `signal` via init/,
     );
@@ -173,13 +180,13 @@ describe('externalFetch', () => {
 
   test('resolves with the upstream response on success', async () => {
     fetchBehavior = 'resolve';
-    const res = await externalFetch('https://example.test/ok');
+    const res = await externalFetch('https://example.test/ok', { timeoutMs: 100 });
     assert.equal(res.status, 200);
     assert.equal(await res.text(), 'ok');
   });
 
   test('propagates non-abort errors (network fail)', async () => {
     fetchBehavior = 'reject';
-    await assert.rejects(externalFetch('https://example.test/fail'), /network fail/);
+    await assert.rejects(externalFetch('https://example.test/fail', { timeoutMs: 100 }), /network fail/);
   });
 });
