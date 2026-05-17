@@ -39,6 +39,7 @@ import { errToString } from '@/lib/utils';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { requireSessionOrCron, userHasPropertyAccess } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -142,8 +143,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   // ─── 1. Call the Railway scraper ─────────────────────────────────────
-  const scraperUrl = process.env.RAILWAY_SCRAPER_URL;
-  const cronSecret = process.env.CRON_SECRET;
+  const scraperUrl = env.RAILWAY_SCRAPER_URL;
+  const cronSecret = env.CRON_SECRET;
   if (!scraperUrl) {
     log.error('refresh-from-pms: RAILWAY_SCRAPER_URL not configured', { requestId, route: 'refresh-from-pms' });
     return err(

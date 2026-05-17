@@ -14,6 +14,7 @@ import { errToString } from '@/lib/utils';
 import { requireCronSecret } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { env } from '@/lib/env';
 
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
@@ -33,8 +34,8 @@ export async function GET(req: NextRequest) {
     // ── Twilio REST helpers ────────────────────────────────────────────────
     async function getTwilioNumbers(): Promise<unknown> {
       try {
-        const sid = process.env.TWILIO_ACCOUNT_SID;
-        const tok = process.env.TWILIO_AUTH_TOKEN;
+        const sid = env.TWILIO_ACCOUNT_SID;
+        const tok = env.TWILIO_AUTH_TOKEN;
         if (!sid || !tok) return { error: 'twilio env vars missing' };
         const res = await fetch(
           `https://api.twilio.com/2010-04-01/Accounts/${sid}/IncomingPhoneNumbers.json`,
@@ -59,8 +60,8 @@ export async function GET(req: NextRequest) {
 
     async function getTwilioMessages(): Promise<unknown> {
       try {
-        const sid = process.env.TWILIO_ACCOUNT_SID;
-        const tok = process.env.TWILIO_AUTH_TOKEN;
+        const sid = env.TWILIO_ACCOUNT_SID;
+        const tok = env.TWILIO_AUTH_TOKEN;
         if (!sid || !tok) return { error: 'twilio env vars missing' };
         const res = await fetch(
           `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json?PageSize=20`,

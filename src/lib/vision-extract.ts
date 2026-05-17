@@ -11,6 +11,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import Anthropic from '@anthropic-ai/sdk';
+import { env } from '@/lib/env';
 
 // Pin the model — the prompts in this file are calibrated for Sonnet 4-class
 // vision quality. Bumping the version requires a re-test of both prompts.
@@ -26,7 +27,7 @@ const VISION_REQUEST_TIMEOUT_MS = 30_000;
 
 /** Throws if ANTHROPIC_API_KEY is missing — caller catches and 500s the route. */
 function getClient(): Anthropic {
-  const key = process.env.ANTHROPIC_API_KEY;
+  const key = env.ANTHROPIC_API_KEY;
   if (!key) {
     throw new Error(
       'ANTHROPIC_API_KEY is not set. Vision features (invoice OCR, photo count) require it. ' +

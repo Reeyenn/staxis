@@ -19,6 +19,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { getPrimaryMlShardUrl } from '@/lib/ml-routing';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -36,7 +37,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // cross-fleet work hosts on the same Railway instance every day,
   // which makes capacity planning and log grouping cleaner.
   const mlServiceUrl = getPrimaryMlShardUrl();
-  const mlServiceSecret = process.env.ML_SERVICE_SECRET;
+  const mlServiceSecret = env.ML_SERVICE_SECRET;
   if (!mlServiceUrl || !mlServiceSecret) {
     log.warn('ml-aggregate-priors: ML service not configured', { requestId });
     return NextResponse.json({

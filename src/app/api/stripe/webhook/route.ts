@@ -40,7 +40,7 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 15;
 
 export async function POST(req: NextRequest) {
-  if (!stripeIsConfigured) {
+  if (!stripeIsConfigured()) {
     return NextResponse.json({ error: 'Billing not configured' }, { status: 503 });
   }
 

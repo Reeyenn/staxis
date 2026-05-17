@@ -42,6 +42,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import type { AppRole } from '@/lib/roles';
 // Side-effect import — registers all tools against the catalog.
 import '@/lib/agent/tools/index';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -239,7 +240,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   log.info('[voice-brain] entry', { requestId });
 
   // ── Auth: shared bearer secret ────────────────────────────────────────
-  const secret = process.env.ELEVENLABS_WEBHOOK_SECRET;
+  const secret = env.ELEVENLABS_WEBHOOK_SECRET;
   if (!secret) {
     log.error('[voice-brain] ELEVENLABS_WEBHOOK_SECRET not configured', { requestId });
     return NextResponse.json({ error: 'server misconfigured' }, { status: 500 });

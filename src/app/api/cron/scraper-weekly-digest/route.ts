@@ -29,6 +29,7 @@ import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { log } from '@/lib/log';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -123,7 +124,7 @@ async function runDigest(): Promise<{ sent: boolean; detail: string }> {
     message = `Staxis weekly: ${deltaSuccesses}/${totalAttempts} pulls succeeded (${successRate.toFixed(1)}%). ${deltaFailures} failure${deltaFailures === 1 ? '' : 's'} this week${codeNote}. Last good pull ${fmtDateTime(lastGoodPull)}.`;
   }
 
-  const alertPhone = process.env.MANAGER_PHONE || process.env.OPS_ALERT_PHONE;
+  const alertPhone = env.OPS_ALERT_PHONE;
   let smsSent = false;
   if (alertPhone) {
     try {

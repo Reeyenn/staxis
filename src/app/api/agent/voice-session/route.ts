@@ -32,6 +32,7 @@ import { createConversation } from '@/lib/agent/memory';
 import { assertAudioBudget } from '@/lib/agent/cost-controls';
 import { PROMPT_VERSION } from '@/lib/agent/prompts';
 import type { AppRole } from '@/lib/roles';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -61,8 +62,8 @@ export async function POST(req: NextRequest): Promise<Response> {
     return NextResponse.json({ ok: false, error: 'no access to this property', requestId }, { status: 403 });
   }
 
-  const apiKey = process.env.ELEVENLABS_API_KEY;
-  const agentId = process.env.ELEVENLABS_AGENT_ID;
+  const apiKey = env.ELEVENLABS_API_KEY;
+  const agentId = env.ELEVENLABS_AGENT_ID;
   if (!apiKey || !agentId) {
     log.error('[voice-session] ELEVENLABS_API_KEY or ELEVENLABS_AGENT_ID not configured', { requestId });
     return NextResponse.json({ ok: false, error: 'voice service not configured', requestId }, { status: 503 });

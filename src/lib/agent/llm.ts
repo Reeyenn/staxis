@@ -18,6 +18,7 @@ import {
   type ToolDefinition,
 } from './tools';
 import { captureException } from '@/lib/sentry';
+import { env } from '@/lib/env';
 
 // ─── Configuration ─────────────────────────────────────────────────────────
 
@@ -45,7 +46,7 @@ const BASE_MODELS = {
 export type ModelTier = keyof typeof BASE_MODELS;
 
 function parseModelOverride(): Partial<Record<ModelTier, string>> {
-  const raw = process.env.MODEL_OVERRIDE;
+  const raw = env.MODEL_OVERRIDE;
   if (!raw) return {};
   const out: Partial<Record<ModelTier, string>> = {};
   for (const pair of raw.split(',')) {
@@ -212,7 +213,7 @@ let cachedClient: Anthropic | null = null;
 
 function getClient(): Anthropic {
   if (cachedClient) return cachedClient;
-  const key = process.env.ANTHROPIC_API_KEY;
+  const key = env.ANTHROPIC_API_KEY;
   if (!key) {
     // Round 13 (2026-05-13): captureException so a silent prod outage
     // can't sit undetected. The 2026-05-13 incident had this code path

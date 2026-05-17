@@ -48,6 +48,7 @@ import {
 import { sendOnboardingInvite } from '@/lib/email/onboarding-invite';
 import { DEFAULT_INVENTORY_ITEMS } from '@/lib/inventory/default-items';
 import { validateRoomNumbers } from '@/lib/api-validate';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -413,7 +414,7 @@ export async function POST(req: NextRequest) {
   // Phase M1.5: changed path from /signup to /onboard — the new unified
   // wizard. Old /signup URLs still work via the redirect added in
   // Commit 8.
-  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://getstaxis.com';
+  const siteUrl = env.NEXT_PUBLIC_APP_URL ?? 'https://getstaxis.com';
   const signupUrl = `${siteUrl}/onboard?code=${encodeURIComponent(joinCodeRow.code)}`;
 
   // Phase M1.5: optional Resend email send. Failure is NEVER fatal —

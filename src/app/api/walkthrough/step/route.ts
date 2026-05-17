@@ -33,6 +33,7 @@ import { buildHotelSnapshot, formatSnapshotForPrompt } from '@/lib/agent/context
 import { escapeTrustMarkerContent } from '@/lib/agent/llm';
 import type { SnapshotElement } from '@/components/walkthrough/snapshotDom';
 import type { AppRole } from '@/lib/roles';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -93,7 +94,7 @@ const PER_STEP_ESTIMATE_USD = 0.03;
 let _client: Anthropic | null = null;
 function client(): Anthropic {
   if (_client) return _client;
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set');
   _client = new Anthropic({ apiKey });
   return _client;

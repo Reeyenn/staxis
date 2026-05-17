@@ -27,6 +27,7 @@ import {
   emitPropertyMisconfiguredEvent,
   parsePropertyMisconfiguredError,
 } from '@/lib/ml-misconfigured-events';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -42,7 +43,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   if (unauth) return unauth;
 
   const shardUrls = listMlShardUrls();
-  const mlServiceSecret = process.env.ML_SERVICE_SECRET;
+  const mlServiceSecret = env.ML_SERVICE_SECRET;
   if (shardUrls.length === 0 || !mlServiceSecret) {
     log.warn('ml-run-inference: ML service not configured — skipping', { requestId });
     return NextResponse.json({ ok: true, skipped: 'ML service not configured yet', requestId });

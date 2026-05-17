@@ -24,6 +24,7 @@ import {
   assertAudioBudget,
   recordNonRequestCost,
 } from '@/lib/agent/cost-controls';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -124,8 +125,8 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   // ── Env check ──────────────────────────────────────────────────────────
-  const apiKey = process.env.ELEVENLABS_API_KEY;
-  const voiceId = process.env.ELEVENLABS_VOICE_ID;
+  const apiKey = env.ELEVENLABS_API_KEY;
+  const voiceId = env.ELEVENLABS_VOICE_ID;
   if (!apiKey || !voiceId) {
     log.error('[agent/speak] ELEVENLABS_API_KEY or ELEVENLABS_VOICE_ID not configured', { requestId });
     return err('TTS not configured', {

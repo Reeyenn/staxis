@@ -33,7 +33,6 @@ const parsed = ClientSchema.safeParse({
 if (!parsed.success) {
   const flat = parsed.error.flatten().fieldErrors;
   const lines = Object.entries(flat).map(([k, msgs]) => `  ${k}: ${(msgs ?? []).join(', ')}`);
-  // eslint-disable-next-line no-console
   console.error('❌ Client env vars failed validation:\n' + lines.join('\n'));
   throw new Error(
     'Invalid client environment. Missing/invalid: ' + Object.keys(flat).join(', ')

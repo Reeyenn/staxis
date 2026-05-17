@@ -25,6 +25,7 @@
 import { createHash } from 'crypto';
 import { writeAudit } from '@/lib/audit';
 import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
+import { env } from '@/lib/env';
 
 const RESEND_API_URL = 'https://api.resend.com/emails';
 
@@ -74,7 +75,7 @@ export type SendEmailResult =
 export async function sendTransactionalEmail(
   params: SendEmailParams,
 ): Promise<SendEmailResult> {
-  const apiKey = process.env.RESEND_API_KEY;
+  const apiKey = env.RESEND_API_KEY;
   if (!apiKey) {
     const result: SendEmailResult = {
       ok: false,
