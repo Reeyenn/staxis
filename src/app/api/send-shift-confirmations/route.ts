@@ -43,7 +43,7 @@ import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratel
 import { enqueueSms, processSmsJobs } from '@/lib/sms-jobs';
 import { buildHousekeeperLink } from '@/lib/staff-auth';
 import { buildOkBody, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 
 interface StaffEntry {
   staffId: string;
@@ -572,7 +572,13 @@ export async function POST(req: NextRequest) {
         message: errToString(caughtErr),
         stack: caughtErr instanceof Error ? caughtErr.stack ?? null : null,
       });
-    } catch {}
+    } catch (logErr) {
+      // The meta-failure (failure of the failure-recording path) is exactly
+      // when we most need a Sentry event — don't swallow it silently.
+      log.warn('send-shift-confirmations: error_logs insert failed', {
+        requestId, err: logErr instanceof Error ? logErr : new Error(String(logErr)),
+      });
+    }
     return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

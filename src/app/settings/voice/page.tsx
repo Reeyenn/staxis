@@ -41,7 +41,7 @@ export default function VoiceSettingsPage() {
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
-    (async () => {
+    void (async () => {
       try {
         const [prefRes, availRes] = await Promise.all([
           fetchWithAuth('/api/agent/voice-preference'),

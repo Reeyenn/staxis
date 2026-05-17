@@ -26,6 +26,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
+import { log } from '@/lib/log';
 import { safeBaseUrl, redactPhone } from '@/lib/api-validate';
 import twilio from 'twilio';
 
@@ -402,7 +403,11 @@ export async function POST(req: NextRequest) {
     console.error('sms-reply error:', msg);
     try {
       await logHit({ stage: 'handler_error', error: msg });
-    } catch {}
+    } catch (logErr) {
+      log.warn('sms-reply: logHit failed in error path', {
+        err: logErr instanceof Error ? logErr : new Error(String(logErr)),
+      });
+    }
     // Always 200 so Twilio doesn't retry
     return twimlOk();
   }

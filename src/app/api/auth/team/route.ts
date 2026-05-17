@@ -21,7 +21,7 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 import { verifyTeamManager, canManageHotel } from '@/lib/team-auth';
 import { isAssignableRole, type AppRole } from '@/lib/roles';
 import { writeAudit } from '@/lib/audit';
@@ -172,8 +172,8 @@ export async function PUT(req: NextRequest) {
     }
     const { error: pwErr } = await supabaseAdmin.auth.admin.updateUserById(target.data_user_id, { password });
     if (pwErr) {
-      console.error('[team:PUT] password update failed', pwErr);
-      return err(pwErr.message || 'Failed to update password', {
+      log.error('[team:PUT] password update failed', { err: pwErr, requestId });
+      return err('Failed to update password', {
         requestId, status: 500, code: ApiErrorCode.InternalError,
       });
     }

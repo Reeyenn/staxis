@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 
 // ─── Admin CRUD on the accounts table ──────────────────────────────────────
 // Guarded by the `x-account-id` header → accounts.role === 'admin' check.
@@ -196,10 +196,11 @@ export async function POST(req: NextRequest) {
   });
 
   if (authErr || !authData.user) {
-    console.error('[accounts:POST] auth.admin.createUser failed', authErr);
-    // 422 is what Supabase returns for weak-password/invalid-email; surface
-    // the message so the settings UI can display it.
-    return err(authErr?.message ?? 'Failed to create auth user', {
+    log.error('[accounts:POST] auth.admin.createUser failed', { err: authErr, requestId });
+    // Don't echo Supabase's error message — it can include user-existence
+    // info, rate-limit quotas, or other internals. Stable string + Sentry
+    // event carry the diagnostic detail without leaking it.
+    return err('Failed to create account', {
       requestId, status: 400, code: ApiErrorCode.ValidationFailed,
     });
   }
@@ -334,8 +335,8 @@ export async function PUT(req: NextRequest) {
       authUpdates,
     );
     if (authErr) {
-      console.error('[accounts:PUT] auth update failed', authErr);
-      return err(authErr.message ?? 'Failed to update account', {
+      log.error('[accounts:PUT] auth update failed', { err: authErr, requestId });
+      return err('Failed to update account', {
         requestId, status: 400, code: ApiErrorCode.ValidationFailed,
       });
     }

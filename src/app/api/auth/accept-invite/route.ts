@@ -12,7 +12,7 @@ import { NextRequest } from 'next/server';
 import { createHash } from 'node:crypto';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 import { writeAudit } from '@/lib/audit';
 import { checkAndIncrementRateLimit, rateLimitedResponse, ipToRateLimitKey } from '@/lib/api-ratelimit';
 
@@ -88,8 +88,8 @@ export async function POST(req: NextRequest) {
     user_metadata: { username, displayName },
   });
   if (authErr || !authData.user) {
-    console.error('[accept-invite] createUser failed', authErr);
-    return err(authErr?.message ?? 'Failed to create account', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    log.error('[accept-invite] createUser failed', { err: authErr, requestId });
+    return err('Failed to create account', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
   const { error: insErr } = await supabaseAdmin.from('accounts').insert({

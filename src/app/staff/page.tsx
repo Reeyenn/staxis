@@ -261,7 +261,7 @@ export default function StaffPage() {
 
   /* ── Data subscriptions ── */
   useEffect(() => {
-    if (uid && pid && staff.length === 0) refreshStaff();
+    if (uid && pid && staff.length === 0) void refreshStaff();
   }, [uid, pid]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {

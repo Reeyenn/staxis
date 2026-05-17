@@ -37,7 +37,7 @@ import {
   validateUuid, validateString, validateDateStr, validateInt, LIMITS,
 } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 
 interface RequestBody {
   propertyId: string;
@@ -216,7 +216,11 @@ export async function POST(req: NextRequest) {
         message: errToString(caughtErr),
         stack: caughtErr instanceof Error ? caughtErr.stack ?? null : null,
       });
-    } catch {}
+    } catch (logErr) {
+      log.warn('ml-override: error_logs insert failed', {
+        requestId, err: logErr instanceof Error ? logErr : new Error(String(logErr)),
+      });
+    }
     return err('Internal server error', {
       requestId,
       status: 500,

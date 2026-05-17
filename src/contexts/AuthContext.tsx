@@ -92,7 +92,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Hydrate from the session Supabase restored from localStorage on page
     // load. This fires BEFORE the first onAuthStateChange event, so we get
     // an accurate initial user without a flash of logged-out state.
-    (async () => {
+    void (async () => {
       try {
         const { data: { session } } = await supabase.auth.getSession();
         if (!active) return;

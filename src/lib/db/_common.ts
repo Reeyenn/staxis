@@ -147,7 +147,7 @@ export function subscribeTable<T>(
     type WithState = { state?: string };
     const state = (channel as unknown as WithState).state;
     if (state === 'closed' || state === 'errored') {
-      try { supabase.removeChannel(channel); } catch { /* best effort */ }
+      try { void supabase.removeChannel(channel); } catch { /* best effort */ }
       channel = supabase
         .channel(channelName)
         .on('postgres_changes' as never, filterSpec, onChange as never)
@@ -164,6 +164,6 @@ export function subscribeTable<T>(
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', onVisibility);
     }
-    supabase.removeChannel(channel);
+    void supabase.removeChannel(channel);
   };
 }

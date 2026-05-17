@@ -17,7 +17,7 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 import { writeAudit } from '@/lib/audit';
 import { checkAndIncrementRateLimit, rateLimitedResponse, ipToRateLimitKey } from '@/lib/api-ratelimit';
 import type { AppRole } from '@/lib/roles';
@@ -189,9 +189,9 @@ export async function POST(req: NextRequest) {
     user_metadata: { username, displayName },
   });
   if (authErr || !authData.user) {
-    console.error('[use-join-code] createUser failed', authErr);
+    log.error('[use-join-code] createUser failed', { err: authErr, requestId });
     await releaseSlot();
-    return err(authErr?.message ?? 'Failed to create account', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return err('Failed to create account', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
   const { error: insErr } = await supabaseAdmin.from('accounts').insert({

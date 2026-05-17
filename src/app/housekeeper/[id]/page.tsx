@@ -216,7 +216,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
     const token = searchParams.get('token');
     if (!token) { setAuthReady(true); return; }
 
-    (async () => {
+    void (async () => {
       try {
         const { error } = await supabase.auth.verifyOtp({
           token_hash: token,
@@ -257,7 +257,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
     if (!housekeeperId || !pid || !authReady) return;
     let cancelled = false;
 
-    (async () => {
+    void (async () => {
       try {
         // getStaffSelfPublic routes through /api/housekeeper/me which uses
         // service-role to bypass RLS. The previous getStaffMember() call
@@ -449,7 +449,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
         // request round-trip instead of waiting for the next 4s poll.
         // We don't await it — the action handler can return as soon as
         // the mutation is confirmed, and the UI will catch up shortly.
-        refetchRooms();
+        void refetchRooms();
       }
       return ok ? { ok: true } : { ok: false, error: j?.error || `http ${r.status}` };
     } catch (err) {
