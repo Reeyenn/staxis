@@ -38,7 +38,6 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 import { writeAudit } from '@/lib/audit';
-import { errToString } from '@/lib/utils';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -157,6 +156,6 @@ export async function POST(req: NextRequest) {
     );
   } catch (e) {
     log.error('scraper-assign: handler crashed', { requestId, err: e as Error });
-    return err(errToString(e), { requestId, status: 500 });
+    return err('scraper-assign handler failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

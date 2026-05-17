@@ -10,8 +10,8 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
-import { ok, err } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { log, getOrMintRequestId } from '@/lib/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -39,7 +39,10 @@ export async function GET(req: NextRequest) {
   }
 
   const { data, error } = await query;
-  if (error) return err(`audit-log query failed: ${error.message}`, { requestId, status: 500 });
+  if (error) {
+    log.error('audit-log query failed', { err: error, requestId });
+    return err('audit-log query failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  }
 
   return ok({ entries: data ?? [] }, { requestId });
 }

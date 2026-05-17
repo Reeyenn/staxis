@@ -65,12 +65,17 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     mlStatus: result.http,
   });
   if (!result.ok) {
+    // Log full upstream detail; client gets a stable string. The HTTP
+    // status from the ML service is captured in mlHttp for cross-stream
+    // log correlation (already echoed via x-request-id).
     log.error('ml-inventory-retrain: ML service call failed', {
-      requestId, err: errToString(result.error ?? `HTTP ${result.http}`),
+      requestId,
+      err: new Error(errToString(result.error ?? `HTTP ${result.http}`)),
+      mlHttp: result.http,
     });
     return NextResponse.json({
       ok: false,
-      error: result.error ?? `HTTP ${result.http}`,
+      error: 'upstream_ml_service_failed',
       requestId,
     }, { status: 502 });
   }

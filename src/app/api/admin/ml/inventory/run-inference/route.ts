@@ -13,7 +13,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/admin-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
-import { errToString } from '@/lib/utils';
 import { getPropertyOpsConfig } from '@/lib/property-config';
 import { resolveMlShardUrl } from '@/lib/ml-routing';
 
@@ -78,6 +77,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ ok: true, requestId, result: json }, { status: 200 });
   } catch (e) {
     log.error('ml-inventory-run-inference: ML service call failed', { requestId, err: e as Error });
-    return NextResponse.json({ ok: false, error: errToString(e), requestId }, { status: 502 });
+    return NextResponse.json({ ok: false, error: 'upstream_ml_service_failed', requestId }, { status: 502 });
   }
 }

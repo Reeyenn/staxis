@@ -10,8 +10,8 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
-import { ok, err } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { log, getOrMintRequestId } from '@/lib/log';
 import { writeAuditLog } from '@/lib/admin-audit';
 
 export const runtime = 'nodejs';
@@ -31,7 +31,10 @@ export async function GET(req: NextRequest) {
     .order('created_at', { ascending: false })
     .limit(200);
 
-  if (error) return err(`prospects list failed: ${error.message}`, { requestId, status: 500 });
+  if (error) {
+    log.error('prospects list failed', { err: error, requestId });
+    return err('prospects list failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  }
   return ok({ prospects: data ?? [] }, { requestId });
 }
 
@@ -63,7 +66,10 @@ export async function POST(req: NextRequest) {
     .select('*')
     .single();
 
-  if (error) return err(`prospect create failed: ${error.message}`, { requestId, status: 500 });
+  if (error) {
+    log.error('prospect create failed', { err: error, requestId });
+    return err('prospect create failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  }
 
   await writeAuditLog({
     actorUserId: auth.userId,

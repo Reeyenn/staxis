@@ -189,7 +189,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
   } catch (fetchErr) {
     log.error('refresh-from-pms: railway fetch failed', { requestId, route: 'refresh-from-pms', pid, err: fetchErr as Error });
-    return err(`Could not reach Railway scraper: ${errToString(fetchErr)}`, {
+    return err('Could not reach Railway scraper', {
       requestId, status: 502, code: ApiErrorCode.UpstreamFailure, headers,
     });
   }
@@ -236,7 +236,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     .eq('date', date);
   if (readErr) {
     log.error('refresh-from-pms: rooms read failed', { requestId, route: 'refresh-from-pms', pid, err: readErr as unknown as Error });
-    return err(`rooms read failed: ${errToString(readErr)}`, {
+    return err('rooms read failed', {
       requestId, status: 500, code: ApiErrorCode.InternalError, headers,
     });
   }
@@ -259,7 +259,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     .maybeSingle();
   if (propErr) {
     log.error('refresh-from-pms: property read failed', { requestId, route: 'refresh-from-pms', pid, err: propErr as unknown as Error });
-    return err(`property read failed: ${errToString(propErr)}`, {
+    return err('property read failed', {
       requestId, status: 500, code: ApiErrorCode.InternalError, headers,
     });
   }
@@ -355,7 +355,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       // Use err() with `details` carrying the partial-success info — the
       // UI's toast layer reads details.partiallySucceeded to switch from
       // "all-failed red" to "partial yellow."
-      return err(`rooms insert failed: ${errToString(insertErr)}`, {
+      return err('rooms insert failed', {
         requestId, status: 500, code: ApiErrorCode.InternalError, headers,
         details: {
           partiallySucceeded: true,
@@ -430,7 +430,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         // updates already landed. Log and surface a partial success so the
         // UI toast can warn rather than scream.
         log.error('refresh-from-pms: phantom-seed insert failed', { requestId, route: 'refresh-from-pms', pid, err: phantomErr as unknown as Error, attempted: phantomRows.length });
-        return err(`phantom-seed insert failed: ${errToString(phantomErr)}`, {
+        return err('phantom-seed insert failed', {
           requestId, status: 500, code: ApiErrorCode.InternalError, headers,
           details: {
             partiallySucceeded: true,

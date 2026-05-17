@@ -13,8 +13,8 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
-import { ok, err } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { log, getOrMintRequestId } from '@/lib/log';
 import { writeAuditLog } from '@/lib/admin-audit';
 
 export const runtime = 'nodejs';
@@ -34,7 +34,10 @@ export async function GET(req: NextRequest) {
     .order('created_at', { ascending: false })
     .limit(200);
 
-  if (error) return err(`feedback list failed: ${error.message}`, { requestId, status: 500 });
+  if (error) {
+    log.error('admin-feedback list failed', { err: error, requestId });
+    return err('feedback list failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  }
 
   // Resolve property names
   const propertyIds = Array.from(new Set((data ?? []).map((r) => (r as { property_id: string | null }).property_id).filter((v): v is string => !!v)));
@@ -99,7 +102,10 @@ export async function PATCH(req: NextRequest) {
     .select('*')
     .single();
 
-  if (error) return err(`feedback update failed: ${error.message}`, { requestId, status: 500 });
+  if (error) {
+    log.error('admin-feedback update failed', { err: error, requestId });
+    return err('feedback update failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  }
 
   await writeAuditLog({
     actorUserId: auth.userId,

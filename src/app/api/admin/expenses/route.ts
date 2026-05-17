@@ -13,8 +13,8 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
-import { ok, err } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { log, getOrMintRequestId } from '@/lib/log';
 import { writeAuditLog } from '@/lib/admin-audit';
 
 export const runtime = 'nodejs';
@@ -48,7 +48,10 @@ export async function GET(req: NextRequest) {
     .order('incurred_on', { ascending: false })
     .limit(500);
 
-  if (error) return err(`expenses list failed: ${error.message}`, { requestId, status: 500 });
+  if (error) {
+    log.error('expenses list failed', { err: error, requestId });
+    return err('expenses list failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  }
   return ok({ expenses: data ?? [] }, { requestId });
 }
 
@@ -85,7 +88,10 @@ export async function POST(req: NextRequest) {
     .select('*')
     .single();
 
-  if (error) return err(`expense create failed: ${error.message}`, { requestId, status: 500 });
+  if (error) {
+    log.error('expense create failed', { err: error, requestId });
+    return err('expense create failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  }
 
   await writeAuditLog({
     actorUserId: auth.userId,
@@ -129,7 +135,10 @@ export async function PATCH(req: NextRequest) {
     .select('*')
     .single();
 
-  if (error) return err(`expense update failed: ${error.message}`, { requestId, status: 500 });
+  if (error) {
+    log.error('expense update failed', { err: error, requestId });
+    return err('expense update failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  }
 
   await writeAuditLog({
     actorUserId: auth.userId,
@@ -157,7 +166,10 @@ export async function DELETE(req: NextRequest) {
     .delete()
     .eq('id', id);
 
-  if (error) return err(`expense delete failed: ${error.message}`, { requestId, status: 500 });
+  if (error) {
+    log.error('expense delete failed', { err: error, requestId });
+    return err('expense delete failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  }
 
   await writeAuditLog({
     actorUserId: auth.userId,

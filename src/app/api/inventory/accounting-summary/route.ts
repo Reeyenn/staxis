@@ -19,7 +19,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getInventoryAccountingSummary } from '@/lib/db/inventory-accounting';
-import { errToString } from '@/lib/utils';
+import { log, getOrMintRequestId } from '@/lib/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -31,6 +31,7 @@ const isMonthString = (s: unknown): s is string =>
   typeof s === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(s);
 
 export async function GET(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
   const session = await requireSession(req);
   if (!session.ok) return session.response;
 
@@ -62,8 +63,15 @@ export async function GET(req: NextRequest) {
       data: summary,
     });
   } catch (e) {
+    // Don't echo errToString(e) to the client — it can include schema
+    // names, query fragments, or upstream error text. Log full detail,
+    // return a stable string.
+    log.error('inventory-accounting-summary aggregation failed', {
+      err: e instanceof Error ? e : new Error(String(e)),
+      requestId, propertyId,
+    });
     return NextResponse.json(
-      { ok: false, error: 'aggregation_failed', detail: errToString(e) },
+      { ok: false, error: 'aggregation_failed', requestId },
       { status: 500 },
     );
   }
