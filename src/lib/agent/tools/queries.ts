@@ -3,7 +3,7 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { registerTool, type ToolResult } from '../tools';
-import { findRoomByNumber, getCurrentRoomsDate, computeRoomTotal } from './_helpers';
+import { getCurrentRoomsDate, computeRoomTotal } from './_helpers';
 
 // ─── list_my_rooms ────────────────────────────────────────────────────────
 // Housekeeper-only. Their assigned rooms with current status.
@@ -110,18 +110,42 @@ registerTool<{ roomNumber: string }>({
   },
   allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk', 'housekeeping', 'maintenance'],
   handler: async ({ roomNumber }, ctx): Promise<ToolResult> => {
-    const room = await findRoomByNumber(ctx.propertyId, roomNumber);
-    if (!room) return { ok: false, error: `Room ${roomNumber} not found.` };
+    // PostgREST embedding: pull the assignee row in the same round-trip
+    // instead of a second `staff.select('name').eq('id', assigned_to)`
+    // call. The FK `rooms.assigned_to -> staff(id)` lets us alias it as
+    // `assignee` (audit hot-paths recommendation, 2026-05-17).
+    const normalized = String(roomNumber ?? '').trim();
+    if (!normalized) return { ok: false, error: `Room ${roomNumber} not found.` };
 
-    let assignedName: string | null = null;
-    if (room.assigned_to) {
-      const { data: staff } = await supabaseAdmin
-        .from('staff')
-        .select('name')
-        .eq('id', room.assigned_to)
-        .maybeSingle();
-      if (staff) assignedName = (staff.name as string) ?? null;
-    }
+    const { data, error } = await supabaseAdmin
+      .from('rooms')
+      .select(
+        'number, status, type, is_dnd, dnd_note, issue_note, help_requested, started_at, completed_at, ' +
+        'assignee:staff!rooms_assigned_to_fkey(name)',
+      )
+      .eq('property_id', ctx.propertyId)
+      .eq('number', normalized)
+      .order('date', { ascending: false, nullsFirst: false })
+      .limit(1);
+    if (error || !data?.length) return { ok: false, error: `Room ${roomNumber} not found.` };
+
+    type EmbeddedRow = {
+      number: string;
+      status: string;
+      type: string | null;
+      is_dnd: boolean | null;
+      dnd_note: string | null;
+      issue_note: string | null;
+      help_requested: boolean | null;
+      started_at: string | null;
+      completed_at: string | null;
+      assignee: { name: string | null } | { name: string | null }[] | null;
+    };
+    const room = data[0] as unknown as EmbeddedRow;
+    // PostgREST returns the embedded resource as an object for a single
+    // FK relationship, but the type system surfaces it as `T | T[]`. Normalize.
+    const assignee = Array.isArray(room.assignee) ? room.assignee[0] : room.assignee;
+    const assignedName = assignee?.name ?? null;
 
     return {
       ok: true,
