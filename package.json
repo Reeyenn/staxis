@@ -12,6 +12,7 @@
     "lint": "eslint src scraper --max-warnings 0",
     "seed": "node scripts/seed-supabase.js",
     "seed:reset": "node scripts/seed-supabase.js --reset",
+    "db:types": "npx supabase gen types typescript --project-id \"$SUPABASE_PROJECT_REF\" | sed '/<claude-code-hint/d' > src/types/database.types.ts",
     "agent:evals": "tsx scripts/run-agent-evals.ts",
     "agent:summarizer-evals": "tsx scripts/run-summarizer-evals.ts",
     "agent:invariant-evals": "tsx scripts/run-agent-invariant-evals.ts",
