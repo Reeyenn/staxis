@@ -34,7 +34,7 @@ export function logErr(tag: string, err: unknown): void {
   } else {
     msg = String(err);
   }
-  // eslint-disable-next-line no-console
+   
   console.error(`[Supabase] ${tag}:`, msg);
 }
 
@@ -104,11 +104,37 @@ export function subscribeTable<T>(
       .catch(err => logErr(`Listener error in ${channelName}`, err));
   };
 
+  // ── Burst-debounce for postgres_changes events ─────────────────────────
+  // Audit follow-up 2026-05-17 (P2.2 — realtime re-fetch hot path):
+  // every change event used to fire its own doFetch. A housekeeper tapping
+  // Done on five rooms in five seconds produced five full re-fetches per
+  // open manager tab — wasteful when the second through fifth fetches
+  // observe the same final state as the first. Coalesce a burst of events
+  // into a single fetch by deferring fire() by REFETCH_DEBOUNCE_MS;
+  // each new event resets the timer. The monotonic requestSeq guard
+  // above still protects the rare case where a deferred fetch and a
+  // visibility-driven fetch interleave.
+  //
+  // 80ms is below the perceptual threshold for "instant UI update" and
+  // wide enough to absorb the typical 10-50ms gap between coupled
+  // INSERTs in a transaction (e.g. one tap → rooms UPDATE + cleaning_events
+  // INSERT both broadcast within a few ms of each other).
+  const REFETCH_DEBOUNCE_MS = 80;
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  const fireDebounced = () => {
+    if (!active) return;
+    if (debounceTimer !== null) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      fire();
+    }, REFETCH_DEBOUNCE_MS);
+  };
+
   // Channel listener: optionally gate on shouldRefetch.
   const onChange = (payload: PostgresChangesPayload) => {
     if (!active) return;
     if (shouldRefetch && !shouldRefetch(payload)) return;
-    fire();
+    fireDebounced();
   };
 
   fire();
@@ -161,6 +187,10 @@ export function subscribeTable<T>(
 
   return () => {
     active = false;
+    if (debounceTimer !== null) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', onVisibility);
     }

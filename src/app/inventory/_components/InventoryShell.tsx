@@ -146,7 +146,7 @@ export function InventoryShell() {
       setOverlay(action as OverlayKey);
     }
     // Run only on initial mount + param changes — we want sticky URLs.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [searchParams]);
 
   // ── Derived display items ──────────────────────────────────────────

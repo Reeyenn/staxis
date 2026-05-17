@@ -23,6 +23,11 @@ export const maxDuration = 15;
 
 const VALID_STATUSES = new Set(['new', 'in_progress', 'resolved', 'wontfix']);
 
+// user_feedback schema per migration 0052. Audit follow-up 2026-05-17.
+const FEEDBACK_FIELDS =
+  'id, property_id, user_id, user_email, user_display_name, message, category, ' +
+  'status, admin_note, resolved_at, created_at';
+
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const auth = await requireAdmin(req);
@@ -30,9 +35,10 @@ export async function GET(req: NextRequest) {
 
   const { data, error } = await supabaseAdmin
     .from('user_feedback')
-    .select('*')
+    .select(FEEDBACK_FIELDS)
     .order('created_at', { ascending: false })
-    .limit(200);
+    .limit(200)
+    .returns<Record<string, unknown>[]>();
 
   if (error) {
     log.error('admin-feedback list failed', { err: error, requestId });
@@ -99,7 +105,7 @@ export async function PATCH(req: NextRequest) {
     .from('user_feedback')
     .update(update)
     .eq('id', id)
-    .select('*')
+    .select(FEEDBACK_FIELDS)
     .single();
 
   if (error) {

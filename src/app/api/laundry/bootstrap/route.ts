@@ -91,12 +91,29 @@ export async function GET(req: NextRequest) {
     }
   })();
 
+  // Explicit field lists — match what fromXxxRow consumes in db-mappers.ts.
+  // Audit P1.3 (2026-05-17): the laundry worker hits this on a phone over
+  // LTE; SELECT * pulled wide rows (especially rooms with JSON checklists
+  // and many ops columns) when the page only needs a handful of fields.
+  const PUBLIC_AREA_FIELDS =
+    'id, name, floor, locations, frequency_days, minutes_per_clean, ' +
+    'start_date, only_when_rented, is_rented_today';
+  const LAUNDRY_FIELDS =
+    'id, name, units_per_checkout, two_bed_multiplier, stayover_factor, ' +
+    'room_equivs_per_load, minutes_per_load';
+  const ROOM_FIELDS =
+    'id, number, type, priority, status, assigned_to, assigned_name, ' +
+    'started_at, completed_at, date, property_id, issue_note, inspected_by, ' +
+    'inspected_at, is_dnd, dnd_note, arrival, stayover_day, stayover_minutes, ' +
+    'help_requested, checklist, photo_url';
+
   // Fan out the three queries concurrently. Each is bypass-RLS via service-
   // role; the pid scoping is done in the WHERE clause.
+  type Row = Record<string, unknown>;
   const [areasRes, configRes, roomsRes] = await Promise.all([
-    supabaseAdmin.from('public_areas').select('*').eq('property_id', pid),
-    supabaseAdmin.from('laundry_config').select('*').eq('property_id', pid),
-    supabaseAdmin.from('rooms').select('*').eq('property_id', pid).eq('date', targetDate),
+    supabaseAdmin.from('public_areas').select(PUBLIC_AREA_FIELDS).eq('property_id', pid).returns<Row[]>(),
+    supabaseAdmin.from('laundry_config').select(LAUNDRY_FIELDS).eq('property_id', pid).returns<Row[]>(),
+    supabaseAdmin.from('rooms').select(ROOM_FIELDS).eq('property_id', pid).eq('date', targetDate).returns<Row[]>(),
   ]);
 
   if (areasRes.error || configRes.error || roomsRes.error) {

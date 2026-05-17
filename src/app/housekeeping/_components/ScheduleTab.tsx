@@ -260,7 +260,6 @@ export function ScheduleTab() {
       // Either helper rejecting would otherwise surface as an unhandled
       // promise rejection. Panel just stays hidden — non-blocking.
       if (cancelled) return;
-      // eslint-disable-next-line no-console
       console.warn('[ScheduleTab] panel fetch failed', e);
     });
     return () => { cancelled = true; };

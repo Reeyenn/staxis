@@ -404,10 +404,6 @@ export function autoAssignRooms(
 
 // ─── Format helpers ────────────────────────────────────────────────────────
 
-export function formatCurrency(n: number): string {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(n);
-}
-
 export function formatMinutes(min: number): string {
   const h = Math.floor(min / 60);
   const m = min % 60;

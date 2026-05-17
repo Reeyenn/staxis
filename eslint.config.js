@@ -1,26 +1,24 @@
 /**
- * ESLint flat config (ESLint 8.57+).
+ * ESLint flat config (ESLint 10+).
  *
- * eslint-config-next ships an old-style config object with `extends` and
- * `plugins` keys, which ESLint flat config rejects. Bridge it with
- * @eslint/eslintrc's FlatCompat helper, which translates extends/plugins
- * into the equivalent flat-config plugin objects at runtime.
+ * eslint-config-next ^16 ships native flat-config — `eslint-config-next`
+ * itself is the base set, and `eslint-config-next/core-web-vitals` adds
+ * the Core Web Vitals subset on top. Both export a flat-config array,
+ * so we can spread them directly instead of going through @eslint/eslintrc's
+ * FlatCompat bridge (which the previous ESLint 8 / eslint-config-next 15
+ * setup needed).
  *
- * The end result is the same set of rules `next lint` would have applied:
+ * End result: the same set of rules `next lint` would have applied —
  * Next's recommended rules + react-hooks rules + a11y best practices.
  */
 
-const { FlatCompat } = require('@eslint/eslintrc');
+const nextCoreWebVitalsConfig = require('eslint-config-next/core-web-vitals');
 const tsPlugin = require('@typescript-eslint/eslint-plugin');
 const tsParser = require('@typescript-eslint/parser');
 
-const compat = new FlatCompat({
-  baseDirectory: __dirname,
-});
-
 module.exports = [
-  // Translate eslint-config-next + the core-web-vitals subset into flat config.
-  ...compat.extends('next/core-web-vitals'),
+  // Next.js recommended + Core Web Vitals (already a flat-config array).
+  ...nextCoreWebVitalsConfig,
 
   {
     // Project-wide ignores. Keep this minimal — anything we want lint-checked
@@ -49,6 +47,19 @@ module.exports = [
       // turn this off; we do the same. If a literal HTML entity actually
       // causes a render bug in the future, the grep will be obvious.
       'react/no-unescaped-entities': 'off',
+
+      // The eslint-plugin-react-hooks v7 family of "React Compiler" rules
+      // were introduced after this codebase was written. They flag valid
+      // (if old-school) patterns like setState-in-effect for hydration,
+      // ref reads during render, and manual memoization that the compiler
+      // would otherwise do. Fixing the ~77 flagged sites is a dedicated
+      // refactor; for the deps upgrade we keep behaviour identical.
+      // Re-enable rule-by-rule when each pattern is migrated.
+      'react-hooks/set-state-in-effect': 'off',
+      'react-hooks/refs': 'off',
+      'react-hooks/purity': 'off',
+      'react-hooks/static-components': 'off',
+      'react-hooks/preserve-manual-memoization': 'off',
     },
   },
 
@@ -79,9 +90,9 @@ module.exports = [
     // in production. These rules catch them at lint time. Audit doc at
     // /Users/reeyen/.claude/plans/audit-error-handling-find-snug-koala.md.
     //
-    // We register the plugin explicitly here because the compat.extends()
-    // shim only attaches it to the next/core-web-vitals blocks above;
-    // this standalone block needs its own reference to look up rules.
+    // We register the plugin + parser explicitly here so the
+    // type-aware lookup works even if eslint-config-next's parser
+    // doesn't provide type info on every file.
     files: ['src/**/*.{ts,tsx}'],
     // Tests use node:test's `test(name, async () => {...})` which the runner
     // consumes but eslint doesn't recognize — would generate hundreds of

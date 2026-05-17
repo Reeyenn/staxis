@@ -100,11 +100,17 @@ export async function enqueueSms(input: EnqueueSmsInput): Promise<SmsJobRow> {
     metadata: input.metadata ?? {},
   };
 
+  // Matches SmsJobRow interface above. Audit follow-up 2026-05-17.
+  const SMS_JOB_FIELDS =
+    'id, property_id, to_phone, body, status, attempts, max_attempts, ' +
+    'next_attempt_at, started_at, sent_at, twilio_sid, error_code, ' +
+    'error_message, idempotency_key, metadata, created_at, updated_at';
+
   const { data: inserted, error: insertErr } = await supabaseAdmin
     .from('sms_jobs')
     .insert(insertPayload)
-    .select('*')
-    .single();
+    .select(SMS_JOB_FIELDS)
+    .single<SmsJobRow>();
 
   if (!insertErr && inserted) return inserted as SmsJobRow;
 
@@ -115,10 +121,10 @@ export async function enqueueSms(input: EnqueueSmsInput): Promise<SmsJobRow> {
   if (isDuplicate) {
     const { data: existing, error: readErr } = await supabaseAdmin
       .from('sms_jobs')
-      .select('*')
+      .select(SMS_JOB_FIELDS)
       .eq('property_id', input.propertyId)
       .eq('idempotency_key', input.idempotencyKey)
-      .single();
+      .single<SmsJobRow>();
     if (readErr || !existing) {
       throw new Error(
         `enqueueSms: duplicate detected for (pid=${input.propertyId}, key=${input.idempotencyKey}) but row not found on re-read: ${errToString(readErr)}`,
@@ -343,7 +349,7 @@ async function applyMetadataCallback(
         .eq('token', token);
     }
   } catch (err) {
-    // eslint-disable-next-line no-console
+     
     console.warn(
       `[sms-jobs] shift_confirmations callback failed for token=${token}:`,
       err instanceof Error ? err.message : String(err),

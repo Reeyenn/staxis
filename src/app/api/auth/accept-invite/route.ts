@@ -15,6 +15,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { writeAudit } from '@/lib/audit';
 import { checkAndIncrementRateLimit, rateLimitedResponse, ipToRateLimitKey } from '@/lib/api-ratelimit';
+import { canManageTeam, type AppRole } from '@/lib/roles';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -55,7 +56,7 @@ export async function POST(req: NextRequest) {
   const tokenHash = hashToken(token);
   const { data: invite, error: invErr } = await supabaseAdmin
     .from('account_invites')
-    .select('id, hotel_id, email, role, expires_at, accepted_at')
+    .select('id, hotel_id, email, role, expires_at, accepted_at, invited_by')
     .eq('token_hash', tokenHash)
     .maybeSingle();
   if (invErr || !invite) {
@@ -68,16 +69,31 @@ export async function POST(req: NextRequest) {
     return err('Invite has expired', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
   }
 
-  // Username from email local-part, plus a tiny suffix if needed.
+  // Re-validate that the inviter still has authority to grant this role.
+  // Without this, an admin who is later demoted to general_manager could
+  // have an in-flight invite that still grants 'owner' — a time-of-check vs.
+  // time-of-use gap. canManageTeam covers admin / owner / general_manager;
+  // the DB CHECK on account_invites.role already restricts invite.role to
+  // the assignable set, so the only new failure mode is "inviter no longer
+  // a team manager." invited_by is NOT NULL with ON DELETE CASCADE, so the
+  // account row is guaranteed to still exist if the invite does.
+  const { data: inviter } = await supabaseAdmin
+    .from('accounts')
+    .select('role')
+    .eq('id', invite.invited_by)
+    .maybeSingle();
+  if (!inviter || !canManageTeam(inviter.role as AppRole)) {
+    return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
+  }
+
+  // Username from email local-part. Audit P3.1 (2026-05-17): previously
+  // a SELECT-then-INSERT loop pre-checked uniqueness; now we trust the
+  // UNIQUE constraint on accounts.username (migration 0001) and retry
+  // the INSERT itself with a digit suffix on SQLSTATE 23505 — saves
+  // N round-trips on the common no-collision path.
   let username = body.username?.toLowerCase().trim() || deriveUsername(invite.email);
   if (!/^[a-z0-9._+-]{2,40}$/.test(username)) {
     username = deriveUsername(invite.email);
-  }
-  // Resolve username collisions by appending random digits.
-  for (let i = 0; i < 5; i++) {
-    const { data: ex } = await supabaseAdmin.from('accounts').select('id').eq('username', username).maybeSingle();
-    if (!ex) break;
-    username = (username + Math.floor(Math.random() * 10000)).slice(0, 40);
   }
 
   // Create auth user.
@@ -92,13 +108,21 @@ export async function POST(req: NextRequest) {
     return err('Failed to create account', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  const { error: insErr } = await supabaseAdmin.from('accounts').insert({
-    username,
-    display_name: displayName,
-    role: invite.role,
-    property_access: [invite.hotel_id],
-    data_user_id: authData.user.id,
-  });
+  // Insert with collision-retry against the UNIQUE constraint.
+  let insErr: { code?: string; message?: string } | null = null;
+  for (let i = 0; i < 5; i++) {
+    const { error } = await supabaseAdmin.from('accounts').insert({
+      username,
+      display_name: displayName,
+      role: invite.role,
+      property_access: [invite.hotel_id],
+      data_user_id: authData.user.id,
+    });
+    if (!error) { insErr = null; break; }
+    insErr = error;
+    if (error.code !== '23505') break;  // not a unique violation — won't fix itself
+    username = (username + Math.floor(Math.random() * 10000)).slice(0, 40);
+  }
   if (insErr) {
     log.error('[accept-invite] accounts insert failed', { err: insErr, requestId });
     await supabaseAdmin.auth.admin.deleteUser(authData.user.id).catch(() => {});

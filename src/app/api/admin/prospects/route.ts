@@ -20,6 +20,11 @@ export const maxDuration = 15;
 
 const VALID_STATUSES = new Set(['talking', 'negotiating', 'committed', 'onboarded', 'dropped']);
 
+// prospects schema per migration 0050. Audit follow-up 2026-05-17.
+const PROSPECT_FIELDS =
+  'id, hotel_name, contact_name, contact_email, contact_phone, pms_type, ' +
+  'expected_launch_date, status, notes, checklist, created_at, updated_at';
+
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const auth = await requireAdmin(req);
@@ -27,7 +32,7 @@ export async function GET(req: NextRequest) {
 
   const { data, error } = await supabaseAdmin
     .from('prospects')
-    .select('*')
+    .select(PROSPECT_FIELDS)
     .order('created_at', { ascending: false })
     .limit(200);
 
@@ -63,10 +68,10 @@ export async function POST(req: NextRequest) {
       notes: body.notes ?? null,
       checklist: body.checklist ?? {},
     })
-    .select('*')
-    .single();
+    .select(PROSPECT_FIELDS)
+    .single<Record<string, unknown>>();
 
-  if (error) {
+  if (error || !data) {
     log.error('prospect create failed', { err: error, requestId });
     return err('prospect create failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }

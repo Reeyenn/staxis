@@ -23,6 +23,9 @@ export const maxDuration = 15;
 
 const VALID_STATUSES = new Set(['idea', 'planned', 'in_progress', 'done', 'dropped']);
 
+// roadmap_items schema per migration 0053. Audit follow-up 2026-05-17.
+const ROADMAP_FIELDS = 'id, title, description, status, priority, created_at, updated_at, done_at';
+
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const auth = await requireAdmin(req);
@@ -30,7 +33,7 @@ export async function GET(req: NextRequest) {
 
   const { data, error } = await supabaseAdmin
     .from('roadmap_items')
-    .select('*')
+    .select(ROADMAP_FIELDS)
     .order('priority', { ascending: false })
     .order('created_at', { ascending: false })
     .limit(500);
@@ -62,7 +65,7 @@ export async function POST(req: NextRequest) {
       status,
       priority: typeof body.priority === 'number' ? body.priority : 0,
     })
-    .select('*')
+    .select(ROADMAP_FIELDS)
     .single();
 
   if (error) {
@@ -108,7 +111,7 @@ export async function PATCH(req: NextRequest) {
     .from('roadmap_items')
     .update(update)
     .eq('id', id)
-    .select('*')
+    .select(ROADMAP_FIELDS)
     .single();
 
   if (error) {
