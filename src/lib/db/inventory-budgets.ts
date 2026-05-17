@@ -15,6 +15,10 @@ import type { InventoryBudget, InventoryCategory } from '@/types';
 import { supabase, logErr } from './_common';
 import { toInventoryBudgetRow, fromInventoryBudgetRow } from '../db-mappers';
 
+// Matches fromInventoryBudgetRow in db-mappers.ts. Audit follow-up 2026-05-17.
+const INVENTORY_BUDGET_FIELDS = 'property_id, category, month_start, budget_cents, notes, updated_at';
+type InventoryBudgetRow = Record<string, unknown>;
+
 function normaliseMonthStart(d: Date): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
 }
@@ -30,13 +34,13 @@ export async function listInventoryBudgets(
 ): Promise<InventoryBudget[]> {
   let query = supabase
     .from('inventory_budgets')
-    .select('*')
+    .select(INVENTORY_BUDGET_FIELDS)
     .eq('property_id', pid)
     .order('month_start', { ascending: false });
   if (monthStart) {
     query = query.eq('month_start', monthStartToISODate(monthStart));
   }
-  const { data, error } = await query;
+  const { data, error } = await query.returns<InventoryBudgetRow[]>();
   if (error) { logErr('listInventoryBudgets', error); throw error; }
   return (data ?? []).map(fromInventoryBudgetRow);
 }

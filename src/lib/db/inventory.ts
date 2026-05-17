@@ -7,6 +7,19 @@ import type { InventoryItem } from '@/types';
 import { supabase, logErr, subscribeTable } from './_common';
 import { toInventoryRow, fromInventoryRow } from '../db-mappers';
 
+// Explicit field list — matches what fromInventoryRow consumes
+// (src/lib/db-mappers.ts). Audit P1.2 (2026-05-17): replaces SELECT * on
+// the realtime-driven inventory re-fetch path so wide JSON/metadata
+// columns don't ride along with every tick. Keep in sync with
+// fromInventoryRow whenever a new field lands.
+const INVENTORY_FIELDS =
+  'id, property_id, name, category, current_stock, par_level, reorder_at, ' +
+  'unit, notes, updated_at, usage_per_checkout, usage_per_stayover, ' +
+  'reorder_lead_days, vendor_name, last_ordered_at, unit_cost, ' +
+  'last_alerted_at, last_counted_at, pack_size, case_unit';
+
+type InventoryRow = Record<string, unknown>;
+
 export function subscribeToInventory(
   _uid: string, pid: string,
   callback: (items: InventoryItem[]) => void,
@@ -15,7 +28,9 @@ export function subscribeToInventory(
     `inventory:${pid}`, 'inventory', `property_id=eq.${pid}`,
     async () => {
       const { data, error } = await supabase
-        .from('inventory').select('*').eq('property_id', pid);
+        .from('inventory').select(INVENTORY_FIELDS)
+        .eq('property_id', pid)
+        .returns<InventoryRow[]>();
       if (error) throw error;
       return (data ?? []).map(fromInventoryRow);
     },

@@ -27,6 +27,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { detectRateAnomalies, type RateObservation } from '@/lib/inventory-anomaly';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { recordAppEvent } from '@/lib/event-recorder';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -50,22 +51,22 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   let body: { propertyId?: unknown; itemIds?: unknown };
   try { body = await req.json(); } catch {
-    return NextResponse.json({ ok: false, error: 'invalid_json' }, { status: 400 });
+    return err('invalid_json', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   if (!isUuid(body.propertyId)) {
-    return NextResponse.json({ ok: false, error: 'invalid_property_id' }, { status: 400 });
+    return err('invalid_property_id', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   if (!Array.isArray(body.itemIds) || !body.itemIds.every(isUuid)) {
-    return NextResponse.json({ ok: false, error: 'invalid_item_ids' }, { status: 400 });
+    return err('invalid_item_ids', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   const itemIds = body.itemIds as string[];
   const propertyId = body.propertyId;
 
   if (!(await userHasPropertyAccess(session.userId, propertyId))) {
-    return NextResponse.json({ ok: false, error: 'forbidden' }, { status: 403 });
+    return err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
   if (itemIds.length === 0) {
-    return NextResponse.json({ ok: true, requestId, anomalies: 0, predictionLogs: 0 });
+    return ok({ anomalies: 0, predictionLogs: 0 }, { requestId });
   }
 
   // Honor the property AI mode kill-switch
@@ -75,13 +76,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     .eq('id', propertyId)
     .maybeSingle();
   if (((prop?.inventory_ai_mode ?? 'auto') as string) === 'off') {
-    return NextResponse.json({
-      ok: true,
-      requestId,
+    return ok({
       anomalies: 0,
       predictionLogs: 0,
       note: 'ai_mode_off',
-    });
+    }, { requestId });
   }
 
   let anomalies = 0;
@@ -99,7 +98,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       .limit(itemIds.length * 4);
     if (error || !rows) {
       log.warn('post-count-process: count fetch failed', { requestId, err: error });
-      return NextResponse.json({ ok: false, error: 'fetch_failed', requestId }, { status: 500 });
+      return err('fetch_failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
 
     // Group by item_id, keep first 2 (most recent + previous)
@@ -230,14 +229,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       anomalies = events.length;
     }
 
-    return NextResponse.json({
-      ok: true,
-      requestId,
-      anomalies,
-      predictionLogs,
-    });
+    return ok({ anomalies, predictionLogs }, { requestId });
   } catch (e) {
     log.error('post-count-process: exception', { requestId, err: e as Error });
-    return NextResponse.json({ ok: false, error: 'internal_error', requestId }, { status: 500 });
+    return err('internal_error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

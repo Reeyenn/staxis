@@ -31,8 +31,8 @@ import {
 } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
-import { recordErrorLog } from '@/lib/event-recorder';
+import { log, getOrMintRequestId } from '@/lib/log';
+import { writeErrorLog } from '@/lib/error-log';
 
 interface StaffEntry {
   staffId: string;
@@ -125,7 +125,7 @@ export async function POST(req: NextRequest) {
 
     // ── Failsafe: refuse to wipe all assignments without explicit opt-in ────
     const hasAnyAssignment = staff.some(s => (s.assignedRooms ?? []).length > 0);
-    const allowClearAll = (body as unknown as Record<string, unknown>).allowClearAll === true;
+    const allowClearAll = body.allowClearAll === true;
     if (!hasAnyAssignment && !allowClearAll) {
       return err('Refusing to clear all room assignments without allowClearAll=true', {
         requestId, status: 400, code: ApiErrorCode.ValidationFailed,
@@ -233,8 +233,8 @@ export async function POST(req: NextRequest) {
 
     return ok({ writes }, { requestId });
   } catch (caughtErr) {
-    console.error('sync-room-assignments error:', caughtErr);
-    await recordErrorLog({
+    log.error('sync-room-assignments error', { err: caughtErr, requestId });
+    await writeErrorLog({
       source: '/api/sync-room-assignments',
       message: errToString(caughtErr),
       stack: caughtErr instanceof Error ? caughtErr.stack ?? null : null,

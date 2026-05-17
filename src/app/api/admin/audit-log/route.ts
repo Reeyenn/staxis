@@ -10,8 +10,8 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
-import { ok, err } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { log, getOrMintRequestId } from '@/lib/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -29,9 +29,12 @@ export async function GET(req: NextRequest) {
   // /admin/properties/[id] for the per-hotel audit panel.
   const propertyId = url.searchParams.get('propertyId');
 
+  // admin_audit_log schema per migration 0054. Audit follow-up 2026-05-17.
+  const AUDIT_LOG_FIELDS =
+    'id, ts, actor_user_id, actor_email, action, target_type, target_id, metadata';
   let query = supabaseAdmin
     .from('admin_audit_log')
-    .select('*')
+    .select(AUDIT_LOG_FIELDS)
     .order('ts', { ascending: false })
     .limit(limit);
   if (propertyId) {
@@ -39,7 +42,10 @@ export async function GET(req: NextRequest) {
   }
 
   const { data, error } = await query;
-  if (error) return err(`audit-log query failed: ${error.message}`, { requestId, status: 500 });
+  if (error) {
+    log.error('audit-log query failed', { err: error, requestId });
+    return err('audit-log query failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  }
 
   return ok({ entries: data ?? [] }, { requestId });
 }

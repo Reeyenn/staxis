@@ -24,7 +24,7 @@ import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { validateUuid, validateDateStr, LIMITS } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 import { seedRoomsForDate } from '@/lib/rooms/seed';
 
 interface RequestBody {
@@ -102,7 +102,7 @@ export async function POST(req: NextRequest) {
   } catch (caughtErr: unknown) {
     // Don't echo errToString back — Postgres / supabase-js errors leak
     // schema details. Log full error server-side, generic 500 to caller.
-    console.error('[populate-rooms-from-plan] Error:', errToString(caughtErr));
+    log.error('[populate-rooms-from-plan] Error', { err: caughtErr, requestId });
     return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

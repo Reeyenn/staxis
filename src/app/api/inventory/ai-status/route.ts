@@ -21,6 +21,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
+import { err, ApiErrorCode } from '@/lib/api-response';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -36,10 +37,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
   const propertyId = new URL(req.url).searchParams.get('propertyId');
   if (!isUuid(propertyId)) {
-    return NextResponse.json({ ok: false, error: 'invalid_property_id' }, { status: 400 });
+    return err('invalid_property_id', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   if (!(await userHasPropertyAccess(session.userId, propertyId))) {
-    return NextResponse.json({ ok: false, error: 'forbidden' }, { status: 403 });
+    return err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 
   try {
@@ -123,6 +124,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     });
   } catch (e) {
     log.error('inventory/ai-status: failed', { requestId, err: e as Error });
-    return NextResponse.json({ ok: false, error: 'internal_error', requestId }, { status: 500 });
+    return err('internal_error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

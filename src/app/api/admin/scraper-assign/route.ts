@@ -38,7 +38,6 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 import { writeAudit } from '@/lib/audit';
-import { errToString } from '@/lib/utils';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -94,7 +93,7 @@ export async function POST(req: NextRequest) {
       .eq('property_id', propertyId)
       .maybeSingle();
     if (readErr) {
-      log.error('scraper-assign: read failed', { requestId, propertyId, err: readErr as unknown as Error });
+      log.error('scraper-assign: read failed', { requestId, propertyId, err: readErr });
       return err('failed to read scraper_credentials', { requestId, status: 500 });
     }
     if (!existing) {
@@ -120,7 +119,7 @@ export async function POST(req: NextRequest) {
       .update({ scraper_instance: newInstance })
       .eq('property_id', propertyId);
     if (upErr) {
-      log.error('scraper-assign: update failed', { requestId, propertyId, err: upErr as unknown as Error });
+      log.error('scraper-assign: update failed', { requestId, propertyId, err: upErr });
       return err('failed to reassign property', { requestId, status: 500 });
     }
 
@@ -157,6 +156,6 @@ export async function POST(req: NextRequest) {
     );
   } catch (e) {
     log.error('scraper-assign: handler crashed', { requestId, err: e as Error });
-    return err(errToString(e), { requestId, status: 500 });
+    return err('scraper-assign handler failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

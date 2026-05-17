@@ -18,6 +18,18 @@ export const DEFAULT_STAFF_LIMIT = 500;
 /** Hard ceiling — even with explicit opts, never return more than this. */
 export const MAX_STAFF_LIMIT = 1000;
 
+// Explicit field list — matches what fromStaffRow consumes
+// (src/lib/db-mappers.ts). Audit P1.1 (2026-05-17): previously SELECT *
+// pulled wide rows including phone, phone_lookup, hourly_wage on every
+// realtime tick; this list keeps payloads small and bandwidth predictable.
+// Keep in sync with fromStaffRow whenever a new field lands.
+// Exported so housekeeper-helpers.ts and other staff readers reuse it.
+export const STAFF_FIELDS =
+  'id, name, phone, language, is_senior, department, hourly_wage, ' +
+  'scheduled_today, weekly_hours, max_weekly_hours, max_days_per_week, ' +
+  'days_worked_this_week, vacation_dates, is_active, schedule_priority, ' +
+  'is_scheduling_manager, last_paired_at';
+
 export interface StaffListOpts {
   /** 1-based page size cap. Clamped to [1, MAX_STAFF_LIMIT]. */
   limit?: number;
@@ -32,15 +44,18 @@ function clampedRange(opts?: StaffListOpts): { from: number; to: number } {
   return { from: offset, to: offset + limit - 1 };
 }
 
+type StaffRow = Record<string, unknown>;
+
 export async function getStaff(
   _uid: string, pid: string, opts?: StaffListOpts,
 ): Promise<StaffMember[]> {
   const { from, to } = clampedRange(opts);
   const { data, error } = await supabase
-    .from('staff').select('*')
+    .from('staff').select(STAFF_FIELDS)
     .eq('property_id', pid)
     .order('name', { ascending: true })
-    .range(from, to);
+    .range(from, to)
+    .returns<StaffRow[]>();
   if (error) { logErr('getStaff', error); throw error; }
   return (data ?? []).map(fromStaffRow);
 }
@@ -55,10 +70,11 @@ export async function getStaffPage(
 ): Promise<{ rows: StaffMember[]; total: number }> {
   const { from, to } = clampedRange(opts);
   const { data, error, count } = await supabase
-    .from('staff').select('*', { count: 'exact' })
+    .from('staff').select(STAFF_FIELDS, { count: 'exact' })
     .eq('property_id', pid)
     .order('name', { ascending: true })
-    .range(from, to);
+    .range(from, to)
+    .returns<StaffRow[]>();
   if (error) { logErr('getStaffPage', error); throw error; }
   return { rows: (data ?? []).map(fromStaffRow), total: count ?? 0 };
 }
@@ -73,10 +89,11 @@ export function subscribeToStaff(
     `staff:${pid}`, 'staff', `property_id=eq.${pid}`,
     async () => {
       const { data, error } = await supabase
-        .from('staff').select('*')
+        .from('staff').select(STAFF_FIELDS)
         .eq('property_id', pid)
         .order('name', { ascending: true })
-        .range(from, to);
+        .range(from, to)
+        .returns<StaffRow[]>();
       if (error) throw error;
       return (data ?? []).map(fromStaffRow);
     },

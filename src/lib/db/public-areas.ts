@@ -7,8 +7,14 @@ import type { PublicArea } from '@/types';
 import { supabase, logErr } from './_common';
 import { toPublicAreaRow, fromPublicAreaRow } from '../db-mappers';
 
+// Matches fromPublicAreaRow in db-mappers.ts. Audit follow-up 2026-05-17.
+const PUBLIC_AREA_FIELDS =
+  'id, name, floor, locations, frequency_days, minutes_per_clean, start_date, ' +
+  'only_when_rented, is_rented_today';
+type PublicAreaRow = Record<string, unknown>;
+
 export async function getPublicAreas(_uid: string, pid: string): Promise<PublicArea[]> {
-  const { data, error } = await supabase.from('public_areas').select('*').eq('property_id', pid);
+  const { data, error } = await supabase.from('public_areas').select(PUBLIC_AREA_FIELDS).eq('property_id', pid).returns<PublicAreaRow[]>();
   if (error) { logErr('getPublicAreas', error); throw error; }
   return (data ?? []).map(fromPublicAreaRow);
 }

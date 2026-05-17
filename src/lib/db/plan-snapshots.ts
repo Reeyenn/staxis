@@ -13,6 +13,20 @@
 import { supabase, subscribeTable } from './_common';
 import { toDate } from '../db-mappers';
 
+// Matches fromPlanSnapshotRow below. Audit follow-up 2026-05-17 — note the
+// large jsonb `rooms` column dominates the row size, so the explicit list is
+// still ~the same payload as SELECT *; included anyway to avoid surprises if
+// future migrations add unused metadata columns.
+const PLAN_SNAPSHOT_FIELDS =
+  'date, pulled_at, pull_type, total_rooms, checkouts, stayovers, stayover_day1, ' +
+  'stayover_day2, stayover_arrival_day, stayover_unknown, arrivals, vacant_clean, ' +
+  'vacant_dirty, ooo, checkout_minutes, stayover_day1_minutes, stayover_day2_minutes, ' +
+  'vacant_dirty_minutes, total_cleaning_minutes, recommended_hks, ' +
+  'checkout_room_numbers, stayover_day1_room_numbers, stayover_day2_room_numbers, ' +
+  'stayover_arrival_room_numbers, arrival_room_numbers, vacant_clean_room_numbers, ' +
+  'vacant_dirty_room_numbers, ooo_room_numbers, rooms';
+type PlanSnapshotRow = Record<string, unknown>;
+
 // ─── Scraper window constants (must match scraper/scraper.js exactly) ──────
 //
 // The scraper pulls hourly during the active window and writes every pull
@@ -117,8 +131,8 @@ export function subscribeToPlanSnapshot(
     `plan_snapshots:${pid}:${date}`, 'plan_snapshots', `property_id=eq.${pid}`,
     async () => {
       const { data, error } = await supabase
-        .from('plan_snapshots').select('*')
-        .eq('property_id', pid).eq('date', date).maybeSingle();
+        .from('plan_snapshots').select(PLAN_SNAPSHOT_FIELDS)
+        .eq('property_id', pid).eq('date', date).maybeSingle<PlanSnapshotRow>();
       if (error) throw error;
       return data ? [fromPlanSnapshotRow(data)] : [];
     },

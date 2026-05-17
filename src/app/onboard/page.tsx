@@ -695,7 +695,7 @@ function Step7Mapping({ code, wizard, onNext }: { code: string; wizard: WizardSt
         // ignore transient network errors; next tick will retry
       }
     };
-    poll();
+    void poll();
     const t = setInterval(poll, 3000);
     return () => { active = false; clearInterval(t); };
   }, [jobId, code, onNext]);

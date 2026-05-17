@@ -100,11 +100,17 @@ export async function enqueueSms(input: EnqueueSmsInput): Promise<SmsJobRow> {
     metadata: input.metadata ?? {},
   };
 
+  // Matches SmsJobRow interface above. Audit follow-up 2026-05-17.
+  const SMS_JOB_FIELDS =
+    'id, property_id, to_phone, body, status, attempts, max_attempts, ' +
+    'next_attempt_at, started_at, sent_at, twilio_sid, error_code, ' +
+    'error_message, idempotency_key, metadata, created_at, updated_at';
+
   const { data: inserted, error: insertErr } = await supabaseAdmin
     .from('sms_jobs')
     .insert(insertPayload)
-    .select('*')
-    .single();
+    .select(SMS_JOB_FIELDS)
+    .single<SmsJobRow>();
 
   if (!insertErr && inserted) return inserted as SmsJobRow;
 
@@ -115,10 +121,10 @@ export async function enqueueSms(input: EnqueueSmsInput): Promise<SmsJobRow> {
   if (isDuplicate) {
     const { data: existing, error: readErr } = await supabaseAdmin
       .from('sms_jobs')
-      .select('*')
+      .select(SMS_JOB_FIELDS)
       .eq('property_id', input.propertyId)
       .eq('idempotency_key', input.idempotencyKey)
-      .single();
+      .single<SmsJobRow>();
     if (readErr || !existing) {
       throw new Error(
         `enqueueSms: duplicate detected for (pid=${input.propertyId}, key=${input.idempotencyKey}) but row not found on re-read: ${errToString(readErr)}`,
@@ -357,8 +363,17 @@ async function applyMetadataCallback(
  * back to 'queued' so the next tick picks them up again.
  *
  * Returns the number of rows reset.
+ *
+ * Default tightened from 300s → 120s (audit/concurrency #9). The cron
+ * runs every 60s and a single tick processes ≤50 jobs at ~1–3s each, so
+ * any healthy run finishes well under 60s. 120s is generous enough to
+ * absorb a slow Twilio response while shortening the window in which a
+ * crashed worker leaves a row "claimed" — that window allowed a
+ * subsequent tick to skip the row, then the watchdog to reset it, then a
+ * future tick to send the SMS again. 5-minute duplicates were the most
+ * common housekeeper complaint.
  */
-export async function resetStuckSmsJobs(maxSeconds = 300): Promise<number> {
+export async function resetStuckSmsJobs(maxSeconds = 120): Promise<number> {
   const { data, error } = await supabaseAdmin
     .rpc('staxis_reset_stuck_sms_jobs', { p_max_seconds: maxSeconds });
   if (error) {

@@ -158,6 +158,12 @@ async def compute_rolling_shadow_mae(
     # index added in 0104.)
     cutoff_dt = datetime.utcnow() - timedelta(days=settings.auto_rollback_window_days)
     cutoff_iso = cutoff_dt.isoformat()
+    # Defensive LIMIT — the cutoff filter scopes the read to the rollback
+    # window (default 14 days), but if cron stalls or the window is widened
+    # the result set could grow unboundedly. 50_000 rows = ~500 properties ×
+    # 100 prediction-events per day × 2 models — a fleet-wide ceiling that
+    # still preserves correctness for any single-property check. Audit
+    # follow-up 2026-05-17 (shadow_mae unbounded read).
     logs_query = f"""
         select model_run_id, abs_error, date
         from prediction_log
@@ -166,6 +172,7 @@ async def compute_rolling_shadow_mae(
           and date >= '{cutoff_iso}'
           and model_run_id in ('{active_model_id}', '{comparator_model_id}')
         order by date asc
+        limit 50000
     """
     try:
         logs = client.execute_sql(logs_query)

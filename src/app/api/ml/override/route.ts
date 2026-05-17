@@ -37,8 +37,8 @@ import {
   validateUuid, validateString, validateDateStr, validateInt, LIMITS,
 } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
-import { recordErrorLog } from '@/lib/event-recorder';
+import { log, getOrMintRequestId } from '@/lib/log';
+import { writeErrorLog } from '@/lib/error-log';
 
 interface RequestBody {
   propertyId: string;
@@ -210,8 +210,8 @@ export async function POST(req: NextRequest) {
 
     return ok(response, { requestId, status: 201 });
   } catch (caughtErr) {
-    console.error('/api/ml/override error:', caughtErr);
-    await recordErrorLog({
+    log.error('/api/ml/override error', { err: caughtErr, requestId });
+    await writeErrorLog({
       source: '/api/ml/override',
       message: errToString(caughtErr),
       stack: caughtErr instanceof Error ? caughtErr.stack ?? null : null,

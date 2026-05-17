@@ -237,7 +237,7 @@ export default function AccountsPage() {
     }
   }, [user]);
 
-  useEffect(() => { loadAccounts(); }, [loadAccounts]);
+  useEffect(() => { void loadAccounts(); }, [loadAccounts]);
 
   const openAdd = () => {
     setEditingId(null);
