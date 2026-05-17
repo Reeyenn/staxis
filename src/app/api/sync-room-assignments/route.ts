@@ -32,6 +32,7 @@ import {
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { recordErrorLog } from '@/lib/event-recorder';
 
 interface StaffEntry {
   staffId: string;
@@ -233,13 +234,11 @@ export async function POST(req: NextRequest) {
     return ok({ writes }, { requestId });
   } catch (caughtErr) {
     console.error('sync-room-assignments error:', caughtErr);
-    try {
-      await supabaseAdmin.from('error_logs').insert({
-        source: '/api/sync-room-assignments',
-        message: errToString(caughtErr),
-        stack: caughtErr instanceof Error ? caughtErr.stack ?? null : null,
-      });
-    } catch {}
+    await recordErrorLog({
+      source: '/api/sync-room-assignments',
+      message: errToString(caughtErr),
+      stack: caughtErr instanceof Error ? caughtErr.stack ?? null : null,
+    });
     return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

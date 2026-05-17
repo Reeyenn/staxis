@@ -27,6 +27,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
 import { safeBaseUrl, redactPhone } from '@/lib/api-validate';
+import { recordWebhookLog } from '@/lib/event-recorder';
 import twilio from 'twilio';
 
 // Twilio expects TwiML (XML), not JSON. An empty <Response/> tells Twilio
@@ -142,7 +143,7 @@ async function logHit(payload: Record<string, unknown>): Promise<void> {
         redacted[k] = v;
       }
     }
-    await supabaseAdmin.from('webhook_log').insert({
+    await recordWebhookLog({
       source: 'twilio-sms-reply',
       payload: redacted,
     });

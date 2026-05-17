@@ -26,6 +26,7 @@ import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { detectRateAnomalies, type RateObservation } from '@/lib/inventory-anomaly';
 import { getOrMintRequestId, log } from '@/lib/log';
+import { recordAppEvent } from '@/lib/event-recorder';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -222,12 +223,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           observed_rate: f.observedDailyRate,
         },
       }));
-      const { error: aeErr } = await supabaseAdmin.from('app_events').insert(events);
-      if (aeErr) {
-        log.warn('post-count-process: app_events insert failed', { requestId, err: aeErr });
-      } else {
-        anomalies = events.length;
-      }
+      // recordAppEvent handles insert failure (structured console.error +
+      // rate-limited Sentry escalation) — never throws. We optimistically
+      // set anomalies count because the helper logs failures itself.
+      await recordAppEvent(events);
+      anomalies = events.length;
     }
 
     return NextResponse.json({

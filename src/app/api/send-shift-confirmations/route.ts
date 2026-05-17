@@ -44,6 +44,7 @@ import { enqueueSms, processSmsJobs } from '@/lib/sms-jobs';
 import { buildHousekeeperLink } from '@/lib/staff-auth';
 import { buildOkBody, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { recordErrorLog } from '@/lib/event-recorder';
 
 interface StaffEntry {
   staffId: string;
@@ -565,14 +566,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(envelope);
   } catch (caughtErr) {
     console.error('send-shift-confirmations error:', caughtErr);
-    // Persist the error so we can diagnose without shell logs.
-    try {
-      await supabaseAdmin.from('error_logs').insert({
-        source: '/api/send-shift-confirmations',
-        message: errToString(caughtErr),
-        stack: caughtErr instanceof Error ? caughtErr.stack ?? null : null,
-      });
-    } catch {}
+    // recordErrorLog handles insert failure (structured console.error +
+    // rate-limited Sentry escalation) — never throws.
+    await recordErrorLog({
+      source: '/api/send-shift-confirmations',
+      message: errToString(caughtErr),
+      stack: caughtErr instanceof Error ? caughtErr.stack ?? null : null,
+    });
     return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }
