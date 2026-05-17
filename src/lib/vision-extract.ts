@@ -33,8 +33,14 @@ const MODEL = 'claude-sonnet-4-6';
 const VISION_REQUEST_TIMEOUT_MS = 30_000;
 const VISION_ABORT_MS = 35_000;
 
+// Module-level singleton — matches the pattern in `src/lib/agent/llm.ts` and
+// `src/app/api/walkthrough/step/route.ts`. Re-instantiating `new Anthropic()`
+// per call burns a TLS handshake on every invoice scan.
+let _visionClient: Anthropic | null = null;
+
 /** Throws if ANTHROPIC_API_KEY is missing — caller catches and 500s the route. */
 function getClient(): Anthropic {
+  if (_visionClient) return _visionClient;
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) {
     throw new Error(
@@ -42,7 +48,8 @@ function getClient(): Anthropic {
       'Set in Vercel → Project Settings → Environment Variables and redeploy.',
     );
   }
-  return new Anthropic({ apiKey: key, timeout: VISION_REQUEST_TIMEOUT_MS });
+  _visionClient = new Anthropic({ apiKey: key, timeout: VISION_REQUEST_TIMEOUT_MS });
+  return _visionClient;
 }
 
 export interface VisionImage {
