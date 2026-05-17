@@ -233,7 +233,7 @@ export async function POST(req: NextRequest) {
     // the unsigned JSON path. Defaulting to closed forces opt-in via
     // a dedicated env var that ops can scrub from prod-shape deploys
     // entirely. Audit Flow 3 #14.
-    if (!isFormEncoded && process.env.ALLOW_UNSIGNED_SMS_WEBHOOK !== '1') {
+    if (!isFormEncoded && env.ALLOW_UNSIGNED_SMS_WEBHOOK !== '1') {
       await logHit({
         stage: 'json_rejected',
         contentType,
