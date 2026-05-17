@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
+import * as Sentry from '@sentry/nextjs';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { AppLayout } from '@/components/layout/AppLayout';
@@ -54,6 +55,21 @@ export default function PMSPage() {
     result: Record<string, unknown> | null;
   } | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Stalled-state tracking (audit Flow 2 #4 + #11). The pre-fix polling
+  // loop had no concept of "we've been at the same progress for ages" —
+  // a dead Fly worker meant the user stared at the spinner indefinitely
+  // with no signal. We now track the last time progress changed; after
+  // STALLED_WARN_MS render a banner; after STALLED_STOP_MS bail entirely
+  // and log to Sentry. Network failures during polling are tracked
+  // separately so we can surface an offline banner without conflating
+  // it with "worker is down".
+  const STALLED_WARN_MS = 5 * 60 * 1000;   // 5 min — banner
+  const STALLED_STOP_MS = 15 * 60 * 1000;  // 15 min — stop + Sentry
+  const lastProgressChangeRef = useRef<number>(0);
+  const lastProgressPctRef = useRef<number>(-1);
+  const [pollState, setPollState] = useState<'polling' | 'stalled-warn' | 'stopped-stalled' | 'stopped-offline'>('polling');
+  const [pollNetworkFailures, setPollNetworkFailures] = useState(0);
+  const [userStopped, setUserStopped] = useState(false);
 
   // When the user picks a PMS, prefill the login URL with the registry's
   // default — saves typing for the 95% case where they use the standard
@@ -184,12 +200,20 @@ export default function PMSPage() {
   useEffect(() => {
     if (!jobId) return;
     let cancelled = false;
+    // Reset stalled-state tracking on a new job.
+    lastProgressChangeRef.current = Date.now();
+    lastProgressPctRef.current = -1;
+    setPollState('polling');
+    setPollNetworkFailures(0);
+    setUserStopped(false);
 
     const poll = async () => {
-      if (cancelled) return;
+      if (cancelled || userStopped) return;
+      let madeNetworkProgress = false;
       try {
         const res = await fetchWithAuth(`/api/pms/job-status?id=${jobId}`);
         const raw = await res.json();
+        madeNetworkProgress = true;
         if (cancelled) return;
         if (res.ok) {
           // Runtime parser (audit Flow 2 #5): previously this code used
@@ -199,6 +223,14 @@ export default function PMSPage() {
           // or an error; on parse failure we keep polling but log.
           const parsed = parsePmsJobStatusResponse(raw);
           if (parsed.value) {
+            // Stalled-state tracking — when progressPct advances, reset
+            // the clock; otherwise let it tick toward the warn / stop
+            // thresholds.
+            if (parsed.value.progressPct !== lastProgressPctRef.current) {
+              lastProgressPctRef.current = parsed.value.progressPct;
+              lastProgressChangeRef.current = Date.now();
+              setPollState('polling');
+            }
             setJobStatus(parsed.value);
             if (parsed.value.status === 'complete' || parsed.value.status === 'failed') {
               setSaving(false);
@@ -210,7 +242,44 @@ export default function PMSPage() {
           }
         }
       } catch {
-        // Transient error — keep polling.
+        // Transient error — keep polling, but track the failure count.
+        if (!cancelled) {
+          setPollNetworkFailures(n => n + 1);
+        }
+      }
+      if (cancelled) return;
+
+      // Reset failure counter on a successful network call.
+      if (madeNetworkProgress) {
+        setPollNetworkFailures(0);
+      }
+
+      // Stalled-state escalation. Only check while job is in flight (not
+      // terminal). The thresholds are wall-clock since the last
+      // progressPct change, not since the job started — a job that
+      // legitimately progresses slowly (long extraction phase) won't
+      // trip the warn as long as the percent ticks at least once every
+      // 5 min.
+      const stalledMs = Date.now() - lastProgressChangeRef.current;
+      if (stalledMs > STALLED_STOP_MS) {
+        // Stop polling and report. The job may still complete on the
+        // server side — manual refresh recovers — but we won't keep
+        // hammering the API forever.
+        setPollState('stopped-stalled');
+        Sentry.captureMessage('pms-onboard stalled — stopping client poll', {
+          level: 'error',
+          tags: { surface: 'settings/pms', reason: 'onboard-stalled' },
+          extra: {
+            jobId,
+            propertyId: activePropertyId,
+            lastProgressPct: lastProgressPctRef.current,
+            stalledSec: Math.round(stalledMs / 1000),
+          },
+        });
+        return;
+      }
+      if (stalledMs > STALLED_WARN_MS) {
+        setPollState('stalled-warn');
       }
       pollTimerRef.current = setTimeout(poll, 3000);
     };
@@ -220,7 +289,9 @@ export default function PMSPage() {
       cancelled = true;
       if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
     };
-  }, [jobId, refreshProperty]);
+    // STALLED_WARN_MS / STALLED_STOP_MS are module-level constants.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId, refreshProperty, userStopped]);
 
   return (
     <AppLayout>
@@ -473,6 +544,68 @@ export default function PMSPage() {
                   transition: 'width 0.3s ease',
                 }} />
               </div>
+            )}
+
+            {/* Stalled-state banner — appears when the sync worker hasn't
+                advanced progress in 5 min. Distinct from "failed" because
+                the job COULD still complete; we just don't have a recent
+                signal. Audit Flow 2 #4. */}
+            {pollState === 'stalled-warn' && jobStatus.status !== 'complete' && jobStatus.status !== 'failed' && (
+              <p style={{
+                fontSize: '13px',
+                color: 'var(--amber)',
+                lineHeight: 1.5,
+                marginBottom: '8px',
+              }}>
+                {lang === 'es'
+                  ? 'Esto está tardando más de lo normal. El trabajador puede estar ocupado — espera unos minutos o detén el sondeo para volver a intentarlo más tarde.'
+                  : 'This is taking longer than expected. The sync worker may be busy — wait a few more minutes or stop polling and try again later.'}
+                {' '}
+                <button
+                  type="button"
+                  onClick={() => setUserStopped(true)}
+                  style={{
+                    background: 'none', border: 'none', padding: 0, marginLeft: '4px',
+                    color: 'var(--amber)', textDecoration: 'underline', cursor: 'pointer',
+                    fontSize: '13px',
+                  }}
+                >
+                  {lang === 'es' ? 'Detener' : 'Stop'}
+                </button>
+              </p>
+            )}
+
+            {/* Hard stop after STALLED_STOP_MS — also fires when the user
+                clicks Stop above. Polling has been halted; refresh to
+                retry. Sentry already received the stalled event. */}
+            {(pollState === 'stopped-stalled' || (userStopped && jobStatus.status !== 'complete' && jobStatus.status !== 'failed')) && (
+              <p style={{
+                fontSize: '13px',
+                color: 'var(--red)',
+                lineHeight: 1.5,
+                marginBottom: '8px',
+              }}>
+                {lang === 'es'
+                  ? 'Detuvimos el sondeo. Recarga la página para reintentar; la sincronización puede haber completado en segundo plano.'
+                  : 'We stopped polling. Refresh the page to retry — the sync may have completed in the background.'}
+              </p>
+            )}
+
+            {/* Network failure offline banner — surfaces 3+ consecutive
+                poll failures. navigator.onLine isn't perfect but it
+                catches the common case (wifi dropped). Audit Flow 2 #11. */}
+            {pollNetworkFailures >= 3 && pollState !== 'stopped-stalled' && jobStatus.status !== 'complete' && jobStatus.status !== 'failed' && (
+              <p style={{
+                fontSize: '13px',
+                color: 'var(--text-muted)',
+                lineHeight: 1.5,
+                marginBottom: '8px',
+              }}>
+                <WifiOff size={12} style={{ verticalAlign: 'middle', marginRight: '4px' }} />
+                {lang === 'es'
+                  ? `Sin conexión (${pollNetworkFailures} intentos fallidos). El sondeo continúa cuando vuelvas en línea.`
+                  : `Offline (${pollNetworkFailures} failed polls). Polling will resume when you reconnect.`}
+              </p>
             )}
 
             {jobStatus.status === 'failed' && jobStatus.error && (

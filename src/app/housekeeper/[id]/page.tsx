@@ -8,6 +8,7 @@ import {
   saveStaffLanguagePublic,
   bucketStayoverDay,
 } from '@/lib/db';
+import * as Sentry from '@sentry/nextjs';
 import { supabase } from '@/lib/supabase';
 import { useTodayStr } from '@/lib/use-today-str';
 import type { Room, RoomStatus } from '@/types';
@@ -230,10 +231,23 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
           type: 'magiclink',
         });
         if (error) {
+          // Surface to Sentry as a breadcrumb-level message (not a hard
+          // error) so we can track the magic-link-fallback rate without
+          // paging on-call — the page still works on the anon polling
+          // path. Audit Flow 3 #11.
           console.warn('[housekeeper] magic-link consume failed (falling back to anon):', error.message);
+          Sentry.captureMessage('housekeeper: magic-link consume failed', {
+            level: 'warning',
+            tags: { surface: 'housekeeper-page', reason: 'magic-link-rejected' },
+            extra: { errorMessage: error.message, pid, housekeeperId },
+          });
         }
       } catch (err) {
         console.warn('[housekeeper] magic-link consume threw:', err);
+        Sentry.captureException(err, {
+          tags: { surface: 'housekeeper-page', reason: 'magic-link-threw' },
+          extra: { pid, housekeeperId },
+        });
       } finally {
         if (cancelled) return;
         // Strip ?token= from the URL regardless of success — a second
