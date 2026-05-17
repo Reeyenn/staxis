@@ -71,15 +71,15 @@ In the ML Service settings:
    ```
    Should return `{"status":"ok"}`
 
-### Step 4: Configure the Scraper to Call This Service
+### Step 4: Configure the Web App to Call This Service
 
-In the scraper container, add:
+In the Vercel project env, add:
 ```
-ML_SERVICE_URL=https://ml-service-production-xxxx.railway.app
+ML_SERVICE_URLS=https://ml-service-production-xxxx.railway.app
 ML_SERVICE_SECRET=your-bearer-token-secret  (must match above)
 ```
 
-The scraper will now trigger ML training/inference at the right times.
+`ML_SERVICE_URLS` is comma-separated — single-shard deploys use one entry; multi-shard deploys list each shard URL. The web app deterministically routes per-property by UUID hash. The legacy singular `ML_SERVICE_URL` is still accepted during the migration window but should not be set in new deploys.
 
 ### Step 5: Manual Testing (Post-Deployment)
 
