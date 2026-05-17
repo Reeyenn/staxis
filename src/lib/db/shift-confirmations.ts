@@ -5,7 +5,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { ShiftConfirmation } from '@/types';
-import { supabase, logErr, subscribeTable } from './_common';
+import { supabase, logErr, subscribeTable, makeUpsertByIdReducer } from './_common';
 import { fromShiftConfirmationRow } from '../db-mappers';
 
 // Matches fromShiftConfirmationRow in db-mappers.ts. Audit follow-up 2026-05-17.
@@ -30,6 +30,20 @@ export function subscribeToShiftConfirmations(
       return (data ?? []).map(fromShiftConfirmationRow);
     },
     callback,
+    // Scope by shift_date (the realtime filter only covers property_id).
+    (payload) => {
+      const newDate = (payload.new as { shift_date?: string } | null)?.shift_date;
+      const oldDate = (payload.old as { shift_date?: string } | null)?.shift_date;
+      return newDate === shiftDate || oldDate === shiftDate;
+    },
+    // REPLICA IDENTITY FULL on shift_confirmations (migration 0133) lets
+    // us apply the change locally — confirmations roll in one SMS reply at
+    // a time, so amplification isn't the big issue here, but the reducer
+    // path also cuts the per-event roundtrip from a refetch to a no-op.
+    makeUpsertByIdReducer<ShiftConfirmation>({
+      mapRow: fromShiftConfirmationRow,
+      isInSlice: (raw) => (raw as { shift_date?: string }).shift_date === shiftDate,
+    }),
   );
 }
 

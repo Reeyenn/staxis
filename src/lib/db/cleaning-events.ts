@@ -11,7 +11,7 @@
 // re-pull, but this audit log persists forever. That's the whole point.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { supabase, logErr, subscribeTable } from './_common';
+import { supabase, logErr, subscribeTable, makeUpsertByIdReducer } from './_common';
 
 // Matches fromCleaningEventRow below. Keep in sync. Audit follow-up
 // 2026-05-17: replaces SELECT * across all read sites.
@@ -329,5 +329,18 @@ export function subscribeToTodayCleaningEvents(
       return (data ?? []).map(fromCleaningEventRow);
     },
     callback,
+    // Single-filter realtime only scopes to property_id; filter by date here.
+    (payload) => {
+      const newDate = (payload.new as { date?: string } | null)?.date;
+      const oldDate = (payload.old as { date?: string } | null)?.date;
+      return newDate === date || oldDate === date;
+    },
+    // REPLICA IDENTITY FULL is set on cleaning_events by migration 0133 so
+    // payload.new is the complete row on UPDATE. Avoids the N events → N
+    // refetch amplification when a manager bulk-resolves flagged events.
+    makeUpsertByIdReducer<CleaningEvent>({
+      mapRow: fromCleaningEventRow,
+      isInSlice: (raw) => (raw as { date?: string }).date === date,
+    }),
   );
 }
