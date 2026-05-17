@@ -21,6 +21,7 @@ import { getOrMintRequestId } from '@/lib/log';
 import { writeAudit } from '@/lib/audit';
 import { checkAndIncrementRateLimit, rateLimitedResponse, ipToRateLimitKey } from '@/lib/api-ratelimit';
 import type { AppRole } from '@/lib/roles';
+import { captureException } from '@/lib/sentry';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -204,7 +205,22 @@ export async function POST(req: NextRequest) {
   });
   if (insErr) {
     console.error('[use-join-code] accounts insert failed', insErr);
-    await supabaseAdmin.auth.admin.deleteUser(authData.user.id).catch(() => {});
+    // Audit finding #4: pre-2026-05-17 this was `.catch(() => {})` which
+    // silently swallowed rollback failures, leaving orphan auth.users
+    // rows. Log loudly + Sentry so the orphan sweeper cron and on-call
+    // both have visibility if rollback fails.
+    await supabaseAdmin.auth.admin.deleteUser(authData.user.id).catch(rollErr => {
+      console.error(
+        `[use-join-code] AUTH ROLLBACK FAILED — orphan auth.users row id=${authData.user.id} email=${normalizedEmail}`,
+        rollErr,
+      );
+      captureException(rollErr, {
+        subsystem: 'auth',
+        failure_mode: 'rollback_failed',
+        auth_user_id: authData.user.id,
+        flow: 'use-join-code',
+      });
+    });
     await releaseSlot();
     return err('Failed to create account', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }

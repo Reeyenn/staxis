@@ -52,6 +52,10 @@
     {
       "path": "/api/cron/seed-rooms-daily",
       "schedule": "10 * * * *"
+    },
+    {
+      "path": "/api/cron/sweep-orphan-auth-users",
+      "schedule": "*/30 * * * *"
     }
   ]
 }
