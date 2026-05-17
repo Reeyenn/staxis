@@ -9,8 +9,9 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { Room, StaffMember } from '@/types';
-import { supabase, logErr, subscribeTable } from './_common';
+import { supabase, logErr, subscribeTable, asRecordRow } from './_common';
 import { fromRoomRow, fromStaffRow } from '../db-mappers';
+import { STAFF_COLS } from './staff';
 
 /**
  * Subscribe to every room (across all dates) assigned to a given staff
@@ -102,10 +103,11 @@ export function subscribeToRoomsForStaff(
  */
 export async function getStaffMember(pid: string, sid: string): Promise<StaffMember | null> {
   const { data, error } = await supabase
-    .from('staff').select('*')
+    .from('staff').select(STAFF_COLS)
     .eq('property_id', pid).eq('id', sid).maybeSingle();
   if (error) { logErr('getStaffMember', error); throw error; }
-  return data ? fromStaffRow(data) : null;
+  const row = asRecordRow(data);
+  return row ? fromStaffRow(row) : null;
 }
 
 /**

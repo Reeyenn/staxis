@@ -11,7 +11,7 @@
 // re-pull, but this audit log persists forever. That's the whole point.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { supabase, logErr, subscribeTable, makeUpsertByIdReducer } from './_common';
+import { supabase, logErr, subscribeTable, makeUpsertByIdReducer, asRecordRow, asRecordRows } from './_common';
 
 export type CleaningEventStatus = 'recorded' | 'discarded' | 'flagged' | 'approved' | 'rejected';
 
@@ -64,6 +64,18 @@ export function classifyCleaningEvent(durationMinutes: number): { status: Cleani
   if (durationMinutes > CLEANING_FLAG_OVER_MIN) return { status: 'flagged', flagReason: 'over_60min' };
   return { status: 'recorded', flagReason: null };
 }
+
+// Explicit column list, in lock-step with fromCleaningEventRow() below.
+// Replaces `.select('*')` per cost-hotpaths audit recommendation #5/#13 —
+// cleaning_events has ~25 columns (UI fields + ML features added in 0021)
+// and the live tab / performance tab / leaderboard only read the first 16.
+// The ML features are populated on insert but never read on the user path;
+// only the training scripts (Python ml-service) read them. Update both
+// this constant and fromCleaningEventRow when adding a column the UI needs.
+const CLEANING_EVENT_COLS =
+  'id, property_id, date, room_number, room_type, stayover_day, staff_id, ' +
+  'staff_name, started_at, completed_at, duration_minutes, status, ' +
+  'flag_reason, reviewed_by, reviewed_at, created_at';
 
 function fromCleaningEventRow(r: Record<string, unknown>): CleaningEvent {
   return {
@@ -161,14 +173,15 @@ export async function insertCleaningEvent(input: {
       onConflict: 'property_id,date,room_number,started_at,completed_at',
       ignoreDuplicates: true,
     })
-    .select()
+    .select(CLEANING_EVENT_COLS)
     .maybeSingle();
 
   if (error) {
     logErr('insertCleaningEvent', error);
     return null;
   }
-  return data ? fromCleaningEventRow(data) : null;
+  const inserted = asRecordRow(data);
+  return inserted ? fromCleaningEventRow(inserted) : null;
 }
 
 /**
@@ -193,7 +206,7 @@ export async function getCleaningEventsForRange(
   const limit = Math.max(1, Math.min(options.limit ?? 5_000, 50_000));
   let q = supabase
     .from('cleaning_events')
-    .select('*')
+    .select(CLEANING_EVENT_COLS)
     .eq('property_id', pid)
     .gte('date', fromDate)
     .lte('date', toDate)
@@ -206,7 +219,7 @@ export async function getCleaningEventsForRange(
 
   const { data, error } = await q;
   if (error) { logErr('getCleaningEventsForRange', error); throw error; }
-  return (data ?? []).map(fromCleaningEventRow);
+  return asRecordRows(data).map(fromCleaningEventRow);
 }
 
 /**
@@ -216,12 +229,12 @@ export async function getCleaningEventsForRange(
 export async function getFlaggedCleaningEvents(pid: string): Promise<CleaningEvent[]> {
   const { data, error } = await supabase
     .from('cleaning_events')
-    .select('*')
+    .select(CLEANING_EVENT_COLS)
     .eq('property_id', pid)
     .eq('status', 'flagged')
     .order('created_at', { ascending: true });
   if (error) { logErr('getFlaggedCleaningEvents', error); throw error; }
-  return (data ?? []).map(fromCleaningEventRow);
+  return asRecordRows(data).map(fromCleaningEventRow);
 }
 
 /**
@@ -311,12 +324,12 @@ export function subscribeToTodayCleaningEvents(
     async () => {
       const { data, error } = await supabase
         .from('cleaning_events')
-        .select('*')
+        .select(CLEANING_EVENT_COLS)
         .eq('property_id', pid)
         .eq('date', date)
         .order('completed_at', { ascending: false });
       if (error) throw error;
-      return (data ?? []).map(fromCleaningEventRow);
+      return asRecordRows(data).map(fromCleaningEventRow);
     },
     callback,
     // Single-filter realtime only scopes to property_id; filter by date here.

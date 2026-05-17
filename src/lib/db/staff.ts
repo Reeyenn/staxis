@@ -10,13 +10,25 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { StaffMember } from '@/types';
-import { supabase, logErr, subscribeTable } from './_common';
+import { supabase, logErr, subscribeTable, asRecordRows } from './_common';
 import { toStaffRow, fromStaffRow } from '../db-mappers';
 
 /** Default upper bound on staff rows returned by listing helpers. */
 export const DEFAULT_STAFF_LIMIT = 500;
 /** Hard ceiling — even with explicit opts, never return more than this. */
 export const MAX_STAFF_LIMIT = 1000;
+
+// Explicit column list, in lock-step with fromStaffRow() in db-mappers.ts.
+// Replaces `.select('*')` per cost-hotpaths audit recommendation #5/#13
+// — the previous wide select returned every staff column on every fetch,
+// including server-internal admin fields and any new columns added later
+// that the UI doesn't read. Update both this constant and fromStaffRow
+// when adding a column the UI needs.
+export const STAFF_COLS =
+  'id, name, phone, language, is_senior, department, hourly_wage, ' +
+  'scheduled_today, weekly_hours, max_weekly_hours, max_days_per_week, ' +
+  'days_worked_this_week, vacation_dates, is_active, schedule_priority, ' +
+  'is_scheduling_manager, last_paired_at';
 
 export interface StaffListOpts {
   /** 1-based page size cap. Clamped to [1, MAX_STAFF_LIMIT]. */
@@ -37,12 +49,12 @@ export async function getStaff(
 ): Promise<StaffMember[]> {
   const { from, to } = clampedRange(opts);
   const { data, error } = await supabase
-    .from('staff').select('*')
+    .from('staff').select(STAFF_COLS)
     .eq('property_id', pid)
     .order('name', { ascending: true })
     .range(from, to);
   if (error) { logErr('getStaff', error); throw error; }
-  return (data ?? []).map(fromStaffRow);
+  return asRecordRows(data).map(fromStaffRow);
 }
 
 /**
@@ -55,12 +67,12 @@ export async function getStaffPage(
 ): Promise<{ rows: StaffMember[]; total: number }> {
   const { from, to } = clampedRange(opts);
   const { data, error, count } = await supabase
-    .from('staff').select('*', { count: 'exact' })
+    .from('staff').select(STAFF_COLS, { count: 'exact' })
     .eq('property_id', pid)
     .order('name', { ascending: true })
     .range(from, to);
   if (error) { logErr('getStaffPage', error); throw error; }
-  return { rows: (data ?? []).map(fromStaffRow), total: count ?? 0 };
+  return { rows: asRecordRows(data).map(fromStaffRow), total: count ?? 0 };
 }
 
 export function subscribeToStaff(
@@ -73,12 +85,12 @@ export function subscribeToStaff(
     `staff:${pid}`, 'staff', `property_id=eq.${pid}`,
     async () => {
       const { data, error } = await supabase
-        .from('staff').select('*')
+        .from('staff').select(STAFF_COLS)
         .eq('property_id', pid)
         .order('name', { ascending: true })
         .range(from, to);
       if (error) throw error;
-      return (data ?? []).map(fromStaffRow);
+      return asRecordRows(data).map(fromStaffRow);
     },
     callback,
   );
