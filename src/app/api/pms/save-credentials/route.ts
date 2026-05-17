@@ -20,7 +20,7 @@ import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { log, getOrMintRequestId } from '@/lib/log';
 import { validateUuid, validateString, validateEnum } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
 import { PMS_TYPES, isPMSType } from '@/lib/pms';
@@ -152,41 +152,31 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // ─── Upsert scraper_credentials ─────────────────────────────────────────
-  // Note: column names are CA-prefixed for legacy reasons (migration 0018
-  // was Choice Advantage-only). They're now the generic PMS credential
-  // columns until we do a renaming migration.
-  const { error: upsertErr } = await supabaseAdmin
-    .from('scraper_credentials')
-    .upsert(
-      {
-        property_id:  pidV.value!,
-        pms_type:     pmsTypeV.value,
-        ca_login_url: urlV.value!,
-        ca_username:  userV.value!,
-        ca_password:  passV.value!,
-        is_active:    true,
-      },
-      { onConflict: 'property_id' },
-    );
+  // ─── Atomic upsert via RPC ──────────────────────────────────────────────
+  // Migration 0069 dropped the plaintext ca_username/ca_password columns
+  // and replaced them with ca_username_encrypted/ca_password_encrypted
+  // (Vault-backed AES-256 via pgcrypto). The RPC defined in migration 0140
+  // does both writes — encrypted credentials AND properties.pms_type/pms_url
+  // stamp — inside a single transaction. Without this, the prior code wrote
+  // to dropped columns and failed silently, leaving scraper_credentials
+  // empty in prod from 0069 onwards.
+  const { error: rpcErr } = await supabaseAdmin.rpc(
+    'staxis_upsert_scraper_credentials',
+    {
+      p_property_id: pidV.value!,
+      p_pms_type:    pmsTypeV.value,
+      p_login_url:   urlV.value!,
+      p_username:    userV.value!,
+      p_password:    passV.value!,
+    },
+  );
 
-  if (upsertErr) {
-    console.error('[pms/save-credentials] upsert failed', upsertErr);
+  if (rpcErr) {
+    log.error('[pms/save-credentials] rpc failed', { err: rpcErr, requestId });
     return err('Could not save credentials', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
   }
-
-  // Also stamp pms_type + pms_url onto the properties row so the rest of
-  // the app (and the existing /settings/pms read path) sees the change
-  // without an extra join.
-  await supabaseAdmin
-    .from('properties')
-    .update({
-      pms_type: pmsTypeV.value,
-      pms_url:  urlV.value!,
-    })
-    .eq('id', pidV.value!);
 
   return ok({ propertyId: pidV.value!, pmsType: pmsTypeV.value }, { requestId });
 }
