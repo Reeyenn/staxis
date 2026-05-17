@@ -1,14 +1,13 @@
 'use client';
 
 /**
- * Live hotels tab.
+ * Live hotels tab — Snow design (May 2026).
  *
- * Layout: chips row at top, then a 4-column responsive grid:
+ * Layout: header chips row, search controls, then a 4-column grid:
  *   Hotels | Recent errors | SMS health | Feedback inbox
  *
- * Both the errors and SMS health columns use a 72h window now (the old
- * 24h was too short for "did we miss anything overnight"). Error rows
- * past 72h are purged daily by /api/cron/purge-old-error-logs.
+ * Errors + SMS health both use a 72h window. Error rows past 72h are
+ * purged daily by /api/cron/purge-old-error-logs.
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
@@ -16,8 +15,13 @@ import Link from 'next/link';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import {
   Building2, ChevronRight, WifiOff, Wifi, AlertCircle,
-  MessageSquare, ChevronDown,
+  MessageSquare, ChevronDown, Search,
 } from 'lucide-react';
+import {
+  T, FONT_SANS, FONT_MONO, FONT_SERIF,
+  Caps, Card, Btn, Pill, SerifNum,
+  type PillTone,
+} from '@/app/admin/_components/_snow';
 
 const STALE_THRESHOLD_MIN = 12 * 60; // 12 hours
 
@@ -75,9 +79,6 @@ export function LiveHotelsTab() {
   const [feedback, setFeedback] = useState<FeedbackItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Phase M2 (2026-05-14): server-side search/filter/pagination.
-  // searchInput is the raw input field (debounced); searchTerm is what
-  // we actually send to the server (300ms debounce).
   const [searchInput, setSearchInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'trial' | 'past_due' | 'stale' | 'pms_disconnected'>('all');
@@ -85,13 +86,11 @@ export function LiveHotelsTab() {
   const [pagination, setPagination] = useState<{ totalMatching: number; totalPages: number; hasMore: boolean } | null>(null);
   const PAGE_SIZE = 50;
 
-  // Debounce search input → searchTerm (300ms)
   useEffect(() => {
     const t = setTimeout(() => setSearchTerm(searchInput.trim()), 300);
     return () => clearTimeout(t);
   }, [searchInput]);
 
-  // Reset to page 1 whenever search/filter changes (avoid landing on empty page).
   useEffect(() => { setPage(1); }, [searchTerm, statusFilter]);
 
   const load = useCallback(async () => {
@@ -130,11 +129,12 @@ export function LiveHotelsTab() {
   if (error) {
     return (
       <div style={{
-        padding: '12px 14px',
-        background: 'var(--red-dim)',
-        border: '1px solid rgba(239,68,68,0.25)',
-        borderRadius: '10px',
-        color: 'var(--red)', fontSize: '13px',
+        padding: '14px 16px',
+        background: T.warmDim,
+        border: `1px solid rgba(184,92,61,0.25)`,
+        borderRadius: 14,
+        color: T.warm, fontSize: 13,
+        fontFamily: FONT_SANS,
       }}>{error}</div>
     );
   }
@@ -147,11 +147,6 @@ export function LiveHotelsTab() {
     );
   }
 
-  // Phase M2: when admin picks a non-default status filter, show ALL
-  // matching properties regardless of "live" criteria. Otherwise keep
-  // the historical "Live hotels" semantics: only properties that have
-  // synced OR are active subscribers (in-flight onboarding hotels show
-  // on the Onboarding tab, not here).
   const live = statusFilter === 'all'
     ? props.filter((p) => p.lastSyncedAt !== null || p.subscriptionStatus === 'active')
     : props;
@@ -179,37 +174,67 @@ export function LiveHotelsTab() {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24, fontFamily: FONT_SANS }}>
 
-      {/* Health chips — kept Total, Active, Disconnected PMS. Stale/Past due
-          chips removed per Reeyen (they were noise at single-property scale).
-          Phase M2: total now reflects the FILTERED universe via pagination,
-          so "Total" can be smaller than props.length when search/filter is active. */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-        <Chip label="Total" value={pagination?.totalMatching ?? summary.total} color="var(--text-secondary)" />
-        <Chip label="Active" value={summary.active} color="var(--green)" />
-        <Chip label="Disconnected PMS" value={summary.disconnected} color={summary.disconnected > 0 ? 'var(--amber)' : 'var(--text-muted)'} />
-      </div>
+      {/* Hero summary — three stats with italic-serif numbers */}
+      <Card padding="20px 24px">
+        <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: 24 }}>
+          <div>
+            <Caps>Fleet</Caps>
+            <h2 style={{
+              fontFamily: FONT_SERIF, fontSize: 26, fontWeight: 400,
+              letterSpacing: '-0.02em', color: T.ink, margin: '2px 0 0',
+              lineHeight: 1.15,
+            }}>
+              <SerifNum size={48} italic c={T.ink}>{pagination?.totalMatching ?? summary.total}</SerifNum>
+              {' '}
+              <span style={{ fontStyle: 'italic', color: T.ink2 }}>hotels live</span>
+            </h2>
+          </div>
+          <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+            <SummaryCell label="Active" value={summary.active} tone="sage" />
+            <SummaryCell
+              label="Disconnected PMS"
+              value={summary.disconnected}
+              tone={summary.disconnected > 0 ? 'warm' : 'muted'}
+            />
+          </div>
+        </div>
+      </Card>
 
-      {/* Phase M2: server-side search + status filter for fleet scale.
-          Inputs sit just under the chips so they're discoverable without
-          stealing screen real estate from the 4-column grid below. */}
-      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-        <input
-          type="search"
-          value={searchInput}
-          onChange={(e) => setSearchInput(e.target.value)}
-          placeholder="Search hotels by name or brand…"
-          style={{
-            flex: '1 1 240px', minWidth: '200px', maxWidth: '400px',
-            padding: '8px 12px', fontSize: '13px',
-            border: '1px solid var(--border)', borderRadius: '8px',
-          }}
-        />
+      {/* Search + filter */}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{
+          position: 'relative',
+          flex: '1 1 260px', minWidth: 220, maxWidth: 420,
+        }}>
+          <Search
+            size={14}
+            color={T.ink3}
+            style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)' }}
+          />
+          <input
+            type="search"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder="Find hotels by name or brand…"
+            style={{
+              width: '100%', boxSizing: 'border-box',
+              padding: '10px 14px 10px 36px', fontSize: 13,
+              border: `1px solid ${T.rule}`, borderRadius: 999, outline: 'none',
+              fontFamily: FONT_SANS, background: T.paper, color: T.ink,
+            }}
+          />
+        </div>
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
-          style={{ padding: '8px 12px', fontSize: '13px', border: '1px solid var(--border)', borderRadius: '8px' }}
+          style={{
+            padding: '10px 14px', fontSize: 13,
+            border: `1px solid ${T.rule}`, borderRadius: 999,
+            fontFamily: FONT_SANS, background: T.paper, color: T.ink,
+            outline: 'none', cursor: 'pointer',
+          }}
         >
           <option value="all">All statuses</option>
           <option value="active">Active</option>
@@ -220,33 +245,27 @@ export function LiveHotelsTab() {
         </select>
       </div>
 
-      {/* 4-column horizontal layout. minmax(280px, 1fr) so columns collapse
-          gracefully as the viewport narrows (admin is desktop-first but
-          shouldn't break at laptop widths). */}
+      {/* 4-column grid */}
       <div style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-        gap: '20px',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+        gap: 18,
         alignItems: 'start',
       }}>
 
         {/* Column 1: Hotels */}
         <section style={columnStyle}>
-          <h2 style={sectionTitle}>Hotels</h2>
+          <SectionTitle caps="Hotels" title="Hotels" italic="list" />
 
           {enriched.length === 0 ? (
-            <div style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--text-muted)' }}>
-              <Building2 size={28} style={{ marginBottom: '8px' }} />
-              <p style={{ fontSize: '13px' }}>No live hotels yet — they'll appear here once their first sync completes.</p>
+            <div style={{ padding: '40px 20px', textAlign: 'center', color: T.ink2 }}>
+              <Building2 size={28} color={T.ink3} style={{ marginBottom: 8 }} />
+              <p style={{ fontSize: 13, fontFamily: FONT_SERIF, fontStyle: 'italic' }}>
+                No live hotels yet — they&apos;ll appear here once their first sync completes.
+              </p>
             </div>
           ) : (
-            <div style={{
-              border: '1px solid var(--border)',
-              borderRadius: '10px',
-              overflow: 'hidden',
-              background: 'var(--surface-primary)',
-              marginTop: '8px',
-            }}>
+            <Card padding="0" style={{ marginTop: 8 }}>
               {enriched.map((p, idx) => (
                 <Link
                   key={p.id}
@@ -254,55 +273,52 @@ export function LiveHotelsTab() {
                   style={{
                     display: 'flex',
                     flexDirection: 'column',
-                    gap: '4px',
-                    padding: '12px 14px',
-                    borderBottom: idx < enriched.length - 1 ? '1px solid var(--border)' : 'none',
+                    gap: 4,
+                    padding: '14px 16px',
+                    borderBottom: idx < enriched.length - 1 ? `1px solid ${T.rule}` : 'none',
                     textDecoration: 'none', color: 'inherit',
                     background: rowBackground(p),
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-                    <div style={{ fontWeight: 600, fontSize: '13px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <div style={{
+                      fontWeight: 600, fontSize: 13.5, minWidth: 0,
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      color: T.ink, letterSpacing: '-0.005em',
+                    }}>
                       {p.name ?? '(unnamed)'}
                     </div>
-                    <ChevronRight size={14} color="var(--text-muted)" style={{ flexShrink: 0 }} />
+                    <ChevronRight size={14} color={T.ink3} style={{ flexShrink: 0 }} />
                   </div>
-                  <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink3, letterSpacing: '0.02em' }}>
                     {p.totalRooms ?? '—'} rooms · {p.staffCount} staff
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginTop: '2px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>
                     <SubscriptionBadge status={p.subscriptionStatus} />
                     <SyncBadge p={p} />
                   </div>
                 </Link>
               ))}
-            </div>
+            </Card>
           )}
 
-          {/* Phase M2: pagination controls. Only render when there's more than one page. */}
           {pagination && pagination.totalPages > 1 && (
             <div style={{
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              gap: '8px', marginTop: '12px',
-              padding: '10px 12px', background: 'var(--surface-primary)',
-              border: '1px solid var(--border)', borderRadius: '8px',
+              gap: 8, marginTop: 12,
+              padding: '10px 14px', background: T.paper,
+              border: `1px solid ${T.rule}`, borderRadius: 999,
             }}>
-              <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                Page {page} of {pagination.totalPages} · {pagination.totalMatching} hotels
+              <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2, letterSpacing: '0.04em' }}>
+                Page {page} / {pagination.totalPages} · {pagination.totalMatching} hotels
               </span>
-              <div style={{ display: 'flex', gap: '6px' }}>
-                <button
-                  onClick={() => setPage((p) => Math.max(1, p - 1))}
-                  disabled={page <= 1}
-                  className="btn btn-secondary"
-                  style={{ padding: '4px 10px', fontSize: '12px', opacity: page <= 1 ? 0.4 : 1 }}
-                >Prev</button>
-                <button
-                  onClick={() => setPage((p) => p + 1)}
-                  disabled={!pagination.hasMore}
-                  className="btn btn-secondary"
-                  style={{ padding: '4px 10px', fontSize: '12px', opacity: pagination.hasMore ? 1 : 0.4 }}
-                >Next</button>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <Btn variant="ghost" size="sm" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>
+                  Prev
+                </Btn>
+                <Btn variant="ghost" size="sm" onClick={() => setPage((p) => p + 1)} disabled={!pagination.hasMore}>
+                  Next
+                </Btn>
               </div>
             </div>
           )}
@@ -310,11 +326,11 @@ export function LiveHotelsTab() {
 
         {/* Column 2: Recent errors */}
         <section style={columnStyle}>
-          <h2 style={sectionTitle}>Recent errors</h2>
+          <SectionTitle caps="Recent errors" title="Recent" italic="errors" />
           {errors.length === 0 ? (
             <EmptyState text="No errors ✓" />
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
               {errors.map((g, idx) => <ErrorGroupRow key={idx} group={g} />)}
             </div>
           )}
@@ -322,11 +338,11 @@ export function LiveHotelsTab() {
 
         {/* Column 3: SMS health */}
         <section style={columnStyle}>
-          <h2 style={sectionTitle}>SMS health</h2>
+          <SectionTitle caps="SMS" title="SMS" italic="health" />
           {sms.length === 0 ? (
             <EmptyState text="No SMS activity." />
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
               {sms.map((h) => <SmsHealthRowCard key={h.propertyId} row={h} />)}
             </div>
           )}
@@ -334,11 +350,11 @@ export function LiveHotelsTab() {
 
         {/* Column 4: Feedback inbox */}
         <section style={columnStyle}>
-          <h2 style={sectionTitle}>Feedback inbox</h2>
+          <SectionTitle caps="Inbox" title="Feedback" italic="inbox" />
           {feedback.length === 0 ? (
             <EmptyState text="No feedback yet." />
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
               {feedback.map((f) => <FeedbackRowCard key={f.id} row={f} onChange={load} />)}
             </div>
           )}
@@ -350,23 +366,35 @@ export function LiveHotelsTab() {
 }
 
 const columnStyle: React.CSSProperties = {
-  minWidth: 0, // critical for grid children with long text — otherwise their content overflows the column
+  minWidth: 0,
 };
 
 // ── Sub-components ─────────────────────────────────────────────────────
 
-function Chip({ label, value, color }: { label: string; value: number; color: string }) {
+function SectionTitle({ caps, title, italic }: { caps: string; title: string; italic?: string }) {
   return (
-    <div style={{
-      padding: '6px 12px',
-      borderRadius: '8px',
-      border: `1px solid ${color}`,
-      fontSize: '12px',
-      color,
-      fontFamily: 'var(--font-mono)',
-    }}>
-      <span style={{ opacity: 0.7 }}>{label}: </span>
-      <span style={{ fontWeight: 700 }}>{value}</span>
+    <div>
+      <Caps>{caps}</Caps>
+      <h2 style={{
+        fontFamily: FONT_SERIF, fontSize: 24, fontWeight: 400,
+        letterSpacing: '-0.02em', color: T.ink, margin: '2px 0 0',
+        lineHeight: 1.15,
+      }}>
+        {title}
+        {italic && <> <span style={{ fontStyle: 'italic' }}>{italic}</span></>}
+      </h2>
+    </div>
+  );
+}
+
+function SummaryCell({ label, value, tone }: { label: string; value: number; tone: 'sage' | 'warm' | 'muted' }) {
+  const c = tone === 'sage' ? T.sageDeep : tone === 'warm' ? T.warm : T.ink3;
+  return (
+    <div>
+      <Caps>{label}</Caps>
+      <div style={{ marginTop: 2 }}>
+        <SerifNum size={36} c={c}>{value}</SerifNum>
+      </div>
     </div>
   );
 }
@@ -375,52 +403,49 @@ function ErrorGroupRow({ group }: { group: ErrorGroup }) {
   const [expanded, setExpanded] = useState(false);
   const truncated = group.message.length > 120 ? group.message.slice(0, 120) + '…' : group.message;
   return (
-    <div
-      style={{
-        padding: '12px 14px',
-        background: 'var(--surface-primary)',
-        border: '1px solid var(--border)',
-        borderRadius: '10px',
-        cursor: group.sampleStack ? 'pointer' : 'default',
-      }}
-      onClick={() => group.sampleStack && setExpanded(!expanded)}
+    <Card
+      padding="12px 14px"
+      style={{ cursor: group.sampleStack ? 'pointer' : 'default' }}
     >
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
-        <AlertCircle size={14} color="var(--red)" style={{ marginTop: '2px', flexShrink: 0 }} />
+      <div
+        style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}
+        onClick={() => group.sampleStack && setExpanded(!expanded)}
+      >
+        <AlertCircle size={14} color={T.warm} style={{ marginTop: 2, flexShrink: 0 }} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: '13px', fontWeight: 500, fontFamily: 'var(--font-mono)' }}>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 12, fontWeight: 500, color: T.ink, lineHeight: 1.45 }}>
             {expanded ? group.message : truncated}
           </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px', display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
-            <span>{group.source ?? 'unknown source'}</span>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: T.ink3, marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 10, letterSpacing: '0.04em' }}>
+            <span>{group.source ?? 'unknown'}</span>
             <span>{group.count}× · last {formatAge(group.lastSeen)}</span>
             {group.affectedPropertyIds.length > 0 && (
-              <span>{group.affectedPropertyIds.length} {group.affectedPropertyIds.length === 1 ? 'hotel' : 'hotels'} affected</span>
+              <span>{group.affectedPropertyIds.length} {group.affectedPropertyIds.length === 1 ? 'hotel' : 'hotels'}</span>
             )}
           </div>
         </div>
-        <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--red)', fontFamily: 'var(--font-mono)' }}>
+        <span style={{ fontFamily: FONT_MONO, fontSize: 11, fontWeight: 700, color: T.warm }}>
           ×{group.count}
         </span>
         {group.sampleStack && (
-          <ChevronDown size={14} color="var(--text-muted)" style={{ transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s', flexShrink: 0 }} />
+          <ChevronDown size={14} color={T.ink3} style={{ transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s', flexShrink: 0 }} />
         )}
       </div>
       {expanded && group.sampleStack && (
         <pre style={{
-          marginTop: '10px',
-          padding: '10px',
-          background: 'var(--surface-secondary)',
-          borderRadius: '6px',
-          fontSize: '11px',
-          fontFamily: 'var(--font-mono)',
-          color: 'var(--text-muted)',
+          marginTop: 10,
+          padding: 12,
+          background: T.ruleSoft,
+          borderRadius: 10,
+          fontSize: 11,
+          fontFamily: FONT_MONO,
+          color: T.ink2,
           overflowX: 'auto',
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-all',
         }}>{group.sampleStack}</pre>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -428,36 +453,36 @@ function SmsHealthRowCard({ row }: { row: SmsHealthRow }) {
   const hasFailures = row.failed > 0;
   return (
     <Link href={`/admin/properties/${row.propertyId}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-      <div style={{
-        padding: '12px 14px',
-        background: 'var(--surface-primary)',
-        border: `1px solid ${hasFailures ? 'rgba(239,68,68,0.25)' : 'var(--border)'}`,
-        borderRadius: '10px',
-        display: 'flex', alignItems: 'center', gap: '12px',
-      }}>
-        <MessageSquare size={14} color={hasFailures ? 'var(--red)' : 'var(--text-muted)'} />
+      <Card
+        padding="12px 14px"
+        style={{
+          border: `1px solid ${hasFailures ? 'rgba(184,92,61,0.25)' : T.rule}`,
+          display: 'flex', alignItems: 'center', gap: 12,
+        }}
+      >
+        <MessageSquare size={14} color={hasFailures ? T.warm : T.ink3} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: '13px', fontWeight: 600 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 600, color: T.ink, letterSpacing: '-0.005em' }}>
             {row.propertyName ?? '(deleted property)'}
           </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px', display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
-            <span style={{ color: 'var(--green)' }}>{row.sent} sent</span>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: T.ink3, marginTop: 3, display: 'flex', flexWrap: 'wrap', gap: 10, letterSpacing: '0.04em' }}>
+            <span style={{ color: T.sageDeep }}>{row.sent} sent</span>
             {row.inFlight > 0 && <span>{row.inFlight} in flight</span>}
-            {row.failed > 0 && <span style={{ color: 'var(--red)' }}>{row.failed} failed</span>}
+            {row.failed > 0 && <span style={{ color: T.warm }}>{row.failed} failed</span>}
             {row.deliveryPct !== null && (
-              <span style={{ color: row.deliveryPct >= 95 ? 'var(--green)' : row.deliveryPct >= 80 ? 'var(--amber)' : 'var(--red)' }}>
+              <span style={{ color: row.deliveryPct >= 95 ? T.sageDeep : row.deliveryPct >= 80 ? T.caramelDeep : T.warm }}>
                 {row.deliveryPct}% delivery
               </span>
             )}
           </div>
           {row.topErrors.length > 0 && (
-            <div style={{ fontSize: '11px', color: 'var(--red)', marginTop: '4px', fontFamily: 'var(--font-mono)' }}>
-              {row.topErrors[0].message}{row.topErrors.length > 1 ? ` (+${row.topErrors.length - 1} more)` : ''}
+            <div style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: T.warm, marginTop: 4 }}>
+              {row.topErrors[0].message}{row.topErrors.length > 1 ? ` (+${row.topErrors.length - 1})` : ''}
             </div>
           )}
         </div>
-        <ChevronRight size={14} color="var(--text-muted)" />
-      </div>
+        <ChevronRight size={14} color={T.ink3} />
+      </Card>
     </Link>
   );
 }
@@ -482,120 +507,111 @@ function FeedbackRowCard({ row, onChange }: { row: FeedbackItem; onChange: () =>
   const categoryEmoji: Record<string, string> = {
     bug: '🐛', feature_request: '✨', general: '💬', complaint: '😠', love: '❤️',
   };
-  const statusColor: Record<string, string> = {
-    new: 'var(--amber)', in_progress: 'var(--text-secondary)', resolved: 'var(--green)', wontfix: 'var(--text-muted)',
+  const statusTone: Record<string, PillTone> = {
+    new: 'caramel', in_progress: 'neutral', resolved: 'sage', wontfix: 'neutral',
   };
 
   return (
-    <div style={{
-      padding: '12px 14px',
-      background: 'var(--surface-primary)',
-      border: `1px solid ${row.status === 'new' ? 'rgba(245,158,11,0.25)' : 'var(--border)'}`,
-      borderRadius: '10px',
-    }}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', marginBottom: '6px' }}>
-        <span style={{ fontSize: '16px' }}>{categoryEmoji[row.category] ?? '💬'}</span>
+    <Card
+      padding="14px 16px"
+      style={{
+        border: `1px solid ${row.status === 'new' ? 'rgba(140,106,51,0.25)' : T.rule}`,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 6 }}>
+        <span style={{ fontSize: 16 }}>{categoryEmoji[row.category] ?? '💬'}</span>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: '13px', fontWeight: 600 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 600, color: T.ink, letterSpacing: '-0.005em' }}>
             {row.user_display_name ?? row.user_email ?? 'Anonymous'}
             {row.property_name && (
-              <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: '12px', marginLeft: '6px' }}>
+              <span style={{ fontWeight: 400, color: T.ink3, fontSize: 12, marginLeft: 6, fontStyle: 'italic' }}>
                 · {row.property_name}
               </span>
             )}
           </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: T.ink3, marginTop: 3, letterSpacing: '0.04em' }}>
             {formatAge(row.created_at)} · {row.category.replace('_', ' ')}
           </div>
         </div>
-        <span style={{
-          padding: '3px 8px',
-          fontSize: '11px',
-          fontWeight: 600,
-          color: statusColor[row.status] ?? 'var(--text-muted)',
-          border: `1px solid ${statusColor[row.status] ?? 'var(--text-muted)'}`,
-          borderRadius: '999px',
-          fontFamily: 'var(--font-mono)',
-        }}>{row.status.toUpperCase()}</span>
+        <Pill tone={statusTone[row.status] ?? 'neutral'}>
+          {row.status.toUpperCase()}
+        </Pill>
       </div>
       <div style={{
-        padding: '10px',
-        background: 'var(--surface-secondary)',
-        borderRadius: '8px',
-        fontSize: '13px',
-        color: 'var(--text-primary)',
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-word',
-        marginBottom: '8px',
+        padding: 12,
+        background: T.ruleSoft,
+        borderRadius: 12,
+        fontSize: 13, color: T.ink,
+        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+        marginBottom: row.status !== 'resolved' && row.status !== 'wontfix' ? 10 : 0,
+        lineHeight: 1.5,
       }}>{row.message}</div>
       {row.status !== 'resolved' && row.status !== 'wontfix' && (
-        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {row.status === 'new' && (
-            <button onClick={() => setStatus('in_progress')} disabled={updating} className="btn btn-secondary" style={{ fontSize: '11px' }}>
+            <Btn variant="ghost" size="sm" onClick={() => setStatus('in_progress')} disabled={updating}>
               Mark in progress
-            </button>
+            </Btn>
           )}
-          <button onClick={() => setStatus('resolved')} disabled={updating} className="btn btn-secondary" style={{ fontSize: '11px', color: 'var(--green)' }}>
+          <Btn variant="sage" size="sm" onClick={() => setStatus('resolved')} disabled={updating}>
             Resolve
-          </button>
-          <button onClick={() => setStatus('wontfix')} disabled={updating} className="btn btn-secondary" style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-            Won't fix
-          </button>
+          </Btn>
+          <Btn variant="ghost" size="sm" onClick={() => setStatus('wontfix')} disabled={updating}>
+            Won&apos;t fix
+          </Btn>
         </div>
       )}
-    </div>
+    </Card>
   );
 }
 
 function EmptyState({ text }: { text: string }) {
   return (
     <div style={{
-      marginTop: '8px',
-      padding: '20px',
-      background: 'var(--surface-secondary)',
-      border: '1px dashed var(--border)',
-      borderRadius: '10px',
+      marginTop: 8,
+      padding: '24px 20px',
+      background: T.ruleSoft,
+      border: `1px dashed ${T.rule}`,
+      borderRadius: 14,
       textAlign: 'center',
-      fontSize: '12px',
-      color: 'var(--text-muted)',
+      fontSize: 12.5,
+      color: T.ink2,
+      fontStyle: 'italic',
+      fontFamily: FONT_SERIF,
     }}>{text}</div>
   );
 }
 
 function rowBackground(p: { subscriptionStatus: string | null; isStale12h: boolean }): string {
-  if (p.subscriptionStatus === 'past_due') return 'rgba(239,68,68,0.04)';
-  if (p.isStale12h) return 'rgba(239,68,68,0.03)';
+  if (p.subscriptionStatus === 'past_due') return 'rgba(184,92,61,0.04)';
+  if (p.isStale12h) return 'rgba(184,92,61,0.03)';
   return 'transparent';
 }
 
 function SubscriptionBadge({ status }: { status: string | null }) {
   const s = status ?? 'unknown';
-  const color = s === 'active' ? 'var(--green)'
-              : s === 'past_due' ? 'var(--red)'
-              : 'var(--text-muted)';
-  return (
-    <div style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color, fontWeight: 600 }}>
-      {s.toUpperCase()}
-    </div>
-  );
+  const tone: PillTone = s === 'active' ? 'sage'
+              : s === 'past_due' ? 'warm'
+              : 'neutral';
+  return <Pill tone={tone}>{s.toUpperCase()}</Pill>;
 }
 
 function SyncBadge({ p }: { p: { pmsConnected: boolean; pmsType: string | null; syncFreshnessMin: number | null; isStale12h: boolean } }) {
   if (!p.pmsConnected) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-muted)' }}>
-        <WifiOff size={14} /> not connected
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: FONT_MONO, fontSize: 11, color: T.ink2, letterSpacing: '0.04em' }}>
+        <WifiOff size={13} /> not connected
       </div>
     );
   }
-  const color = p.isStale12h ? 'var(--red)'
-              : p.syncFreshnessMin !== null && p.syncFreshnessMin > 60 ? 'var(--amber)'
-              : 'var(--green)';
+  const c = p.isStale12h ? T.warm
+          : p.syncFreshnessMin !== null && p.syncFreshnessMin > 60 ? T.caramelDeep
+          : T.sageDeep;
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color }}>
-      <Wifi size={14} /> {p.pmsType}
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: FONT_MONO, fontSize: 11, color: c, letterSpacing: '0.04em' }}>
+      <Wifi size={13} /> {p.pmsType}
       {p.syncFreshnessMin !== null && (
-        <span style={{ fontFamily: 'var(--font-mono)' }}>· {formatMin(p.syncFreshnessMin)} ago</span>
+        <span>· {formatMin(p.syncFreshnessMin)}</span>
       )}
     </div>
   );
@@ -618,10 +634,3 @@ function formatAge(iso: string): string {
   if (hr < 24) return `${hr}h ago`;
   return `${Math.floor(hr / 24)}d ago`;
 }
-
-const sectionTitle: React.CSSProperties = {
-  fontSize: '15px',
-  fontWeight: 600,
-  letterSpacing: '-0.01em',
-  marginBottom: '4px',
-};

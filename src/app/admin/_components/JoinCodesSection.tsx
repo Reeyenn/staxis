@@ -25,6 +25,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { Plus, Copy, Check, X, KeyRound, AlertCircle } from 'lucide-react';
+import { T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Btn } from './_snow';
 
 interface JoinCodeRow {
   id: string;
@@ -126,39 +127,40 @@ export function JoinCodesSection({ propertyId }: Props) {
 
   return (
     <section style={{
-      background: 'var(--surface-primary)',
-      border: '1px solid var(--border)',
-      borderRadius: '12px',
-      padding: '16px',
+      background: T.paper,
+      border: `1px solid ${T.rule}`,
+      borderRadius: 18,
+      padding: 20,
+      fontFamily: FONT_SANS,
     }}>
       <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        marginBottom: '12px',
+        display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between',
+        marginBottom: 14, gap: 12,
       }}>
-        <h3 style={{
-          display: 'flex', alignItems: 'center', gap: '8px',
-          fontSize: '14px', fontWeight: 700,
-        }}>
-          <KeyRound size={14} color="var(--amber)" />
-          Join codes
-        </h3>
-        <button
-          onClick={mintStaffCode}
-          className="btn btn-secondary"
-          style={{ padding: '4px 10px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}
-          disabled={minting}
-        >
+        <div>
+          <Caps>Codes</Caps>
+          <h3 style={{
+            fontFamily: FONT_SERIF, fontSize: 22, fontWeight: 400,
+            letterSpacing: '-0.02em', color: T.ink, margin: '2px 0 0',
+            lineHeight: 1.15, display: 'flex', alignItems: 'center', gap: 8,
+          }}>
+            <KeyRound size={16} color={T.caramelDeep} />
+            Join <span style={{ fontStyle: 'italic' }}>codes</span>
+          </h3>
+        </div>
+        <Btn variant="ghost" size="sm" onClick={mintStaffCode} disabled={minting}>
           <Plus size={12} />
           {minting ? 'Minting…' : 'Mint staff code'}
-        </button>
+        </Btn>
       </div>
 
       {error && (
         <div style={{
-          display: 'flex', alignItems: 'center', gap: '8px',
-          padding: '8px 10px', marginBottom: '10px',
-          background: 'var(--red-dim, rgba(239,68,68,0.1))', borderRadius: '6px',
-          color: 'var(--red)', fontSize: '12px',
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '10px 12px', marginBottom: 12,
+          background: T.warmDim, borderRadius: 10,
+          border: `1px solid rgba(184,92,61,0.25)`,
+          color: T.warm, fontSize: 12,
         }}>
           <AlertCircle size={12} />
           {error}
@@ -166,15 +168,23 @@ export function JoinCodesSection({ propertyId }: Props) {
       )}
 
       {loading && codes === null ? (
-        <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '12px' }}>
+        <div style={{
+          padding: '24px', textAlign: 'center', color: T.ink2, fontSize: 12.5,
+          fontStyle: 'italic', fontFamily: FONT_SERIF,
+        }}>
           Loading codes…
         </div>
       ) : activeCodes.length === 0 ? (
-        <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '12px' }}>
+        <div style={{
+          padding: '24px 20px', textAlign: 'center',
+          background: T.ruleSoft, border: `1px dashed ${T.rule}`, borderRadius: 14,
+          color: T.ink2, fontSize: 12.5,
+          fontStyle: 'italic', fontFamily: FONT_SERIF,
+        }}>
           No active codes. Mint one to invite staff.
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {activeCodes.map((c) => {
             const expired = new Date(c.expires_at).getTime() <= Date.now();
             const usedUp = c.used_count >= c.max_uses;
@@ -182,41 +192,39 @@ export function JoinCodesSection({ propertyId }: Props) {
               <div
                 key={c.id}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: '10px',
-                  padding: '10px 12px',
-                  background: 'var(--surface-secondary, var(--bg))',
-                  border: '1px solid var(--border)',
-                  borderRadius: '8px',
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '12px 14px',
+                  background: T.ruleSoft,
+                  border: `1px solid ${T.rule}`,
+                  borderRadius: 12,
                   opacity: expired || usedUp ? 0.55 : 1,
                 }}
               >
                 <code style={{
-                  fontFamily: 'var(--font-mono)', fontSize: '13px',
-                  letterSpacing: '0.05em', fontWeight: 600,
+                  fontFamily: FONT_MONO, fontSize: 13.5,
+                  letterSpacing: '0.06em', fontWeight: 600, color: T.ink,
                 }}>
                   {c.code}
                 </code>
-                <div style={{ flex: 1, minWidth: 0, fontSize: '11px', color: 'var(--text-muted)' }}>
+                <div style={{ flex: 1, minWidth: 0, fontFamily: FONT_MONO, fontSize: 10.5, color: T.ink3, letterSpacing: '0.04em' }}>
                   {c.role ? `${c.role} · ` : 'staff-pickable · '}
                   {c.used_count}/{c.max_uses} used ·{' '}
                   {expired ? 'EXPIRED' : usedUp ? 'USED UP' : `expires ${formatExpiry(c.expires_at)}`}
                 </div>
                 <button
                   onClick={() => copy(c.code)}
-                  className="btn btn-ghost"
-                  style={{ padding: '4px' }}
+                  style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 6, display: 'flex' }}
                   title="Copy code"
                 >
-                  {copied === c.code ? <Check size={12} color="var(--green)" /> : <Copy size={12} />}
+                  {copied === c.code ? <Check size={12} color={T.sageDeep} /> : <Copy size={12} color={T.ink3} />}
                 </button>
                 <button
                   onClick={() => revoke(c.id)}
-                  className="btn btn-ghost"
-                  style={{ padding: '4px' }}
+                  style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 6, display: 'flex' }}
                   title="Revoke"
                   disabled={revoking === c.id}
                 >
-                  <X size={12} color="var(--red)" />
+                  <X size={12} color={T.warm} />
                 </button>
               </div>
             );
@@ -224,10 +232,10 @@ export function JoinCodesSection({ propertyId }: Props) {
         </div>
       )}
 
-      <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '10px', lineHeight: 1.4 }}>
+      <p style={{ fontSize: 11.5, color: T.ink3, marginTop: 12, lineHeight: 1.5, fontStyle: 'italic', fontFamily: FONT_SERIF }}>
         Staff codes accept up to 100 signups in 7 days. Recipients pick their own role
         (front_desk / housekeeping / maintenance) at signup. To mint an owner-only code,
-        use the "+ New" hotel flow which always pairs a hotel with one owner code.
+        use the &ldquo;+ New&rdquo; hotel flow which always pairs a hotel with one owner code.
       </p>
     </section>
   );

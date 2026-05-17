@@ -22,6 +22,7 @@ import React, { useMemo, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { X, Building2, Check, Copy, AlertCircle } from 'lucide-react';
 import { parseRoomList } from '@/lib/api-validate';
+import { T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Btn } from './_snow';
 
 interface Props {
   open: boolean;
@@ -207,43 +208,60 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
     <div
       onClick={handleClose}
       style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+        position: 'fixed', inset: 0, background: 'rgba(31,35,28,0.55)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        zIndex: 1000, padding: '20px',
+        zIndex: 1000, padding: 20,
+        fontFamily: FONT_SANS,
       }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
-          background: 'var(--surface-primary)', borderRadius: '12px',
-          width: '100%', maxWidth: '520px', maxHeight: '90vh', overflowY: 'auto',
-          border: '1px solid var(--border)',
+          background: T.paper, borderRadius: 18,
+          width: '100%', maxWidth: 560, maxHeight: '90vh', overflowY: 'auto',
+          border: `1px solid ${T.rule}`,
+          boxShadow: '0 28px 64px -20px rgba(31,35,28,0.30)',
         }}
       >
         <div style={{
-          padding: '16px 20px', borderBottom: '1px solid var(--border)',
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px',
+          padding: '18px 22px', borderBottom: `1px solid ${T.rule}`,
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
         }}>
-          <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '15px', fontWeight: 700 }}>
-            <Building2 size={16} color="var(--amber)" />
-            {result ? 'Hotel created' : 'New hotel'}
-          </h2>
-          <button onClick={handleClose} className="btn btn-ghost" style={{ padding: '4px' }}>
-            <X size={16} />
+          <div>
+            <Caps>{result ? 'Hotel created' : 'New hotel'}</Caps>
+            <h2 style={{
+              fontFamily: FONT_SERIF, fontSize: 24, fontWeight: 400,
+              letterSpacing: '-0.02em', color: T.ink, margin: '2px 0 0',
+              lineHeight: 1.15, display: 'flex', alignItems: 'center', gap: 8,
+            }}>
+              <Building2 size={18} color={T.caramelDeep} />
+              {result ? 'Send the' : 'Add a'} <span style={{ fontStyle: 'italic' }}>{result ? 'signup link' : 'new hotel'}</span>
+            </h2>
+          </div>
+          <button
+            onClick={handleClose}
+            style={{
+              background: 'transparent', border: 'none', cursor: 'pointer',
+              padding: 6, color: T.ink3, display: 'flex',
+            }}
+            aria-label="Close"
+          >
+            <X size={18} />
           </button>
         </div>
 
-        <div style={{ padding: '20px' }}>
+        <div style={{ padding: 22 }}>
           {result ? (
             <SuccessView result={result} onCopy={copy} copied={copied} onClose={handleClose} />
           ) : (
             <>
               {error && (
                 <div style={{
-                  display: 'flex', alignItems: 'center', gap: '8px',
-                  padding: '10px 12px', marginBottom: '14px',
-                  background: 'var(--red-dim, rgba(239,68,68,0.1))', borderRadius: '8px',
-                  color: 'var(--red)', fontSize: '13px',
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '10px 14px', marginBottom: 14,
+                  background: T.warmDim, borderRadius: 12,
+                  border: `1px solid rgba(184,92,61,0.25)`,
+                  color: T.warm, fontSize: 13,
                 }}>
                   <AlertCircle size={14} />
                   {error}
@@ -280,14 +298,16 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
                 />
                 {roomNumbersPreview && (
                   <div style={{
-                    marginTop: '6px',
-                    fontSize: '11px',
+                    marginTop: 6,
+                    fontFamily: FONT_MONO,
+                    fontSize: 11,
+                    letterSpacing: '0.04em',
                     color:
                       roomNumbersPreview.kind === 'error'
-                        ? 'var(--red, #ef4444)'
+                        ? T.warm
                         : (typeof totalRooms === 'number' && roomNumbersPreview.list.length === totalRooms
-                            ? 'var(--green, #22c55e)'
-                            : 'var(--amber, #f59e0b)'),
+                            ? T.sageDeep
+                            : T.caramelDeep),
                   }}>
                     {roomNumbersPreview.kind === 'error'
                       ? roomNumbersPreview.message
@@ -296,7 +316,7 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
                         : `Parsed ${roomNumbersPreview.list.length} rooms${typeof totalRooms === 'number' ? ` — Total rooms says ${totalRooms} (must match)` : ''}`}
                   </div>
                 )}
-                <p style={{ marginTop: '4px', fontSize: '11px', color: 'var(--text-muted)' }}>
+                <p style={{ marginTop: 4, fontSize: 11.5, color: T.ink3, fontStyle: 'italic', fontFamily: FONT_SERIF, lineHeight: 1.5 }}>
                   Master list of every room number at this property. Without it, vacant-clean rooms
                   won&apos;t render on the Rooms tab until the PMS syncs. Most US hotels skip 13s:
                   101&ndash;112, 114&ndash;122 etc.
@@ -319,24 +339,21 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
                     </select>
                   </>
                 ) : (
-                  <div style={{ display: 'flex', gap: '8px' }}>
+                  <div style={{ display: 'flex', gap: 8 }}>
                     <input
                       type="text" value={customTz} onChange={(e) => setCustomTz(e.target.value)}
                       className="input" placeholder="e.g. Europe/Madrid"
                       style={{ flex: 1 }}
                     />
-                    <button
-                      type="button" onClick={() => setTzMode('preset')}
-                      className="btn btn-secondary" style={{ whiteSpace: 'nowrap' }}
-                    >
+                    <Btn variant="ghost" size="md" onClick={() => setTzMode('preset')}>
                       Pick from list
-                    </button>
+                    </Btn>
                   </div>
                 )}
               </Field>
 
-              <div style={{ height: '1px', background: 'var(--border)', margin: '14px 0' }} />
-              <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '12px' }}>Optional</p>
+              <div style={{ height: 1, background: T.rule, margin: '18px 0' }} />
+              <Caps style={{ marginBottom: 12, display: 'block' }}>Optional</Caps>
 
               <Field label="PMS">
                 <select
@@ -369,10 +386,10 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
                 </select>
               </Field>
 
-              <div style={{ height: '1px', background: 'var(--border)', margin: '14px 0' }} />
-              <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '12px' }}>
+              <div style={{ height: 1, background: T.rule, margin: '18px 0' }} />
+              <Caps style={{ marginBottom: 12, display: 'block' }}>
                 Invite the {inviteRole === 'owner' ? 'owner' : 'general manager'}
-              </p>
+              </Caps>
 
               <Field label="Their role at the hotel *">
                 <select
@@ -386,23 +403,23 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
               </Field>
 
               <Field label="How to send the invite *">
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <button
-                    type="button"
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <Btn
+                    variant={deliveryMode === 'copy' ? 'primary' : 'ghost'}
+                    size="md"
                     onClick={() => setDeliveryMode('copy')}
-                    className={`btn ${deliveryMode === 'copy' ? 'btn-primary' : 'btn-secondary'}`}
                     style={{ flex: 1, justifyContent: 'center' }}
                   >
                     Copy link
-                  </button>
-                  <button
-                    type="button"
+                  </Btn>
+                  <Btn
+                    variant={deliveryMode === 'email' ? 'primary' : 'ghost'}
+                    size="md"
                     onClick={() => setDeliveryMode('email')}
-                    className={`btn ${deliveryMode === 'email' ? 'btn-primary' : 'btn-secondary'}`}
                     style={{ flex: 1, justifyContent: 'center' }}
                   >
                     Send by email
-                  </button>
+                  </Btn>
                 </div>
               </Field>
 
@@ -415,28 +432,30 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
               </Field>
 
               <label style={{
-                display: 'flex', alignItems: 'center', gap: '8px',
-                fontSize: '13px', cursor: 'pointer', marginTop: '8px',
+                display: 'flex', alignItems: 'center', gap: 8,
+                fontSize: 13, cursor: 'pointer', marginTop: 12, color: T.ink2,
               }}>
                 <input type="checkbox" checked={isTest} onChange={(e) => setIsTest(e.target.checked)} />
                 Test hotel (excluded from fleet aggregates)
               </label>
 
-              <div style={{ display: 'flex', gap: '8px', marginTop: '20px' }}>
-                <button
-                  onClick={handleClose} className="btn btn-secondary"
-                  style={{ flex: 1, justifyContent: 'center' }}
+              <div style={{ display: 'flex', gap: 8, marginTop: 22 }}>
+                <Btn
+                  variant="ghost" size="md"
+                  onClick={handleClose}
                   disabled={submitting}
+                  style={{ flex: 1, justifyContent: 'center' }}
                 >
                   Cancel
-                </button>
-                <button
-                  onClick={submit} className="btn btn-primary"
-                  style={{ flex: 1, justifyContent: 'center' }}
+                </Btn>
+                <Btn
+                  variant="primary" size="md"
+                  onClick={submit}
                   disabled={submitting || !name.trim() || totalRooms === '' || totalRooms < 1}
+                  style={{ flex: 1, justifyContent: 'center' }}
                 >
                   {submitting ? 'Creating…' : 'Create hotel'}
-                </button>
+                </Btn>
               </div>
             </>
           )}
@@ -457,10 +476,11 @@ function SuccessView({
   return (
     <div>
       <div style={{
-        display: 'flex', alignItems: 'center', gap: '10px',
-        padding: '12px', marginBottom: '16px',
-        background: 'var(--green-dim, rgba(34,197,94,0.1))', borderRadius: '8px',
-        color: 'var(--green)', fontSize: '13px',
+        display: 'flex', alignItems: 'center', gap: 10,
+        padding: '12px 14px', marginBottom: 18,
+        background: T.sageDim, borderRadius: 12,
+        border: `1px solid rgba(104,131,114,0.30)`,
+        color: T.sageDeep, fontSize: 13, lineHeight: 1.5,
       }}>
         <Check size={16} />
         {result.emailSent
@@ -470,9 +490,10 @@ function SuccessView({
 
       {result.emailSent === false && result.emailError && (
         <div style={{
-          padding: '10px 12px', marginBottom: '12px',
-          background: 'var(--amber-dim, rgba(245,158,11,0.1))', borderRadius: '8px',
-          color: 'var(--amber)', fontSize: '12px',
+          padding: '10px 14px', marginBottom: 12,
+          background: 'rgba(215,176,126,0.14)', borderRadius: 12,
+          border: `1px solid rgba(140,106,51,0.25)`,
+          color: T.caramelDeep, fontSize: 12,
         }}>
           ⚠ Email send failed ({result.emailError}). The link below still works — copy and send it manually.
         </div>
@@ -480,9 +501,10 @@ function SuccessView({
 
       {result.warning && (
         <div style={{
-          padding: '10px 12px', marginBottom: '12px',
-          background: 'var(--amber-dim, rgba(245,158,11,0.1))', borderRadius: '8px',
-          color: 'var(--amber)', fontSize: '12px',
+          padding: '10px 14px', marginBottom: 12,
+          background: 'rgba(215,176,126,0.14)', borderRadius: 12,
+          border: `1px solid rgba(140,106,51,0.25)`,
+          color: T.caramelDeep, fontSize: 12,
         }}>
           ⚠ {result.warning}
         </div>
@@ -490,51 +512,46 @@ function SuccessView({
 
       {result.signupUrl && (
         <Field label="Signup URL (send to owner)">
-          <div style={{ display: 'flex', gap: '6px' }}>
+          <div style={{ display: 'flex', gap: 6 }}>
             <input
               type="text" value={result.signupUrl} readOnly
-              className="input" style={{ flex: 1, fontFamily: 'monospace', fontSize: '12px' }}
+              className="input" style={{ flex: 1, fontFamily: FONT_MONO, fontSize: 12 }}
               onFocus={(e) => e.target.select()}
             />
-            <button
-              type="button" onClick={() => onCopy(result.signupUrl!, 'url')}
-              className="btn btn-secondary" style={{ whiteSpace: 'nowrap' }}
-            >
+            <Btn variant="ghost" size="md" onClick={() => onCopy(result.signupUrl!, 'url')}>
               {copied === 'url' ? <Check size={14} /> : <Copy size={14} />}
-            </button>
+            </Btn>
           </div>
         </Field>
       )}
 
       {result.joinCode && (
-        <Field label="Join code (alternative — owner can paste at /signup)">
-          <div style={{ display: 'flex', gap: '6px' }}>
+        <Field label="Join code (owner can paste at /signup)">
+          <div style={{ display: 'flex', gap: 6 }}>
             <input
               type="text" value={result.joinCode} readOnly
               className="input"
-              style={{ flex: 1, fontFamily: 'monospace', fontSize: '14px', letterSpacing: '0.05em' }}
+              style={{ flex: 1, fontFamily: FONT_MONO, fontSize: 14, letterSpacing: '0.06em' }}
               onFocus={(e) => e.target.select()}
             />
-            <button
-              type="button" onClick={() => onCopy(result.joinCode!, 'code')}
-              className="btn btn-secondary" style={{ whiteSpace: 'nowrap' }}
-            >
+            <Btn variant="ghost" size="md" onClick={() => onCopy(result.joinCode!, 'code')}>
               {copied === 'code' ? <Check size={14} /> : <Copy size={14} />}
-            </button>
+            </Btn>
           </div>
         </Field>
       )}
 
-      <div style={{ display: 'flex', gap: '8px', marginTop: '16px' }}>
-        <button
+      <div style={{ display: 'flex', gap: 8, marginTop: 18 }}>
+        <Btn
+          variant="ghost" size="md"
           onClick={() => window.open(`/admin/properties/${result.propertyId}`, '_blank')}
-          className="btn btn-secondary" style={{ flex: 1, justifyContent: 'center' }}
+          style={{ flex: 1, justifyContent: 'center' }}
         >
           Open hotel
-        </button>
-        <button onClick={onClose} className="btn btn-primary" style={{ flex: 1, justifyContent: 'center' }}>
+        </Btn>
+        <Btn variant="primary" size="md" onClick={onClose} style={{ flex: 1, justifyContent: 'center' }}>
           Done
-        </button>
+        </Btn>
       </div>
     </div>
   );
@@ -542,12 +559,11 @@ function SuccessView({
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div style={{ marginBottom: '14px' }}>
+    <div style={{ marginBottom: 14 }}>
       <label style={{
-        display: 'block', fontSize: '12px', fontWeight: 600,
-        color: 'var(--text-secondary)', marginBottom: '6px',
+        display: 'block', marginBottom: 6,
       }}>
-        {label}
+        <Caps>{label}</Caps>
       </label>
       {children}
     </div>

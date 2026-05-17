@@ -1,23 +1,22 @@
 'use client';
 
 /**
- * Alerts bell — sticky-header right-side icon that surfaces
- * "stuff that needs Reeyen's attention right now" without him having
- * to walk through every tab.
+ * Alerts bell — sticky-header right-side icon (Snow design).
  *
- * Fetches /api/admin/alerts on mount + every 30s. Shows a red badge
- * if there's a red alert, amber if only amber alerts. Click opens
- * a dropdown listing each alert with severity, title, detail, and a
+ * Surfaces "stuff that needs Reeyen's attention right now" without him
+ * having to walk through every tab.
+ *
+ * Fetches /api/admin/alerts on mount + every 30s. Shows a warm badge
+ * if there's a red alert, caramel if only amber alerts. Click opens a
+ * dropdown listing each alert with severity, title, detail, and a
  * jump-to link when one is available.
- *
- * Wired into StickyHeader.tsx; replaced the inert <Bell> placeholder
- * that landed in Phase 1.
  */
 
 import React, { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { Bell, X, ChevronRight } from 'lucide-react';
+import { T, FONT_MONO, FONT_SANS, Caps } from './_snow';
 
 type Severity = 'red' | 'amber';
 
@@ -66,8 +65,8 @@ export function AlertsBell() {
   }, []);
 
   const badgeColor = (data?.counts.red ?? 0) > 0
-    ? 'var(--red)'
-    : (data?.counts.amber ?? 0) > 0 ? 'var(--amber)' : null;
+    ? T.warm
+    : (data?.counts.amber ?? 0) > 0 ? T.caramelDeep : null;
 
   return (
     <div style={{ position: 'relative' }}>
@@ -76,33 +75,34 @@ export function AlertsBell() {
         title={data?.counts.total ? `${data.counts.total} alert${data.counts.total === 1 ? '' : 's'}` : 'No alerts'}
         onClick={() => setOpen((v) => !v)}
         style={{
-          padding: '6px',
-          borderRadius: '8px',
-          border: 'none',
-          background: open ? 'var(--surface-secondary)' : 'transparent',
+          width: 38, height: 38,
+          borderRadius: 999,
+          border: `1px solid ${T.rule}`,
+          background: open ? T.ruleSoft : 'transparent',
           cursor: 'pointer',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           position: 'relative',
         }}
       >
-        <Bell size={18} color={badgeColor ?? 'var(--text-muted)'} />
+        <Bell size={16} color={badgeColor ?? T.ink2} />
         {(data?.counts.total ?? 0) > 0 && (
           <span style={{
             position: 'absolute',
-            top: '2px',
-            right: '2px',
-            minWidth: '16px',
-            height: '16px',
-            padding: '0 4px',
-            borderRadius: '8px',
-            background: badgeColor ?? 'var(--text-muted)',
-            color: 'white',
-            fontSize: '10px',
-            fontWeight: 700,
+            top: '-2px',
+            right: '-2px',
+            minWidth: '18px',
+            height: '18px',
+            padding: '0 5px',
+            borderRadius: 999,
+            background: badgeColor ?? T.ink2,
+            color: '#fff',
+            fontSize: 10,
+            fontWeight: 600,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            fontFamily: 'var(--font-mono)',
+            fontFamily: FONT_MONO,
+            border: '2px solid #fff',
           }}>{data!.counts.total}</span>
         )}
       </button>
@@ -116,35 +116,36 @@ export function AlertsBell() {
           <div style={{
             position: 'absolute',
             right: 0,
-            top: 'calc(100% + 8px)',
-            width: '380px',
+            top: 'calc(100% + 10px)',
+            width: '400px',
             maxHeight: '70vh',
             overflowY: 'auto',
-            background: '#ffffff',
-            border: '1px solid var(--border)',
-            borderRadius: '12px',
+            background: T.paper,
+            border: `1px solid ${T.rule}`,
+            borderRadius: 18,
             zIndex: 50,
-            boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+            boxShadow: '0 24px 48px -16px rgba(31,35,28,0.18)',
+            fontFamily: FONT_SANS,
           }}>
             <div style={{
-              padding: '12px 16px',
-              borderBottom: '1px solid var(--border)',
+              padding: '14px 18px',
+              borderBottom: `1px solid ${T.rule}`,
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
             }}>
-              <strong style={{ fontSize: '13px' }}>
+              <Caps>
                 {data && data.counts.total > 0
                   ? `${data.counts.total} ${data.counts.total === 1 ? 'alert' : 'alerts'}`
                   : 'Alerts'}
-              </strong>
+              </Caps>
               <button
                 onClick={() => setOpen(false)}
                 aria-label="Close alerts"
                 style={{
                   background: 'transparent', border: 'none', cursor: 'pointer',
-                  display: 'flex', padding: '4px',
+                  display: 'flex', padding: 4, color: T.ink3,
                 }}
               >
-                <X size={14} color="var(--text-muted)" />
+                <X size={14} />
               </button>
             </div>
 
@@ -154,12 +155,12 @@ export function AlertsBell() {
               </div>
             ) : data.alerts.length === 0 ? (
               <div style={{
-                padding: '24px 16px',
+                padding: '28px 16px',
                 textAlign: 'center',
-                fontSize: '13px',
-                color: 'var(--text-muted)',
+                fontSize: 13,
+                color: T.ink2,
               }}>
-                Nothing needs your attention ✓
+                Nothing needs your attention <span style={{ color: T.sageDeep }}>✓</span>
               </div>
             ) : (
               <div>
@@ -176,29 +177,29 @@ export function AlertsBell() {
 }
 
 function AlertRow({ alert, onClickThrough }: { alert: Alert; onClickThrough: () => void }) {
-  const dotColor = alert.severity === 'red' ? 'var(--red)' : 'var(--amber)';
+  const dotColor = alert.severity === 'red' ? T.warm : T.caramelDeep;
   const inner = (
     <div style={{
-      padding: '12px 16px',
-      borderBottom: '1px solid var(--border)',
+      padding: '14px 18px',
+      borderBottom: `1px solid ${T.rule}`,
       display: 'flex',
       alignItems: 'flex-start',
-      gap: '10px',
+      gap: 10,
       cursor: alert.href ? 'pointer' : 'default',
     }}>
-      <span style={{ marginTop: '5px', width: '8px', height: '8px', borderRadius: '50%', background: dotColor, flexShrink: 0 }} />
+      <span style={{ marginTop: 6, width: 7, height: 7, borderRadius: '50%', background: dotColor, flexShrink: 0 }} />
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: T.ink, letterSpacing: '-0.005em' }}>
           {alert.title}
         </div>
-        <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px', lineHeight: 1.4 }}>
+        <p style={{ fontSize: 12, color: T.ink2, marginTop: 3, lineHeight: 1.5 }}>
           {alert.detail}
         </p>
-        <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px', opacity: 0.7 }}>
+        <p style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: T.ink3, marginTop: 6, letterSpacing: '0.04em' }}>
           {formatAge(alert.ts)}
         </p>
       </div>
-      {alert.href && <ChevronRight size={14} color="var(--text-muted)" style={{ marginTop: '4px', flexShrink: 0 }} />}
+      {alert.href && <ChevronRight size={14} color={T.ink3} style={{ marginTop: 4, flexShrink: 0 }} />}
     </div>
   );
 

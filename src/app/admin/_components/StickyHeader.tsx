@@ -1,20 +1,20 @@
 'use client';
 
 /**
- * Sticky header for /admin — always visible above the four tabs.
+ * Sticky header for /admin — always visible above the five tabs.
  *
- * Shows the at-a-glance stats Reeyen wants without clicking anything:
- * live hotels, hotels mid-onboarding, errors today, active jobs, MRR
- * (or pilot indicator). Plus the alerts bell (Phase 3) and the four
- * tab buttons.
+ * Snow design (May 2026):
+ *   - Top stat row: caps mono labels + Instrument Serif italic numbers
+ *   - Tab buttons: hairline pills, active = ink-solid with sage underline
  *
- * Stats refresh every 15s. The tab state lives in the parent page so
- * URL ?tab=… can deep-link into a specific tab if we add that later.
+ * Stats refresh every 15s. The tab state lives in the parent page so URL
+ * hash can deep-link into a specific tab.
  */
 
 import React, { useEffect, useRef, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { AlertsBell } from './AlertsBell';
+import { T, FONT_SANS, FONT_SERIF, Caps, MonoNum } from './_snow';
 
 export type AdminTab = 'onboarding' | 'live' | 'system' | 'money' | 'agent';
 
@@ -73,46 +73,64 @@ export function StickyHeader({ activeTab, onTabChange }: Props) {
       position: 'sticky',
       top: '64px', // sits below the global Header.tsx (height 64)
       zIndex: 30,
-      background: 'rgba(251, 249, 244, 0.92)',
+      background: 'rgba(255,255,255,0.92)',
       backdropFilter: 'blur(48px)',
       WebkitBackdropFilter: 'blur(48px)',
-      borderBottom: '1px solid var(--border)',
-      padding: '12px 24px',
-      marginLeft: '-24px',
-      marginRight: '-24px',
+      borderBottom: `1px solid ${T.rule}`,
+      padding: '18px 48px 0',
+      marginLeft: '-48px',
+      marginRight: '-48px',
       marginTop: '-24px',
-      marginBottom: '20px',
+      marginBottom: '32px',
     }}>
-      {/* Stats row */}
+      {/* Page title row */}
       <div style={{
-        display: 'flex',
-        flexWrap: 'wrap',
-        alignItems: 'center',
-        gap: '14px',
-        marginBottom: '12px',
-        fontSize: '13px',
+        display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between',
+        gap: 24, flexWrap: 'wrap', marginBottom: 16,
       }}>
-        <Stat label="Live hotels" value={stats?.liveHotels} />
-        <Dot />
-        <Stat label="Onboarding" value={stats?.onboarding} />
-        <Dot />
-        <Stat label="Errors today" value={stats?.errorsToday} color={(stats?.errorsToday ?? 0) > 0 ? 'var(--red)' : undefined} />
-        <Dot />
-        <Stat label="Active jobs" value={stats?.activeJobs} color={(stats?.activeJobs ?? 0) > 0 ? 'var(--amber)' : undefined} />
-        <Dot />
-        <span style={{ color: 'var(--text-muted)' }}>
-          MRR: <strong style={{ color: 'var(--text-primary)', marginLeft: '4px' }}>
-            {stats?.pilotMode ? 'Pilot mode' : stats?.mrrCents != null ? `$${(stats.mrrCents / 100).toLocaleString()}` : '—'}
-          </strong>
-        </span>
-
-        <div style={{ marginLeft: 'auto' }}>
+        <div>
+          <Caps>Owner cockpit</Caps>
+          <h1 style={{
+            fontFamily: FONT_SERIF, fontSize: 36, fontWeight: 400,
+            letterSpacing: '-0.02em', color: T.ink, margin: '4px 0 0',
+            lineHeight: 1.15,
+          }}>
+            <span style={{ fontStyle: 'italic' }}>Staxis</span> Admin
+          </h1>
+        </div>
+        <div style={{ flexShrink: 0 }}>
           <AlertsBell />
         </div>
       </div>
 
-      {/* Tab buttons */}
-      <div style={{ display: 'flex', gap: '4px' }}>
+      {/* Stats row — caps label over italic-serif number, separated by hairlines */}
+      <div style={{
+        display: 'flex', flexWrap: 'wrap', alignItems: 'stretch', gap: 0,
+        marginBottom: 20,
+        border: `1px solid ${T.rule}`,
+        borderRadius: 18, background: T.paper,
+        overflow: 'hidden',
+      }}>
+        <StatCell label="Live hotels" value={stats?.liveHotels} />
+        <StatCell label="Onboarding" value={stats?.onboarding} />
+        <StatCell label="Errors today" value={stats?.errorsToday}
+          tone={(stats?.errorsToday ?? 0) > 0 ? 'warm' : 'neutral'} />
+        <StatCell label="Active jobs" value={stats?.activeJobs}
+          tone={(stats?.activeJobs ?? 0) > 0 ? 'caramel' : 'neutral'} />
+        <StatCell
+          label="MRR"
+          customValue={stats?.pilotMode
+            ? <span style={{ fontFamily: FONT_SANS, fontSize: 22, fontStyle: 'italic', color: T.ink2 }}>Pilot</span>
+            : stats?.mrrCents != null
+              ? <MonoNum size={28} weight={500}>${(stats.mrrCents / 100).toLocaleString()}</MonoNum>
+              : <MonoNum size={28} c={T.ink3}>—</MonoNum>
+          }
+          tone="sage"
+        />
+      </div>
+
+      {/* Tab buttons — Snow style: ghost ink, active = solid-ink pill */}
+      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
         {TABS.map((t) => {
           const active = t.id === activeTab;
           return (
@@ -120,16 +138,19 @@ export function StickyHeader({ activeTab, onTabChange }: Props) {
               key={t.id}
               onClick={() => onTabChange(t.id)}
               style={{
-                padding: '10px 16px',
-                fontSize: '13px',
+                position: 'relative',
+                padding: '10px 18px',
+                fontFamily: FONT_SANS,
+                fontSize: 13,
                 fontWeight: active ? 600 : 500,
-                color: active ? '#364262' : 'var(--text-muted)',
-                background: active ? 'var(--surface-primary)' : 'transparent',
+                color: active ? T.ink : T.ink2,
+                background: 'transparent',
                 border: 'none',
-                borderBottom: `2px solid ${active ? '#364262' : 'transparent'}`,
+                borderBottom: `2px solid ${active ? T.sageDeep : 'transparent'}`,
+                marginBottom: -1,
                 cursor: 'pointer',
-                fontFamily: 'var(--font-sans)',
-                transition: 'color 0.15s, background 0.15s',
+                transition: 'color 0.15s',
+                letterSpacing: '-0.005em',
               }}
             >
               {t.label}
@@ -141,21 +162,39 @@ export function StickyHeader({ activeTab, onTabChange }: Props) {
   );
 }
 
-function Stat({ label, value, color }: { label: string; value: number | undefined; color?: string }) {
+function StatCell({
+  label, value, customValue, tone = 'neutral',
+}: {
+  label: string;
+  value?: number | null;
+  customValue?: React.ReactNode;
+  tone?: 'neutral' | 'sage' | 'warm' | 'caramel';
+}) {
+  const toneColor = {
+    neutral: T.ink,
+    sage:    T.sageDeep,
+    warm:    T.warm,
+    caramel: T.caramelDeep,
+  }[tone];
   return (
-    <span style={{ color: 'var(--text-muted)' }}>
-      {label}:{' '}
-      <strong style={{
-        color: color ?? 'var(--text-primary)',
-        marginLeft: '4px',
-        fontFamily: 'var(--font-mono)',
-      }}>
-        {value ?? '—'}
-      </strong>
-    </span>
+    <div style={{
+      flex: '1 1 160px', minWidth: 140,
+      padding: '14px 18px',
+      borderRight: `1px solid ${T.rule}`,
+      display: 'flex', flexDirection: 'column', gap: 4,
+    }}>
+      <Caps size={9}>{label}</Caps>
+      {customValue ? (
+        <div>{customValue}</div>
+      ) : (
+        <span style={{
+          fontFamily: FONT_SERIF, fontStyle: 'italic',
+          fontSize: 32, fontWeight: 400, lineHeight: 1, letterSpacing: '-0.03em',
+          color: value == null ? T.ink3 : toneColor,
+        }}>
+          {value ?? '—'}
+        </span>
+      )}
+    </div>
   );
-}
-
-function Dot() {
-  return <span style={{ color: 'var(--text-muted)', opacity: 0.4 }}>·</span>;
 }

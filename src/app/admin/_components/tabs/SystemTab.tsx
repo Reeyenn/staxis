@@ -1,24 +1,23 @@
 'use client';
 
 /**
- * System tab.
+ * System tab — Snow design (May 2026).
  *
  * Top (full-width): Marvel timeline — commits, deploys, worktrees,
  * active Claude sessions.
  *
- * Below (2-column horizontal):
+ * Below (2-column grid):
  *   Your roadmap (CRUD)  │  Admin audit log (read-only)
- *
- * The old Scheduled jobs widget was removed — pull_jobs health is
- * better surfaced inside each hotel's detail page when we want it.
  */
 
 import React, { useEffect, useRef, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import {
-  Plus, Save, Trash2,
-} from 'lucide-react';
+import { Plus, Save, Trash2 } from 'lucide-react';
 import { MarvelTimeline } from '@/app/admin/_components/MarvelTimeline';
+import {
+  T, FONT_SANS, FONT_MONO, FONT_SERIF,
+  Caps, Card, Btn,
+} from '@/app/admin/_components/_snow';
 
 type RoadmapStatus = 'idea' | 'planned' | 'in_progress' | 'done' | 'dropped';
 
@@ -69,16 +68,9 @@ interface ActiveSessionsResp {
   totalActive: number;
 }
 
-// Two-tier polling:
-//   - CURSOR_MS (2s): hits the tiny /api/admin/last-github-event endpoint
-//     that just returns the newest webhook ts. When it ticks, we refetch
-//     the full timeline immediately. This is what gives the "feels live"
-//     reaction time when commits land.
-//   - REFRESH_MS (60s): background safety net so even if a webhook is
-//     missed (GitHub down, secret rotated, etc.) the timeline still
-//     refreshes on its own.
 const CURSOR_MS = 2_000;
 const REFRESH_MS = 60_000;
+
 interface RoadmapItem {
   id: string; title: string; description: string | null;
   status: RoadmapStatus; priority: number;
@@ -123,7 +115,6 @@ export function SystemTab() {
     }
   };
 
-  // Two timers — cursor (fast, cheap) + background (slow, full refetch).
   const cursorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSeenCursorTs = useRef<string | null>(null);
@@ -131,12 +122,6 @@ export function SystemTab() {
   useEffect(() => {
     void load();
 
-    // Cursor poll: cheap query for the latest webhook event ts AND a
-    // fresh active-sessions snapshot. Two cheap calls every 2s give us
-    // sub-3s reaction time both for "commit just landed" (via the
-    // github_events cursor) and "Claude session is currently running"
-    // (via the active-sessions endpoint). The expensive full build-
-    // status fetch only fires when the cursor actually changes.
     const cursorTick = async () => {
       try {
         const [cursorRes, sessionsRes] = await Promise.all([
@@ -155,20 +140,16 @@ export function SystemTab() {
           if (ts && ts !== lastSeenCursorTs.current) {
             const isFirstSeen = lastSeenCursorTs.current === null;
             lastSeenCursorTs.current = ts;
-            // Don't refetch on the very first observation — that's just us
-            // discovering the existing latest event, not a new one.
             if (!isFirstSeen) await load();
           }
         }
       } catch {
-        /* swallow — background refresh will catch up */
+        /* swallow */
       }
       cursorTimer.current = setTimeout(cursorTick, CURSOR_MS);
     };
     cursorTimer.current = setTimeout(cursorTick, CURSOR_MS);
 
-    // Background refresh: in case the webhook misses an event, refetch
-    // everything once a minute regardless.
     const refreshTick = () => {
       refreshTimer.current = setTimeout(async () => {
         await load();
@@ -186,11 +167,12 @@ export function SystemTab() {
   if (error) {
     return (
       <div style={{
-        padding: '12px 14px',
-        background: 'var(--red-dim)',
-        border: '1px solid rgba(239,68,68,0.25)',
-        borderRadius: '10px',
-        color: 'var(--red)', fontSize: '13px',
+        padding: '14px 16px',
+        background: T.warmDim,
+        border: `1px solid rgba(184,92,61,0.25)`,
+        borderRadius: 14,
+        color: T.warm, fontSize: 13,
+        fontFamily: FONT_SANS,
       }}>{error}</div>
     );
   }
@@ -198,15 +180,14 @@ export function SystemTab() {
   if (!build || !roadmap || !audit) {
     return (
       <div style={{ padding: '60px 0', textAlign: 'center' }}>
-        <div className="spinner" style={{ width: '24px', height: '24px', margin: '0 auto' }} />
+        <div className="spinner" style={{ width: 24, height: 24, margin: '0 auto' }} />
       </div>
     );
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24, fontFamily: FONT_SANS }}>
 
-      {/* Marvel timeline — full-width at top, unchanged */}
       <section>
         <MarvelTimeline
           commits={build.commits}
@@ -224,20 +205,19 @@ export function SystemTab() {
         )}
       </section>
 
-      {/* 2-column horizontal layout: Roadmap | Audit log */}
       <div style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
-        gap: '20px',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))',
+        gap: 18,
         alignItems: 'start',
       }}>
         <RoadmapSection items={roadmap} reload={load} />
         <section style={{ minWidth: 0 }}>
-          <h2 style={sectionTitle}>Admin audit log</h2>
+          <SectionTitle caps="Audit" title="Admin" italic="audit log" />
           {audit.length === 0 ? (
             <EmptyState text="No admin actions logged yet." />
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '8px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
               {audit.map((a) => <AuditRow key={a.id} entry={a} />)}
             </div>
           )}
@@ -247,60 +227,82 @@ export function SystemTab() {
   );
 }
 
-function ActiveSessionsPanel({ resp }: { resp: ActiveSessionsResp }) {
+function SectionTitle({ caps, title, italic, right }: {
+  caps: string; title: string; italic?: string; right?: React.ReactNode;
+}) {
   return (
     <div style={{
-      marginTop: '10px',
-      padding: '10px 12px',
-      background: 'linear-gradient(180deg, rgba(212,144,64,0.08), rgba(212,144,64,0.02))',
-      border: '1px solid rgba(212,144,64,0.25)',
-      borderRadius: '10px',
-      fontSize: '12px',
+      display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between',
+      gap: 12, marginBottom: 4,
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+      <div>
+        <Caps>{caps}</Caps>
+        <h2 style={{
+          fontFamily: FONT_SERIF, fontSize: 24, fontWeight: 400,
+          letterSpacing: '-0.02em', color: T.ink, margin: '2px 0 0',
+          lineHeight: 1.15,
+        }}>
+          {title}
+          {italic && <> <span style={{ fontStyle: 'italic' }}>{italic}</span></>}
+        </h2>
+      </div>
+      {right}
+    </div>
+  );
+}
+
+function ActiveSessionsPanel({ resp }: { resp: ActiveSessionsResp }) {
+  return (
+    <Card padding="14px 18px" style={{
+      marginTop: 12,
+      background: 'linear-gradient(180deg, rgba(215,176,126,0.10), rgba(215,176,126,0.02))',
+      border: `1px solid rgba(140,106,51,0.20)`,
+      borderRadius: 14,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
         <span style={{
-          width: '8px', height: '8px', borderRadius: '50%',
-          background: 'var(--green)',
+          width: 8, height: 8, borderRadius: '50%',
+          background: T.sageDeep,
           animation: 'pulseDot 1.4s ease-in-out infinite',
         }} />
-        <strong style={{ fontSize: '13px' }}>
+        <Caps c={T.ink}>
           {resp.totalActive} Claude {resp.totalActive === 1 ? 'session' : 'sessions'} active
-        </strong>
-        <span style={{ color: 'var(--text-muted)', fontSize: '11px' }}>
-          (last heartbeat &lt; 2 min ago)
+        </Caps>
+        <span style={{ color: T.ink3, fontSize: 11, fontStyle: 'italic', fontFamily: FONT_SERIF }}>
+          last heartbeat &lt; 2 min ago
         </span>
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         {resp.grouped.map((g) => (
-          <div key={g.branch} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' }}>
-            <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: '#364262' }}>
+          <div key={g.branch} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+            <span style={{ fontFamily: FONT_MONO, fontWeight: 600, color: T.sageDeep }}>
               {g.branch}
             </span>
-            <span style={{ color: 'var(--text-muted)' }}>·</span>
-            <span style={{ color: 'var(--text-muted)' }}>
+            <span style={{ color: T.ink3 }}>·</span>
+            <span style={{ color: T.ink2 }}>
               {g.sessionCount} {g.sessionCount === 1 ? 'session' : 'sessions'}
             </span>
-            <span style={{ color: 'var(--text-muted)' }}>·</span>
-            <span style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', fontSize: '11px' }}>
+            <span style={{ color: T.ink3 }}>·</span>
+            <span style={{ color: T.ink2, fontFamily: FONT_MONO, fontSize: 11 }}>
               {g.sessions.map((s) => fmtToolName(s.current_tool ?? '?')).slice(0, 3).join(', ')}
             </span>
-            <span style={{ color: 'var(--text-muted)', marginLeft: 'auto', fontSize: '11px' }}>
+            <span style={{ color: T.ink3, marginLeft: 'auto', fontFamily: FONT_MONO, fontSize: 10.5, letterSpacing: '0.04em' }}>
               {timeAgo(g.sessions[0].last_heartbeat)}
             </span>
           </div>
         ))}
       </div>
       <style>{`@keyframes pulseDot { 0%,100% { opacity: 1; transform: scale(1) } 50% { opacity: 0.4; transform: scale(1.3) } }`}</style>
-    </div>
+    </Card>
   );
 }
 
 const STATUS_COLOR: Record<RoadmapStatus, string> = {
-  idea: 'var(--text-muted)',
-  planned: 'var(--text-secondary)',
-  in_progress: 'var(--amber)',
-  done: 'var(--green)',
-  dropped: 'var(--red)',
+  idea: T.ink3,
+  planned: T.ink2,
+  in_progress: T.caramelDeep,
+  done: T.sageDeep,
+  dropped: T.warm,
 };
 
 function RoadmapSection({ items, reload }: { items: RoadmapItem[]; reload: () => Promise<void> }) {
@@ -348,45 +350,57 @@ function RoadmapSection({ items, reload }: { items: RoadmapItem[]; reload: () =>
 
   return (
     <section style={{ minWidth: 0 }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '8px' }}>
-        <h2 style={sectionTitle}>Your roadmap</h2>
-        {!adding && (
-          <button onClick={() => setAdding(true)} className="btn btn-secondary" style={{ fontSize: '12px' }}>
+      <SectionTitle
+        caps="Roadmap"
+        title="Your"
+        italic="roadmap"
+        right={!adding && (
+          <Btn variant="ghost" size="sm" onClick={() => setAdding(true)}>
             <Plus size={12} /> Add
-          </button>
+          </Btn>
         )}
-      </div>
+      />
 
       {adding && (
-        <div style={{ display: 'flex', gap: '6px', marginBottom: '8px' }}>
+        <Card padding="10px 12px" style={{ marginTop: 8, display: 'flex', gap: 6 }}>
           <input
             autoFocus
             value={newTitle}
             onChange={(e) => setNewTitle(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') void create(); if (e.key === 'Escape') { setAdding(false); setNewTitle(''); } }}
             placeholder="What do you want to build next?"
-            className="input"
-            style={{ flex: 1, fontSize: '13px' }}
+            style={{
+              flex: 1, fontSize: 13, padding: '8px 12px',
+              border: `1px solid ${T.rule}`, borderRadius: 999, outline: 'none',
+              fontFamily: FONT_SANS, background: T.paper, color: T.ink,
+            }}
           />
-          <button onClick={create} className="btn btn-primary" style={{ fontSize: '12px' }}>
+          <Btn variant="primary" size="sm" onClick={create}>
             <Save size={12} /> Save
-          </button>
-          <button onClick={() => { setAdding(false); setNewTitle(''); }} className="btn btn-secondary" style={{ fontSize: '12px' }}>
+          </Btn>
+          <Btn variant="ghost" size="sm" onClick={() => { setAdding(false); setNewTitle(''); }}>
             Cancel
-          </button>
-        </div>
+          </Btn>
+        </Card>
       )}
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginTop: 8 }}>
         {(['in_progress', 'planned', 'idea', 'done', 'dropped'] as RoadmapStatus[]).map((s) => {
           const list = grouped[s];
           if (list.length === 0) return null;
           return (
             <div key={s}>
-              <div style={{ fontSize: '11px', fontWeight: 700, color: STATUS_COLOR[s], textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '6px' }}>
-                {s.replace('_', ' ')} <span style={{ opacity: 0.6, fontWeight: 400 }}>· {list.length}</span>
+              <div style={{
+                fontFamily: FONT_MONO, fontSize: 10, fontWeight: 600,
+                color: STATUS_COLOR[s], textTransform: 'uppercase',
+                letterSpacing: '0.16em', marginBottom: 6,
+              }}>
+                {s.replace('_', ' ')}
+                <span style={{ marginLeft: 6, fontWeight: 400, color: T.ink3 }}>
+                  · {list.length}
+                </span>
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                 {list.map((item) => (
                   <RoadmapItemRow key={item.id} item={item} onStatusChange={updateStatus} onDelete={remove} />
                 ))}
@@ -406,23 +420,27 @@ function RoadmapItemRow({ item, onStatusChange, onDelete }: {
 }) {
   return (
     <div style={{
-      padding: '10px 12px',
-      background: 'var(--surface-primary)',
-      border: '1px solid var(--border)',
-      borderRadius: '8px',
-      display: 'flex', alignItems: 'center', gap: '10px',
+      padding: '10px 14px',
+      background: T.paper,
+      border: `1px solid ${T.rule}`,
+      borderRadius: 12,
+      display: 'flex', alignItems: 'center', gap: 10,
     }}>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: '13px' }}>{item.title}</div>
+        <div style={{ fontSize: 13, color: T.ink, letterSpacing: '-0.005em' }}>{item.title}</div>
         {item.description && (
-          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>{item.description}</div>
+          <div style={{ fontSize: 11, color: T.ink2, marginTop: 2 }}>{item.description}</div>
         )}
       </div>
       <select
         value={item.status}
         onChange={(e) => onStatusChange(item.id, e.target.value as RoadmapStatus)}
-        className="input"
-        style={{ fontSize: '11px', padding: '4px 8px' }}
+        style={{
+          fontSize: 11, padding: '4px 10px',
+          border: `1px solid ${T.rule}`, borderRadius: 999,
+          fontFamily: FONT_SANS, background: T.paper, color: T.ink2,
+          outline: 'none', cursor: 'pointer',
+        }}
       >
         <option value="idea">Idea</option>
         <option value="planned">Planned</option>
@@ -433,9 +451,9 @@ function RoadmapItemRow({ item, onStatusChange, onDelete }: {
       <button
         onClick={() => onDelete(item.id)}
         aria-label="Delete"
-        style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: '4px', display: 'flex' }}
+        style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 4, display: 'flex' }}
       >
-        <Trash2 size={12} color="var(--text-muted)" />
+        <Trash2 size={12} color={T.ink3} />
       </button>
     </div>
   );
@@ -444,22 +462,22 @@ function RoadmapItemRow({ item, onStatusChange, onDelete }: {
 function AuditRow({ entry }: { entry: AuditEntry }) {
   return (
     <div style={{
-      padding: '8px 12px',
-      background: 'var(--surface-primary)',
-      border: '1px solid var(--border)',
-      borderRadius: '6px',
-      fontSize: '12px',
-      display: 'flex', alignItems: 'center', gap: '12px',
+      padding: '10px 14px',
+      background: T.paper,
+      border: `1px solid ${T.rule}`,
+      borderRadius: 10,
+      fontSize: 12,
+      display: 'flex', alignItems: 'center', gap: 12,
     }}>
-      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', flexShrink: 0 }}>
+      <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: T.ink3, flexShrink: 0, letterSpacing: '0.04em' }}>
         {timeAgo(entry.ts)}
       </span>
-      <span style={{ color: 'var(--text-secondary)', minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        <strong style={{ color: 'var(--text-primary)' }}>{entry.actor_email ?? 'system'}</strong>
+      <span style={{ color: T.ink2, minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <strong style={{ color: T.ink, letterSpacing: '-0.005em' }}>{entry.actor_email ?? 'system'}</strong>
         {' · '}
-        <span style={{ fontFamily: 'var(--font-mono)' }}>{entry.action}</span>
+        <span style={{ fontFamily: FONT_MONO }}>{entry.action}</span>
         {entry.target_id && (
-          <span style={{ color: 'var(--text-muted)' }}>{' on '}{entry.target_type}/{entry.target_id.slice(0, 8)}</span>
+          <span style={{ color: T.ink3 }}> on {entry.target_type}/{entry.target_id.slice(0, 8)}</span>
         )}
       </span>
     </div>
@@ -469,14 +487,16 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
 function EmptyState({ text }: { text: string }) {
   return (
     <div style={{
-      marginTop: '8px',
-      padding: '20px',
-      background: 'var(--surface-secondary)',
-      border: '1px dashed var(--border)',
-      borderRadius: '10px',
+      marginTop: 8,
+      padding: '24px 20px',
+      background: T.ruleSoft,
+      border: `1px dashed ${T.rule}`,
+      borderRadius: 14,
       textAlign: 'center',
-      fontSize: '12px',
-      color: 'var(--text-muted)',
+      fontSize: 12.5,
+      color: T.ink2,
+      fontStyle: 'italic',
+      fontFamily: FONT_SERIF,
     }}>{text}</div>
   );
 }
@@ -492,11 +512,6 @@ function timeAgo(iso: string): string {
   return `${Math.floor(hr / 24)}d ago`;
 }
 
-// MCP tool names come through as `mcp__<server>__<action>` (e.g.
-// `mcp__Claude_in_Chrome__browser_batch`). The `mcp__server__` prefix
-// is repetitive — strip it so the action ("browser_batch") is what
-// shows. Mirrors fmtTool inside MarvelTimeline; kept local so this
-// component stays self-contained.
 function fmtToolName(tool: string): string {
   if (!tool) return tool;
   if (tool.startsWith('mcp__')) {
@@ -505,10 +520,3 @@ function fmtToolName(tool: string): string {
   }
   return tool;
 }
-
-const sectionTitle: React.CSSProperties = {
-  fontSize: '15px',
-  fontWeight: 600,
-  letterSpacing: '-0.01em',
-  marginBottom: '4px',
-};

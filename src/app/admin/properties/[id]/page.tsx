@@ -25,6 +25,7 @@ import {
 import { ASSIGNABLE_ROLES, roleLabel, type AppRole, type AssignableRole } from '@/lib/roles';
 import { JoinCodesSection } from '@/app/admin/_components/JoinCodesSection';
 import { MlHealthPanel } from '@/app/admin/_components/MlHealthPanel';
+import { T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Btn, Pill } from '@/app/admin/_components/_snow';
 
 interface HealthData {
   property: {
@@ -149,10 +150,10 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
   if (authLoading || (user && user.role !== 'admin')) {
     return (
       <AppLayout>
-        <div style={{ padding: '40px 24px', textAlign: 'center' }}>
+        <div style={{ padding: '80px 24px', textAlign: 'center', fontFamily: FONT_SERIF, color: T.ink }}>
           {authLoading
-            ? <div className="spinner" style={{ width: '24px', height: '24px', margin: '0 auto' }} />
-            : <><ShieldAlert size={32} color="var(--red)" /><p>Admin access only.</p></>}
+            ? <div className="spinner" style={{ width: 24, height: 24, margin: '0 auto' }} />
+            : <><ShieldAlert size={32} color={T.warm} /><p style={{ fontSize: 22, fontStyle: 'italic', letterSpacing: '-0.02em' }}>Admin access only.</p></>}
         </div>
       </AppLayout>
     );
@@ -160,54 +161,76 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
 
   return (
     <AppLayout>
-      <div style={{ padding: '24px', maxWidth: '1400px', margin: '0 auto' }}>
+      <div style={{
+        padding: '24px 48px 48px', maxWidth: 1400, margin: '0 auto',
+        background: T.bg, minHeight: 'calc(100vh - 64px)',
+        fontFamily: FONT_SANS,
+      }}>
 
         <Link href="/admin/properties" style={{
-          display: 'inline-flex', alignItems: 'center', gap: '6px',
-          fontSize: '13px', color: 'var(--text-muted)', textDecoration: 'none', marginBottom: '16px',
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+          fontFamily: FONT_MONO, fontSize: 10.5, color: T.ink3, textDecoration: 'none',
+          marginBottom: 20, letterSpacing: '0.16em', textTransform: 'uppercase',
         }}>
-          <ArrowLeft size={14} /> All properties
+          <ArrowLeft size={12} /> All properties
         </Link>
 
         {loading && !data && (
           <div style={{ padding: '60px 0', textAlign: 'center' }}>
-            <div className="spinner" style={{ width: '24px', height: '24px', margin: '0 auto' }} />
+            <div className="spinner" style={{ width: 24, height: 24, margin: '0 auto' }} />
           </div>
         )}
 
         {error && (
-          <div style={{ padding: '12px', background: 'var(--red-dim)', border: '1px solid var(--red-border, rgba(239,68,68,0.25))', borderRadius: '10px', color: 'var(--red)', fontSize: '13px', marginBottom: '14px' }}>
+          <div style={{
+            padding: '14px 16px',
+            background: T.warmDim,
+            border: `1px solid rgba(184,92,61,0.25)`,
+            borderRadius: 14,
+            color: T.warm, fontSize: 13, marginBottom: 16,
+          }}>
             {error}
           </div>
         )}
 
         {data && (
           <>
-            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '24px' }}>
-              <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '22px', letterSpacing: '-0.01em' }}>
-                {data.property.name ?? '(unnamed)'}
-              </h1>
-              <button onClick={load} disabled={loading} className="btn btn-secondary" style={{ fontSize: '13px' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 28, gap: 16, flexWrap: 'wrap' }}>
+              <div>
+                <Caps>Property</Caps>
+                <h1 style={{
+                  fontFamily: FONT_SERIF, fontSize: 40, fontWeight: 400,
+                  letterSpacing: '-0.02em', color: T.ink, margin: '4px 0 0',
+                  lineHeight: 1.1,
+                }}>
+                  {data.property.name ?? <span style={{ fontStyle: 'italic', color: T.ink3 }}>(unnamed)</span>}
+                </h1>
+              </div>
+              <Btn variant="ghost" size="md" onClick={load} disabled={loading}>
                 <RefreshCw size={14} style={{ animation: loading ? 'spin 1s linear infinite' : undefined }} /> Refresh
-              </button>
+              </Btn>
             </div>
 
             {/* Summary cards — kept Subscription, PMS, Owner per Reeyen.
                 Removed: Active recipe, Staff sample, Source. Property UUID
                 under the name and the Recent onboarding jobs section are
                 also gone. */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px', marginBottom: '20px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 14, marginBottom: 24 }}>
               <DetailCard title="Subscription">
-                <p style={{ fontSize: '15px', fontWeight: 600, color: subscriptionColor(data.property.subscriptionStatus) }}>
+                <Pill tone={
+                  data.property.subscriptionStatus === 'active' ? 'sage'
+                    : data.property.subscriptionStatus === 'past_due' ? 'warm'
+                    : 'neutral'
+                }>
                   {(data.property.subscriptionStatus ?? '?').toUpperCase()}
-                </p>
+                </Pill>
                 {data.property.trialEndsAt && (
-                  <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                  <p style={{ fontSize: 12, color: T.ink2, marginTop: 8, fontStyle: 'italic', fontFamily: FONT_SERIF }}>
                     Trial ends {new Date(data.property.trialEndsAt).toLocaleDateString()}
                   </p>
                 )}
                 {data.property.stripeCustomerId && (
-                  <p style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginTop: '4px' }}>
+                  <p style={{ fontSize: 10.5, color: T.ink3, fontFamily: FONT_MONO, marginTop: 6, letterSpacing: '0.04em' }}>
                     {data.property.stripeCustomerId}
                   </p>
                 )}
@@ -216,25 +239,29 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
               <DetailCard title="PMS">
                 {data.credentials ? (
                   <>
-                    <p style={{ fontSize: '14px', fontWeight: 600 }}>{data.credentials.pmsType}</p>
-                    <p style={{ fontSize: '12px', color: 'var(--text-muted)', wordBreak: 'break-all' }}>{data.credentials.loginUrl}</p>
-                    <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    <p style={{ fontSize: 14, fontWeight: 600, color: T.ink, letterSpacing: '-0.005em' }}>{data.credentials.pmsType}</p>
+                    <p style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2, wordBreak: 'break-all', marginTop: 4 }}>
+                      {data.credentials.loginUrl}
+                    </p>
+                    <p style={{ fontSize: 11, color: T.ink3, marginTop: 4 }}>
                       user: {data.credentials.username} · {data.credentials.isActive ? 'active' : 'inactive'}
                     </p>
                   </>
                 ) : (
-                  <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>No credentials saved</p>
+                  <p style={{ fontSize: 13, color: T.ink2, fontStyle: 'italic', fontFamily: FONT_SERIF }}>No credentials saved</p>
                 )}
               </DetailCard>
 
               <DetailCard title="Owner">
                 {data.owner ? (
                   <>
-                    <p style={{ fontSize: '13px' }}>{data.owner.displayName ?? '(no name)'}</p>
-                    <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{data.owner.email ?? '—'}</p>
+                    <p style={{ fontSize: 14, fontWeight: 600, color: T.ink, letterSpacing: '-0.005em' }}>
+                      {data.owner.displayName ?? '(no name)'}
+                    </p>
+                    <p style={{ fontSize: 12, color: T.ink2, marginTop: 3 }}>{data.owner.email ?? '—'}</p>
                   </>
                 ) : (
-                  <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>No owner row</p>
+                  <p style={{ fontSize: 13, color: T.ink2, fontStyle: 'italic', fontFamily: FONT_SERIF }}>No owner row</p>
                 )}
               </DetailCard>
             </div>
@@ -242,22 +269,21 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
             {/* Action: regenerate recipe — kept near the header as a small
                 utility. The big "Active recipe" card itself is gone. */}
             {data.credentials && (
-              <div style={{ padding: '12px 14px', border: '1px solid var(--border)', borderRadius: '12px', marginBottom: '24px', display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-                <span style={{ fontSize: '12px', color: 'var(--text-muted)', flex: 1, minWidth: '180px' }}>
+              <div style={{
+                padding: '14px 16px', border: `1px solid ${T.rule}`, borderRadius: 14,
+                marginBottom: 28, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+                background: T.paper,
+              }}>
+                <span style={{ fontSize: 12, color: T.ink2, flex: 1, minWidth: 180, fontStyle: 'italic', fontFamily: FONT_SERIF }}>
                   Use when a PMS UI change has broken the active recipe (~$1-3).
                 </span>
-                <button
-                  onClick={handleRegenerate}
-                  disabled={regenerating}
-                  className="btn btn-secondary"
-                  style={{ fontSize: '13px' }}
-                >
+                <Btn variant="ghost" size="md" onClick={handleRegenerate} disabled={regenerating}>
                   {regenerating
                     ? (<><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> Queuing…</>)
                     : (<>Regenerate recipe</>)}
-                </button>
+                </Btn>
                 {regenerateMsg && (
-                  <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{regenerateMsg}</span>
+                  <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink3, letterSpacing: '0.04em' }}>{regenerateMsg}</span>
                 )}
               </div>
             )}
@@ -357,20 +383,20 @@ function PeopleWithAccessSection({ propertyId }: { propertyId: string }) {
       </div>
 
       {loading ? (
-        <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Loading…</p>
+        <p style={{ fontSize: '12px', color: T.ink2 }}>Loading…</p>
       ) : withAccess.length === 0 ? (
-        <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>No accounts have access to this hotel yet.</p>
+        <p style={{ fontSize: '13px', color: T.ink2 }}>No accounts have access to this hotel yet.</p>
       ) : (
-        <div style={{ border: '1px solid var(--border)', borderRadius: '10px', overflow: 'hidden' }}>
+        <div style={{ border: `1px solid ${T.rule}`, borderRadius: '10px', overflow: 'hidden' }}>
           {withAccess.map((a, idx) => (
             <div key={a.accountId} style={{
               padding: '12px 14px',
-              borderBottom: idx < withAccess.length - 1 ? '1px solid var(--border)' : 'none',
+              borderBottom: idx < withAccess.length - 1 ? `1px solid ${T.rule}` : 'none',
               display: 'flex', alignItems: 'center', gap: '8px',
             }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: '13px', fontWeight: 600 }}>{a.displayName}</div>
-                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                <div style={{ fontSize: '11px', color: T.ink2, marginTop: '2px' }}>
                   {roleLabel(a.role)} · {a.email}
                 </div>
               </div>
@@ -484,7 +510,7 @@ function AddPersonModal({
   return (
     <ModalShell onClose={onClose} title="Attach person">
       {hasEligibleExisting && (
-        <div style={{ display: 'flex', gap: '4px', background: 'var(--surface-secondary)', borderRadius: '8px', padding: '3px' }}>
+        <div style={{ display: 'flex', gap: '4px', background: T.ruleSoft, borderRadius: '8px', padding: '3px' }}>
           <TabButton active={effectiveMode === 'new'} onClick={() => setMode('new')}>Create new</TabButton>
           <TabButton active={effectiveMode === 'existing'} onClick={() => setMode('existing')}>
             Attach existing ({eligibleToAttach.length})
@@ -594,7 +620,7 @@ function EditPersonModal({
         <button onClick={removeFromHotel} style={{
           width: '100%', height: '40px', borderRadius: '8px',
           background: 'transparent', border: '1px solid rgba(239,68,68,0.3)',
-          color: 'var(--red)', fontSize: '13px', fontWeight: 600,
+          color: T.warm, fontSize: '13px', fontWeight: 600,
           cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
         }}>
           <Trash2 size={13} /> Remove from this hotel
@@ -628,8 +654,8 @@ function ModalShell({ title, onClose, children }: { title: string; onClose: () =
         maxHeight: '90vh', overflowY: 'auto',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <h2 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '16px', color: 'var(--text-primary)' }}>{title}</h2>
-          <button onClick={onClose} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: '4px' }}>
+          <h2 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '16px', color: T.ink }}>{title}</h2>
+          <button onClick={onClose} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: T.ink2, padding: '4px' }}>
             <X size={18} />
           </button>
         </div>
@@ -643,9 +669,9 @@ function TabButton({ active, disabled, onClick, children }: { active: boolean; d
   return (
     <button onClick={onClick} disabled={disabled} style={{
       flex: 1, height: '34px', borderRadius: '6px',
-      background: active ? 'var(--surface-primary)' : 'transparent',
-      border: active ? '1px solid var(--border)' : '1px solid transparent',
-      color: disabled ? 'var(--text-muted)' : 'var(--text-primary)',
+      background: active ? T.paper : 'transparent',
+      border: active ? `1px solid ${T.rule}` : '1px solid transparent',
+      color: disabled ? T.ink2 : T.ink,
       fontSize: '13px', fontWeight: active ? 600 : 500,
       cursor: disabled ? 'not-allowed' : 'pointer',
       opacity: disabled ? 0.5 : 1,
@@ -656,9 +682,9 @@ function TabButton({ active, disabled, onClick, children }: { active: boolean; d
 function FieldText({ label, value, onChange, type='text', placeholder, autoFocus }: { label: string; value: string; onChange: (v: string) => void; type?: string; placeholder?: string; autoFocus?: boolean }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-      <label style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>{label}</label>
+      <label style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', color: T.ink2 }}>{label}</label>
       <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} autoFocus={autoFocus}
-        style={{ height: '40px', borderRadius: '8px', background: 'var(--surface-primary)', border: '1px solid var(--border)', padding: '0 12px', color: 'var(--text-primary)', fontSize: '14px', outline: 'none' }} />
+        style={{ height: '40px', borderRadius: '8px', background: T.paper, border: `1px solid ${T.rule}`, padding: '0 12px', color: T.ink, fontSize: '14px', outline: 'none' }} />
     </div>
   );
 }
@@ -666,9 +692,9 @@ function FieldText({ label, value, onChange, type='text', placeholder, autoFocus
 function FieldSelect({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: { value: string; label: string }[] }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-      <label style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>{label}</label>
+      <label style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', color: T.ink2 }}>{label}</label>
       <select value={value} onChange={e => onChange(e.target.value)}
-        style={{ height: '40px', borderRadius: '8px', background: 'var(--surface-primary)', border: '1px solid var(--border)', padding: '0 12px', color: 'var(--text-primary)', fontSize: '14px', outline: 'none' }}>
+        style={{ height: '40px', borderRadius: '8px', background: T.paper, border: `1px solid ${T.rule}`, padding: '0 12px', color: T.ink, fontSize: '14px', outline: 'none' }}>
         {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
     </div>
@@ -678,16 +704,16 @@ function FieldSelect({ label, value, onChange, options }: { label: string; value
 function FieldRole({ role, onChange }: { role: AssignableRole; onChange: (r: AssignableRole) => void }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-      <label style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Role</label>
+      <label style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', color: T.ink2 }}>Role</label>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
         {ASSIGNABLE_ROLES.map(r => (
           <button key={r} onClick={() => onChange(r)} style={{
-            minWidth: '90px', flex: '1 1 90px', height: '34px',
-            borderRadius: '6px',
-            background: role === r ? 'var(--amber-dim, rgba(245,158,11,0.12))' : 'var(--surface-primary)',
-            border: `1px solid ${role === r ? 'var(--amber, #f59e0b)' : 'var(--border)'}`,
-            color: role === r ? 'var(--amber, #f59e0b)' : 'var(--text-secondary)',
-            fontSize: '12px', fontWeight: role === r ? 600 : 400,
+            minWidth: 90, flex: '1 1 90px', height: 34,
+            borderRadius: 999,
+            background: role === r ? 'rgba(215,176,126,0.14)' : T.paper,
+            border: `1px solid ${role === r ? T.caramelDeep : T.rule}`,
+            color: role === r ? T.caramelDeep : T.ink2,
+            fontFamily: FONT_SANS, fontSize: 12, fontWeight: role === r ? 600 : 500,
             cursor: 'pointer',
           }}>
             {roleLabel(r)}
@@ -700,37 +726,43 @@ function FieldRole({ role, onChange }: { role: AssignableRole; onChange: (r: Ass
 
 function ErrorBox({ children }: { children: React.ReactNode }) {
   return (
-    <p style={{ fontSize: '12px', color: 'var(--red)', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: '6px', padding: '8px 10px', margin: 0 }}>{children}</p>
+    <p style={{
+      fontSize: 12, color: T.warm,
+      background: T.warmDim,
+      border: `1px solid rgba(184,92,61,0.25)`,
+      borderRadius: 10,
+      padding: '8px 12px', margin: 0,
+    }}>{children}</p>
   );
 }
 
 function primaryBtnStyle(disabled: boolean): React.CSSProperties {
   return {
-    width: '100%', height: '42px', borderRadius: '8px',
-    background: disabled ? 'rgba(37,99,235,0.4)' : 'var(--navy-light)',
-    color: '#FFFFFF', fontSize: '14px', fontWeight: 600,
+    width: '100%', height: 44, borderRadius: 999,
+    background: disabled ? 'rgba(31,35,28,0.4)' : T.ink,
+    color: T.bg, fontFamily: FONT_SANS, fontSize: 14, fontWeight: 500,
     border: 'none', cursor: disabled ? 'not-allowed' : 'pointer',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
   };
 }
 
 const attachBtnStyle: React.CSSProperties = {
-  display: 'inline-flex', alignItems: 'center', gap: '6px',
-  background: 'var(--surface-secondary)', color: 'var(--text-primary)',
-  border: '1px solid var(--border)', borderRadius: '8px',
-  padding: '6px 12px', fontSize: '12px', fontWeight: 600,
-  cursor: 'pointer',
+  display: 'inline-flex', alignItems: 'center', gap: 6,
+  background: 'transparent', color: T.ink,
+  border: `1px solid ${T.rule}`, borderRadius: 999,
+  padding: '6px 14px', fontSize: 12, fontWeight: 500,
+  cursor: 'pointer', fontFamily: FONT_SANS,
 };
 const iconBtnStyle: React.CSSProperties = {
-  width: '32px', height: '32px', borderRadius: '6px',
-  background: 'transparent', border: '1px solid var(--border)',
-  color: 'var(--text-muted)', cursor: 'pointer',
+  width: 32, height: 32, borderRadius: 999,
+  background: 'transparent', border: `1px solid ${T.rule}`,
+  color: T.ink2, cursor: 'pointer',
   display: 'flex', alignItems: 'center', justifyContent: 'center',
 };
 const iconBtnRedStyle: React.CSSProperties = {
-  width: '32px', height: '32px', borderRadius: '6px',
-  background: 'transparent', border: '1px solid rgba(239,68,68,0.3)',
-  color: 'var(--red)', cursor: 'pointer',
+  width: 32, height: 32, borderRadius: 999,
+  background: 'transparent', border: `1px solid rgba(184,92,61,0.30)`,
+  color: T.warm, cursor: 'pointer',
   display: 'flex', alignItems: 'center', justifyContent: 'center',
 };
 
@@ -765,24 +797,24 @@ function GmActivitySection({ propertyId }: { propertyId: string }) {
         <Activity size={16} /> GM activity & engagement
       </h2>
       {row === undefined ? (
-        <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Loading…</p>
+        <p style={{ fontSize: '12px', color: T.ink2 }}>Loading…</p>
       ) : !row ? (
-        <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>No activity in the last 7 days.</p>
+        <p style={{ fontSize: '13px', color: T.ink2 }}>No activity in the last 7 days.</p>
       ) : (
-        <div style={{ padding: '14px', border: '1px solid var(--border)', borderRadius: '10px' }}>
+        <div style={{ padding: '14px', border: `1px solid ${T.rule}`, borderRadius: '10px' }}>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', fontSize: '12px' }}>
-            <span><strong style={{ color: 'var(--text-primary)' }}>{row.viewsToday}</strong> <span style={{ color: 'var(--text-muted)' }}>views today</span></span>
-            <span><strong style={{ color: 'var(--text-primary)' }}>{row.viewsWeek}</strong> <span style={{ color: 'var(--text-muted)' }}>this week</span></span>
-            <span><strong style={{ color: 'var(--text-primary)' }}>{row.distinctUsersToday}</strong> <span style={{ color: 'var(--text-muted)' }}>{row.distinctUsersToday === 1 ? 'user' : 'users'} today</span></span>
-            <span style={{ color: 'var(--text-muted)' }}>last active {new Date(row.lastActiveTs).toLocaleString()}</span>
+            <span><strong style={{ color: T.ink }}>{row.viewsToday}</strong> <span style={{ color: T.ink2 }}>views today</span></span>
+            <span><strong style={{ color: T.ink }}>{row.viewsWeek}</strong> <span style={{ color: T.ink2 }}>this week</span></span>
+            <span><strong style={{ color: T.ink }}>{row.distinctUsersToday}</strong> <span style={{ color: T.ink2 }}>{row.distinctUsersToday === 1 ? 'user' : 'users'} today</span></span>
+            <span style={{ color: T.ink2 }}>last active {new Date(row.lastActiveTs).toLocaleString()}</span>
           </div>
           {row.topFeatures.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '12px' }}>
               {row.topFeatures.map(f => (
                 <span key={f.path} style={{
                   fontSize: '11px', padding: '2px 8px',
-                  background: 'var(--surface-secondary)', borderRadius: '999px',
-                  color: 'var(--text-muted)', fontFamily: 'var(--font-mono)',
+                  background: T.ruleSoft, borderRadius: '999px',
+                  color: T.ink2, fontFamily: 'var(--font-mono)',
                 }}>
                   {f.path === '/' ? 'home' : f.path.split('/').filter(Boolean).slice(0, 2).join('/')} · {f.count}
                 </span>
@@ -797,20 +829,16 @@ function GmActivitySection({ propertyId }: { propertyId: string }) {
 
 function DetailCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div style={{ padding: '14px', border: '1px solid var(--border)', borderRadius: '12px' }}>
-      <p style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '8px' }}>
-        {title}
-      </p>
+    <div style={{
+      padding: '16px 18px',
+      background: T.paper,
+      border: `1px solid ${T.rule}`,
+      borderRadius: 16,
+    }}>
+      <Caps style={{ marginBottom: 10, display: 'block' }}>{title}</Caps>
       {children}
     </div>
   );
-}
-
-function subscriptionColor(s: string | null): string {
-  if (s === 'active') return 'var(--green)';
-  if (s === 'trial') return 'var(--amber)';
-  if (s === 'past_due' || s === 'canceled') return 'var(--red)';
-  return 'var(--text-secondary)';
 }
 
 // ─── Audit log (this hotel only) ────────────────────────────────────────
@@ -842,25 +870,25 @@ function AuditLogSection({ propertyId }: { propertyId: string }) {
         <FileText size={16} /> Audit log
       </h2>
       {entries === null ? (
-        <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Loading…</p>
+        <p style={{ fontSize: '12px', color: T.ink2 }}>Loading…</p>
       ) : entries.length === 0 ? (
-        <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>No events recorded for this hotel yet.</p>
+        <p style={{ fontSize: '13px', color: T.ink2 }}>No events recorded for this hotel yet.</p>
       ) : (
-        <div style={{ border: '1px solid var(--border)', borderRadius: '10px', overflow: 'hidden' }}>
+        <div style={{ border: `1px solid ${T.rule}`, borderRadius: '10px', overflow: 'hidden' }}>
           {entries.map((e, idx) => (
             <div key={e.id} style={{
               padding: '10px 14px',
-              borderBottom: idx < entries.length - 1 ? '1px solid var(--border)' : 'none',
+              borderBottom: idx < entries.length - 1 ? `1px solid ${T.rule}` : 'none',
               display: 'grid', gridTemplateColumns: '1fr 1.5fr 1fr', gap: '12px', alignItems: 'center',
               fontSize: '12px',
             }}>
               <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
                 {e.action}
               </div>
-              <div style={{ color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <div style={{ color: T.ink2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {summarizeMetadata(e)}
               </div>
-              <div style={{ textAlign: 'right', color: 'var(--text-muted)', fontSize: '11px' }}>
+              <div style={{ textAlign: 'right', color: T.ink2, fontSize: '11px' }}>
                 <div>{e.actor_email ?? '—'}</div>
                 <div style={{ marginTop: '2px' }}>{new Date(e.ts).toLocaleString()}</div>
               </div>

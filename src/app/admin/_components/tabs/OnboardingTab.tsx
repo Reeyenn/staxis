@@ -1,13 +1,10 @@
 'use client';
 
 /**
- * Onboarding tab — 4-column horizontal layout.
+ * Onboarding tab — Snow design (May 2026).
  *
  *   Onboarding (prospects)    │  CUA agent learning PMS  │  Onboarding pipeline  │  PMS coverage
  *   (ProspectsSection)        │  (live mapping jobs)     │  (4-stage funnel)     │  (learned-only)
- *
- * The Recent sign-ups list that used to live below was removed — the
- * Onboarding pipeline already surfaces the same hotels.
  *
  * PMS coverage is filtered to PMSes the agent has actually learned
  * (recipe.coveragePct > 0). PMSes with zero progress are hidden — they
@@ -23,8 +20,10 @@ import {
 } from 'lucide-react';
 import { ProspectsSection } from '@/app/admin/_components/ProspectsSection';
 import { CreateHotelModal } from '@/app/admin/_components/CreateHotelModal';
-
-const RUNNING = new Set(['queued', 'running', 'mapping', 'extracting']);
+import {
+  T, FONT_SANS, FONT_MONO, FONT_SERIF,
+  Caps, Card, Btn, Pill,
+} from '@/app/admin/_components/_snow';
 
 interface PropertyRow {
   id: string;
@@ -103,15 +102,7 @@ export function OnboardingTab() {
   }, [liveJobs]);
 
   if (error) {
-    return (
-      <div style={{
-        padding: '12px 14px',
-        background: 'var(--red-dim)',
-        border: '1px solid rgba(239,68,68,0.25)',
-        borderRadius: '10px',
-        color: 'var(--red)', fontSize: '13px',
-      }}>{error}</div>
-    );
+    return <ErrorRow text={error} />;
   }
 
   if (!props || !liveJobs || !pms) {
@@ -122,55 +113,45 @@ export function OnboardingTab() {
     );
   }
 
-  // ── Bucket properties by onboarding stage ─────────────────────────────
   // Hotels that are ALREADY live (synced + connected) don't show on this
   // tab; they belong on Live hotels. We only surface in-flight onboardings.
   const inOnboarding = props.filter((p) => !p.lastSyncedAt);
   const stages = bucketByStage(inOnboarding, liveJobs);
 
   // PMS coverage filter: only show PMSes the agent has actually learned.
-  // The full registry (all supported PMSes including never-touched ones)
-  // is still available behind the "Show technical details" link.
   const learnedPms = pms.filter((p) => p.recipe !== null);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24, fontFamily: FONT_SANS }}>
 
-      {/* Phase M1 (2026-05-14) — primary CTA: start onboarding a new hotel.
-          Lives at the top of THIS tab (not Live Hotels) because hotels
-          enter the system here, then graduate to Live Hotels once their
-          first PMS sync completes. */}
-      <div style={{
+      {/* Primary CTA: start onboarding a new hotel. */}
+      <Card padding="20px 24px" style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        gap: '12px', padding: '16px 20px',
-        background: 'var(--surface-primary)',
-        border: '1px solid var(--border)',
-        borderRadius: '12px',
+        gap: 16, flexWrap: 'wrap',
       }}>
         <div style={{ minWidth: 0, flex: 1 }}>
-          <h2 style={{ fontSize: '15px', fontWeight: 700, marginBottom: '2px' }}>
-            Onboard a new hotel
+          <Caps>New hotel</Caps>
+          <h2 style={{
+            fontFamily: FONT_SERIF, fontSize: 24, fontWeight: 400,
+            letterSpacing: '-0.02em', color: T.ink, margin: '2px 0 4px',
+            lineHeight: 1.15,
+          }}>
+            <span style={{ fontStyle: 'italic' }}>Onboard</span> a new hotel
           </h2>
-          <p style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.4 }}>
-            Creates the property, generates a single-use owner signup link valid for 7 days, and surfaces it for you to send.
+          <p style={{ fontSize: 13, color: T.ink2, lineHeight: 1.5 }}>
+            Creates the property, generates a single-use owner signup link valid for 7 days,
+            and surfaces it for you to send.
           </p>
         </div>
-        <button
-          onClick={() => setCreateOpen(true)}
-          className="btn btn-primary"
-          style={{
-            padding: '10px 16px', fontSize: '13px', fontWeight: 600,
-            display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap',
-          }}
-        >
+        <Btn variant="primary" size="lg" onClick={() => setCreateOpen(true)}>
           <Plus size={14} /> New hotel
-        </button>
-      </div>
+        </Btn>
+      </Card>
 
       <div style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-        gap: '20px',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+        gap: 18,
         alignItems: 'start',
       }}>
 
@@ -179,41 +160,46 @@ export function OnboardingTab() {
 
       {/* Column 2: CUA agent learning PMS */}
       <section style={columnStyle}>
-        <h2 style={sectionTitle}>CUA agent learning PMS</h2>
+        <SectionTitle caps="Live mapping" title="CUA agent" italic="learning PMS" />
         {liveJobs.length === 0 ? (
           <EmptyState text="Nothing mapping right now ✓" />
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
             {liveJobs.map((j) => <LiveJobCard key={j.id} job={j} />)}
           </div>
         )}
       </section>
 
-      {/* Column 3: Onboarding pipeline.
-          Keep the 4 sub-buckets but flow them vertically within the column
-          so they fit the narrower width. */}
+      {/* Column 3: Onboarding pipeline */}
       <section style={columnStyle}>
-        <h2 style={sectionTitle}>Onboarding pipeline</h2>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+        <SectionTitle caps="Pipeline" title="Onboarding" italic="funnel" />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
           <PipelineColumn title="Signed up" hint="Account exists, wizard not done" rows={stages.signedUp} />
           <PipelineColumn title="Wizard done" hint="Staff added, no PMS yet" rows={stages.wizardDone} />
           <PipelineColumn title="PMS connected" hint="Creds saved, not mapped" rows={stages.pmsConnected} />
-          <PipelineColumn title="Mapping" hint="Agent is learning right now" rows={stages.mapping} accent="var(--amber)" />
+          <PipelineColumn title="Mapping" hint="Agent is learning right now" rows={stages.mapping} accent={T.caramelDeep} />
         </div>
       </section>
 
       {/* Column 4: PMS coverage — filtered to learned only */}
       <section style={columnStyle}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
-          <h2 style={sectionTitle}>PMS coverage</h2>
-          <Link href="/admin/pms" style={{ fontSize: '11px', color: 'var(--text-muted)', textDecoration: 'none' }}>
-            details →
-          </Link>
-        </div>
+        <SectionTitle
+          caps="Coverage"
+          title="PMS"
+          italic="coverage"
+          right={
+            <Link href="/admin/pms" style={{
+              fontFamily: FONT_MONO, fontSize: 10, color: T.ink3,
+              textDecoration: 'none', letterSpacing: '0.16em', textTransform: 'uppercase',
+            }}>
+              details →
+            </Link>
+          }
+        />
         {learnedPms.length === 0 ? (
           <EmptyState text="No PMSes learned yet. First hotel onboarding will populate this list." />
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
             {learnedPms.map((p) => <PMSRow key={p.pmsType} pms={p} />)}
           </div>
         )}
@@ -231,44 +217,71 @@ export function OnboardingTab() {
 }
 
 const columnStyle: React.CSSProperties = {
-  minWidth: 0, // critical for grid children so long names don't overflow
+  minWidth: 0,
 };
 
 // ── Sub-components ─────────────────────────────────────────────────────
 
+function SectionTitle({ caps, title, italic, right }: {
+  caps: string; title: string; italic?: string; right?: React.ReactNode;
+}) {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between',
+      gap: 12, marginBottom: 4,
+    }}>
+      <div>
+        <Caps>{caps}</Caps>
+        <h2 style={{
+          fontFamily: FONT_SERIF, fontSize: 24, fontWeight: 400,
+          letterSpacing: '-0.02em', color: T.ink, margin: '2px 0 0',
+          lineHeight: 1.15,
+        }}>
+          {title}
+          {italic && <> <span style={{ fontStyle: 'italic' }}>{italic}</span></>}
+        </h2>
+      </div>
+      {right}
+    </div>
+  );
+}
+
 function LiveJobCard({ job }: { job: JobRow }) {
   return (
     <Link href={`/admin/properties/${job.propertyId}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-      <div style={{
-        padding: '12px 14px',
-        background: 'var(--surface-primary)',
-        border: '1px solid var(--border)',
-        borderRadius: '10px',
-        cursor: 'pointer',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
-          <Loader2 size={14} color="var(--amber)" style={{ animation: 'spin 1.5s linear infinite' }} />
-          <strong style={{ fontSize: '13px' }}>{job.propertyName ?? '(deleted)'}</strong>
-          <span style={{ fontSize: '11px', color: 'var(--text-muted)', padding: '2px 6px', background: 'var(--surface-secondary)', borderRadius: '4px' }}>
+      <Card padding="14px 16px" style={{ cursor: 'pointer' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+          <Loader2 size={14} color={T.caramelDeep} style={{ animation: 'spin 1.5s linear infinite' }} />
+          <strong style={{ fontSize: 13, color: T.ink, letterSpacing: '-0.005em' }}>
+            {job.propertyName ?? '(deleted)'}
+          </strong>
+          <Pill tone="neutral" style={{ height: 20, fontSize: 10, fontFamily: FONT_MONO, letterSpacing: '0.04em' }}>
             {job.pmsType}
-          </span>
-          <span style={{ marginLeft: 'auto', fontSize: '11px', color: 'var(--amber)', fontWeight: 600 }}>
+          </Pill>
+          <Pill tone="caramel" style={{ marginLeft: 'auto', height: 20, fontSize: 10, letterSpacing: '0.06em' }}>
             {job.status.toUpperCase()}
-          </span>
+          </Pill>
         </div>
-        <div style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+        <div style={{
+          fontSize: 12, color: T.ink2, display: 'flex',
+          justifyContent: 'space-between', marginBottom: 6,
+        }}>
           <span>{job.step ?? 'Working…'}</span>
-          {job.progressPct != null && <span>{job.progressPct}%</span>}
+          {job.progressPct != null && (
+            <span style={{ fontFamily: FONT_MONO, color: T.caramelDeep, fontWeight: 600 }}>
+              {job.progressPct}%
+            </span>
+          )}
         </div>
-        <div style={{ height: '3px', background: 'var(--surface-secondary)', borderRadius: '2px', overflow: 'hidden' }}>
+        <div style={{ height: 3, background: T.ruleSoft, borderRadius: 2, overflow: 'hidden' }}>
           <div style={{
             width: `${Math.max(0, Math.min(100, job.progressPct ?? 0))}%`,
             height: '100%',
-            background: 'var(--amber)',
+            background: T.caramel,
             transition: 'width 0.3s',
           }} />
         </div>
-      </div>
+      </Card>
     </Link>
   );
 }
@@ -279,32 +292,35 @@ function PipelineColumn({ title, hint, rows, accent }: {
   accent?: string;
 }) {
   return (
-    <div style={{
-      padding: '12px',
-      background: 'var(--surface-primary)',
-      border: '1px solid var(--border)',
-      borderRadius: '10px',
-      minHeight: '80px',
-    }}>
-      <div style={{ fontSize: '12px', fontWeight: 700, color: accent ?? 'var(--text-primary)', marginBottom: '2px' }}>
-        {title} <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 400, opacity: 0.6 }}>· {rows.length}</span>
+    <Card padding="14px">
+      <div style={{
+        fontFamily: FONT_MONO, fontSize: 10, fontWeight: 600,
+        color: accent ?? T.ink, textTransform: 'uppercase', letterSpacing: '0.16em',
+        marginBottom: 2,
+      }}>
+        {title}
+        <span style={{ marginLeft: 6, fontWeight: 400, color: T.ink3 }}>
+          · {rows.length}
+        </span>
       </div>
-      <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '10px', lineHeight: 1.4 }}>{hint}</p>
+      <p style={{ fontSize: 11.5, color: T.ink2, marginBottom: 10, lineHeight: 1.45 }}>
+        {hint}
+      </p>
       {rows.length === 0 ? (
-        <p style={{ fontSize: '12px', color: 'var(--text-muted)', opacity: 0.5 }}>—</p>
+        <p style={{ fontSize: 12, color: T.ink3, fontStyle: 'italic' }}>—</p>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {rows.map((r) => (
             <Link
               key={r.id}
               href={`/admin/properties/${r.id}`}
               style={{
-                fontSize: '12px',
-                padding: '6px 8px',
-                background: 'var(--surface-secondary)',
-                borderRadius: '6px',
+                fontSize: 12.5,
+                padding: '6px 10px',
+                background: T.ruleSoft,
+                borderRadius: 8,
                 textDecoration: 'none',
-                color: 'var(--text-primary)',
+                color: T.ink,
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               }}
             >
@@ -312,7 +328,10 @@ function PipelineColumn({ title, hint, rows, accent }: {
                 {r.name ?? '(unnamed)'}
               </span>
               {r.pmsType && (
-                <span style={{ fontSize: '10px', color: 'var(--text-muted)', flexShrink: 0, marginLeft: '6px' }}>
+                <span style={{
+                  fontFamily: FONT_MONO, fontSize: 10, color: T.ink3,
+                  flexShrink: 0, marginLeft: 6, letterSpacing: '0.04em',
+                }}>
                   {r.pmsType}
                 </span>
               )}
@@ -320,7 +339,7 @@ function PipelineColumn({ title, hint, rows, accent }: {
           ))}
         </div>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -331,53 +350,72 @@ function PMSRow({ pms }: { pms: PMSCoverage }) {
 
   let icon, color, status;
   if (fully) {
-    icon = <CheckCircle2 size={16} color="var(--green)" />;
-    color = 'var(--green)';
+    icon = <CheckCircle2 size={16} color={T.sageDeep} />;
+    color = T.sageDeep;
     status = 'Ready. Future hotels onboard free.';
   } else if (partial) {
-    icon = <AlertCircle size={16} color="var(--amber)" />;
-    color = 'var(--amber)';
+    icon = <AlertCircle size={16} color={T.caramelDeep} />;
+    color = T.caramelDeep;
     status = `Partial — ${pms.recipe!.coveragePct}% of actions captured.`;
   } else if (failed) {
-    icon = <AlertTriangle size={16} color="var(--red)" />;
-    color = 'var(--red)';
+    icon = <AlertTriangle size={16} color={T.warm} />;
+    color = T.warm;
     status = 'Last mapping failed. First hotel will retry.';
   } else {
-    icon = <Clock size={16} color="var(--text-muted)" />;
-    color = 'var(--text-muted)';
+    icon = <Clock size={16} color={T.ink3} />;
+    color = T.ink2;
     status = 'Not learned yet. First hotel triggers ~$0.50, ~7 min mapping.';
   }
 
   return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: '12px',
-      padding: '12px 14px',
-      background: 'var(--surface-primary)',
-      border: '1px solid var(--border)',
-      borderRadius: '10px',
+    <Card padding="14px 16px" style={{
+      display: 'flex', alignItems: 'center', gap: 12,
     }}>
       {icon}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: '13px', fontWeight: 600 }}>{pms.label}</div>
-        <div style={{ fontSize: '12px', color, marginTop: '2px' }}>{status}</div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: T.ink, letterSpacing: '-0.005em' }}>
+          {pms.label}
+        </div>
+        <div style={{ fontSize: 12, color, marginTop: 3, lineHeight: 1.4 }}>
+          {status}
+        </div>
       </div>
-      <div style={{ fontSize: '11px', color: 'var(--text-muted)', flexShrink: 0 }}>
+      <span style={{
+        fontFamily: FONT_MONO, fontSize: 11, color: T.ink3,
+        flexShrink: 0, letterSpacing: '0.04em',
+      }}>
         {pms.propertyCount} {pms.propertyCount === 1 ? 'hotel' : 'hotels'}
-      </div>
-    </div>
+      </span>
+    </Card>
   );
 }
 
 function EmptyState({ text }: { text: string }) {
   return (
     <div style={{
-      padding: '20px',
-      background: 'var(--surface-secondary)',
-      border: '1px dashed var(--border)',
-      borderRadius: '10px',
+      marginTop: 8,
+      padding: '24px 20px',
+      background: T.ruleSoft,
+      border: `1px dashed ${T.rule}`,
+      borderRadius: 14,
       textAlign: 'center',
-      fontSize: '12px',
-      color: 'var(--text-muted)',
+      fontSize: 12.5,
+      color: T.ink2,
+      fontStyle: 'italic',
+      fontFamily: FONT_SERIF,
+    }}>{text}</div>
+  );
+}
+
+function ErrorRow({ text }: { text: string }) {
+  return (
+    <div style={{
+      padding: '14px 16px',
+      background: T.warmDim,
+      border: `1px solid rgba(184,92,61,0.25)`,
+      borderRadius: 14,
+      color: T.warm, fontSize: 13,
+      fontFamily: FONT_SANS,
     }}>{text}</div>
   );
 }
@@ -405,10 +443,3 @@ function bucketByStage(props: PropertyRow[], liveJobs: JobRow[]) {
   }
   return { signedUp, wizardDone, pmsConnected, mapping };
 }
-
-const sectionTitle: React.CSSProperties = {
-  fontSize: '15px',
-  fontWeight: 600,
-  letterSpacing: '-0.01em',
-  marginBottom: '4px',
-};

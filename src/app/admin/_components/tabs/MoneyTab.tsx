@@ -1,24 +1,27 @@
 'use client';
 
 /**
- * Money tab.
+ * Money tab — Snow design (May 2026).
  *
- * Top (full-width):
- *   - Pilot-mode banner (only when MRR = 0)
- *   - Monthly summary chips (MRR / Cost (30d) / Margin / This month spent)
+ * Top: pilot-mode banner (when MRR = 0) + monthly summary chips
+ *   (MRR / Cost (30d) / Margin / This month spent).
  *
- * Below (3-column horizontal):
+ * Below (3-column grid):
  *   Expenses  │  Per-hotel economics  │  External links
  *
  * Claude API spend rolls into expenses automatically once claude_usage_log
  * starts populating. Until then the per-hotel Claude cost shows $0 —
- * console.anthropic.com link in the External column is the ground truth.
+ * console.anthropic.com link in External is the ground truth.
  */
 
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { ExternalLink, Plus, Save, Trash2 } from 'lucide-react';
+import {
+  T, FONT_SANS, FONT_MONO, FONT_SERIF,
+  Caps, Card, Btn, SerifNum, MonoNum,
+} from '@/app/admin/_components/_snow';
 
 interface Expense {
   id: string;
@@ -45,8 +48,6 @@ interface HotelEcon {
   marginCents: number;
 }
 
-// Defaults shown in the dropdown out of the box. Anything else the user
-// has previously entered gets folded in dynamically (see categoryOptions).
 const DEFAULT_CATEGORIES: { key: string; label: string }[] = [
   { key: 'claude_api', label: 'Claude API' },
   { key: 'hosting',    label: 'Hosting (other)' },
@@ -62,18 +63,17 @@ const CATEGORY_LABEL: Record<string, string> = Object.fromEntries(
 );
 
 const CATEGORY_COLOR: Record<string, string> = {
-  claude_api: '#a78bfa',
-  hosting: '#60a5fa',
-  twilio: '#fb923c',
-  supabase: '#34d399',
-  vercel: '#f472b6',
-  fly: '#facc15',
-  other: '#9ca3af',
+  claude_api: '#7B6A97',
+  hosting:    '#5E7A8C',
+  twilio:     '#C99644',
+  supabase:   '#5C7A60',
+  vercel:     '#B8775E',
+  fly:        '#8C6A33',
+  other:      '#A6ABA6',
 };
 
-// Custom categories get a deterministic color so the same name always
-// shows up the same color across reloads.
-const CUSTOM_PALETTE = ['#f87171', '#fbbf24', '#4ade80', '#22d3ee', '#818cf8', '#e879f9', '#2dd4bf'];
+const CUSTOM_PALETTE = ['#B85C3D', '#C99644', '#5C7A60', '#5E7A8C', '#7B6A97', '#B8775E', '#688372'];
+
 function colorFor(category: string): string {
   if (CATEGORY_COLOR[category]) return CATEGORY_COLOR[category];
   let h = 0;
@@ -112,11 +112,12 @@ export function MoneyTab() {
   if (error) {
     return (
       <div style={{
-        padding: '12px 14px',
-        background: 'var(--red-dim)',
-        border: '1px solid rgba(239,68,68,0.25)',
-        borderRadius: '10px',
-        color: 'var(--red)', fontSize: '13px',
+        padding: '14px 16px',
+        background: T.warmDim,
+        border: `1px solid rgba(184,92,61,0.25)`,
+        borderRadius: 14,
+        color: T.warm, fontSize: 13,
+        fontFamily: FONT_SANS,
       }}>{error}</div>
     );
   }
@@ -124,12 +125,11 @@ export function MoneyTab() {
   if (!expenses || !econ) {
     return (
       <div style={{ padding: '60px 0', textAlign: 'center' }}>
-        <div className="spinner" style={{ width: '24px', height: '24px', margin: '0 auto' }} />
+        <div className="spinner" style={{ width: 24, height: 24, margin: '0 auto' }} />
       </div>
     );
   }
 
-  // Sum expenses for the current month
   const thisMonthCutoff = new Date();
   thisMonthCutoff.setDate(1);
   thisMonthCutoff.setHours(0, 0, 0, 0);
@@ -138,58 +138,82 @@ export function MoneyTab() {
     .reduce((s, e) => s + e.amount_cents, 0);
 
   const isPilot = econ.totals.mrrCents === 0;
+  const marginCents = econ.totals.mrrCents - econ.totals.totalCostLast30dCents;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24, fontFamily: FONT_SANS }}>
 
-      {/* 1. Pilot banner */}
+      {/* Pilot banner */}
       {isPilot && (
-        <div style={{
-          padding: '14px 16px',
-          background: 'rgba(212,144,64,0.08)',
-          border: '1px solid rgba(212,144,64,0.2)',
-          borderRadius: '10px',
+        <Card padding="16px 20px" style={{
+          background: 'linear-gradient(180deg, rgba(215,176,126,0.10), rgba(215,176,126,0.02))',
+          border: `1px solid rgba(140,106,51,0.20)`,
         }}>
-          <div style={{ fontSize: '14px', fontWeight: 600, marginBottom: '4px' }}>Pilot mode</div>
-          <p style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-            All hotels are free. The cost numbers below are still real — useful to see how
-            expensive each hotel is to run before billing flips on.
+          <Caps c={T.caramelDeep}>Pilot mode</Caps>
+          <h2 style={{
+            fontFamily: FONT_SERIF, fontSize: 22, fontWeight: 400,
+            letterSpacing: '-0.02em', color: T.ink, margin: '4px 0 4px',
+            lineHeight: 1.2,
+          }}>
+            All hotels are <span style={{ fontStyle: 'italic' }}>free</span>.
+          </h2>
+          <p style={{ fontSize: 13, color: T.ink2, lineHeight: 1.55 }}>
+            The cost numbers below are still real — useful to see how expensive each
+            hotel is to run before billing flips on.
           </p>
-        </div>
+        </Card>
       )}
 
-      {/* 2. Monthly summary */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-        <SummaryChip label="MRR" value={formatUSD(econ.totals.mrrCents)} color="var(--green)" />
-        <SummaryChip label="Cost (30d)" value={formatUSD(econ.totals.totalCostLast30dCents)} color="var(--text-muted)" />
-        <SummaryChip label="Margin (30d)" value={formatUSD(econ.totals.mrrCents - econ.totals.totalCostLast30dCents)}
-          color={econ.totals.mrrCents - econ.totals.totalCostLast30dCents >= 0 ? 'var(--green)' : 'var(--red)'} />
-        <SummaryChip label="This month spent" value={formatUSD(thisMonthCents)} color="var(--text-muted)" />
-      </div>
+      {/* Hero summary — italic-serif numbers in a single card row */}
+      <Card padding="0">
+        <div style={{ display: 'flex', flexWrap: 'wrap' }}>
+          <SummaryCell
+            label="MRR"
+            value={formatUSD(econ.totals.mrrCents)}
+            tone="sage"
+          />
+          <SummaryCell
+            label="Cost (30d)"
+            value={formatUSD(econ.totals.totalCostLast30dCents)}
+            tone="neutral"
+          />
+          <SummaryCell
+            label="Margin (30d)"
+            value={formatUSD(marginCents)}
+            tone={marginCents >= 0 ? 'sage' : 'warm'}
+          />
+          <SummaryCell
+            label="This month spent"
+            value={formatUSD(thisMonthCents)}
+            tone="caramel"
+            last
+          />
+        </div>
+      </Card>
 
-      {/* 3-column horizontal layout: Expenses | Per-hotel economics | External */}
+      {/* 3-column grid */}
       <div style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
-        gap: '20px',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))',
+        gap: 18,
         alignItems: 'start',
       }}>
         <ExpensesSection expenses={expenses} reload={load} />
 
         <section style={{ minWidth: 0 }}>
-          <h2 style={sectionTitle}>Per-hotel economics</h2>
+          <SectionTitle caps="Per-hotel" title="Per-hotel" italic="economics" />
           {econ.hotels.length === 0 ? (
             <EmptyState text="No hotels yet." />
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
               {econ.hotels.map((h) => <HotelEconRow key={h.propertyId} row={h} />)}
             </div>
           )}
         </section>
 
         <section style={{ minWidth: 0 }}>
-          <h2 style={sectionTitle}>External</h2>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+          <SectionTitle caps="External" title="External" italic="dashboards" />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
             <ExternalRow href="https://console.anthropic.com/cost"
               title="Claude API spend" subtitle="console.anthropic.com" />
             <ExternalRow href="https://dashboard.stripe.com/dashboard"
@@ -201,18 +225,48 @@ export function MoneyTab() {
   );
 }
 
-function SummaryChip({ label, value, color }: { label: string; value: string; color: string }) {
+function SectionTitle({ caps, title, italic, right }: {
+  caps: string; title: string; italic?: string; right?: React.ReactNode;
+}) {
   return (
     <div style={{
-      padding: '10px 14px',
-      borderRadius: '10px',
-      border: `1px solid ${color}`,
-      background: 'var(--surface-primary)',
-      minWidth: '140px',
+      display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between',
+      gap: 12, marginBottom: 4,
     }}>
-      <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{label}</div>
-      <div style={{ fontSize: '18px', fontWeight: 700, color, fontFamily: 'var(--font-mono)', marginTop: '2px' }}>
-        {value}
+      <div>
+        <Caps>{caps}</Caps>
+        <h2 style={{
+          fontFamily: FONT_SERIF, fontSize: 24, fontWeight: 400,
+          letterSpacing: '-0.02em', color: T.ink, margin: '2px 0 0',
+          lineHeight: 1.15,
+        }}>
+          {title}
+          {italic && <> <span style={{ fontStyle: 'italic' }}>{italic}</span></>}
+        </h2>
+      </div>
+      {right}
+    </div>
+  );
+}
+
+function SummaryCell({ label, value, tone, last }: {
+  label: string; value: string; tone: 'sage' | 'warm' | 'caramel' | 'neutral'; last?: boolean;
+}) {
+  const c = {
+    sage:    T.sageDeep,
+    warm:    T.warm,
+    caramel: T.caramelDeep,
+    neutral: T.ink,
+  }[tone];
+  return (
+    <div style={{
+      flex: '1 1 200px', minWidth: 160,
+      padding: '18px 22px',
+      borderRight: last ? 'none' : `1px solid ${T.rule}`,
+    }}>
+      <Caps size={9}>{label}</Caps>
+      <div style={{ marginTop: 4 }}>
+        <SerifNum size={32} italic c={c}>{value}</SerifNum>
       </div>
     </div>
   );
@@ -229,7 +283,6 @@ function ExpensesSection({ expenses, reload }: { expenses: Expense[]; reload: ()
     incurredOn: new Date().toISOString().slice(0, 10),
   });
 
-  // Dropdown options = defaults + any custom categories already saved.
   const categoryOptions = React.useMemo(() => {
     const seen = new Set(DEFAULT_CATEGORIES.map((c) => c.key));
     const opts = DEFAULT_CATEGORIES.map((c) => ({ key: c.key, label: c.label }));
@@ -277,33 +330,26 @@ function ExpensesSection({ expenses, reload }: { expenses: Expense[]; reload: ()
 
   return (
     <section style={{ minWidth: 0 }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '8px' }}>
-        <h2 style={sectionTitle}>Expenses</h2>
-        {!adding && (
-          <button onClick={() => setAdding(true)} className="btn btn-secondary" style={{ fontSize: '12px' }}>
+      <SectionTitle
+        caps="Expenses"
+        title="Expenses"
+        italic="& burn"
+        right={!adding && (
+          <Btn variant="ghost" size="sm" onClick={() => setAdding(true)}>
             <Plus size={12} /> Add
-          </button>
+          </Btn>
         )}
-      </div>
+      />
 
       {adding && (
-        <div style={{
-          padding: '12px',
-          background: 'var(--surface-primary)',
-          border: '1px solid var(--amber)',
-          borderRadius: '10px',
-          marginBottom: '8px',
-          // Narrower column = vertical form. The inputs flow naturally
-          // top-to-bottom which is also easier to scan than the 5-up
-          // horizontal row we used before.
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '8px',
+        <Card padding="14px 16px" style={{
+          marginTop: 8,
+          border: `1px solid ${T.caramelDeep}`,
+          display: 'flex', flexDirection: 'column', gap: 10,
         }}>
           <FieldLabel text="Category">
             {isNewCategory ? (
               <input
-                className="input"
                 type="text"
                 autoFocus
                 placeholder="New category name"
@@ -312,14 +358,13 @@ function ExpensesSection({ expenses, reload }: { expenses: Expense[]; reload: ()
                 onBlur={() => { if (!draft.customCategory.trim()) setDraft({ ...draft, category: 'hosting', customCategory: '' }); }}
                 onKeyDown={(e) => { if (e.key === 'Escape') setDraft({ ...draft, category: 'hosting', customCategory: '' }); }}
                 maxLength={60}
-                style={{ fontSize: '12px' }}
+                style={inputStyle}
               />
             ) : (
               <select
-                className="input"
                 value={draft.category}
                 onChange={(e) => setDraft({ ...draft, category: e.target.value })}
-                style={{ fontSize: '12px' }}
+                style={inputStyle}
               >
                 {categoryOptions.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
                 <option disabled>──────────</option>
@@ -328,76 +373,72 @@ function ExpensesSection({ expenses, reload }: { expenses: Expense[]; reload: ()
             )}
           </FieldLabel>
           <FieldLabel text="Amount (USD)">
-            <input className="input" type="number" step="0.01" placeholder="0.00" value={draft.amountDollars} onChange={(e) => setDraft({ ...draft, amountDollars: e.target.value })} style={{ fontSize: '12px' }} />
+            <input type="number" step="0.01" placeholder="0.00" value={draft.amountDollars}
+              onChange={(e) => setDraft({ ...draft, amountDollars: e.target.value })} style={inputStyle} />
           </FieldLabel>
           <FieldLabel text="Description">
-            <input className="input" type="text" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} style={{ fontSize: '12px' }} />
+            <input type="text" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} style={inputStyle} />
           </FieldLabel>
           <FieldLabel text="Date">
-            <input className="input" type="date" value={draft.incurredOn} onChange={(e) => setDraft({ ...draft, incurredOn: e.target.value })} style={{ fontSize: '12px' }} />
+            <input type="date" value={draft.incurredOn} onChange={(e) => setDraft({ ...draft, incurredOn: e.target.value })} style={inputStyle} />
           </FieldLabel>
-          <div style={{ display: 'flex', gap: '4px', marginTop: '4px' }}>
-            <button
+          <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+            <Btn
+              variant="primary"
+              size="sm"
               onClick={create}
-              className="btn btn-primary"
               disabled={!resolvedCategory || !(parseFloat(draft.amountDollars) > 0)}
-              style={{ fontSize: '12px' }}
             >
               <Save size={12} /> Save
-            </button>
-            <button onClick={() => setAdding(false)} className="btn btn-secondary" style={{ fontSize: '12px' }}>
+            </Btn>
+            <Btn variant="ghost" size="sm" onClick={() => setAdding(false)}>
               Cancel
-            </button>
+            </Btn>
           </div>
-        </div>
+        </Card>
       )}
 
       {expenses.length === 0 ? (
         <EmptyState text="No expenses yet — add one to start tracking your monthly burn." />
       ) : (
-        <div style={{
-          border: '1px solid var(--border)',
-          borderRadius: '10px',
-          overflow: 'hidden',
-          background: 'var(--surface-primary)',
-        }}>
+        <Card padding="0" style={{ marginTop: 8 }}>
           {expenses.map((e, idx) => (
             <div key={e.id} style={{
-              padding: '10px 14px',
+              padding: '12px 16px',
               display: 'grid',
               gridTemplateColumns: 'auto 1fr auto auto',
-              gap: '12px',
+              gap: 12,
               alignItems: 'center',
-              borderBottom: idx < expenses.length - 1 ? '1px solid var(--border)' : 'none',
-              fontSize: '12px',
+              borderBottom: idx < expenses.length - 1 ? `1px solid ${T.rule}` : 'none',
+              fontSize: 12,
             }}>
               <span style={{
-                width: '8px', height: '8px', borderRadius: '50%',
+                width: 8, height: 8, borderRadius: '50%',
                 background: colorFor(e.category),
               }} />
               <div style={{ minWidth: 0 }}>
-                <div style={{ fontWeight: 600 }}>
+                <div style={{ fontWeight: 600, color: T.ink, letterSpacing: '-0.005em' }}>
                   {labelFor(e.category)}
                   {e.source === 'auto' && (
-                    <span style={{ fontSize: '10px', marginLeft: '6px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>auto</span>
+                    <span style={{ fontSize: 9.5, marginLeft: 6, color: T.ink3, fontFamily: FONT_MONO, letterSpacing: '0.06em' }}>
+                      AUTO
+                    </span>
                   )}
                 </div>
-                <div style={{ color: 'var(--text-muted)', fontSize: '11px', marginTop: '1px' }}>
+                <div style={{ color: T.ink3, fontSize: 11, marginTop: 1 }}>
                   {e.description ?? e.vendor ?? '—'} · {e.incurred_on}
                 </div>
               </div>
-              <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
-                {formatUSD(e.amount_cents)}
-              </div>
+              <MonoNum size={13} weight={600}>{formatUSD(e.amount_cents)}</MonoNum>
               {e.source === 'manual' ? (
                 <button onClick={() => remove(e.id)} aria-label="Delete"
-                  style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: '4px', display: 'flex' }}>
-                  <Trash2 size={12} color="var(--text-muted)" />
+                  style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 4, display: 'flex' }}>
+                  <Trash2 size={12} color={T.ink3} />
                 </button>
-              ) : <span style={{ width: '20px' }} />}
+              ) : <span style={{ width: 20 }} />}
             </div>
           ))}
-        </div>
+        </Card>
       )}
     </section>
   );
@@ -405,48 +446,56 @@ function ExpensesSection({ expenses, reload }: { expenses: Expense[]; reload: ()
 
 function HotelEconRow({ row }: { row: HotelEcon }) {
   const isPilot = row.mrrCents === 0;
-  const marginColor = isPilot ? 'var(--text-muted)'
-    : row.marginCents >= 0 ? 'var(--green)' : 'var(--red)';
+  const marginColor = isPilot ? T.ink3
+    : row.marginCents >= 0 ? T.sageDeep : T.warm;
   return (
     <Link href={`/admin/properties/${row.propertyId}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-      <div style={{
-        padding: '12px 14px',
-        background: 'var(--surface-primary)',
-        border: '1px solid var(--border)',
-        borderRadius: '10px',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-          <div style={{ fontSize: '13px', fontWeight: 600 }}>{row.propertyName ?? '(unnamed)'}</div>
-          <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{row.subscriptionStatus ?? '—'}</div>
+      <Card padding="14px 16px">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 600, color: T.ink, letterSpacing: '-0.005em' }}>
+            {row.propertyName ?? '(unnamed)'}
+          </div>
+          <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: T.ink3, letterSpacing: '0.04em' }}>
+            {(row.subscriptionStatus ?? '—').toUpperCase()}
+          </span>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px', fontSize: '11px' }}>
-          <Cell label="MRR" value={formatUSD(row.mrrCents)} color="var(--green)" />
-          <Cell label="Claude" value={formatUSD(row.claudeCostLast30dCents)} color="var(--text-secondary)" />
-          <Cell label="SMS" value={formatUSD(row.smsCostLast30dCents)} color="var(--text-secondary)" />
-          <Cell label="Margin" value={formatUSD(row.marginCents)} color={marginColor} />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+          <Cell label="MRR" value={formatUSD(row.mrrCents)} c={T.sageDeep} />
+          <Cell label="Claude" value={formatUSD(row.claudeCostLast30dCents)} c={T.ink2} />
+          <Cell label="SMS" value={formatUSD(row.smsCostLast30dCents)} c={T.ink2} />
+          <Cell label="Margin" value={formatUSD(row.marginCents)} c={marginColor} />
         </div>
-      </div>
+      </Card>
     </Link>
   );
 }
 
-function Cell({ label, value, color }: { label: string; value: string; color: string }) {
+function Cell({ label, value, c }: { label: string; value: string; c: string }) {
   return (
     <div>
-      <div style={{ color: 'var(--text-muted)', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</div>
-      <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color, marginTop: '1px' }}>{value}</div>
+      <Caps size={9}>{label}</Caps>
+      <div style={{ marginTop: 2 }}>
+        <MonoNum size={12.5} weight={600} c={c}>{value}</MonoNum>
+      </div>
     </div>
   );
 }
 
 function FieldLabel({ text, children }: { text: string; children: React.ReactNode }) {
   return (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-      <span style={{ fontSize: '10px', color: 'var(--text-muted)', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{text}</span>
+    <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <Caps>{text}</Caps>
       {children}
     </label>
   );
 }
+
+const inputStyle: React.CSSProperties = {
+  fontSize: 13, padding: '8px 12px',
+  border: `1px solid ${T.rule}`, borderRadius: 10, outline: 'none',
+  fontFamily: FONT_SANS, background: T.paper, color: T.ink,
+  width: '100%', boxSizing: 'border-box',
+};
 
 function ExternalRow({ href, title, subtitle }: { href: string; title: string; subtitle: string }) {
   return (
@@ -454,19 +503,19 @@ function ExternalRow({ href, title, subtitle }: { href: string; title: string; s
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'space-between',
-      padding: '12px 14px',
-      background: 'var(--surface-primary)',
-      border: '1px solid var(--border)',
-      borderRadius: '10px',
+      padding: '14px 16px',
+      background: T.paper,
+      border: `1px solid ${T.rule}`,
+      borderRadius: 14,
       textDecoration: 'none',
       color: 'inherit',
-      fontSize: '13px',
+      fontSize: 13,
     }}>
       <div>
-        <div style={{ fontWeight: 600, marginBottom: '2px' }}>{title}</div>
-        <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{subtitle}</div>
+        <div style={{ fontWeight: 600, marginBottom: 2, color: T.ink, letterSpacing: '-0.005em' }}>{title}</div>
+        <div style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: T.ink3, letterSpacing: '0.04em' }}>{subtitle}</div>
       </div>
-      <ExternalLink size={14} color="var(--text-muted)" />
+      <ExternalLink size={14} color={T.ink3} />
     </a>
   );
 }
@@ -474,13 +523,16 @@ function ExternalRow({ href, title, subtitle }: { href: string; title: string; s
 function EmptyState({ text }: { text: string }) {
   return (
     <div style={{
-      padding: '20px',
-      background: 'var(--surface-secondary)',
-      border: '1px dashed var(--border)',
-      borderRadius: '10px',
+      marginTop: 8,
+      padding: '24px 20px',
+      background: T.ruleSoft,
+      border: `1px dashed ${T.rule}`,
+      borderRadius: 14,
       textAlign: 'center',
-      fontSize: '12px',
-      color: 'var(--text-muted)',
+      fontSize: 12.5,
+      color: T.ink2,
+      fontStyle: 'italic',
+      fontFamily: FONT_SERIF,
     }}>{text}</div>
   );
 }
@@ -492,10 +544,3 @@ function formatUSD(cents: number): string {
   if (abs >= 1000) return `${sign}$${abs.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
   return `${sign}$${abs.toFixed(2)}`;
 }
-
-const sectionTitle: React.CSSProperties = {
-  fontSize: '15px',
-  fontWeight: 600,
-  letterSpacing: '-0.01em',
-  marginBottom: '4px',
-};

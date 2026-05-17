@@ -2,7 +2,7 @@
 
 /**
  * "Soon to be onboarded" — sales pipeline section that lives at the top
- * of the Onboarding tab. CRUD against /api/admin/prospects.
+ * of the Onboarding tab (Snow design). CRUD against /api/admin/prospects.
  *
  * Shows hotels Reeyen has talked to but who haven't signed up yet, with
  * a per-prospect launch checklist (PMS creds, staff list, GM trained,
@@ -12,6 +12,11 @@
 import React, { useEffect, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { Plus, Trash2, Save, ChevronDown, ChevronRight as ChevronR } from 'lucide-react';
+import {
+  T, FONT_SANS, FONT_MONO, FONT_SERIF,
+  Caps, Card, Btn, Pill,
+  type PillTone,
+} from './_snow';
 
 type Status = 'talking' | 'negotiating' | 'committed' | 'onboarded' | 'dropped';
 
@@ -37,12 +42,12 @@ const CHECKLIST_KEYS = [
   { key: 'launchDateConfirmed', label: 'Launch date confirmed' },
 ] as const;
 
-const STATUS_OPTIONS: { value: Status; label: string; color: string }[] = [
-  { value: 'talking',     label: 'Talking',     color: 'var(--text-muted)' },
-  { value: 'negotiating', label: 'Negotiating', color: 'var(--amber)' },
-  { value: 'committed',   label: 'Committed',   color: 'var(--green)' },
-  { value: 'onboarded',   label: 'Onboarded',   color: 'var(--text-muted)' },
-  { value: 'dropped',     label: 'Dropped',     color: 'var(--red)' },
+const STATUS_OPTIONS: { value: Status; label: string; tone: PillTone }[] = [
+  { value: 'talking',     label: 'Talking',     tone: 'neutral' },
+  { value: 'negotiating', label: 'Negotiating', tone: 'caramel' },
+  { value: 'committed',   label: 'Committed',   tone: 'sage' },
+  { value: 'onboarded',   label: 'Onboarded',   tone: 'neutral' },
+  { value: 'dropped',     label: 'Dropped',     tone: 'warm' },
 ];
 
 export function ProspectsSection() {
@@ -85,44 +90,47 @@ export function ProspectsSection() {
     }
   };
 
-  // Hide already-onboarded ones from the active pipeline view (they show
-  // up in the Live hotels tab once they sign up). Dropped also hidden.
   const active = (prospects ?? []).filter((p) => p.status !== 'onboarded' && p.status !== 'dropped');
 
   return (
-    <section>
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '8px' }}>
-        <h2 style={{ fontSize: '15px', fontWeight: 600 }}>Onboarding</h2>
+    <section style={{ minWidth: 0, fontFamily: FONT_SANS }}>
+      <div style={{
+        display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between',
+        gap: 12, marginBottom: 4,
+      }}>
+        <div>
+          <Caps>Pipeline</Caps>
+          <h2 style={{
+            fontFamily: FONT_SERIF, fontSize: 24, fontWeight: 400,
+            letterSpacing: '-0.02em', color: T.ink, margin: '2px 0 0',
+            lineHeight: 1.15,
+          }}>
+            Sales <span style={{ fontStyle: 'italic' }}>pipeline</span>
+          </h2>
+        </div>
         {!creating && (
-          <button
-            onClick={() => setCreating(true)}
-            className="btn btn-secondary"
-            style={{ fontSize: '12px' }}
-          >
+          <Btn variant="ghost" size="sm" onClick={() => setCreating(true)}>
             <Plus size={12} /> Add hotel
-          </button>
+          </Btn>
         )}
       </div>
 
       {error && (
         <div style={{
-          padding: '8px 12px',
-          background: 'var(--red-dim)',
-          border: '1px solid rgba(239,68,68,0.25)',
-          borderRadius: '8px',
-          color: 'var(--red)', fontSize: '12px',
-          marginBottom: '8px',
+          padding: '10px 14px',
+          background: T.warmDim,
+          border: `1px solid rgba(184,92,61,0.25)`,
+          borderRadius: 12,
+          color: T.warm, fontSize: 12,
+          marginTop: 8,
         }}>{error}</div>
       )}
 
       {creating && (
-        <div style={{
-          padding: '12px 14px',
-          background: 'var(--surface-primary)',
-          border: '1px solid var(--amber)',
-          borderRadius: '10px',
-          marginBottom: '8px',
-          display: 'flex', gap: '8px', alignItems: 'center',
+        <Card padding="12px 14px" style={{
+          marginTop: 8,
+          border: `1px solid ${T.caramelDeep}`,
+          display: 'flex', gap: 8, alignItems: 'center',
         }}>
           <input
             autoFocus
@@ -131,34 +139,40 @@ export function ProspectsSection() {
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') void create(); if (e.key === 'Escape') { setCreating(false); setNewName(''); } }}
-            className="input"
-            style={{ flex: 1, fontSize: '13px' }}
+            style={{
+              flex: 1, fontSize: 13, padding: '8px 12px',
+              border: `1px solid ${T.rule}`, borderRadius: 999, outline: 'none',
+              fontFamily: FONT_SANS, background: T.paper, color: T.ink,
+            }}
           />
-          <button onClick={create} className="btn btn-primary" style={{ fontSize: '12px' }}>
+          <Btn variant="primary" size="sm" onClick={create}>
             <Save size={12} /> Save
-          </button>
-          <button onClick={() => { setCreating(false); setNewName(''); }} className="btn btn-secondary" style={{ fontSize: '12px' }}>
+          </Btn>
+          <Btn variant="ghost" size="sm" onClick={() => { setCreating(false); setNewName(''); }}>
             Cancel
-          </button>
-        </div>
+          </Btn>
+        </Card>
       )}
 
       {prospects === null ? (
-        <div style={{ padding: '20px', textAlign: 'center' }}>
-          <div className="spinner" style={{ width: '18px', height: '18px', margin: '0 auto' }} />
+        <div style={{ padding: 20, textAlign: 'center', marginTop: 8 }}>
+          <div className="spinner" style={{ width: 18, height: 18, margin: '0 auto' }} />
         </div>
       ) : active.length === 0 ? (
         <div style={{
-          padding: '20px',
-          background: 'var(--surface-secondary)',
-          border: '1px dashed var(--border)',
-          borderRadius: '10px',
+          marginTop: 8,
+          padding: '24px 20px',
+          background: T.ruleSoft,
+          border: `1px dashed ${T.rule}`,
+          borderRadius: 14,
           textAlign: 'center',
-          fontSize: '12px',
-          color: 'var(--text-muted)',
+          fontSize: 12.5,
+          color: T.ink2,
+          fontStyle: 'italic',
+          fontFamily: FONT_SERIF,
         }}>No prospects yet — add one when you start talking to a hotel.</div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
           {active.map((p) => <ProspectRow key={p.id} prospect={p} onChange={load} />)}
         </div>
       )}
@@ -174,7 +188,7 @@ function ProspectRow({ prospect, onChange }: { prospect: Prospect; onChange: () 
 
   const checklistDone = CHECKLIST_KEYS.filter((c) => draft.checklist?.[c.key]).length;
   const checklistTotal = CHECKLIST_KEYS.length;
-  const statusColor = STATUS_OPTIONS.find((s) => s.value === prospect.status)?.color ?? 'var(--text-muted)';
+  const statusOpt = STATUS_OPTIONS.find((s) => s.value === prospect.status);
 
   const save = async () => {
     setSaving(true);
@@ -212,9 +226,9 @@ function ProspectRow({ prospect, onChange }: { prospect: Prospect; onChange: () 
 
   return (
     <div style={{
-      background: 'var(--surface-primary)',
-      border: '1px solid var(--border)',
-      borderRadius: '10px',
+      background: T.paper,
+      border: `1px solid ${T.rule}`,
+      borderRadius: 14,
       overflow: 'hidden',
     }}>
       <div
@@ -222,44 +236,40 @@ function ProspectRow({ prospect, onChange }: { prospect: Prospect; onChange: () 
           padding: '12px 14px',
           display: 'flex',
           alignItems: 'center',
-          gap: '12px',
+          gap: 12,
           cursor: 'pointer',
         }}
         onClick={() => setExpanded(!expanded)}
       >
-        {expanded ? <ChevronDown size={14} color="var(--text-muted)" /> : <ChevronR size={14} color="var(--text-muted)" />}
+        {expanded ? <ChevronDown size={14} color={T.ink3} /> : <ChevronR size={14} color={T.ink3} />}
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: '14px', fontWeight: 600 }}>{prospect.hotel_name}</div>
-          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+          <div style={{ fontSize: 13.5, fontWeight: 600, color: T.ink, letterSpacing: '-0.005em' }}>
+            {prospect.hotel_name}
+          </div>
+          <div style={{ fontSize: 11, color: T.ink2, marginTop: 2 }}>
             {prospect.contact_name ? `${prospect.contact_name} · ` : ''}
             {prospect.pms_type ?? 'PMS unknown'}
             {prospect.expected_launch_date ? ` · launch ${prospect.expected_launch_date}` : ''}
           </div>
         </div>
-        <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-          {checklistDone}/{checklistTotal} checklist
-        </div>
         <span style={{
-          padding: '3px 8px',
-          fontSize: '11px',
-          fontWeight: 600,
-          color: statusColor,
-          border: `1px solid ${statusColor}`,
-          borderRadius: '999px',
-          background: 'transparent',
-          fontFamily: 'var(--font-mono)',
+          fontFamily: FONT_MONO, fontSize: 11, color: T.ink3,
+          letterSpacing: '0.04em',
         }}>
-          {prospect.status.toUpperCase()}
+          {checklistDone}/{checklistTotal}
         </span>
+        <Pill tone={statusOpt?.tone ?? 'neutral'}>
+          {prospect.status.toUpperCase()}
+        </Pill>
       </div>
 
       {expanded && (
         <div style={{
-          padding: '12px 14px',
-          borderTop: '1px solid var(--border)',
+          padding: '14px 16px',
+          borderTop: `1px solid ${T.rule}`,
           display: 'grid',
           gridTemplateColumns: '1fr 1fr',
-          gap: '10px',
+          gap: 12,
         }}>
           <Field label="Hotel name" value={draft.hotel_name} onChange={(v) => setDraft({ ...draft, hotel_name: v })} />
           <Field label="Status" value={draft.status} options={STATUS_OPTIONS.map((s) => ({ value: s.value, label: s.label }))}
@@ -272,20 +282,19 @@ function ProspectRow({ prospect, onChange }: { prospect: Prospect; onChange: () 
           <Field label="Notes" value={draft.notes ?? ''} multiline onChange={(v) => setDraft({ ...draft, notes: v || null })} />
 
           <div style={{ gridColumn: '1 / -1' }}>
-            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '6px', letterSpacing: '0.04em', textTransform: 'uppercase' }}>
-              Launch checklist
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '6px' }}>
+            <Caps>Launch checklist</Caps>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6, marginTop: 6 }}>
               {CHECKLIST_KEYS.map((c) => (
                 <label key={c.key} style={{
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '8px',
-                  padding: '8px 10px',
-                  background: draft.checklist?.[c.key] ? 'rgba(34,197,94,0.08)' : 'var(--surface-secondary)',
-                  border: `1px solid ${draft.checklist?.[c.key] ? 'rgba(34,197,94,0.25)' : 'var(--border)'}`,
-                  borderRadius: '8px',
-                  fontSize: '12px',
+                  gap: 8,
+                  padding: '8px 12px',
+                  background: draft.checklist?.[c.key] ? T.sageDim : T.ruleSoft,
+                  border: `1px solid ${draft.checklist?.[c.key] ? 'rgba(104,131,114,0.30)' : T.rule}`,
+                  borderRadius: 999,
+                  fontSize: 12.5,
+                  color: draft.checklist?.[c.key] ? T.sageDeep : T.ink2,
                   cursor: 'pointer',
                 }}>
                   <input type="checkbox"
@@ -297,13 +306,13 @@ function ProspectRow({ prospect, onChange }: { prospect: Prospect; onChange: () 
             </div>
           </div>
 
-          <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'space-between', marginTop: '4px' }}>
-            <button onClick={remove} className="btn btn-secondary" style={{ fontSize: '12px', color: 'var(--red)' }}>
+          <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
+            <Btn variant="ghost" size="sm" onClick={remove} style={{ color: T.warm, borderColor: 'rgba(184,92,61,0.25)' }}>
               <Trash2 size={12} /> Delete
-            </button>
-            <button onClick={save} disabled={!dirty || saving} className="btn btn-primary" style={{ fontSize: '12px' }}>
+            </Btn>
+            <Btn variant="primary" size="sm" onClick={save} disabled={!dirty || saving}>
               <Save size={12} /> {saving ? 'Saving…' : dirty ? 'Save changes' : 'Saved'}
-            </button>
+            </Btn>
           </div>
         </div>
       )}
@@ -318,17 +327,24 @@ function Field({ label, value, onChange, options, type, multiline }: {
   type?: string;
   multiline?: boolean;
 }) {
+  const inputStyle: React.CSSProperties = {
+    fontSize: 13, padding: '8px 12px',
+    border: `1px solid ${T.rule}`, borderRadius: 10, outline: 'none',
+    fontFamily: FONT_SANS, background: T.paper, color: T.ink,
+    width: '100%', boxSizing: 'border-box',
+  };
   return (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-      <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 500 }}>{label}</span>
+    <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <Caps>{label}</Caps>
       {options ? (
-        <select className="input" value={value} onChange={(e) => onChange(e.target.value)} style={{ fontSize: '13px' }}>
+        <select value={value} onChange={(e) => onChange(e.target.value)} style={inputStyle}>
           {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
       ) : multiline ? (
-        <textarea className="input" value={value} onChange={(e) => onChange(e.target.value)} rows={3} style={{ fontSize: '13px', resize: 'vertical' }} />
+        <textarea value={value} onChange={(e) => onChange(e.target.value)} rows={3}
+          style={{ ...inputStyle, resize: 'vertical', borderRadius: 12 }} />
       ) : (
-        <input className="input" type={type ?? 'text'} value={value} onChange={(e) => onChange(e.target.value)} style={{ fontSize: '13px' }} />
+        <input type={type ?? 'text'} value={value} onChange={(e) => onChange(e.target.value)} style={inputStyle} />
       )}
     </label>
   );

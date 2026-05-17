@@ -810,15 +810,17 @@ export function MarvelTimeline({
   if (commits.length === 0) {
     return (
       <div style={{
-        padding: '40px 20px',
+        padding: '32px 20px',
         textAlign: 'center',
-        background: 'var(--surface-secondary)',
-        border: '1px dashed var(--border)',
-        borderRadius: '12px',
-        color: 'var(--text-muted)',
-        fontSize: '13px',
+        background: 'rgba(31,35,28,0.04)',
+        border: '1px dashed rgba(31,35,28,0.08)',
+        borderRadius: 14,
+        color: '#5C625C',
+        fontSize: 13,
+        fontFamily: "var(--font-instrument-serif), 'Times New Roman', Georgia, serif",
+        fontStyle: 'italic',
       }}>
-        Couldn't load commits from GitHub. The timeline will show up when the API responds.
+        Couldn&apos;t load commits from GitHub. The timeline will show up when the API responds.
       </div>
     );
   }

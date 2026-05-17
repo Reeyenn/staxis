@@ -1,7 +1,8 @@
 'use client';
 
 /**
- * MlHealthPanel — per-property ML health card on /admin/properties/[id].
+ * MlHealthPanel — per-property ML health card on /admin/properties/[id]
+ * (Snow design).
  *
  * Answers "why doesn't hotel X have predictions?" without psql. Shows a
  * row per layer (inventory, demand, supply, optimizer) with:
@@ -17,6 +18,7 @@
 import React, { useEffect, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { Activity, Loader2 } from 'lucide-react';
+import { T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Pill, MonoNum } from './_snow';
 
 type Layer = 'inventory_rate' | 'demand' | 'supply' | 'optimizer';
 
@@ -62,23 +64,10 @@ function relativeTime(iso: string | null): string {
 }
 
 function algorithmBadge(algo: string, isColdStart: boolean): React.ReactNode {
-  const isFull = !isColdStart;
-  const bg = isColdStart
-    ? 'var(--amber-dim, rgba(245,158,11,0.12))'
-    : 'var(--green-dim, rgba(16,185,129,0.12))';
-  const fg = isColdStart ? 'var(--amber, #f59e0b)' : 'var(--green, #10b981)';
-  const label = isColdStart ? 'cold-start' : isFull ? algo : algo;
   return (
-    <span style={{
-      display: 'inline-block',
-      padding: '2px 8px',
-      borderRadius: '999px',
-      background: bg,
-      color: fg,
-      fontSize: '11px',
-      fontWeight: 600,
-      fontFamily: 'var(--font-mono)',
-    }}>{label}</span>
+    <Pill tone={isColdStart ? 'caramel' : 'sage'}>
+      {isColdStart ? 'cold-start' : algo}
+    </Pill>
   );
 }
 
@@ -104,76 +93,87 @@ export function MlHealthPanel({ propertyId }: { propertyId: string }) {
   }, [propertyId]);
 
   return (
-    <div style={{ marginTop: '20px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-        <h2 style={{ fontSize: '15px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <Activity size={16} /> ML health
-        </h2>
+    <div style={{ marginTop: 24, fontFamily: FONT_SANS }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+        <div>
+          <Caps>Layers</Caps>
+          <h2 style={{
+            fontFamily: FONT_SERIF, fontSize: 24, fontWeight: 400,
+            letterSpacing: '-0.02em', color: T.ink, margin: '2px 0 0',
+            lineHeight: 1.15, display: 'flex', alignItems: 'center', gap: 10,
+          }}>
+            <Activity size={18} color={T.ink} />
+            ML <span style={{ fontStyle: 'italic' }}>health</span>
+          </h2>
+        </div>
         {data && (
-          <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+          <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink3, letterSpacing: '0.04em' }}>
             cohort: {data.cohort.brand ?? '—'} · {data.cohort.region ?? '—'} · {data.cohort.sizeTier ?? '—'}
           </span>
         )}
       </div>
 
       {loading && (
-        <p style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+        <p style={{ fontSize: 12, color: T.ink2, display: 'flex', alignItems: 'center', gap: 6 }}>
           <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Loading…
         </p>
       )}
 
       {error && (
-        <p style={{ fontSize: '12px', color: 'var(--red)' }}>Error: {error}</p>
+        <p style={{ fontSize: 12, color: T.warm }}>Error: {error}</p>
       )}
 
       {data && (
-        <div style={{ border: '1px solid var(--border)', borderRadius: '10px', overflow: 'hidden' }}>
+        <div style={{ border: `1px solid ${T.rule}`, borderRadius: 14, overflow: 'hidden', background: T.paper }}>
           {data.layers.map((layer, idx) => (
             <div key={layer.layer} style={{
-              padding: '12px 14px',
-              borderBottom: idx < data.layers.length - 1 ? '1px solid var(--border)' : 'none',
+              padding: '14px 16px',
+              borderBottom: idx < data.layers.length - 1 ? `1px solid ${T.rule}` : 'none',
               display: 'grid',
-              gridTemplateColumns: '110px 1fr 1fr',
-              gap: '12px',
+              gridTemplateColumns: '120px 1fr 1fr',
+              gap: 14,
               alignItems: 'center',
-              fontSize: '12px',
+              fontSize: 12.5,
             }}>
-              <div style={{ fontWeight: 600, fontSize: '13px' }}>
+              <div style={{ fontWeight: 600, fontSize: 14, color: T.ink, letterSpacing: '-0.005em' }}>
                 {LAYER_LABEL[layer.layer]}
               </div>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {layer.activeModel ? (
                   <>
-                    <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                       {algorithmBadge(layer.activeModel.algorithm, layer.activeModel.isColdStart)}
-                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: 'var(--text-muted)' }}>
+                      <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink3, letterSpacing: '0.04em' }}>
                         {layer.activeModel.id.slice(0, 8)}…
                       </span>
                     </div>
-                    <div style={{ color: 'var(--text-muted)', fontSize: '11px' }}>
-                      trained {relativeTime(layer.activeModel.trainedAt)} · {layer.activeModel.trainingRowCount} rows
+                    <div style={{ color: T.ink2, fontSize: 11.5, lineHeight: 1.5 }}>
+                      trained {relativeTime(layer.activeModel.trainedAt)}
+                      <span style={{ fontFamily: FONT_MONO }}> · {layer.activeModel.trainingRowCount} rows</span>
                       {layer.activeModel.validationMae != null && (
-                        <> · MAE {layer.activeModel.validationMae.toFixed(2)}</>
+                        <span style={{ fontFamily: FONT_MONO }}> · MAE {layer.activeModel.validationMae.toFixed(2)}</span>
                       )}
                       {layer.activeModel.beatsBaselinePct != null && layer.activeModel.beatsBaselinePct > 0 && (
-                        <> · beats baseline {(layer.activeModel.beatsBaselinePct * 100).toFixed(0)}%</>
+                        <span style={{ fontFamily: FONT_MONO, color: T.sageDeep }}> · beats {(layer.activeModel.beatsBaselinePct * 100).toFixed(0)}%</span>
                       )}
                     </div>
                   </>
                 ) : (
-                  <div style={{ color: 'var(--text-muted)' }}>
+                  <div style={{ color: T.ink2, fontStyle: 'italic', fontFamily: FONT_SERIF }}>
                     {layer.note ?? 'No active model'}
                   </div>
                 )}
               </div>
 
               <div style={{ textAlign: 'right' }}>
-                <div style={{ color: 'var(--text-primary)' }}>
-                  <strong>{layer.predictionCountToday}</strong>
-                  <span style={{ color: 'var(--text-muted)' }}> {layer.predictionCountToday === 1 ? 'prediction' : 'predictions'} today</span>
+                <div style={{ display: 'inline-flex', alignItems: 'baseline', gap: 6 }}>
+                  <MonoNum size={16} weight={600}>{layer.predictionCountToday}</MonoNum>
+                  <span style={{ color: T.ink3, fontSize: 11 }}>
+                    {layer.predictionCountToday === 1 ? 'pred today' : 'preds today'}
+                  </span>
                 </div>
-                <div style={{ color: 'var(--text-muted)', fontSize: '11px', marginTop: '2px' }}>
+                <div style={{ color: T.ink3, fontSize: 10.5, marginTop: 2, fontFamily: FONT_MONO, letterSpacing: '0.04em' }}>
                   last {relativeTime(layer.lastPredictionAt)}
                 </div>
               </div>

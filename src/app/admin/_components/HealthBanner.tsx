@@ -4,7 +4,7 @@
  * Health banner shown above the admin StickyHeader.
  *
  * Polls /api/admin/doctor every 60 seconds. If any check has
- * status='fail', renders a red banner listing them with their
+ * status='fail', renders a warm-toned banner listing them with their
  * suggested fixes. Hidden when everything is green/warn.
  *
  * The intent is "you don't have to remember to check the doctor page —
@@ -16,6 +16,7 @@
 import React, { useEffect, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { AlertTriangle, X } from 'lucide-react';
+import { T, FONT_MONO, FONT_SANS, Caps } from './_snow';
 
 interface DoctorCheck {
   name: string;
@@ -47,7 +48,6 @@ export function HealthBanner() {
         setFailing(body.checks?.filter(c => c.status === 'fail') ?? []);
       } catch {
         // Silent: a doctor outage is a separate problem from the things it monitors.
-        // If we can't reach the doctor, the rest of the admin page will probably also be unhappy.
       }
     };
     void load();
@@ -55,8 +55,6 @@ export function HealthBanner() {
     return () => { cancelled = true; clearInterval(handle); };
   }, []);
 
-  // Filter out any failing checks the user has dismissed in this session.
-  // Re-rendering with new "name"s automatically re-shows them.
   const visible = failing.filter(c => !dismissed.has(c.name));
 
   if (visible.length === 0) return null;
@@ -64,38 +62,39 @@ export function HealthBanner() {
   return (
     <div style={{
       marginBottom: '16px',
-      borderRadius: '8px',
-      border: '1px solid rgba(220, 53, 69, 0.30)',
-      background: 'rgba(220, 53, 69, 0.06)',
-      padding: '14px 16px',
+      borderRadius: 18,
+      border: `1px solid ${T.warmDim}`,
+      background: 'rgba(184,92,61,0.04)',
+      padding: '16px 20px',
       display: 'flex',
       flexDirection: 'column',
-      gap: '8px',
+      gap: 10,
+      fontFamily: FONT_SANS,
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--red, #dc3545)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: T.warm }}>
         <AlertTriangle size={16} />
-        <strong style={{ fontSize: 13 }}>
+        <Caps c={T.warm}>
           {visible.length} system check{visible.length === 1 ? '' : 's'} failing
-        </strong>
+        </Caps>
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {visible.map(check => (
           <div key={check.name} style={{
             display: 'flex',
             alignItems: 'flex-start',
-            gap: 8,
-            padding: '6px 0',
-            borderTop: '1px solid rgba(220, 53, 69, 0.15)',
+            gap: 10,
+            padding: '8px 0 0',
+            borderTop: `1px solid ${T.warmDim}`,
           }}>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: 11, fontWeight: 500, color: 'var(--text-primary)' }}>
+              <div style={{ fontFamily: FONT_MONO, fontSize: 11.5, fontWeight: 500, color: T.ink }}>
                 {check.name}
               </div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+              <div style={{ fontSize: 13, color: T.ink2, marginTop: 3, lineHeight: 1.5 }}>
                 {check.detail}
               </div>
               {check.fix && (
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, fontStyle: 'italic' }}>
+                <div style={{ fontSize: 12, color: T.ink3, marginTop: 6, fontStyle: 'italic' }}>
                   Fix: {check.fix}
                 </div>
               )}
@@ -107,7 +106,7 @@ export function HealthBanner() {
                 border: 'none',
                 cursor: 'pointer',
                 padding: 4,
-                color: 'var(--text-muted)',
+                color: T.ink3,
                 flexShrink: 0,
               }}
               title="Hide this for the rest of this session"

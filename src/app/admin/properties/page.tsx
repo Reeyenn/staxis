@@ -1,10 +1,10 @@
 'use client';
 
 /**
- * /admin/properties — Owner cockpit.
+ * /admin/properties — Owner cockpit (Snow design, May 2026).
  *
  * Single tabbed admin home. The sticky header on top shows always-visible
- * stats (live hotels, onboarding, errors, jobs, MRR) plus the four tab
+ * stats (live hotels, onboarding, errors, jobs, MRR) plus the five tab
  * buttons. Each tab is a self-contained component fetching its own data.
  *
  * Tabs:
@@ -12,12 +12,10 @@
  *   - Live hotels (Phase 1 baseline + Phase 2/5/6 layered on top)
  *   - System (Phase 7): Marvel-style timeline, scheduled jobs, roadmap, audit
  *   - Money (Phase 8): revenue, expenses, per-hotel economics
+ *   - Agent: AI agent admin landing
  *
- * Auth: admin role only — non-admins get a 403 message. /admin redirects
+ * Auth: admin role only — only Reeyen has that role today. /admin redirects
  * here via Header.tsx so the URL stays stable.
- *
- * The legacy fleet view that used to live on this page now lives inside
- * the Live hotels tab.
  */
 
 import React, { useEffect, useState } from 'react';
@@ -32,6 +30,7 @@ import { LiveHotelsTab } from '@/app/admin/_components/tabs/LiveHotelsTab';
 import { SystemTab } from '@/app/admin/_components/tabs/SystemTab';
 import { MoneyTab } from '@/app/admin/_components/tabs/MoneyTab';
 import { AgentTab } from '@/app/admin/_components/tabs/AgentTab';
+import { T, FONT_SERIF } from '@/app/admin/_components/_snow';
 
 const VALID_TABS: AdminTab[] = ['onboarding', 'live', 'system', 'money', 'agent'];
 
@@ -69,13 +68,18 @@ export default function AdminPropertiesPage() {
   if (authLoading || (user && user.role !== 'admin')) {
     return (
       <AppLayout>
-        <div style={{ padding: '40px 24px', textAlign: 'center' }}>
+        <div style={{
+          padding: '80px 24px', textAlign: 'center',
+          fontFamily: FONT_SERIF, color: T.ink,
+        }}>
           {authLoading
             ? <div className="spinner" style={{ width: '24px', height: '24px', margin: '0 auto' }} />
             : (
               <>
-                <ShieldAlert size={32} color="var(--red)" style={{ marginBottom: '12px' }} />
-                <p style={{ fontSize: '15px' }}>Admin access only.</p>
+                <ShieldAlert size={32} color={T.warm} style={{ marginBottom: '12px' }} />
+                <p style={{ fontSize: '22px', fontStyle: 'italic', letterSpacing: '-0.02em' }}>
+                  Admin access only.
+                </p>
               </>
             )}
         </div>
@@ -85,7 +89,13 @@ export default function AdminPropertiesPage() {
 
   return (
     <AppLayout>
-      <div style={{ padding: '24px', maxWidth: '1200px', margin: '0 auto' }}>
+      <div style={{
+        padding: '24px 48px 48px',
+        maxWidth: '1400px',
+        margin: '0 auto',
+        background: T.bg,
+        minHeight: 'calc(100vh - 64px)',
+      }}>
         <HealthBanner />
         <StickyHeader activeTab={activeTab} onTabChange={handleTabChange} />
 
