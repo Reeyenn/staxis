@@ -379,7 +379,6 @@ export async function visionExtractJSON<T>(
   // model produced (potentially OCR text from a customer's invoice or
   // injected commentary). Log the head server-side for diagnostics
   // and throw a stable, content-free message.
-  // eslint-disable-next-line no-console
   console.warn('[vision-extract] model returned non-JSON output', {
     head: text.slice(0, 200),
   });
