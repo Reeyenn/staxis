@@ -3,7 +3,44 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { registerTool, type ToolResult } from '../tools';
+import { buildHotelSnapshot } from '../context';
 import { getCurrentRoomsDate, computeRoomTotal } from './_helpers';
+
+// ─── get_hotel_state ──────────────────────────────────────────────────────
+// Returns the same HotelSnapshot the system prompt today embeds inline. The
+// goal (audit cost recommendation: snapshot → tool) is to move the snapshot
+// out of every-turn prompt overhead and onto an explicit tool call so the
+// model only pays the token cost when it actually needs the data.
+//
+// Today the system prompt still embeds the snapshot inline (in
+// src/lib/agent/prompts.ts buildSystemPrompt). Until the user has run agent
+// evals against the snapshot-via-tool pattern, the prompt stays the way it
+// is. Once evals confirm no regression, edit the agent_prompts row (or
+// PROMPT_BASE in prompts.ts) to:
+//   1. Drop "Use the hotel snapshot in your context to answer ..." line
+//   2. Replace with "Call get_hotel_state() to check current occupancy ..."
+// and stop calling formatSnapshotForPrompt() in buildSystemPrompt.
+//
+// Audit recommendation #1 / first-principle #1 in
+// .claude/reports/cost-hotpaths-audit.md.
+
+registerTool<Record<string, never>>({
+  name: 'get_hotel_state',
+  description:
+    'Get a live snapshot of the hotel: occupancy (dirty/clean/in-progress/DND), staff active today, and (for housekeepers) the user\'s assigned rooms. Read-only. Use when the user asks about current property state ("what\'s our occupancy", "how many DND rooms", "what\'s next for me").',
+  inputSchema: { type: 'object', properties: {} },
+  allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk', 'housekeeping', 'maintenance'],
+  handler: async (_, ctx): Promise<ToolResult> => {
+    try {
+      // Reuses the 30 s in-process cache in buildHotelSnapshot so back-to-back
+      // tool calls within one request don't double-fetch.
+      const snapshot = await buildHotelSnapshot(ctx.propertyId, ctx.user.role, ctx.staffId);
+      return { ok: true, data: snapshot };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : 'Failed to load hotel state.' };
+    }
+  },
+});
 
 // ─── list_my_rooms ────────────────────────────────────────────────────────
 // Housekeeper-only. Their assigned rooms with current status.
