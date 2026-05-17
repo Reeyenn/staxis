@@ -19,6 +19,10 @@
  */
 
 import Stripe from 'stripe';
+import {
+  STRIPE_REQUEST_TIMEOUT_MS,
+  STRIPE_MAX_NETWORK_RETRIES,
+} from '@/lib/external-service-config';
 
 const SECRET_KEY = process.env.STRIPE_SECRET_KEY;
 const WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
@@ -51,6 +55,12 @@ const stripe: Stripe | null = SECRET_KEY
       // — that's the signal to remove this directive.
       apiVersion: '2025-04-30.basil',
       typescript: true,
+      // Per src/lib/external-service-config.ts: explicit timeout overrides
+      // the Stripe SDK default of 80s, which is way too long for the
+      // checkout button to hang on. maxNetworkRetries is safe because we
+      // pass idempotency keys on customers.create + checkout.sessions.create.
+      timeout: STRIPE_REQUEST_TIMEOUT_MS,
+      maxNetworkRetries: STRIPE_MAX_NETWORK_RETRIES,
       // Build a meaningful application name in the Stripe dashboard
       // request log so we can grep easily.
       appInfo: {

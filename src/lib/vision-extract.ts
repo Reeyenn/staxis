@@ -11,18 +11,20 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import Anthropic from '@anthropic-ai/sdk';
+import {
+  ANTHROPIC_VISION_TIMEOUT_MS,
+  ANTHROPIC_MAX_RETRIES,
+} from '@/lib/external-service-config';
 
 // Pin the model — the prompts in this file are calibrated for Sonnet 4-class
 // vision quality. Bumping the version requires a re-test of both prompts.
 const MODEL = 'claude-sonnet-4-6';
 
-// Per-request timeout. Vision calls typically complete in 3-8s; 30s is
-// generous and well under the route's 60s maxDuration so the Anthropic
-// SDK fails fast (and we surface a 503) rather than hanging Vercel's
-// function until the route timeout. May 2026 audit pass-5: the SDK
-// defaults to no timeout, so an Anthropic API hiccup could pin our
-// function memory for minutes at fleet scale.
-const VISION_REQUEST_TIMEOUT_MS = 30_000;
+// Timeout + retry config is centralized in external-service-config.ts.
+// Vision calls typically complete in 3-8s; 30s timeout is generous and
+// well under the route's 60s maxDuration. maxRetries=1 (not the SDK
+// default of 2) so a hiccup doesn't drag the user through 90s of spinner
+// — see external-service-config.ts for the budget math.
 
 /** Throws if ANTHROPIC_API_KEY is missing — caller catches and 500s the route. */
 function getClient(): Anthropic {
@@ -33,7 +35,11 @@ function getClient(): Anthropic {
       'Set in Vercel → Project Settings → Environment Variables and redeploy.',
     );
   }
-  return new Anthropic({ apiKey: key, timeout: VISION_REQUEST_TIMEOUT_MS });
+  return new Anthropic({
+    apiKey: key,
+    timeout: ANTHROPIC_VISION_TIMEOUT_MS,
+    maxRetries: ANTHROPIC_MAX_RETRIES,
+  });
 }
 
 export interface VisionImage {
