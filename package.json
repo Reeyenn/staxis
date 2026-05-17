@@ -21,7 +21,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",
     "@elevenlabs/client": "^1.7.0",
-    "@picovoice/porcupine-web": "^3.0.3",
+    "@picovoice/porcupine-web": "^4.0.0",
     "@picovoice/web-voice-processor": "^4.0.10",
     "@sentry/nextjs": "^10.51.0",
     "@supabase/supabase-js": "^2.47.0",
