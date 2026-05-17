@@ -287,9 +287,11 @@ export async function DELETE(req: NextRequest) {
     });
   }
 
+  // Role guard — admins can only be modified through the admin route.
+  // Cheap pre-check before invoking the atomic RPC.
   const { data: target, error: tErr } = await supabaseAdmin
     .from('accounts')
-    .select('id, role, property_access')
+    .select('id, role')
     .eq('id', accountId)
     .maybeSingle();
   if (tErr || !target) {
@@ -301,22 +303,25 @@ export async function DELETE(req: NextRequest) {
     });
   }
 
-  const current = Array.isArray(target.property_access) ? target.property_access : [];
-  const next = current.filter((p: string) => p !== hotelId);
-  if (next.length === current.length) {
-    // Already not on this hotel — idempotent success.
-    return ok({ success: true, alreadyRemoved: true }, { requestId });
-  }
-
-  const { error: upErr } = await supabaseAdmin
-    .from('accounts')
-    .update({ property_access: next })
-    .eq('id', accountId);
-  if (upErr) {
-    console.error('[team:DELETE] update failed', upErr);
+  // Concurrency audit #1: use the atomic RPC instead of read-filter-update.
+  // Two concurrent removals on the same account from different hotels could
+  // each compute a stale `next` array and clobber each other, silently re-
+  // granting a hotel one of them had just removed.
+  const { data: remaining, error: rpcErr } = await supabaseAdmin.rpc(
+    'staxis_remove_property_access',
+    { p_account_id: accountId, p_hotel_id: hotelId },
+  );
+  if (rpcErr) {
+    console.error('[team:DELETE] staxis_remove_property_access failed', rpcErr);
     return err('Failed to remove access', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
+  }
+  // RPC contract: returns -1 if the account row no longer exists, otherwise
+  // the resulting property_access length (0 = nothing left).
+  const remainingLen = typeof remaining === 'number' ? remaining : -1;
+  if (remainingLen < 0) {
+    return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
 
   await writeAudit({
@@ -326,7 +331,7 @@ export async function DELETE(req: NextRequest) {
     targetType: 'account',
     targetId: accountId,
     hotelId,
-    metadata: { remaining_hotels: next.length },
+    metadata: { remaining_hotels: remainingLen },
   });
 
   return ok({ success: true }, { requestId });
