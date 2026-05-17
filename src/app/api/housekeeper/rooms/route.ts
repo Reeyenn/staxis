@@ -85,11 +85,21 @@ export async function GET(req: NextRequest) {
   // by date here — the page picks the right date bucket client-side so that
   // a HK who left the page open overnight rolls into tomorrow's shift
   // automatically. See housekeeper/[id]/page.tsx:158 for the rationale.
+  //
+  // Explicit field list matches what fromRoomRow consumes — avoids pulling
+  // wide JSON columns (checklist) and audit metadata that the HK page never
+  // renders. Audit follow-up 2026-05-17.
+  const ROOM_FIELDS =
+    'id, number, type, priority, status, assigned_to, assigned_name, ' +
+    'started_at, completed_at, date, property_id, issue_note, inspected_by, ' +
+    'inspected_at, is_dnd, dnd_note, arrival, stayover_day, stayover_minutes, ' +
+    'help_requested, checklist, photo_url';
   const { data, error: queryError } = await supabaseAdmin
     .from('rooms')
-    .select('*')
+    .select(ROOM_FIELDS)
     .eq('property_id', pid)
-    .eq('assigned_to', staffId);
+    .eq('assigned_to', staffId)
+    .returns<Record<string, unknown>[]>();
 
   if (queryError) {
     console.error('[housekeeper/rooms] query failed', errToString(queryError));

@@ -29,9 +29,12 @@ export async function GET(req: NextRequest) {
   // /admin/properties/[id] for the per-hotel audit panel.
   const propertyId = url.searchParams.get('propertyId');
 
+  // admin_audit_log schema per migration 0054. Audit follow-up 2026-05-17.
+  const AUDIT_LOG_FIELDS =
+    'id, ts, actor_user_id, actor_email, action, target_type, target_id, metadata';
   let query = supabaseAdmin
     .from('admin_audit_log')
-    .select('*')
+    .select(AUDIT_LOG_FIELDS)
     .order('ts', { ascending: false })
     .limit(limit);
   if (propertyId) {

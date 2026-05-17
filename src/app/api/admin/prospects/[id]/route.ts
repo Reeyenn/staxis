@@ -46,11 +46,15 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     return err('no fields to update', { requestId, status: 400 });
   }
 
+  // prospects schema per migration 0050. Audit follow-up 2026-05-17.
+  const PROSPECT_FIELDS =
+    'id, hotel_name, contact_name, contact_email, contact_phone, pms_type, ' +
+    'expected_launch_date, status, notes, checklist, created_at, updated_at';
   const { data, error } = await supabaseAdmin
     .from('prospects')
     .update(update)
     .eq('id', id)
-    .select('*')
+    .select(PROSPECT_FIELDS)
     .single();
 
   if (error) return err(`prospect update failed: ${error.message}`, { requestId, status: 500 });

@@ -23,7 +23,8 @@ export const MAX_STAFF_LIMIT = 1000;
 // pulled wide rows including phone, phone_lookup, hourly_wage on every
 // realtime tick; this list keeps payloads small and bandwidth predictable.
 // Keep in sync with fromStaffRow whenever a new field lands.
-const STAFF_FIELDS =
+// Exported so housekeeper-helpers.ts and other staff readers reuse it.
+export const STAFF_FIELDS =
   'id, name, phone, language, is_senior, department, hourly_wage, ' +
   'scheduled_today, weekly_hours, max_weekly_hours, max_days_per_week, ' +
   'days_worked_this_week, vacation_dates, is_active, schedule_priority, ' +

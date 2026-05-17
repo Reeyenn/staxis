@@ -23,6 +23,11 @@ export const maxDuration = 15;
 
 // Categories are free-form strings now — Reeyen can type "GitHub Pro",
 // "Postmark", whatever. We just sanity-check shape (non-empty, not silly long).
+// expenses schema per migration 0055. Audit follow-up 2026-05-17.
+const EXPENSE_FIELDS =
+  'id, category, amount_cents, description, vendor, incurred_on, source, ' +
+  'property_id, metadata, created_at';
+
 const MAX_CATEGORY_LEN = 60;
 function normalizeCategory(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
@@ -43,7 +48,7 @@ export async function GET(req: NextRequest) {
 
   const { data, error } = await supabaseAdmin
     .from('expenses')
-    .select('*')
+    .select(EXPENSE_FIELDS)
     .gte('incurred_on', since.toISOString().slice(0, 10))
     .order('incurred_on', { ascending: false })
     .limit(500);
@@ -82,10 +87,10 @@ export async function POST(req: NextRequest) {
       property_id: body.propertyId ?? null,
       metadata: body.metadata ?? {},
     })
-    .select('*')
-    .single();
+    .select(EXPENSE_FIELDS)
+    .single<Record<string, unknown>>();
 
-  if (error) return err(`expense create failed: ${error.message}`, { requestId, status: 500 });
+  if (error || !data) return err(`expense create failed: ${error?.message ?? 'unknown'}`, { requestId, status: 500 });
 
   await writeAuditLog({
     actorUserId: auth.userId,
@@ -126,7 +131,7 @@ export async function PATCH(req: NextRequest) {
     .from('expenses')
     .update(update)
     .eq('id', id)
-    .select('*')
+    .select(EXPENSE_FIELDS)
     .single();
 
   if (error) return err(`expense update failed: ${error.message}`, { requestId, status: 500 });
