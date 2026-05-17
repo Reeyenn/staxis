@@ -11,31 +11,47 @@
 // Add new shapes as M6 migration progresses. Keep this file thin — only put
 // shapes here when there's at least one cross-team caller.
 
-// Walkthrough overlay
-export interface WalkthroughStartResponse {
+// Walkthrough overlay — `/api/walkthrough/start` + `/api/walkthrough/step`.
+// Server returns these shapes RAW (no `ok()` envelope) so the client casts the
+// parsed JSON directly. Audit M6.
+export interface WalkthroughStartOk {
   ok: true;
   runId: string;
+  requestId?: string;
 }
+
+export interface WalkthroughStartErr {
+  ok: false;
+  error: string;
+  code?: string;
+  requestId?: string;
+}
+
+export type WalkthroughStartResponse = WalkthroughStartOk | WalkthroughStartErr;
+
+/** Action the walkthrough LLM picked for this step. Mirror of the server's
+ *  StepAction type — kept here to share between client and the route. */
+export type WalkthroughStepAction =
+  | { type: 'click'; elementId: string; narration: string }
+  | { type: 'done'; narration: string }
+  | { type: 'cannot_help'; narration: string };
 
 export interface WalkthroughStepResponseOk {
   ok: true;
-  done?: boolean;
-  cleanupRequired?: boolean;
-  highlight?: { selector: string; label?: string };
-  spoken?: string;
-  written?: string;
-  finished?: boolean;
+  action: WalkthroughStepAction;
+  requestId?: string;
 }
 
 export interface WalkthroughStepResponseErr {
   ok: false;
   error: string;
   code?: string;
+  requestId?: string;
 }
 
 export type WalkthroughStepResponse = WalkthroughStepResponseOk | WalkthroughStepResponseErr;
 
-// Agent voice session
+// Agent voice session (Eleven Labs session mint). Raw shape, no envelope.
 export interface SessionMintResponse {
   ok: true;
   data: {
@@ -46,13 +62,14 @@ export interface SessionMintResponse {
   };
 }
 
-// Stripe checkout
-export interface StripeCheckoutResponse {
+// Stripe checkout — wrapped in the ok() envelope, so the client gets
+// ApiResponse<StripeCheckoutData>.
+export interface StripeCheckoutData {
   url: string;
   sessionId: string;
 }
 
-export interface StripePortalResponse {
+export interface StripePortalData {
   url: string;
 }
 

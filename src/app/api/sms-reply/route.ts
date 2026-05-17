@@ -27,6 +27,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
 import { safeBaseUrl, redactPhone } from '@/lib/api-validate';
+import { parseStringField, parseUnionField } from '@/lib/db-mappers';
 import twilio from 'twilio';
 
 // Twilio expects TwiML (XML), not JSON. An empty <Response/> tells Twilio
@@ -185,9 +186,17 @@ export async function POST(req: NextRequest) {
     if (contentType.includes('application/json')) {
       const jsonText = await req.text();
       rawBodyForLog = jsonText;
-      const body = JSON.parse(jsonText) as { fromNumber?: string; From?: string; text?: string; Body?: string };
-      fromNumber = body.fromNumber ?? body.From;
-      text = body.text ?? body.Body;
+      // Audit M2: narrow each field at runtime — a JSON body that delivers
+      // `From: 15551234567` (number) instead of a string used to slip past
+      // the cast and crash `.replace()` downstream. typeof guards make the
+      // dev-only path symmetric with the form-encoded branch below.
+      let parsedJson: unknown;
+      try { parsedJson = JSON.parse(jsonText); } catch { parsedJson = null; }
+      if (parsedJson && typeof parsedJson === 'object') {
+        const body = parsedJson as Record<string, unknown>;
+        fromNumber = parseStringField(body.fromNumber) ?? parseStringField(body.From);
+        text = parseStringField(body.text) ?? parseStringField(body.Body);
+      }
     } else {
       const rawBody = await req.text();
       rawBodyForLog = rawBody;
@@ -328,7 +337,25 @@ export async function POST(req: NextRequest) {
       return twimlOk();
     }
 
-    const conf = (confs ?? [])[0];
+    const confRaw = (confs ?? [])[0];
+    // Audit M3: validate the shift_confirmations row shape at the SELECT
+    // boundary so a column rename produces "no_open_confirmation" instead
+    // of building a URL with `?pid=undefined`. We need token, property_id,
+    // shift_date as strings; language must be one of the supported codes.
+    const conf = confRaw && typeof confRaw === 'object' ? (() => {
+      const r = confRaw as Record<string, unknown>;
+      const token = parseStringField(r.token);
+      const property_id = parseStringField(r.property_id);
+      const shift_date = parseStringField(r.shift_date);
+      if (!token || !property_id || !shift_date) return null;
+      return {
+        token,
+        property_id,
+        shift_date,
+        staff_name: parseStringField(r.staff_name) ?? null,
+        language: parseUnionField(r.language, ['en', 'es'] as const, 'en'),
+      };
+    })() : null;
     if (!conf) {
       await logHit({ stage: 'no_open_confirmation', staffId: staff.id });
       return twimlOk();
@@ -353,10 +380,10 @@ export async function POST(req: NextRequest) {
 
     const firstName = (conf.staff_name ?? staff.name ?? 'there').split(' ')[0];
     const baseUrl = resolveBaseUrl();
-    const hkUrl = `${baseUrl}/housekeeper/${staff.id}?pid=${encodeURIComponent(conf.property_id as string)}`;
+    const hkUrl = `${baseUrl}/housekeeper/${staff.id}?pid=${encodeURIComponent(conf.property_id)}`;
 
     const renderLinkMessage = (targetLang: 'en' | 'es'): string => {
-      const label = formatShiftDate(conf.shift_date as string, targetLang);
+      const label = formatShiftDate(conf.shift_date, targetLang);
       return targetLang === 'es'
         ? `Hola ${firstName}! Tu lista para ${label}:\n${hkUrl}\n\nFor English, reply ENGLISH\n\n– ${hotelName}`
         : `Hi ${firstName}! Your list for ${label}:\n${hkUrl}\n\nPara español, responde ESPAÑOL\n\n– ${hotelName}`;
@@ -369,7 +396,7 @@ export async function POST(req: NextRequest) {
       // shift_confirmation row.
       const [{ error: staffUpdErr }, { error: confUpdErr }] = await Promise.all([
         supabaseAdmin.from('staff').update({ language: next }).eq('id', staff!.id),
-        supabaseAdmin.from('shift_confirmations').update({ language: next }).eq('token', conf.token as string),
+        supabaseAdmin.from('shift_confirmations').update({ language: next }).eq('token', conf.token),
       ]);
       if (staffUpdErr) console.error('[sms-reply] staff language update failed:', staffUpdErr.message);
       if (confUpdErr) console.error('[sms-reply] confirmation language update failed:', confUpdErr.message);
@@ -390,7 +417,7 @@ export async function POST(req: NextRequest) {
     }
 
     // ── Anything else — friendly ack, point at their link ───────────────────
-    const lang: 'en' | 'es' = (conf.language as 'en' | 'es') ?? 'en';
+    const lang = conf.language;
     const hint = lang === 'es'
       ? `¡Gracias, ${firstName}! Abre tu enlace para ver tu lista.\n– ${hotelName}`
       : `Thanks, ${firstName}! Open your link to see your list.\n– ${hotelName}`;

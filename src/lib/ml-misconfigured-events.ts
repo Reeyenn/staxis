@@ -88,7 +88,7 @@ export async function emitPropertyMisconfiguredEvent(
       log.warn('emitPropertyMisconfiguredEvent: insert failed', {
         requestId: input.requestId,
         propertyId: input.propertyId,
-        err: error as unknown as Error,
+        err: error,
       });
     }
   } catch (err) {

@@ -124,7 +124,7 @@ export async function POST(req: NextRequest) {
 
     // ── Failsafe: refuse to wipe all assignments without explicit opt-in ────
     const hasAnyAssignment = staff.some(s => (s.assignedRooms ?? []).length > 0);
-    const allowClearAll = (body as unknown as Record<string, unknown>).allowClearAll === true;
+    const allowClearAll = body.allowClearAll === true;
     if (!hasAnyAssignment && !allowClearAll) {
       return err('Refusing to clear all room assignments without allowClearAll=true', {
         requestId, status: 400, code: ApiErrorCode.ValidationFailed,

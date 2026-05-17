@@ -235,7 +235,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     .eq('property_id', pid)
     .eq('date', date);
   if (readErr) {
-    log.error('refresh-from-pms: rooms read failed', { requestId, route: 'refresh-from-pms', pid, err: readErr as unknown as Error });
+    log.error('refresh-from-pms: rooms read failed', { requestId, route: 'refresh-from-pms', pid, err: readErr });
     return err(`rooms read failed: ${errToString(readErr)}`, {
       requestId, status: 500, code: ApiErrorCode.InternalError, headers,
     });
@@ -258,7 +258,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     .eq('id', pid)
     .maybeSingle();
   if (propErr) {
-    log.error('refresh-from-pms: property read failed', { requestId, route: 'refresh-from-pms', pid, err: propErr as unknown as Error });
+    log.error('refresh-from-pms: property read failed', { requestId, route: 'refresh-from-pms', pid, err: propErr });
     return err(`property read failed: ${errToString(propErr)}`, {
       requestId, status: 500, code: ApiErrorCode.InternalError, headers,
     });
@@ -351,7 +351,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (toInsert.length > 0) {
     const { error: insertErr } = await supabaseAdmin.from('rooms').insert(toInsert);
     if (insertErr) {
-      log.error('refresh-from-pms: rooms insert failed', { requestId, route: 'refresh-from-pms', pid, err: insertErr as unknown as Error, attemptedInserts: toInsert.length });
+      log.error('refresh-from-pms: rooms insert failed', { requestId, route: 'refresh-from-pms', pid, err: insertErr, attemptedInserts: toInsert.length });
       // Use err() with `details` carrying the partial-success info — the
       // UI's toast layer reads details.partiallySucceeded to switch from
       // "all-failed red" to "partial yellow."
@@ -429,7 +429,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         // Phantom-seed failure is degraded but not fatal — the CA-side
         // updates already landed. Log and surface a partial success so the
         // UI toast can warn rather than scream.
-        log.error('refresh-from-pms: phantom-seed insert failed', { requestId, route: 'refresh-from-pms', pid, err: phantomErr as unknown as Error, attempted: phantomRows.length });
+        log.error('refresh-from-pms: phantom-seed insert failed', { requestId, route: 'refresh-from-pms', pid, err: phantomErr, attempted: phantomRows.length });
         return err(`phantom-seed insert failed: ${errToString(phantomErr)}`, {
           requestId, status: 500, code: ApiErrorCode.InternalError, headers,
           details: {

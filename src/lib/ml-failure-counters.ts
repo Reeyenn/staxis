@@ -91,7 +91,7 @@ export async function incrementMLFailureCounter(
     if (readErr) {
       // Don't blow up the parent — counter writes are best-effort.
       log.warn('ml-failure-counter: read failed (non-fatal)', {
-        kind, err: readErr as unknown as Error,
+        kind, err: readErr,
       });
       return;
     }
@@ -118,13 +118,13 @@ export async function incrementMLFailureCounter(
 
     if (writeErr) {
       log.warn('ml-failure-counter: write failed (non-fatal)', {
-        kind, err: writeErr as unknown as Error,
+        kind, err: writeErr,
       });
     }
   } catch (e) {
     // Belt-and-suspenders — counter logic must NEVER crash the parent request.
     log.warn('ml-failure-counter: unexpected exception (non-fatal)', {
-      kind, err: e as unknown as Error,
+      kind, err: e,
     });
   }
 }

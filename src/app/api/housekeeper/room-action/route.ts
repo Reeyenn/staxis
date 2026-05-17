@@ -377,7 +377,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           });
         } catch (featureErr) {
           log.error('room-action: feature derivation threw (unexpected)', {
-            requestId, pid, staffId, action: 'finish', err: featureErr as unknown as Error
+            requestId, pid, staffId, action: 'finish', err: featureErr
           });
           // Smoke-detector: deriveCleaningEventFeatures already swallows its
           // own internal failures and returns null fields, so reaching this
@@ -424,7 +424,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         // Don't fail the whole request if audit insert fails — the room
         // update already succeeded and the housekeeper has moved on.
         if (ceErr) {
-          log.error('room-action: cleaning_events insert failed (non-fatal)', { requestId, route: 'housekeeper/room-action', pid, staffId, action: 'finish', err: ceErr as unknown as Error });
+          log.error('room-action: cleaning_events insert failed (non-fatal)', { requestId, route: 'housekeeper/room-action', pid, staffId, action: 'finish', err: ceErr });
         }
       }
       return ok({ action: 'finish', completedAt, cleaningEventInserted, deduped: isDuplicate }, { requestId, headers });
@@ -481,7 +481,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         if (discardErr) {
           log.error('room-action: cleaning_events discard failed (non-fatal)', {
             requestId, route: 'housekeeper/room-action', pid, staffId,
-            action: 'reset', err: discardErr as unknown as Error,
+            action: 'reset', err: discardErr,
           });
         } else {
           cleaningEventDiscarded = true;
