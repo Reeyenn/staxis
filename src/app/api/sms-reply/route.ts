@@ -253,6 +253,41 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Webhook dedup (audit/concurrency #7). Twilio re-delivers inbound
+    // webhooks on any non-2xx response or operator request — without
+    // dedup, the second delivery would fire another language-switch /
+    // ack SMS to the housekeeper. INSERT-then-detect-conflict using
+    // the same shape as stripe_processed_events.
+    const messageSid = formParams['MessageSid']
+      ?? formParams['SmsMessageSid']
+      ?? null;
+    if (messageSid) {
+      const { error: dupErr } = await supabaseAdmin
+        .from('processed_twilio_webhooks')
+        .insert({
+          message_sid: messageSid,
+          webhook_kind: 'inbound-sms',
+          metadata: {
+            from: fromNumber ?? null,
+            text_len: text?.length ?? 0,
+          },
+        });
+      if (dupErr) {
+        const code = (dupErr as { code?: string }).code;
+        if (code === '23505') {
+          // Already processed — Twilio's retry. Ack 2xx so they stop.
+          await logHit({ stage: 'duplicate_webhook', messageSid });
+          return twimlOk();
+        }
+        // Any OTHER error means the dedup table is unreachable. Fail
+        // closed — Twilio will retry; meanwhile we don't risk a true
+        // duplicate slipping through unchecked.
+        log.error('[sms-reply] dedup insert failed', { err: dupErr, messageSid });
+        await logHit({ stage: 'dedup_table_error', messageSid });
+        return new NextResponse('', { status: 503 });
+      }
+    }
+
     await logHit({
       stage: 'received',
       contentType,

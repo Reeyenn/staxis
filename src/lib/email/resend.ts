@@ -41,6 +41,13 @@ export interface SendEmailParams {
   tags?: Array<{ name: string; value: string }>;
   // Optional from override — defaults to noreply@getstaxis.com.
   from?: string;
+  // Optional Resend `Idempotency-Key` header. Resend dedupes within a
+  // 24h window when the same key reappears (audit/concurrency #6).
+  // Callers that can construct a stable key (e.g. `invite:${inviteId}`)
+  // should pass one; otherwise the wrapper derives a minute-bucketed
+  // hash of (to, subject) — good enough to swallow accidental double
+  // submits and SDK-level retries.
+  idempotencyKey?: string;
   // Optional audit metadata. The standard write to admin_audit_log
   // includes action, target, and the recipient; this lets callers
   // attach context like "hotel name" or "invite role".
@@ -108,6 +115,8 @@ export async function sendTransactionalEmail(
     tags: params.tags,
   };
 
+  const idempotencyKey = params.idempotencyKey ?? deriveIdempotencyKey(params);
+
   let res: Response;
   try {
     res = await fetch(RESEND_API_URL, {
@@ -115,6 +124,7 @@ export async function sendTransactionalEmail(
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
+        'Idempotency-Key': idempotencyKey,
       },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(15_000),
@@ -184,6 +194,24 @@ function emailToRateLimitKey(email: string): string {
     hash.slice(20, 32),
   ].join('-');
 }
+
+/**
+ * Derive a default Idempotency-Key when the caller doesn't pass one.
+ * Bucketed to the minute so accidental double-submits in quick succession
+ * dedupe but a legitimate "resend the same email later" still goes
+ * through. 32-char hex.
+ */
+function deriveIdempotencyKey(params: SendEmailParams): string {
+  const normalized = normalizeEmailForRateLimit(params.to);
+  const minute = Math.floor(Date.now() / 60_000);
+  return createHash('sha256')
+    .update(`${normalized}|${params.subject}|${minute}`)
+    .digest('hex')
+    .slice(0, 32);
+}
+
+// Export for unit tests only.
+export const __test_deriveIdempotencyKey = deriveIdempotencyKey;
 
 async function logEmailOutcome(
   params: SendEmailParams,

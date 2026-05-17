@@ -72,6 +72,22 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('hotelops-active-property', id);
   };
 
+  // Cross-tab sync (audit/concurrency #13). Without this, swapping the
+  // active property in Tab A leaves Tab B's dashboard/rooms/staff list
+  // pointing at the OLD property until manual reload — confusing in
+  // multi-property accounts.
+  useEffect(() => {
+    const handler = (e: StorageEvent) => {
+      if (e.key !== 'hotelops-active-property') return;
+      const next = e.newValue;
+      if (next && next !== activePropertyId) {
+        setActivePropertyIdState(next);
+      }
+    };
+    window.addEventListener('storage', handler);
+    return () => window.removeEventListener('storage', handler);
+  }, [activePropertyId]);
+
   // Load properties list.
   // After sign-in there may be a brief delay before the RLS context
   // (auth.uid() in Postgres) catches up with the Supabase client's JWT —

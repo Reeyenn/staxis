@@ -234,7 +234,7 @@ export async function DELETE(req: NextRequest) {
 
   const { data: target, error: tErr } = await supabaseAdmin
     .from('accounts')
-    .select('id, role, property_access')
+    .select('id, role')
     .eq('id', accountId)
     .maybeSingle();
   if (tErr || !target) {
@@ -246,22 +246,23 @@ export async function DELETE(req: NextRequest) {
     });
   }
 
-  const current = Array.isArray(target.property_access) ? target.property_access : [];
-  const next = current.filter((p: string) => p !== hotelId);
-  if (next.length === current.length) {
-    // Already not on this hotel — idempotent success.
-    return ok({ success: true, alreadyRemoved: true }, { requestId });
-  }
-
-  const { error: upErr } = await supabaseAdmin
-    .from('accounts')
-    .update({ property_access: next })
-    .eq('id', accountId);
-  if (upErr) {
-    log.error('[team:DELETE] update failed', { err: upErr, requestId });
+  // Atomic remove via RPC. The previous SELECT→filter→UPDATE raced when
+  // two managers detached the same user from different hotels in parallel
+  // — the second writer's stale array could re-grant a hotel the first
+  // writer just stripped (audit/concurrency #1).
+  const { data: remainingLen, error: rpcErr } = await supabaseAdmin
+    .rpc('staxis_remove_property_access', {
+      p_account_id: accountId,
+      p_hotel_id: hotelId,
+    });
+  if (rpcErr) {
+    log.error('[team:DELETE] rpc failed', { err: rpcErr, requestId });
     return err('Failed to remove access', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
+  }
+  if (remainingLen === -1) {
+    return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
 
   await writeAudit({
@@ -271,7 +272,7 @@ export async function DELETE(req: NextRequest) {
     targetType: 'account',
     targetId: accountId,
     hotelId,
-    metadata: { remaining_hotels: next.length },
+    metadata: { remaining_hotels: Number(remainingLen ?? 0) },
   });
 
   return ok({ success: true }, { requestId });
