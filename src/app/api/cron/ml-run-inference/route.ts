@@ -21,13 +21,12 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { runWithConcurrency, applyShardFilter } from '@/lib/parallel';
-import { listMlShardUrls, resolveMlShardUrl } from '@/lib/ml-routing';
+import { classifyMlServiceConfig, resolveMlShardUrl } from '@/lib/ml-routing';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import {
   emitPropertyMisconfiguredEvent,
   parsePropertyMisconfiguredError,
 } from '@/lib/ml-misconfigured-events';
-import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -42,12 +41,23 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const unauth = requireCronSecret(req);
   if (unauth) return unauth;
 
-  const shardUrls = listMlShardUrls();
-  const mlServiceSecret = env.ML_SERVICE_SECRET;
-  if (shardUrls.length === 0 || !mlServiceSecret) {
+  const config = classifyMlServiceConfig();
+  if (config.state === 'disabled') {
     log.warn('ml-run-inference: ML service not configured — skipping', { requestId });
     return NextResponse.json({ ok: true, skipped: 'ML service not configured yet', requestId });
   }
+  if (config.state === 'drift') {
+    // One of (ML_SERVICE_URLS, ML_SERVICE_SECRET) is set but not the
+    // other. Fail loudly instead of silently no-op'ing — see
+    // classifyMlServiceConfig in src/lib/ml-routing.ts for the May 2026
+    // incident that motivated this branch.
+    log.error('ml-run-inference: ML service config drift', { requestId, missing: config.missing });
+    return NextResponse.json(
+      { ok: false, error: 'ml_service_config_drift', missing: config.missing, requestId },
+      { status: 503 },
+    );
+  }
+  const { secret: mlServiceSecret } = config;
 
   // Pull `timezone` along with id so each property's "tomorrow" is computed
   // against its own local clock — a Florida hotel on America/New_York must

@@ -10,7 +10,7 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { parseCSV, classifyStayover, CLEANING_TIMES, buildSnapshot } = require('../csv-scraper');
+const { parseCSV, classifyStayover, CLEANING_TIMES, buildSnapshot, computeTargetDate } = require('../csv-scraper');
 
 // CA's Housekeeping Check-off List CSV has 14 columns:
 //   Room, Type, People, Adults, Children, Status, Condition,
@@ -129,5 +129,63 @@ describe('buildSnapshot', () => {
     const snap = buildSnapshot(rooms, 'morning', today);
     assert.ok(Array.isArray(snap.oooRoomNumbers));
     assert.ok(snap.oooRoomNumbers.includes('105'));
+  });
+});
+
+// Regression coverage for the 2026-05-17 reintroduction of the 7pm pull
+// cutover. The earlier removal (2026-04-30) collapsed every pull onto
+// today's row, which made ml-run-inference predict against an empty
+// plan_snapshots row and ate 3 days of demand_predictions. This suite
+// pins the contract so anyone tempted to revert the split sees a red
+// test that points at the ML pipeline that depends on it.
+describe('computeTargetDate', () => {
+  test('morning pulls write to today (local)', () => {
+    const todayChicago = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago' }).format(new Date());
+    assert.equal(computeTargetDate('morning', 'America/Chicago'), todayChicago);
+  });
+
+  test('evening pulls write to tomorrow (local)', () => {
+    const todayChicago = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago' }).format(new Date());
+    // Compute tomorrow the same way the function does so DST quirks
+    // can't desync the expected value from the production code.
+    const anchor = new Date(`${todayChicago}T12:00:00Z`);
+    anchor.setUTCDate(anchor.getUTCDate() + 1);
+    const tomorrowChicago = anchor.toISOString().slice(0, 10);
+    assert.equal(computeTargetDate('evening', 'America/Chicago'), tomorrowChicago);
+  });
+
+  test('evening pulls land on day N+1 regardless of timezone', () => {
+    for (const tz of ['America/New_York', 'America/Los_Angeles', 'Pacific/Honolulu', 'Europe/London']) {
+      const today = new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date());
+      const anchor = new Date(`${today}T12:00:00Z`);
+      anchor.setUTCDate(anchor.getUTCDate() + 1);
+      assert.equal(
+        computeTargetDate('evening', tz),
+        anchor.toISOString().slice(0, 10),
+        `tz=${tz}: expected tomorrow's date`,
+      );
+    }
+  });
+
+  test('unknown pullType falls back to today (fail-safe)', () => {
+    const todayChicago = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago' }).format(new Date());
+    // Anything that isn't the literal 'evening' should NOT advance the date.
+    // Worst case is we keep refining today's row, which never poisons
+    // tomorrow's plan.
+    assert.equal(computeTargetDate('garbage', 'America/Chicago'), todayChicago);
+    assert.equal(computeTargetDate(undefined, 'America/Chicago'), todayChicago);
+    assert.equal(computeTargetDate(null, 'America/Chicago'), todayChicago);
+  });
+
+  test('tomorrow advances exactly one day, even across DST transitions', () => {
+    // We can't time-travel the system clock from a node:test, but the
+    // production code uses a UTC anchor at noon specifically so that a
+    // ±1h DST shift can't undershoot or overshoot the next civil day.
+    // Sanity-check the helper output is exactly +1 day.
+    const morning = computeTargetDate('morning', 'America/Chicago');
+    const evening = computeTargetDate('evening', 'America/Chicago');
+    const a = new Date(`${morning}T12:00:00Z`).getTime();
+    const b = new Date(`${evening}T12:00:00Z`).getTime();
+    assert.equal(b - a, 86400000, `expected exactly 24h delta, got ${(b - a) / 3600000}h`);
   });
 });

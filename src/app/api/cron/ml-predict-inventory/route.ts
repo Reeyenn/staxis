@@ -16,14 +16,13 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { runWithConcurrency } from '@/lib/parallel';
-import { listMlShardUrls, resolveMlShardUrl } from '@/lib/ml-routing';
+import { classifyMlServiceConfig, resolveMlShardUrl } from '@/lib/ml-routing';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import {
   emitPropertyMisconfiguredEvent,
   parsePropertyMisconfiguredError,
   MISCONFIG_STATUSES,
 } from '@/lib/ml-misconfigured-events';
-import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -34,9 +33,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const unauth = requireCronSecret(req);
   if (unauth) return unauth;
 
-  const shardUrls = listMlShardUrls();
-  const mlServiceSecret = env.ML_SERVICE_SECRET;
-  if (shardUrls.length === 0 || !mlServiceSecret) {
+  const config = classifyMlServiceConfig();
+  if (config.state === 'disabled') {
     log.warn('ml-predict-inventory: ML service not configured', { requestId });
     return NextResponse.json({
       ok: true,
@@ -44,6 +42,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       requestId,
     });
   }
+  if (config.state === 'drift') {
+    log.error('ml-predict-inventory: ML service config drift', { requestId, missing: config.missing });
+    return NextResponse.json(
+      { ok: false, error: 'ml_service_config_drift', missing: config.missing, requestId },
+      { status: 503 },
+    );
+  }
+  const { secret: mlServiceSecret } = config;
 
   // Pull `timezone` so each property's "tomorrow" is computed against its
   // own local clock (a Florida hotel must not predict a Texas-timed date).

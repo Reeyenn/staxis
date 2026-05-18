@@ -80,6 +80,39 @@ export function listMlShardUrls(): string[] {
 }
 
 /**
+ * Classify the ML service routing config from the perspective of a cron
+ * caller. The six ml-* cron routes all share the same early-exit shape:
+ *
+ *   - both unset      → legit "ML disabled" deploy (dev / unconfigured).
+ *                       Cron returns ok:true, skipped.
+ *   - one set, one not → config drift. Without this helper, the route
+ *                       used to return ok:true + skipped here too — and
+ *                       the ml-cron workflow's `jq -e '.ok == true'`
+ *                       guard happily passed, swallowing 3 days of
+ *                       missing predictions in May 2026 before
+ *                       ml_demand_predictions_fresh tripped.
+ *   - both set         → ready to call the ML service.
+ *
+ * Callers branch on the returned `state`. `drift` carries the missing
+ * key name so the route's error payload + Sentry log point straight at
+ * the Vercel env var that needs setting.
+ */
+export type MlServiceConfigState =
+  | { state: 'ready'; shardUrls: string[]; secret: string }
+  | { state: 'disabled' }
+  | { state: 'drift'; missing: 'ML_SERVICE_URLS' | 'ML_SERVICE_SECRET' };
+
+export function classifyMlServiceConfig(): MlServiceConfigState {
+  const shardUrls = listMlShardUrls();
+  const secret = env.ML_SERVICE_SECRET ?? '';
+  const urlsSet = shardUrls.length > 0;
+  const secretSet = secret.trim().length > 0;
+  if (urlsSet && secretSet) return { state: 'ready', shardUrls, secret };
+  if (!urlsSet && !secretSet) return { state: 'disabled' };
+  return { state: 'drift', missing: !urlsSet ? 'ML_SERVICE_URLS' : 'ML_SERVICE_SECRET' };
+}
+
+/**
  * Return the "primary" shard URL for fleet-wide operations that don't
  * partition by property — namely the inventory_rate_priors aggregator,
  * which reads from the shared DB across all properties regardless of

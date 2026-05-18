@@ -17,9 +17,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireCronSecret } from '@/lib/api-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { getPrimaryMlShardUrl } from '@/lib/ml-routing';
+import { classifyMlServiceConfig, getPrimaryMlShardUrl } from '@/lib/ml-routing';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
-import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -36,9 +35,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // shard-local state. We pick the primary shard deterministically so the
   // cross-fleet work hosts on the same Railway instance every day,
   // which makes capacity planning and log grouping cleaner.
-  const mlServiceUrl = getPrimaryMlShardUrl();
-  const mlServiceSecret = env.ML_SERVICE_SECRET;
-  if (!mlServiceUrl || !mlServiceSecret) {
+  const cfg = classifyMlServiceConfig();
+  if (cfg.state === 'disabled') {
     log.warn('ml-aggregate-priors: ML service not configured', { requestId });
     return NextResponse.json({
       ok: true,
@@ -46,6 +44,15 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       requestId,
     });
   }
+  if (cfg.state === 'drift') {
+    log.error('ml-aggregate-priors: ML service config drift', { requestId, missing: cfg.missing });
+    return NextResponse.json(
+      { ok: false, error: 'ml_service_config_drift', missing: cfg.missing, requestId },
+      { status: 503 },
+    );
+  }
+  const mlServiceUrl = getPrimaryMlShardUrl()!;
+  const mlServiceSecret = cfg.secret;
 
   // Phase M3 (2026-05-14): aggregate inventory + demand + supply cohort
   // priors in parallel. All three are cross-fleet, idempotent, cheap.

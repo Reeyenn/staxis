@@ -63,8 +63,18 @@ jobs:
           # are the authoritative signal for "models exist but no
           # predictions landed" — that's where the silent-fail bug
           # class is now caught.
+          #
+          # Also fail on top-level `.skipped`: that response shape means
+          # the route hit its early-exit (no ML config) and wrote nothing.
+          # In prod that's the silent-cron-success bug from May 2026 that
+          # ate 3 days of demand predictions before a doctor check tripped.
+          # Routes now return 503 on actual config drift; the only path
+          # that still returns `{ok:true, skipped:...}` is "both env vars
+          # intentionally unset" — which should never be true for
+          # getstaxis.com hits.
           jq -e '
             (.ok == true) and
+            ((.skipped // null) == null) and
             (
               (.results // []) | map(
                 (.status // "ok") as $s | $s != "error"
@@ -109,8 +119,18 @@ jobs:
           # are the authoritative signal for "models exist but no
           # predictions landed" — that's where the silent-fail bug
           # class is now caught.
+          #
+          # Also fail on top-level `.skipped`: that response shape means
+          # the route hit its early-exit (no ML config) and wrote nothing.
+          # In prod that's the silent-cron-success bug from May 2026 that
+          # ate 3 days of demand predictions before a doctor check tripped.
+          # Routes now return 503 on actual config drift; the only path
+          # that still returns `{ok:true, skipped:...}` is "both env vars
+          # intentionally unset" — which should never be true for
+          # getstaxis.com hits.
           jq -e '
             (.ok == true) and
+            ((.skipped // null) == null) and
             (
               (.results // []) | map(
                 (.status // "ok") as $s | $s != "error"
@@ -155,8 +175,18 @@ jobs:
           # are the authoritative signal for "models exist but no
           # predictions landed" — that's where the silent-fail bug
           # class is now caught.
+          #
+          # Also fail on top-level `.skipped`: that response shape means
+          # the route hit its early-exit (no ML config) and wrote nothing.
+          # In prod that's the silent-cron-success bug from May 2026 that
+          # ate 3 days of demand predictions before a doctor check tripped.
+          # Routes now return 503 on actual config drift; the only path
+          # that still returns `{ok:true, skipped:...}` is "both env vars
+          # intentionally unset" — which should never be true for
+          # getstaxis.com hits.
           jq -e '
             (.ok == true) and
+            ((.skipped // null) == null) and
             (
               (.results // []) | map(
                 (.status // "ok") as $s | $s != "error"
@@ -201,8 +231,18 @@ jobs:
           # are the authoritative signal for "models exist but no
           # predictions landed" — that's where the silent-fail bug
           # class is now caught.
+          #
+          # Also fail on top-level `.skipped`: that response shape means
+          # the route hit its early-exit (no ML config) and wrote nothing.
+          # In prod that's the silent-cron-success bug from May 2026 that
+          # ate 3 days of demand predictions before a doctor check tripped.
+          # Routes now return 503 on actual config drift; the only path
+          # that still returns `{ok:true, skipped:...}` is "both env vars
+          # intentionally unset" — which should never be true for
+          # getstaxis.com hits.
           jq -e '
             (.ok == true) and
+            ((.skipped // null) == null) and
             (
               (.results // []) | map(
                 (.status // "ok") as $s | $s != "error"
@@ -247,8 +287,18 @@ jobs:
           # are the authoritative signal for "models exist but no
           # predictions landed" — that's where the silent-fail bug
           # class is now caught.
+          #
+          # Also fail on top-level `.skipped`: that response shape means
+          # the route hit its early-exit (no ML config) and wrote nothing.
+          # In prod that's the silent-cron-success bug from May 2026 that
+          # ate 3 days of demand predictions before a doctor check tripped.
+          # Routes now return 503 on actual config drift; the only path
+          # that still returns `{ok:true, skipped:...}` is "both env vars
+          # intentionally unset" — which should never be true for
+          # getstaxis.com hits.
           jq -e '
             (.ok == true) and
+            ((.skipped // null) == null) and
             (
               (.results // []) | map(
                 (.status // "ok") as $s | $s != "error"
@@ -293,8 +343,18 @@ jobs:
           # are the authoritative signal for "models exist but no
           # predictions landed" — that's where the silent-fail bug
           # class is now caught.
+          #
+          # Also fail on top-level `.skipped`: that response shape means
+          # the route hit its early-exit (no ML config) and wrote nothing.
+          # In prod that's the silent-cron-success bug from May 2026 that
+          # ate 3 days of demand predictions before a doctor check tripped.
+          # Routes now return 503 on actual config drift; the only path
+          # that still returns `{ok:true, skipped:...}` is "both env vars
+          # intentionally unset" — which should never be true for
+          # getstaxis.com hits.
           jq -e '
             (.ok == true) and
+            ((.skipped // null) == null) and
             (
               (.results // []) | map(
                 (.status // "ok") as $s | $s != "error"
