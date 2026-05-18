@@ -58,9 +58,10 @@ We deliberately split crons across two schedulers because they have different re
 |---|---|---|
 | `/api/cron/process-sms-jobs` | every 5 min | Drains SMS jobs queue → Twilio |
 | `/api/cron/scraper-health` | every 15 min | Alerting watchdog for dead scrapers |
+| `/api/cron/seal-daily` | hourly :05 | Per-property attendance marks + daily_logs |
 | `/api/cron/expire-trials` | daily 09:00 UTC | Flips expired trial accounts |
 
-Vercel Pro guarantees per-minute precision. We moved `process-sms-jobs` and `scraper-health` here in May 2026 audit pass-6 after observing GitHub Actions throttle them by 7-17×.
+Vercel Pro guarantees per-minute precision. We moved `process-sms-jobs` and `scraper-health` here in May 2026 audit pass-6 after observing GitHub Actions throttle them by 7-17×. Moved `seal-daily` here 2026-05-17 after a 4-tick GH scheduler stall turned the doctor red.
 
 ### GitHub Actions workflows (`.github/workflows/`)
 **Use for:** daily/weekly cadences where hour-scale precision is fine.
@@ -70,7 +71,6 @@ Vercel Pro guarantees per-minute precision. We moved `process-sms-jobs` and `scr
 | `tests.yml` | Every push and PR | Broken tests |
 | `post-deploy-smoke-test.yml` | Every push to main | Broken deploy, missing/stale env vars |
 | `daily-drift-check.yml` | 8am Central daily | Credential drift between Vercel, Railway, Fly |
-| `seal-daily-cron.yml` | Hourly | Per-property attendance marks + daily_logs |
 | `ml-cron.yml` | Multiple daily + weekly | ML training, inference, prior aggregation |
 | `ml-shadow-evaluate-cron.yml` | Daily 11:30 UTC | Shadow-model promotion/rejection pass |
 | `purge-old-error-logs-cron.yml` | Daily 09:30 UTC | error_logs retention sweep + api_limits cleanup |
@@ -128,7 +128,7 @@ Symptom → diagnosis → fix → verify → prevention, per failure type. When 
 
 **What it does:** Every cron route's LAST step is a write to `cron_heartbeats` with its name + timestamp. The doctor's `cron_heartbeats_fresh` check reads back and fails if any expected cron is older than 2× its cadence. Independent of GitHub Actions' "workflow succeeded" signal (which silent-passed for weeks while inner ML calls all failed).
 
-**Why it exists:** The May 2026 audit found that the previous health signal — "GitHub Actions workflow returned 200" — could be green while the route silently aggregated 100% per-item errors. A heartbeat written AFTER all the real work means "the route actually finished, not just returned." Pairs with the tightened jq checks in `ml-cron.yml` and `seal-daily-cron.yml`.
+**Why it exists:** The May 2026 audit found that the previous health signal — "GitHub Actions workflow returned 200" — could be green while the route silently aggregated 100% per-item errors. A heartbeat written AFTER all the real work means "the route actually finished, not just returned." Pairs with the tightened jq checks in `ml-cron.yml`.
 
 **Don't:**
 - Move the `writeCronHeartbeat()` call earlier in the route. It must come AFTER every write that matters; otherwise a silent partial-failure still writes the heartbeat.
