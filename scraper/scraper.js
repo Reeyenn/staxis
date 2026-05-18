@@ -913,12 +913,43 @@ async function run() {
     loginUrl: ACTIVE.caLoginUrl,
   };
 
-  await login(page, ACTIVE_CREDS);
-  // Write to BOTH places: file-on-disk (legacy, useful for local dev) AND
-  // Supabase (survives Railway redeploys). Writes are tolerant of failure.
-  await context.storageState({ path: sessionFile });
-  const stateBlob = await context.storageState();
-  await saveScraperSession(supabase, ACTIVE.propertyId, stateBlob, log);
+  // Startup login — DO NOT let a failure crash the process. Without this,
+  // a sustained CA-side outage (force-logout, password change, account lock)
+  // turns into a Railway crash-loop: process exits → autorestart → fail
+  // again → exit → ... burning compute and hammering CA's auth endpoint
+  // every ~3 seconds, which makes the underlying problem worse and
+  // triggers rate-limit/IP-block on top of the original failure.
+  //
+  // Instead: catch the error, write it to scraper_status so the watchdog
+  // can alert with the actionable message, and let the tick loop handle
+  // retries through the circuit breaker (which paces attempts at 30-min
+  // intervals after 3 consecutive failures).
+  try {
+    await login(page, ACTIVE_CREDS);
+    // Write to BOTH places: file-on-disk (legacy, useful for local dev) AND
+    // Supabase (survives Railway redeploys). Writes are tolerant of failure.
+    await context.storageState({ path: sessionFile });
+    const stateBlob = await context.storageState();
+    await saveScraperSession(supabase, ACTIVE.propertyId, stateBlob, log);
+  } catch (err) {
+    const code = err instanceof ScraperError ? err.code : ERROR_CODES.UNKNOWN;
+    log(`Startup login FAILED [${code}]: ${err.message}`);
+    log('Continuing into tick loop — circuit breaker + watchdog will handle retries and alerting.');
+    // Mark both morning + dashboard as errored so the watchdog (which reads
+    // BOTH morning/evening status AND dashboard status) sees the failure on
+    // its very next 15-min tick and fires the correct SMS. Without this,
+    // the stale 'login_failed' code in scraper_status would persist until
+    // the first tick-driven login attempt rewrites it.
+    try {
+      await writeScrapeStatus('morning', 'error', {
+        errorCode: code,
+        error: `startup login failed: ${err.message}`,
+        date: todayISO(),
+      });
+    } catch (writeErr) {
+      log(`Could not stamp morning error status: ${writeErr.message}`);
+    }
+  }
 
   // Optional: on startup, pull today's CSV immediately — useful for smoke tests.
   if (env.CSV_TEST_ON_STARTUP) {
