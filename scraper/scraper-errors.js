@@ -23,7 +23,15 @@
 
 const ERROR_CODES = Object.freeze({
   // Auth
-  LOGIN_FAILED:       'login_failed',        // credentials rejected (password change / account lock / migration consent missing)
+  LOGIN_FAILED:       'login_failed',        // credentials rejected by CA's Login Error page at /j_security_check
+  // CA accepted credentials at /j_security_check (200 → 302) but the post-auth
+  // filter immediately redirected through /choice.LogUserOff back to sign_in.jsp.
+  // Observed 2026-05-18: CA replaced their SkyTouch migration consent screen
+  // (#migrationSubmit at /Login.do) with a silent forced-logout for accounts
+  // that haven't completed the migration. The fix is NOT updating CA_PASSWORD —
+  // the hotel admin needs to log into Choice Advantage manually and accept the
+  // new SkyTouch terms.
+  LOGIN_FORCE_LOGOUT: 'login_force_logout',
   SESSION_EXPIRED:    'session_expired',     // mid-pull CA dropped our session
 
   // CA structural / page-level

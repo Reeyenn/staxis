@@ -76,6 +76,7 @@ const TIMEZONE = 'America/Chicago';
 type AlertCondition =
   | 'heartbeat_dead'
   | 'login_failed'
+  | 'login_force_logout'  // CA accepted creds but force-logged out via /choice.LogUserOff (SkyTouch migration enforcement, 2026-05-18)
   | 'session_expired_stuck'
   | 'selector_miss'
   | 'timeout_persistent'
@@ -94,7 +95,9 @@ function alertMessage(cond: AlertCondition, ctx: AlertContext): string {
     case 'heartbeat_dead':
       return `Staxis scraper DOWN — no heartbeat for ${ctx.heartbeatMinutesAgo ?? '?'} min. Check Railway deployment.${last}`;
     case 'login_failed':
-      return `Staxis scraper: Choice Advantage sign-in failed. Password likely changed — update CA_PASSWORD env var on Railway.${last}`;
+      return `Staxis scraper: Choice Advantage rejected the credentials at /j_security_check (Login Error page). Verify CA_USERNAME / CA_PASSWORD, or check if the account is locked.${last}`;
+    case 'login_force_logout':
+      return `Staxis scraper: CA accepted the password but immediately logged us out (likely SkyTouch migration enforcement). Log into Choice Advantage manually with the scraper account and accept the new terms — the password is NOT the problem.${last}`;
     case 'session_expired_stuck':
       return `Staxis scraper: CA sessions keep expiring mid-pull and re-login isn't recovering.${stale}${last}`;
     case 'selector_miss':
@@ -128,15 +131,16 @@ type AlertContext = {
 
 function mapErrorToCondition(code: string | null): AlertCondition | null {
   switch (code) {
-    case 'login_failed':       return 'login_failed';
-    case 'selector_miss':      return 'selector_miss';
-    case 'parse_error':        return 'parse_error';
-    case 'validation_failed':  return 'validation_failed';
-    case 'session_expired':    return 'session_expired_stuck';
-    case 'timeout':            return 'timeout_persistent';
-    case 'ca_unreachable':     return 'ca_unreachable';
-    case 'csv_schema_drift':   return 'csv_schema_drift';
-    case 'unknown':            return 'unknown_error';
+    case 'login_failed':         return 'login_failed';
+    case 'login_force_logout':   return 'login_force_logout';
+    case 'selector_miss':        return 'selector_miss';
+    case 'parse_error':          return 'parse_error';
+    case 'validation_failed':    return 'validation_failed';
+    case 'session_expired':      return 'session_expired_stuck';
+    case 'timeout':              return 'timeout_persistent';
+    case 'ca_unreachable':       return 'ca_unreachable';
+    case 'csv_schema_drift':     return 'csv_schema_drift';
+    case 'unknown':              return 'unknown_error';
     default: return null;
   }
 }

@@ -271,6 +271,27 @@ async function login(page, creds) {
     );
   }
 
+  // Track every main-frame navigation AND every HTTP response during the
+  // submit-and-settle phase so we can spot CA's force-logout chain
+  // (/j_security_check → /choice.LogUserOff → /sign_in.jsp).
+  //
+  // Playwright's `framenavigated` only fires on the FINAL navigation —
+  // intermediate 302 hops are skipped. So we also subscribe to `response`,
+  // which DOES fire on every redirect response. We use the union of both
+  // for the choice.LogUserOff detector below. Cleared in the finally block.
+  const loginUrlChain = [];
+  const trackNav = (frame) => {
+    if (frame === page.mainFrame()) loginUrlChain.push(`nav:${frame.url()}`);
+  };
+  const trackResp = (res) => {
+    const u = res.url();
+    if (!u.includes('choiceadvantage.com')) return;
+    if (/\.(css|png|gif|ico|js|woff|svg|jpg|jpeg)(\?|$)/.test(u)) return;
+    loginUrlChain.push(`resp${res.status()}:${u}`);
+  };
+  page.on('framenavigated', trackNav);
+  page.on('response', trackResp);
+
   try {
     // Username + password fields. CA has used `j_username` / `j_password`
     // historically, but downstream pulls all depend on this step — list
@@ -344,11 +365,17 @@ async function login(page, creds) {
     log(`After login click — now at: ${page.url()}`);
 
     if (page.url().includes('j_security_check')) {
+      // Up to 30s. CA's chain through choice.LogUserOff back to sign_in.jsp
+      // can take >15s in slow networks; the previous 15s ceiling meant we
+      // sometimes returned from login() with the page still mid-chain, then
+      // fell through to a stillOnLoginForm=false check (the error page at
+      // j_security_check has no form), so login was reported as success.
+      // The downstream pull then hit session_expired masking the real cause.
       try {
-        await page.waitForURL(url => !url.toString().includes('j_security_check'), { timeout: 15000 });
+        await page.waitForURL(url => !url.toString().includes('j_security_check'), { timeout: 30000 });
         log(`Redirected away from j_security_check — now at: ${page.url()}`);
       } catch (e) {
-        log('Still on j_security_check after 15s — login may have failed or credentials are wrong');
+        log('Still on j_security_check after 30s — CA likely returned its in-place error page here');
       }
     }
 
@@ -359,6 +386,26 @@ async function login(page, creds) {
     await page.waitForLoadState('load', { timeout: 15000 }).catch(() => {});
     await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
     log(`After settle — now at: ${page.url()}`);
+    log(`Login URL chain: ${loginUrlChain.join(' → ') || '(none captured)'}`);
+
+    // ── CA forced-logout detection (added 2026-05-18) ─────────────────────
+    // CA replaced their SkyTouch migration consent screen (#migrationSubmit
+    // at /Login.do, handled below) with a silent forced-logout for accounts
+    // that haven't completed the migration: POST /j_security_check returns
+    // 302 → /choice.LogUserOff → 302 → /sign_in.jsp. Credentials are NOT
+    // rejected — the server-side post-auth filter is dumping the new
+    // session. Surfacing this as LOGIN_FAILED (the prior behavior) is
+    // misleading: the watchdog SMS says "update CA_PASSWORD" but the
+    // password isn't the problem. The hotel admin needs to log into CA
+    // manually and accept the new SkyTouch terms.
+    if (loginUrlChain.some((u) => u.includes('choice.LogUserOff'))) {
+      throw new ScraperError(
+        ERROR_CODES.LOGIN_FORCE_LOGOUT,
+        `CA force-logged-out scraper through /choice.LogUserOff. ` +
+        `Hotel admin must log into Choice Advantage manually and accept any pending SkyTouch migration / terms before the scraper can resume.`,
+        { diagnostics: { urlChain: loginUrlChain, finalUrl: page.url() } }
+      );
+    }
 
     // ── CA migration consent screen (added 2026-04-27) ────────────────────
     // CA started gating post-login navigation behind a SkyTouch / Salesforce
@@ -402,32 +449,48 @@ async function login(page, creds) {
       log(`Migration consent check non-fatal error: ${err.message}`);
     }
 
-    // VERIFY login actually worked. If the login form is still present on the
-    // page after a submit, CA rejected our credentials — password was changed
-    // or the account was locked. This used to be a silent failure: the scraper
-    // would loop forever hitting "session expired" because every View page
-    // bounced back to the login form. Now it surfaces as a typed error the
-    // health-check cron can alert on with "CA password changed".
+    // VERIFY login actually worked. CA exposes login failure in three ways:
+    //   1. /sign_in.jsp with form still rendered → re-loaded login page
+    //      (no session established, e.g. blank-form bounce on rate limit)
+    //   2. /j_security_check 200 with title "Login Error" → server-side
+    //      credential rejection rendered in-place (not a redirect)
+    //   3. /choice.LogUserOff in the redirect chain → handled above as
+    //      LOGIN_FORCE_LOGOUT
+    //
+    // Without (2), the prior implementation reported login as a SUCCESS
+    // when the page settled at /j_security_check (no j_username input on
+    // the error page), and every downstream pull then bounced back as
+    // session_expired — hiding the real cause behind a sea of session_expired.
+    const finalUrl = page.url();
     const stillOnLoginForm = await safeEval(page, () =>
       !!document.querySelector('input[name="j_username"]')
     );
-    if (stillOnLoginForm) {
-      // Grab the error message CA displays so we can distinguish "wrong
-      // password" from "account locked" from "too many attempts" later.
+    const loginErrorPage = await safeEval(page, () => {
+      const title = (document.title || '').toLowerCase();
+      const titleEl = document.querySelector('h3.CHI_Title');
+      const titleText = titleEl ? (titleEl.textContent || '').trim().toLowerCase() : '';
+      return title.includes('login error') || titleText.includes('login error');
+    }).catch(() => false);
+    const isStuckOnAuthUrl = finalUrl.includes('j_security_check') || /\/sign_in\.jsp\b/.test(finalUrl);
+
+    if (stillOnLoginForm || loginErrorPage || isStuckOnAuthUrl) {
       const caMessage = await safeEval(page, () => {
-        const el = document.querySelector('.CHI_Error, .error, [class*="rror"]');
-        return el ? el.textContent.trim().slice(0, 200) : null;
+        const desc = document.querySelector('h3.CHI_Title, .CHI_Description, .CHI_Error, .error, [class*="rror"]');
+        return desc ? (desc.textContent || '').trim().slice(0, 200) : null;
       }).catch(() => null);
       throw new ScraperError(
         ERROR_CODES.LOGIN_FAILED,
-        `Credentials rejected at ${page.url()}${caMessage ? ` — CA said: "${caMessage}"` : ''}`,
-        { diagnostics: { caMessage, url: page.url() } }
+        `Credentials rejected at ${finalUrl}${caMessage ? ` — CA said: "${caMessage}"` : ''}`,
+        { diagnostics: { caMessage, url: finalUrl, urlChain: loginUrlChain, loginErrorPage, isStuckOnAuthUrl } }
       );
     }
   } catch (err) {
     if (err instanceof ScraperError) throw err;
     log(`Login error: ${err.message}`);
     throw new ScraperError(ERROR_CODES.UNKNOWN, `Login threw: ${err.message}`);
+  } finally {
+    try { page.off('framenavigated', trackNav); } catch {}
+    try { page.off('response', trackResp); } catch {}
   }
 }
 

@@ -34,7 +34,7 @@ describe('ScraperError', () => {
 describe('ERROR_CODES', () => {
   test('exposes all expected codes', () => {
     const expected = [
-      'LOGIN_FAILED', 'SESSION_EXPIRED',
+      'LOGIN_FAILED', 'LOGIN_FORCE_LOGOUT', 'SESSION_EXPIRED',
       'SELECTOR_MISS', 'PARSE_ERROR', 'VALIDATION_FAILED',
       'TIMEOUT', 'CA_UNREACHABLE',
       'CSV_DOWNLOAD_FAILED', 'CSV_BAD_CONTENT', 'CSV_VALIDATION_FAILED',
@@ -62,6 +62,7 @@ describe('ERROR_CODES', () => {
 
   test('values are snake_case strings used in scraper_status.errorCode', () => {
     assert.equal(ERROR_CODES.LOGIN_FAILED, 'login_failed');
+    assert.equal(ERROR_CODES.LOGIN_FORCE_LOGOUT, 'login_force_logout');
     assert.equal(ERROR_CODES.SESSION_EXPIRED, 'session_expired');
     assert.equal(ERROR_CODES.CSV_DOWNLOAD_FAILED, 'csv_download_failed');
   });
