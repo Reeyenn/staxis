@@ -2193,6 +2193,7 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'purge-old-error-logs',          cadenceHours: 24,    description: 'daily error_logs retention sweep' },
   { name: 'expire-trials',                 cadenceHours: 24,    description: 'daily trial-expiration flip' },
   { name: 'agent-archive-stale-conversations', cadenceHours: 24, description: 'daily 3am archival of stale agent conversations (L4 part A)' },
+  { name: 'claude-sessions-purge',         cadenceHours: 24,    description: 'daily 3:30am claude_sessions retention sweep — deletes rows older than 24h so random-sessionId floods can\'t grow the table (security audit M2)' },
   { name: 'agent-heal-counters',           cadenceHours: 24,    description: 'daily 4am counter-drift heal (Round 12 T12.12, invariant doctrine safety net)' },
   // Weekly
   { name: 'ml-train-demand',               cadenceHours: 168,   description: 'weekly demand training (Sunday)' },

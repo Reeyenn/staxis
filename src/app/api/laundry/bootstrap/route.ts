@@ -31,6 +31,10 @@ import {
   fromLaundryRow,
   fromRoomRow,
 } from '@/lib/db-mappers';
+import {
+  checkAndIncrementRateLimit,
+  rateLimitedResponse,
+} from '@/lib/api-ratelimit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -58,6 +62,14 @@ export async function GET(req: NextRequest) {
 
   const pid = pidV.value!;
   const staffId = staffV.value!;
+
+  // 2026-05-20 audit M3 — rate-limit per property. The laundry page has
+  // no per-staff identity worth tracking (the laundry worker is logically
+  // one role per property), so keying on pid is the right granularity.
+  const rl = await checkAndIncrementRateLimit('laundry-bootstrap', pid);
+  if (!rl.allowed) {
+    return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
+  }
 
   // Capability check — staff must belong to property. Same enumeration-
   // resistance posture as the other public housekeeper / laundry endpoints.

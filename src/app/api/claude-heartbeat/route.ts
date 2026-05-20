@@ -12,16 +12,24 @@
  *
  * Sessions also auto-expire if no heartbeat arrives within the read
  * endpoint's freshness window — a safety net for sessions that crash
- * or lose network before the Stop hook can fire.
+ * or lose network before the Stop hook can fire. The daily cron at
+ * /api/cron/claude-sessions-purge is the storage-side counterpart: it
+ * DELETEs rows whose last_heartbeat is older than 24h so the table
+ * doesn't grow without bound under random-sessionId floods.
  *
- * No auth: the endpoint is intentionally unauthenticated so the hook
- * can fire without env-var plumbing on every dev machine. The blast
- * radius of abuse is near zero — fake sessions vanish on their own.
+ * Auth: gated on HEARTBEAT_SECRET (2026-05-20 security audit M2).
+ * The local hooks source tokens.env and attach the bearer header; see
+ * ~/.claude/hooks/heartbeat.sh and ~/.claude/hooks/stop.sh. Distinct
+ * env var from CRON_SECRET and LOCAL_SYNC_SECRET so this dev-tool
+ * channel can be rotated independently. Fail-closed in production
+ * (refuses if env var unset); pass-through in dev so local sessions
+ * without the secret still work.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { revalidateTag } from 'next/cache';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { requireHeartbeatSecret } from '@/lib/api-auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -35,6 +43,9 @@ export const maxDuration = 5;
 const ENDED_TIMESTAMP = '2000-01-01T00:00:00Z';
 
 export async function POST(req: NextRequest) {
+  const guard = requireHeartbeatSecret(req);
+  if (guard) return guard;
+
   let body: Record<string, unknown> = {};
   try {
     body = await req.json();

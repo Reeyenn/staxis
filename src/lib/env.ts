@@ -82,6 +82,10 @@ const ServerSchema = z.object({
   // "unset → reject" branch directly.
   CRON_SECRET: z.string().optional(),
   LOCAL_SYNC_SECRET: z.string().optional(),
+  // Bearer secret for /api/claude-heartbeat. Distinct from CRON_SECRET so
+  // this dev-tool channel can be rotated independently of cron auth.
+  // Local Claude Code PostToolUse/Stop hooks attach this from tokens.env.
+  HEARTBEAT_SECRET: z.string().optional(),
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
 
   // Dev/staging escape hatch for /api/sms-reply: when set to '1', the

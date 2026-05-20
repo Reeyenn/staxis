@@ -40,6 +40,11 @@ import { validateUuid } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { fromRoomRow } from '@/lib/db-mappers';
+import {
+  checkAndIncrementRateLimit,
+  rateLimitedResponse,
+  hashToRateLimitKey,
+} from '@/lib/api-ratelimit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -59,6 +64,19 @@ export async function GET(req: NextRequest) {
   }
   const pid = pidV.value!;
   const staffId = staffV.value!;
+
+  // 2026-05-20 audit M3 — rate-limit per (pid, staffId). SMS links are
+  // capability tokens but they're forwardable and effectively permanent.
+  // Without this cap, a leaked link can be replayed to enumerate room
+  // state indefinitely. 600/hr is generous given the housekeeper page
+  // polls every few seconds during a shift.
+  const rl = await checkAndIncrementRateLimit(
+    'housekeeper-rooms',
+    hashToRateLimitKey(`${pid}:${staffId}`),
+  );
+  if (!rl.allowed) {
+    return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
+  }
 
   // Capability check: this staff member must actually exist on this property.
   // Without this, an attacker who knows ANY staff UUID could enumerate rooms

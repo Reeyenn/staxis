@@ -26,6 +26,10 @@
       "schedule": "0 3 * * *"
     },
     {
+      "path": "/api/cron/claude-sessions-purge",
+      "schedule": "30 3 * * *"
+    },
+    {
       "path": "/api/cron/agent-summarize-long-conversations",
       "schedule": "*/30 * * * *"
     },

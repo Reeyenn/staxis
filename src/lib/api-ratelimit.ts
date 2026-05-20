@@ -70,7 +70,21 @@ export type RateLimitEndpoint =
   // Keyed on the recipient (normalized email, plus-addressing collapsed)
   // so an admin can't accidentally spam alice@hotel.com by re-clicking
   // "send invite". 5/hour matches our most conservative outbound caps.
-  | 'email-transactional';
+  | 'email-transactional'
+  // 2026-05-20 security audit M3 — public SMS-linked routes. Capability
+  // tokens (pid + staffId) gate access, but the URLs are replayable
+  // indefinitely if a SMS forward leaks the link. Rate limits are
+  // defense-in-depth so a stolen link can't be hammered.
+  //
+  // sms-reply is keyed on the From phone (housekeeper's E.164 hashed
+  // via ipToRateLimitKey). The other three are keyed on `${pid}:${staffId}`
+  // hashed the same way (laundry-bootstrap is keyed on pid directly
+  // since the page has no per-staff identity).
+  | 'sms-reply'
+  | 'housekeeper-rooms'
+  | 'housekeeper-room-action'
+  | 'housekeeper-save-language'
+  | 'laundry-bootstrap';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -128,22 +142,37 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // need to wait. Per-recipient (not per-property) so different hotels'
   // invites don't compete with each other.
   'email-transactional':         5,
+  // 2026-05-20 audit M3 — public SMS-linked surface. Caps tuned to
+  // generous real-world ops use.
+  // sms-reply: a chatty housekeeper might fire 50+ ENGLISH/ESPAÑOL toggles
+  // and short replies per shift; 120/hr per phone leaves headroom.
+  'sms-reply':                  120,
+  // housekeeper-rooms is the polled-read endpoint for the housekeeper
+  // page; the UI polls every few seconds. 600/hr ≈ 10/min is comfortable.
+  'housekeeper-rooms':          600,
+  // housekeeper-room-action is the write path (mark clean / dirty / etc.).
+  // One action every ~18s sustained = 200/hr, well above realistic use.
+  'housekeeper-room-action':    200,
+  // Language toggle — a settings change. Set once, occasionally re-toggled.
+  // 10/hr is plenty.
+  'housekeeper-save-language':   10,
+  // laundry-bootstrap is a read-only page bootstrap. Polled less often
+  // than housekeeper. 600/hr per property covers heavy use.
+  'laundry-bootstrap':          600,
 };
 
 /**
- * Hash a request's source IP into a deterministic UUID-shaped string,
- * suitable as the `pid` argument to checkAndIncrementRateLimit. Used
- * by routes (like /api/signup) that have no property_id at the time
- * they want to rate-limit. The same IP always maps to the same key,
- * so the bucket counts every request from that IP within an hour.
- *
- * IPv4 and IPv6 inputs are normalized lowercase; the hash is stable
- * across processes/regions. Fail-soft on missing IP — returns the
- * NO_PROPERTY_RATE_LIMIT_KEY so all "unknown IP" callers share one
- * bucket (which is itself a defense against header-spoofing attacks).
+ * Hash any string into a deterministic UUID-shaped key suitable as the
+ * `pid` argument to checkAndIncrementRateLimit. The api_limits table's
+ * `property_id` column is just an opaque UUID slot — so this same
+ * function works for IPs, phone numbers, emails, or composite keys
+ * like `${pid}:${staffId}`. Same input → same key (stable across
+ * processes and regions). Empty input falls back to
+ * NO_PROPERTY_RATE_LIMIT_KEY so unknown callers share one bucket
+ * (a defense against header-spoofing attacks).
  */
-export function ipToRateLimitKey(ip: string | null | undefined): string {
-  const trimmed = (ip ?? '').trim().toLowerCase();
+export function hashToRateLimitKey(s: string | null | undefined): string {
+  const trimmed = (s ?? '').trim().toLowerCase();
   if (!trimmed) return NO_PROPERTY_RATE_LIMIT_KEY;
   const h = createHash('sha256').update(trimmed).digest();
   // Format the first 16 bytes as a UUID (8-4-4-4-12 hex). Not a real
@@ -157,6 +186,13 @@ export function ipToRateLimitKey(ip: string | null | undefined): string {
     h.slice(10, 16).toString('hex'),
   ].join('-');
 }
+
+/**
+ * Backwards-compatible alias — early callers used this name when the
+ * function only handled IPs. Now just a thin wrapper over
+ * hashToRateLimitKey. New code should prefer the generic name.
+ */
+export const ipToRateLimitKey = hashToRateLimitKey;
 
 /**
  * Sentinel UUID used as the property_id when an SMS-fan-out endpoint accepts

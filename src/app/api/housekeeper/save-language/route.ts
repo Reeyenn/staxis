@@ -22,6 +22,11 @@ import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import {
+  checkAndIncrementRateLimit,
+  rateLimitedResponse,
+  hashToRateLimitKey,
+} from '@/lib/api-ratelimit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -57,6 +62,16 @@ export async function POST(req: NextRequest) {
   const pid = pidV.value!;
   const staffId = staffV.value!;
   const language = body.language;
+
+  // 2026-05-20 audit M3 — rate-limit per (pid, staffId). Language is a
+  // settings toggle; legitimate use is single-digit per hour.
+  const rl = await checkAndIncrementRateLimit(
+    'housekeeper-save-language',
+    hashToRateLimitKey(`${pid}:${staffId}`),
+  );
+  if (!rl.allowed) {
+    return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
+  }
 
   // Capability: write only if (staff_id, property_id) actually matches.
   // .update().eq().eq() is enough — if there's no matching row the update

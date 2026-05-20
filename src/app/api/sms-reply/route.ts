@@ -30,6 +30,10 @@ import { log } from '@/lib/log';
 import { safeBaseUrl, redactPhone } from '@/lib/api-validate';
 import { recordWebhookLog } from '@/lib/event-recorder';
 import { parseStringField, parseUnionField } from '@/lib/db-mappers';
+import {
+  checkAndIncrementRateLimit,
+  hashToRateLimitKey,
+} from '@/lib/api-ratelimit';
 import twilio from 'twilio';
 import { env } from '@/lib/env';
 
@@ -317,6 +321,27 @@ export async function POST(req: NextRequest) {
 
     const phone164 = toE164(fromNumber);
     if (!phone164) return twimlOk();
+
+    // 2026-05-20 audit M3 — per-sender rate limit. Twilio signature
+    // validation is the primary gate; this is defense in depth. Keyed
+    // on the housekeeper's phone so a runaway sender can't flood the
+    // route. We return twimlOk on cap-hit (rather than 429) so Twilio
+    // doesn't retry-storm the webhook — silently dropping replies past
+    // the cap is the right UX here. The cap is logged so a real abuse
+    // signal still appears in Sentry / logs.
+    const rl = await checkAndIncrementRateLimit(
+      'sms-reply',
+      hashToRateLimitKey(phone164),
+    );
+    if (!rl.allowed) {
+      await logHit({
+        stage: 'rate_limited',
+        capHit: rl.cap,
+        current: rl.current,
+        retryAfterSec: rl.retryAfterSec,
+      });
+      return twimlOk();
+    }
 
     const reply = normalise(text);
 

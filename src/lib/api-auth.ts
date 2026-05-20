@@ -201,6 +201,44 @@ export function requireCronSecret(req: NextRequest): NextResponse | null {
 }
 
 /**
+ * Returns null on success, or a NextResponse the caller should return to
+ * short-circuit with 401. If HEARTBEAT_SECRET is unset, fails closed in
+ * production and passes through in dev. Same shape as requireCronSecret
+ * but reads its own env var so the Claude Code heartbeat channel can be
+ * rotated independently of cron secrets.
+ *
+ * Added 2026-05-20 (security audit M2): the heartbeat endpoint
+ * previously had no auth and wrote to claude_sessions via the
+ * service-role client, so a random internet caller could pollute the
+ * table. This gate closes that surface without forcing the local hook
+ * scripts to take on full CRON_SECRET handling.
+ */
+export function requireHeartbeatSecret(req: NextRequest): NextResponse | null {
+  const secret = env.HEARTBEAT_SECRET;
+  if (!secret) {
+    // Same fail-closed-in-true-prod, pass-through-otherwise shape as
+    // requireCronSecret. Vercel previews and dev still pass through.
+    const isVercelProd = env.VERCEL_ENV === 'production';
+    const isOtherProd = env.NODE_ENV === 'production' && !env.VERCEL_ENV;
+    if (isVercelProd || isOtherProd) {
+      console.error('[api-auth] HEARTBEAT_SECRET unset in production — refusing request');
+      return NextResponse.json({ error: 'server misconfigured' }, { status: 500 });
+    }
+    return null;  // dev / preview — no secret configured
+  }
+  const auth = req.headers.get('authorization') ?? '';
+  const expected = `Bearer ${secret}`;
+  const authBuf = Buffer.from(auth);
+  const expectedBuf = Buffer.from(expected);
+  let ok = false;
+  if (authBuf.length === expectedBuf.length) {
+    try { ok = timingSafeEqual(authBuf, expectedBuf); } catch { ok = false; }
+  }
+  if (ok) return null;
+  return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+}
+
+/**
  * Verify a Supabase user session from the Authorization header.
  * Returns the user info on success, or a NextResponse the caller
  * should return to short-circuit with 401.

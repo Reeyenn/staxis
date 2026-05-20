@@ -40,6 +40,11 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { deriveCleaningEventFeatures } from '@/lib/feature-derivation';
 import { incrementMLFailureCounter } from '@/lib/ml-failure-counters';
 import { deriveStartedAtPure } from '@/lib/cleaning-event-derivation';
+import {
+  checkAndIncrementRateLimit,
+  rateLimitedResponse,
+  hashToRateLimitKey,
+} from '@/lib/api-ratelimit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -258,6 +263,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (!['finish', 'reset', 'dnd_on', 'dnd_off', 'issue', 'help'].includes(action)) {
     log.warn('room-action: invalid action', { requestId, route: 'housekeeper/room-action', action });
     return err('invalid action', { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
+  }
+
+  // 2026-05-20 audit M3 — rate-limit per (pid, staffId). The SMS-link
+  // URL is a permanent capability token; without this a leaked link can
+  // hammer the write path indefinitely. 200/hr ≈ one action every 18s,
+  // well above realistic housekeeper use.
+  const rl = await checkAndIncrementRateLimit(
+    'housekeeper-room-action',
+    hashToRateLimitKey(`${pid}:${staffId}`),
+  );
+  if (!rl.allowed) {
+    return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
   }
 
   // ─── Capability check ─────────────────────────────────────────────────
