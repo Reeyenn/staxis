@@ -604,20 +604,88 @@ async function checkSupabaseProjectConsistency(): Promise<Omit<Check, 'name' | '
 }
 
 /**
- * Critical tables where a disabled RLS policy = data leak (anon users can
- * read every row across every property). If this check flips to fail, stop
- * everything and fix immediately.
+ * Critical tables where a disabled RLS policy = data leak (anon/authenticated
+ * users can read every row across every property). If this check flips to
+ * fail, stop everything and fix immediately.
  *
- * Adding a new user-facing table? Add it here too.
+ * Adding a new user-facing or sensitive backend table? Add it here too.
+ * Tables must exist in pg_catalog (the check warns on any name not found).
+ *
+ * Intentionally excluded:
+ *   - *_priors (global cross-hotel ML coefficients, readable by authenticated)
+ *   - scraper_status (global heartbeat, readable by authenticated)
+ *   - log / audit tables with 0 policies (RLS-on + no grants = already locked)
  */
 const RLS_REQUIRED_TABLES = [
+  // Identity / accounts
   'accounts',
+  'account_invites',
+  'hotel_join_codes',
+
+  // Properties + property-scoped customer data
   'properties',
-  'staff',
   'rooms',
-  'shift_confirmations',
+  'public_areas',
+  'staff',
+  'attendance_marks',
   'schedule_assignments',
+  'scheduled_shifts',
+  'shift_confirmations',
+  'time_off_requests',
+  'week_publications',
+  'property_shift_presets',
   'plan_snapshots',
+
+  // Operations + housekeeping
+  'cleaning_events',
+  'daily_logs',
+  'dashboard_by_date',
+  'deep_clean_config',
+  'deep_clean_records',
+  'guest_requests',
+  'handoff_logs',
+  'manager_notifications',
+  'preventive_tasks',
+  'work_orders',
+  'laundry_config',
+
+  // Inventory
+  'inventory',
+  'inventory_budgets',
+  'inventory_counts',
+  'inventory_discards',
+  'inventory_orders',
+  'inventory_reconciliations',
+  'inventory_rate_predictions',
+
+  // ML predictions / overrides (per-property)
+  'demand_predictions',
+  'supply_predictions',
+  'optimizer_results',
+  'prediction_log',
+  'prediction_overrides',
+  'ml_feature_flags',
+  'model_runs',
+
+  // Agent (per-user data)
+  'agent_conversations',
+  'agent_messages',
+  'agent_costs',
+  'agent_nudges',
+  'walkthrough_runs',
+
+  // High-sensitivity backend tables — service-role only.
+  // RLS off here would be catastrophic (plain-text PMS passwords, phone
+  // numbers, webhook dedupe, Stripe events).
+  'scraper_credentials',
+  'sms_jobs',
+  'pull_jobs',
+  'pms_recipes',
+  'onboarding_jobs',
+  'idempotency_log',
+  'stripe_processed_events',
+  'processed_sentry_webhooks',
+  'processed_twilio_webhooks',
 ];
 
 async function checkSupabaseRlsEnabled(): Promise<Omit<Check, 'name' | 'durationMs'>> {
