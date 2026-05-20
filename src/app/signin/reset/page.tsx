@@ -58,6 +58,38 @@ export default function ResetPasswordPage() {
     // Sign out and bounce back to /signin after a beat so the user has to
     // re-authenticate with the new password.
     setTimeout(async () => {
+      // F-02: revoke trusted-device cookie + DB row BEFORE the sign-out.
+      // Password reset is the canonical recovery flow for a compromised
+      // credential — without this, a stolen cookie outlives the password
+      // rotation and the attacker can still skip OTP on next sign-in.
+      // Best-effort with 2s abort: a slow network never blocks the
+      // reset → signin redirect.
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const accessToken = session?.access_token;
+        if (accessToken) {
+          const controller = new AbortController();
+          const tid = setTimeout(() => controller.abort(), 2000);
+          try {
+            await fetch('/api/auth/revoke-trust', {
+              method: 'POST',
+              credentials: 'include',
+              signal: controller.signal,
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${accessToken}`,
+              },
+              body: JSON.stringify({ source: 'password_reset' }),
+            });
+          } catch {
+            // network / abort — proceed with sign-out regardless
+          } finally {
+            clearTimeout(tid);
+          }
+        }
+      } catch {
+        // getSession failure — proceed with sign-out
+      }
       await supabase.auth.signOut();
       router.replace('/signin');
     }, 1500);

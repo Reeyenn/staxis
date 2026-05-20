@@ -1697,10 +1697,14 @@ const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // 0147 staff_schedule tables (weekly schedule data layer).
   // 0148 sms_jobs.sent_dirty status flag.
   // 0149 audit/data-model follow-up: COMMENTs documenting polymorphic + external IDs.
+  // 0150 voice-session connection binding (Plan v2 M-1; landed on main from the
+  //   integrations-infra-abuse branch — wasn't added to this allowlist there,
+  //   so we add it alongside 0151 to keep the doctor honest).
+  // 0151 F-06: revoke legacy owner/GM hotel_join_codes + CHECK forbidding new privileged rows.
   '0124', '0125', '0126', '0129', '0130', '0131', '0132', '0133',
   '0135', '0136', '0137', '0138', '0139', '0140',
   '0141', '0142', '0143', '0144', '0145', '0146', '0147', '0148',
-  '0149',
+  '0149', '0150', '0151',
 ];
 
 /**

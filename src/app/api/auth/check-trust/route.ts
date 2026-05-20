@@ -17,6 +17,8 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { hashDeviceToken, readDeviceCookie, trustCookieOptions } from '@/lib/trusted-device';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
+import { env } from '@/lib/env';
+import { logSecurityEvent } from '@/lib/audit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -43,10 +45,40 @@ export async function POST(req: NextRequest) {
     return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
 
-  // Demo bypass: shared investor account skips OTP unconditionally.
-  // No device cookie is set/refreshed — bypass lives entirely in the DB flag.
+  // Demo bypass: shared investor account skips OTP. F-01.A.1 in the
+  // security plan — gate the column on env.SKIP_2FA_ENABLED so a stray
+  // service-role write that flips skip_2fa=true on a real customer
+  // account doesn't silently disable OTP. Also write a SecurityEvent
+  // every time the bypass fires so the audit trail exists in app_events
+  // (not just a forensic guess from request logs).
+  //
+  // Phase 1 (this commit): default is "honored unless env is explicitly
+  // 'false'". Operationally identical to today; gives ops a deploy
+  // cycle to set SKIP_2FA_ENABLED='true' in Vercel before the follow-up
+  // PR flips the default. Phase 2: require env === 'true' to honor.
   if (account.skip_2fa) {
-    return ok({ trusted: true }, { requestId });
+    const skipEnabled = env.SKIP_2FA_ENABLED !== 'false';
+    if (skipEnabled) {
+      await logSecurityEvent({
+        action: 'auth.skip_2fa_used',
+        userId: userData.user.id,
+        requestId,
+        metadata: {
+          accountId: account.id,
+          envGate: env.SKIP_2FA_ENABLED ?? '(unset — Phase 1 default-honored)',
+        },
+      });
+      return ok({ trusted: true }, { requestId });
+    }
+    // Env-gated off — fall through to normal cookie check. Don't return
+    // early so an investor with a real trusted-device cookie still gets
+    // the trust path.
+    await logSecurityEvent({
+      action: 'auth.skip_2fa_blocked_by_env',
+      userId: userData.user.id,
+      requestId,
+      metadata: { accountId: account.id, envGate: env.SKIP_2FA_ENABLED },
+    });
   }
 
   // Check the cookie.

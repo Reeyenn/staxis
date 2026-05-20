@@ -280,6 +280,43 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // ignore — private browsing / no storage
     }
+
+    // F-02 — best-effort revoke of trusted-device cookie + DB row BEFORE
+    // we tear the session down. Without this, a stolen cookie outlives a
+    // sign-out + password rotation (the canonical recovery path for a
+    // compromised credential). Hard timeout of 2s so a slow/offline
+    // network can't hang the sign-out UI — the security trade is worth
+    // less than the UX hit. If revoke fails (offline, 5xx, timeout), the
+    // device just stays trusted until its own expires_at; that's the
+    // same posture as before this commit, so we're never worse off.
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const accessToken = session?.access_token;
+      if (accessToken) {
+        const controller = new AbortController();
+        const tid = setTimeout(() => controller.abort(), 2000);
+        try {
+          await fetch('/api/auth/revoke-trust', {
+            method: 'POST',
+            credentials: 'include',
+            signal: controller.signal,
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({ source: 'signout' }),
+          });
+        } catch {
+          // Network error / abort. Continue with auth.signOut — sign-out
+          // proceeds regardless of revoke outcome.
+        } finally {
+          clearTimeout(tid);
+        }
+      }
+    } catch {
+      // getSession failure (broken localStorage, etc). Continue.
+    }
+
     await supabase.auth.signOut();
     setUser(null);
   };

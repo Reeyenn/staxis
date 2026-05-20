@@ -42,6 +42,7 @@ import {
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { enqueueSms, processSmsJobs } from '@/lib/sms-jobs';
 import { buildHousekeeperLink } from '@/lib/staff-auth';
+import { logSecurityEvent } from '@/lib/audit';
 import { buildOkBody, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { writeErrorLog } from '@/lib/error-log';
@@ -168,6 +169,45 @@ export async function POST(req: NextRequest) {
     }
     if (!isValidDateStr(shiftDate)) {  // belt-and-suspenders, never hits
       return err('Invalid shiftDate', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    }
+
+    // F-NEW-04: cross-tenant staffId gate. Caller has been verified to own
+    // `pid`, but every staffId in the body is still attacker-controllable.
+    // Without this check, a caller who owns property A could pass a staffId
+    // belonging to property B and have an SMS (eventually) routed for B's
+    // staff identity. buildHousekeeperLink would catch this further down via
+    // CrossTenantStaffError and degrade to a tokenless URL — but the SMS to
+    // the attacker-controlled phone has still gone out, which is a real
+    // abuse vector (notification spam + URL embedding). Reject the entire
+    // batch on any mismatch so the attempt never reaches enqueueSms.
+    const staffIds = staff.map(s => s.staffId);
+    const { data: ownedStaffRows, error: ownedStaffErr } = await supabaseAdmin
+      .from('staff')
+      .select('id')
+      .in('id', staffIds)
+      .eq('property_id', pid);
+    if (ownedStaffErr) {
+      log.error('[send-shift-confirmations] staff property-scope lookup failed', { err: ownedStaffErr, requestId, pid });
+      return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    }
+    const ownedStaffIds = new Set((ownedStaffRows ?? []).map(r => r.id as string));
+    const foreignStaffIds = staffIds.filter(id => !ownedStaffIds.has(id));
+    if (foreignStaffIds.length > 0) {
+      await logSecurityEvent({
+        action: 'auth.cross_tenant_staff_attempt',
+        userId: session.userId,
+        propertyId: pid,
+        requestId,
+        metadata: {
+          route: '/api/send-shift-confirmations',
+          foreignStaffIds,
+          requestedCount: staffIds.length,
+          ownedCount: ownedStaffIds.size,
+        },
+      });
+      return err('One or more staffIds do not belong to this property', {
+        requestId, status: 403, code: ApiErrorCode.Forbidden,
+      });
     }
     // Hourly Twilio-bill cap. Maria might re-Send 2-3x; 10/hr is plenty.
     const limit = await checkAndIncrementRateLimit('send-shift-confirmations', pid);

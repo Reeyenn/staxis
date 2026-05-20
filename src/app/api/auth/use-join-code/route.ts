@@ -18,7 +18,7 @@ import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
-import { writeAudit } from '@/lib/audit';
+import { writeAudit, logSecurityEvent } from '@/lib/audit';
 import { checkAndIncrementRateLimit, rateLimitedResponse, ipToRateLimitKey } from '@/lib/api-ratelimit';
 import type { AppRole } from '@/lib/roles';
 import { captureException } from '@/lib/sentry';
@@ -99,6 +99,35 @@ export async function POST(req: NextRequest) {
   if (row.revoked_at) return err('Code has been revoked', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
   if (new Date(row.expires_at).getTime() <= Date.now()) return err('Code has expired', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
   if (row.used_count >= row.max_uses) return err('Code has been used up', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
+
+  // F-06: legacy owner/GM-baked codes are an ownership-transfer primitive.
+  // The redeem path below unconditionally rewrites properties.owner_id when
+  // finalRole === 'owner' (line 251-267), so possession of an unrevoked
+  // legacy owner code lets the redeemer displace the current owner of an
+  // existing hotel. GM codes are nearly as bad — GMs can issue further
+  // invites/codes (canManageTeam returns true for them). New-flow codes
+  // always insert role=null (join-codes/route.ts) so this only affects
+  // legacy/manual rows. Migration 0150 revokes existing legacy owner/GM
+  // rows; this gate is defense-in-depth in case any sneak in later or
+  // ride a service-role write past the CHECK constraint.
+  //
+  // Reject BEFORE the CAS increment so a probe doesn't burn a slot.
+  if (row.role === 'owner' || row.role === 'general_manager') {
+    await logSecurityEvent({
+      action: 'auth.legacy_privileged_code_rejected',
+      propertyId: row.hotel_id,
+      requestId,
+      metadata: {
+        codeId: row.id,
+        bakedRole: row.role,
+        email: normalizedEmail,
+      },
+    });
+    return err(
+      'Owner and General Manager roles cannot be assigned via shared join codes — ask your admin for an emailed invite instead.',
+      { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict },
+    );
+  }
 
   // ── Atomic CAS increment (May 2026 audit pass-4) ──────────────────────
   // Old code did SELECT-then-UPDATE with the increment at the END after

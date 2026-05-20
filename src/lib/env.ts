@@ -113,6 +113,24 @@ const ServerSchema = z.object({
   // form-encoded Twilio webhooks accepted).
   ALLOW_UNSIGNED_SMS_WEBHOOK: z.string().optional(),
 
+  // F-01.A.1 — 2FA-bypass env gate. `accounts.skip_2fa` is a hard-set DB
+  // column used today only by the shared investor demo (`test` / `test12`,
+  // Comfort Suites, role general_manager). Without this gate, a future
+  // typo or service-role write that flips skip_2fa=true on a real customer
+  // account silently disables OTP fleet-wide with no detection signal.
+  //
+  // Rollout (two-deploy plan from the security plan, Batch A):
+  //   • Deploy 1 (this commit): default is "honored when unset" — set the
+  //     env to literal 'false' in Vercel to take effect. Operationally
+  //     identical to today for the demo account.
+  //   • Deploy 2 (follow-up PR): flip the default so the bypass requires
+  //     the env to be explicitly 'true'. Set SKIP_2FA_ENABLED='true' in
+  //     Vercel BEFORE that PR ships or the demo account starts prompting
+  //     for OTP.
+  //   • Deploy 3 (F-01.A.2): add SKIP_2FA_USER_IDS allowlist on top so a
+  //     row outside the allowlist with skip_2fa=true is still rejected.
+  SKIP_2FA_ENABLED: z.string().optional(),
+
   // ── Voice / wake word ─────────────────────────────────
   PICOVOICE_ACCESS_KEY: z.string().optional(),
 

@@ -30,8 +30,27 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
+import { logSecurityEvent } from '@/lib/audit';
 
 const SYNTHETIC_EMAIL_DOMAIN = 'staxis.invalid';
+
+/**
+ * Thrown when a caller passes a staffId that doesn't belong to the pid
+ * they also passed. This is the cross-tenant pivot vector that F-NEW-04
+ * targets: the bulk SMS route used to validate only that the caller had
+ * access to `pid` and trust every staffId in the body, so a caller with
+ * access to property A could mint a magic-link for a staff row in
+ * property B by passing B's UUID. Routes catch this and 403 (or filter
+ * the offender out of the batch). Either way, the audit event has
+ * already been written from inside ensureStaffAuthUser so the alert
+ * lives in Sentry regardless of how the caller reacts.
+ */
+export class CrossTenantStaffError extends Error {
+  constructor(public readonly staffId: string, public readonly pid: string) {
+    super(`Staff ${staffId} does not belong to property ${pid}`);
+    this.name = 'CrossTenantStaffError';
+  }
+}
 
 /** Build the synthetic email used to identify this staff member's auth user. */
 function syntheticEmailFor(staffId: string): string {
@@ -43,6 +62,14 @@ function syntheticEmailFor(staffId: string): string {
  * `auth_user_id` column points at it. Idempotent — safe to call on every
  * link generation. Returns the auth user's id.
  *
+ * F-NEW-04 contract: this helper is the cross-tenant boundary for
+ * housekeeper magic-link minting. The staff row MUST belong to `pid` —
+ * we lookup with `.eq('id', staffId).eq('property_id', pid)` and throw
+ * CrossTenantStaffError otherwise. A SecurityEvent is also written so
+ * the alert reaches Sentry regardless of how the caller handles the
+ * exception. Routes that previously trusted client-supplied staffIds
+ * within a request-level `pid` are now safe at the helper layer too.
+ *
  * Failure modes are surfaced as thrown errors with a clear `[staff-auth]`
  * prefix so callers (the SMS fan-out + the Link API) can include them in
  * their failure logs. We never silently produce a "staff is auth-linked"
@@ -51,19 +78,35 @@ function syntheticEmailFor(staffId: string): string {
  */
 export async function ensureStaffAuthUser(
   staffId: string,
+  pid: string,
 ): Promise<{ authUserId: string; email: string }> {
   // Look up the existing staff row first — we need to know whether
-  // auth_user_id is already populated.
+  // auth_user_id is already populated. F-NEW-04: scope to `pid` so a
+  // caller who only owns property X can't trigger link minting for a
+  // staff row in property Y.
   const { data: staffRow, error: lookupErr } = await supabaseAdmin
     .from('staff')
-    .select('id, auth_user_id, name')
+    .select('id, auth_user_id, name, property_id')
     .eq('id', staffId)
+    .eq('property_id', pid)
     .maybeSingle();
   if (lookupErr) {
     throw new Error(`[staff-auth] staff lookup failed: ${errToString(lookupErr)}`);
   }
   if (!staffRow) {
-    throw new Error(`[staff-auth] no staff row with id ${staffId}`);
+    // Could be a genuine missing row OR a cross-tenant probe. Both look
+    // identical here (the `.eq('property_id', pid)` masks the difference)
+    // — which is the right posture: we don't leak existence. But we DO
+    // record the attempt because the route-layer log alone isn't enough:
+    // staff-link callers don't audit failure today, and the route
+    // currently uses /api/staff-list to enumerate staffIds within a
+    // property, so a probe is the only realistic explanation for a miss.
+    await logSecurityEvent({
+      action: 'auth.cross_tenant_staff_attempt',
+      propertyId: pid,
+      metadata: { staffId, helper: 'ensureStaffAuthUser' },
+    });
+    throw new CrossTenantStaffError(staffId, pid);
   }
 
   const email = syntheticEmailFor(staffId);
@@ -180,7 +223,9 @@ export async function buildHousekeeperLink(
   pid: string,
   baseUrl: string = 'https://getstaxis.com',
 ): Promise<string> {
-  const { email } = await ensureStaffAuthUser(staffId);
+  // F-NEW-04: pid is now load-bearing — ensureStaffAuthUser asserts the
+  // staff row belongs to pid before any auth-user creation or token mint.
+  const { email } = await ensureStaffAuthUser(staffId, pid);
 
   const { data, error } = await supabaseAdmin.auth.admin.generateLink({
     type: 'magiclink',
