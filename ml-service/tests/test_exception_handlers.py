@@ -79,14 +79,28 @@ def test_http_exception_returns_jsonresponse_with_status_code(client):
 
 
 def test_generic_exception_returns_500_with_parseable_json(client):
-    """Generic Exception → JSONResponse 500 with valid JSON body."""
+    """Generic Exception → JSONResponse 500 with valid JSON body.
+
+    Plan v2 F-AI-12 (audit-02 D-06): the handler intentionally does NOT
+    leak `str(exc)` into the response — that previously surfaced
+    psycopg2 error text + partial PII on internal failures. The thrown
+    details now go to stdout (Fly logs / Sentry) under an `incident_id`
+    that's echoed back in the body so the caller can correlate.
+    """
     res = client.get("/raises-generic")
     assert res.status_code == 500, f"expected 500, got {res.status_code}"
     # If body is a raw dict (pre-fix bug), starlette would have crashed
     # before reaching here. Parsing the body confirms it's valid JSON.
     body = res.json()
     assert body["status_code"] == 500
-    assert "boom from test" in body["error"]
+    # The body must NOT contain the raw exception text — that's the
+    # whole point of the F-AI-12 fix.
+    assert "boom from test" not in body.get("error", "")
+    assert "boom from test" not in str(body.get("incident_id", ""))
+    # The body MUST contain a stable error code + an incident_id the
+    # operator can grep in stdout / Sentry.
+    assert body["error"] == "internal_error"
+    assert isinstance(body.get("incident_id"), str) and len(body["incident_id"]) > 0
 
 
 def test_handlers_return_response_subclass_not_dict():
@@ -99,13 +113,17 @@ def test_handlers_return_response_subclass_not_dict():
     return type catches a revert without needing a TestClient request.
     """
     import asyncio
+    from types import SimpleNamespace
 
-    # Minimal request stub — handlers don't use it for these branches.
-    fake_request = None  # type: ignore[assignment]
+    # http_exception_handler ignores `request` entirely. general_exception_
+    # handler reads `request.url.path` to log the offending route — give
+    # it a minimal stub so the unit test doesn't crash on attribute access.
+    fake_http_request = None  # type: ignore[assignment]
+    fake_generic_request = SimpleNamespace(url=SimpleNamespace(path="/unit-test"))
 
     http_resp = asyncio.run(
         http_exception_handler(
-            fake_request,  # type: ignore[arg-type]
+            fake_http_request,  # type: ignore[arg-type]
             HTTPException(status_code=418, detail="teapot"),
         )
     )
@@ -119,11 +137,15 @@ def test_handlers_return_response_subclass_not_dict():
     assert body == {"error": "teapot", "status_code": 418}
 
     generic_resp = asyncio.run(
-        general_exception_handler(fake_request, RuntimeError("unit test")),  # type: ignore[arg-type]
+        general_exception_handler(fake_generic_request, RuntimeError("unit test")),  # type: ignore[arg-type]
     )
     assert isinstance(generic_resp, Response)
     assert isinstance(generic_resp, JSONResponse)
     assert generic_resp.status_code == 500
     body = json.loads(bytes(generic_resp.body))
     assert body["status_code"] == 500
-    assert "unit test" in body["error"]
+    # Same F-AI-12 contract: raw exception text must NOT leak; the
+    # response carries a stable code + an incident_id for correlation.
+    assert "unit test" not in body.get("error", "")
+    assert body["error"] == "internal_error"
+    assert isinstance(body.get("incident_id"), str) and len(body["incident_id"]) > 0
