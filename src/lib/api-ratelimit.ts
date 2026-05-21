@@ -85,7 +85,12 @@ export type RateLimitEndpoint =
   | 'housekeeper-rooms'
   | 'housekeeper-room-action'
   | 'housekeeper-save-language'
-  | 'laundry-bootstrap';
+  | 'laundry-bootstrap'
+  // Plan v2 F-AI-8 — Mario's "Load Rooms" button. Triggers Railway
+  // scraper /scrape/hk-center, which talks to Choice Advantage. Two
+  // open browser tabs + a power-user clicking refresh shouldn't burn
+  // through the CA session quota. Keyed on (userId, propertyId).
+  | 'refresh-from-pms';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -160,6 +165,12 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // laundry-bootstrap is a read-only page bootstrap. Polled less often
   // than housekeeper. 600/hr per property covers heavy use.
   'laundry-bootstrap':          600,
+  // refresh-from-pms — Rooms tab "Load Rooms" button. Triggers a CA
+  // scrape on Railway; the Choice Advantage account is a single shared
+  // session that we don't want to burn. 30/hr per (user, property) is
+  // "click roughly every 2 minutes for an hour" which is enough for any
+  // legitimate troubleshooting and stops a runaway script dead.
+  'refresh-from-pms':            30,
 };
 
 /**

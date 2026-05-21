@@ -40,6 +40,7 @@ import { log, getOrMintRequestId } from '@/lib/log';
 import { requireSessionOrCron, userHasPropertyAccess } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { env } from '@/lib/env';
+import { checkAndIncrementRateLimit, hashToRateLimitKey } from '@/lib/api-ratelimit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -122,6 +123,24 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       return err('forbidden — no access to this property', {
         requestId, status: 403, code: ApiErrorCode.Forbidden, headers,
       });
+    }
+
+    // Plan v2 F-AI-8: rate-limit session callers per (userId, propertyId).
+    // Cron callers (CRON_SECRET) bypass — the cron schedule itself is the
+    // outer cap and we don't want a noisy daily cron to lock itself out.
+    const rl = await checkAndIncrementRateLimit(
+      'refresh-from-pms',
+      hashToRateLimitKey(`${auth.userId}:${pid}`),
+    );
+    if (!rl.allowed) {
+      return err(
+        `Rate limited. ${rl.current}/${rl.cap} refreshes this hour for this property. ` +
+        `Try again in ${rl.retryAfterSec}s.`,
+        {
+          requestId, status: 429, code: ApiErrorCode.RateLimited,
+          headers: { ...headers, 'Retry-After': String(rl.retryAfterSec) },
+        },
+      );
     }
   }
 

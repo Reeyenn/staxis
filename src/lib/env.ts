@@ -29,6 +29,62 @@ function emptyToUndef(obj: NodeJS.ProcessEnv): Record<string, string | undefined
   return out;
 }
 
+// ─── Service-to-service hostname allowlist (Plan v2 F-AI-6) ──────────────
+// A compromised env editor that sets RAILWAY_SCRAPER_URL or ML_SERVICE_URLS
+// or VERCEL_DOCTOR_URL to an attacker host would send our bearer secrets
+// to that host on the next cron tick. Constrain to known managed-platform
+// suffixes (and our own domain) so that vector is closed at env-parse
+// time. Add new suffixes here when adding a deploy platform.
+//
+// The allowlist is intentionally simple — suffix match on the registrable
+// hostname. Localhost is permitted so dev/test setups keep working.
+const SERVICE_HOSTNAME_SUFFIXES: readonly string[] = [
+  '.railway.app',
+  '.up.railway.app',
+  '.fly.dev',
+  '.vercel.app',           // Vercel preview deployments
+  'getstaxis.com',
+  '.getstaxis.com',
+  'hotelops-ai.vercel.app',
+  'localhost',
+  '127.0.0.1',
+];
+
+function hostnameOnAllowlist(rawUrl: string): boolean {
+  // The allowlist is a security boundary against compromised PROD env
+  // editors. Tests + local dev use placeholder URLs (ml.example.com,
+  // localhost variants) that shouldn't have to be in the suffix list.
+  // We bypass when NODE_ENV is not explicitly 'production' AND when
+  // VERCEL_ENV is not 'production'. Vercel sets VERCEL_ENV=production
+  // on real prod deploys, NODE_ENV is "production" both there and on
+  // any prod-mode `next build`; either signal turns the check on.
+  if (process.env.NODE_ENV !== 'production' && process.env.VERCEL_ENV !== 'production') {
+    return true;
+  }
+
+  let host: string;
+  try {
+    host = new URL(rawUrl).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return SERVICE_HOSTNAME_SUFFIXES.some(
+    (s) => host === s || host === s.replace(/^\./, '') || host.endsWith(s),
+  );
+}
+
+function allHostnamesOnAllowlist(csv: string): boolean {
+  return csv.split(',').map((s) => s.trim()).filter(Boolean).every(hostnameOnAllowlist);
+}
+
+function serviceHostnameAllowlistMessage(varName: string): string {
+  return (
+    `${varName} hostname must end with one of: ${SERVICE_HOSTNAME_SUFFIXES.join(', ')}. ` +
+    `This blocks a compromised env from redirecting bearer secrets to an attacker host. ` +
+    `Add a new suffix to SERVICE_HOSTNAME_SUFFIXES in src/lib/env.ts if onboarding a new platform.`
+  );
+}
+
 const ServerSchema = z.object({
   // ── Supabase ──────────────────────────────────────────
   NEXT_PUBLIC_SUPABASE_URL: z.string().url(),
@@ -129,7 +185,10 @@ const ServerSchema = z.object({
   // CSV — single-shard is just one entry. Legacy singular ML_SERVICE_URL
   // accepted by parse layer. Optional: when unset, ml-routing returns
   // null and cron callers skip the ML call (dev / unconfigured envs).
-  ML_SERVICE_URLS: z.string().min(1).optional(),
+  ML_SERVICE_URLS: z.string().min(1).optional()
+    .refine((csv) => !csv || allHostnamesOnAllowlist(csv), {
+      message: serviceHostnameAllowlistMessage('ML_SERVICE_URLS'),
+    }),
   ML_SERVICE_SECRET: z.string().optional(),
 
   // ── Admin / DevOps tokens ─────────────────────────────
@@ -137,10 +196,16 @@ const ServerSchema = z.object({
   VERCEL_API_TOKEN: z.string().optional(),
   VERCEL_PROJECT_ID: z.string().optional(),
   VERCEL_TEAM_ID: z.string().optional(),
-  VERCEL_DOCTOR_URL: z.string().url().optional(),
+  VERCEL_DOCTOR_URL: z.string().url().optional()
+    .refine((v) => !v || hostnameOnAllowlist(v), {
+      message: serviceHostnameAllowlistMessage('VERCEL_DOCTOR_URL'),
+    }),
   FLY_API_TOKEN: z.string().optional(),
   FLY_APP_NAME: z.string().default('staxis-cua'),
-  RAILWAY_SCRAPER_URL: z.string().url().optional(),
+  RAILWAY_SCRAPER_URL: z.string().url().optional()
+    .refine((v) => !v || hostnameOnAllowlist(v), {
+      message: serviceHostnameAllowlistMessage('RAILWAY_SCRAPER_URL'),
+    }),
 
   // ── Platform auto-injected (read-only metadata) ───────
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
