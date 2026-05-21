@@ -70,11 +70,15 @@ function looksLikeLoginControl(hint: string): boolean {
   const h = hint.toLowerCase();
 
   // Deny-list — controls with these prefixes are NOT login forms even
-  // if their suffix matches a login keyword (e.g. share_email, forward_password,
-  // delete_account). Login forms never need typing into "share/forward/
-  // forgot/reset/delete/remove/cancel/refund_*" fields. Empirically
-  // these prefixes are how PMS pages name dangerous mutating controls.
-  if (/(\b|_)(share|forward|forgot[_-]?reset|reset[_-]?other|delete|remove|cancel|refund|share[_-]via|export[_-])(\b|_)/.test(h)) {
+  // if their suffix matches a login keyword (e.g. share_email,
+  // forward_password, delete_account). Login forms never need typing
+  // into share/forward/delete/remove/cancel/refund/export controls.
+  //
+  // Plan v2.1 MP-3 — dropped the dead `forgot[_-]?reset` alternation.
+  // It matched no realistic PMS control name. "forgot password" is a
+  // legitimate login control (handled by the positive match below);
+  // "reset other accounts" is covered by `reset[_-]?other`.
+  if (/(\b|_)(share|forward|reset[_-]?other|delete|remove|cancel|refund|share[_-]via|export[_-])(\b|_)/.test(h)) {
     return false;
   }
 
