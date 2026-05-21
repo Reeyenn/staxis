@@ -105,16 +105,32 @@ async function main(): Promise<void> {
       continue;
     }
 
-    // Verify by reading back and re-computing. If this fails we have a
-    // canonical-JSON bug — abort before flipping enforce.
+    // Plan v2.1 CR-5 — read back BOTH recipe and signature, then
+    // recompute the HMAC over the read-back recipe and compare. The
+    // pre-CR-5 check only compared signature bytes to what we just
+    // wrote (tautology — never confirmed the recipe matched). A
+    // concurrent UPDATE between our SELECT and UPDATE could leave a
+    // mismatched recipe/signature pair while the script still printed
+    // "Safe to enforce."
     const { data: check } = await supabase
       .from('pms_recipes')
       .select('recipe, signature')
       .eq('id', row.id)
       .maybeSingle();
-    const readBack = (check?.signature as string | null) ?? '';
-    if (readBack !== hexSig) {
-      console.error(`  ✖ ${row.pms_type} v${row.version} (${row.status}): readback signature mismatch`);
+    const readBackSig = (check?.signature as string | null) ?? '';
+    if (readBackSig !== hexSig) {
+      console.error(`  ✖ ${row.pms_type} v${row.version} (${row.status}): readback signature bytes mismatch (concurrent UPDATE?)`);
+      mismatches++;
+      continue;
+    }
+    // Recompute the HMAC over the read-back recipe. If a concurrent
+    // writer mutated the recipe between SELECT and UPDATE, the
+    // signature we wrote is no longer the HMAC of the row's recipe.
+    const readBackPayload = canonicalJson(check?.recipe);
+    const recomputed = createHmac('sha256', signingKey).update(readBackPayload).digest();
+    const expectedHex = `\\x${recomputed.toString('hex')}`;
+    if (readBackSig !== expectedHex) {
+      console.error(`  ✖ ${row.pms_type} v${row.version} (${row.status}): recipe drifted between SELECT and UPDATE — signature no longer matches the row's recipe`);
       mismatches++;
       continue;
     }
