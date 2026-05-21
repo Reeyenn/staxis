@@ -206,6 +206,28 @@ describe('resolveVoiceSession — M-1 rejections', () => {
     assert.equal(result.ok, true);
   });
 
+  // ─── Plan v2.1 CR-2 — pre-first-turn idle expiry ─────────────────────
+  // Before CR-2, mintVoiceSession left last_turn_at NULL. A freshly-
+  // minted but unused nonce stayed valid for the full 30-min expires_at
+  // TTL, contradicting the "5 min replay window" claim. After CR-2 the
+  // mint stamps last_turn_at = now(), so the idle clock starts at mint.
+
+  test('CR-2: minted >5min ago, never used → idle_expired', async () => {
+    // Simulate "mintVoiceSession ran 10 min ago, no webhook turn since."
+    voiceRow!.last_turn_at = new Date(Date.now() - 10 * 60_000).toISOString();
+    voiceRow!.elevenlabs_conversation_id = null; // never bound
+    const result = await resolveVoiceSession(SESSION_ID);
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.reason, 'idle_expired');
+  });
+
+  test('CR-2: minted <5min ago, never used → resolves', async () => {
+    voiceRow!.last_turn_at = new Date(Date.now() - 60_000).toISOString();
+    voiceRow!.elevenlabs_conversation_id = null;
+    const result = await resolveVoiceSession(SESSION_ID);
+    assert.equal(result.ok, true);
+  });
+
   test('bound row + mismatched conv_id → binding_mismatch', async () => {
     voiceRow!.elevenlabs_conversation_id = ELEVEN_A;
     const result = await resolveVoiceSession(SESSION_ID, ELEVEN_B);

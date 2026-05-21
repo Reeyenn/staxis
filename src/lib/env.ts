@@ -145,6 +145,14 @@ const ServerSchema = z.object({
   //   zdr-confirmed-2026-05-20-anthropic+openai+elevenlabs
   STAXIS_AI_DATA_POLICY: z.string().optional(),
 
+  // ── CUA action policy enforce state (Plan v2.1 CR-3) ───
+  // Mirror of the Fly worker's CUA_POLICY_ENFORCE env. The CUA worker
+  // is the source of truth; this mirror lets the Vercel-side doctor's
+  // `cua_action_policy_enforce_status` check surface the active
+  // posture without needing direct access to Fly secrets. Operator
+  // sets BOTH places when flipping enforce.
+  CUA_POLICY_ENFORCE: z.enum(['warn', 'enforce']).optional(),
+
   // ── Email ─────────────────────────────────────────────
   RESEND_API_KEY: z.string().optional(),
 
