@@ -38,6 +38,13 @@ export function initSentry(): boolean {
     // tracesSampleRate=0 — we don't need tracing on a worker, just errors.
     // Keeping the dependency lightweight.
     tracesSampleRate: 0,
+    // Plan v2 F-AI-9 — explicitly disable Sentry's default PII attachers
+    // (IP address, user agent, cookie headers). The CUA worker doesn't
+    // serve HTTP traffic anyway, so there's no meaningful PII the SDK
+    // would pull — but turning it off explicitly makes the posture
+    // surface in the Sentry settings UI rather than depending on a
+    // default that might change in a future SDK release.
+    sendDefaultPii: false,
     // environment lets us filter prod/dev errors in the Sentry UI.
     environment: env.NODE_ENV,
     // Tag every event with the worker_id so we can pivot on which Fly
@@ -62,9 +69,44 @@ export function initSentry(): boolean {
     // token starts with "eyJ") would silently disappear, hiding real
     // bugs.
     beforeSend(event) {
-      const redactInPlace = (obj: unknown): void => {
-        if (!obj || typeof obj !== 'object') return;
+      // Plan v2 F-AI-9 — extended beforeSend. The original redactor was
+      // regex-only on credential-shaped strings. Now we also:
+      //   - drop the entire value when the KEY name says it carries
+      //     screenshot bytes, tool-result content, or page text
+      //     (these are large PII-bearing payloads that should never
+      //     reach Sentry).
+      //   - strip query strings from URLs (auth tokens sometimes ride
+      //     query parameters; ?token=… should never appear in Sentry).
+      //   - keep the original regex-based credential redactor as a
+      //     last line of defense for stack-frame strings.
+      const SUPPRESSED_KEY_PATTERNS = [
+        /screenshot/i,                  // screenshotB64, screenshot_data, etc.
+        /^body$/i,                      // raw HTTP body
+        /tool_?result/i,                // any tool_result.* content blob
+        /page_?text/i,                  // get_page_text returns
+        /dom_?tree/i,                   // read_page output
+        /^content$/i,                   // sentry default name for body content
+      ];
+      const stripQueryFromUrl = (s: string): string => {
+        try {
+          const u = new URL(s);
+          if (u.search) {
+            u.search = '?<redacted>';
+            return u.toString();
+          }
+          return s;
+        } catch {
+          return s;
+        }
+      };
+      const redactInPlace = (obj: unknown, depth = 0): void => {
+        if (!obj || typeof obj !== 'object' || depth > 8) return;
         for (const [k, v] of Object.entries(obj)) {
+          // Drop the entire value when the key looks like a PII payload.
+          if (SUPPRESSED_KEY_PATTERNS.some((re) => re.test(k))) {
+            (obj as Record<string, unknown>)[k] = '<redacted:suppressed_key>';
+            continue;
+          }
           if (typeof v === 'string') {
             // Anthropic API key shape: sk-ant-api03-… (95+ chars).
             // We only redact the long-form key; shorter sk-ant- mentions
@@ -80,12 +122,23 @@ export function initSentry(): boolean {
             else if (/eyJ[a-zA-Z0-9_-]{30,}\.[a-zA-Z0-9_-]{30,}\.[a-zA-Z0-9_-]{200,}/.test(v)) {
               (obj as Record<string, unknown>)[k] = '<redacted:long_jwt>';
             }
+            // URLs: strip query string. ?token=… sometimes rides
+            // there and should never reach Sentry.
+            else if (/^https?:\/\//.test(v) && v.includes('?')) {
+              (obj as Record<string, unknown>)[k] = stripQueryFromUrl(v);
+            }
           } else if (typeof v === 'object') {
-            redactInPlace(v);
+            redactInPlace(v, depth + 1);
           }
         }
       };
       redactInPlace(event);
+      // request.body is the SDK's well-known location for HTTP-request
+      // bodies; drop it entirely on the off chance the SDK auto-attaches
+      // one in a future release.
+      if (event.request && typeof event.request === 'object') {
+        (event.request as Record<string, unknown>).data = '<redacted:body>';
+      }
       return event;
     },
   });

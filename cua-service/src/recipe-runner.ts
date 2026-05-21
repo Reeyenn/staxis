@@ -469,5 +469,21 @@ async function runActionAsTable<T>(
     );
   }
 
+  // Plan v2 M-3 — cap the row count we serialize into JS objects.
+  // A poisoned recipe with `rowSelector: '*'` (or even a too-broad
+  // legitimate selector after a PMS UI change) would otherwise pull
+  // the entire same-site DOM into memory. 5000 rows is comfortably
+  // above any real-world hotel (Comfort Suites has 61 rooms; the
+  // largest Choice Hotel has ~800) but stops the memory-DoS case.
+  const MAX_ROWS_PER_ACTION = 5000;
+  if (rows.length > MAX_ROWS_PER_ACTION) {
+    throw new RecipeActionFailedError(
+      actionName,
+      `too_many_rows: ${rows.length} matched, cap is ${MAX_ROWS_PER_ACTION}. ` +
+        'Either the rowSelector is too broad or the PMS page has unusual content. ' +
+        'Re-run the mapper to refit the selector.',
+    );
+  }
+
   return rows as T[];
 }
