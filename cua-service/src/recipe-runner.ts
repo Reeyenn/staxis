@@ -347,9 +347,17 @@ async function runStep(
     case 'wait_ms':
       await new Promise((r) => setTimeout(r, step.ms));
       return;
-    case 'select':
-      await page.selectOption(step.selector, step.value);
+    case 'select': {
+      // Plan v2.1 MP-1 — route step.value through the same placeholder
+      // scope check that fill/type_text use. selectOption matches against
+      // <option value="…"> rather than typing, so a poisoned `$password`
+      // here wouldn't leak the credential — but symmetric coverage
+      // preserves the documented invariant that credential placeholders
+      // never resolve outside login.steps.
+      const value = resolveValueWithScope(step.value, creds, allowCredentialPlaceholders);
+      await page.selectOption(step.selector, value);
       return;
+    }
     case 'press_key':
       await page.keyboard.press(step.key);
       return;
