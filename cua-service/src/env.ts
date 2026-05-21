@@ -47,6 +47,15 @@ const Schema = z.object({
   // an agent-friendly error so Claude retries.
   CUA_POLICY_ENFORCE: z.enum(['warn', 'enforce']).default('warn'),
 
+  // ── Screenshot minimization (Plan v2 F-AI-10) ────────────
+  // The mapper used to auto-capture a screenshot on navigate + hover
+  // and ship it to Anthropic. Default is now 'false' — Claude relies on
+  // read_page + get_page_text and only explicit `screenshot` actions
+  // produce image blocks. Set to 'true' if a PMS proves to need vision
+  // grounding (regression metric: % of mapping runs reaching dashboard
+  // within 30 steps).
+  CUA_AUTO_SCREENSHOT: z.enum(['true', 'false']).default('false'),
+
   // ── Platform auto-injected (read-only metadata) ───────
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   FLY_APP_NAME: z.string().default('staxis-cua'),

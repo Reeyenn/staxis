@@ -258,6 +258,14 @@ const checks: Array<[string, CheckFn]> = [
   // pre-2026-05-14 PICOVOICE_ACCESS_KEY-in-REQUIRED_ENV_VARS approach that
   // hard-failed CI any time the key wasn't set.
   ['picovoice_wake_word_config',     checkPicovoiceWakeWordConfig],
+  // Plan v2 F-AI-1 — confirm the operator has documented an AI data-
+  // retention posture for Anthropic / OpenAI / ElevenLabs. The check is
+  // a stamp (STAXIS_AI_DATA_POLICY env) rather than an inline policy
+  // because the actual configuration lives in the provider dashboards;
+  // the env is "the operator says they've confirmed it on date X." A
+  // missing stamp returns yellow, not red — the live app still works,
+  // we just don't know whether ZDR is in force.
+  ['ai_data_policy_documented',      checkAiDataPolicyDocumented],
   // Round 14 (2026-05-14): every active property's `rooms` table for
   // today should have one row per inventory entry. The AI tools now
   // compute totals from room_inventory (Layer 1), but if today's seed
@@ -2950,6 +2958,64 @@ async function checkMlServiceSecretStrength(): Promise<Omit<Check, 'name' | 'dur
   return {
     status: 'ok',
     detail: `ML_SERVICE_SECRET set (${secret.length} chars).`,
+  };
+}
+
+/**
+ * ai_data_policy_documented — Plan v2 F-AI-1. Hotel guest PII flows to
+ * Anthropic (Claude), OpenAI (Whisper), and ElevenLabs (TTS) through
+ * our agent/voice/transcribe surfaces. Each provider's default retention
+ * is 30 days unless an org-level "zero data retention" / data-controls
+ * setting is configured in their dashboard. There's no in-code parameter
+ * for it on Whisper or ElevenLabs, so the policy lives off-repo.
+ *
+ * This check reads a `STAXIS_AI_DATA_POLICY` env stamp set by the
+ * operator after they've confirmed retention in each provider's
+ * dashboard. The stamp is freeform — typical values look like:
+ *   `zdr-confirmed-2026-05-20-anthropic+openai+elevenlabs`
+ *
+ * Missing stamp → warn (yellow). The product still works; we just
+ * don't know whether ZDR is in force. RUNBOOKS.md > "AI Data Retention
+ * Posture" documents the confirmation steps per provider.
+ */
+async function checkAiDataPolicyDocumented(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const stamp = (process.env.STAXIS_AI_DATA_POLICY ?? '').trim();
+  if (!stamp) {
+    return {
+      status: 'warn',
+      detail:
+        'STAXIS_AI_DATA_POLICY not set — operator has not documented ' +
+        'an AI data-retention posture for Anthropic / OpenAI / ElevenLabs. ' +
+        "Guest PII flows to these providers under each one's default " +
+        '30-day retention until an org-level data control is confirmed.',
+      fix:
+        'Confirm Zero Data Retention (or equivalent data controls) in ' +
+        'console.anthropic.com, platform.openai.com Data Controls, and ' +
+        'elevenlabs.io workspace settings. Then set ' +
+        '`STAXIS_AI_DATA_POLICY=zdr-confirmed-YYYY-MM-DD-<provider list>` ' +
+        'in Vercel. See RUNBOOKS.md > "AI Data Retention Posture".',
+    };
+  }
+  // The stamp must mention at least one provider — otherwise it's
+  // probably a placeholder. We don't try to be exhaustive; we just
+  // want to catch `1` / `yes` / `true` style stamps that don't
+  // communicate what was actually confirmed.
+  const mentionsProvider =
+    /anthropic|openai|elevenlabs|claude|whisper/i.test(stamp);
+  if (!mentionsProvider) {
+    return {
+      status: 'warn',
+      detail:
+        `STAXIS_AI_DATA_POLICY="${stamp.slice(0, 80)}" set but doesn't ` +
+        'mention a specific provider — that makes the stamp ambiguous ' +
+        'for the next audit. Use the documented format.',
+      fix:
+        'Replace with e.g. `zdr-confirmed-2026-05-20-anthropic+openai+elevenlabs`.',
+    };
+  }
+  return {
+    status: 'ok',
+    detail: `AI data policy stamp present: "${stamp.slice(0, 120)}".`,
   };
 }
 

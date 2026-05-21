@@ -41,6 +41,18 @@ import {
   policyMode,
   type MappingPhase,
 } from './policy.js';
+import { env } from './env.js';
+
+/**
+ * Plan v2 F-AI-10 — auto-screenshots on navigate/hover are off by
+ * default. Helper centralizes the env-read so the per-action sites stay
+ * single-line. Returns undefined when suppressed so the existing
+ * `screenshotB64` shape stays opt-in.
+ */
+async function maybeAutoScreenshot(page: Page): Promise<string | undefined> {
+  if (env.CUA_AUTO_SCREENSHOT !== 'true') return undefined;
+  return captureScreenshot(page);
+}
 
 // ─── Tool definition (Claude-facing) ─────────────────────────────────────
 
@@ -269,10 +281,14 @@ export async function executeBrowserAction(
           throw err;
         }
         await page.waitForTimeout(1500);
-        const screenshot = await captureScreenshot(page);
+        // Plan v2 F-AI-10: auto-screenshot is opt-in via CUA_AUTO_SCREENSHOT.
+        // Default behavior is "no screenshot after navigate" — Claude calls
+        // read_page next and works from the DOM, which is cheaper, more
+        // reliable, and avoids shipping the full viewport to Anthropic.
+        const screenshot = await maybeAutoScreenshot(page);
         return {
           output: `Navigated to ${url}`,
-          screenshotB64: screenshot,
+          ...(screenshot ? { screenshotB64: screenshot } : {}),
           recordedStep: { kind: 'goto', url },
         };
       }
@@ -333,8 +349,12 @@ export async function executeBrowserAction(
           const [x, y] = info.coordinates;
           await page.mouse.move(x, y);
           await page.waitForTimeout(300);
-          const screenshot = await captureScreenshot(page);
-          return { output: `Hovered ${action.ref}`, screenshotB64: screenshot };
+          // Plan v2 F-AI-10: gated by CUA_AUTO_SCREENSHOT.
+          const screenshot = await maybeAutoScreenshot(page);
+          return {
+            output: `Hovered ${action.ref}`,
+            ...(screenshot ? { screenshotB64: screenshot } : {}),
+          };
         }
         if (action.coordinate) {
           await page.mouse.move(action.coordinate[0], action.coordinate[1]);
