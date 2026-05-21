@@ -108,12 +108,18 @@ describe('requireHeartbeatSecret — env behavior', () => {
     assert.equal(body.error, 'server misconfigured');
   });
 
-  test('Vercel preview with HEARTBEAT_SECRET unset passes through (smoke tests)', () => {
+  test('Vercel preview with HEARTBEAT_SECRET unset returns 500 (fails closed)', async () => {
+    // Tightened 2026-05-21 (Codex post-shipment review A5): preview URLs
+    // are publicly reachable, so a preview deploy without the secret
+    // would expose a service-role write endpoint. Previews must fail
+    // closed just like production.
     delete process.env.HEARTBEAT_SECRET;
     process.env.VERCEL_ENV = 'preview';
     (process.env as Record<string, string>).NODE_ENV = 'production';
     const result = requireHeartbeatSecret(reqWith('Bearer whatever'));
-    assert.equal(result, null);
+    assert.equal(result!.status, 500);
+    const body = await result!.json();
+    assert.equal(body.error, 'server misconfigured');
   });
 
   test('non-Vercel prod (e.g. Railway/Fly) with HEARTBEAT_SECRET unset returns 500', async () => {
