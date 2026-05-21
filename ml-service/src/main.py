@@ -223,6 +223,12 @@ class TrainInventoryRateRequest(BaseModel):
 
     property_id: str
     item_id: Optional[str] = None
+    # Plan v2.1 MP-2 — symmetric with TrainDemandRequest / TrainSupplyRequest.
+    # Inventory training doesn't read max_rows today, but adding the
+    # field-validator now keeps the guard-by-default invariant
+    # consistent: a future change that wires max_rows into the
+    # inventory path cannot accidentally ship unbounded.
+    max_rows: Optional[int] = None
 
     @field_validator("property_id")
     @classmethod
@@ -235,6 +241,11 @@ class TrainInventoryRateRequest(BaseModel):
         if v is None:
             return v
         return _validate_uuid_str(v)
+
+    @field_validator("max_rows")
+    @classmethod
+    def _check_max_rows(cls, v: Optional[int]) -> Optional[int]:
+        return _clamp_max_rows(v)
 
 
 class TrainInventoryRateResponse(BaseModel):
