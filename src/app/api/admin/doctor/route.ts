@@ -266,6 +266,12 @@ const checks: Array<[string, CheckFn]> = [
   // missing stamp returns yellow, not red — the live app still works,
   // we just don't know whether ZDR is in force.
   ['ai_data_policy_documented',      checkAiDataPolicyDocumented],
+  // Plan v2 M-1 rollout readiness — reports the fraction of voice
+  // sessions in the last 24h whose ElevenLabs conversation_id we
+  // observed and bound. When ≥ 95%, it's safe to flip
+  // STAXIS_VOICE_REQUIRE_CONNECTION_BINDING=true; below that, doing so
+  // would refuse legitimate voice turns.
+  ['voice_binding_readiness',        checkVoiceBindingReadiness],
   // Round 14 (2026-05-14): every active property's `rooms` table for
   // today should have one row per inventory entry. The AI tools now
   // compute totals from room_inventory (Layer 1), but if today's seed
@@ -3037,6 +3043,81 @@ async function checkAiDataPolicyDocumented(): Promise<Omit<Check, 'name' | 'dura
   return {
     status: 'ok',
     detail: `AI data policy stamp present: "${stamp.slice(0, 120)}".`,
+  };
+}
+
+/**
+ * voice_binding_readiness — Plan v2 M-1 rollout gauge.
+ *
+ * We can't flip STAXIS_VOICE_REQUIRE_CONNECTION_BINDING=true blind: if
+ * ElevenLabs doesn't reliably forward conversation_id in the custom-LLM
+ * webhook body, the binding-required mode would refuse every legitimate
+ * voice turn. This check reports the bind-rate — the fraction of recent
+ * voice sessions whose elevenlabs_conversation_id we observed and stored
+ * — so the operator knows when it's safe to flip.
+ *
+ * Status mapping:
+ *   - already enforcing → ok (the flip happened; the gauge is moot)
+ *   - 0 sessions in the window → ok with "no data" note (don't fail
+ *     the doctor for an idle voice surface)
+ *   - bind_rate ≥ 95% → ok with the recommendation to flip
+ *   - bind_rate <  95% → warn with the actual rate so the operator can
+ *     decide whether the gap is "needs more traffic" or "ElevenLabs
+ *     SDK changed which field carries conversation_id"
+ */
+async function checkVoiceBindingReadiness(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const enforce = (env.STAXIS_VOICE_REQUIRE_CONNECTION_BINDING ?? 'false') === 'true';
+  if (enforce) {
+    return {
+      status: 'ok',
+      detail: 'STAXIS_VOICE_REQUIRE_CONNECTION_BINDING=true — binding already enforced. This check is moot.',
+    };
+  }
+
+  // 24 h window keeps the gauge useful for low-traffic deployments.
+  // Anything shorter risks "zero sessions" being the steady state.
+  const sinceIso = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
+  const { data, error } = await supabaseAdmin
+    .from('agent_voice_sessions')
+    .select('elevenlabs_conversation_id, created_at')
+    .gte('created_at', sinceIso);
+
+  if (error) {
+    return {
+      status: 'warn',
+      detail: `Could not read agent_voice_sessions for readiness gauge: ${error.message}.`,
+    };
+  }
+
+  const total = (data ?? []).length;
+  if (total === 0) {
+    return {
+      status: 'ok',
+      detail:
+        'No voice sessions in the last 24h — readiness gauge has no data. ' +
+        'Trigger a real voice turn on the hotel app to populate; re-check after.',
+    };
+  }
+  const bound = (data ?? []).filter((r) => !!(r as { elevenlabs_conversation_id: string | null }).elevenlabs_conversation_id).length;
+  const pct = Math.round((bound / total) * 100);
+  if (pct >= 95) {
+    return {
+      status: 'ok',
+      detail:
+        `Voice-binding rate ${pct}% (${bound}/${total}) over the last 24h — ` +
+        'safe to flip STAXIS_VOICE_REQUIRE_CONNECTION_BINDING=true on Vercel.',
+    };
+  }
+  return {
+    status: 'warn',
+    detail:
+      `Voice-binding rate ${pct}% (${bound}/${total}) over the last 24h. ` +
+      'Below the 95% safety floor — flipping enforce now would refuse legitimate turns.',
+    fix:
+      'Investigate the missing conversation_id source. Either ElevenLabs changed ' +
+      'the field name (check elevenlabs_extra_body / extra_body / body.user in a ' +
+      'recent [voice-brain] log line) or low traffic is hiding the real rate. ' +
+      'When this check turns green, set STAXIS_VOICE_REQUIRE_CONNECTION_BINDING=true.',
   };
 }
 

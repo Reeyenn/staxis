@@ -566,6 +566,12 @@ export async function POST(req: NextRequest): Promise<Response> {
           chars: safe.length,
           tokensIn: finalUsage?.inputTokens ?? 0,
           tokensOut: finalUsage?.outputTokens ?? 0,
+          // Plan v2 M-1 rollout telemetry: surface whether ElevenLabs is
+          // reliably forwarding their conversation_id. We need this true
+          // on real voice traffic before flipping
+          // STAXIS_VOICE_REQUIRE_CONNECTION_BINDING=true; otherwise the
+          // bind-required mode would refuse every turn.
+          hasConvId: !!elevenlabsConvId,
         });
       } catch (e) {
         log.error('[voice-brain] unhandled error', { requestId, e });
