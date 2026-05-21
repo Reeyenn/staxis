@@ -1,4 +1,4 @@
--- 0151 — Revoke legacy owner/GM hotel_join_codes and forbid future ones.
+-- 0152 — Revoke legacy owner/GM hotel_join_codes and forbid future ones.
 --
 -- F-06 in the core-web/auth/RLS security plan. The /api/auth/use-join-code
 -- redemption path unconditionally rewrites properties.owner_id when the
@@ -39,7 +39,7 @@ alter table public.hotel_join_codes
 -- Bookkeeping
 insert into public.applied_migrations (version, description)
 values (
-  '0151',
+  '0152',
   'F-06: revoke legacy owner/GM hotel_join_codes + CHECK forbidding new privileged rows'
 )
 on conflict (version) do nothing;
