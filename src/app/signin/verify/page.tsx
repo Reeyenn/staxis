@@ -1,5 +1,7 @@
 'use client';
 
+
+export const dynamic = 'force-dynamic';
 // /signin/verify — enter the 6-digit OTP code from email after a password
 // sign-in on an unknown device. The sign-in page already called
 // supabase.auth.signInWithOtp() to send the code; here we verify it and,

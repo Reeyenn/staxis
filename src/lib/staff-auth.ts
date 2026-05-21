@@ -250,16 +250,20 @@ export async function buildHousekeeperLink(
   }
   const tokenHash = data?.properties?.hashed_token;
   if (!tokenHash) {
-    // Generated link API surface returns either action_link OR hashed_token
-    // depending on Supabase client version. Fall back to action_link if
-    // hashed_token is unset — that path goes through verifyOtp differently
-    // and doesn't benefit from the code-exchange wrapping (the URL is
-    // already an opaque Supabase one). Pass it through unchanged.
-    const actionLink = data?.properties?.action_link;
-    if (!actionLink) {
-      throw new Error('[staff-auth] generateLink: no token returned');
-    }
-    return actionLink;
+    // FAIL CLOSED — Codex review of Batch D flagged that this path used to
+    // fall back to `data.properties.action_link`, which is the Supabase
+    // `auth/v1/verify?token=<hashed_token>&redirect_to=...` URL — the
+    // credential IS in the URL. That silently re-opens exactly the
+    // exposure F-NEW-02 closed (token in URL → Vercel logs / Sentry
+    // breadcrumbs / browser history / Referer headers).
+    //
+    // Today's @supabase/supabase-js (^2.x) always returns hashed_token
+    // for type: 'magiclink'. If a future Supabase version stops doing
+    // that, we want the throw to surface in Sentry so we re-evaluate
+    // the helper deliberately — not silently degrade security.
+    throw new Error(
+      '[staff-auth] generateLink: hashed_token absent — refusing to fall back to action_link (would leak credential in URL)',
+    );
   }
 
   // Mint a fresh opaque code, store the {code → hashed_token} mapping

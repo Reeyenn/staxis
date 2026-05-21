@@ -1,5 +1,7 @@
 'use client';
 
+
+export const dynamic = 'force-dynamic';
 // /invite/[token] — Accept an email invite. The owner/admin generated this
 // link from Settings → Account & Team → Invite by email. We only need the
 // user to set a display name + password; the email + hotel + role were

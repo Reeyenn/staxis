@@ -1,5 +1,7 @@
 'use client';
 
+
+export const dynamic = 'force-dynamic';
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import {
@@ -265,6 +267,25 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
         }
       } else if (token) {
         // Legacy ?token= path — the URL is the hashed_token directly.
+        // Codex review of Batch D flagged that this branch had no
+        // telemetry — no way to know when the pre-Batch-D in-flight SMSes
+        // have drained so we can delete the branch. Fire-and-forget a
+        // count event into /api/housekeeper/log-legacy-token; once the
+        // app_events count for `auth.legacy_token_redeemed` stays at zero
+        // for ~1 week, the legacy branch and the route both come out.
+        void fetch('/api/housekeeper/log-legacy-token', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pid, staffId: housekeeperId }),
+          // keepalive lets the request complete even if the user navigates
+          // away during the verifyOtp step. No await — telemetry never
+          // blocks the actual sign-in.
+          keepalive: true,
+        }).catch(() => {
+          // Telemetry is best-effort; silent on error so flaky cellular
+          // doesn't surface as a UX bug.
+        });
         hashedToken = token;
       }
 

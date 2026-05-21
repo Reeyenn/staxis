@@ -1,5 +1,7 @@
 'use client';
 
+
+export const dynamic = 'force-dynamic';
 /**
  * Phase M1.5 (2026-05-14) — unified onboarding wizard.
  *

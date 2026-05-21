@@ -1,5 +1,7 @@
 'use client';
 
+
+export const dynamic = 'force-dynamic';
 // /join — Legacy URL kept so existing share links still work. Redirects
 // to /signup with the code prefilled. Owners and admins are now told to
 // share /signup links instead.
