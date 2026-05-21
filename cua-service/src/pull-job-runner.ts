@@ -225,7 +225,7 @@ function validateAndUnwrap(row: Record<string, unknown>): LoadedRecipe | null {
       || !(recipe as Recipe).actions
       || !Array.isArray((recipe as Recipe).login.steps)
       || !Array.isArray((recipe as Recipe).login.successSelectors)) {
-    log.error('recipe failed shape validation', { recipeId: row.id });
+    log.error('recipe failed shape validation', { recipeId: row.id as string | undefined });
     return null;
   }
   const rawSig = row.signature as string | null;

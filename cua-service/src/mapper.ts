@@ -503,7 +503,10 @@ async function mapLogin(
     const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
     for (const toolUse of toolUses) {
       const action = toolUse.input as BrowserAction;
-      const exec = await executeBrowserAction(page, action, creds);
+      // Plan v2 F-AI-7: login phase — the policy layer allows writes on
+      // login-shaped controls (ARIA name/role match) and refuses
+      // everything else.
+      const exec = await executeBrowserAction(page, action, creds, 'login');
       if (exec.recordedStep) recordedSteps.push(exec.recordedStep);
       toolResults.push(makeToolResult(toolUse.id, exec));
     }
@@ -704,7 +707,10 @@ async function mapAction(args: {
     const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
     for (const toolUse of toolUses) {
       const action = toolUse.input as BrowserAction;
-      const exec = await executeBrowserAction(args.page, action, args.credentials);
+      // Plan v2 F-AI-7: action phase — write-style actions (type /
+      // form_input / click) are refused. Mapper must navigate + read +
+      // emit the JSON recipe; no mutations on the data pages.
+      const exec = await executeBrowserAction(args.page, action, args.credentials, 'action');
       if (exec.recordedStep) recordedSteps.push(exec.recordedStep);
       toolResults.push(makeToolResult(toolUse.id, exec));
     }

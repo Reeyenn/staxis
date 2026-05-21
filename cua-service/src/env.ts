@@ -41,6 +41,12 @@ const Schema = z.object({
   // 'enforce' — verifier refuses on mismatch / missing signature.
   RECIPE_SIGNING_ENFORCE: z.enum(['warn', 'enforce']).default('warn'),
 
+  // ── CUA action policy (Plan v2 F-AI-7) ───────────────────
+  // Phase-aware allowlist for browser-tool actions. 'warn' (default)
+  // logs refusals but lets the action through; 'enforce' refuses with
+  // an agent-friendly error so Claude retries.
+  CUA_POLICY_ENFORCE: z.enum(['warn', 'enforce']).default('warn'),
+
   // ── Platform auto-injected (read-only metadata) ───────
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   FLY_APP_NAME: z.string().default('staxis-cua'),

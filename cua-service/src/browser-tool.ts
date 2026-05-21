@@ -35,6 +35,12 @@ import type { Page } from 'playwright';
 import type { RecipeStep, PMSCredentials } from './types.js';
 import { log } from './log.js';
 import { safeGoto, normalizeUrl, UnsafeNavigationError } from './browser-utils/navigate.js';
+import {
+  allowAction,
+  recordPolicyRefusal,
+  policyMode,
+  type MappingPhase,
+} from './policy.js';
 
 // ─── Tool definition (Claude-facing) ─────────────────────────────────────
 
@@ -186,8 +192,53 @@ export async function executeBrowserAction(
   page: Page,
   action: BrowserAction,
   creds: PMSCredentials,
+  phase: MappingPhase = 'login',
 ): Promise<BrowserActionResult> {
   try {
+    // Plan v2 F-AI-7: deterministic action allowlist. Build a hint
+    // string from the ref's element info when available, then gate.
+    // Empty hint for actions that don't carry a ref (the policy module
+    // handles that case for each phase).
+    let policyHint = '';
+    if ((action.action === 'left_click' ||
+         action.action === 'double_click' ||
+         action.action === 'hover' ||
+         action.action === 'form_input' ||
+         action.action === 'scroll_to') && action.ref) {
+      const info = await resolveRef(page, action.ref);
+      if (info.success) {
+        policyHint = [
+          info.attributes.text ?? '',
+          info.attributes.ariaLabel ?? '',
+          info.attributes.role ?? '',
+          info.attributes.type ?? '',
+          info.elementInfo ?? '',
+        ].filter(Boolean).join(' ').trim();
+      }
+    }
+    if (action.action === 'type') policyHint = '';
+    if (action.action === 'navigate') policyHint = action.text ?? '';
+
+    const decision = allowAction(action, phase, policyHint);
+    if (!decision.allow) {
+      const mode = policyMode();
+      recordPolicyRefusal({
+        action: action.action,
+        phase,
+        rule: decision.rule,
+        reason: decision.reason ?? 'refused',
+        mode,
+      });
+      if (mode === 'enforce') {
+        return {
+          output: decision.reason ?? `Action ${action.action} refused by policy.`,
+          isError: true,
+        };
+      }
+      // warn mode: fall through and execute anyway so the agent + ops
+      // can see real-world refusal patterns before the flip.
+    }
+
     switch (action.action) {
       case 'navigate': {
         const url = normalizeUrl(action.text);
