@@ -1732,10 +1732,14 @@ const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // 0152 F-06: revoke legacy owner/GM hotel_join_codes + CHECK forbidding new privileged rows.
   // 0153 F-03+F-05+F-09: trusted_devices.absolute_expires_at + search_path pin
   //   on user_owns_property and staxis_release_join_code_slot.
+  // 0154 Batch E: clear leftover bcrypt password_hash from the pre-Supabase-Auth
+  //   era; column is now nullable + documented as deprecated.
+  // 0155 F-NEW-02 / Batch D: staff_magic_codes table for server-side
+  //   housekeeper magic-link exchange (token out of URL).
   '0124', '0125', '0126', '0129', '0130', '0131', '0132', '0133',
   '0135', '0136', '0137', '0138', '0139', '0140',
   '0141', '0142', '0143', '0144', '0145', '0146', '0147', '0148',
-  '0149', '0150', '0151', '0152', '0153',
+  '0149', '0150', '0151', '0152', '0153', '0154', '0155',
 ];
 
 /**

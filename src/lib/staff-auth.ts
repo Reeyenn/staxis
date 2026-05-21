@@ -28,6 +28,7 @@
 // email it would fail to deliver to a real inbox.
 // ═══════════════════════════════════════════════════════════════════════════
 
+import { randomInt } from 'node:crypto';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { logSecurityEvent } from '@/lib/audit';
@@ -190,40 +191,53 @@ export async function ensureStaffAuthUser(
 }
 
 /**
- * Mint a one-time magic-link token for the given staff member and return
+ * Mint a short opaque CODE that the housekeeper page can exchange for
+ * a session via /api/housekeeper/exchange-code. 8 chars from a 32-char
+ * alphabet ≈ 40 bits of entropy. Combined with the per-IP rate limit
+ * on the exchange endpoint, brute-forcing the code space is infeasible.
+ *
+ * Alphabet excludes letters that look like digits (I, L, O) and digits
+ * that look like letters (0, 1) so codes are unambiguous if anyone ever
+ * has to read one aloud.
+ */
+const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+function generateMagicCode(): string {
+  let s = '';
+  for (let i = 0; i < 8; i++) {
+    s += CODE_ALPHABET[randomInt(CODE_ALPHABET.length)];
+  }
+  return s;
+}
+
+/**
+ * Mint a one-time magic-link for the given staff member and return
  * the full URL to embed in the SMS body or copy to clipboard.
  *
- * Always calls `ensureStaffAuthUser` first so this works on a freshly-added
- * staff member who's never had a link generated. The returned URL has the
- * shape:
+ * F-NEW-02 (Batch D): the URL now carries a short opaque CODE instead
+ * of the Supabase hashed_token. The hashed_token is stored server-side
+ * in staff_magic_codes (keyed by code), and the housekeeper page POSTs
+ * the code to /api/housekeeper/exchange-code to retrieve the token.
+ * That keeps the actual credential out of: Vercel access logs, Sentry
+ * breadcrumbs, browser history, and Referer headers.
  *
- *   https://getstaxis.com/housekeeper/{staffId}?pid={pid}&token={hashed_token}
+ * Returned URL shape:
+ *   https://getstaxis.com/housekeeper/{staffId}?pid={pid}&code={short_code}
  *
- * Same path + query the page already supports for unauthenticated callers
- * (the `token` param is the only addition). When the page sees `token`,
- * it consumes it via supabase.auth.verifyOtp and establishes a session.
- * When the page does NOT see `token`, it falls back to the polling
- * service-role API path. Either way the page works.
- *
- * Tokens default to a 1-hour Supabase TTL. Once consumed, the resulting
- * Supabase session is good for ~1 week, so a HK who clicks the link in
- * the morning has access for the full shift even if the token would have
- * otherwise expired.
+ * The OLD ?token={hashed_token} URL pattern keeps working for the
+ * transition window (in-flight SMSes from before this deploy). See
+ * src/app/housekeeper/[id]/page.tsx for the dual-format handler.
  *
  * @param staffId  UUID of the staff member
  * @param pid      UUID of the property the URL is scoped to
  * @param baseUrl  Optional override for the deployment origin. Defaults
- *                 to https://getstaxis.com — the production
- *                 deploy. Pass `req.nextUrl.origin` from inside an API
- *                 route if you want preview deploys to mint preview-
- *                 scoped links.
+ *                 to https://getstaxis.com.
  */
 export async function buildHousekeeperLink(
   staffId: string,
   pid: string,
   baseUrl: string = 'https://getstaxis.com',
 ): Promise<string> {
-  // F-NEW-04: pid is now load-bearing — ensureStaffAuthUser asserts the
+  // F-NEW-04: pid is load-bearing — ensureStaffAuthUser asserts the
   // staff row belongs to pid before any auth-user creation or token mint.
   const { email } = await ensureStaffAuthUser(staffId, pid);
 
@@ -238,7 +252,9 @@ export async function buildHousekeeperLink(
   if (!tokenHash) {
     // Generated link API surface returns either action_link OR hashed_token
     // depending on Supabase client version. Fall back to action_link if
-    // hashed_token is unset — the page knows how to handle both.
+    // hashed_token is unset — that path goes through verifyOtp differently
+    // and doesn't benefit from the code-exchange wrapping (the URL is
+    // already an opaque Supabase one). Pass it through unchanged.
     const actionLink = data?.properties?.action_link;
     if (!actionLink) {
       throw new Error('[staff-auth] generateLink: no token returned');
@@ -246,11 +262,44 @@ export async function buildHousekeeperLink(
     return actionLink;
   }
 
+  // Mint a fresh opaque code, store the {code → hashed_token} mapping
+  // server-side, and embed the code in the URL. 15-minute TTL — Mario
+  // typically Sends and the HK opens the SMS within seconds; 15 min is
+  // a comfortable buffer for delayed carrier delivery. If a code does
+  // expire, Mario can just Send again.
+  //
+  // Retry on the rare collision (40-bit code-space, vanishing chance
+  // of a PRNG collision against existing rows, but we trust the unique
+  // constraint to be cheap).
+  const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+  let code: string | null = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const candidate = generateMagicCode();
+    const { error: insErr } = await supabaseAdmin
+      .from('staff_magic_codes')
+      .insert({
+        code: candidate,
+        staff_id: staffId,
+        property_id: pid,
+        hashed_token: tokenHash,
+        expires_at: expiresAt,
+      });
+    if (!insErr) { code = candidate; break; }
+    // 23505 = unique-violation; retry with a fresh code. Any other
+    // error is fatal.
+    if (insErr.code !== '23505') {
+      throw new Error(`[staff-auth] staff_magic_codes insert failed: ${errToString(insErr)}`);
+    }
+  }
+  if (!code) {
+    throw new Error('[staff-auth] staff_magic_codes insert: 5 collisions in a row — PRNG broken?');
+  }
+
   // Trim trailing slash from baseUrl just in case.
   const cleanBase = baseUrl.replace(/\/$/, '');
   return (
     `${cleanBase}/housekeeper/${encodeURIComponent(staffId)}` +
     `?pid=${encodeURIComponent(pid)}` +
-    `&token=${encodeURIComponent(tokenHash)}`
+    `&code=${encodeURIComponent(code)}`
   );
 }

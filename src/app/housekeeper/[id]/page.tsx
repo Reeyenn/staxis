@@ -202,71 +202,114 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
   }, []);
 
   // ── Magic-link consumption ─────────────────────────────────────────────
-  // SMS / Schedule-tab links carry an optional `?token=…` param minted by
-  // /api/staff-link (and the Send Shift Confirmations fan-out). On first
-  // mount we exchange that token for a real Supabase session via
-  // verifyOtp. After that, the supabase browser client has a JWT scoped
-  // to this staff member, RLS policies match, and postgres_changes
+  // SMS / Schedule-tab links carry an optional credential in the URL. On
+  // first mount we exchange that credential for a real Supabase session
+  // via verifyOtp. After that, the supabase browser client has a JWT
+  // scoped to this staff member, RLS policies match, and postgres_changes
   // payloads start arriving over realtime — meaning Start/Done taps
   // reflect on screen instantly without leaning on the polling fallback.
   //
-  // Failure is non-fatal: if the token is expired, already consumed, or
-  // missing entirely, the page still works through the service-role
-  // /api/housekeeper/* routes plus polling. Users see no broken UI; they
-  // just don't get the realtime upgrade.
+  // Two URL formats are accepted:
+  //   • ?code=<8-char>  — F-NEW-02 / Batch D. The code is opaque; we POST
+  //     it to /api/housekeeper/exchange-code which swaps it for the real
+  //     hashed_token and returns the token in the JSON body. The token
+  //     never appears in any URL or Referer.
+  //   • ?token=<hashed_token>  — LEGACY. The hashed_token sits in the URL
+  //     directly. Pre-Batch-D format; still accepted for the transition
+  //     window while in-flight SMSes drain. Once those are gone (≥1 week
+  //     after Batch D deploys) the ?token= branch can be removed.
   //
-  // We strip the token from the URL after consuming it so a refresh
-  // doesn't try to re-verify (Supabase magic links are single-use, so
-  // the second call would 401 and look like an error in DevTools).
+  // Failure is non-fatal in either path: page still works through the
+  // service-role /api/housekeeper/* routes plus polling. Users see no
+  // broken UI; they just don't get the realtime upgrade.
+  //
+  // We strip the credential from the URL after consuming it so a refresh
+  // doesn't try to re-verify (both formats are single-use).
   const [authReady, setAuthReady] = useState(false);
   useEffect(() => {
     let cancelled = false;
+    const code = searchParams.get('code');
     const token = searchParams.get('token');
-    if (!token) { setAuthReady(true); return; }
+    if (!code && !token) { setAuthReady(true); return; }
 
     void (async () => {
-      try {
-        const { error } = await supabase.auth.verifyOtp({
-          token_hash: token,
-          type: 'magiclink',
-        });
-        if (error) {
-          // Surface to Sentry as a breadcrumb-level message (not a hard
-          // error) so we can track the magic-link-fallback rate without
-          // paging on-call — the page still works on the anon polling
-          // path. Audit Flow 3 #11.
-          console.warn('[housekeeper] magic-link consume failed (falling back to anon):', error.message);
-          Sentry.captureMessage('housekeeper: magic-link consume failed', {
-            level: 'warning',
-            tags: { surface: 'housekeeper-page', reason: 'magic-link-rejected' },
-            extra: { errorMessage: error.message, pid, housekeeperId },
+      // Resolve the hashed_token. ?code= path does a server-side exchange;
+      // ?token= path uses the hashed_token directly.
+      let hashedToken: string | null = null;
+
+      if (code) {
+        try {
+          const res = await fetch('/api/housekeeper/exchange-code', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code, pid, staffId: housekeeperId }),
+          });
+          if (res.ok) {
+            const json = await res.json().catch(() => null) as { data?: { hashedToken?: string } } | null;
+            hashedToken = json?.data?.hashedToken ?? null;
+          } else {
+            console.warn('[housekeeper] exchange-code failed', res.status);
+            Sentry.captureMessage('housekeeper: exchange-code failed', {
+              level: 'warning',
+              tags: { surface: 'housekeeper-page', reason: 'exchange-code-rejected' },
+              extra: { status: res.status, pid, housekeeperId },
+            });
+          }
+        } catch (err) {
+          console.warn('[housekeeper] exchange-code threw', err);
+          Sentry.captureException(err, {
+            tags: { surface: 'housekeeper-page', reason: 'exchange-code-threw' },
+            extra: { pid, housekeeperId },
           });
         }
-      } catch (err) {
-        console.warn('[housekeeper] magic-link consume threw:', err);
-        Sentry.captureException(err, {
-          tags: { surface: 'housekeeper-page', reason: 'magic-link-threw' },
-          extra: { pid, housekeeperId },
-        });
-      } finally {
-        if (cancelled) return;
-        // Strip ?token= from the URL regardless of success — a second
-        // verify call will fail anyway, and we don't want the token
-        // sitting in browser history.
-        try {
-          const url = new URL(window.location.href);
-          url.searchParams.delete('token');
-          window.history.replaceState({}, '', url.pathname + (url.search || ''));
-        } catch {
-          // ignore — non-DOM environments don't reach this code
-        }
-        setAuthReady(true);
+      } else if (token) {
+        // Legacy ?token= path — the URL is the hashed_token directly.
+        hashedToken = token;
       }
+
+      if (hashedToken) {
+        try {
+          const { error } = await supabase.auth.verifyOtp({
+            token_hash: hashedToken,
+            type: 'magiclink',
+          });
+          if (error) {
+            console.warn('[housekeeper] magic-link consume failed (falling back to anon):', error.message);
+            Sentry.captureMessage('housekeeper: magic-link consume failed', {
+              level: 'warning',
+              tags: { surface: 'housekeeper-page', reason: 'magic-link-rejected' },
+              extra: { errorMessage: error.message, pid, housekeeperId },
+            });
+          }
+        } catch (err) {
+          console.warn('[housekeeper] magic-link consume threw:', err);
+          Sentry.captureException(err, {
+            tags: { surface: 'housekeeper-page', reason: 'magic-link-threw' },
+            extra: { pid, housekeeperId },
+          });
+        }
+      }
+
+      if (cancelled) return;
+      // Strip the credential params from the URL regardless of success —
+      // a second consume call will fail anyway, and we don't want either
+      // the legacy token or the (already-consumed) code lingering in
+      // browser history / Referer headers.
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.delete('token');
+        url.searchParams.delete('code');
+        window.history.replaceState({}, '', url.pathname + (url.search || ''));
+      } catch {
+        // ignore — non-DOM environments don't reach this code
+      }
+      setAuthReady(true);
     })();
 
     return () => { cancelled = true; };
-    // searchParams is intentionally read once on mount — token consumption
-    // is a one-shot. Don't make this re-fire on every URL change.
+    // searchParams is intentionally read once on mount — credential
+    // consumption is a one-shot. Don't make this re-fire on every URL change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
