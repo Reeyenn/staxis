@@ -154,4 +154,9 @@ jobs:
           NEXT_PUBLIC_SUPABASE_URL: 'https://placeholder.supabase.co'
           NEXT_PUBLIC_SUPABASE_ANON_KEY: 'placeholder-anon-key-min-20-chars'
           SUPABASE_SERVICE_ROLE_KEY: 'placeholder-service-role-key-min-20-chars'
+          # OPENAI_API_KEY became required after the voice-replay batch.
+          # Build's "Collecting page data" step boots route handlers and
+          # transitively imports env.ts, so the validation throw fires
+          # without this placeholder.
+          OPENAI_API_KEY: 'sk-placeholder-test-key-min-20-chars'
         run: npm run build
