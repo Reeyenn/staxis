@@ -61,6 +61,32 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # Audit Batch 2 (F-13a): PII guard. `scripts/check-no-pii-logs.sh`
+      # fails when `console.{error,warn,log}` interpolates a known-PII
+      # identifier. It's defined as `npm run test:pii-logs` in
+      # package.json but wasn't wired into CI before this step.
+      - name: PII-log check
+        run: npm run test:pii-logs
+
+      # Audit Batch 1 (NEW-1): block Finder-style duplicates from ever
+      # shipping a workflow file. macOS creates `foo 2.yml` when copying
+      # `foo.yml` onto an existing target; if a parallel session does
+      # this and the dup is committed, GitHub Actions schedules both.
+      # The original `scraper-health-cron 2.yml` / `sms-jobs-cron 2.yml`
+      # incident was exactly this. The find is anchored to .github/
+      # workflows but the principle extends; if more duplicates appear
+      # anywhere in the tree, surface them in the warn channel.
+      - name: Block duplicate workflow basenames
+        run: |
+          set -euo pipefail
+          dups=$(find .github/workflows -type f \( -name '* 2.yml' -o -name '* 2.yaml' -o -name '* copy.yml' \) 2>/dev/null)
+          if [ -n "$dups" ]; then
+            echo "::error::Finder-style duplicate workflow files found. Delete them — they fire alongside the canonical files."
+            echo "$dups"
+            exit 1
+          fi
+          echo "No duplicate workflow files."
+
       # Type-check — fails on any tsc error.
       - name: Type-check
         run: npx tsc --noEmit
