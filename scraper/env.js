@@ -23,6 +23,35 @@ function emptyToUndef(obj) {
   return out;
 }
 
+// Plan v2 F-AI-14: VERCEL_DOCTOR_URL carries the CRON_SECRET bearer to
+// whatever host it points at. A misconfigured Railway env (or a
+// compromised env editor) shouldn't be able to redirect that secret to
+// an attacker host. Constrain to known managed-platform suffixes + our
+// own domain. Mirrors SERVICE_HOSTNAME_SUFFIXES in src/lib/env.ts.
+const SERVICE_HOSTNAME_SUFFIXES = [
+  '.railway.app',
+  '.up.railway.app',
+  '.fly.dev',
+  '.vercel.app',
+  'getstaxis.com',
+  '.getstaxis.com',
+  'hotelops-ai.vercel.app',
+  'localhost',
+  '127.0.0.1',
+];
+
+function hostnameOnAllowlist(rawUrl) {
+  let host;
+  try {
+    host = new URL(rawUrl).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return SERVICE_HOSTNAME_SUFFIXES.some(
+    (s) => host === s || host === s.replace(/^\./, '') || host.endsWith(s),
+  );
+}
+
 const Schema = z.object({
   // ── Supabase ──────────────────────────────────────────
   NEXT_PUBLIC_SUPABASE_URL: z.string().url().optional(),
@@ -51,7 +80,12 @@ const Schema = z.object({
   CRON_SECRET: z.string().optional(),
 
   // ── Vercel watchdog ───────────────────────────────────
-  VERCEL_DOCTOR_URL: z.string().url().optional(),
+  VERCEL_DOCTOR_URL: z.string().url().optional()
+    .refine((v) => !v || hostnameOnAllowlist(v), {
+      message:
+        `VERCEL_DOCTOR_URL hostname must end with one of: ${SERVICE_HOSTNAME_SUFFIXES.join(', ')}. ` +
+        `Plan v2 F-AI-14 — bearer secrets are only sent to known platform hosts.`,
+    }),
 
   // ── Platform auto-injected ────────────────────────────
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),

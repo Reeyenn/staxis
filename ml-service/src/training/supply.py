@@ -43,6 +43,7 @@ def _validate_property_id(property_id: str) -> Optional[str]:
 async def train_supply_model(
     property_id: str,
     max_rows: Optional[int] = None,
+    blocking_lock: bool = True,
 ) -> dict:
     """Train Layer 2 supply model (per-room × per-housekeeper cleaning times).
 
@@ -84,7 +85,21 @@ async def train_supply_model(
 
     try:
         if lock_conn is not None:
-            with advisory_lock(lock_conn, property_id, "supply", blocking=True):
+            # Plan v2 F-AI-4: HTTP endpoints pass blocking_lock=False so
+            # cron misfires return 409 instead of stacking blocked
+            # connections behind a running train.
+            with advisory_lock(lock_conn, property_id, "supply", blocking=blocking_lock) as acquired:
+                if not acquired:
+                    print(json.dumps({
+                        "evt": "training_already_running",
+                        "layer": "supply", "property_id": property_id,
+                    }))
+                    return {
+                        "status": "already_running",
+                        "model_run_id": None,
+                        "is_active": False,
+                        "error": "training_already_running",
+                    }
                 return _do_train()
         else:
             return _do_train()

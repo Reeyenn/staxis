@@ -16,6 +16,11 @@ import type { Browser, Page } from 'playwright';
 import { chromium } from 'playwright';
 import { log } from './log.js';
 import { safeGoto } from './browser-utils/navigate.js';
+import {
+  verifyRecipe,
+  recipeSigningMode,
+  isRecipeSigningConfigured,
+} from './recipe-signing.js';
 import type {
   ActionRecipe,
   PMSArrival,
@@ -39,6 +44,14 @@ function allowedHostFromRecipe(login: Recipe['login']): string {
 interface RunOptions {
   recipe: Recipe;
   credentials: PMSCredentials;
+  /**
+   * HMAC over canonical-JSON of the recipe (Plan v2 F-AI-2). NULL means
+   * the row is unsigned — recipe-runner refuses in enforce mode, logs and
+   * proceeds in warn mode (default during the rollout). Always pass the
+   * value loaded from the DB; do NOT pass null just to skip verification.
+   */
+  signature: Buffer | null;
+  signedWithKeyId: string | null;
   /** ISO date for date-aware actions; default today in property's TZ. */
   date?: string;
   /** Look-back window for getHistoricalOccupancy. */
@@ -100,6 +113,43 @@ export async function runRecipeExtraction(opts: RunOptions): Promise<ExtractionR
   let browser: Browser | null = null;
 
   try {
+    // ─── Recipe signature verification (Plan v2 F-AI-2) ────────────────
+    // Refuse to run a tampered or unsigned recipe in enforce mode. In
+    // warn mode (the rollout default) we log mismatches but proceed so
+    // operators can flip the enforcement only after the doctor's
+    // `recipes_all_signed` check is green.
+    if (isRecipeSigningConfigured() || opts.signature) {
+      const verify = verifyRecipe(opts.recipe, opts.signature, opts.signedWithKeyId);
+      if (!verify.ok) {
+        const mode = recipeSigningMode();
+        const detail = {
+          phase: 'recipe_verify',
+          reason: verify.reason,
+          mode,
+        };
+        if (mode === 'enforce') {
+          log.error('recipe-runner refusing tampered/unsigned recipe', detail);
+          return {
+            ok: false,
+            userMessage:
+              "We couldn't verify the integrity of your hotel's automation recipe. " +
+              'Please contact support — we may need to re-learn your PMS.',
+            detail,
+          };
+        }
+        // warn mode: log loudly but proceed. The warn metric is the
+        // doctor's lever to know when 100% of rows are signed and the
+        // env flip is safe.
+        log.warn('recipe signature verification failed (warn mode — proceeding)', detail);
+      } else {
+        if (verify.keyGeneration === 'previous') {
+          log.warn('recipe verified with PREVIOUS signing key (resign soon)', {
+            phase: 'recipe_verify',
+          });
+        }
+      }
+    }
+
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({
       viewport: VIEWPORT,
@@ -226,11 +276,37 @@ function humanizeAction(actionName: string): string {
 
 // ─── Step execution ───────────────────────────────────────────────────────
 
+/**
+ * Resolve credential placeholders for a recipe step value. Plan v2 F-AI-2
+ * defence-in-depth: even if recipe signing is bypassed (key compromise,
+ * rollout in warn mode), credentials are only resolved inside `login.steps`.
+ * A non-login step that references `$username` / `$password` throws here
+ * rather than typing the real credential into an attacker-chosen selector.
+ */
+function resolveValueWithScope(
+  rawValue: string,
+  creds: PMSCredentials,
+  allowCredentialPlaceholders: boolean,
+): string {
+  if (rawValue === '$username' || rawValue === '$password') {
+    if (!allowCredentialPlaceholders) {
+      throw new Error(
+        `credential_placeholder_outside_login: recipe step requested ${rawValue} ` +
+        'from a non-login step. Refusing to type credentials into a selector ' +
+        'the login phase did not record.'
+      );
+    }
+    return rawValue === '$username' ? creds.username : creds.password;
+  }
+  return rawValue;
+}
+
 async function runStep(
   page: Page,
   step: RecipeStep,
   creds: PMSCredentials,
   allowedHost: string,
+  allowCredentialPlaceholders: boolean,
 ): Promise<void> {
   switch (step.kind) {
     case 'goto':
@@ -244,9 +320,7 @@ async function runStep(
       });
       return;
     case 'fill': {
-      const value = step.value === '$username' ? creds.username
-                  : step.value === '$password' ? creds.password
-                  : step.value;
+      const value = resolveValueWithScope(step.value, creds, allowCredentialPlaceholders);
       await page.fill(step.selector, value, { timeout: 10_000 });
       return;
     }
@@ -261,10 +335,9 @@ async function runStep(
       return;
     case 'type_text': {
       // The mapper substituted credentials with $username / $password
-      // placeholders. Resolve them now using the property's real creds.
-      const value = step.value === '$username' ? creds.username
-                  : step.value === '$password' ? creds.password
-                  : step.value;
+      // placeholders. Resolve them now — but ONLY inside login.steps
+      // (Plan v2 F-AI-2 defence-in-depth).
+      const value = resolveValueWithScope(step.value, creds, allowCredentialPlaceholders);
       await page.keyboard.type(value);
       return;
     }
@@ -281,12 +354,16 @@ async function runStep(
       await page.keyboard.press(step.key);
       return;
     case 'eval_text':
-      // We don't store bindings cross-step in v0 — placeholder.
-      return;
+      // Disabled: cross-step bindings were never wired up and a future
+      // re-enable shouldn't slip past an audit. If you need it, route
+      // through a dedicated step kind with a security review.
+      throw new Error('eval_text step kind is disabled (see recipe-runner.ts for context)');
     case 'screenshot':
-      // No-op in production runs (the screenshot would just go to a buffer
-      // and be discarded). Useful for debugging when we capture them.
-      return;
+      // Disabled in prod: the screenshot would just go to a buffer and
+      // be discarded. Surfacing as an explicit throw rather than a
+      // silent no-op so a future maintainer doesn't accidentally
+      // re-enable it without a security review.
+      throw new Error('screenshot step kind is disabled (see recipe-runner.ts for context)');
   }
 }
 
@@ -306,7 +383,9 @@ async function runLogin(
       context: 'recipe-runner:login:startUrl',
     });
     for (const step of login.steps) {
-      await runStep(page, step, creds, allowedHost);
+      // Plan v2 F-AI-2: login phase is the ONLY place credential
+      // placeholders may resolve. resolveValueWithScope throws otherwise.
+      await runStep(page, step, creds, allowedHost, /* allowCredentialPlaceholders */ true);
     }
     // Confirm login by waiting for any of the success selectors.
     const selectors = login.successSelectors.length > 0 ? login.successSelectors : ['body'];
@@ -338,7 +417,10 @@ async function runActionAsTable<T>(
   let rows: unknown[];
   try {
     for (const step of action.steps) {
-      await runStep(page, step, creds, allowedHost);
+      // Plan v2 F-AI-2: action steps must NOT resolve credentials. A
+      // poisoned recipe filling `$password` into a same-origin form
+      // would throw here rather than typing the real credential.
+      await runStep(page, step, creds, allowedHost, /* allowCredentialPlaceholders */ false);
     }
 
     if (action.parse.mode !== 'table') {
@@ -384,6 +466,22 @@ async function runActionAsTable<T>(
     throw new RecipeActionFailedError(
       actionName,
       'rowSelector matched zero rows — recipe likely stale (PMS UI may have changed)',
+    );
+  }
+
+  // Plan v2 M-3 — cap the row count we serialize into JS objects.
+  // A poisoned recipe with `rowSelector: '*'` (or even a too-broad
+  // legitimate selector after a PMS UI change) would otherwise pull
+  // the entire same-site DOM into memory. 5000 rows is comfortably
+  // above any real-world hotel (Comfort Suites has 61 rooms; the
+  // largest Choice Hotel has ~800) but stops the memory-DoS case.
+  const MAX_ROWS_PER_ACTION = 5000;
+  if (rows.length > MAX_ROWS_PER_ACTION) {
+    throw new RecipeActionFailedError(
+      actionName,
+      `too_many_rows: ${rows.length} matched, cap is ${MAX_ROWS_PER_ACTION}. ` +
+        'Either the rowSelector is too broad or the PMS page has unusual content. ' +
+        'Re-run the mapper to refit the selector.',
     );
   }
 

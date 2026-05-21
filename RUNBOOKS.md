@@ -1053,6 +1053,56 @@ Step 6 retires it.
 
 ---
 
+## AI Data Retention Posture (Anthropic / OpenAI / ElevenLabs)
+
+Plan v2 F-AI-1 (May 2026 audit). Every voice turn, every chat agent call, every PMS mapping run sends hotel guest data to one of three external AI providers. None of them honor a per-request "do not retain" flag for the audio/vision endpoints we use, so the policy lives in each provider's dashboard. This runbook documents what we confirm and how.
+
+### Why this matters
+- Conversation history (text agent) contains guest names, room numbers, reservation details.
+- Voice transcripts (Whisper) contain raw guest audio + transcription.
+- Synthesized speech (ElevenLabs TTS) contains the spoken response text.
+- CUA mapping ships viewport screenshots of PMS dashboards — guest data visible.
+
+Each provider's default retention is roughly 30 days for safety/abuse review. A hotel-grade customer audit (or a guest-level GDPR / CCPA request) will surface "are you a data controller for this?" as the first question. The cheap answer: confirm Zero Data Retention (or equivalent) at the org level.
+
+### How to confirm (re-do on every rotation / quarterly)
+
+1. **Anthropic** — console.anthropic.com → Workspace settings → Data sharing. Confirm "Zero Data Retention" (or, for non-enterprise: "Don't train on my data" + 30-day retention disabled). Screenshot the confirmation page.
+2. **OpenAI** — platform.openai.com → Settings → Data Controls. Toggle off "Improve the model for everyone" AND request 0-day retention via the org's API access settings if available. Whisper: confirm under "Audio API" that transcripts aren't stored.
+3. **ElevenLabs** — elevenlabs.io → Workspace → Settings → Privacy. Disable "Use my data to train models" and confirm 0-day retention for TTS output.
+
+### How to record the confirmation
+
+In Vercel → staxis → Settings → Environment Variables (Production):
+
+```
+STAXIS_AI_DATA_POLICY=zdr-confirmed-2026-05-20-anthropic+openai+elevenlabs
+```
+
+Format: `zdr-confirmed-<YYYY-MM-DD>-<provider list>`. The date is when you confirmed, not when the providers' settings took effect. Re-stamp on any rotation.
+
+### Verify
+
+```
+curl -fsSL -u "$DOCTOR_USER:$DOCTOR_PASS" "https://hotelops-ai.vercel.app/api/admin/doctor" \
+  | jq '.checks[] | select(.name=="ai_data_policy_documented")'
+```
+
+Expect `status: "ok"` with the stamp in `detail`. Yellow (`status: "warn"`) means the stamp is missing — fix by setting the env var.
+
+### Prevention
+
+- The doctor's `ai_data_policy_documented` check fires yellow when the stamp is missing.
+- The check tolerates legitimate values (anything mentioning a provider) but warns on placeholder stamps like `1` / `yes` / `confirmed`.
+- Not yet implemented: a cron that re-checks each provider's dashboard programmatically. None of them expose an API for retention status today (May 2026); revisit if one of them adds it.
+
+### What if a provider doesn't offer ZDR?
+
+- **Whisper**: OpenAI's Audio Transcriptions API has no `store:false` parameter. The only mitigation is org-level Data Controls (above) OR moving to self-hosted Whisper (whisper.cpp / Faster-Whisper on Railway). Defer until a customer contract forces it.
+- **ElevenLabs**: ZDR is enterprise-only as of May 2026. If a customer requires it, switch to self-hosted TTS (Coqui, Piper) or accept the 30-day window and document it in the customer-facing privacy policy.
+
+---
+
 ## Meta: how to add a new failure mode to this doc
 
 Every time something breaks and takes more than 30 min to fix, come back and add a section here with Symptom / Diagnosis / Fix / Verify / Prevention. This file only pays for itself if we update it.

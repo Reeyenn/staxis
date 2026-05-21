@@ -20,6 +20,10 @@
 // And forwards { waitUntil, timeout } to Playwright with our defaults.
 
 import type { Page } from 'playwright';
+import * as dns from 'node:dns';
+import { promisify } from 'node:util';
+
+const dnsLookup = promisify(dns.lookup);
 
 /** Multi-part public suffixes — if the registrable domain check has to
  *  trim back further than 2 labels to avoid lumping different sites in
@@ -187,6 +191,44 @@ export async function safeGoto(
   opts: SafeGotoOptions,
 ): Promise<void> {
   validateNavigationUrl(url, opts.allowedHost);
+
+  // Plan v2 F-AI-5 — DNS preflight. Resolve the hostname via Node DNS
+  // and refuse if the resolved IP is private. This closes the trivial
+  // DNS-rebinding case where a same-site domain `internal.pms.com`
+  // resolves to 127.0.0.1: the validateNavigationUrl hostname-string
+  // check passes (it's a public-looking FQDN), but the resolved IP is
+  // private. We still can't catch MID-RESOLUTION rebinding — Chromium
+  // does its own resolve on the actual fetch — so the residual gap
+  // exists, documented in F-AI-5.
+  //
+  // Gated by env CUA_DNS_PREFLIGHT so we can roll out slowly. Default
+  // is off; flip to 'true' once latency impact has been measured.
+  if (process.env.CUA_DNS_PREFLIGHT === 'true') {
+    try {
+      const parsed = new URL(url);
+      const lookup = await dnsLookup(parsed.hostname, { all: false });
+      if (isPrivateOrLocalHost(lookup.address)) {
+        throw new UnsafeNavigationError(
+          `Refused: ${parsed.hostname} resolves to private IP ${lookup.address}: ${url.slice(0, 120)}`,
+          'private_or_local_ip',
+          url,
+        );
+      }
+    } catch (err) {
+      if (err instanceof UnsafeNavigationError) throw err;
+      // dns.lookup can throw ENOTFOUND / ECONNREFUSED — we don't want
+      // DNS noise to brick a legitimate navigation. Log via stderr and
+      // proceed; safeGoto's existing string-check + Playwright's own
+      // resolve still apply.
+      process.stderr.write(JSON.stringify({
+        level: 'warn',
+        evt: 'cua_dns_preflight_lookup_failed',
+        url: url.slice(0, 120),
+        error: (err as Error).message,
+      }) + '\n');
+    }
+  }
+
   await page.goto(url, {
     waitUntil: opts.waitUntil ?? 'domcontentloaded',
     timeout: opts.timeoutMs ?? 30_000,

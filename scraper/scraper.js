@@ -1283,12 +1283,28 @@ async function run() {
       let parsedBody = {};
       if (bodyText) {
         try { parsedBody = JSON.parse(bodyText); } catch {
-          // Empty or non-JSON body is fine for backwards compat — just
-          // means caller didn't send property_id. Treat as default.
           parsedBody = {};
         }
       }
       const requestedPid = parsedBody.property_id || null;
+
+      // Plan v2 M-5: in production, require a non-empty body that names
+      // the property. Empty-body / missing-pid is convenient for smoke
+      // tests but it weakens auditability — anyone with CRON_SECRET can
+      // trigger "the configured property" without identifying it. The
+      // smoke-test path stays available behind NODE_ENV=test.
+      const allowImplicit = process.env.NODE_ENV === 'test';
+      if (!requestedPid && !allowImplicit) {
+        log(`[http ${requestId}] refused: missing property_id (NODE_ENV=${process.env.NODE_ENV ?? 'unset'})`);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: false,
+          error: 'missing_property_id',
+          detail: 'POST /scrape/hk-center requires { property_id } in the body in production. The empty-body smoke path is gated on NODE_ENV=test.',
+        }));
+        return;
+      }
+
       if (requestedPid && requestedPid !== CONFIG.PROPERTY_ID) {
         log(`[http ${requestId}] property mismatch: requested=${requestedPid} configured=${CONFIG.PROPERTY_ID}`);
         res.writeHead(400, { 'Content-Type': 'application/json' });

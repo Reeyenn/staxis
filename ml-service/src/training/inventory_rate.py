@@ -73,6 +73,7 @@ def _validate_item_id(item_id: str) -> Optional[str]:
 async def train_inventory_rate_model(
     property_id: str,
     item_id: Optional[str] = None,
+    blocking_lock: bool = True,
 ) -> Dict[str, Any]:
     """Train inventory_rate models for a property.
 
@@ -122,7 +123,24 @@ async def train_inventory_rate_model(
 
     try:
         if lock_conn is not None:
-            with advisory_lock(lock_conn, property_id, "inventory_rate", blocking=True):
+            # Plan v2 F-AI-4: HTTP endpoints pass blocking_lock=False so
+            # cron misfires return 409 instead of stacking blocked
+            # connections behind a running train.
+            with advisory_lock(lock_conn, property_id, "inventory_rate", blocking=blocking_lock) as acquired:
+                if not acquired:
+                    print(json.dumps({
+                        "evt": "training_already_running",
+                        "layer": "inventory_rate", "property_id": property_id,
+                    }))
+                    return {
+                        "status": "already_running",
+                        "items_trained": 0,
+                        "items_skipped_insufficient_data": 0,
+                        "items_with_active_model": 0,
+                        "items_with_auto_fill": 0,
+                        "errors": [],
+                        "error": "training_already_running",
+                    }
                 return _do_train()
         else:
             return _do_train()

@@ -2,3 +2,12 @@
 node_modules/
 .session.json
 *.png
+# Plan v2 F-AI-13 — diagnostic dumps on selector miss / bad CSV land in
+# scraper/ at the top level (csv-form-dump.html, csv-bad-content.txt,
+# csv-bad-content.png, selector-miss HTML dumps). Block them from being
+# accidentally git-added even though their content is DOM markup, not
+# secrets — better to never re-litigate this.
+*.html
+*-dump.*
+*.txt
+downloads/

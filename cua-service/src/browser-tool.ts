@@ -35,6 +35,24 @@ import type { Page } from 'playwright';
 import type { RecipeStep, PMSCredentials } from './types.js';
 import { log } from './log.js';
 import { safeGoto, normalizeUrl, UnsafeNavigationError } from './browser-utils/navigate.js';
+import {
+  allowAction,
+  recordPolicyRefusal,
+  policyMode,
+  type MappingPhase,
+} from './policy.js';
+import { env } from './env.js';
+
+/**
+ * Plan v2 F-AI-10 — auto-screenshots on navigate/hover are off by
+ * default. Helper centralizes the env-read so the per-action sites stay
+ * single-line. Returns undefined when suppressed so the existing
+ * `screenshotB64` shape stays opt-in.
+ */
+async function maybeAutoScreenshot(page: Page): Promise<string | undefined> {
+  if (env.CUA_AUTO_SCREENSHOT !== 'true') return undefined;
+  return captureScreenshot(page);
+}
 
 // ─── Tool definition (Claude-facing) ─────────────────────────────────────
 
@@ -186,8 +204,53 @@ export async function executeBrowserAction(
   page: Page,
   action: BrowserAction,
   creds: PMSCredentials,
+  phase: MappingPhase = 'login',
 ): Promise<BrowserActionResult> {
   try {
+    // Plan v2 F-AI-7: deterministic action allowlist. Build a hint
+    // string from the ref's element info when available, then gate.
+    // Empty hint for actions that don't carry a ref (the policy module
+    // handles that case for each phase).
+    let policyHint = '';
+    if ((action.action === 'left_click' ||
+         action.action === 'double_click' ||
+         action.action === 'hover' ||
+         action.action === 'form_input' ||
+         action.action === 'scroll_to') && action.ref) {
+      const info = await resolveRef(page, action.ref);
+      if (info.success) {
+        policyHint = [
+          info.attributes.text ?? '',
+          info.attributes.ariaLabel ?? '',
+          info.attributes.role ?? '',
+          info.attributes.type ?? '',
+          info.elementInfo ?? '',
+        ].filter(Boolean).join(' ').trim();
+      }
+    }
+    if (action.action === 'type') policyHint = '';
+    if (action.action === 'navigate') policyHint = action.text ?? '';
+
+    const decision = allowAction(action, phase, policyHint);
+    if (!decision.allow) {
+      const mode = policyMode();
+      recordPolicyRefusal({
+        action: action.action,
+        phase,
+        rule: decision.rule,
+        reason: decision.reason ?? 'refused',
+        mode,
+      });
+      if (mode === 'enforce') {
+        return {
+          output: decision.reason ?? `Action ${action.action} refused by policy.`,
+          isError: true,
+        };
+      }
+      // warn mode: fall through and execute anyway so the agent + ops
+      // can see real-world refusal patterns before the flip.
+    }
+
     switch (action.action) {
       case 'navigate': {
         const url = normalizeUrl(action.text);
@@ -218,10 +281,14 @@ export async function executeBrowserAction(
           throw err;
         }
         await page.waitForTimeout(1500);
-        const screenshot = await captureScreenshot(page);
+        // Plan v2 F-AI-10: auto-screenshot is opt-in via CUA_AUTO_SCREENSHOT.
+        // Default behavior is "no screenshot after navigate" — Claude calls
+        // read_page next and works from the DOM, which is cheaper, more
+        // reliable, and avoids shipping the full viewport to Anthropic.
+        const screenshot = await maybeAutoScreenshot(page);
         return {
           output: `Navigated to ${url}`,
-          screenshotB64: screenshot,
+          ...(screenshot ? { screenshotB64: screenshot } : {}),
           recordedStep: { kind: 'goto', url },
         };
       }
@@ -282,8 +349,12 @@ export async function executeBrowserAction(
           const [x, y] = info.coordinates;
           await page.mouse.move(x, y);
           await page.waitForTimeout(300);
-          const screenshot = await captureScreenshot(page);
-          return { output: `Hovered ${action.ref}`, screenshotB64: screenshot };
+          // Plan v2 F-AI-10: gated by CUA_AUTO_SCREENSHOT.
+          const screenshot = await maybeAutoScreenshot(page);
+          return {
+            output: `Hovered ${action.ref}`,
+            ...(screenshot ? { screenshotB64: screenshot } : {}),
+          };
         }
         if (action.coordinate) {
           await page.mouse.move(action.coordinate[0], action.coordinate[1]);

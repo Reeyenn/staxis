@@ -25,6 +25,47 @@ const Schema = z.object({
   WORKER_ID_PREFIX: z.string().default('cua'),
   CUA_JOB_COST_CAP_MICROS: z.coerce.number().int().positive().default(5_000_000),
 
+  // ── Recipe signing (Plan v2 F-AI-2) ─────────────────────
+  // Active HMAC key used to sign and verify pms_recipes.recipe rows.
+  // Optional during the rollout: when missing, signRecipe throws and
+  // verifyRecipe reports `no_key_configured`. recipe-runner's warn
+  // mode logs and proceeds; enforce mode refuses. Set via `fly secrets
+  // set RECIPE_SIGNING_KEY=<32+ bytes>`.
+  RECIPE_SIGNING_KEY: z.string().min(32).optional(),
+  // Previous-generation key, accepted by verifyRecipe during a key
+  // rotation grace window. Unset it after the doctor's
+  // `recipes_all_signed` check shows 100% of active rows resigned with
+  // the new key.
+  RECIPE_SIGNING_KEY_PREVIOUS: z.string().min(32).optional(),
+  // 'warn' (default) — verifier logs mismatches but proceeds.
+  // 'enforce' — verifier refuses on mismatch / missing signature.
+  RECIPE_SIGNING_ENFORCE: z.enum(['warn', 'enforce']).default('warn'),
+
+  // ── CUA action policy (Plan v2 F-AI-7) ───────────────────
+  // Phase-aware allowlist for browser-tool actions. 'warn' (default)
+  // logs refusals but lets the action through; 'enforce' refuses with
+  // an agent-friendly error so Claude retries.
+  CUA_POLICY_ENFORCE: z.enum(['warn', 'enforce']).default('warn'),
+
+  // ── Screenshot minimization (Plan v2 F-AI-10) ────────────
+  // The mapper used to auto-capture a screenshot on navigate + hover
+  // and ship it to Anthropic. Default is now 'false' — Claude relies on
+  // read_page + get_page_text and only explicit `screenshot` actions
+  // produce image blocks. Set to 'true' if a PMS proves to need vision
+  // grounding (regression metric: % of mapping runs reaching dashboard
+  // within 30 steps).
+  CUA_AUTO_SCREENSHOT: z.enum(['true', 'false']).default('false'),
+
+  // ── DNS rebinding preflight (Plan v2 F-AI-5) ────────────
+  // When 'true', safeGoto resolves the target hostname via dns.lookup
+  // before navigating and refuses if the resolved IP is private. Closes
+  // the trivial DNS-rebinding case (no rebinding mid-fetch) — does NOT
+  // solve mid-resolution rebinding (Chromium does its own DNS); for
+  // that we'd need --host-resolver-rules. Off by default during
+  // rollout because dns.lookup adds latency + can flake on slow DNS;
+  // flip to 'true' once we've measured the impact.
+  CUA_DNS_PREFLIGHT: z.enum(['true', 'false']).default('false'),
+
   // ── Platform auto-injected (read-only metadata) ───────
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   FLY_APP_NAME: z.string().default('staxis-cua'),
