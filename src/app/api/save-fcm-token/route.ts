@@ -3,6 +3,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { validateUuid } from '@/lib/api-validate';
 
 /**
  * POST /api/save-fcm-token — stamp the staff member's `last_paired_at`.
@@ -45,14 +46,23 @@ export async function POST(req: NextRequest) {
     return err('body must be an object', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  const { pid, staffId } = body as { uid?: unknown; pid?: unknown; staffId?: unknown };
+  const { pid: rawPid, staffId: rawStaffId } = body as { uid?: unknown; pid?: unknown; staffId?: unknown };
 
-  if (typeof pid !== 'string' || pid.length < 8) {
-    return err('pid required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  // Audit Batch 2 (F-07): align with the housekeeper/laundry routes that
+  // already validate UUID shape. Length-only checks previously let
+  // malformed strings reach the DB equality, returning a 404 that the UI
+  // couldn't distinguish from a real "staff not found". 400 here gives a
+  // clean, distinct failure mode.
+  const pidCheck = validateUuid(rawPid, 'pid');
+  if (pidCheck.error) {
+    return err(pidCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
-  if (typeof staffId !== 'string' || staffId.length < 8) {
-    return err('staffId required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  const staffCheck = validateUuid(rawStaffId, 'staffId');
+  if (staffCheck.error) {
+    return err(staffCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
+  const pid = pidCheck.value!;
+  const staffId = staffCheck.value!;
 
   // Verify the staff row exists AND belongs to the claimed property. This
   // is the capability check — without it, anyone with a guess at a staff

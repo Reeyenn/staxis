@@ -5,7 +5,7 @@ customer is Comfort Suites Beaumont; the product handles housekeeping
 scheduling, room turnover tracking, work orders, preventive maintenance,
 inventory, public-area cleaning, and SMS-driven shift coordination.
 
-Live at **https://hotelops-ai.vercel.app**.
+Live at **https://getstaxis.com**.
 
 This README is the entry point for engineers working on the codebase. For
 operator-facing documentation, see the in-app help page; for incident

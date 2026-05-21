@@ -327,8 +327,25 @@ export async function POST(req: NextRequest) {
             hkUrl = await buildHousekeeperLink(staffId, pid, baseUrl);
           } catch (linkErr) {
             // Graceful fallback — SMS still sends, just without the deep-link
-            // token. Logged as warn so we see degradation without paging
-            // on-call for what's working-as-designed (audit finding L1).
+            // token. Codex review of Batch D flagged this as a silent
+            // degradation: when the magic-code path fails the page falls
+            // back to anon polling via the (Batch-A-pid-scoped) /api/
+            // housekeeper/* routes, but the F-NEW-02 protection is gone.
+            // Both surfaces now: (1) audit-trail SecurityEvent so the
+            // failure shows up in app_events + Sentry the same hour it
+            // happens (not silent), and (2) the existing warn-log
+            // breadcrumb. Operator should investigate any non-zero rate
+            // of this event — a healthy fleet sees zero.
+            await logSecurityEvent({
+              action: 'auth.magic_link_mint_degraded',
+              propertyId: pid,
+              requestId,
+              metadata: {
+                staffId,
+                reason: errToString(linkErr),
+                route: '/api/send-shift-confirmations',
+              },
+            });
             log.warn('[send-shift-confirmations] magic-link mint failed, falling back to tokenless URL', {
               err: linkErr,
               staffId,

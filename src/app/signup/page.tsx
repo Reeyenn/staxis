@@ -1,5 +1,7 @@
 'use client';
 
+
+export const dynamic = 'force-dynamic';
 // /signup — Public signup with a hotel join code.
 //
 // Owner gives the staff member a code (Settings → Account & Team →

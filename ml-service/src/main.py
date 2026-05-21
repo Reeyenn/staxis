@@ -10,6 +10,18 @@ from fastapi import Depends, FastAPI, HTTPException, status, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
+# Plan v2 Phase 2 — fleet-wide rate limit. Without this a leaked
+# bearer token (or a misfiring cron) can hammer /predict and /train
+# endpoints unbounded and rack up Railway CPU. 60 req/min/IP is plenty
+# for the cron-driven workload (a few per-property calls per day) and
+# tight enough to bound an abuse scenario.
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+from slowapi.middleware import SlowAPIMiddleware
+
+limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
+
 # Plan v2 F-AI-4: hard ceiling on `max_rows` so a bearer-token holder
 # (or a misfiring cron) can't cause Railway to pull arbitrarily large
 # dataframes into memory. The cap lives in env so per-property
@@ -286,6 +298,14 @@ app = FastAPI(
     description="Housekeeping demand/supply prediction and optimization",
     version="0.1.0",
 )
+
+# Wire up slowapi. `app.state.limiter` is read by the SlowAPIMiddleware
+# at request time; the exception handler converts a RateLimitExceeded
+# raise into a clean 429 response with Retry-After. Default limit is
+# 60/minute/IP from the `default_limits` arg above.
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 
 # Plan v2 F-AI-4: refuse oversized bodies BEFORE FastAPI tries to parse

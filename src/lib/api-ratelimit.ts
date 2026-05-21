@@ -86,6 +86,18 @@ export type RateLimitEndpoint =
   | 'housekeeper-room-action'
   | 'housekeeper-save-language'
   | 'laundry-bootstrap'
+  // F-NEW-02 / Batch D — public POST that swaps the SMS-link CODE for the
+  // hashed_token used to verifyOtp. Code is ~40 bits; the rate limit caps
+  // brute-force enumeration further. IP-keyed. 30/hr lets a real
+  // housekeeper retry a few times if the first tap fails over flaky
+  // cellular without ever bumping the cap.
+  | 'housekeeper-exchange-code'
+  // Codex follow-up to Batch D — fire-and-forget telemetry endpoint that
+  // counts legacy ?token= URL redemptions on the housekeeper page so we
+  // can verify in-flight pre-Batch-D SMSes have drained before deleting
+  // the page's legacy branch. IP-keyed; 30/hr is generous because real
+  // legitimate redemptions are bounded by SMS volume.
+  | 'housekeeper-log-legacy-token'
   // Plan v2 F-AI-8 — Mario's "Load Rooms" button. Triggers Railway
   // scraper /scrape/hk-center, which talks to Choice Advantage. Two
   // open browser tabs + a power-user clicking refresh shouldn't burn
@@ -165,6 +177,16 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // laundry-bootstrap is a read-only page bootstrap. Polled less often
   // than housekeeper. 600/hr per property covers heavy use.
   'laundry-bootstrap':          600,
+  // housekeeper-exchange-code: one-shot per SMS-link tap, IP-keyed.
+  // Real housekeepers tap once; the cap exists to bound brute-force
+  // enumeration of the ~40-bit code space. 30/hr leaves room for a few
+  // retries on flaky cellular without ever inconveniencing a real tap.
+  'housekeeper-exchange-code':   30,
+  // housekeeper-log-legacy-token: fire-and-forget telemetry; the legacy
+  // ?token= URL path on the housekeeper page hits this so we can count
+  // redemptions and decide when the in-flight SMS drain is complete.
+  // 30/hr per IP — well above any single phone's realistic re-tap rate.
+  'housekeeper-log-legacy-token': 30,
   // refresh-from-pms — Rooms tab "Load Rooms" button. Triggers a CA
   // scrape on Railway; the Choice Advantage account is a single shared
   // session that we don't want to burn. 30/hr per (user, property) is

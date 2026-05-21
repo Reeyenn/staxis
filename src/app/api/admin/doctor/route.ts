@@ -280,6 +280,13 @@ const checks: Array<[string, CheckFn]> = [
   // alerts when the gap is ≥ 4 rooms or > 10% of inventory so the
   // seed-rooms-daily cron's failure mode pages SMS within an hour.
   ['rooms_today_seeded',             checkRoomsTodaySeeded],
+  // Audit Batch 2 (F-04): assert every bucket that's supposed to be
+  // private actually is. A Supabase Studio UI click can flip a bucket
+  // to public; nothing else alarms. List below tracks every bucket
+  // that holds PII (voice recordings, invoices, photo counts,
+  // maintenance photos). Add new private buckets here when migrations
+  // create them.
+  ['storage_buckets_private',        checkStorageBucketsPrivate],
 ];
 
 // ─── Individual checks ───────────────────────────────────────────────────
@@ -313,6 +320,11 @@ const REQUIRED_ENV_VARS: Array<{ name: string; altNames?: string[]; group: strin
   { name: 'MANAGER_PHONE',      altNames: ['OPS_ALERT_PHONE'],      group: 'alerts' },
   // Shared secret for cron auth
   { name: 'CRON_SECRET',                       group: 'cron' },
+  // Local Claude Code hook auth. requireHeartbeatSecret() in
+  // src/lib/api-auth.ts returns 500 in true production when this is unset,
+  // so a deploy that drops the var passes env checks but breaks the
+  // PostToolUse/Stop hooks on first hit. (Audit Batch 2, NEW-4.)
+  { name: 'HEARTBEAT_SECRET',                  group: 'cron' },
   // Anthropic — required for the entire agent layer (chatbot, tool calls,
   // summarization, voice TTS routing). Round 13 (2026-05-13): added after
   // a silent prod outage where the key was missing for an unknown duration
@@ -1720,10 +1732,14 @@ const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // 0152 F-06: revoke legacy owner/GM hotel_join_codes + CHECK forbidding new privileged rows.
   // 0153 F-03+F-05+F-09: trusted_devices.absolute_expires_at + search_path pin
   //   on user_owns_property and staxis_release_join_code_slot.
+  // 0154 Batch E: clear leftover bcrypt password_hash from the pre-Supabase-Auth
+  //   era; column is now nullable + documented as deprecated.
+  // 0155 F-NEW-02 / Batch D: staff_magic_codes table for server-side
+  //   housekeeper magic-link exchange (token out of URL).
   '0124', '0125', '0126', '0129', '0130', '0131', '0132', '0133',
   '0135', '0136', '0137', '0138', '0139', '0140',
   '0141', '0142', '0143', '0144', '0145', '0146', '0147', '0148',
-  '0149', '0150', '0151', '0152', '0153',
+  '0149', '0150', '0151', '0152', '0153', '0154', '0155',
 ];
 
 /**
@@ -3600,6 +3616,67 @@ async function checkPmsCredentialsEncrypted(): Promise<Omit<Check, 'name' | 'dur
       fix: 'Verify Supabase service-role connectivity; re-apply 0069 and 0132 if migrations are missing.',
     };
   }
+}
+
+/**
+ * Audit Batch 2 (F-04) — verify every bucket that holds PII is still
+ * configured `public:false` on Supabase Storage. A Studio UI click can
+ * flip a bucket public; without this check, voice transcripts / OCR'd
+ * invoices / shelf photos / maintenance photos would become listable
+ * without RLS protection.
+ *
+ * Add new buckets to PRIVATE_BUCKETS when migrations create them. Keep
+ * the list short — one round-trip per bucket per cold-cache run.
+ */
+const PRIVATE_BUCKETS = ['voice-recordings', 'invoices', 'inventory-counts', 'maintenance-photos'] as const;
+
+async function checkStorageBucketsPrivate(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const offenders: string[] = [];
+  const missing: string[] = [];
+  const errors: string[] = [];
+
+  await Promise.all(PRIVATE_BUCKETS.map(async (name) => {
+    try {
+      const { data, error } = await supabaseAdmin.storage.getBucket(name);
+      if (error) {
+        // Bucket not found is distinct from "found but public". Surface
+        // both — a missing bucket is also a misconfig.
+        const msg = (error as { message?: string }).message ?? String(error);
+        if (/not found/i.test(msg)) {
+          missing.push(name);
+        } else {
+          errors.push(`${name}: ${msg}`);
+        }
+        return;
+      }
+      if (data?.public === true) offenders.push(name);
+    } catch (e) {
+      errors.push(`${name}: ${errToString(e)}`);
+    }
+  }));
+
+  if (offenders.length > 0) {
+    return {
+      status: 'fail',
+      detail: `Storage bucket(s) are PUBLIC but must be private: ${offenders.join(', ')}.`,
+      fix: 'Supabase Studio → Storage → bucket → Configuration → uncheck "Public bucket". Re-run /api/admin/doctor?nocache=1.',
+    };
+  }
+  if (missing.length > 0) {
+    return {
+      status: 'warn',
+      detail: `Expected private bucket(s) not found: ${missing.join(', ')}. Either the bootstrap script never ran or the bucket was renamed.`,
+      fix: 'Run scripts/ensure-voice-recordings-bucket.ts (and equivalent bootstrap for the others); confirm names match the PRIVATE_BUCKETS list.',
+    };
+  }
+  if (errors.length > 0) {
+    return {
+      status: 'warn',
+      detail: `Bucket probe errored: ${errors.join('; ')}.`,
+      fix: 'Check Supabase service-role connectivity and bucket-list visibility.',
+    };
+  }
+  return { status: 'ok', detail: `All ${PRIVATE_BUCKETS.length} private buckets confirmed public=false.` };
 }
 
 export async function GET(req: NextRequest) {
