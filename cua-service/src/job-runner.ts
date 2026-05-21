@@ -151,17 +151,23 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
         return;
       }
 
-      // Freshly-mapped recipes are signed inline by saveDraftRecipe (when
-      // signing is configured). recipe-runner won't run a verification
-      // pass against the in-memory recipe we just wrote — the integrity
-      // story is "the row in the DB is signed; the next load proves it"
-      // — so the `signature`/`signedWithKeyId` fields stay null here.
+      // Plan v2.1 CR-1 — plumb the signature that saveDraftRecipe just
+      // computed straight through to the immediate extraction. Earlier
+      // versions hard-coded NULL here on the assumption that the
+      // verifier wouldn't run on the in-memory recipe. That assumption
+      // was wrong: with RECIPE_SIGNING_KEY set + enforce mode active,
+      // runRecipeExtraction's top-of-function check runs on every call
+      // and refuses on `no_signature` before launching the browser.
+      // Result: every fresh onboarding / forced remap used to fail with
+      // "We couldn't verify the integrity of your hotel's automation
+      // recipe." Pull jobs were unaffected because loadActiveRecipe
+      // already returns the signature from the DB row.
       recipe = {
         id: saved.id,
         version: saved.version,
         recipe: mapResult.recipe,
-        signature: null,
-        signedWithKeyId: null,
+        signature: saved.signature,
+        signedWithKeyId: saved.signedWithKeyId,
       };
       recipeIdForJob = saved.id;
       isFreshlyMapped = true;
@@ -363,7 +369,10 @@ async function saveDraftRecipe(args: {
   recipe: Recipe;
   learnedByPropertyId: string;
   notes?: string;
-}): Promise<{ id: string; version: number } | { error: string }> {
+}): Promise<
+  | { id: string; version: number; signature: Buffer | null; signedWithKeyId: string | null }
+  | { error: string }
+> {
   // Codex audit pass-6 P1 — the previous read-then-insert pattern raced
   // when two concurrent jobs for the same PMS both saw version=N and
   // both tried to insert version=N+1; the (pms_type, version, status)
@@ -426,7 +435,19 @@ async function saveDraftRecipe(args: {
           version: data.version,
         });
       }
-      return { id: data.id as string, version: data.version as number };
+      // Plan v2.1 CR-1 — return the signature we just computed so the
+      // immediate-extraction call site in runJob can pass it straight
+      // into runRecipeExtraction. Without this, the in-memory recipe
+      // arrives at the verifier with NULL signature, and enforce mode
+      // refuses the freshly-mapped recipe with `no_signature` before
+      // any browser launch (active prod bug found in the post-deploy
+      // Codex review).
+      return {
+        id: data.id as string,
+        version: data.version as number,
+        signature: signing?.signature ?? null,
+        signedWithKeyId: signing?.signedWithKeyId ?? null,
+      };
     }
 
     lastError = error?.message ?? 'unknown insert error';

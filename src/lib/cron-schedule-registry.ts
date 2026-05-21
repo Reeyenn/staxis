@@ -30,8 +30,12 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // Tight cadences (sub-hourly) — Vercel native cron (May 2026 audit
   // pass-6: moved from GH Actions, which was silently throttling these
   // to 60-200 min intervals). Vercel Pro supports per-minute precision.
-  { heartbeatName: 'process-sms-jobs',                  source: { kind: 'vercel', cronPath: '/api/cron/process-sms-jobs' },                  cronExpr: '*/5 * * * *' },
-  { heartbeatName: 'scraper-health',                    source: { kind: 'vercel', cronPath: '/api/cron/scraper-health' },                    cronExpr: '*/15 * * * *' },
+  //
+  // process-sms-jobs + scraper-health were moved BACK to GH Actions in
+  // the audit-02 ship (single scheduler of record, see workflow comment
+  // headers). Keep them under "tight cadences" for chronological context.
+  { heartbeatName: 'process-sms-jobs',                  source: { kind: 'github', workflowFile: 'sms-jobs-cron.yml' },                       cronExpr: '*/5 * * * *' },
+  { heartbeatName: 'scraper-health',                    source: { kind: 'github', workflowFile: 'scraper-health-cron.yml' },                 cronExpr: '*/15 * * * *' },
   { heartbeatName: 'agent-nudges-check',                source: { kind: 'vercel', cronPath: '/api/agent/nudges/check' },                     cronExpr: '*/5 * * * *' },
   { heartbeatName: 'agent-sweep-reservations',          source: { kind: 'vercel', cronPath: '/api/cron/agent-sweep-reservations' },          cronExpr: '*/5 * * * *' },
   { heartbeatName: 'agent-summarize-long-conversations',source: { kind: 'vercel', cronPath: '/api/cron/agent-summarize-long-conversations' },cronExpr: '*/30 * * * *' },
@@ -60,6 +64,11 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   { heartbeatName: 'claude-sessions-purge',             source: { kind: 'vercel', cronPath: '/api/cron/claude-sessions-purge' },             cronExpr: '30 3 * * *' },
   { heartbeatName: 'agent-heal-counters',               source: { kind: 'vercel', cronPath: '/api/cron/agent-heal-counters' },              cronExpr: '0 4 * * *' },
   { heartbeatName: 'agent-weekly-digest',               source: { kind: 'vercel', cronPath: '/api/cron/agent-weekly-digest' },              cronExpr: '0 9 * * 0' },
+  // Audit-02 — daily purge of webhook-dedup tables (Twilio / Sentry /
+  // Stripe). 30-day retention, batched delete with per-table PK as
+  // count column. Vercel-native cron because the route is on Vercel
+  // and the existing nightly cluster already lives there.
+  { heartbeatName: 'webhook-dedup-purge',               source: { kind: 'vercel', cronPath: '/api/cron/webhook-dedup-purge' },                cronExpr: '15 4 * * *' },
   // Weekly
   { heartbeatName: 'ml-train-demand',       source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '0 8 * * 0' },
   { heartbeatName: 'ml-train-supply',       source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '30 8 * * 0' },
