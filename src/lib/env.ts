@@ -113,23 +113,27 @@ const ServerSchema = z.object({
   // form-encoded Twilio webhooks accepted).
   ALLOW_UNSIGNED_SMS_WEBHOOK: z.string().optional(),
 
-  // F-01.A.1 — 2FA-bypass env gate. `accounts.skip_2fa` is a hard-set DB
-  // column used today only by the shared investor demo (`test` / `test12`,
-  // Comfort Suites, role general_manager). Without this gate, a future
-  // typo or service-role write that flips skip_2fa=true on a real customer
+  // F-01 — 2FA-bypass env gate + allowlist. `accounts.skip_2fa` is a hard-set
+  // DB column used today only by the role-demo investor accounts (test /
+  // testhk / testfd at Comfort Suites). Without these gates, a future typo
+  // or service-role write that flips skip_2fa=true on a real customer
   // account silently disables OTP fleet-wide with no detection signal.
   //
-  // Rollout (two-deploy plan from the security plan, Batch A):
-  //   • Deploy 1 (this commit): default is "honored when unset" — set the
-  //     env to literal 'false' in Vercel to take effect. Operationally
-  //     identical to today for the demo account.
-  //   • Deploy 2 (follow-up PR): flip the default so the bypass requires
-  //     the env to be explicitly 'true'. Set SKIP_2FA_ENABLED='true' in
-  //     Vercel BEFORE that PR ships or the demo account starts prompting
-  //     for OTP.
-  //   • Deploy 3 (F-01.A.2): add SKIP_2FA_USER_IDS allowlist on top so a
-  //     row outside the allowlist with skip_2fa=true is still rejected.
+  // Phase 2 (current): SKIP_2FA_ENABLED must be literal 'true' AND the
+  //   account's data_user_id must be in SKIP_2FA_USER_IDS (comma-separated)
+  //   OR the bypass is refused. Either check failing writes
+  //   auth.skip_2fa_blocked_by_env / auth.skip_2fa_account_not_allowlisted
+  //   via logSecurityEvent so an attacker who flips skip_2fa=true on a
+  //   non-allowlisted account immediately surfaces in Sentry.
+  //
+  // Phase 1 was the rollout grace period (default-honored if env unset);
+  // both env vars are now set in Vercel production, so this commit safely
+  // requires explicit 'true' + allowlist membership.
   SKIP_2FA_ENABLED: z.string().optional(),
+  // Comma-separated list of accounts.data_user_id values that are permitted
+  // to skip 2FA. Empty / unset = no account can skip, even with skip_2fa=true
+  // in the DB. Set in Vercel; rotate when the demo account set changes.
+  SKIP_2FA_USER_IDS: z.string().optional(),
 
   // ── Voice / wake word ─────────────────────────────────
   PICOVOICE_ACCESS_KEY: z.string().optional(),

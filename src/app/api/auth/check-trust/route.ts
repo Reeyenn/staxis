@@ -45,40 +45,61 @@ export async function POST(req: NextRequest) {
     return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
 
-  // Demo bypass: shared investor account skips OTP. F-01.A.1 in the
-  // security plan — gate the column on env.SKIP_2FA_ENABLED so a stray
-  // service-role write that flips skip_2fa=true on a real customer
-  // account doesn't silently disable OTP. Also write a SecurityEvent
-  // every time the bypass fires so the audit trail exists in app_events
-  // (not just a forensic guess from request logs).
+  // Role-demo bypass: shared investor accounts (test / testhk / testfd)
+  // skip OTP. F-01 Phase 2 in the security plan — two gates layered:
   //
-  // Phase 1 (this commit): default is "honored unless env is explicitly
-  // 'false'". Operationally identical to today; gives ops a deploy
-  // cycle to set SKIP_2FA_ENABLED='true' in Vercel before the follow-up
-  // PR flips the default. Phase 2: require env === 'true' to honor.
+  //   1. env.SKIP_2FA_ENABLED must be literal 'true' (Phase 1's grace-
+  //      period default-honored is over). A future SQL typo flipping
+  //      skip_2fa=true on a real customer doesn't matter if the env
+  //      gate isn't on.
+  //
+  //   2. account.data_user_id must appear in env.SKIP_2FA_USER_IDS
+  //      (comma-separated). Even with the env gate on, a non-allowlisted
+  //      account with skip_2fa=true is refused — and the attempt is
+  //      logged via logSecurityEvent so on-call sees the alert in Sentry
+  //      the same hour it happens.
+  //
+  // Either check failing falls through to the normal cookie-based trust
+  // path — a legitimate user with a real trusted-device cookie still
+  // gets the trust granted; only the *bypass-via-DB-flag* path is
+  // gated.
   if (account.skip_2fa) {
-    const skipEnabled = env.SKIP_2FA_ENABLED !== 'false';
-    if (skipEnabled) {
+    const envOn = env.SKIP_2FA_ENABLED === 'true';
+    const allowlist = (env.SKIP_2FA_USER_IDS ?? '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+    const onAllowlist = allowlist.includes(userData.user.id);
+
+    if (envOn && onAllowlist) {
       await logSecurityEvent({
         action: 'auth.skip_2fa_used',
         userId: userData.user.id,
         requestId,
-        metadata: {
-          accountId: account.id,
-          envGate: env.SKIP_2FA_ENABLED ?? '(unset — Phase 1 default-honored)',
-        },
+        metadata: { accountId: account.id },
       });
       return ok({ trusted: true }, { requestId });
     }
-    // Env-gated off — fall through to normal cookie check. Don't return
-    // early so an investor with a real trusted-device cookie still gets
-    // the trust path.
-    await logSecurityEvent({
-      action: 'auth.skip_2fa_blocked_by_env',
-      userId: userData.user.id,
-      requestId,
-      metadata: { accountId: account.id, envGate: env.SKIP_2FA_ENABLED },
-    });
+
+    // Bypass blocked. Two distinct reasons → two distinct events so
+    // the Sentry filter can alert specifically on "skip_2fa=true on an
+    // account NOT in the allowlist" — that's the smoking-gun signal
+    // for the failure mode this gate exists to catch.
+    if (!envOn) {
+      await logSecurityEvent({
+        action: 'auth.skip_2fa_blocked_by_env',
+        userId: userData.user.id,
+        requestId,
+        metadata: { accountId: account.id, envGate: env.SKIP_2FA_ENABLED ?? null },
+      });
+    } else {
+      await logSecurityEvent({
+        action: 'auth.skip_2fa_account_not_allowlisted',
+        userId: userData.user.id,
+        requestId,
+        metadata: { accountId: account.id, allowlistSize: allowlist.length },
+      });
+    }
   }
 
   // Check the cookie.
