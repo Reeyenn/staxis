@@ -21,6 +21,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { useLang } from '@/contexts/LanguageContext';
+import { safeRedirect } from '@/lib/url-redirect';
 
 function VerifyInner() {
   const { lang } = useLang();
@@ -32,6 +33,11 @@ function VerifyInner() {
   // so we auto-trust the device and hide the checkbox entirely — Reeyen
   // wants signups to skip the extra "remember this device?" prompt.
   const postSignup = params.get('postSignup') === '1';
+  // F-04: the signin page forwards `?redirect=<original>` when the user
+  // arrived via the edge-gate. Honor it on OTP success so deep links land
+  // where they asked for. Signups don't carry a redirect, so postSignup
+  // falls through to the historical /property-selector target.
+  const redirectTarget = safeRedirect(params.get('redirect'), '/property-selector');
 
   const [code, setCode] = useState('');
   const [trust, setTrust] = useState(true);
@@ -75,7 +81,7 @@ function VerifyInner() {
       }
     }
 
-    router.replace('/property-selector');
+    router.replace(redirectTarget);
   };
 
   return (

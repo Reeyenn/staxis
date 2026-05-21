@@ -8,6 +8,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { supabase } from '@/lib/supabase';
 import { t } from '@/lib/translations';
 import { parseCheckTrustResponse } from '@/lib/api-validate';
+import { safeRedirect } from '@/lib/url-redirect';
 
 /**
  * Banner shown when fetchWithAuth signed the user out and bounced them
@@ -43,10 +44,20 @@ function SessionEndedBanner() {
   );
 }
 
-export default function SignInPage() {
+// Inner component that uses `useSearchParams`. Wrapped below in a Suspense
+// boundary so Next.js's static prerender pass doesn't choke on the hook —
+// matches the same pattern as SessionEndedBanner above.
+function SignInInner() {
   const { user, loading, signIn } = useAuth();
   const { lang } = useLang();
   const router = useRouter();
+  const params = useSearchParams();
+
+  // F-04: honor the middleware's `?redirect=<original>` param so deep links
+  // through the edge gate land the user back on the page they actually asked
+  // for after sign-in. safeRedirect rejects open-redirect attempts and auth-
+  // page loops; fallback is /property-selector (the historical destination).
+  const redirectTarget = safeRedirect(params.get('redirect'), '/property-selector');
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -61,8 +72,8 @@ export default function SignInPage() {
   // /signin/verify). That race produced the "flash dashboard then bounce
   // back to signin" loop reported on 2026-05-10.
   useEffect(() => {
-    if (!loading && user && !signing) router.replace('/property-selector');
-  }, [user, loading, router, signing]);
+    if (!loading && user && !signing) router.replace(redirectTarget);
+  }, [user, loading, router, signing, redirectTarget]);
 
   // Sign-in flow (Phase 2 + Resend email):
   //   1. signInWithPassword — verifies the password, issues a session.
@@ -140,7 +151,16 @@ export default function SignInPage() {
         setSigning(false);
         return;
       }
-      router.replace(`/signin/verify?email=${encodeURIComponent(normalizedEmail)}`);
+      // Preserve the redirect target through the OTP step so the verify
+      // page can land the user on the originally-requested URL on success.
+      // We pass the raw `params.get('redirect')` (not the validated
+      // redirectTarget) so the verify page re-validates; that keeps the
+      // safety check at the actual navigation site.
+      const rawRedirect = params.get('redirect');
+      const verifyUrl = `/signin/verify?email=${encodeURIComponent(normalizedEmail)}${
+        rawRedirect ? `&redirect=${encodeURIComponent(rawRedirect)}` : ''
+      }`;
+      router.replace(verifyUrl);
     } catch {
       setError(t('invalidCredentials', lang));
       setSigning(false);
@@ -321,5 +341,13 @@ export default function SignInPage() {
 
       </div>
     </div>
+  );
+}
+
+export default function SignInPage() {
+  return (
+    <Suspense fallback={null}>
+      <SignInInner />
+    </Suspense>
   );
 }
