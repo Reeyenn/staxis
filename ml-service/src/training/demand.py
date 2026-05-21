@@ -48,6 +48,7 @@ def _validate_property_id(property_id: str) -> Optional[str]:
 async def train_demand_model(
     property_id: str,
     max_rows: Optional[int] = None,
+    blocking_lock: bool = True,
 ) -> dict:
     """Train Layer 1 demand model for a property.
 
@@ -97,7 +98,22 @@ async def train_demand_model(
 
     try:
         if lock_conn is not None:
-            with advisory_lock(lock_conn, property_id, "demand", blocking=True):
+            # Plan v2 F-AI-4: HTTP endpoints pass blocking_lock=False so
+            # cron misfires don't stack blocked server requests behind one
+            # active run. blocking_lock=True is kept as the default for
+            # background callers that genuinely want to wait.
+            with advisory_lock(lock_conn, property_id, "demand", blocking=blocking_lock) as acquired:
+                if not acquired:
+                    print(json.dumps({
+                        "evt": "training_already_running",
+                        "layer": "demand", "property_id": property_id,
+                    }))
+                    return {
+                        "status": "already_running",
+                        "model_run_id": None,
+                        "is_active": False,
+                        "error": "training_already_running",
+                    }
                 return _do_train()
         else:
             return _do_train()

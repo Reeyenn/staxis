@@ -1,12 +1,20 @@
 """FastAPI application for ML Service."""
 import json
+import os
+import uuid as _uuid
 from datetime import date as DateType  # alias to avoid shadowing the Pydantic field name `date`
 from typing import Optional
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, status, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
+
+# Plan v2 F-AI-4: hard ceiling on `max_rows` so a bearer-token holder
+# (or a misfiring cron) can't cause Railway to pull arbitrarily large
+# dataframes into memory. The cap lives in env so per-property
+# back-fills (5+ years of history) can override without code change.
+MAX_ROWS_CAP = int(os.environ.get("ML_MAX_ROWS_CAP", "200000"))
 
 from src.auth import verify_bearer_token
 from src.config import get_settings
@@ -38,6 +46,24 @@ def _validate_uuid_str(value: str) -> str:
     return str(value)
 
 
+def _clamp_max_rows(value: Optional[int]) -> Optional[int]:
+    """Plan v2 F-AI-4 — clamp max_rows at the API boundary.
+
+    Bearer-token holders or misfiring crons used to be able to send
+    max_rows=10_000_000 and force Railway to materialize the entire result
+    set in pandas. Now requests beyond MAX_ROWS_CAP are refused with 422.
+    None / 0 stay as "no cap" (the training code reads all rows in that
+    case, but the DB-level statement_timeout still bounds the work).
+    """
+    if value is None or value == 0:
+        return value
+    if value < 0:
+        raise ValueError("max_rows must be non-negative")
+    if value > MAX_ROWS_CAP:
+        raise ValueError(f"max_rows must be ≤ {MAX_ROWS_CAP}")
+    return value
+
+
 # Request/Response models
 class TrainDemandRequest(BaseModel):
     """Request to train demand model."""
@@ -49,6 +75,11 @@ class TrainDemandRequest(BaseModel):
     @classmethod
     def _check_uuid(cls, v: str) -> str:
         return _validate_uuid_str(v)
+
+    @field_validator("max_rows")
+    @classmethod
+    def _check_max_rows(cls, v: Optional[int]) -> Optional[int]:
+        return _clamp_max_rows(v)
 
 
 class TrainDemandResponse(BaseModel):
@@ -74,6 +105,11 @@ class TrainSupplyRequest(BaseModel):
     @classmethod
     def _check_uuid(cls, v: str) -> str:
         return _validate_uuid_str(v)
+
+    @field_validator("max_rows")
+    @classmethod
+    def _check_max_rows(cls, v: Optional[int]) -> Optional[int]:
+        return _clamp_max_rows(v)
 
 
 class TrainSupplyResponse(BaseModel):
@@ -251,6 +287,36 @@ app = FastAPI(
     version="0.1.0",
 )
 
+
+# Plan v2 F-AI-4: refuse oversized bodies BEFORE FastAPI tries to parse
+# them. ML endpoints all carry tiny JSON bodies (a UUID + a date string);
+# 64 KB is far above anything legitimate and cuts off the obvious DoS
+# vector of POSTing a giant payload.
+_MAX_BODY_BYTES = int(os.environ.get("ML_MAX_BODY_BYTES", str(64 * 1024)))
+
+
+@app.middleware("http")
+async def body_size_limit(request: Request, call_next):
+    """Refuse any request whose Content-Length exceeds the body cap."""
+    cl = request.headers.get("content-length")
+    if cl is not None:
+        try:
+            if int(cl) > _MAX_BODY_BYTES:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "error": "request_body_too_large",
+                        "max_bytes": _MAX_BODY_BYTES,
+                    },
+                )
+        except ValueError:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "invalid_content_length"},
+            )
+    return await call_next(request)
+
+
 # Include health check router (no auth)
 app.include_router(health_router)
 
@@ -266,16 +332,21 @@ app.include_router(health_router)
 async def train_demand_endpoint(
     request: TrainDemandRequest,
     token: str = Depends(verify_bearer_token),
-) -> TrainDemandResponse:
+) -> JSONResponse:
     """Train demand model for a property.
 
-    Requires bearer token authentication.
+    Requires bearer token authentication. Plan v2 F-AI-4: uses a
+    nonblocking advisory lock so concurrent calls return 409
+    `already_running` instead of stacking blocked DB connections.
     """
     result = await train_demand_model(
         property_id=request.property_id,
         max_rows=request.max_rows,
+        blocking_lock=False,
     )
-    return TrainDemandResponse(**result)
+    if result.get("status") == "already_running":
+        return JSONResponse(status_code=409, content=result)
+    return JSONResponse(status_code=200, content=TrainDemandResponse(**result).model_dump())
 
 
 @app.post(
@@ -287,16 +358,20 @@ async def train_demand_endpoint(
 async def train_supply_endpoint(
     request: TrainSupplyRequest,
     token: str = Depends(verify_bearer_token),
-) -> TrainSupplyResponse:
+) -> JSONResponse:
     """Train supply model for a property.
 
-    Requires bearer token authentication.
+    Requires bearer token authentication. Plan v2 F-AI-4: nonblocking
+    advisory lock → 409 on contention.
     """
     result = await train_supply_model(
         property_id=request.property_id,
         max_rows=request.max_rows,
+        blocking_lock=False,
     )
-    return TrainSupplyResponse(**result)
+    if result.get("status") == "already_running":
+        return JSONResponse(status_code=409, content=result)
+    return JSONResponse(status_code=200, content=TrainSupplyResponse(**result).model_dump())
 
 
 # Inference endpoints
@@ -380,20 +455,24 @@ async def optimize_endpoint(
 async def train_inventory_rate_endpoint(
     request: TrainInventoryRateRequest,
     token: str = Depends(verify_bearer_token),
-) -> TrainInventoryRateResponse:
+) -> JSONResponse:
     """Train per-(property × item) inventory rate models.
 
     When item_id is provided, retrains just that item. Otherwise iterates
     every inventory.id in the property and trains one model per item that
     has ≥3 count events.
 
-    Requires bearer token authentication.
+    Requires bearer token authentication. Plan v2 F-AI-4: nonblocking
+    advisory lock → 409 on contention.
     """
     result = await train_inventory_rate_model(
         property_id=request.property_id,
         item_id=request.item_id,
+        blocking_lock=False,
     )
-    return TrainInventoryRateResponse(**result)
+    if result.get("status") == "already_running":
+        return JSONResponse(status_code=409, content=result)
+    return JSONResponse(status_code=200, content=TrainInventoryRateResponse(**result).model_dump())
 
 
 @app.post(
@@ -529,12 +608,29 @@ async def http_exception_handler(request, exc):
 
 
 @app.exception_handler(Exception)
-async def general_exception_handler(request, exc):
-    """Handle unexpected exceptions — return 500 JSON, not a raw dict."""
+async def general_exception_handler(request: Request, exc: Exception):
+    """Handle unexpected exceptions — return 500 JSON with a sanitized body.
+
+    Plan v2 F-AI-12: the previous version returned `str(exc)` to the
+    caller, which would leak psycopg2 error text + partial PII on
+    internal failures. The thrown exception details now go to stdout for
+    the operator (Fly logs / Sentry) and the body is a generic error +
+    correlation id the caller can match against the logs.
+    """
+    incident_id = _uuid.uuid4().hex
+    # Logged to stdout — picked up by Fly's log aggregator + Sentry.
+    print(json.dumps({
+        "evt": "ml_service_unhandled_exception",
+        "incident_id": incident_id,
+        "path": str(request.url.path),
+        "exception": type(exc).__name__,
+        "message": str(exc)[:2000],
+    }), flush=True)
     return JSONResponse(
         status_code=500,
         content={
-            "error": str(exc),
+            "error": "internal_error",
+            "incident_id": incident_id,
             "status_code": 500,
         },
     )
