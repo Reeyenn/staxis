@@ -151,17 +151,19 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
         return;
       }
 
-      // Freshly-mapped recipes are signed inline by saveDraftRecipe (when
-      // signing is configured). recipe-runner won't run a verification
-      // pass against the in-memory recipe we just wrote — the integrity
-      // story is "the row in the DB is signed; the next load proves it"
-      // — so the `signature`/`signedWithKeyId` fields stay null here.
+      // Plan v2.1 CR-1 — plumb the signature that saveDraftRecipe just
+      // computed straight through to the immediate extraction. The
+      // pre-fix version hard-coded NULL here, which caused every fresh
+      // onboarding to fail under RECIPE_SIGNING_ENFORCE=enforce with
+      // "We couldn't verify the integrity of your hotel's automation
+      // recipe." Pull jobs were unaffected (loadActiveRecipe returns
+      // the signature from the row).
       recipe = {
         id: saved.id,
         version: saved.version,
         recipe: mapResult.recipe,
-        signature: null,
-        signedWithKeyId: null,
+        signature: saved.signature,
+        signedWithKeyId: saved.signedWithKeyId,
       };
       recipeIdForJob = saved.id;
       isFreshlyMapped = true;
@@ -363,7 +365,10 @@ async function saveDraftRecipe(args: {
   recipe: Recipe;
   learnedByPropertyId: string;
   notes?: string;
-}): Promise<{ id: string; version: number } | { error: string }> {
+}): Promise<
+  | { id: string; version: number; signature: Buffer | null; signedWithKeyId: string | null }
+  | { error: string }
+> {
   // Codex audit pass-6 P1 — the previous read-then-insert pattern raced
   // when two concurrent jobs for the same PMS both saw version=N and
   // both tried to insert version=N+1; the (pms_type, version, status)
@@ -426,7 +431,15 @@ async function saveDraftRecipe(args: {
           version: data.version,
         });
       }
-      return { id: data.id as string, version: data.version as number };
+      // Plan v2.1 CR-1 — return the signature so runJob plumbs it
+      // into the immediate runRecipeExtraction call. Without this,
+      // enforce mode rejects every fresh-mapped recipe.
+      return {
+        id: data.id as string,
+        version: data.version as number,
+        signature: signing?.signature ?? null,
+        signedWithKeyId: signing?.signedWithKeyId ?? null,
+      };
     }
 
     lastError = error?.message ?? 'unknown insert error';
