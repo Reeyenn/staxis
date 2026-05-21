@@ -22,6 +22,7 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { userHasPropertyAccess } from '@/lib/api-auth';
+import { env } from '@/lib/env';
 import type { AppRole } from '@/lib/roles';
 
 /** Compact name for the dynamic-variable key we pass through ElevenLabs. */
@@ -53,8 +54,24 @@ export interface ResolvedVoiceSession {
 export type ResolveError =
   | 'not_found'
   | 'expired'
+  | 'idle_expired'
+  | 'binding_mismatch'
   | 'account_missing'
   | 'access_revoked';
+
+/**
+ * Plan v2 M-1: voice-session connection binding + idle expiry.
+ *
+ * `IDLE_EXPIRY_MS` rejects turns that arrive more than this long after the
+ * last accepted turn. Real voice conversations turn within seconds; a
+ * long gap is either a replayed nonce or an abandoned session that
+ * shouldn't accept new traffic. 5 minutes is comfortable above any
+ * natural pause + ElevenLabs first-byte timeout (~30s).
+ *
+ * Lowering this is a security gain (smaller replay window). Override via
+ * env `STAXIS_VOICE_SESSION_IDLE_MS` for tests.
+ */
+const IDLE_EXPIRY_MS = env.STAXIS_VOICE_SESSION_IDLE_MS ?? 5 * 60_000;
 
 /**
  * Mint a server-side voice-session row. Caller is responsible for verifying
@@ -90,20 +107,28 @@ export async function mintVoiceSession(args: VoiceSessionMintArgs): Promise<Voic
  * than trusting the snapshot — so a property removed from `accounts.property_access`
  * mid-session blocks the next webhook turn.
  *
+ * Plan v2 M-1: connection binding + idle expiry are layered on top:
+ *   - If `expectedElevenLabsConversationId` is provided AND the row already
+ *     has `elevenlabs_conversation_id` set, the two must match.
+ *   - If the row's `last_turn_at` is older than IDLE_EXPIRY_MS, the
+ *     session is rejected as `idle_expired` — abandoned nonces don't get
+ *     to wake up later.
+ *
  * Returns:
  *   { ok: true, ... }    — valid session, use the resolved context
  *   { ok: false, reason } — reject the webhook turn with 401
  */
 export async function resolveVoiceSession(
   id: string,
+  expectedElevenLabsConversationId?: string | null,
 ): Promise<
-  | { ok: true; ctx: ResolvedVoiceSession }
+  | { ok: true; ctx: ResolvedVoiceSession; needsConnectionBinding: boolean }
   | { ok: false; reason: ResolveError }
 > {
   // 1. Load the session row.
   const { data: session, error: sessionErr } = await supabaseAdmin
     .from('agent_voice_sessions')
-    .select('id, account_id, data_user_id, property_id, conversation_id, expires_at')
+    .select('id, account_id, data_user_id, property_id, conversation_id, expires_at, elevenlabs_conversation_id, last_turn_at')
     .eq('id', id)
     .maybeSingle();
   if (sessionErr || !session) {
@@ -113,6 +138,25 @@ export async function resolveVoiceSession(
   // 2. Check expiry.
   if (new Date(session.expires_at as string).getTime() <= Date.now()) {
     return { ok: false, reason: 'expired' };
+  }
+
+  // 2a. Idle expiry — if the previous turn was longer than IDLE_EXPIRY_MS
+  // ago, refuse. A captured nonce that nobody is actively using becomes
+  // useless after the first idle gap, even if the outer TTL hasn't fired.
+  const lastTurnAt = session.last_turn_at as string | null;
+  if (lastTurnAt && Date.now() - new Date(lastTurnAt).getTime() > IDLE_EXPIRY_MS) {
+    return { ok: false, reason: 'idle_expired' };
+  }
+
+  // 2b. Connection binding — if the row already carries a bound
+  // conversation id, the caller's claim must match. NULL means "not yet
+  // bound" — the caller will bind it after this resolve succeeds (see
+  // bindVoiceSessionToConnection). NULL expected = caller didn't supply
+  // one (e.g. tests / first-turn path), which we accept and signal back
+  // via `needsConnectionBinding`.
+  const bound = session.elevenlabs_conversation_id as string | null;
+  if (bound && expectedElevenLabsConversationId && bound !== expectedElevenLabsConversationId) {
+    return { ok: false, reason: 'binding_mismatch' };
   }
 
   // 3. Re-load the CURRENT role from accounts (not the snapshot). This is
@@ -160,5 +204,61 @@ export async function resolveVoiceSession(
       staffId,
       conversationId: session.conversation_id as string,
     },
+    // Caller (voice-brain) uses this to decide whether to write the
+    // binding now (true → row unbound, this is the first accepted turn)
+    // or skip the write (false → row already bound, we just verified the
+    // match above). Either way the caller should call markVoiceSessionTurn
+    // so last_turn_at advances.
+    needsConnectionBinding: bound === null,
   };
+}
+
+/**
+ * Compare-and-set the ElevenLabs `conversation_id` onto an unbound voice
+ * session row. Called once per session, on the FIRST webhook turn after
+ * resolveVoiceSession returned `needsConnectionBinding: true`.
+ *
+ * The `IS NULL` predicate is the safety net: if two concurrent first-turns
+ * race (cosmetically unlikely — ElevenLabs sends one webhook at a time
+ * for a conversation, but defensible regardless), only the first write
+ * wins. The second sees zero rows updated and treats it as a binding
+ * mismatch (whoever didn't win has a different conversation_id).
+ *
+ * Returns true when this caller successfully claimed the row; false when
+ * the row was already bound to a different conversation (race lost — the
+ * caller must reject the turn). Throws on infra failures.
+ */
+export async function bindVoiceSessionToConnection(
+  sessionId: string,
+  elevenlabsConversationId: string,
+): Promise<boolean> {
+  const { data, error } = await supabaseAdmin
+    .from('agent_voice_sessions')
+    .update({ elevenlabs_conversation_id: elevenlabsConversationId })
+    .eq('id', sessionId)
+    .is('elevenlabs_conversation_id', null)
+    .select('id')
+    .maybeSingle();
+  if (error) {
+    throw new Error(`[voice-session] bindToConnection failed: ${error.message}`);
+  }
+  // `data` is null when zero rows matched the predicate — i.e. the row
+  // is already bound to a different connection. Caller must reject.
+  return data !== null;
+}
+
+/**
+ * Stamp `last_turn_at = now()` on a voice-session row. Called after every
+ * successfully-resolved + accepted turn so the idle-expiry clock restarts.
+ * Best-effort: a write failure logs and continues; the next turn would
+ * still pass the idle check unless many minutes elapse.
+ */
+export async function markVoiceSessionTurn(sessionId: string): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from('agent_voice_sessions')
+    .update({ last_turn_at: new Date().toISOString() })
+    .eq('id', sessionId);
+  if (error) {
+    throw new Error(`[voice-session] markVoiceSessionTurn failed: ${error.message}`);
+  }
 }

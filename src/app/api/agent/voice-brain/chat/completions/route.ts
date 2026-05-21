@@ -41,6 +41,8 @@ import { buildSystemPrompt } from '@/lib/agent/prompts';
 import { recordNonRequestCost, assertAudioBudget } from '@/lib/agent/cost-controls';
 import {
   resolveVoiceSession,
+  bindVoiceSessionToConnection,
+  markVoiceSessionTurn,
   VOICE_SESSION_DYNVAR_KEY,
   type ResolvedVoiceSession,
 } from '@/lib/agent/voice-session';
@@ -127,6 +129,27 @@ function asString(v: unknown): string | null {
 function extractVoiceSessionId(body: OpenAIChatRequest): string | null {
   const dv = extractDynamicVariables(body);
   return asString(dv[VOICE_SESSION_DYNVAR_KEY]);
+}
+
+/**
+ * Plan v2 M-1: extract the ElevenLabs `conversation_id` from the webhook
+ * body. ElevenLabs forwards this on the OpenAI chat-completions payload;
+ * it lands inconsistently depending on SDK version, so we check the
+ * documented `elevenlabs_extra_body.conversation_id`, the older
+ * `extra_body.conversation_id` shape, and the OpenAI standard `user`
+ * field (some ElevenLabs versions stuff conv_id there). NULL when none
+ * of those are present — caller treats absence as a fatal binding error
+ * once the migration is deployed and ElevenLabs's config exposes the id.
+ */
+function extractElevenLabsConversationId(body: OpenAIChatRequest): string | null {
+  const eb = body.elevenlabs_extra_body as Record<string, unknown> | undefined;
+  const xb = body.extra_body as Record<string, unknown> | undefined;
+  return (
+    asString(eb?.conversation_id) ??
+    asString(xb?.conversation_id) ??
+    asString(body.user) ??
+    null
+  );
 }
 
 /**
@@ -277,16 +300,70 @@ export async function POST(req: NextRequest): Promise<Response> {
     });
     return NextResponse.json({ error: `missing ${VOICE_SESSION_DYNVAR_KEY}` }, { status: 400 });
   }
-  const resolved = await resolveVoiceSession(sessionId);
+  // Plan v2 M-1: pull the ElevenLabs conversation_id off the webhook body
+  // and pass it into resolveVoiceSession. If the row is already bound to a
+  // different conversation_id, the resolve refuses; if the row is unbound,
+  // we bind it ourselves on this first accepted turn (compare-and-set
+  // below). Soft mode: when STAXIS_VOICE_REQUIRE_CONNECTION_BINDING is
+  // 'false' (default during initial rollout to allow ElevenLabs SDK shape
+  // verification), a missing conversation_id is logged but not fatal —
+  // the binding column stays NULL and replay protection isn't engaged for
+  // that session. Flip the env to 'true' once we've confirmed the
+  // conversation_id is reliably present in production traffic.
+  const elevenlabsConvId = extractElevenLabsConversationId(body);
+  const requireBinding = (env.STAXIS_VOICE_REQUIRE_CONNECTION_BINDING ?? 'false') === 'true';
+  if (!elevenlabsConvId && requireBinding) {
+    log.warn('[voice-brain] missing ElevenLabs conversation_id (binding required)', {
+      requestId,
+      sessionId,
+    });
+    return NextResponse.json({ error: 'voice session missing_connection_id' }, { status: 400 });
+  }
+
+  const resolved = await resolveVoiceSession(sessionId, elevenlabsConvId);
   if (!resolved.ok) {
     log.warn('[voice-brain] voice session rejected', {
       requestId,
       sessionId,
       reason: resolved.reason,
+      hasConvId: !!elevenlabsConvId,
     });
     return NextResponse.json({ error: `voice session ${resolved.reason}` }, { status: 401 });
   }
   const ctx: ResolvedVoiceSession = resolved.ctx;
+
+  // Plan v2 M-1: if this is the first accepted turn for the session and
+  // we have a conversation_id, claim the binding atomically. If somebody
+  // else raced us (unlikely — ElevenLabs serializes its own webhook
+  // delivery per conversation), bindVoiceSessionToConnection returns
+  // false and we refuse the turn rather than risk talking on a session
+  // we don't own.
+  if (resolved.needsConnectionBinding && elevenlabsConvId) {
+    try {
+      const claimed = await bindVoiceSessionToConnection(sessionId, elevenlabsConvId);
+      if (!claimed) {
+        log.warn('[voice-brain] connection-binding race lost — rejecting turn', {
+          requestId,
+          sessionId,
+        });
+        return NextResponse.json({ error: 'voice session binding_mismatch' }, { status: 401 });
+      }
+    } catch (e) {
+      log.error('[voice-brain] connection-binding write failed', { requestId, sessionId, e });
+      return NextResponse.json({ error: 'voice session binding_failed' }, { status: 500 });
+    }
+  }
+
+  // Stamp last_turn_at so the next turn's idle-expiry check sees fresh
+  // activity. Done BEFORE the brain runs so a slow Anthropic call doesn't
+  // make a 4-min-long voice turn look idle to the next webhook.
+  try {
+    await markVoiceSessionTurn(sessionId);
+  } catch (e) {
+    // Best-effort; the next turn would still pass idle unless many
+    // minutes elapse. Log and continue.
+    log.warn('[voice-brain] markVoiceSessionTurn failed', { requestId, sessionId, e });
+  }
 
   // ── Translate messages → AgentMessage[] ───────────────────────────────
   const { history, newUserMessage } = translateMessages(body.messages);
@@ -326,20 +403,34 @@ export async function POST(req: NextRequest): Promise<Response> {
         // Security review 2026-05-16 (Surface 7 P3 — Pattern F): assert
         // the daily $ budget at the START of every voice turn. Pre-flight
         // at session-mint catches "new session over cap" but a long-lived
-        // session (up to the 4hr agent_voice_sessions TTL) accumulated
-        // brain + STT/TTS spend that the mint-time check couldn't see.
-        // Per-turn check closes that gap. On over-budget we emit a polite
-        // spoken sentence + finish — never silently keep billing.
-        const budget = await assertAudioBudget({
-          userId: ctx.accountId,
-          propertyId: ctx.propertyId,
-        }).catch((budgetErr) => {
-          // Don't fail the turn on a budget-check error — log loudly and
-          // proceed. Better to bill one extra turn than to brick voice
-          // on a transient Supabase hiccup.
-          log.error('[voice-brain] budget check threw — failing OPEN', { requestId, budgetErr });
-          return { ok: true as const, userSpendUsd: 0, propertySpendUsd: 0 };
-        });
+        // session accumulated brain + STT/TTS spend that the mint-time
+        // check couldn't see. Per-turn check closes that gap.
+        //
+        // Plan v2 M-4 (Codex catch): this used to fail OPEN on
+        // assertAudioBudget exceptions — a Supabase outage turned every
+        // audio cap into best-effort logging while ElevenLabs + Anthropic
+        // spend continued. /api/agent/speak and /transcribe both fail
+        // closed on the same error class; voice-brain now matches them.
+        // The user hears a one-line apology; the turn ends without ever
+        // calling Anthropic.
+        let budget;
+        try {
+          budget = await assertAudioBudget({
+            userId: ctx.accountId,
+            propertyId: ctx.propertyId,
+          });
+        } catch (budgetErr) {
+          log.error('[voice-brain] budget check threw — failing CLOSED', { requestId, budgetErr });
+          const id = makeOpenAiId();
+          controller.enqueue(encoder.encode(sseChunk(id, model, { role: 'assistant' }, null)));
+          for (const seg of splitForStream("Sorry, I can't take this turn right now — please try again in a moment.")) {
+            controller.enqueue(encoder.encode(sseChunk(id, model, { content: seg }, null)));
+          }
+          controller.enqueue(encoder.encode(sseChunk(id, model, {}, 'stop')));
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+          return;
+        }
         if (!budget.ok) {
           const id = makeOpenAiId();
           controller.enqueue(encoder.encode(sseChunk(id, model, { role: 'assistant' }, null)));

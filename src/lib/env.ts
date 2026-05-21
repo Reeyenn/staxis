@@ -38,6 +38,14 @@ const ServerSchema = z.object({
   // ── Anthropic ─────────────────────────────────────────
   ANTHROPIC_API_KEY: z.string().startsWith('sk-ant-').optional(),
 
+  // ── OpenAI ────────────────────────────────────────────
+  // Required: powers Whisper STT (/api/agent/transcribe) and is treated as
+  // production-required by /api/admin/doctor's REQUIRED_ENV_VARS. Keep the
+  // doctor's voice-surface contract honest by failing boot if it's missing —
+  // silent degradation of STT during a deploy with a dropped env var was the
+  // failure mode this gate exists to prevent. (Audit Batch 1, F-01.)
+  OPENAI_API_KEY: z.string().startsWith('sk-'),
+
   // ── Twilio ────────────────────────────────────────────
   // Optional everywhere — sms.ts gracefully refuses to send when unset.
   // We deliberately don't enforce the `AC` prefix on the SID: tests use
@@ -60,6 +68,17 @@ const ServerSchema = z.object({
   ELEVENLABS_AGENT_ID: z.string().optional(),
   ELEVENLABS_VOICE_ID: z.string().optional(),
   ELEVENLABS_WEBHOOK_SECRET: z.string().optional(),
+
+  // ── Voice replay protection (Plan v2 M-1) ─────────────
+  // When 'true', /api/agent/voice-brain refuses any turn whose body lacks
+  // an ElevenLabs conversation_id. Default 'false' for rollout so the
+  // route keeps working if ElevenLabs ever changes which field carries
+  // the id; flip to 'true' after a week of green logs.
+  STAXIS_VOICE_REQUIRE_CONNECTION_BINDING: z.enum(['true', 'false']).optional(),
+  // Override for the voice-session idle-expiry window (ms). Optional;
+  // src/lib/agent/voice-session.ts falls back to 5 min when unset.
+  // Routed through here to satisfy scripts/check-env-access.mjs.
+  STAXIS_VOICE_SESSION_IDLE_MS: z.coerce.number().int().positive().optional(),
 
   // ── Email ─────────────────────────────────────────────
   RESEND_API_KEY: z.string().optional(),
