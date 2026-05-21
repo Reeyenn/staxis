@@ -166,8 +166,18 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // and short replies per shift; 120/hr per phone leaves headroom.
   'sms-reply':                  120,
   // housekeeper-rooms is the polled-read endpoint for the housekeeper
-  // page; the UI polls every few seconds. 600/hr ≈ 10/min is comfortable.
-  'housekeeper-rooms':          600,
+  // page. The page polls every 4 seconds (see subscribeToRoomsForStaff
+  // in src/lib/db/housekeeper-helpers.ts) so legitimate worst-case is
+  // 900/hr from polling alone, plus realtime-triggered refetches plus
+  // action-driven refetches after every Done/Reset tap. 3600/hr = 1/sec
+  // gives ~4x headroom over worst legitimate use while still bounding
+  // a stolen-link replay loop within an hour.
+  //
+  // DO NOT tighten below ~2400 without first reducing the page's poll
+  // interval — the original 600 cap (2026-05-20) shipped broken: real
+  // housekeepers got 429'd after ~40 minutes of normal foreground use
+  // (Codex post-shipment review, 2026-05-21, finding A2).
+  'housekeeper-rooms':         3600,
   // housekeeper-room-action is the write path (mark clean / dirty / etc.).
   // One action every ~18s sustained = 200/hr, well above realistic use.
   'housekeeper-room-action':    200,

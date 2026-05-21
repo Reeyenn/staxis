@@ -20,7 +20,34 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from slowapi.middleware import SlowAPIMiddleware
 
-limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
+
+def _client_ip_for_rate_limit(request: Request) -> str:
+    """Resolve the real client IP for slowapi keying behind Railway's LB.
+
+    Tightened 2026-05-21 (Codex post-shipment review, finding A4): the
+    original `key_func=get_remote_address` reads `request.client.host`,
+    which behind Railway's load balancer is the LB IP — so every caller
+    from anywhere ended up sharing one 60/min bucket. Now read the FIRST
+    IP from `X-Forwarded-For`, which Railway sets to the originating
+    client. Fall back to `request.client.host` for direct connections
+    (e.g. local dev) and a literal "unknown" sentinel for the spoofed-
+    empty-headers case so unknown callers share one bucket.
+
+    Safe ONLY because Railway terminates the LB and rewrites XFF before
+    forwarding; if we ever move to a setup with arbitrary proxy layers
+    in front, we must revisit (allow N hops, trust only the rightmost
+    proxy, etc.).
+    """
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        first = xff.split(",")[0].strip()
+        if first:
+            return first
+    direct = get_remote_address(request)
+    return direct or "unknown"
+
+
+limiter = Limiter(key_func=_client_ip_for_rate_limit, default_limits=["60/minute"])
 
 # Plan v2 F-AI-4: hard ceiling on `max_rows` so a bearer-token holder
 # (or a misfiring cron) can't cause Railway to pull arbitrarily large

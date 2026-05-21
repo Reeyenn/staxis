@@ -247,15 +247,21 @@ export function requireCronSecret(req: NextRequest): NextResponse | null {
 export function requireHeartbeatSecret(req: NextRequest): NextResponse | null {
   const secret = env.HEARTBEAT_SECRET;
   if (!secret) {
-    // Same fail-closed-in-true-prod, pass-through-otherwise shape as
-    // requireCronSecret. Vercel previews and dev still pass through.
+    // Fail-closed in BOTH production and Vercel preview. Previews are
+    // publicly reachable URLs — a preview deploy without the secret
+    // would expose a service-role write surface. Codex post-shipment
+    // review 2026-05-21 (finding A5) tightened this from the original
+    // requireCronSecret-style pass-through-in-preview pattern. Cron
+    // infra runs in scheduled jobs (not user-callable) while heartbeat
+    // is a public POST endpoint — different threat surface.
     const isVercelProd = env.VERCEL_ENV === 'production';
+    const isVercelPreview = env.VERCEL_ENV === 'preview';
     const isOtherProd = env.NODE_ENV === 'production' && !env.VERCEL_ENV;
-    if (isVercelProd || isOtherProd) {
-      console.error('[api-auth] HEARTBEAT_SECRET unset in production — refusing request');
+    if (isVercelProd || isVercelPreview || isOtherProd) {
+      console.error('[api-auth] HEARTBEAT_SECRET unset in prod/preview — refusing request');
       return NextResponse.json({ error: 'server misconfigured' }, { status: 500 });
     }
-    return null;  // dev / preview — no secret configured
+    return null;  // dev / test only — no secret configured
   }
   const auth = req.headers.get('authorization') ?? '';
   const expected = `Bearer ${secret}`;

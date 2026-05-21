@@ -685,20 +685,18 @@ function normalizeKey(raw: string): string {
  * passed back to Claude vision as a tool_result image block; Anthropic
  * retains those for 30/60 days unless org-level Zero Data Retention is
  * enabled. PMS pages can show guest names, reservation IDs, and other
- * tenant PII. The primary mitigation is enabling ZDR (off-repo); a
- * secondary mitigation is to pass a `clip` so only the action region
- * is captured rather than the whole viewport. Mapper actions that
- * already know the target element's bounding box (click, type, hover
- * resolved by ref) should plumb that through.
+ * tenant PII. The org's current retention is 30 days (verified
+ * 2026-05-20). The real privacy mitigation is enabling ZDR off-repo
+ * via an Anthropic sales conversation.
+ *
+ * History: an earlier revision added an optional `clip` parameter to
+ * support per-action cropping, but no call site ever passed one. The
+ * dead parameter was removed 2026-05-21 (Codex post-shipment review,
+ * finding A1) to avoid false-sense-of-security from "infrastructure"
+ * that isn't actually used.
  */
-async function captureScreenshot(
-  page: Page,
-  opts?: { clip?: { x: number; y: number; width: number; height: number } },
-): Promise<string> {
-  const buf = await page.screenshot({
-    fullPage: false,
-    ...(opts?.clip ? { clip: opts.clip } : {}),
-  });
+async function captureScreenshot(page: Page): Promise<string> {
+  const buf = await page.screenshot({ fullPage: false });
   return buf.toString('base64');
 }
 

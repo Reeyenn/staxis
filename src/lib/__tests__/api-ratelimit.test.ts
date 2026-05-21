@@ -223,3 +223,27 @@ describe('rateLimitedResponse — 429 builder', () => {
     assert.equal(res.headers.get('Content-Type'), 'application/json');
   });
 });
+
+// ─── HOURLY_CAPS regression floors ───────────────────────────────────────
+//
+// Regression guard for Codex post-shipment review A2 (2026-05-21). The
+// housekeeper page polls /api/housekeeper/rooms every 4 seconds via
+// subscribeToRoomsForStaff (src/lib/db/housekeeper-helpers.ts).
+// Legitimate worst-case foreground use is 900/hr from polling alone,
+// plus realtime-triggered refetches plus action-driven refetches.
+// The original 600/hr cap shipped broken — real housekeepers got
+// 429'd after ~40 min of normal use. Raised to 3600.
+
+describe('HOURLY_CAPS floors — housekeeper-rooms accommodates 4s polling', () => {
+  test('housekeeper-rooms cap allows >= 3000 hits in an hour', async () => {
+    nextRpcResult = { data: 3000, error: null };
+    const result = await checkAndIncrementRateLimit(
+      'housekeeper-rooms',
+      '11111111-1111-1111-1111-111111111111',
+    );
+    assert.equal(
+      result.allowed, true,
+      '3000th hit must still be allowed (cap must accommodate 4s polling + realtime + action refetches)',
+    );
+  });
+});
