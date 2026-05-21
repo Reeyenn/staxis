@@ -56,6 +56,16 @@ const Schema = z.object({
   // within 30 steps).
   CUA_AUTO_SCREENSHOT: z.enum(['true', 'false']).default('false'),
 
+  // ── DNS rebinding preflight (Plan v2 F-AI-5) ────────────
+  // When 'true', safeGoto resolves the target hostname via dns.lookup
+  // before navigating and refuses if the resolved IP is private. Closes
+  // the trivial DNS-rebinding case (no rebinding mid-fetch) — does NOT
+  // solve mid-resolution rebinding (Chromium does its own DNS); for
+  // that we'd need --host-resolver-rules. Off by default during
+  // rollout because dns.lookup adds latency + can flake on slow DNS;
+  // flip to 'true' once we've measured the impact.
+  CUA_DNS_PREFLIGHT: z.enum(['true', 'false']).default('false'),
+
   // ── Platform auto-injected (read-only metadata) ───────
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   FLY_APP_NAME: z.string().default('staxis-cua'),

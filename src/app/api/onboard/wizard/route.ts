@@ -131,6 +131,33 @@ export async function GET(req: NextRequest) {
     return err('Property not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
 
+  // Plan v2 M-2 — narrow the unauth-callable response. The route is
+  // gated by a join code, but a brute-forced or phished code used to
+  // leak total_rooms, brand, pms_type, and the full onboarding_state
+  // JSON to anyone holding the code. Doctor's RLS tripwire can't see
+  // this because the read goes through a service-role API surface.
+  //
+  // New shape:
+  //   - Unauthenticated caller → { propertyName, currentStep, completed,
+  //     inviteRole }. Enough to render the welcome card.
+  //   - Authenticated caller who owns the property → full payload
+  //     (state + hotelDefaults), same as before.
+  let sessionUserId: string | null = null;
+  const session = await requireSession(req);
+  if (session.ok) {
+    const { data: account } = await supabaseAdmin
+      .from('accounts')
+      .select('property_access, role')
+      .eq('data_user_id', session.userId)
+      .maybeSingle();
+    const access = (account?.property_access ?? []) as string[];
+    const isAdmin = account?.role === 'admin';
+    if (isAdmin || access.includes(resolved.propertyId)) {
+      sessionUserId = session.userId;
+    }
+  }
+  const isOwnerSession = sessionUserId !== null;
+
   // Already completed? Tell the caller so the wizard can redirect to /dashboard.
   if (prop.onboarding_completed_at) {
     return ok({
@@ -138,7 +165,9 @@ export async function GET(req: NextRequest) {
       propertyName: prop.name,
       currentStep: 9 as const,
       completed: true,
-      state: (prop.onboarding_state as OnboardingState) ?? { step: 9 },
+      state: isOwnerSession
+        ? ((prop.onboarding_state as OnboardingState) ?? { step: 9 })
+        : { step: 9 } as OnboardingState,
       hotelDefaults: null,
       inviteRole: resolved.codeRow.role,
     }, { requestId });
@@ -146,6 +175,20 @@ export async function GET(req: NextRequest) {
 
   const state = (prop.onboarding_state as OnboardingState) ?? { step: 1 };
   const currentStep = deriveCurrentStep(state);
+
+  if (!isOwnerSession) {
+    return ok({
+      propertyId: prop.id,
+      propertyName: prop.name,
+      currentStep,
+      completed: false,
+      // Minimal state — just the step number — so the wizard can
+      // render the welcome without exposing operator progress.
+      state: { step: currentStep } as OnboardingState,
+      hotelDefaults: null,
+      inviteRole: resolved.codeRow.role,
+    }, { requestId });
+  }
 
   return ok({
     propertyId: prop.id,
