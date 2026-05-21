@@ -23,6 +23,7 @@ import { timingSafeEqual } from 'node:crypto';
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { createSupabaseServerClient } from '@/lib/supabase-server';
 import { log } from '@/lib/log';
 import { env } from '@/lib/env';
 
@@ -159,6 +160,36 @@ function authFailureResponse(
 }
 
 /**
+ * Cookie-session fallback. Reads the `sb-*-auth-token` cookies set by
+ * `@supabase/ssr`'s `createBrowserClient` (and refreshed by the
+ * middleware), validates against Supabase Auth, and returns the user.
+ *
+ * Returns `{ ok: false }` when no cookie session is present, or when the
+ * cookie session is invalid, or when called outside a Next.js request
+ * context (e.g. unit tests pass a bare `Request` mock — `cookies()` then
+ * throws and we treat it as "no session"). The bearer-header path is
+ * preserved for the 171 fetchWithAuth call sites that always send it;
+ * this fallback only fires when the header is absent.
+ */
+async function tryCookieSession(route: string): Promise<
+  | { ok: true; userId: string; email: string | null }
+  | { ok: false }
+> {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase.auth.getUser();
+    if (error || !data?.user) return { ok: false };
+    return { ok: true, userId: data.user.id, email: data.user.email ?? null };
+  } catch (err) {
+    log.warn('api-auth: cookie fallback errored', {
+      route,
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return { ok: false };
+  }
+}
+
+/**
  * Returns null on success, or a NextResponse the caller should return
  * to short-circuit with 401. If CRON_SECRET is unset (dev), allows
  * everything through.
@@ -239,11 +270,16 @@ export function requireHeartbeatSecret(req: NextRequest): NextResponse | null {
 }
 
 /**
- * Verify a Supabase user session from the Authorization header.
- * Returns the user info on success, or a NextResponse the caller
- * should return to short-circuit with 401.
+ * Verify a Supabase user session. Accepts EITHER an Authorization bearer
+ * header (the path used by the 171 fetchWithAuth call sites) OR the
+ * `sb-*-auth-token` cookies set by `@supabase/ssr` (the new cookie-storage
+ * path; used by future server-component → API calls and as a safety net
+ * if the bearer header is missing for any reason).
  *
- * The UI must send the access token like:
+ * Returns the user info on success, or a NextResponse the caller should
+ * return to short-circuit with 401.
+ *
+ * The UI sends the access token like:
  *   const { data: { session } } = await supabase.auth.getSession();
  *   fetch('/api/...', {
  *     headers: { Authorization: `Bearer ${session.access_token}` },
@@ -258,9 +294,19 @@ export async function requireSession(req: NextRequest): Promise<
   const route = new URL(req.url).pathname;
   const m = /^Bearer\s+(.+)$/i.exec(auth.trim());
   if (!m) {
-    // Treat as expired for client purposes — the natural recovery (refresh
-    // session, attach header, retry) is the same.
-    log.warn('requireSession: missing bearer header', { route, code: 'missing_token' });
+    // No bearer header — try the cookie session. If it succeeds, the caller
+    // is signed in via the @supabase/ssr cookies and we treat that as a
+    // successful auth. If it fails (no cookies, invalid, or cookie API
+    // unavailable in this context), 401 missing_token — same code the
+    // bearer-only callers got before, so fetchWithAuth's refresh/retry path
+    // is unaffected.
+    const cookieResult = await tryCookieSession(route);
+    if (cookieResult.ok) return cookieResult;
+
+    log.warn('requireSession: missing bearer header and no cookie session', {
+      route,
+      code: 'missing_token',
+    });
     return {
       ok: false,
       response: NextResponse.json(
@@ -378,7 +424,19 @@ export async function requireSessionOrCron(req: NextRequest): Promise<
   const route = new URL(req.url).pathname;
   const m = /^Bearer\s+(.+)$/i.exec(auth.trim());
   if (!m) {
-    log.warn('requireSessionOrCron: missing bearer header', { route, code: 'missing_token' });
+    // No bearer header — try the cookie session before 401-ing. Same
+    // cookie-or-bearer fallback shape as requireSession; lifted to keep
+    // user-facing cron-or-session routes (button clicks from the UI) working
+    // even when fetchWithAuth's bearer attach fails for some reason.
+    const cookieResult = await tryCookieSession(route);
+    if (cookieResult.ok) {
+      return { ok: true, kind: 'session', userId: cookieResult.userId, email: cookieResult.email };
+    }
+
+    log.warn('requireSessionOrCron: missing bearer header and no cookie session', {
+      route,
+      code: 'missing_token',
+    });
     return {
       ok: false,
       response: NextResponse.json(

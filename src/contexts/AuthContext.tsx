@@ -20,6 +20,7 @@
 
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
+import { migrateLegacySessionIfPresent } from '@/lib/auth-storage-migration';
 import type { AppRole } from '@/lib/roles';
 
 export interface AppUser {
@@ -91,11 +92,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let active = true;
     let resolved = false;
 
-    // Hydrate from the session Supabase restored from localStorage on page
-    // load. This fires BEFORE the first onAuthStateChange event, so we get
-    // an accurate initial user without a flash of logged-out state.
+    // Hydrate from the session Supabase restored from cookies on page load.
+    // This fires BEFORE the first onAuthStateChange event, so we get an
+    // accurate initial user without a flash of logged-out state.
+    //
+    // Before reading the session, run the one-time legacy localStorage →
+    // cookie migration shim. It's a fast no-op once localStorage is empty
+    // (which is the steady state after this batch ships), but on the first
+    // page load following the deploy it lifts any leftover `staxis-auth`
+    // entry into the new SSR cookies so existing users stay signed in.
     void (async () => {
       try {
+        await migrateLegacySessionIfPresent();
         const { data: { session } } = await supabase.auth.getSession();
         if (!active) return;
         if (session?.user) {
