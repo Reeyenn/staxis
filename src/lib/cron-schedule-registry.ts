@@ -30,8 +30,11 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // Tight cadences (sub-hourly) — Vercel native cron (May 2026 audit
   // pass-6: moved from GH Actions, which was silently throttling these
   // to 60-200 min intervals). Vercel Pro supports per-minute precision.
-  { heartbeatName: 'process-sms-jobs',                  source: { kind: 'vercel', cronPath: '/api/cron/process-sms-jobs' },                  cronExpr: '*/5 * * * *' },
-  { heartbeatName: 'scraper-health',                    source: { kind: 'vercel', cronPath: '/api/cron/scraper-health' },                    cronExpr: '*/15 * * * *' },
+  // process-sms-jobs + scraper-health stayed on GH Actions per audit-02
+  // (single-source-of-truth doctrine: all SMS-firing crons in one
+  // observable channel).
+  { heartbeatName: 'process-sms-jobs',                  source: { kind: 'github', workflowFile: 'sms-jobs-cron.yml' },                       cronExpr: '*/5 * * * *' },
+  { heartbeatName: 'scraper-health',                    source: { kind: 'github', workflowFile: 'scraper-health-cron.yml' },                 cronExpr: '*/15 * * * *' },
   { heartbeatName: 'agent-nudges-check',                source: { kind: 'vercel', cronPath: '/api/agent/nudges/check' },                     cronExpr: '*/5 * * * *' },
   { heartbeatName: 'agent-sweep-reservations',          source: { kind: 'vercel', cronPath: '/api/cron/agent-sweep-reservations' },          cronExpr: '*/5 * * * *' },
   { heartbeatName: 'agent-summarize-long-conversations',source: { kind: 'vercel', cronPath: '/api/cron/agent-summarize-long-conversations' },cronExpr: '*/30 * * * *' },
@@ -59,6 +62,7 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   { heartbeatName: 'agent-archive-stale-conversations', source: { kind: 'vercel', cronPath: '/api/cron/agent-archive-stale-conversations' },cronExpr: '0 3 * * *' },
   { heartbeatName: 'claude-sessions-purge',             source: { kind: 'vercel', cronPath: '/api/cron/claude-sessions-purge' },             cronExpr: '30 3 * * *' },
   { heartbeatName: 'agent-heal-counters',               source: { kind: 'vercel', cronPath: '/api/cron/agent-heal-counters' },              cronExpr: '0 4 * * *' },
+  { heartbeatName: 'webhook-dedup-purge',               source: { kind: 'vercel', cronPath: '/api/cron/webhook-dedup-purge' },              cronExpr: '15 4 * * *' },
   { heartbeatName: 'agent-weekly-digest',               source: { kind: 'vercel', cronPath: '/api/cron/agent-weekly-digest' },              cronExpr: '0 9 * * 0' },
   // Weekly
   { heartbeatName: 'ml-train-demand',       source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '0 8 * * 0' },

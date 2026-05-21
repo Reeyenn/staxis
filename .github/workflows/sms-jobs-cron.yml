@@ -1,0 +1,74 @@
+# SMS Jobs Worker — GitHub Actions cron
+#
+# Single scheduler of record for /api/cron/process-sms-jobs. The route
+# was previously listed in vercel.json crons; audit-02 moved it here
+# so all SMS-firing crons live behind one observable channel (Actions
+# UI). Don't re-add to vercel.json without removing this workflow —
+# the doctor's `cron_single_source_of_truth` check will fail if both
+# schedulers reference the same path.
+#
+# What it does:
+#   Every 5 minutes, curls /api/cron/process-sms-jobs. That endpoint
+#   resets stuck rows (worker died mid-call), then claims and sends up to
+#   50 queued SMS jobs via Twilio.
+#
+# URL: must be the canonical getstaxis.com host. The Vercel alias
+# hotelops-ai.vercel.app is permanently 301-redirected in next.config.ts —
+# curl without -L would receive HTML and the `ok:true` grep below would
+# never match. (Audit-02 F-15.)
+#
+# Required GitHub Secrets:
+#   CRON_SECRET — same value as the CRON_SECRET env var in Vercel. Used as
+#                 Bearer auth so only we can trigger this endpoint.
+
+name: SMS Jobs Worker
+
+on:
+  schedule:
+    # Every 5 minutes. GitHub's hard floor is 5 min on cron schedules.
+    - cron: "*/5 * * * *"
+  # Allow manual triggering from the Actions tab for testing / draining
+  # a backlog after maintenance.
+  workflow_dispatch:
+
+# Minimal permissions — this workflow only calls a public URL.
+permissions:
+  contents: read
+
+jobs:
+  drain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Drain SMS jobs queue
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+
+          URL="https://getstaxis.com/api/cron/process-sms-jobs"
+
+          # Use --fail-with-body so HTTP 4xx/5xx exits non-zero and fails
+          # the workflow (so GitHub emails us). -sS hides progress but
+          # surfaces errors. -m 60 caps the call at 60s (route's own
+          # maxDuration is 30s). --retry 2 absorbs a cold-start blip.
+          RESPONSE=$(curl \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --max-time 60 \
+            --retry 2 \
+            --retry-delay 5 \
+            --retry-connrefused \
+            -H "Authorization: Bearer ${CRON_SECRET:-}" \
+            "$URL")
+
+          echo "Response: $RESPONSE"
+
+          # Endpoint returns JSON with ok:true on a clean tick. If ok is
+          # false, the handler threw — fail the workflow so we hear about
+          # it.
+          echo "$RESPONSE" | grep -q '"ok":true' || {
+            echo "::error::process-sms-jobs returned ok:false or malformed JSON"
+            exit 1
+          }
