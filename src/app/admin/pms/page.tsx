@@ -1,5 +1,7 @@
 'use client';
 
+
+export const dynamic = 'force-dynamic';
 /**
  * /admin/pms — PMS coverage dashboard.
  *

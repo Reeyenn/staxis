@@ -1,5 +1,7 @@
 'use client';
 
+
+export const dynamic = 'force-dynamic';
 // ─── /admin/agent/prompts — DB-backed prompt editor ─────────────────────
 // Edit the AI's system prompts without a code deploy. List view shows
 // every version, you click Edit to change content/notes, click Save,

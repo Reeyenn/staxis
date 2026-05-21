@@ -34,6 +34,9 @@ interface RequestBody {
   uid?: string;
 }
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   // Auth: writes/upserts every room row for the date. Without auth, any

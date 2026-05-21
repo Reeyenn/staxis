@@ -91,6 +91,9 @@ function buildToken(shiftDate: string, staffId: string): string {
   return `${shiftDate}_${staffId}`;
 }
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   // Auth: this route fires bulk SMS to every housekeeper on the crew

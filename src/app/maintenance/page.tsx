@@ -1,5 +1,7 @@
 'use client';
 
+
+export const dynamic = 'force-dynamic';
 // Maintenance tab — full rewrite (Claude Design handoff, May 2026).
 //
 // Replaces a 4,058-line monolith that had 5 sub-tabs (Work Orders, Preventive,

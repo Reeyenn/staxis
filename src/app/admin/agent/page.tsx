@@ -1,5 +1,7 @@
 'use client';
 
+
+export const dynamic = 'force-dynamic';
 // ─── /admin/agent — internal monitoring dashboard ─────────────────────────
 // Staxis-only. Shows the agent layer's recent activity, today's spend vs
 // caps, model breakdown, top tools called, recent conversations. Built

@@ -1,5 +1,7 @@
 'use client';
 
+
+export const dynamic = 'force-dynamic';
 // ─── /settings/voice — voice preferences ─────────────────────────────────
 //
 // One toggle: the "Hey Staxis" wake-word listener (Picovoice). Voice mode

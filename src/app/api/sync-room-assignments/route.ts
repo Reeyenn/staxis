@@ -60,6 +60,9 @@ function deriveRoomType(
   return match.stayType === 'Stay' ? 'stayover' : 'checkout';
 }
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   // Auth: writes to rooms table (assigns/unassigns staff). Without auth

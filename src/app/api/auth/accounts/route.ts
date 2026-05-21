@@ -100,6 +100,9 @@ function serializeAccount(row: {
 }
 
 // GET /api/auth/accounts - list all accounts (admin only)
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const caller = await verifyAdmin(req);

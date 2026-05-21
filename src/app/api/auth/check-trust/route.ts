@@ -90,7 +90,7 @@ export async function POST(req: NextRequest) {
   const tokenHash = hashDeviceToken(cookieValue);
   const { data: row, error: rowErr } = await supabaseAdmin
     .from('trusted_devices')
-    .select('id, expires_at')
+    .select('id, expires_at, absolute_expires_at')
     .eq('account_id', account.id)
     .eq('token_hash', tokenHash)
     .maybeSingle();
@@ -107,7 +107,33 @@ export async function POST(req: NextRequest) {
   }
   if (!row) return ok({ trusted: false }, { requestId });
 
+  // Rolling-window check: the expires_at field rolls forward on each
+  // successful trust check (see the re-issue block below). If it's
+  // somehow already past, treat as untrusted.
   if (new Date(row.expires_at).getTime() <= Date.now()) {
+    return ok({ trusted: false }, { requestId });
+  }
+
+  // F-03 absolute upper bound. Unlike expires_at, this field is set ONCE
+  // at insert time (default: created_at + 365 days, see migration 0153)
+  // and is never updated. Even an actively-used device gets re-prompted
+  // for OTP once a year, capping the worst-case exposure of a leaked
+  // cookie that the user never explicitly signs out of. The column is
+  // NOT NULL post-0153, so the row?.absolute_expires_at check would only
+  // be false on a database that's missing the migration — log + fail-
+  // closed in that case.
+  const absExpRaw = (row as { absolute_expires_at?: string | null }).absolute_expires_at;
+  if (!absExpRaw) {
+    log.error('[check-trust] absolute_expires_at missing — migration 0153 not applied?', {
+      requestId, accountId: account.id, deviceId: row.id,
+    });
+    return ok({ trusted: false }, { requestId });
+  }
+  if (new Date(absExpRaw).getTime() <= Date.now()) {
+    // Absolute cap reached. The user has to OTP at least once a year on
+    // each device. We don't delete the row here — let it linger so the
+    // next sign-in's trust-device flow either dedupes by fingerprint or
+    // inserts a fresh row with a new 365-day window.
     return ok({ trusted: false }, { requestId });
   }
 

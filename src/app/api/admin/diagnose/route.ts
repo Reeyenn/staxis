@@ -33,6 +33,9 @@ import {
   EXTERNAL_FETCH_SHORT_TIMEOUT_MS,
 } from '@/lib/external-service-config';
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   // Admin session required. Previously gated on CRON_SECRET alone — Codex

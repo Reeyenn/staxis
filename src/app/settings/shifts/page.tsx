@@ -1,5 +1,7 @@
 'use client';
 
+
+export const dynamic = 'force-dynamic';
 // Settings → Shifts. Manager defines named shift templates per
 // department (e.g. "Morning HK: 8a–4p"). The /staff Schedule grid
 // cell-edit popover offers these as one-click picks.

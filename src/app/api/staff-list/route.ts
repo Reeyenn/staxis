@@ -32,6 +32,9 @@ import { getOrMintRequestId } from '@/lib/log';
  *   4xx: { ok: false, requestId, error, code }
  *   5xx: { ok: false, requestId, error, code }
  */
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const { searchParams } = new URL(req.url);

@@ -10,6 +10,9 @@ import { getOrMintRequestId } from '@/lib/log';
 // the import is kept so the type signature matches every other migrated
 // route — making this a clean copy-paste skeleton when the next admin
 // route gets added.
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   return err('Seed endpoint disabled', { requestId, status: 410, code: ApiErrorCode.Forbidden });

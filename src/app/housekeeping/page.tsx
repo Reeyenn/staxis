@@ -1,5 +1,7 @@
 'use client';
 
+
+export const dynamic = 'force-dynamic';
 // Split from 6094-line monolith on 2026-04-27. Each tab now lives in _components/:
 // - ScheduleTab.tsx: Schedule tab (assignment planning)
 // - RoomsTab.tsx: Rooms tab (live status board)

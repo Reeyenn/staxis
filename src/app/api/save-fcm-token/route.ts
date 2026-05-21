@@ -30,6 +30,9 @@ import { getOrMintRequestId } from '@/lib/log';
  * swallowed the 410 and the timestamp never updated. Replaced with a real
  * implementation 2026-04-27.
  */
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   let body: unknown;

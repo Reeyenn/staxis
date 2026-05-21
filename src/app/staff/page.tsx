@@ -1,5 +1,7 @@
 'use client';
 
+
+export const dynamic = 'force-dynamic';
 // Staff page — role-gated entry point.
 //
 //   • Manager (admin / owner / general_manager) → Schedule + Directory tabs

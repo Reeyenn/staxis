@@ -40,6 +40,9 @@ async function gateAdmin(req: NextRequest) {
   return requireAdmin(req);
 }
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   // Sends real SMS via Twilio + writes a test shift_confirmation row.

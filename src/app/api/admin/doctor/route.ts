@@ -1704,10 +1704,12 @@ const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   //   the AI/CUA/scraper branch's main merge — adding here so the migrations-
   //   applied check doesn't flag it as unexpected).
   // 0152 F-06: revoke legacy owner/GM hotel_join_codes + CHECK forbidding new privileged rows.
+  // 0153 F-03+F-05+F-09: trusted_devices.absolute_expires_at + search_path pin
+  //   on user_owns_property and staxis_release_join_code_slot.
   '0124', '0125', '0126', '0129', '0130', '0131', '0132', '0133',
   '0135', '0136', '0137', '0138', '0139', '0140',
   '0141', '0142', '0143', '0144', '0145', '0146', '0147', '0148',
-  '0149', '0150', '0151', '0152',
+  '0149', '0150', '0151', '0152', '0153',
 ];
 
 /**

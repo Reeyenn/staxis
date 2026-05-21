@@ -1,5 +1,7 @@
 'use client';
 
+
+export const dynamic = 'force-dynamic';
 // ─── /chat — polished full-page chat surface ──────────────────────────────
 // Snow design system: paper-white canvas, sage/caramel accents, Geist +
 // Instrument Serif fonts. Conversation history sidebar on the left,

@@ -13,6 +13,9 @@ import { getOrMintRequestId } from '@/lib/log';
 // on the new bundle, this file can be deleted.
 // ───────────────────────────────────────────────────────────────────────────
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   return err(

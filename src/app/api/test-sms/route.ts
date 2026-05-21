@@ -6,6 +6,9 @@ import { NextRequest } from 'next/server';
 import { err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   return err('gone', { requestId, status: 410, code: ApiErrorCode.Forbidden });

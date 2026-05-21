@@ -174,6 +174,9 @@ function resolveBaseUrl(): string {
   return safeBaseUrl(env.NEXT_PUBLIC_APP_URL);
 }
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: NextRequest) {
   try {
     // Twilio sends form-encoded; some legacy senders send JSON.
