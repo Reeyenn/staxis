@@ -16,6 +16,7 @@
  */
 
 import { createHash } from 'crypto';
+import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
 
@@ -324,23 +325,26 @@ export async function checkAndIncrementRateLimit(
   }
 }
 
-/** Convenience: return a NextResponse for a denied limit. */
+/** Convenience: return a NextResponse for a denied limit.
+ *
+ * Returns NextResponse (not raw Response) so route handlers with an
+ * explicit `Promise<NextResponse>` return-type signature can use it
+ * without a type error — caught the hard way by the 2026-05-20
+ * Vercel deploy failing TypeScript on /api/housekeeper/room-action.
+ */
 export function rateLimitedResponse(
   current: number,
   cap: number,
   retryAfterSec: number,
-): Response {
-  return new Response(
-    JSON.stringify({
+): NextResponse {
+  return NextResponse.json(
+    {
       error: 'rate_limited',
       detail: `${current}/${cap} for this property in the past hour. Try again in ${retryAfterSec}s.`,
-    }),
+    },
     {
       status: 429,
-      headers: {
-        'Content-Type': 'application/json',
-        'Retry-After': String(retryAfterSec),
-      },
+      headers: { 'Retry-After': String(retryAfterSec) },
     },
   );
 }
