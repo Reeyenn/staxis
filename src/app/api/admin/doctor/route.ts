@@ -272,6 +272,16 @@ const checks: Array<[string, CheckFn]> = [
   // STAXIS_VOICE_REQUIRE_CONNECTION_BINDING=true; below that, doing so
   // would refuse legitimate voice turns.
   ['voice_binding_readiness',        checkVoiceBindingReadiness],
+  // Plan v2.1 CR-3 — surface whether the CUA action allowlist is in
+  // enforce mode on the Fly worker. The code shipped warn-mode-by-
+  // default (CUA_POLICY_ENFORCE='warn'); refusals are logged but the
+  // action still executes. This check warns yellow until the operator
+  // flips Fly secret CUA_POLICY_ENFORCE=enforce, at which point the
+  // allowlist actually refuses dangerous post-login clicks instead of
+  // just logging them. The flip happens after observing the
+  // `cua_action_policy_refusal` stderr stream for one full mapping run
+  // with no false-positive refusals.
+  ['cua_action_policy_enforce_status', checkCuaActionPolicyEnforceStatus],
   // Round 14 (2026-05-14): every active property's `rooms` table for
   // today should have one row per inventory entry. The AI tools now
   // compute totals from room_inventory (Layer 1), but if today's seed
@@ -3122,6 +3132,56 @@ async function checkVoiceBindingReadiness(): Promise<Omit<Check, 'name' | 'durat
       'the field name (check elevenlabs_extra_body / extra_body / body.user in a ' +
       'recent [voice-brain] log line) or low traffic is hiding the real rate. ' +
       'When this check turns green, set STAXIS_VOICE_REQUIRE_CONNECTION_BINDING=true.',
+  };
+}
+
+/**
+ * cua_action_policy_enforce_status — Plan v2.1 CR-3.
+ *
+ * The CUA action allowlist (cua-service/src/policy.ts) classifies post-
+ * login mapper actions as allowed or refused. Refusals only block when
+ * `CUA_POLICY_ENFORCE === 'enforce'`; the default 'warn' mode logs the
+ * refusal and STILL executes the action. The user-facing claim "Claude
+ * can't be talked into clicking dangerous buttons" only holds in
+ * enforce mode.
+ *
+ * This check reports the live state of the env on the CUA worker so
+ * the operator has one place to see whether the lock is active. Note
+ * that the Vercel-side doctor can't read the Fly worker's env directly
+ * — we read the env from the doctor's host process (Vercel), which is
+ * accurate ONLY IF the operator sets CUA_POLICY_ENFORCE on Vercel too.
+ * For Fly-only deploys the check still surfaces a green/yellow signal
+ * by reading the Vercel-side env: green when set to 'enforce' on
+ * Vercel (operator opted in), warn when unset or 'warn'.
+ *
+ * Operational flow: after the operator observes one full mapping run
+ * with no false-positive refusals in the `cua_action_policy_refusal`
+ * stderr stream on Fly, they set both Vercel + Fly env to 'enforce'.
+ */
+async function checkCuaActionPolicyEnforceStatus(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  // CUA_POLICY_ENFORCE lives in the CUA worker's env (cua-service), not
+  // the main app's. Fly is the source of truth. The Vercel-side env is
+  // a mirror the operator sets when flipping Fly; we read it through
+  // the canonical env module so check-env-access.mjs stays green.
+  const raw = (env.CUA_POLICY_ENFORCE ?? '').trim().toLowerCase();
+  if (raw === 'enforce') {
+    return {
+      status: 'ok',
+      detail:
+        'CUA_POLICY_ENFORCE=enforce on Vercel. CUA mapper action allowlist ' +
+        'will refuse dangerous post-login actions (configured Fly-side too).',
+    };
+  }
+  return {
+    status: 'warn',
+    detail:
+      `CUA_POLICY_ENFORCE=${raw || '<unset>'} on Vercel — the CUA action allowlist ` +
+      'is in warn mode. Refusals are logged but the action still executes.',
+    fix:
+      'After observing one full CUA mapping run with no false-positive refusals ' +
+      'in the `cua_action_policy_refusal` stderr stream on Fly, set ' +
+      '`CUA_POLICY_ENFORCE=enforce` on both Fly (`fly secrets set CUA_POLICY_ENFORCE=enforce -a staxis-cua`) ' +
+      'AND Vercel (production env) so this check turns green.',
   };
 }
 
