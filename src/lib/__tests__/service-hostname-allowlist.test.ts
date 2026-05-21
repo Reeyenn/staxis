@@ -34,7 +34,6 @@ afterEach(() => {
 
 function freshEnv(): typeof import('@/lib/env').env {
   delete require.cache[require.resolve('@/lib/env')];
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   return require('@/lib/env').env;
 }
 
