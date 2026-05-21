@@ -79,6 +79,15 @@ jobs:
           NEXT_PUBLIC_SUPABASE_URL: 'https://placeholder.supabase.co'
           NEXT_PUBLIC_SUPABASE_ANON_KEY: 'placeholder-anon-key-min-20-chars'
           SUPABASE_SERVICE_ROLE_KEY: 'placeholder-service-role-key-min-20-chars'
+          # OPENAI_API_KEY became required (z.string().startsWith('sk-')) in
+          # the security/02 voice-replay-close batch. tsx --test imports
+          # env.ts transitively from many test files; without this placeholder
+          # the env-validation throw fires before any test runs and every
+          # tsx test fails immediately.
+          OPENAI_API_KEY: 'sk-placeholder-test-key-min-20-chars'
+          # CRON_SECRET is optional in the schema but some tests poke
+          # requireCronSecret directly. Min length matches the schema rules.
+          CRON_SECRET: 'placeholder-cron-secret-min-16'
         run: npx tsx --test src/lib/__tests__/*.test.ts
 
       # Phase M3.1 (2026-05-14): static check for undefined names. F821
