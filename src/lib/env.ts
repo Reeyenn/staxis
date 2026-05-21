@@ -136,6 +136,15 @@ const ServerSchema = z.object({
   // Routed through here to satisfy scripts/check-env-access.mjs.
   STAXIS_VOICE_SESSION_IDLE_MS: z.coerce.number().int().positive().optional(),
 
+  // ── AI data-retention posture stamp (Plan v2 F-AI-1) ───
+  // Freeform stamp set by the operator after confirming Zero Data
+  // Retention (or equivalent data controls) in Anthropic / OpenAI /
+  // ElevenLabs dashboards. Doctor's ai_data_policy_documented check
+  // reads it and warns yellow when missing. See RUNBOOKS.md > "AI Data
+  // Retention Posture" for the confirmation steps. Typical value:
+  //   zdr-confirmed-2026-05-20-anthropic+openai+elevenlabs
+  STAXIS_AI_DATA_POLICY: z.string().optional(),
+
   // ── Email ─────────────────────────────────────────────
   RESEND_API_KEY: z.string().optional(),
 

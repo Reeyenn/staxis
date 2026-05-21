@@ -1293,9 +1293,9 @@ async function run() {
       // tests but it weakens auditability — anyone with CRON_SECRET can
       // trigger "the configured property" without identifying it. The
       // smoke-test path stays available behind NODE_ENV=test.
-      const allowImplicit = process.env.NODE_ENV === 'test';
+      const allowImplicit = env.NODE_ENV === 'test';
       if (!requestedPid && !allowImplicit) {
-        log(`[http ${requestId}] refused: missing property_id (NODE_ENV=${process.env.NODE_ENV ?? 'unset'})`);
+        log(`[http ${requestId}] refused: missing property_id (NODE_ENV=${env.NODE_ENV ?? 'unset'})`);
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           ok: false,

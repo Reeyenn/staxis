@@ -22,6 +22,7 @@
 import type { Page } from 'playwright';
 import * as dns from 'node:dns';
 import { promisify } from 'node:util';
+import { env } from '../env.js';
 
 const dnsLookup = promisify(dns.lookup);
 
@@ -203,7 +204,7 @@ export async function safeGoto(
   //
   // Gated by env CUA_DNS_PREFLIGHT so we can roll out slowly. Default
   // is off; flip to 'true' once latency impact has been measured.
-  if (process.env.CUA_DNS_PREFLIGHT === 'true') {
+  if (env.CUA_DNS_PREFLIGHT === 'true') {
     try {
       const parsed = new URL(url);
       const lookup = await dnsLookup(parsed.hostname, { all: false });

@@ -2988,7 +2988,7 @@ async function checkMlServiceSecretStrength(): Promise<Omit<Check, 'name' | 'dur
  * Posture" documents the confirmation steps per provider.
  */
 async function checkAiDataPolicyDocumented(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  const stamp = (process.env.STAXIS_AI_DATA_POLICY ?? '').trim();
+  const stamp = (env.STAXIS_AI_DATA_POLICY ?? '').trim();
   if (!stamp) {
     return {
       status: 'warn',
