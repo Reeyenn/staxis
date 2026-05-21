@@ -3037,21 +3037,33 @@ async function checkAiDataPolicyDocumented(): Promise<Omit<Check, 'name' | 'dura
         'in Vercel. See RUNBOOKS.md > "AI Data Retention Posture".',
     };
   }
-  // The stamp must mention at least one provider — otherwise it's
-  // probably a placeholder. We don't try to be exhaustive; we just
-  // want to catch `1` / `yes` / `true` style stamps that don't
-  // communicate what was actually confirmed.
-  const mentionsProvider =
-    /anthropic|openai|elevenlabs|claude|whisper/i.test(stamp);
-  if (!mentionsProvider) {
+  // Plan v2.1 CR-4 — tightened stamp validation. The original check
+  // only required ONE provider keyword, so `STAXIS_AI_DATA_POLICY=openai`
+  // would pass and turn the check green without proving anything.
+  // The stamp is an attestation, so the quality of the stamp is the
+  // only signal of operator diligence. Now requires a YYYY-MM-DD date
+  // AND mentions of all three providers. See RUNBOOKS.md > "AI Data
+  // Retention Posture" for the canonical format.
+  const hasDate = /\b20\d{2}-\d{2}-\d{2}\b/.test(stamp);
+  const mentionsAnthropic = /anthropic|claude/i.test(stamp);
+  const mentionsOpenAI = /openai|whisper/i.test(stamp);
+  const mentionsElevenLabs = /elevenlabs|11labs/i.test(stamp);
+  const allProviders = mentionsAnthropic && mentionsOpenAI && mentionsElevenLabs;
+  if (!hasDate || !allProviders) {
+    const missing: string[] = [];
+    if (!hasDate) missing.push('YYYY-MM-DD date');
+    if (!mentionsAnthropic) missing.push('Anthropic');
+    if (!mentionsOpenAI) missing.push('OpenAI');
+    if (!mentionsElevenLabs) missing.push('ElevenLabs');
     return {
       status: 'warn',
       detail:
-        `STAXIS_AI_DATA_POLICY="${stamp.slice(0, 80)}" set but doesn't ` +
-        'mention a specific provider — that makes the stamp ambiguous ' +
-        'for the next audit. Use the documented format.',
+        `STAXIS_AI_DATA_POLICY="${stamp.slice(0, 80)}" is set but missing: ${missing.join(', ')}. ` +
+        'The stamp must record when AND which providers were confirmed.',
       fix:
-        'Replace with e.g. `zdr-confirmed-2026-05-20-anthropic+openai+elevenlabs`.',
+        'Replace with the canonical format, e.g. ' +
+        '`audit-2026-05-20-anthropic:30d-default-openai:sharing-off-logging-off-elevenlabs:starter-default`. ' +
+        'See RUNBOOKS.md > "AI Data Retention Posture".',
     };
   }
   return {
