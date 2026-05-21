@@ -92,6 +92,14 @@ export async function mintVoiceSession(args: VoiceSessionMintArgs): Promise<Voic
       conversation_id: args.conversationId,
       role_snapshot: args.role,
       staff_id_snapshot: args.staffId,
+      // Plan v2.1 CR-2 — stamp last_turn_at at mint so the idle clock
+      // starts immediately. Before this, a freshly-minted but unused
+      // session stayed valid for the full 30-min expires_at TTL — the
+      // user-facing "5 min replay window" claim only held *after* the
+      // first webhook turn. With this stamp, the idle expiry in
+      // resolveVoiceSession fires ~5 min after mint regardless of
+      // whether the user ever speaks.
+      last_turn_at: new Date().toISOString(),
     })
     .select('id, expires_at')
     .single();
