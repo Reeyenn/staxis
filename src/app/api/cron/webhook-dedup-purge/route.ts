@@ -41,12 +41,20 @@ export async function GET(req: NextRequest) {
 
   const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
 
-  async function purge(table: string): Promise<number> {
+  // Each table has its own PK column. Supabase-js's `.delete().select(col)`
+  // returns the deleted rows projected onto `col`, which is how we count.
+  // The original (audit-02 ship) passed `.select('1')` — `'1'` isn't a real
+  // column, so PostgREST returned an error and the count metric was always
+  // `-1`. Per-table PK names live here:
+  //   processed_twilio_webhooks → message_sid (PK)
+  //   processed_sentry_webhooks → event_id    (PK)
+  //   stripe_processed_events   → event_id    (PK)
+  async function purge(table: string, countColumn: string): Promise<number> {
     const { data, error } = await supabaseAdmin
       .from(table)
       .delete()
       .lt('processed_at', cutoff)
-      .select('1');
+      .select(countColumn);
     if (error) {
       // Don't fail the whole cron on a single-table error — log it and
       // continue. The next tick retries; meanwhile the other tables
@@ -61,9 +69,9 @@ export async function GET(req: NextRequest) {
   }
 
   const [twilio, sentry, stripe] = await Promise.all([
-    purge('processed_twilio_webhooks'),
-    purge('processed_sentry_webhooks'),
-    purge('stripe_processed_events'),
+    purge('processed_twilio_webhooks', 'message_sid'),
+    purge('processed_sentry_webhooks', 'event_id'),
+    purge('stripe_processed_events',   'event_id'),
   ]);
 
   const anyFailed = twilio < 0 || sentry < 0 || stripe < 0;

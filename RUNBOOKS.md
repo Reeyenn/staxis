@@ -1103,6 +1103,47 @@ Expect `status: "ok"` with the stamp in `detail`. Yellow (`status: "warn"`) mean
 
 ---
 
+## HEARTBEAT_SECRET — local-hook auth (audit-02 NEW-4)
+
+`HEARTBEAT_SECRET` gates `/api/claude-heartbeat` so external callers can't pollute `claude_sessions`. Local Claude Code PostToolUse/Stop hooks attach this header from `~/.config/staxis/tokens.env`.
+
+| Where it lives | Purpose |
+|---|---|
+| Vercel Production env | server-side bearer compare in `requireHeartbeatSecret()` |
+| `~/.config/staxis/tokens.env` | local hooks source this before `curl`-ing the heartbeat route |
+| `.env.local.example:46` | placeholder so new dev environments know to set it |
+| Recovery Codes vault | canonical source of truth for rotation |
+
+Rotation procedure: mint a new value, set it in Vercel + `tokens.env` simultaneously, restart any in-flight Claude session so its `tokens.env` source picks up the new value. The route is fail-closed in production when the secret is missing, so the worst case is a deploy with a dropped value surfaces immediately in `/api/admin/doctor` env_vars + the next heartbeat POST.
+
+---
+
+## Pending hardening — deferred from audit-02
+
+These are real findings from the audit but blocked on an infra change or measurement before they can ship. Each lists the unblocker. Re-open when the unblocker exists.
+
+- **F-02 / F-03 / F-11 — rate limits on github-webhook, sentry-SMS, events/feedback.** Unblocker: redesign `api_limits.property_id` to accept nullable / sentinel UUIDs without hitting the `properties(id)` foreign key. Today the doctor treats the `23503` FK violation as success, so a no-property rate limit silently fails open for non-billing endpoints. Either add a sibling table without the FK or extend the schema with a `limit_subject text` column.
+- **F-06 — preview-deploy secret-scope check.** Unblocker: a design that doesn't put `VERCEL_API_TOKEN` (a deploy-control credential) into the doctor route's runtime. Better path: a one-shot script run from local or CI that queries the Vercel API and asserts production secrets aren't bleeding into Preview env scope.
+- **F-08 — Sentry scrub for AI provider keys and free-text body.** Unblocker: capture an actual Sentry event in production where the upstream provider error body carried prompt / transcript content. Without a real leak example, the regex additions are speculative; better to wait until we have evidence than design a wider scrub on assumptions.
+- **F-13b — `npm audit` CI gate.** Unblocker: define `.audit-allow.json` format with `advisory_id`, `package`, `reason`, `owner`, `expires_at` per accepted advisory, plus a triage process. Without that scaffolding the gate becomes "fail every PR for noisy advisories" and gets disabled.
+- **M-08 — CSP `'unsafe-inline'` script-src migration to nonce-based.** Multi-week refactor; separate PR. Track here so it doesn't get lost.
+
+When any of these get unblocked, move them out of this section into a regular runbook entry with the symptom / diagnosis / fix / verify / prevention shape.
+
+---
+
+## Audit-02 post-push defects
+
+The audit-02 ship landed on `main` but two issues surfaced afterward — both shipped via parallel sessions, neither was caught by lint:
+
+1. **Tests workflow red on the merge commit** — pre-existing `tsc` errors in `src/lib/__tests__/service-hostname-allowlist.test.ts` (NODE_ENV readonly under newer @types/node). Fix: a later main commit added a `mutEnv` cast pattern. Lesson: run `npx tsc --noEmit` locally before merging — `npm run lint` alone doesn't catch type errors.
+
+2. **`webhook-dedup-purge` cron used `.select('1')`** — `'1'` isn't a column on any of the three dedup tables, so the count metric was always `-1` and the daily run looked broken. Fix: per-table PK passed as `countColumn` (`message_sid` for Twilio, `event_id` for Sentry + Stripe). Regression-pinned in `src/lib/__tests__/webhook-dedup-purge.test.ts`.
+
+Lesson: when adding a "trivial" supabase-js `.select(...)` call after a `.delete()`, pass a real column or the existing convention `.select('*')`. PostgREST does not silently accept a literal scalar like `'1'`.
+
+---
+
 ## Meta: how to add a new failure mode to this doc
 
 Every time something breaks and takes more than 30 min to fix, come back and add a section here with Symptom / Diagnosis / Fix / Verify / Prevention. This file only pays for itself if we update it.
