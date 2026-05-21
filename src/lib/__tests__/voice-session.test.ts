@@ -78,7 +78,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // @ts-expect-error restore
+  // restore — originalFrom matches the official `from` signature, so no
+  // ts-expect-error needed here (unlike the install in beforeEach above).
   supabaseAdmin.from = originalFrom;
 });
 
