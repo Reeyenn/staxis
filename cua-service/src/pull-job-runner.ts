@@ -95,6 +95,8 @@ export async function runPullJob(jobId: string, workerId: string): Promise<void>
 
     const extracted = await runRecipeExtraction({
       recipe: recipe.recipe,
+      signature: recipe.signature,
+      signedWithKeyId: recipe.signedWithKeyId,
       credentials,
       onProgress: (step, pct) =>
         updateProgress(jobId, workerId, 'extracting', step, pct).catch((err) =>
@@ -181,36 +183,41 @@ async function loadCredentials(propertyId: string): Promise<ScraperCredentialsRo
   return data as ScraperCredentialsRow;
 }
 
-async function loadRecipeById(
-  recipeId: string,
-): Promise<{ id: string; version: number; recipe: Recipe } | null> {
+// Plan v2 F-AI-2: pull jobs verify the recipe signature before any
+// browser launch. Both load paths surface the BYTEA + key-id so the
+// recipe-runner can re-derive the canonical JSON and compare.
+interface LoadedRecipe {
+  id: string;
+  version: number;
+  recipe: Recipe;
+  signature: Buffer | null;
+  signedWithKeyId: string | null;
+}
+
+async function loadRecipeById(recipeId: string): Promise<LoadedRecipe | null> {
   const { data } = await supabase
     .from('pms_recipes')
-    .select('id, version, recipe')
+    .select('id, version, recipe, signature, signed_with_key_id')
     .eq('id', recipeId)
     .maybeSingle();
   if (!data) return null;
-  return validateAndUnwrap(data as { id: string; version: number; recipe: unknown });
+  return validateAndUnwrap(data as Record<string, unknown>);
 }
 
-async function loadActiveRecipe(
-  pmsType: string,
-): Promise<{ id: string; version: number; recipe: Recipe } | null> {
+async function loadActiveRecipe(pmsType: string): Promise<LoadedRecipe | null> {
   const { data } = await supabase
     .from('pms_recipes')
-    .select('id, version, recipe')
+    .select('id, version, recipe, signature, signed_with_key_id')
     .eq('pms_type', pmsType)
     .eq('status', 'active')
     .order('version', { ascending: false })
     .limit(1)
     .maybeSingle();
   if (!data) return null;
-  return validateAndUnwrap(data as { id: string; version: number; recipe: unknown });
+  return validateAndUnwrap(data as Record<string, unknown>);
 }
 
-function validateAndUnwrap(row: { id: string; version: number; recipe: unknown }):
-  { id: string; version: number; recipe: Recipe } | null
-{
+function validateAndUnwrap(row: Record<string, unknown>): LoadedRecipe | null {
   const recipe = row.recipe as Recipe | null;
   if (!recipe || typeof recipe !== 'object'
       || (recipe as { schema?: unknown }).schema !== 1
@@ -221,7 +228,17 @@ function validateAndUnwrap(row: { id: string; version: number; recipe: unknown }
     log.error('recipe failed shape validation', { recipeId: row.id });
     return null;
   }
-  return { id: row.id, version: row.version, recipe };
+  const rawSig = row.signature as string | null;
+  const signature = rawSig
+    ? Buffer.from(rawSig.replace(/^\\x/, ''), 'hex')
+    : null;
+  return {
+    id: row.id as string,
+    version: row.version as number,
+    recipe,
+    signature,
+    signedWithKeyId: (row.signed_with_key_id as string | null) ?? null,
+  };
 }
 
 async function updateProgress(

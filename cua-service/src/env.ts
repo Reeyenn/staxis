@@ -25,6 +25,22 @@ const Schema = z.object({
   WORKER_ID_PREFIX: z.string().default('cua'),
   CUA_JOB_COST_CAP_MICROS: z.coerce.number().int().positive().default(5_000_000),
 
+  // ── Recipe signing (Plan v2 F-AI-2) ─────────────────────
+  // Active HMAC key used to sign and verify pms_recipes.recipe rows.
+  // Optional during the rollout: when missing, signRecipe throws and
+  // verifyRecipe reports `no_key_configured`. recipe-runner's warn
+  // mode logs and proceeds; enforce mode refuses. Set via `fly secrets
+  // set RECIPE_SIGNING_KEY=<32+ bytes>`.
+  RECIPE_SIGNING_KEY: z.string().min(32).optional(),
+  // Previous-generation key, accepted by verifyRecipe during a key
+  // rotation grace window. Unset it after the doctor's
+  // `recipes_all_signed` check shows 100% of active rows resigned with
+  // the new key.
+  RECIPE_SIGNING_KEY_PREVIOUS: z.string().min(32).optional(),
+  // 'warn' (default) — verifier logs mismatches but proceeds.
+  // 'enforce' — verifier refuses on mismatch / missing signature.
+  RECIPE_SIGNING_ENFORCE: z.enum(['warn', 'enforce']).default('warn'),
+
   // ── Platform auto-injected (read-only metadata) ───────
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   FLY_APP_NAME: z.string().default('staxis-cua'),

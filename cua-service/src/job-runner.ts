@@ -25,6 +25,7 @@ import { mapPMS } from './mapper.js';
 import { runRecipeExtraction } from './recipe-runner.js';
 import { env } from './env.js';
 import { saveExtractedData } from './data-loader.js';
+import { signRecipe, isRecipeSigningConfigured } from './recipe-signing.js';
 
 // 15 minutes total per onboarding job. A full first-time mapping run
 // is login (up to 5 min) + getRoomStatus + getArrivals + getDepartures
@@ -150,7 +151,18 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
         return;
       }
 
-      recipe = { id: saved.id, version: saved.version, recipe: mapResult.recipe };
+      // Freshly-mapped recipes are signed inline by saveDraftRecipe (when
+      // signing is configured). recipe-runner won't run a verification
+      // pass against the in-memory recipe we just wrote — the integrity
+      // story is "the row in the DB is signed; the next load proves it"
+      // — so the `signature`/`signedWithKeyId` fields stay null here.
+      recipe = {
+        id: saved.id,
+        version: saved.version,
+        recipe: mapResult.recipe,
+        signature: null,
+        signedWithKeyId: null,
+      };
       recipeIdForJob = saved.id;
       isFreshlyMapped = true;
       log.info('mapper succeeded — draft recipe saved', {
@@ -172,6 +184,14 @@ export async function runJob(jobId: string, workerId: string): Promise<void> {
 
     const extracted = await runRecipeExtraction({
       recipe: recipe.recipe,
+      // Plan v2 F-AI-2: pass the row's signature so recipe-runner can
+      // verify it before any browser launch. Freshly-mapped recipes
+      // pass nulls here — the in-memory recipe wasn't loaded from a
+      // signed row; the row IS signed but we trust the just-finished
+      // mapper output for the immediate extraction. Subsequent pull
+      // jobs go through loadActiveRecipe which DOES pull the signature.
+      signature: recipe.signature,
+      signedWithKeyId: recipe.signedWithKeyId,
       credentials,
       onProgress: (step, pct) => updateProgress(jobId, workerId, 'extracting', step, pct).catch((err) =>
         log.warn('progress update failed', {
@@ -293,10 +313,10 @@ async function loadCredentials(propertyId: string): Promise<ScraperCredentialsRo
 
 async function loadActiveRecipe(
   pmsType: string,
-): Promise<{ id: string; version: number; recipe: Recipe } | null> {
+): Promise<{ id: string; version: number; recipe: Recipe; signature: Buffer | null; signedWithKeyId: string | null } | null> {
   const { data } = await supabase
     .from('pms_recipes')
-    .select('id, version, recipe')
+    .select('id, version, recipe, signature, signed_with_key_id')
     .eq('pms_type', pmsType)
     .eq('status', 'active')
     .order('version', { ascending: false })
@@ -321,10 +341,20 @@ async function loadActiveRecipe(
     return null;
   }
 
+  // Decode signature from supabase-js's hex-encoded BYTEA representation.
+  // The driver returns it as a `\x…` string; convert to Buffer so the
+  // verifier compares bytes-to-bytes.
+  const rawSig = data.signature as string | null;
+  const signature = rawSig
+    ? Buffer.from(rawSig.replace(/^\\x/, ''), 'hex')
+    : null;
+
   return {
     id: data.id as string,
     version: data.version as number,
     recipe,
+    signature,
+    signedWithKeyId: (data.signed_with_key_id as string | null) ?? null,
   };
 }
 
@@ -361,6 +391,14 @@ async function saveDraftRecipe(args: {
       .maybeSingle();
     const nextVersion = ((latest?.version as number) ?? 0) + 1;
 
+    // Plan v2 F-AI-2: sign the recipe at write time so recipe-runner can
+    // refuse tampered rows at replay. Skipped when RECIPE_SIGNING_KEY is
+    // unset — the rollout flips this on after backfill + grace window.
+    // signature columns are nullable in 0151 to support that flip.
+    const signing = isRecipeSigningConfigured()
+      ? signRecipe(args.recipe)
+      : null;
+
     const { data, error } = await supabase
       .from('pms_recipes')
       .insert({
@@ -370,6 +408,12 @@ async function saveDraftRecipe(args: {
         status: 'draft',
         learned_by_property_id: args.learnedByPropertyId,
         notes: args.notes ?? null,
+        // Postgres BYTEA round-trips through supabase-js as a hex-encoded
+        // string with a `\x` prefix; surface-area-wise we'd rather emit
+        // it explicitly than rely on driver Buffer marshalling.
+        signature: signing ? `\\x${signing.signature.toString('hex')}` : null,
+        signed_with_key_id: signing?.signedWithKeyId ?? null,
+        signed_at: signing?.signedAt ?? null,
       })
       .select('id, version')
       .single();
