@@ -38,6 +38,7 @@ from src.errors import PropertyMisconfiguredError, require_total_rooms
 from src.layers.bayesian_regression import BayesianRegression
 from src.layers.xgboost_quantile import XGBoostQuantile, XGBOOST_INFERENCE_READY
 from src.supabase_client import get_supabase_client
+from src.training._gates import should_force_deactivate
 from src.training._streak import compute_consecutive_passes
 
 
@@ -519,78 +520,25 @@ def _train_single_item(
     is_active = not is_shadow
     shadow_started_at = datetime.utcnow().isoformat() if is_shadow else None
 
-    # ── No-validation-set gate (May 2026 audit pass-3) ────────────────
-    # When the item has <5 training rows, X_test ends up empty and
-    # validation_mae defaults to 0.0 as a sentinel (see line 367).
-    # The next gate below checks validation_mae >= max(mean*1.0, 1.0)
-    # — 0 < 1.0 so the model passes unconditionally. A model with
-    # ZERO validation rows would pass the "this prediction is
-    # trustworthy" gate. Catch that case here first.
-    #
-    # Concrete failure mode: hotel #2 onboards. Maria adds 12
-    # inventory items. The first weekly training run sees 2-3 rows
-    # per item. All 12 items would have validation_mae=0 and pass
-    # this gate, producing confident-looking AI suggestions ("Coffee
-    # Pods: predicted 47 today") on essentially no signal.
-    #
-    # Bayesian cold-start path still works — those models build from
-    # cohort priors and don't need an internal validation set to be
-    # useful. But they shouldn't be MARKED as validated either;
-    # is_active=False keeps them serving via the cold-start prior
-    # without claiming "the per-property model has earned trust".
-    mae_reject_notes = None
-    if is_active and len(X_test) == 0:
+    # ── Force-deactivate gates (May 2026 audit) ──────────────────────────
+    # Three sequential safety gates: no-validation-set, max-MAE, XGBoost-
+    # not-served. Extracted to `_gates.should_force_deactivate` in the
+    # honesty audit (Phase 1, 2026-05-22) so they're unit-testable
+    # without a Supabase RPC stub. Behavior preserved bit-for-bit; see
+    # `training/_gates.py` for the gate rationale + reject-message contract.
+    mae_reject_notes: Optional[str] = None
+    _force_deactivate, _gate_note = should_force_deactivate(
+        algorithm=algorithm,
+        xgboost_inference_ready=XGBOOST_INFERENCE_READY,
+        is_currently_active=is_active,
+        validation_holdout_n=len(X_test),
+        validation_mae=validation_mae,
+        mean_observed_rate=mean_observed_rate,
+        training_row_count=len(X_train),
+    )
+    if _force_deactivate:
         is_active = False
-        mae_reject_notes = (
-            f"rejected_no_validation_set: only {len(X_train)} training rows "
-            f"(need ≥5 for an 80/20 split). Falling back to cold-start prior."
-        )
-
-    # ── Max-MAE safety gate (P0-3, May 2026 audit) ────────────────────
-    # Reject models whose validation_mae is at or above the mean observed
-    # rate — those are no better than a constant "predict the mean"
-    # baseline and their per-day predictions look confidently wrong.
-    #
-    # Threshold: validation_mae must be < max(mean_rate * 1.0, 1.0).
-    #   - mean_rate * 1.0 = "model beats the constant-mean baseline".
-    #     A model EXACTLY at the mean's level (MAE = mean) is no
-    #     information; >= mean is worse than no information.
-    #   - 1.0 absolute floor handles items with near-zero mean rates
-    #     where the ratio metric is meaningless — even an "MAE of 1
-    #     per day" on a cleaning supply with mean usage 0.0007 is
-    #     clearly broken.
-    #
-    # The first audit (May 2026) shipped 1.5×mean threshold; in
-    # follow-up testing this still let Coffee Pods through (MAE 49.99
-    # vs mean ~50, threshold 75 → passes). Tightened to 1.0×mean.
-    # Shadow models skip this gate; the evaluate cron + promote path
-    # re-checks before activation.
-    if (
-        is_active
-        and validation_mae is not None
-        and validation_mae >= max(mean_observed_rate * 1.0, 1.0)
-    ):
-        is_active = False
-        mae_reject_notes = (
-            f"rejected_high_mae: validation_mae={validation_mae:.4f} >= "
-            f"threshold={max(mean_observed_rate * 1.0, 1.0):.4f} "
-            f"(mean_rate={mean_observed_rate:.4f})"
-        )
-
-    # ── XGBoost-not-served gate (Codex audit pass-6 P0) ──────────────────
-    # Inventory inference returns predicted=False for any active XGBoost
-    # run because artifact deserialization isn't wired up yet. Activating
-    # an XGBoost run would silently stop emitting per-day predictions for
-    # the item the moment it crosses the 100-event activation threshold.
-    # Force is_active=False (run still gets logged with metrics so we can
-    # compare XGBoost vs Bayesian quality) until inference is ready.
-    if is_active and algorithm == "xgboost-quantile" and not XGBOOST_INFERENCE_READY:
-        is_active = False
-        mae_reject_notes = (
-            (mae_reject_notes + "; " if mae_reject_notes else "")
-            + "rejected_xgboost_inference_unavailable: XGBoost graduates "
-              "but inference can't deserialize the artifact yet"
-        )
+        mae_reject_notes = _gate_note
 
     # Posterior params for Bayesian models (so inference can rebuild without the model file)
     posterior_params = None

@@ -172,7 +172,15 @@ export async function fetchDailyAverages(
 // that the auto-fill map had NO freshness gate while this fetcher did.
 export const ML_PREDICTION_FRESHNESS_DAYS = 7;
 
-export async function fetchMlPredictedRates(pid: string): Promise<Map<string, number>> {
+// Minimal supabase shape the fetcher actually uses. Lets tests inject a
+// mock client without pulling in the full @supabase/supabase-js type
+// (50+ unused builder methods). Honesty-audit Phase 1.
+type MlRatesSupabaseLike = Pick<typeof supabase, 'from'>;
+
+export async function fetchMlPredictedRates(
+  pid: string,
+  client: MlRatesSupabaseLike = supabase,
+): Promise<Map<string, number>> {
   const out = new Map<string, number>();
   try {
     const since = new Date();
@@ -192,7 +200,7 @@ export async function fetchMlPredictedRates(pid: string): Promise<Map<string, nu
     // INNER JOIN with WHERE in one round-trip. Fetch the small set of
     // active run IDs first, then filter the prediction stream client-
     // side. At fleet scale this is ~10 IDs per property × 1 query, cheap.
-    const { data: activeRuns } = await supabase
+    const { data: activeRuns } = await client
       .from('model_runs')
       .select('id')
       .eq('property_id', pid)
@@ -201,7 +209,7 @@ export async function fetchMlPredictedRates(pid: string): Promise<Map<string, nu
     const activeRunIds = new Set((activeRuns ?? []).map((r) => String(r.id)));
     if (activeRunIds.size === 0) return out;  // no active models → no rates
 
-    const { data, error } = await supabase
+    const { data, error } = await client
       .from('inventory_rate_predictions')
       .select('item_id, predicted_daily_rate, predicted_at, model_run_id, is_shadow')
       .eq('property_id', pid)
