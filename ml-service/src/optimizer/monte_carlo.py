@@ -249,6 +249,59 @@ async def optimize_headcount(
     # Use L2 supply predictions if available and sufficient, otherwise fall back to L1 uniform
     use_l2_supply = len(supply_preds) >= 10
 
+    # Honesty fields: fetch the backing model rows so we can persist cold-start
+    # status on optimizer_results.inputs_snapshot AND return it to callers
+    # (cron / cockpit / Schedule tab) without a downstream model_runs join.
+    #
+    # Trust model_runs.is_cold_start (migration 0123 backfilled), defense in
+    # depth with the algorithm-string prefix check: a row whose flag column
+    # was missed by the backfill but whose algorithm is "cold-start-cohort-prior"
+    # still correctly classifies as cold-start.
+    l1_model_row = None
+    l1_model_run_id = demand.get("model_run_id")
+    if l1_model_run_id:
+        try:
+            l1_model_row = client.fetch_one("model_runs", filters={"id": l1_model_run_id})
+        except Exception as exc:
+            print(json.dumps({
+                "evt": "optimizer_l1_model_row_fetch_failed",
+                "property_id": property_id, "l1_model_run_id": l1_model_run_id,
+                "error": str(exc)[:200],
+            }))
+    l2_model_ids_unique = list({
+        p.get("model_run_id") for p in (supply_preds or []) if p.get("model_run_id")
+    })
+    l2_model_rows: list = []
+    for _mid in l2_model_ids_unique:
+        try:
+            _row = client.fetch_one("model_runs", filters={"id": _mid})
+            if _row:
+                l2_model_rows.append(_row)
+        except Exception as exc:
+            print(json.dumps({
+                "evt": "optimizer_l2_model_row_fetch_failed",
+                "property_id": property_id, "l2_model_run_id": _mid,
+                "error": str(exc)[:200],
+            }))
+    l1_is_cold_start = bool((l1_model_row or {}).get("is_cold_start")) or (
+        str((l1_model_row or {}).get("algorithm") or "").startswith("cold-start")
+    )
+    l2_any_cold_start = any(
+        bool((m or {}).get("is_cold_start"))
+        or str((m or {}).get("algorithm") or "").startswith("cold-start")
+        for m in l2_model_rows
+    )
+    l1_algorithm = (l1_model_row or {}).get("algorithm")
+    l2_algorithms = sorted({
+        (m or {}).get("algorithm") for m in l2_model_rows
+        if (m or {}).get("algorithm")
+    })
+    # "Both cold-start" means the Monte Carlo is running over synthetic
+    # quantiles (fixed multipliers on a cohort prior) — the resulting
+    # completion_probability_curve has no per-hotel signal. Used below to
+    # omit the curve from the persisted row + the response.
+    both_layers_cold_start = l1_is_cold_start and (l2_any_cold_start or not use_l2_supply)
+
     if use_l2_supply:
         # L2 path: per-room quantile sampling + LPT bin-packing across H abstract workers.
         #
@@ -417,6 +470,14 @@ async def optimize_headcount(
     # ceiling for this run rather than the old hard-coded 10.
     sensitivity_ceiling = max(c["headcount"] for c in completion_curves)
 
+    # Honesty: omit the completion curve when both backing layers are
+    # cold-start. The Monte Carlo over fixed-multiplier quantiles produces
+    # a deterministic curve whose only variance comes from LPT bin-packing
+    # across H workers — reporting it as a "confidence band" misleads
+    # downstream UI consumers. The recommended_headcount itself is still
+    # written so the cockpit + Schedule tab have a Day-1 anchor.
+    completion_curve_payload = [] if both_layers_cold_start else completion_curves
+
     # Write optimizer_results
     optimizer_result = {
         "property_id": property_id,
@@ -424,7 +485,7 @@ async def optimize_headcount(
         "recommended_headcount": recommended_headcount,
         "target_completion_probability": float(target_prob),
         "achieved_completion_probability": float(achieved_p),
-        "completion_probability_curve": json.dumps(completion_curves),
+        "completion_probability_curve": json.dumps(completion_curve_payload),
         "assignment_plan": json.dumps({}),  # Simplified
         "sensitivity_analysis": json.dumps({
             "one_hk_sick": {"recommended": max(1, recommended_headcount - 1)},
@@ -447,6 +508,15 @@ async def optimize_headcount(
             "l2_model_run_ids": [p.get("model_run_id") for p in supply_preds] if use_l2_supply else [],
             "used_l2_supply": use_l2_supply,
             "l2_prediction_count": len(supply_preds) if use_l2_supply else 0,
+            # Honesty fields read by getActiveOptimizerForTomorrow() to
+            # derive modelKind = fitted | warming-up | capacity-unavailable
+            # so the Schedule tab can stop labeling cold-start recommendations
+            # as "AI recommendation" (Phase 1.3).
+            "l1_is_cold_start": l1_is_cold_start,
+            "l2_any_cold_start": l2_any_cold_start,
+            "l1_algorithm": l1_algorithm,
+            "l2_algorithms": l2_algorithms,
+            "both_layers_cold_start": both_layers_cold_start,
         }),
         "monte_carlo_draws": settings.monte_carlo_draws,
         "ran_at": datetime.utcnow().isoformat(),
@@ -465,7 +535,13 @@ async def optimize_headcount(
             "date": str(prediction_date),
             "recommended_headcount": recommended_headcount,
             "achieved_completion_probability": float(achieved_p),
-            "completion_probability_curve": completion_curves,
+            "completion_probability_curve": completion_curve_payload,
+            # Honesty fields mirrored from inputs_snapshot for any caller
+            # that doesn't re-read the row from optimizer_results.
+            "l1_is_cold_start": l1_is_cold_start,
+            "l2_any_cold_start": l2_any_cold_start,
+            "used_l2_supply": use_l2_supply,
+            "l2_prediction_count": len(supply_preds) if use_l2_supply else 0,
         }
     except Exception as e:
         return {

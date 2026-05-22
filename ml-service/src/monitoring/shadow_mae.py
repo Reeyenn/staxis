@@ -1,7 +1,53 @@
-"""Rolling 14-day shadow MAE computation and auto-rollback."""
+"""Phase 7 v2 (2026-05-22) — statistical auto-rollback for housekeeping ML.
+
+REPLACES the dead-code v1 path (compute_rolling_shadow_mae +
+check_auto_rollback + _find_fallback_model) that was structurally
+unable to fire — its "compare active to previously-active model"
+design needed paired prediction_log rows on the same dates for two
+different model_run_ids, but deactivated models stop predicting so
+the comparator series was always empty.
+
+v2 design — see /Users/reeyen/.claude/plans/you-are-claude-code-hashed-hellman.md
+Phase 7 v2 for the full architectural rationale. Summary:
+
+  Comparator = same-DOW historical actual (median of the last 4
+  same-day-of-week actuals before the date being scored). The
+  paired Wilcoxon test then asks: "is the active model statistically
+  worse than just looking up last week's same-day actual?" If yes,
+  the model has earned a rollback — it's no better than naive.
+
+This module exposes four functions consumed by
+ml-service/src/monitoring/fleet_rollback.py:
+
+  - compute_same_dow_baseline_errors(property_id, layer)
+      Returns the list of (date, active_error, naive_error) tuples
+      for the rolling lookback window, EXCLUDING dates inside the
+      actuals correction window (because actuals there are still
+      mutable). Pure read.
+
+  - compute_rolling_mae_vs_baseline(property_id, layer)
+      Wraps the above, requires n>=settings.auto_rollback_min_paired_days
+      mature observations, runs scipy.stats.wilcoxon (one-sided,
+      paired, zsplit ties). Returns (active_mae, baseline_mae, pvalue)
+      or None if underpowered.
+
+  - decide_rollback(active_mae, baseline_mae, pvalue, alpha)
+      Pure function. Returns True when the active is statistically
+      worse than baseline at the (possibly BH-adjusted) alpha.
+
+  - execute_rollback(property_id, layer, *, dry_run)
+      Effectful: in live mode, deactivates the active model under
+      an advisory lock. In dry-run mode, emits structured log and
+      returns {would_fire: True} without touching model_runs.
+      No fallback promotion (Codex high-pri finding) — property
+      serves cold-start cohort prior until next training cycle.
+"""
+from __future__ import annotations
+
 import json
-from datetime import datetime, timedelta
-from typing import Any, Dict, Optional, Tuple
+import os
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import psycopg2
@@ -9,486 +55,411 @@ from scipy import stats
 
 from src.advisory_lock import advisory_lock
 from src.config import get_settings
-from src.supabase_client import SupabaseServiceClient, get_supabase_client, safe_uuid
+from src.supabase_client import get_supabase_client, safe_uuid
 
 
-def _find_fallback_model(
-    client: SupabaseServiceClient,
+def _parse_date(value: Any) -> Optional[date]:
+    """Coerce a supabase date string / date / datetime to a date."""
+    if value is None:
+        return None
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    try:
+        return datetime.fromisoformat(str(value)).date()
+    except (TypeError, ValueError):
+        try:
+            return date.fromisoformat(str(value))
+        except (TypeError, ValueError):
+            return None
+
+
+def compute_same_dow_baseline_errors(
     property_id: str,
     layer: str,
-    failed_model_id: str,
-) -> Optional[Dict[str, Any]]:
-    """Find the best previously-active model to promote when auto-rollback
-    fires. We prefer the most recently-activated non-shadow run that hasn't
-    itself been auto-rolled-back, and that has a recorded validation MAE
-    (so we have at least some evidence it's not garbage).
+    *,
+    lookback_days: Optional[int] = None,
+    exclude_recent_days: Optional[int] = None,
+) -> List[Tuple[date, float, float]]:
+    """Build the list of (date, active_error, naive_error) tuples for
+    the rolling window, excluding dates inside the actuals correction
+    window (rows there have mutable actual_value).
 
-    Codex audit pass-6 P0 — auto-rollback used to deactivate the bad model
-    and stop there. The property would then have ZERO active models for
-    that layer and predictions would silently stop. Now we promote the
-    previous good run in the same lock window.
+    The naive predictor at date D is the median of the last 4 same-DOW
+    actuals from cleaning_minutes_per_day_view.total_approved_minutes
+    BEFORE date D. We compute the naive prediction PER DATE because
+    same-DOW for D-7 may include different dates than same-DOW for D.
 
-    Returns the row to promote, or None if there's no candidate (in which
-    case the caller logs a high-priority alert — operators must manually
-    restore service).
+    For supply layer, we aggregate the per-(room, staff) prediction_log
+    rows to a per-(property, date) total before pairing. This is the
+    same grain as the demand layer and the cleaning_minutes_per_day_view
+    actuals — the test then says "does the day-aggregate prediction
+    beat naive day-aggregate baseline?"
+
+    Pure read. Used by compute_rolling_mae_vs_baseline.
     """
-    candidates = client.fetch_many(
-        "model_runs",
-        filters={"property_id": property_id, "layer": layer, "is_shadow": False},
-        order_by="activated_at",
-        descending=True,
-        limit=20,
-    )
-    for row in candidates:
-        if row.get("id") == failed_model_id:
-            continue
-        # Skip prior auto-rolled-back runs — they've already been judged
-        # bad once and we shouldn't re-promote them.
-        if (row.get("deactivation_reason") or "").lower() == "auto_rollback":
-            continue
-        # Require a recorded validation MAE so we have at least one
-        # quality signal before flipping a property's active model.
-        if row.get("validation_mae") is None:
-            continue
-        # Activated_at must exist — never-activated draft runs aren't
-        # valid fallbacks.
-        if not row.get("activated_at"):
-            continue
-        return row
-    return None
-
-
-# *** DEAD CODE NOTICE (Codex post-merge review 2026-05-13, Phase 2.3) ***
-# The two functions below (`compute_rolling_shadow_mae` and
-# `check_auto_rollback`) have ZERO callers in any cron, route, or task.
-# The auto-rollback subsystem is fully built but not wired. Recent fixes
-# (M-C1 database_url at line ~266, H-4 Wilcoxon n>=10 at line ~187) keep
-# them CORRECT, just unused. Wiring requires:
-#   1. A new cron route src/app/api/cron/ml-auto-rollback-check/route.ts
-#      that iterates active models per property and calls
-#      `check_auto_rollback`.
-#   2. BH-FDR correction across the fleet (H-4 step 2 backlog item) to
-#      keep false-rollback rate manageable at fleet scale.
-#   3. Operator alerts when a rollback fires.
-# Each of those is its own multi-day project. Until they land, these
-# functions stay correct-but-unused. DO NOT DELETE — they are the
-# executable spec for what auto-rollback should do.
-
-
-async def compute_rolling_shadow_mae(
-    property_id: str,
-    layer: str,
-) -> Optional[Tuple[float, float, float]]:
-    """Compute rolling 14-day shadow MAE for active model vs the most
-    recent previous active model (the natural rollback target).
-
-    Codex audit pass-6 P1 — three statistical issues fixed here:
-
-    1. The 14-day cutoff was computed but never applied to the fetch,
-       so old predictions could influence rollback decisions long after
-       the window closed.
-    2. The previous "baseline" was every log not from the active model,
-       which mixed multiple prior models + shadows + static baseline
-       into one comparator. Now we pin the comparator to a single
-       model_run_id (the most recent previously-active model) so the
-       comparison is between two known cohorts.
-    3. Mann-Whitney U is unpaired. Each error pair comes from the same
-       day's prediction; the natural test is paired (Wilcoxon signed-
-       rank). Paired tests are far more powerful when the two samples
-       share day-to-day variation.
-
-    Args:
-        property_id: Property UUID
-        layer: Layer name (demand, supply)
-
-    Returns:
-        Tuple of (active_mae, baseline_mae, pvalue) or None if insufficient data
-    """
-    client = get_supabase_client()
+    if layer not in ("demand", "supply"):
+        raise ValueError(f"layer must be demand or supply, got {layer!r}")
     settings = get_settings()
-
-    # Find active model
-    active_models = client.fetch_many(
-        "model_runs",
-        filters={"property_id": property_id, "layer": layer, "is_active": True},
-        limit=1,
+    client = get_supabase_client()
+    lookback_days = int(lookback_days if lookback_days is not None else 28)
+    exclude_recent_days = int(
+        exclude_recent_days
+        if exclude_recent_days is not None
+        else settings.auto_rollback_actuals_correction_days
     )
 
-    if not active_models:
-        return None
+    today = datetime.now(timezone.utc).date()
+    window_start = today - timedelta(days=lookback_days)
+    # Exclude rows within the correction window (their actual_value
+    # may still flip when Maria approves/flags/discards events).
+    window_end_excl = today - timedelta(days=exclude_recent_days)
 
-    active_model_id = active_models[0]["id"]
+    if window_end_excl <= window_start:
+        return []
 
-    # Pick the comparator: the most recent previously-active non-shadow
-    # run that ISN'T the current active model and wasn't itself rolled
-    # back. This is the run we'd roll back TO, so it's the right thing
-    # to compare against.
-    prior_runs = client.fetch_many(
-        "model_runs",
-        filters={"property_id": property_id, "layer": layer, "is_shadow": False},
-        order_by="activated_at",
-        descending=True,
-        limit=10,
-    )
-    comparator_model_id = None
-    for row in prior_runs:
-        if row.get("id") == active_model_id:
-            continue
-        if (row.get("deactivation_reason") or "").lower() == "auto_rollback":
-            continue
-        if not row.get("activated_at"):
-            continue
-        comparator_model_id = row["id"]
-        break
+    # Pull prediction_log + per-date aggregate via the natural key.
+    # For supply, aggregate per (property, date) by summing predicted
+    # and actual values; abs_error must be recomputed at the aggregate
+    # grain (sum of per-row abs_error is NOT equal to abs_error of sums).
+    pid = safe_uuid(property_id)
+    if layer == "demand":
+        sql = f"""
+            select
+              date::text as date,
+              predicted_value,
+              actual_value
+            from prediction_log
+            where property_id = '{pid}'
+              and layer = 'demand'
+              and date >= date '{window_start.isoformat()}'
+              and date <  date '{window_end_excl.isoformat()}'
+            order by date asc
+        """
+    else:  # supply
+        sql = f"""
+            select
+              date::text as date,
+              sum(predicted_value)::numeric as predicted_value,
+              sum(actual_value)::numeric    as actual_value
+            from prediction_log
+            where property_id = '{pid}'
+              and layer = 'supply'
+              and date >= date '{window_start.isoformat()}'
+              and date <  date '{window_end_excl.isoformat()}'
+            group by date
+            order by date asc
+        """
 
-    if comparator_model_id is None:
-        # Nothing to compare against — never rolled over from a previous
-        # active model. Can't make a rollback decision in that state.
-        return None
+    try:
+        rows = client.execute_sql(sql)
+    except Exception as exc:
+        print(json.dumps({
+            "evt": "rolling_mae_query_failed",
+            "property_id": property_id, "layer": layer,
+            "error": str(exc)[:200],
+        }))
+        return []
 
-    # Fetch prediction_log for last `auto_rollback_window_days` days
-    # ONLY. Filter on `date` (the operational date the prediction was
-    # MADE FOR), not `logged_at` (the moment the actual error was
-    # recorded) — otherwise a stale prediction backfilled today pairs
-    # against fresh actuals and biases the rollback decision.
-    # (Phase L: K mistakenly used `prediction_date`, a column that
-    # doesn't exist on prediction_log; the bare except below swallowed
-    # the SQL error so the bug hid. The actual operational-date column
-    # is `date`, per migration 0021 and the `prediction_log_pld_idx`
-    # index added in 0104.)
-    cutoff_dt = datetime.utcnow() - timedelta(days=settings.auto_rollback_window_days)
-    cutoff_iso = cutoff_dt.isoformat()
-    # Layer is bounded to {'demand', 'supply'} at the API boundary; defense-
-    # in-depth assert here so a future caller that bypasses the boundary
-    # can't inject. cutoff_iso is server-derived (datetime.utcnow()) so it
-    # carries no user-input lineage; not wrapped.
-    if layer not in ('demand', 'supply'):
-        raise ValueError(f"safe_layer: not a valid layer: {layer!r}")
-    logs_query = f"""
-        select model_run_id, abs_error, date
-        from prediction_log
-        where property_id = '{safe_uuid(property_id)}'
-          and layer = '{layer}'
-          and date >= '{cutoff_iso}'
-          and model_run_id in ('{safe_uuid(active_model_id)}', '{safe_uuid(comparator_model_id)}')
+    if not rows:
+        return []
+
+    # For the naive same-DOW baseline we need approved actuals for the
+    # WIDER window — looking back another 28 days to have enough same-DOWs
+    # before each prediction date.
+    naive_window_start = window_start - timedelta(days=28)
+    naive_sql = f"""
+        select
+          date::text as date,
+          total_approved_minutes
+        from cleaning_minutes_per_day_view
+        where property_id = '{pid}'
+          and date >= date '{naive_window_start.isoformat()}'
+          and date <  date '{window_end_excl.isoformat()}'
+          and total_approved_minutes is not null
         order by date asc
     """
     try:
-        logs = client.execute_sql(logs_query)
+        actual_rows = client.execute_sql(naive_sql)
     except Exception as exc:
-        # Phase L discipline rule #3: never swallow silently. A future
-        # column-name regression here surfaces in logs within one cron
-        # cycle instead of hiding for months like Phase K's did.
         print(json.dumps({
-            "evt": "shadow_mae_query_failed",
-            "property_id": property_id,
-            "layer": layer,
+            "evt": "rolling_mae_naive_query_failed",
+            "property_id": property_id, "layer": layer,
             "error": str(exc)[:200],
         }))
-        return None
+        return []
 
-    if not logs or len(logs) < 10:
-        return None
-
-    # Bucket errors by date so we can pair them across the two models.
-    # Each bucket holds at most one active-error and one comparator-error
-    # per date; a date that has both contributes one paired observation.
-    by_date: dict = {}
-    for log in logs:
-        d = log.get("date")
+    # date -> approved actual minutes (a property-day total)
+    actual_by_date: Dict[date, float] = {}
+    for r in (actual_rows or []):
+        d = _parse_date(r.get("date"))
         if d is None:
             continue
-        bucket = by_date.setdefault(str(d), {})
         try:
-            err = float(log.get("abs_error", 0))
+            actual_by_date[d] = float(r["total_approved_minutes"])
         except (TypeError, ValueError):
             continue
-        run_id = log.get("model_run_id")
-        if run_id == active_model_id and "active" not in bucket:
-            bucket["active"] = err
-        elif run_id == comparator_model_id and "comparator" not in bucket:
-            bucket["comparator"] = err
 
-    paired_active: list = []
-    paired_baseline: list = []
-    for bucket in by_date.values():
-        if "active" in bucket and "comparator" in bucket:
-            paired_active.append(bucket["active"])
-            paired_baseline.append(bucket["comparator"])
+    out: List[Tuple[date, float, float]] = []
+    for r in rows:
+        d = _parse_date(r.get("date"))
+        if d is None:
+            continue
+        try:
+            predicted = float(r["predicted_value"])
+            actual = float(r["actual_value"])
+        except (TypeError, ValueError):
+            continue
+        # Same-DOW median over the last 4 same-DOWs BEFORE date d.
+        naive_candidates: List[float] = []
+        for k in range(1, 5):
+            prior_dow = d - timedelta(weeks=k)
+            if prior_dow in actual_by_date:
+                naive_candidates.append(actual_by_date[prior_dow])
+        if len(naive_candidates) < 2:
+            # Need at least 2 same-DOWs to compute a stable median; skip.
+            continue
+        naive_pred = float(np.median(naive_candidates))
+        active_error = abs(predicted - actual)
+        naive_error = abs(naive_pred - actual)
+        out.append((d, active_error, naive_error))
+    return out
 
-    # Codex post-merge review 2026-05-13 (H-4): bumped from n=5 to n=10.
-    # At n=5 the Wilcoxon signed-rank one-sided minimum achievable p-value
-    # is 1/32 ≈ 0.031 — already below the 0.05 trigger at line 229. A
-    # single unlucky 5-of-5 comparison favoring "active is worse" would
-    # fire a rollback regardless of effect size. n>=10 gives the test a
-    # minimum p ~0.001 and makes the alpha=0.05 boundary meaningful.
-    # Step 2 (BH-FDR across the cron pass) tracked as backlog — requires
-    # pivoting the cron loop, defer until shadow-evaluate has real
-    # fleet-scale traffic.
-    if len(paired_active) < 10:
-        # Not enough paired days yet to make a confident call.
+
+def compute_rolling_mae_vs_baseline(
+    property_id: str,
+    layer: str,
+) -> Optional[Tuple[float, float, float]]:
+    """Compute (active_mae, baseline_mae, pvalue) for the rolling
+    window, or None if there's insufficient mature paired data.
+
+    Test: paired one-sided Wilcoxon signed-rank, "active errors are
+    GREATER than naive errors". The same test the dead-code v1 used —
+    only the comparator has changed.
+
+    zero_method='zsplit' handles ties (same error on both predictors)
+    without throwing on Wilcoxon's no-difference fast path.
+    """
+    settings = get_settings()
+    obs = compute_same_dow_baseline_errors(property_id, layer)
+    if len(obs) < settings.auto_rollback_min_paired_days:
         return None
-
-    active_mae = float(np.mean(paired_active))
-    baseline_mae = float(np.mean(paired_baseline))
-
-    # Wilcoxon signed-rank: paired, one-sided test that active errors
-    # are GREATER than baseline errors (i.e. the active model is worse).
-    # zero_method="zsplit" handles ties (same error on both models)
-    # without throwing on Wilcoxon's no-difference fast-path.
+    active_errors = np.array([o[1] for o in obs], dtype=float)
+    baseline_errors = np.array([o[2] for o in obs], dtype=float)
     try:
         result = stats.wilcoxon(
-            paired_active, paired_baseline,
+            active_errors, baseline_errors,
             alternative="greater",
             zero_method="zsplit",
         )
         pvalue = float(result.pvalue)
-    except Exception:
+    except Exception as exc:
+        print(json.dumps({
+            "evt": "rolling_mae_wilcoxon_failed",
+            "property_id": property_id, "layer": layer,
+            "error": str(exc)[:200],
+        }))
         return None
+    return (float(active_errors.mean()), float(baseline_errors.mean()), pvalue)
 
-    return (active_mae, baseline_mae, pvalue)
 
-
-async def check_auto_rollback(
-    property_id: str,
-    layer: str,
+def decide_rollback(
+    active_mae: float,
+    baseline_mae: float,
+    pvalue: float,
+    alpha: float,
 ) -> bool:
-    """Check if active model should be rolled back.
+    """Pure function. True iff the test rejects the null at alpha
+    (which may be a BH-adjusted threshold passed by the orchestrator)
+    AND the effect direction is correct (active > baseline).
 
-    Criteria:
-    - Wilcoxon p-value < 0.05 AND
-    - Active model errors > baseline errors
+    Guard against the perverse case where Wilcoxon rejects but
+    active_mae is somehow not actually greater (numerical edge case
+    on tied data).
+    """
+    if pvalue >= alpha:
+        return False
+    if active_mae <= baseline_mae:
+        return False
+    return True
 
-    Args:
-        property_id: Property UUID
-        layer: Layer name
 
-    Returns:
-        True if rollback should happen
+def recent_rollback_within_cooldown(client, property_id: str, layer: str) -> bool:
+    """Returns True if a rollback fired for this (property, layer)
+    within auto_rollback_cooldown_days. Used by the orchestrator to
+    skip (property, layer) pairs that just rolled back — prevents
+    oscillation. Public so fleet_rollback.py can call it without
+    importing a private helper.
     """
     settings = get_settings()
-    result = await compute_rolling_shadow_mae(property_id, layer)
-
-    if result is None:
-        return False
-
-    active_mae, baseline_mae, pvalue = result
-
-    # Rollback if statistically worse
-    should_rollback = (
-        pvalue < settings.auto_rollback_pvalue_threshold
-        and active_mae > baseline_mae
+    cutoff_iso = (
+        datetime.now(timezone.utc) - timedelta(days=settings.auto_rollback_cooldown_days)
+    ).isoformat()
+    rows = client.fetch_many(
+        "model_runs",
+        filters={
+            "property_id": property_id,
+            "layer": layer,
+            "deactivation_reason": "auto_rollback",
+        },
+        order_by="deactivated_at",
+        descending=True,
+        limit=1,
     )
+    if not rows:
+        return False
+    deactivated_at = rows[0].get("deactivated_at")
+    if not deactivated_at:
+        return False
+    return str(deactivated_at) >= cutoff_iso
 
-    if should_rollback:
-        # Look up the active model FIRST so we can log its id even if the lock
-        # acquisition or update fails. (Previous version referenced
-        # active_models[0]['id'] in the log line BEFORE that variable was
-        # ever populated — the log always wrote null.)
-        client = get_supabase_client()
-        try:
-            active_models = client.fetch_many(
-                "model_runs",
-                filters={"property_id": property_id, "layer": layer, "is_active": True},
-                limit=1,
-            )
-        except Exception as fetch_err:
-            print(
-                json.dumps(
+
+def execute_rollback(
+    property_id: str,
+    layer: str,
+    *,
+    dry_run: bool,
+) -> Dict[str, Any]:
+    """Deactivate the active fitted model for (property, layer).
+
+    No fallback promotion — Codex high-priority finding #3 from the
+    Phase 7 review. The previous-active fallback might also be drifting
+    (it's OLDER, not fresher). Promoting it blind risks oscillation
+    and bypasses the Phase 4a 7-day shadow soak that's supposed to
+    gate model activations. Instead: property serves cold-start cohort
+    prior (already wired in Phase 1.2 of v2) until next Sunday's
+    training cycle produces a fresh active.
+
+    Returns:
+      {decision: 'no_active' | 'would_fire' | 'rolled_back' | 'execute_failed',
+       deactivated_model_run_id: <id|null>,
+       dry_run: bool, ...diagnostics...}
+    """
+    client = get_supabase_client()
+
+    active_rows = client.fetch_many(
+        "model_runs",
+        filters={
+            "property_id": property_id,
+            "layer": layer,
+            "is_active": True,
+            "is_shadow": False,
+        },
+        limit=1,
+    )
+    if not active_rows:
+        # No active model to roll back — orchestrator should have
+        # filtered this case earlier, but defense-in-depth.
+        return {
+            "decision": "no_active",
+            "property_id": property_id,
+            "layer": layer,
+            "deactivated_model_run_id": None,
+            "dry_run": dry_run,
+        }
+    active = active_rows[0]
+    active_id = active.get("id")
+
+    if dry_run:
+        print(json.dumps({
+            "evt": "auto_rollback_dry_run_would_fire",
+            "property_id": property_id,
+            "layer": layer,
+            "active_model_run_id": active_id,
+            "active_model_version": active.get("model_version"),
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }))
+        return {
+            "decision": "would_fire",
+            "property_id": property_id,
+            "layer": layer,
+            "deactivated_model_run_id": None,  # nothing deactivated in dry-run
+            "active_model_run_id": active_id,
+            "dry_run": True,
+        }
+
+    # Live mode — deactivate inside a per-(property, layer) advisory lock
+    # so concurrent orchestrator runs can't double-deactivate. Same lock
+    # helper the training paths use (training/supply.py:71-111).
+    db_url = os.environ.get("SUPABASE_DB_URL") or os.environ.get("DATABASE_URL")
+    if not db_url:
+        print(json.dumps({
+            "evt": "auto_rollback_no_database_url",
+            "property_id": property_id, "layer": layer,
+            "remediation": "Set DATABASE_URL or SUPABASE_DB_URL on ml-service.",
+        }))
+        return {
+            "decision": "execute_failed",
+            "property_id": property_id, "layer": layer,
+            "deactivated_model_run_id": None,
+            "active_model_run_id": active_id,
+            "dry_run": False,
+            "error": "no_database_url_for_lock",
+        }
+
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url)
+        with advisory_lock(conn, property_id, f"auto_rollback_{layer}", blocking=False) as acquired:
+            if not acquired:
+                print(json.dumps({
+                    "evt": "auto_rollback_lock_held_by_other",
+                    "property_id": property_id, "layer": layer,
+                }))
+                return {
+                    "decision": "execute_failed",
+                    "property_id": property_id, "layer": layer,
+                    "deactivated_model_run_id": None,
+                    "active_model_run_id": active_id,
+                    "dry_run": False,
+                    "error": "lock_held_by_other",
+                }
+            try:
+                client.update(
+                    "model_runs",
                     {
-                        "level": "error",
-                        "event": "auto_rollback_active_model_fetch_failed",
-                        "property_id": property_id,
-                        "layer": layer,
-                        "err": repr(fetch_err),
-                        "ts": datetime.utcnow().isoformat(),
-                    }
+                        "is_active": False,
+                        "deactivated_at": datetime.now(timezone.utc).isoformat(),
+                        "deactivation_reason": "auto_rollback",
+                    },
+                    {"id": active_id},
                 )
-            )
-            return should_rollback
-        active_model_id = active_models[0]["id"] if active_models else None
-
-        # Acquire advisory lock so concurrent workers don't double-deactivate.
-        # Codex adversarial review 2026-05-13 (M-C1): the previous version
-        # parsed settings.supabase_url (HTTPS, port 443, PostgREST gateway)
-        # as if it were a Postgres host. Every connect failed silently and
-        # auto-rollback never actually fired in production. Use the same
-        # database_url the training modules use for their advisory locks.
-        if not settings.database_url:
-            print(
-                json.dumps(
-                    {
-                        "level": "error",
-                        "event": "auto_rollback_no_database_url",
-                        "property_id": property_id,
-                        "layer": layer,
-                        "ts": datetime.utcnow().isoformat(),
-                        "remediation": "Set DATABASE_URL (or SUPABASE_DB_URL) in the ML service env.",
-                    }
-                )
-            )
-            return should_rollback
-        conn = None
-        try:
-            conn = psycopg2.connect(settings.database_url)
-            with advisory_lock(conn, property_id, layer, blocking=False) as acquired:
-                if not acquired:
-                    # Another worker is handling this rollback; skip silently.
-                    print(
-                        json.dumps(
-                            {
-                                "level": "info",
-                                "event": "auto_rollback_lock_held_by_other",
-                                "property_id": property_id,
-                                "layer": layer,
-                                "ts": datetime.utcnow().isoformat(),
-                            }
-                        )
-                    )
-                    return should_rollback
-
-                # Emit structured log before deactivating.
-                print(
-                    json.dumps(
-                        {
-                            "level": "error",
-                            "event": "auto_rollback_triggered",
-                            "property_id": property_id,
-                            "layer": layer,
-                            "active_model_run_id": active_model_id,
-                            "active_mae": float(active_mae),
-                            "baseline_mae": float(baseline_mae),
-                            "pvalue": float(pvalue),
-                            "ts": datetime.utcnow().isoformat(),
-                        }
-                    )
-                )
-
-                # Find a fallback BEFORE we deactivate — if no candidate
-                # exists, we still deactivate (predictions on the bad
-                # model are worse than no predictions) but we surface a
-                # high-priority alert so operators can intervene.
-                fallback = _find_fallback_model(
-                    client, property_id, layer, active_model_id or "",
-                )
-
-                # Deactivate the bad model.
-                if active_model_id:
-                    try:
-                        client.update(
-                            "model_runs",
-                            {
-                                "is_active": False,
-                                "deactivated_at": datetime.utcnow().isoformat(),
-                                "deactivation_reason": "auto_rollback",
-                            },
-                            {"id": active_model_id},
-                        )
-                    except Exception as update_err:
-                        print(
-                            json.dumps(
-                                {
-                                    "level": "error",
-                                    "event": "auto_rollback_update_failed",
-                                    "property_id": property_id,
-                                    "layer": layer,
-                                    "active_model_run_id": active_model_id,
-                                    "err": repr(update_err),
-                                    "ts": datetime.utcnow().isoformat(),
-                                }
-                            )
-                        )
-                        # If we couldn't even deactivate, don't try to
-                        # promote a fallback — the bad model is still
-                        # marked active and we'd have two active rows.
-                        return should_rollback
-
-                # Promote the fallback if we found one.
-                if fallback is not None:
-                    fallback_id = fallback["id"]
-                    try:
-                        client.update(
-                            "model_runs",
-                            {
-                                "is_active": True,
-                                "activated_at": datetime.utcnow().isoformat(),
-                                "activation_reason": "auto_rollback_restore",
-                            },
-                            {"id": fallback_id},
-                        )
-                        print(
-                            json.dumps(
-                                {
-                                    "level": "warning",
-                                    "event": "auto_rollback_fallback_promoted",
-                                    "property_id": property_id,
-                                    "layer": layer,
-                                    "deactivated_model_run_id": active_model_id,
-                                    "promoted_model_run_id": fallback_id,
-                                    "promoted_validation_mae": float(
-                                        fallback.get("validation_mae", 0)
-                                    ),
-                                    "ts": datetime.utcnow().isoformat(),
-                                }
-                            )
-                        )
-                    except Exception as promote_err:
-                        # Promotion failed → property is left without an
-                        # active model. Loud alert so operators can fix
-                        # manually before tomorrow's predictions.
-                        print(
-                            json.dumps(
-                                {
-                                    "level": "error",
-                                    "event": "auto_rollback_no_active_model",
-                                    "subevent": "promotion_failed",
-                                    "property_id": property_id,
-                                    "layer": layer,
-                                    "deactivated_model_run_id": active_model_id,
-                                    "attempted_promotion_run_id": fallback_id,
-                                    "err": repr(promote_err),
-                                    "ts": datetime.utcnow().isoformat(),
-                                }
-                            )
-                        )
-                else:
-                    # No safe fallback exists. Predictions for this
-                    # (property, layer) will stop until a human acts.
-                    # Loud structured log so monitoring can page.
-                    print(
-                        json.dumps(
-                            {
-                                "level": "error",
-                                "event": "auto_rollback_no_active_model",
-                                "subevent": "no_fallback_found",
-                                "property_id": property_id,
-                                "layer": layer,
-                                "deactivated_model_run_id": active_model_id,
-                                "ts": datetime.utcnow().isoformat(),
-                            }
-                        )
-                    )
-        except Exception as lock_err:
-            # Lock acquisition / connection failed — surface to operators
-            # instead of silently skipping (previous version did `pass`).
-            print(
-                json.dumps(
-                    {
-                        "level": "error",
-                        "event": "auto_rollback_lock_or_conn_failed",
-                        "property_id": property_id,
-                        "layer": layer,
-                        "active_model_run_id": active_model_id,
-                        "err": repr(lock_err),
-                        "ts": datetime.utcnow().isoformat(),
-                    }
-                )
-            )
-        finally:
-            if conn is not None:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
-    return should_rollback
+            except Exception as exc:
+                print(json.dumps({
+                    "evt": "auto_rollback_update_failed",
+                    "property_id": property_id, "layer": layer,
+                    "active_model_run_id": active_id,
+                    "error": str(exc)[:200],
+                }))
+                return {
+                    "decision": "execute_failed",
+                    "property_id": property_id, "layer": layer,
+                    "deactivated_model_run_id": None,
+                    "active_model_run_id": active_id,
+                    "dry_run": False,
+                    "error": f"update_failed: {exc!r}"[:300],
+                }
+        # Loud structured log after lock release (so the lock window stays short).
+        print(json.dumps({
+            "evt": "auto_rollback_fired",
+            "property_id": property_id,
+            "layer": layer,
+            "deactivated_model_run_id": active_id,
+            "deactivated_model_version": active.get("model_version"),
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "note": "property will serve cold-start cohort prior until next training cycle",
+        }))
+        return {
+            "decision": "rolled_back",
+            "property_id": property_id, "layer": layer,
+            "deactivated_model_run_id": active_id,
+            "active_model_run_id": active_id,
+            "dry_run": False,
+        }
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass

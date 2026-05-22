@@ -412,6 +412,86 @@ def _train_demand_inner(
         "posterior_params": posterior_params,
         "hyperparameters": model.get_config(),
     }
+    # Phase 4a (2026-05-22) — promotion safety gate (see training/supply.py
+    # for the full architectural rationale). When a new fit would normally
+    # activate AND an existing fitted model is active, write the new run
+    # as a shadow and let the layer-agnostic ml-shadow-evaluate cron
+    # promote it after a 7-day soak iff its validation_mae matches or
+    # beats the active's ±5%. Cold-start replacements still go through
+    # the RPC path directly.
+    active_fitted_exists = False
+    if should_activate:
+        try:
+            active_rows = client.fetch_many(
+                "model_runs",
+                filters={
+                    "property_id": property_id,
+                    "layer": "demand",
+                    "is_active": True,
+                    "is_shadow": False,
+                },
+                limit=1,
+            )
+            if active_rows:
+                active = active_rows[0]
+                is_cold_start = bool(active.get("is_cold_start")) or (
+                    str(active.get("algorithm") or "").startswith("cold-start")
+                )
+                active_fitted_exists = not is_cold_start
+        except Exception as exc:
+            print(json.dumps({
+                "evt": "demand_promotion_gate_check_failed",
+                "property_id": property_id, "error": str(exc)[:200],
+            }))
+            # Fail-open on the safety gate — original behavior (immediate
+            # replace) is the worst case here.
+
+    if active_fitted_exists:
+        # Shadow path — bypass the RPC. is_active=false means no conflict
+        # with the partial unique index that the RPC's lock+deactivate
+        # dance was designed to protect.
+        shadow_row = {
+            "property_id": property_id,
+            "layer": "demand",
+            "item_id": None,
+            "is_active": False,
+            "is_shadow": True,
+            "shadow_started_at": datetime.utcnow().isoformat(),
+            **fields,
+        }
+        try:
+            inserted = client.insert("model_runs", shadow_row)
+        except Exception as exc:
+            print(json.dumps({
+                "evt": "demand_shadow_insert_failed",
+                "property_id": property_id, "error": str(exc)[:200],
+            }))
+            return {
+                "error": f"shadow insert failed: {exc}",
+                "model_run_id": None,
+                "is_active": False,
+            }
+        new_run_id = inserted.get("id") if isinstance(inserted, dict) else None
+        print(json.dumps({
+            "evt": "demand_shadow_installed",
+            "property_id": property_id,
+            "shadow_run_id": new_run_id,
+            "validation_mae": validation_mae,
+            "active_validation_mae": active_rows[0].get("validation_mae") if active_rows else None,
+            "note": "awaits 7-day soak in ml-shadow-evaluate cron",
+        }))
+        return {
+            "model_run_id": new_run_id,
+            "is_active": False,
+            "is_shadow": True,
+            "training_mae": training_mae,
+            "validation_mae": validation_mae,
+            "baseline_mae": baseline_mae,
+            "beats_baseline_pct": beats_baseline_pct,
+            "training_row_count": len(df),
+        }
+
+    # Existing RPC path — first model, cold-start replacement, or gates failed.
     rpc_result = client.client.rpc(
         "staxis_install_housekeeping_model_run",
         {

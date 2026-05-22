@@ -202,6 +202,13 @@ const checks: Array<[string, CheckFn]> = [
   // to read training logs. Phase B's len(X_test)>=30 gate silently
   // rejects models — this makes that visible.
   ['ml_models_holdout_size',         checkMlModelsHoldoutSize],
+  // Phase 7 v2 (2026-05-22): the auto-rollback pipeline depends on a
+  // daily prediction_log writer. If the writer cron silently fails,
+  // the rolling-MAE check has no fresh data and silently never fires
+  // a rollback — exactly the same bug class the v1 design had. These
+  // two checks make both halves of the pipeline observable.
+  ['ml_prediction_log_writer_alive', checkMlPredictionLogWriterAlive],
+  ['ml_no_orphan_active_after_rollback', checkMlNoOrphanActiveAfterRollback],
   // Codex round-5 META J2.1 (2026-05-13): the cohort prior aggregator
   // had a units-mismatch bug for 5+ months — emitted ABSOLUTE
   // units/day into a column named per-room-per-day. Latent today
@@ -1749,7 +1756,7 @@ const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   '0124', '0125', '0126', '0129', '0130', '0131', '0132', '0133',
   '0135', '0136', '0137', '0138', '0139', '0140',
   '0141', '0142', '0143', '0144', '0145', '0146', '0147', '0148',
-  '0149', '0150', '0151', '0152', '0153', '0154', '0155',
+  '0149', '0150', '0151', '0152', '0153', '0154', '0155', '0156', '0157',
 ];
 
 /**
@@ -2690,6 +2697,127 @@ async function checkMlModelsHoldoutSize(): Promise<Omit<Check, 'name' | 'duratio
     };
   } catch (err) {
     return { status: 'warn', detail: `holdout-size check threw: ${errToString(err)}` };
+  }
+}
+
+/**
+ * Phase 7 v2 (2026-05-22) — observability for the prediction_log
+ * backfill writer (ml-service/src/actuals.py). If the daily backfill
+ * cron silently fails (Railway outage, advisory lock thrashing, SQL
+ * regression), the auto-rollback pipeline has no fresh paired data
+ * and silently never fires — exactly the bug class the v1 design had.
+ *
+ * Fails when: no prediction_log row in the last 28h AND there's at
+ * least one active fitted housekeeping model in the fleet (we'd expect
+ * rows). 28h tolerates one missed daily cron run.
+ */
+async function checkMlPredictionLogWriterAlive(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const cutoffIso = new Date(Date.now() - 28 * 3600_000).toISOString();
+    const [{ count: recentLogCount }, { count: activeFittedCount }] = await Promise.all([
+      supabaseAdmin
+        .from('prediction_log')
+        .select('id', { count: 'exact', head: true })
+        .gte('logged_at', cutoffIso),
+      // Active non-cold-start housekeeping models — the population
+      // the writer is supposed to be tracking. If none exist, the
+      // writer SHOULD be quiet, and we'd give it a pass.
+      supabaseAdmin
+        .from('model_runs')
+        .select('id', { count: 'exact', head: true })
+        .eq('is_active', true)
+        .eq('is_shadow', false)
+        .in('layer', ['demand', 'supply'])
+        .eq('is_cold_start', false),
+    ]);
+    if ((activeFittedCount ?? 0) === 0) {
+      return {
+        status: 'skipped',
+        detail: 'No active fitted housekeeping models — writer has no work to do',
+      };
+    }
+    if ((recentLogCount ?? 0) === 0) {
+      return {
+        status: 'fail',
+        detail: `prediction_log has no rows newer than 28h but ${activeFittedCount} ` +
+          `active fitted housekeeping models exist (writer should be producing rows daily)`,
+        fix: 'Check the GitHub Actions ml-cron workflow for the auto-rollback job ' +
+          '(daily 06:45 CDT). Inspect ml-service Railway logs for actuals_backfill_* ' +
+          'event names. May indicate Maria isn\'t approving cleanings (recorded → ' +
+          'approved gap), in which case total_approved_minutes IS NULL skips writes.',
+      };
+    }
+    return {
+      status: 'ok',
+      detail: `${recentLogCount} prediction_log rows written in the last 28h ` +
+        `(${activeFittedCount} active fitted housekeeping models on the fleet)`,
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `prediction_log writer check threw: ${errToString(err)}` };
+  }
+}
+
+/**
+ * Phase 7 v2 (2026-05-22) — surface "rollback fired but next Sunday's
+ * training cycle didn't produce a replacement model". The auto-rollback
+ * pipeline deliberately does NOT promote a fallback (Codex high-pri
+ * finding) — property serves cold-start cohort prior until the next
+ * weekly training run creates a fresh active. If 8+ days pass with no
+ * new active, something is broken in the training pipeline.
+ *
+ * The 8-day window aligns with the weekly training cron (Sunday 03:00
+ * CDT): if a rollback fires Monday, Sunday's training should produce
+ * a replacement; if Tuesday rolls around without one, alert.
+ */
+async function checkMlNoOrphanActiveAfterRollback(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const cutoffIso = new Date(Date.now() - 8 * 86400_000).toISOString();
+    // Find rolled-back (property, layer) pairs from the last 8 days.
+    const { data: rolledBack } = await supabaseAdmin
+      .from('model_runs')
+      .select('property_id, layer, deactivated_at')
+      .eq('deactivation_reason', 'auto_rollback')
+      .gte('deactivated_at', cutoffIso)
+      .limit(200);
+    if (!rolledBack || rolledBack.length === 0) {
+      return { status: 'ok', detail: 'No auto-rollbacks in the last 8 days' };
+    }
+    // For each, check whether an active non-shadow row exists now.
+    const orphans: Array<{ property_id: string; layer: string }> = [];
+    for (const row of rolledBack) {
+      const { count } = await supabaseAdmin
+        .from('model_runs')
+        .select('id', { count: 'exact', head: true })
+        .eq('property_id', row.property_id as string)
+        .eq('layer', row.layer as string)
+        .eq('is_active', true)
+        .eq('is_shadow', false);
+      if ((count ?? 0) === 0) {
+        orphans.push({
+          property_id: row.property_id as string,
+          layer: row.layer as string,
+        });
+      }
+    }
+    if (orphans.length === 0) {
+      return {
+        status: 'ok',
+        detail: `${rolledBack.length} auto-rollback(s) in last 8 days; all properties ` +
+          'have a replacement active model',
+      };
+    }
+    return {
+      status: 'warn',
+      detail: `${orphans.length} property/layer pair(s) rolled back >8 days ago without ` +
+        `replacement active model: ${orphans.map((o) => `${o.property_id}:${o.layer}`).slice(0, 3).join(', ')}` +
+        (orphans.length > 3 ? ` (+${orphans.length - 3} more)` : ''),
+      fix: 'Check the weekly training cron (Sunday 03:00 CDT for demand, 03:30 for ' +
+        'supply). The property may be in cold-start (insufficient cleaning_events ' +
+        'after the rollback) — in which case serving the cohort prior is correct ' +
+        'and this warning is informational, not actionable.',
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `orphan-active check threw: ${errToString(err)}` };
   }
 }
 

@@ -30,16 +30,96 @@ function getTomorrowDateStr(tz: string = APP_TIMEZONE): string {
 }
 
 /**
+ * Honest model-state classification surfaced to the UI tile / tooltip.
+ *
+ * Derived from the Python optimizer's `inputs_snapshot` keys:
+ *   - `'fitted'`              — L1 demand AND L2 supply trained from this hotel
+ *   - `'warming-up'`          — any backing layer is `algorithm='cold-start-cohort-prior'`
+ *                               (cohort benchmark, not learned-from-this-hotel)
+ *   - `'capacity-unavailable'` — L1 fitted but < 10 supply predictions for
+ *                               this date → optimizer dropped to L1-only path;
+ *                               recommendation is from aggregate demand only,
+ *                               no per-room model ran
+ *
+ * Backward-compat: rows written before Phase 1.2 don't carry these keys.
+ * Default to `'warming-up'` (fail-honest, not fail-AI).
+ */
+export type OptimizerModelKind = 'fitted' | 'warming-up' | 'capacity-unavailable';
+
+export interface OptimizerInputsSnapshot {
+  l1_is_cold_start?: unknown;
+  l2_any_cold_start?: unknown;
+  used_l2_supply?: unknown;
+  l2_prediction_count?: unknown;
+  l1_algorithm?: unknown;
+  l2_algorithms?: unknown;
+  both_layers_cold_start?: unknown;
+}
+
+export function parseInputsSnapshot(raw: unknown): OptimizerInputsSnapshot {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    return raw as OptimizerInputsSnapshot;
+  }
+  // Some Supabase writers stringify JSONB; tolerate both shapes.
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+export function deriveModelKind(snap: OptimizerInputsSnapshot): {
+  modelKind: OptimizerModelKind;
+  warmupReason: string | null;
+} {
+  // Treat missing keys as warming-up (fail-honest). Old rows from before
+  // Phase 1.2 will hit this branch and the UI will downgrade to "Industry
+  // estimate · learning" — better than mislabeling them "AI recommendation".
+  const hasKeys =
+    snap.l1_is_cold_start !== undefined ||
+    snap.l2_any_cold_start !== undefined ||
+    snap.used_l2_supply !== undefined;
+  if (!hasKeys) {
+    return { modelKind: 'warming-up', warmupReason: 'pre-phase-1.2 row (kind metadata absent)' };
+  }
+
+  const l1Cold = snap.l1_is_cold_start === true;
+  const l2Cold = snap.l2_any_cold_start === true;
+  const usedL2 = snap.used_l2_supply === true;
+  const l2Count = typeof snap.l2_prediction_count === 'number' ? snap.l2_prediction_count : 0;
+
+  if (!usedL2) {
+    return {
+      modelKind: 'capacity-unavailable',
+      warmupReason: `L1 ${l1Cold ? 'cold-start' : 'fitted'}; L2 capacity model unavailable (${l2Count} supply predictions)`,
+    };
+  }
+  if (l1Cold || l2Cold) {
+    const l1Note = l1Cold ? 'cold-start' : 'fitted';
+    const l2Note = l2Cold ? 'cold-start' : 'fitted';
+    return { modelKind: 'warming-up', warmupReason: `L1 ${l1Note}; L2 ${l2Note}` };
+  }
+  return { modelKind: 'fitted', warmupReason: null };
+}
+
+/**
  * Fetch the active optimizer result for tomorrow (the recommended headcount).
  * Returns null if no active model exists or the row is older than 24h.
  *
- * Codex post-merge review 2026-05-13 (N2): the optimizer cron is currently
- * paused (`src/app/api/cron/ml-run-inference/route.ts` returns
- * `{status:'skipped'}` for the optimizer stage). Anything in the
- * `optimizer_results` table from before the pause is now stale. The 24h
- * `ran_at` gate prevents this helper from surfacing those rows. Combined
- * with the paused cron, the function returns null until the cron is
- * re-enabled — better than silently showing months-old recommendations.
+ * Phase 1.3 (2026-05-22): now exposes `modelKind` derived from the
+ * Python optimizer's `inputs_snapshot` so the Schedule tab can branch
+ * the headline label between "AI recommendation" (fitted) and "Industry
+ * estimate · learning" (warming-up or capacity-unavailable). Bug this
+ * fixes: prior to Phase 1, the tile said "AI recommendation" for cold-start
+ * hotels whose recommendations were industry-benchmark cohort priors.
+ *
+ * Codex post-merge review 2026-05-13 (N2): the 24h `ran_at` gate prevents
+ * this helper from surfacing stale rows. Combined with the optimizer cron
+ * being un-paused at Phase M3.1, returns the freshest row per property.
  */
 export async function getActiveOptimizerForTomorrow(
   propertyId: string,
@@ -47,13 +127,15 @@ export async function getActiveOptimizerForTomorrow(
 ): Promise<{
   recommendedHeadcount: number;
   completionProbabilityCurve: Array<{ headcount: number; p: number }>;
+  modelKind: OptimizerModelKind;
+  warmupReason: string | null;
 } | null> {
   try {
     const tomorrow = getTomorrowDateStr(tz);
     const freshnessIso = new Date(Date.now() - 24 * 3_600_000).toISOString();
     const { data, error } = await supabase
       .from('optimizer_results')
-      .select('recommended_headcount, completion_probability_curve, ran_at')
+      .select('recommended_headcount, completion_probability_curve, inputs_snapshot, ran_at')
       .eq('property_id', propertyId)
       .eq('date', tomorrow)
       .gte('ran_at', freshnessIso)
@@ -69,12 +151,18 @@ export async function getActiveOptimizerForTomorrow(
     const rawCurve = (data.completion_probability_curve ?? []) as unknown;
     const curveRows: Array<{ headcount?: unknown; p?: unknown }> =
       Array.isArray(rawCurve) ? (rawCurve as Array<{ headcount?: unknown; p?: unknown }>) : [];
+
+    const snap = parseInputsSnapshot(data.inputs_snapshot);
+    const { modelKind, warmupReason } = deriveModelKind(snap);
+
     return {
       recommendedHeadcount: data.recommended_headcount as number,
       completionProbabilityCurve: curveRows.map(row => ({
         headcount: typeof row.headcount === 'number' ? row.headcount : 0,
         p: typeof row.p === 'number' ? row.p : 0,
       })),
+      modelKind,
+      warmupReason,
     };
   } catch (err) {
     logErr('getActiveOptimizerForTomorrow', err);

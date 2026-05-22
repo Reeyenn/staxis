@@ -366,6 +366,107 @@ def _train_supply_inner(
         "posterior_params": posterior_params,
         "hyperparameters": model.get_config(),
     }
+
+    # Phase 4a (2026-05-22) — promotion safety gate. When a new fit would
+    # normally activate (`should_activate=True`) AND an active fitted model
+    # already exists for this (property, layer), write the new run as a
+    # SHADOW (is_shadow=True, is_active=False, shadow_started_at=now())
+    # instead of replacing the active. The already-layer-agnostic
+    # `ml-shadow-evaluate` cron promotes shadows after a 7-day soak iff
+    # shadow.validation_mae <= active.validation_mae × 1.05; otherwise
+    # rejects with deactivation_reason='shadow_underperformed'. Net:
+    # a single bad retrain can no longer silently degrade an active
+    # housekeeping model. See
+    # /Users/reeyen/.claude/plans/you-are-claude-code-hashed-hellman.md
+    # Phase 4a for the architectural rationale.
+    #
+    # Fast-paths preserved:
+    #   - First model ever (no active row): RPC path, activates directly.
+    #   - Active is cold-start: REPLACE directly (cold-start is the
+    #     "anything beats this" baseline; no soak needed).
+    #   - Active is fitted: new fit goes to shadow.
+    #   - Gates didn't pass (should_activate=False): RPC path, inserts as
+    #     non-active non-shadow. Operator can inspect via model_runs.
+    #
+    # Bypassing the RPC for shadow inserts (instead of extending it) is
+    # the right architectural call: shadow rows have is_active=false and
+    # won't conflict with the `model_runs_active_housekeeping_uq` partial
+    # unique index that the RPC's lock-then-deactivate dance was built to
+    # protect. The RPC keeps its load-bearing role for activation paths.
+    active_fitted_exists = False
+    if should_activate:
+        try:
+            active_rows = client.fetch_many(
+                "model_runs",
+                filters={
+                    "property_id": property_id,
+                    "layer": "supply",
+                    "is_active": True,
+                    "is_shadow": False,
+                },
+                limit=1,
+            )
+            if active_rows:
+                active = active_rows[0]
+                # Cold-start detection: trust is_cold_start (migration 0123
+                # backfilled) + defense-in-depth on algorithm prefix.
+                is_cold_start = bool(active.get("is_cold_start")) or (
+                    str(active.get("algorithm") or "").startswith("cold-start")
+                )
+                active_fitted_exists = not is_cold_start
+        except Exception as exc:
+            print(json.dumps({
+                "evt": "supply_promotion_gate_check_failed",
+                "property_id": property_id, "error": str(exc)[:200],
+            }))
+            # Fall through to the existing RPC path — fail-open on the
+            # safety gate is safer than refusing to train. The original
+            # behavior (immediate replace) is the worst case here.
+
+    if active_fitted_exists:
+        # Shadow path — direct insert. is_active stays false so the
+        # partial unique index doesn't fight us.
+        shadow_row = {
+            "property_id": property_id,
+            "layer": "supply",
+            "item_id": None,
+            "is_active": False,
+            "is_shadow": True,
+            "shadow_started_at": datetime.utcnow().isoformat(),
+            **fields,
+        }
+        try:
+            inserted = client.insert("model_runs", shadow_row)
+        except Exception as exc:
+            print(json.dumps({
+                "evt": "supply_shadow_insert_failed",
+                "property_id": property_id, "error": str(exc)[:200],
+            }))
+            return {
+                "error": f"shadow insert failed: {exc}",
+                "model_run_id": None,
+                "is_active": False,
+            }
+        new_run_id = inserted.get("id") if isinstance(inserted, dict) else None
+        print(json.dumps({
+            "evt": "supply_shadow_installed",
+            "property_id": property_id,
+            "shadow_run_id": new_run_id,
+            "validation_mae": validation_mae,
+            "active_validation_mae": active_rows[0].get("validation_mae") if active_rows else None,
+            "note": "awaits 7-day soak in ml-shadow-evaluate cron",
+        }))
+        return {
+            "model_run_id": new_run_id,
+            "is_active": False,
+            "is_shadow": True,
+            "training_mae": training_mae,
+            "validation_mae": validation_mae,
+            "beats_baseline_pct": beats_baseline_pct,
+            "training_row_count": len(df),
+        }
+
+    # Existing RPC path — activates directly (no active or active is cold-start).
     rpc_result = client.client.rpc(
         "staxis_install_housekeeping_model_run",
         {

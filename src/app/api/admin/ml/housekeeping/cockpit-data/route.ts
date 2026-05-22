@@ -56,6 +56,13 @@ export interface HKPropertyEntry {
   joinedAt: string | null;
   /** True for test/canary properties; excluded from fleet aggregates. */
   isTest: boolean;
+  /**
+   * Phase 7 v2 (2026-05-22) — most recent auto-rollback timestamp for
+   * THIS hotel. null when no rollback has ever fired for it. The
+   * single-hotel cockpit view uses this to render the "Last
+   * auto-rollback" row honestly.
+   */
+  lastAutoRollbackAt: string | null;
 }
 
 export interface HKAggregateStats {
@@ -70,6 +77,53 @@ export interface HKAggregateStats {
   fleetMedianDay: number;
   daysOfHistoryRange: { min: number; max: number };
   healthCounts: { healthy: number; warming: number; issue: number };
+  /**
+   * Honesty rollup (Phase 1.5 — 2026-05-22). Counts hotels in each
+   * "model state" so the cockpit banner can say "3 of 9 warming up" or
+   * "2 of 9 capacity model unavailable" instead of the binary healthy/issue
+   * pip alone.
+   *
+   * - `warmingUpCount`        : ≥1 backing layer (demand or supply) is
+   *                              algorithm='cold-start-cohort-prior'
+   *                              (cohort benchmark, not learned from
+   *                              this hotel)
+   * - `capacityUnavailableCount`: latest optimizer_results for this hotel
+   *                              had `used_l2_supply=false` (<10 supply
+   *                              predictions → L1-only path)
+   * - `xgboostDeferredCount`  : a layer's training_row_count ≥ 500
+   *                              (XGBoost-eligible) but algorithm stayed
+   *                              'bayesian' because XGBoost inference is
+   *                              not yet wired (ml-service/src/layers/
+   *                              xgboost_quantile.py XGBOOST_INFERENCE_READY=false)
+   * - `fullyFittedCount`      : all active demand+supply models fitted-
+   *                              from-this-hotel AND latest optimizer
+   *                              used L2 supply
+   */
+  warmingUpCount: number;
+  capacityUnavailableCount: number;
+  xgboostDeferredCount: number;
+  fullyFittedCount: number;
+  /**
+   * Phase 7 v2 (2026-05-22) auto-rollback fleet rollup. Surfaces the
+   * statistical drift-detection pipeline's recent activity.
+   *
+   * - `lastAutoRollbackAt`     : ISO timestamp of the most recent
+   *                              `deactivation_reason='auto_rollback'`
+   *                              event across the fleet, or null if
+   *                              no rollback has ever fired.
+   * - `autoRollbacksLast7d`    : count of LIVE rollbacks fired in the
+   *                              last 7 days (from app_events.event_type
+   *                              ='ml_auto_rollback_fired', payload.dry_run=false).
+   * - `dryRunRollbacksLast7d`  : count of would-have-fired (dry-run) events
+   *                              in the last 7 days. During the first 30
+   *                              days of Phase 7 these are the ONLY events;
+   *                              operators audit them to validate the
+   *                              same-DOW + n>=21 + BH-FDR combination
+   *                              before flipping AUTO_ROLLBACK_DRY_RUN=false.
+   */
+  lastAutoRollbackAt: string | null;
+  autoRollbacksLast7d: number;
+  dryRunRollbacksLast7d: number;
   daysToNextMilestoneMedian: number | null;
   nextMilestoneLabel: string;
   phaseHistogram: Array<{ phaseId: string; phaseLabel: string; phaseDay: number; hotelCount: number }>;
@@ -215,9 +269,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         .in('property_id', scopeIds)
         .gte('date', sinceDate30d)
         .limit(100000),
+      // Phase 1.5 (2026-05-22): added is_cold_start + algorithm +
+      // training_row_count so the cockpit can rollup warming-up state
+      // and XGBoost-deferred state per hotel without an extra query.
       supabaseAdmin
         .from('model_runs')
-        .select('property_id, layer, is_active, trained_at')
+        .select('property_id, layer, is_active, trained_at, is_cold_start, algorithm, training_row_count')
         .in('property_id', scopeIds)
         .in('layer', ['demand', 'supply', 'optimizer'])
         .eq('is_active', true)
@@ -288,17 +345,50 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     }
 
     // Active model runs per property (any of demand/supply/optimizer)
-    const modelsByProp = new Map<string, { count: number; layers: Set<string>; lastTrainingAt: number }>();
+    // Phase 1.5 (2026-05-22): also track cold-start state per layer and
+    // XGBoost-deferred state so the fleet rollup can count hotels in
+    // each honesty bucket.
+    interface ModelByProp {
+      count: number;
+      layers: Set<string>;
+      lastTrainingAt: number;
+      anyDemandColdStart: boolean;
+      anySupplyColdStart: boolean;
+      anyXgboostDeferred: boolean;
+    }
+    const modelsByProp = new Map<string, ModelByProp>();
     for (const r of modelRuns) {
       const pid = r.property_id as string;
       if (!modelsByProp.has(pid)) {
-        modelsByProp.set(pid, { count: 0, layers: new Set(), lastTrainingAt: 0 });
+        modelsByProp.set(pid, {
+          count: 0,
+          layers: new Set(),
+          lastTrainingAt: 0,
+          anyDemandColdStart: false,
+          anySupplyColdStart: false,
+          anyXgboostDeferred: false,
+        });
       }
       const m = modelsByProp.get(pid)!;
       m.count += 1;
       m.layers.add(r.layer as string);
       const t = r.trained_at ? new Date(r.trained_at).getTime() : 0;
       if (t > m.lastTrainingAt) m.lastTrainingAt = t;
+      // Cold-start detection: trust is_cold_start (column added in
+      // migration 0123 + backfilled) and defense-in-depth on the
+      // algorithm string for any rows the backfill missed.
+      const isCold = (r as { is_cold_start?: boolean | null }).is_cold_start === true
+        || String((r as { algorithm?: string | null }).algorithm ?? '').startsWith('cold-start');
+      if (r.layer === 'demand' && isCold) m.anyDemandColdStart = true;
+      if (r.layer === 'supply' && isCold) m.anySupplyColdStart = true;
+      // XGBoost-deferred: hotel is big enough (>=500 events) but algorithm
+      // stayed bayesian because xgboost-quantile inference isn't wired
+      // (ml-service/src/layers/xgboost_quantile.py XGBOOST_INFERENCE_READY=false).
+      const algorithm = String((r as { algorithm?: string | null }).algorithm ?? '');
+      const trainRows = Number((r as { training_row_count?: number | null }).training_row_count ?? 0);
+      if (algorithm === 'bayesian' && trainRows >= 500 && (r.layer === 'demand' || r.layer === 'supply')) {
+        m.anyXgboostDeferred = true;
+      }
     }
 
     // Last inference per property — pull demand_predictions
@@ -315,6 +405,76 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       const t = p.predicted_at ? new Date(p.predicted_at).getTime() : 0;
       if (t > (lastInferByProp.get(pid) ?? 0)) lastInferByProp.set(pid, t);
       if (Date.now() - t <= 86400000) predLast24h += 1;
+    }
+
+    // Phase 7 v2 (2026-05-22) — pull auto-rollback signals for the
+    // cockpit's drift-detection surface. Two sources:
+    //   1. model_runs.deactivation_reason='auto_rollback' — when a
+    //      rollback actually flipped a model. Gives lastAutoRollbackAt.
+    //   2. app_events.event_type='ml_auto_rollback_fired' — every fire
+    //      (real OR dry-run), with payload.dry_run flag distinguishing.
+    //      Gives autoRollbacksLast7d + dryRunRollbacksLast7d counts.
+    const sevenDaysAgoIso = new Date(Date.now() - 7 * 86400000).toISOString();
+    const [rollbackRunsRes, rollbackEventsRes] = await Promise.all([
+      supabaseAdmin
+        .from('model_runs')
+        .select('property_id, deactivated_at')
+        .in('property_id', scopeIds)
+        .eq('deactivation_reason', 'auto_rollback')
+        .order('deactivated_at', { ascending: false })
+        .limit(2000),
+      supabaseAdmin
+        .from('app_events')
+        .select('property_id, payload, ts')
+        .in('property_id', scopeIds)
+        .eq('event_type', 'ml_auto_rollback_fired')
+        .gte('ts', sevenDaysAgoIso)
+        .limit(5000),
+    ]);
+    // Per-property: max deactivated_at where reason=auto_rollback.
+    const lastRollbackByProp = new Map<string, number>();
+    for (const r of rollbackRunsRes.data ?? []) {
+      const pid = r.property_id as string;
+      const t = r.deactivated_at ? new Date(r.deactivated_at as string).getTime() : 0;
+      if (t > (lastRollbackByProp.get(pid) ?? 0)) lastRollbackByProp.set(pid, t);
+    }
+    // Fleet counts: split real vs dry-run by payload.dry_run.
+    let autoRollbacksLast7d = 0;
+    let dryRunRollbacksLast7d = 0;
+    for (const ev of rollbackEventsRes.data ?? []) {
+      const payload = (ev.payload ?? {}) as { dry_run?: boolean };
+      if (payload.dry_run === true) dryRunRollbacksLast7d += 1;
+      else autoRollbacksLast7d += 1;
+    }
+    const lastAutoRollbackAt: string | null = (() => {
+      let maxT = 0;
+      for (const t of lastRollbackByProp.values()) if (t > maxT) maxT = t;
+      return maxT > 0 ? new Date(maxT).toISOString() : null;
+    })();
+
+    // Phase 1.5 (2026-05-22): pull latest optimizer_results per property
+    // so we can compute the `capacityUnavailableCount` rollup (hotels whose
+    // latest optimizer run had used_l2_supply=false, i.e. < 10 supply
+    // predictions → L1-only path). One row per property — most recent
+    // ran_at. inputs_snapshot is JSONB, parse defensively.
+    const { data: optimizerRowsRes } = await supabaseAdmin
+      .from('optimizer_results')
+      .select('property_id, inputs_snapshot, ran_at')
+      .in('property_id', scopeIds)
+      .order('ran_at', { ascending: false })
+      .limit(2000);
+    const latestOptimizerSnapByProp = new Map<string, Record<string, unknown>>();
+    for (const r of optimizerRowsRes ?? []) {
+      const pid = r.property_id as string;
+      if (latestOptimizerSnapByProp.has(pid)) continue; // first row wins (newest)
+      const raw = r.inputs_snapshot as unknown;
+      let snap: Record<string, unknown> = {};
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        snap = raw as Record<string, unknown>;
+      } else if (typeof raw === 'string') {
+        try { snap = JSON.parse(raw); } catch { snap = {}; }
+      }
+      latestOptimizerSnapByProp.set(pid, snap);
     }
 
     // ── Build property entries (sidebar status pips) ──
@@ -345,6 +505,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         eventsLast1h: t?.last1h ?? 0,
         joinedAt: (p as { created_at?: string }).created_at ?? null,
         isTest: Boolean(p.is_test),
+        // Phase 7 v2 — per-property last auto-rollback timestamp.
+        // Null if never rolled back. The HousekeepingSystemHealth row
+        // hides itself when null (no fake "N/A" placeholder).
+        lastAutoRollbackAt: lastRollbackByProp.has(p.id)
+          ? new Date(lastRollbackByProp.get(p.id)!).toISOString()
+          : null,
       };
     });
 
@@ -460,6 +626,33 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const healthCounts = scopedProps.reduce((acc, p) => { acc[p.status] += 1; return acc; },
       { healthy: 0, warming: 0, issue: 0 } as { healthy: number; warming: number; issue: number });
 
+    // Phase 1.5 (2026-05-22): honesty rollup. Count hotels in each
+    // model-state bucket so the cockpit banner can say specific things
+    // like "3 of 9 warming up · 1 capacity model unavailable" instead
+    // of the binary healthy/issue pip alone.
+    let warmingUpCount = 0;
+    let capacityUnavailableCount = 0;
+    let xgboostDeferredCount = 0;
+    let fullyFittedCount = 0;
+    for (const p of scopedProps) {
+      const m = modelsByProp.get(p.id);
+      const snap = latestOptimizerSnapByProp.get(p.id);
+      const anyColdStart = (m?.anyDemandColdStart === true) || (m?.anySupplyColdStart === true);
+      // "Capacity model unavailable" means the optimizer's latest L2
+      // path used 0 supply predictions (e.g. supply training stalled,
+      // < 10 rows for the day). Read from inputs_snapshot.used_l2_supply.
+      const usedL2 = snap && (snap as { used_l2_supply?: boolean }).used_l2_supply;
+      const capacityUnavailable = snap !== undefined && usedL2 === false;
+      if (m?.anyXgboostDeferred) xgboostDeferredCount += 1;
+      if (anyColdStart) warmingUpCount += 1;
+      if (capacityUnavailable) capacityUnavailableCount += 1;
+      // "Fully fitted" requires BOTH an active non-cold-start model on
+      // demand+supply AND the latest optimizer used L2 supply.
+      const hasDemandFitted = (m?.layers.has('demand') ?? false) && !(m?.anyDemandColdStart ?? false);
+      const hasSupplyFitted = (m?.layers.has('supply') ?? false) && !(m?.anySupplyColdStart ?? false);
+      if (hasDemandFitted && hasSupplyFitted && usedL2 === true) fullyFittedCount += 1;
+    }
+
     const daysOfHistoryRange = {
       min: dayValues.length > 0 ? Math.min(...dayValues) : 0,
       max: dayValues.length > 0 ? Math.max(...dayValues) : 0,
@@ -518,6 +711,15 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       fleetMedianDay,
       daysOfHistoryRange,
       healthCounts,
+      // Phase 1.5 honesty rollup
+      warmingUpCount,
+      capacityUnavailableCount,
+      xgboostDeferredCount,
+      fullyFittedCount,
+      // Phase 7 v2 auto-rollback rollup (drift detection)
+      lastAutoRollbackAt,
+      autoRollbacksLast7d,
+      dryRunRollbacksLast7d,
       daysToNextMilestoneMedian: nextMilestone.daysToNext,
       nextMilestoneLabel: nextMilestone.label,
       phaseHistogram,

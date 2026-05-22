@@ -242,6 +242,12 @@ export function ScheduleTab() {
   const [optimizerPanel, setOptimizerPanel] = useState<{
     recommendedHeadcount: number;
     completionProbabilityCurve: Array<{ headcount: number; p: number }>;
+    // Phase 1.3 (2026-05-22) — derived from optimizer_results.inputs_snapshot
+    // so the confidence tile can branch the headline label honestly
+    // between "AI recommendation" (fitted) and "Industry estimate ·
+    // learning" (warming-up or capacity-unavailable).
+    modelKind: 'fitted' | 'warming-up' | 'capacity-unavailable';
+    warmupReason: string | null;
   } | null>(null);
   const [demandPanel, setDemandPanel] = useState<{
     predictedHeadcountP80: number;
@@ -868,61 +874,85 @@ export function ScheduleTab() {
           tomorrow only), AND (b) optimizer has produced a row for this
           property. Fail closed: if the optimizer cron hasn't run yet
           (brand-new property), the panel is hidden — operator falls
-          back to the existing PMS strip + crew rows below. */}
-      {isTomorrow && optimizerPanel && (
-        <div
-          title={
-            optimizerPanel.completionProbabilityCurve.length > 0
+          back to the existing PMS strip + crew rows below.
+
+          Phase 1.4 (2026-05-22): label branches on modelKind. Only
+          fitted-from-this-hotel recommendations are labeled "AI
+          recommendation" — cold-start / capacity-unavailable rows
+          show "Industry estimate · learning". The synthetic p80/p95
+          confidence band is hidden when not fitted (multiplier-derived
+          bands carry no per-hotel signal). */}
+      {isTomorrow && optimizerPanel && (() => {
+        const isFitted = optimizerPanel.modelKind === 'fitted';
+        const headlineLabel = isFitted
+          ? (lang === 'es' ? 'Recomendación de IA' : 'AI recommendation')
+          : (lang === 'es' ? 'Estimación del sector · aprendiendo' : 'Industry estimate · learning');
+        const kindTooltip = isFitted
+          ? (optimizerPanel.completionProbabilityCurve.length > 0
               ? optimizerPanel.completionProbabilityCurve
                   .map((r) => `${r.headcount} HKs → ${Math.round(r.p * 100)}% finish`)
                   .join('\n')
-              : (lang === 'es' ? 'Recomendación basada en demanda + capacidad estimada.' : 'Recommendation based on predicted demand + crew capacity.')
-          }
-          style={{
-            background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
-            padding: '14px 22px', marginBottom: 10,
-            display: 'flex', alignItems: 'center', gap: 28, flexWrap: 'wrap',
-          }}
-        >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 160 }}>
-            <Caps size={9}>{lang === 'es' ? 'Confianza para mañana' : "Tomorrow's confidence"}</Caps>
-            <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2, marginTop: 2 }}>
-              {lang === 'es' ? 'Recomendación de IA' : 'AI recommendation'}
-            </span>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 0 }}>
-            <Caps size={9}>{lang === 'es' ? 'Recomendado' : 'Recommended'}</Caps>
-            <span style={{ fontFamily: FONT_SERIF, fontSize: 28, color: T.ink, lineHeight: 1.1 }}>
-              {optimizerPanel.recommendedHeadcount}
-              <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, marginLeft: 4 }}>
-                {lang === 'es' ? 'HK' : 'HKs'}
+              : (lang === 'es' ? 'Recomendación basada en demanda + capacidad estimada.' : 'Recommendation based on predicted demand + crew capacity.'))
+          : optimizerPanel.modelKind === 'capacity-unavailable'
+            ? (lang === 'es'
+                ? 'El modelo por habitación aún no está activo. Recomendación basada en demanda agregada.'
+                : 'Per-room model is not yet active. Recommendation is based on aggregate workload only.')
+            : (lang === 'es'
+                ? 'Basado en datos de hoteles similares. Mejorará con el historial de tu hotel.'
+                : "Based on industry benchmark for hotels of your size. Will sharpen as your hotel's cleaning history accumulates.");
+        return (
+          <div
+            title={kindTooltip}
+            style={{
+              background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
+              padding: '14px 22px', marginBottom: 10,
+              display: 'flex', alignItems: 'center', gap: 28, flexWrap: 'wrap',
+            }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 160 }}>
+              <Caps size={9}>{lang === 'es' ? 'Confianza para mañana' : "Tomorrow's confidence"}</Caps>
+              <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2, marginTop: 2 }}>
+                {headlineLabel}
               </span>
-            </span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 0 }}>
+              <Caps size={9}>{lang === 'es' ? 'Recomendado' : 'Recommended'}</Caps>
+              <span style={{ fontFamily: FONT_SERIF, fontSize: 28, color: T.ink, lineHeight: 1.1 }}>
+                {optimizerPanel.recommendedHeadcount}
+                <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, marginLeft: 4 }}>
+                  {lang === 'es' ? 'HK' : 'HKs'}
+                </span>
+              </span>
+            </div>
+            {/* P80/P95 bands are only shown when the model is fitted; for
+                cold-start / capacity-unavailable, the bands are derived from
+                synthetic multipliers (mu × [0.5, 0.7, …, 1.8]) and have no
+                per-hotel signal. Hiding them keeps the tile honest. */}
+            {isFitted && demandPanel && (
+              <>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 0 }}>
+                  <Caps size={9}>P80</Caps>
+                  <span style={{ fontFamily: FONT_SERIF, fontSize: 22, color: T.ink2, lineHeight: 1.1 }}>
+                    {demandPanel.predictedHeadcountP80}
+                    <span style={{ fontFamily: FONT_SANS, fontSize: 11, color: T.ink3, marginLeft: 4 }}>
+                      {lang === 'es' ? 'HK' : 'HKs'}
+                    </span>
+                  </span>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 0 }}>
+                  <Caps size={9}>P95</Caps>
+                  <span style={{ fontFamily: FONT_SERIF, fontSize: 22, color: T.ink2, lineHeight: 1.1 }}>
+                    {demandPanel.predictedHeadcountP95}
+                    <span style={{ fontFamily: FONT_SANS, fontSize: 11, color: T.ink3, marginLeft: 4 }}>
+                      {lang === 'es' ? 'HK' : 'HKs'}
+                    </span>
+                  </span>
+                </div>
+              </>
+            )}
           </div>
-          {demandPanel && (
-            <>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 0 }}>
-                <Caps size={9}>P80</Caps>
-                <span style={{ fontFamily: FONT_SERIF, fontSize: 22, color: T.ink2, lineHeight: 1.1 }}>
-                  {demandPanel.predictedHeadcountP80}
-                  <span style={{ fontFamily: FONT_SANS, fontSize: 11, color: T.ink3, marginLeft: 4 }}>
-                    {lang === 'es' ? 'HK' : 'HKs'}
-                  </span>
-                </span>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 0 }}>
-                <Caps size={9}>P95</Caps>
-                <span style={{ fontFamily: FONT_SERIF, fontSize: 22, color: T.ink2, lineHeight: 1.1 }}>
-                  {demandPanel.predictedHeadcountP95}
-                  <span style={{ fontFamily: FONT_SANS, fontSize: 11, color: T.ink3, marginLeft: 4 }}>
-                    {lang === 'es' ? 'HK' : 'HKs'}
-                  </span>
-                </span>
-              </div>
-            </>
-          )}
-        </div>
-      )}
+        );
+      })()}
 
       {/* UNASSIGNED STRIP — sits between the PMS strip and the crew so
           rooms that come off Reset, or rooms whose previously-assigned
