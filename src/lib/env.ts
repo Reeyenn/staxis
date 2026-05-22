@@ -208,6 +208,20 @@ const ServerSchema = z.object({
   // in the DB. Set in Vercel; rotate when the demo account set changes.
   SKIP_2FA_USER_IDS: z.string().optional(),
 
+  // Break-glass kill switch for the Phase-1 server-side 2FA enforcement in
+  // requireSession() / requireSessionOrCron(). When set to literal 'true',
+  // those helpers skip the validateDeviceTrust check and accept any valid
+  // Supabase JWT (the pre-Phase-1 behavior). Default unset = enforced.
+  //
+  // Existence rationale: if validateDeviceTrust ever misfires in prod
+  // (false-positive 401s locking users out), flip this in Vercel and the
+  // gate disables without a redeploy. Every request hit with the var on
+  // emits a CRITICAL log line + a doctor warning, so leaving it on past
+  // an incident triage window will surface in monitoring.
+  //
+  // Never set this in preview or production absent an active incident.
+  DISABLE_SERVER_2FA_ENFORCEMENT: z.string().optional(),
+
   // ── Voice / wake word ─────────────────────────────────
   PICOVOICE_ACCESS_KEY: z.string().optional(),
 

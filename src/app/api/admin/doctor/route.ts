@@ -132,6 +132,11 @@ type CheckFn = () => Promise<Omit<Check, 'name' | 'durationMs'>>;
 
 const checks: Array<[string, CheckFn]> = [
   ['env_vars',                       checkEnvVars],
+  // Audit 2026-05-22: warn if DISABLE_SERVER_2FA_ENFORCEMENT is set —
+  // the break-glass kill switch for the new server-side 2FA enforcement
+  // in requireSession(). Leaving this on past an incident-triage window
+  // re-opens the attack vector the enforcement closes.
+  ['server_2fa_enforcement_active',  checkServer2faEnforcementActive],
   ['supabase_admin_auth',            checkSupabaseAdminAuth],
   ['supabase_jwt_expiry',            checkSupabaseJwtExpiry],
   // Project consistency: NEXT_PUBLIC_SUPABASE_URL (where the browser
@@ -435,6 +440,35 @@ async function checkEnvVars(): Promise<Omit<Check, 'name' | 'durationMs'>> {
     detail: parts.join(' | '),
     fix: 'Vercel → Project Settings → Environment Variables. Set missing/empty vars and redeploy.',
   };
+}
+
+/**
+ * Audit 2026-05-22: surfaces the DISABLE_SERVER_2FA_ENFORCEMENT
+ * break-glass kill switch when it's active. When set, requireSession()
+ * skips the device-trust check and accepts any valid Supabase JWT —
+ * the pre-Phase-1 behavior. The switch exists for emergency recovery
+ * (a bad deploy of the new gate locking users out) but should NEVER
+ * stay on past an incident-triage window. Warning here surfaces it on
+ * every doctor poll so it doesn't get forgotten.
+ *
+ * status: 'ok' when unset / not 'true'
+ * status: 'fail' when set to 'true' — intentionally a hard fail (not warn)
+ *   because the security boundary is fully disabled while it's on
+ */
+async function checkServer2faEnforcementActive(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  if (env.DISABLE_SERVER_2FA_ENFORCEMENT === 'true') {
+    return {
+      status: 'fail',
+      detail:
+        'DISABLE_SERVER_2FA_ENFORCEMENT=true is active — server-side 2FA enforcement in '
+        + 'requireSession() is BYPASSED. The OTP gate is currently security theater. This '
+        + 'switch is for emergency triage only.',
+      fix: 'Vercel → Project Settings → Environment Variables → unset DISABLE_SERVER_2FA_ENFORCEMENT '
+        + '(or set to anything other than the literal string "true") and redeploy. After unsetting, '
+        + 'confirm a normal user can still sign in from a new browser without errors.',
+    };
+  }
+  return { status: 'ok', detail: 'server-side 2FA enforcement active (DISABLE_SERVER_2FA_ENFORCEMENT unset)' };
 }
 
 async function checkSupabaseAdminAuth(): Promise<Omit<Check, 'name' | 'durationMs'>> {

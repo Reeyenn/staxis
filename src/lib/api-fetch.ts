@@ -122,12 +122,39 @@ async function readFailureCode(res: Response): Promise<string | null> {
   }
 }
 
+/** Module-scoped one-shot guard for force-signout. A dashboard page can
+ *  fan out a dozen concurrent fetchWithAuth calls; if every one of them
+ *  receives a 401 with an unrecoverable code, they would each call
+ *  signOut() and window.location.assign() independently. The first wins
+ *  the navigation but the racing signOut/assign calls cause auth-state
+ *  jitter and (rarely) the wrong "reason" query param landing on the
+ *  signin page. This guard pins the first reason and turns every
+ *  subsequent caller into a silent throw of SessionEndedError.
+ *
+ *  Reset for tests: __resetSessionEndForTesting() below.
+ */
+let sessionEndFired = false;
+
+export function __resetSessionEndForTesting(): void {
+  sessionEndFired = false;
+}
+
 /** Force-signout + redirect to /signin. Fire-and-forget the signOut call
  *  so we don't block on it; the redirect tears the page down anyway. The
  *  throw is what stops the caller's continuation from executing (and from
  *  rendering "invalid session token" right before the redirect lands).
+ *
+ *  Preserves the `redirect=<here>` query param so users land back where
+ *  they started after re-OTP. Added 2026-05-22 alongside requires_2fa
+ *  branch — without preserving it, anyone bounced mid-session would be
+ *  dropped on /dashboard after re-OTP regardless of where they were.
  */
-function endSessionAndRedirect(reason: 'session-ended' | 'config-error'): never {
+function endSessionAndRedirect(reason: 'session-ended' | 'config-error' | '2fa_required'): never {
+  // First caller wins. Subsequent concurrent callers throw silently —
+  // their continuations stop without firing duplicate signOut/assign.
+  if (sessionEndFired) throw new SessionEndedError();
+  sessionEndFired = true;
+
   if (typeof window !== 'undefined') {
     // If we're already on /signin (or /signin/verify, /signin/reset, etc.)
     // don't redirect to ourselves — let the in-page error handler take over.
@@ -135,7 +162,12 @@ function endSessionAndRedirect(reason: 'session-ended' | 'config-error'): never 
     if (!here.startsWith('/signin')) {
       // Don't await — page is being torn down.
       void supabase.auth.signOut();
-      window.location.assign(`/signin?reason=${reason}`);
+      const params = new URLSearchParams({ reason });
+      // Preserve where the user was so we can return them after re-OTP.
+      // Include search + hash so deep links survive the bounce.
+      const target = here + window.location.search + window.location.hash;
+      if (target && target !== '/') params.set('redirect', target);
+      window.location.assign(`/signin?${params.toString()}`);
     }
   }
   throw new SessionEndedError();
@@ -182,6 +214,13 @@ export async function fetchWithAuth(
   // fix it; signing them out won't help. Surface a distinct reason on the
   // signin page so the message is honest.
   if (code === 'project_mismatch') endSessionAndRedirect('config-error');
+
+  // 2FA required: the JWT is valid but the device isn't trusted (or the
+  // skip_2fa bypass was refused). Refresh wouldn't help — only a fresh
+  // OTP can recover. Sign out and bounce to /signin?reason=2fa_required
+  // so the user re-enters password and gets prompted for OTP again.
+  // Added 2026-05-22 alongside server-side enforcement in api-auth.ts.
+  if (code === 'requires_2fa') endSessionAndRedirect('2fa_required');
 
   // Recoverable: refresh the token and retry exactly once. If that retry
   // also 401s, we're out of moves — sign out cleanly.

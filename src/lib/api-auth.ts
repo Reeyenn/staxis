@@ -26,6 +26,8 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { createSupabaseServerClient } from '@/lib/supabase-server';
 import { log } from '@/lib/log';
 import { env } from '@/lib/env';
+import { hashDeviceToken, readDeviceCookie } from '@/lib/trusted-device';
+import { logSecurityEvent } from '@/lib/audit';
 
 /**
  * Classification of session-validation failure modes. The client (fetchWithAuth)
@@ -56,6 +58,7 @@ export type SessionFailureCode =
   | 'project_mismatch'
   | 'auth_unavailable'
   | 'missing_token'
+  | 'requires_2fa'
   | 'unknown';
 
 interface DecodedClaims {
@@ -154,6 +157,226 @@ function authFailureResponse(
       error: 'invalid session token',
       code,
       ...(hint ? { hint } : {}),
+    },
+    { status: 401 },
+  );
+}
+
+/**
+ * Server-side 2FA enforcement (Phase 1, audit 2026-05-21).
+ *
+ * Without this, `requireSession()` validated only the Supabase JWT. An
+ * attacker with a leaked staff password could call `signInWithPassword`
+ * directly (curl / postman) and use the resulting JWT against any
+ * /api/* route — the OTP step was pure UI choreography, never enforced
+ * server-side. With this, every /api/* call that uses requireSession
+ * must ALSO carry a valid `staxis_device` cookie matching a non-expired
+ * row in `trusted_devices` (the cookie is issued only after OTP).
+ *
+ * Skip-2FA escape hatch: the same demo bypass that check-trust uses
+ * (account.skip_2fa=true + SKIP_2FA_ENABLED=true env + user in
+ * SKIP_2FA_USER_IDS allowlist + role!='admin' + no '*' in
+ * property_access) is honored here too, so investor demo accounts
+ * keep working exactly as before.
+ *
+ * Returns:
+ *   { ok: true, via: 'device' | 'skip_2fa' } — caller proceeds
+ *   { ok: false, reason }                     — caller returns 401 requires_2fa
+ *
+ * Fail-closed: any thrown error (DB outage, etc.) returns ok:false with
+ * reason='db_error', mirroring the existing check-trust posture so a
+ * Supabase hiccup doesn't silently open the gate.
+ */
+type DeviceTrustReason =
+  | 'no_cookie'
+  | 'cookie_invalid'
+  | 'cookie_expired'
+  | 'absolute_cap_reached'
+  | 'no_account_row'
+  | 'skip_2fa_blocked_by_env'
+  | 'skip_2fa_not_allowlisted'
+  | 'skip_2fa_refused_privileged'
+  | 'db_error';
+
+async function validateDeviceTrust(
+  req: NextRequest,
+  userId: string,
+  route: string,
+  requestId: string | null,
+): Promise<
+  | { ok: true; via: 'device' | 'skip_2fa' }
+  | { ok: false; reason: DeviceTrustReason }
+> {
+  // Break-glass kill switch. When set, the entire enforcement is bypassed
+  // (the pre-Phase-1 behavior). Logs CRITICAL on every request so leaving
+  // it on past an incident-triage window surfaces in monitoring.
+  if (env.DISABLE_SERVER_2FA_ENFORCEMENT === 'true') {
+    log.error('[validateDeviceTrust] enforcement bypassed via DISABLE_SERVER_2FA_ENFORCEMENT — break-glass active', {
+      route,
+      userId,
+      requestId: requestId ?? undefined,
+    });
+    return { ok: true, via: 'device' };
+  }
+
+  try {
+    // Look up the caller's accounts row. We need role + property_access
+    // for the skip_2fa privileged-account refusal.
+    const { data: account, error: acctErr } = await supabaseAdmin
+      .from('accounts')
+      .select('id, skip_2fa, role, property_access')
+      .eq('data_user_id', userId)
+      .maybeSingle();
+
+    if (acctErr) {
+      log.error('[validateDeviceTrust] accounts lookup failed — failing closed', {
+        route, userId, requestId: requestId ?? undefined, err: acctErr.message,
+      });
+      return { ok: false, reason: 'db_error' };
+    }
+    if (!account) {
+      // Orphan auth user — auth.users row exists but no accounts row. Fail
+      // closed; the orphan sweeper or admin will clean up.
+      return { ok: false, reason: 'no_account_row' };
+    }
+
+    // Try the device-cookie path first. If valid, we're done.
+    const cookieValue = readDeviceCookie(req);
+    if (cookieValue) {
+      const tokenHash = hashDeviceToken(cookieValue);
+      const { data: row, error: rowErr } = await supabaseAdmin
+        .from('trusted_devices')
+        .select('id, expires_at, absolute_expires_at')
+        .eq('account_id', account.id)
+        .eq('token_hash', tokenHash)
+        .maybeSingle();
+
+      if (rowErr) {
+        log.error('[validateDeviceTrust] trusted_devices lookup failed — failing closed', {
+          route, userId, requestId: requestId ?? undefined, err: rowErr.message,
+        });
+        return { ok: false, reason: 'db_error' };
+      }
+
+      if (row) {
+        const now = Date.now();
+        if (new Date(row.expires_at).getTime() <= now) {
+          return { ok: false, reason: 'cookie_expired' };
+        }
+        const absExpRaw = (row as { absolute_expires_at?: string | null }).absolute_expires_at;
+        if (!absExpRaw) {
+          // Migration 0153 should have made this NOT NULL — if it's null,
+          // we're on a DB missing the migration. Fail closed.
+          log.error('[validateDeviceTrust] absolute_expires_at missing — migration 0153 not applied?', {
+            route, userId, requestId: requestId ?? undefined, deviceId: row.id,
+          });
+          return { ok: false, reason: 'absolute_cap_reached' };
+        }
+        if (new Date(absExpRaw).getTime() <= now) {
+          return { ok: false, reason: 'absolute_cap_reached' };
+        }
+        // Valid device trust. Don't bump last_seen_at here (that's
+        // check-trust's job, runs once per sign-in). Doing it on every API
+        // call would be a write per request.
+        return { ok: true, via: 'device' };
+      }
+      // Cookie present but no matching row — treat as cookie_invalid
+      // (likely revoked, expired-and-deleted, or forged). Fall through
+      // to skip_2fa check.
+    }
+
+    // Skip-2FA fallback. Mirrors check-trust's gate (env var + allowlist)
+    // PLUS the privileged-account refusal that check-trust also applies
+    // in Phase 1 — defense in depth for the case where check-trust was
+    // somehow bypassed (e.g., a future code path that doesn't call it).
+    if (account.skip_2fa) {
+      const envOn = env.SKIP_2FA_ENABLED === 'true';
+      const allowlist = (env.SKIP_2FA_USER_IDS ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const onAllowlist = allowlist.includes(userId);
+      const role = (account.role as string) ?? '';
+      const access = (account.property_access ?? []) as string[];
+      const isPrivileged = role === 'admin' || access.includes('*');
+
+      // Privileged refusal takes precedence: an admin row with skip_2fa
+      // should NEVER bypass, even if the env gate + allowlist are
+      // (mis)configured to permit it. Log critical so the misconfiguration
+      // surfaces in Sentry the moment it happens.
+      if (isPrivileged) {
+        await logSecurityEvent({
+          action: 'auth.skip_2fa_refused_privileged',
+          userId,
+          requestId: requestId ?? undefined,
+          metadata: {
+            accountId: account.id,
+            role,
+            hadWildcardAccess: access.includes('*'),
+            enforcement_point: 'requireSession',
+          },
+        });
+        return { ok: false, reason: 'skip_2fa_refused_privileged' };
+      }
+
+      if (!envOn) {
+        await logSecurityEvent({
+          action: 'auth.skip_2fa_blocked_by_env',
+          userId,
+          requestId: requestId ?? undefined,
+          metadata: {
+            accountId: account.id,
+            envGate: env.SKIP_2FA_ENABLED ?? null,
+            enforcement_point: 'requireSession',
+          },
+        });
+        return { ok: false, reason: 'skip_2fa_blocked_by_env' };
+      }
+      if (!onAllowlist) {
+        await logSecurityEvent({
+          action: 'auth.skip_2fa_account_not_allowlisted',
+          userId,
+          requestId: requestId ?? undefined,
+          metadata: {
+            accountId: account.id,
+            allowlistSize: allowlist.length,
+            enforcement_point: 'requireSession',
+          },
+        });
+        return { ok: false, reason: 'skip_2fa_not_allowlisted' };
+      }
+
+      // All gates passed. Log the bypass usage so we can correlate
+      // unexpected demo-account activity in Sentry.
+      await logSecurityEvent({
+        action: 'auth.skip_2fa_used',
+        userId,
+        requestId: requestId ?? undefined,
+        metadata: {
+          accountId: account.id,
+          enforcement_point: 'requireSession',
+        },
+      });
+      return { ok: true, via: 'skip_2fa' };
+    }
+
+    // No cookie, no skip_2fa — caller needs to OTP.
+    return { ok: false, reason: cookieValue ? 'cookie_invalid' : 'no_cookie' };
+  } catch (err) {
+    log.error('[validateDeviceTrust] unexpected error — failing closed', {
+      route, userId, requestId: requestId ?? undefined,
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return { ok: false, reason: 'db_error' };
+  }
+}
+
+function requires2faResponse(reason: DeviceTrustReason): NextResponse {
+  return NextResponse.json(
+    {
+      error: 'two-factor authentication required',
+      code: 'requires_2fa' satisfies SessionFailureCode,
+      reason,
     },
     { status: 401 },
   );
@@ -292,10 +515,31 @@ export function requireHeartbeatSecret(req: NextRequest): NextResponse | null {
  *     ...
  *   });
  */
-export async function requireSession(req: NextRequest): Promise<
+/**
+ * Options for requireSession / requireSessionOrCron.
+ *
+ * `enforce2FA` (default true) — when true, validates the staxis_device
+ * cookie against trusted_devices in addition to the JWT. Required for any
+ * user-facing route. Set to false ONLY for routes that participate in the
+ * 2FA flow itself (e.g. an endpoint that needs to identify the caller
+ * BEFORE they've completed OTP). None of the current callers need this;
+ * the option exists so future auth-flow routes can opt out explicitly
+ * instead of silently weakening the gate.
+ */
+export interface RequireSessionOptions {
+  enforce2FA?: boolean;
+  requestId?: string | null;
+}
+
+export async function requireSession(
+  req: NextRequest,
+  opts: RequireSessionOptions = {},
+): Promise<
   | { ok: true; userId: string; email: string | null }
   | { ok: false; response: NextResponse }
 > {
+  const enforce2FA = opts.enforce2FA ?? true;
+  const requestId = opts.requestId ?? null;
   const auth = req.headers.get('authorization') ?? '';
   const route = new URL(req.url).pathname;
   const m = /^Bearer\s+(.+)$/i.exec(auth.trim());
@@ -307,7 +551,18 @@ export async function requireSession(req: NextRequest): Promise<
     // bearer-only callers got before, so fetchWithAuth's refresh/retry path
     // is unaffected.
     const cookieResult = await tryCookieSession(route);
-    if (cookieResult.ok) return cookieResult;
+    if (cookieResult.ok) {
+      if (enforce2FA) {
+        const trust = await validateDeviceTrust(req, cookieResult.userId, route, requestId);
+        if (!trust.ok) {
+          log.warn('requireSession: 2FA enforcement rejected cookie session', {
+            route, userId: cookieResult.userId, reason: trust.reason,
+          });
+          return { ok: false, response: requires2faResponse(trust.reason) };
+        }
+      }
+      return cookieResult;
+    }
 
     log.warn('requireSession: missing bearer header and no cookie session', {
       route,
@@ -357,6 +612,17 @@ export async function requireSession(req: NextRequest): Promise<
       }
       return { ok: false, response: authFailureResponse(code) };
     }
+    // JWT is valid. Run server-side 2FA enforcement unless explicitly
+    // opted out (e.g. auth-flow routes that must work before OTP).
+    if (enforce2FA) {
+      const trust = await validateDeviceTrust(req, data.user.id, route, requestId);
+      if (!trust.ok) {
+        log.warn('requireSession: 2FA enforcement rejected bearer session', {
+          route, userId: data.user.id, reason: trust.reason,
+        });
+        return { ok: false, response: requires2faResponse(trust.reason) };
+      }
+    }
     return { ok: true, userId: data.user.id, email: data.user.email ?? null };
   } catch (err) {
     log.error('requireSession: auth verification threw', {
@@ -392,11 +658,16 @@ export async function requireSession(req: NextRequest): Promise<
  * If CRON_SECRET is unset (dev), the helper still requires a valid
  * session token. Pre-launch dev mode: just set a CRON_SECRET locally.
  */
-export async function requireSessionOrCron(req: NextRequest): Promise<
+export async function requireSessionOrCron(
+  req: NextRequest,
+  opts: RequireSessionOptions = {},
+): Promise<
   | { ok: true; kind: 'cron' }
   | { ok: true; kind: 'session'; userId: string; email: string | null }
   | { ok: false; response: NextResponse }
 > {
+  const enforce2FA = opts.enforce2FA ?? true;
+  const requestId = opts.requestId ?? null;
   const auth = req.headers.get('authorization') ?? '';
 
   // Try cron-secret first (fast path, constant time).
@@ -436,6 +707,15 @@ export async function requireSessionOrCron(req: NextRequest): Promise<
     // even when fetchWithAuth's bearer attach fails for some reason.
     const cookieResult = await tryCookieSession(route);
     if (cookieResult.ok) {
+      if (enforce2FA) {
+        const trust = await validateDeviceTrust(req, cookieResult.userId, route, requestId);
+        if (!trust.ok) {
+          log.warn('requireSessionOrCron: 2FA enforcement rejected cookie session', {
+            route, userId: cookieResult.userId, reason: trust.reason,
+          });
+          return { ok: false, response: requires2faResponse(trust.reason) };
+        }
+      }
       return { ok: true, kind: 'session', userId: cookieResult.userId, email: cookieResult.email };
     }
 
@@ -479,6 +759,17 @@ export async function requireSessionOrCron(req: NextRequest): Promise<
         log.warn('requireSessionOrCron: rejected', fields);
       }
       return { ok: false, response: authFailureResponse(code) };
+    }
+    // JWT is valid. Apply server-side 2FA enforcement on the session path
+    // (cron path returned earlier — secret-bearer callers are trusted).
+    if (enforce2FA) {
+      const trust = await validateDeviceTrust(req, data.user.id, route, requestId);
+      if (!trust.ok) {
+        log.warn('requireSessionOrCron: 2FA enforcement rejected bearer session', {
+          route, userId: data.user.id, reason: trust.reason,
+        });
+        return { ok: false, response: requires2faResponse(trust.reason) };
+      }
     }
     return { ok: true, kind: 'session', userId: data.user.id, email: data.user.email ?? null };
   } catch (err) {
