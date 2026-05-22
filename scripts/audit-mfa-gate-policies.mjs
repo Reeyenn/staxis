@@ -37,9 +37,19 @@ const EXEMPT = new Set([
   'trusted_devices:trusted_devices_auth_hook_read',
 ]);
 
-// Regex matches `create policy "X" on Y` or `alter policy "X" on Y`.
-// Captures: policy name (between quotes), table (after `on`).
-const POLICY_RX = /(?:create|alter)\s+policy\s+"([^"]+)"\s+on\s+(?:public\.)?(\w+)/gi;
+// Regex matches `create policy NAME on TABLE` or `alter policy NAME on TABLE`.
+// Accepts NAME as either "quoted" or unquoted (identifier). Accepts TABLE
+// as either "quoted" or unquoted, optionally schema-qualified (schema.table
+// or "schema"."table"). Codex review finding #5: prior version required
+// double-quotes around NAME, missing the common unquoted form used by all
+// existing *_deny_browser policies. If a future migration uses that form
+// without the mfa_verified gate, the guard would silently let it through.
+//
+// Note: this regex does NOT detect policies created via dynamic SQL inside
+// a DO block (e.g., `execute format('create policy ...')`). That class is
+// caught by the runtime audit in scripts/audit-pg-policies-runtime.mjs
+// which queries prod pg_policies directly.
+const POLICY_RX = /(?:create|alter)\s+policy\s+(?:"([^"]+)"|([a-zA-Z_][\w]*))\s+on\s+(?:(?:"([^"]+)"|([a-zA-Z_][\w]*))\.)?(?:"([^"]+)"|([a-zA-Z_][\w]*))/gi;
 // Roles regex — looks for `to authenticated` or `to public` or `to anon,authenticated` etc.
 const PUBLIC_OR_AUTH_RX = /\bto\s+([a-z_,\s]*\b(?:authenticated|public|anon)\b[a-z_,\s]*)/i;
 // Helper presence regex.
@@ -79,7 +89,16 @@ function main() {
     // of body.
     const matches = [...content.matchAll(POLICY_RX)];
     for (const m of matches) {
-      const [, policyName, tableName] = m;
+      // POLICY_RX capture groups:
+      //   [1] policy name (quoted)
+      //   [2] policy name (unquoted)
+      //   [3] schema (quoted)        — optional
+      //   [4] schema (unquoted)      — optional
+      //   [5] table (quoted)
+      //   [6] table (unquoted)
+      const policyName = m[1] ?? m[2];
+      const tableName = m[5] ?? m[6];
+      if (!policyName || !tableName) continue;
       const key = `${tableName}:${policyName}`;
       if (EXEMPT.has(key)) continue;
 

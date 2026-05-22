@@ -23,8 +23,10 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 
 type GetUserFn = typeof supabaseAdmin.auth.getUser;
 type FromFn = typeof supabaseAdmin.from;
+type RpcFn = typeof supabaseAdmin.rpc;
 const originalGetUser: GetUserFn = supabaseAdmin.auth.getUser.bind(supabaseAdmin.auth);
 const originalFrom: FromFn = supabaseAdmin.from.bind(supabaseAdmin);
+const originalRpc: RpcFn = supabaseAdmin.rpc.bind(supabaseAdmin);
 
 interface MockState {
   user: { id: string } | null;
@@ -35,6 +37,16 @@ interface MockState {
     session_id: string;
     user_id: string;
   }>;
+  /**
+   * Phase A + atomic-claim RPC (Codex finding #3, migration 0164). The
+   * RPC returns a proof id when one was atomically claimed, null when
+   * no unused+unexpired proof was available. Default: a dummy id, so
+   * the happy-path tests don't all need to set it.
+   */
+  claimedProofId: string | null;
+  claimRpcError: { message: string } | null;
+  claimRpcCalls: number;
+  releaseRpcCalls: number;
 }
 const state: MockState = {
   user: null,
@@ -42,6 +54,10 @@ const state: MockState = {
   trustedDevicesInsertError: null,
   mfaSessionsInsertError: null,
   mfaSessionsInserts: [],
+  claimedProofId: 'proof-id-from-rpc',
+  claimRpcError: null,
+  claimRpcCalls: 0,
+  releaseRpcCalls: 0,
 };
 
 beforeEach(() => {
@@ -50,11 +66,29 @@ beforeEach(() => {
   state.trustedDevicesInsertError = null;
   state.mfaSessionsInsertError = null;
   state.mfaSessionsInserts = [];
+  state.claimedProofId = 'proof-id-from-rpc';
+  state.claimRpcError = null;
+  state.claimRpcCalls = 0;
+  state.releaseRpcCalls = 0;
 
   supabaseAdmin.auth.getUser = (async () => ({
     data: { user: state.user },
     error: null,
   })) as unknown as GetUserFn;
+
+  // Mock supabaseAdmin.rpc — Phase A's atomic-claim RPC (migration 0164)
+  // and the release helper. Both run under service_role only.
+  supabaseAdmin.rpc = (async (fn: string) => {
+    if (fn === 'staxis_claim_password_signin_proof') {
+      state.claimRpcCalls += 1;
+      return { data: state.claimedProofId, error: state.claimRpcError };
+    }
+    if (fn === 'staxis_release_password_signin_proof') {
+      state.releaseRpcCalls += 1;
+      return { data: null, error: null };
+    }
+    throw new Error(`unexpected rpc: ${fn}`);
+  }) as unknown as RpcFn;
 
   // @ts-expect-error monkey-patch
   supabaseAdmin.from = (table: string) => {
@@ -100,6 +134,7 @@ beforeEach(() => {
 afterEach(() => {
   supabaseAdmin.auth.getUser = originalGetUser;
   supabaseAdmin.from = originalFrom;
+  supabaseAdmin.rpc = originalRpc;
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
@@ -195,5 +230,52 @@ describe('trust-device — mfa_verified_sessions write (Phase 2B / Door B)', () 
     state.mfaSessionsInsertError = { message: 'unexpected db error', code: '42P01' };
     const res = await POST(mockReq());
     assert.equal(res.status, 200);
+  });
+});
+
+describe('trust-device — atomic password-proof claim (Codex review #3, migration 0164)', () => {
+  test('RPC returns proof id → flow continues, mfa_verified_sessions row written', async () => {
+    ok();
+    state.claimedProofId = 'real-proof-uuid';
+    const res = await POST(mockReq());
+    assert.equal(res.status, 200);
+    assert.equal(state.claimRpcCalls, 1, 'RPC must be called exactly once per request');
+    assert.equal(state.releaseRpcCalls, 0, 'release RPC must NOT fire on happy path');
+    assert.equal(state.mfaSessionsInserts.length, 1);
+  });
+
+  test('RPC returns NULL (no unused proof) → 403, no trusted_devices write, no mfa_verified_sessions write', async () => {
+    // The Hole #1 attack: caller has a valid Supabase JWT (from signInWithOtp,
+    // not signInWithPassword) → no proof exists → RPC returns null → must
+    // 403, NOT mint a trust cookie.
+    ok();
+    state.claimedProofId = null;
+    const res = await POST(mockReq());
+    assert.equal(res.status, 403);
+    assert.equal(state.claimRpcCalls, 1);
+    assert.equal(state.mfaSessionsInserts.length, 0, 'no mfa_verified_sessions write when proof claim fails');
+  });
+
+  test('RPC errors transiently → fail-closed 503, no trust mint, no release', async () => {
+    ok();
+    state.claimRpcError = { message: 'connection reset' };
+    state.claimedProofId = null;
+    const res = await POST(mockReq());
+    assert.equal(res.status, 503);
+    assert.equal(state.releaseRpcCalls, 0, 'nothing to release — never successfully claimed');
+    assert.equal(state.mfaSessionsInserts.length, 0);
+  });
+
+  test('proof claimed but trusted_devices insert fails → release RPC fires (proof not burned)', async () => {
+    // Otherwise a transient failure during the trust mint would burn the
+    // claim and force the user back to a fresh password sign-in.
+    ok();
+    state.claimedProofId = 'real-proof-uuid';
+    state.trustedDevicesInsertError = { message: 'transient db error' };
+    const res = await POST(mockReq());
+    assert.equal(res.status, 500);
+    assert.equal(state.claimRpcCalls, 1);
+    assert.equal(state.releaseRpcCalls, 1, 'release RPC must fire to un-burn the proof');
+    assert.equal(state.mfaSessionsInserts.length, 0);
   });
 });

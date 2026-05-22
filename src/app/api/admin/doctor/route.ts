@@ -465,10 +465,16 @@ async function checkEnvVars(): Promise<Omit<Check, 'name' | 'durationMs'>> {
 async function checkMfaVerifiedHookSelfTest(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   // The known demo user (test@staxis.local). Its auth.users.id was
   // observed in prod as 8b1ca426-fa48-43c9-90e4-eb69fed168b6 during the
-  // Phase A hook-verification run. If this UUID changes, the doctor
-  // check breaks — but so would the entire investor demo, so it's
-  // self-documenting.
-  const KNOWN_DEMO_USER_ID = '8b1ca426-fa48-43c9-90e4-eb69fed168b6';
+  // Phase A hook-verification run.
+  //
+  // Configurable via STAXIS_DEMO_USER_ID env var (Codex review #7,
+  // 2026-05-22). If we ever recreate test@staxis.local with a new
+  // auth.users.id — e.g. during a disaster restore from PITR, or if the
+  // demo user gets purged by the orphan sweeper — set the env var to
+  // the new UUID and redeploy without touching this code. Default
+  // fallback is the current prod UUID so existing deploys keep working
+  // without configuration.
+  const KNOWN_DEMO_USER_ID = env.STAXIS_DEMO_USER_ID ?? '8b1ca426-fa48-43c9-90e4-eb69fed168b6';
   // Synthetic session_id — not a real session. The hook's skip_2fa
   // branch fires before the session_id lookup so this doesn't need
   // to match a real auth.sessions row.

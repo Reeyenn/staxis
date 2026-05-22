@@ -208,6 +208,18 @@ const ServerSchema = z.object({
   // in the DB. Set in Vercel; rotate when the demo account set changes.
   SKIP_2FA_USER_IDS: z.string().optional(),
 
+  // Codex review #7 (audit 2026-05-22): the doctor's
+  // mfa_verified_hook_self_test calls the auth hook with a known demo
+  // user id and asserts mfa_verified=true. If we ever recreate
+  // test@staxis.local (PITR restore, accidental delete + recreate) with
+  // a new auth.users.id, the doctor would falsely flag the hook as
+  // broken. Set this in Vercel after rotating the demo user; default
+  // fallback in the doctor route is the current prod UUID.
+  STAXIS_DEMO_USER_ID: z
+    .string()
+    .uuid()
+    .optional(),
+
   // ── Voice / wake word ─────────────────────────────────
   PICOVOICE_ACCESS_KEY: z.string().optional(),
 

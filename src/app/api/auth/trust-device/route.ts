@@ -21,6 +21,7 @@ import {
 } from '@/lib/trusted-device';
 import { err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
+import { logSecurityEvent } from '@/lib/audit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -106,12 +107,55 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Phase A (Hole #1 fix, audit 2026-05-22): require an atomically-claimed
+  // password_signin_proofs row. Written by custom_access_token_hook when
+  // Supabase tags the JWT issuance with authentication_method='password'.
+  // Attackers calling supabase.auth.signInWithOtp directly cannot fake the
+  // method — the hook tags 'otp' and no proof gets written. So they have
+  // a valid Supabase JWT but no proof → 403 here → can't mint trust.
+  //
+  // The claim is via an RPC (migration 0164) instead of SELECT+UPDATE to
+  // close a race where two concurrent OTP verifications could both
+  // consume the same proof and mint two trusted devices. FOR UPDATE
+  // SKIP LOCKED inside the RPC ensures exactly one caller wins the row.
+  const { data: claimedProofId, error: proofClaimErr } = await supabaseAdmin.rpc(
+    'staxis_claim_password_signin_proof',
+    { p_user_id: userData.user.id },
+  );
+  if (proofClaimErr) {
+    log.error('[trust-device] password proof RPC failed — failing closed', {
+      requestId, userId: userData.user.id, err: proofClaimErr.message,
+    });
+    return err('Trust-device temporarily unavailable, please retry', {
+      requestId, status: 503, code: ApiErrorCode.InternalError,
+    });
+  }
+  if (!claimedProofId) {
+    await logSecurityEvent({
+      action: 'auth.trust_device_blocked_no_password_proof',
+      userId: userData.user.id,
+      requestId,
+      metadata: { reason: 'password_signin_proof_missing_or_expired_or_used' },
+    });
+    return err(
+      'Password sign-in required before this device can be trusted. Please sign in again with your password.',
+      { requestId, status: 403, code: ApiErrorCode.Unauthorized },
+    );
+  }
+
   const { data: account, error: acctErr } = await supabaseAdmin
     .from('accounts')
     .select('id')
     .eq('data_user_id', userData.user.id)
     .maybeSingle();
   if (acctErr || !account) {
+    // Release the claimed proof so the user can retry without losing it.
+    try {
+      await supabaseAdmin.rpc('staxis_release_password_signin_proof', { p_id: claimedProofId });
+    } catch {
+      // Best-effort — the user will need to re-sign-in with their password
+      // if the release also fails. Logged via Sentry from the route caller.
+    }
     return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
 
@@ -161,6 +205,14 @@ export async function POST(req: NextRequest) {
   });
   if (insErr) {
     log.error('[trust-device] insert failed', { requestId, accountId: account.id, err: insErr.message });
+    // Release the claimed proof so the user can retry without re-doing
+    // their password sign-in. Otherwise a transient DB error burns the
+    // proof and forces them all the way back to /signin.
+    try {
+      await supabaseAdmin.rpc('staxis_release_password_signin_proof', { p_id: claimedProofId });
+    } catch {
+      // Best-effort.
+    }
     return err('Failed to register trusted device', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
