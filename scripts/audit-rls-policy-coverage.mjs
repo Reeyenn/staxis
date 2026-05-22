@@ -102,6 +102,11 @@ const SERVICE_ROLE_ONLY = new Set([
   'trusted_devices',
   'agent_cost_finalize_failures',
   'staff_magic_codes',
+  // Phase A (2026-05-22 audit, Hole #1): hook writes proof rows when
+  // Supabase tags JWT issuance with authentication_method='password';
+  // trust-device reads via supabaseAdmin. Never user-readable — the
+  // raw rows would leak that a password sign-in happened.
+  'password_signin_proofs',
   // RLS-on with explicit deny-browser policies (no end-user access).
   // Listed for clarity; they'd pass the policy check via their deny policy
   // text containing `false` and the table name, but the lint matches on
