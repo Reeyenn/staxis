@@ -463,8 +463,13 @@ function CountRow({
         <div style={{ position: 'relative', flex: 1 }}>
           <input
             type="number"
+            min="0"
+            inputMode="decimal"
             value={entry.value}
-            onChange={(e) => onChange(e.target.value)}
+            // Reject anything that isn't empty or a non-negative decimal in progress.
+            // Blocks "-5", "abc", "NaN", scientific notation at type-time so the
+            // count we save can't be a negative or non-finite number.
+            onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) onChange(v); }}
             placeholder="—"
             style={{
               width: '100%',

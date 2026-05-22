@@ -178,16 +178,22 @@ export function AddItemSheet({ open, onClose, item }: AddItemSheetProps) {
           <Field label="On hand">
             <input
               type="number"
+              min="0"
+              inputMode="decimal"
               value={currentStock}
-              onChange={(e) => setCurrentStock(e.target.value)}
+              // Reject anything that isn't empty or a non-negative decimal in progress.
+              // Blocks "-5", "abc", "1e10" at type-time so the saved value can't be junk.
+              onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setCurrentStock(v); }}
               style={inputStyle}
             />
           </Field>
           <Field label="Par level">
             <input
               type="number"
+              min="0"
+              inputMode="decimal"
               value={parLevel}
-              onChange={(e) => setParLevel(e.target.value)}
+              onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setParLevel(v); }}
               style={inputStyle}
             />
           </Field>
@@ -206,9 +212,11 @@ export function AddItemSheet({ open, onClose, item }: AddItemSheetProps) {
           <Field label="Unit cost ($)">
             <input
               type="number"
+              min="0"
               step="0.01"
+              inputMode="decimal"
               value={unitCost}
-              onChange={(e) => setUnitCost(e.target.value)}
+              onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setUnitCost(v); }}
               placeholder="0.00"
               style={inputStyle}
             />
@@ -225,8 +233,10 @@ export function AddItemSheet({ open, onClose, item }: AddItemSheetProps) {
           <Field label="Lead days">
             <input
               type="number"
+              min="0"
+              inputMode="numeric"
               value={leadDays}
-              onChange={(e) => setLeadDays(e.target.value)}
+              onChange={(e) => { const v = e.target.value; if (v === '' || /^\d+$/.test(v)) setLeadDays(v); }}
               style={inputStyle}
             />
           </Field>
