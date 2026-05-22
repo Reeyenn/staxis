@@ -100,7 +100,11 @@ export type RateLimitEndpoint =
   // scraper /scrape/hk-center, which talks to Choice Advantage. Two
   // open browser tabs + a power-user clicking refresh shouldn't burn
   // through the CA session quota. Keyed on (userId, propertyId).
-  | 'refresh-from-pms';
+  | 'refresh-from-pms'
+  // Scraper hardening v2 (F6) — read-only freshness probe powering the
+  // <StaleDataBanner /> on /dashboard and /staff. Polled every 60s
+  // from each open tab. Keyed on (userId, propertyId).
+  | 'scraper-status';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -197,6 +201,10 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // "click roughly every 2 minutes for an hour" which is enough for any
   // legitimate troubleshooting and stops a runaway script dead.
   'refresh-from-pms':            30,
+  // scraper-status — banner polls every 60s = 60/hr per tab. Cap at
+  // 240/hr per (user, property) to absorb 4 open tabs without 429,
+  // while still stopping a runaway useEffect or stale-link DDoS.
+  'scraper-status':              240,
 };
 
 /**

@@ -69,6 +69,11 @@ const Schema = z.object({
   CSV_TEST_ON_STARTUP: z.coerce.boolean().default(false),
   HEADED: z.coerce.boolean().default(false),
   SCRAPER_INSTANCE_ID: z.string().default('default'),
+  // F10: opt-in raw HTML / CSV dumps to disk on failure. Default OFF —
+  // structural diagnostics (URL, title, length, content-type) are kept
+  // in logs and ScraperError diagnostics regardless. Set true in dev or
+  // when actively chasing a CA-side selector miss; clear when done.
+  SCRAPER_DEBUG_DUMPS: z.coerce.boolean().default(false),
 
   // ── Alerting (optional) ───────────────────────────────
   TWILIO_ACCOUNT_SID: z.string().optional(),

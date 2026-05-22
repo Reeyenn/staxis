@@ -34,7 +34,7 @@ const SAMPLE_CSV = [
 
 describe('parseCSV', () => {
   test('parses a well-formed 14-column CSV into room objects', () => {
-    const rooms = parseCSV(SAMPLE_CSV);
+    const { rooms } = parseCSV(SAMPLE_CSV);
     assert.equal(rooms.length, 5);
     const r101 = rooms.find(r => r.number === '101');
     assert.ok(r101, 'expected to find room 101');
@@ -44,12 +44,12 @@ describe('parseCSV', () => {
   });
 
   test('preserves room number as string (some hotels use 100A, 12B, etc.)', () => {
-    const rooms = parseCSV(SAMPLE_CSV);
+    const { rooms } = parseCSV(SAMPLE_CSV);
     assert.equal(typeof rooms[0].number, 'string');
   });
 
   test('handles VAC rooms with empty Arrival/Departure', () => {
-    const rooms = parseCSV(SAMPLE_CSV);
+    const { rooms } = parseCSV(SAMPLE_CSV);
     const vac = rooms.find(r => r.number === '103');
     assert.equal(vac.status, 'VAC');
     // parseCSV converts empty strings to null for arrival/departure.
@@ -57,21 +57,35 @@ describe('parseCSV', () => {
   });
 
   test('handles OOO rooms', () => {
-    const rooms = parseCSV(SAMPLE_CSV);
+    const { rooms } = parseCSV(SAMPLE_CSV);
     const ooo = rooms.find(r => r.number === '105');
     assert.equal(ooo.status, 'OOO');
   });
 
   test('ignores rows whose first column is not a room number', () => {
     const csvWithGarbage = SAMPLE_CSV + '\n"Total","","","","","","","","","","","","",""';
-    const rooms = parseCSV(csvWithGarbage);
+    const { rooms, anomalies } = parseCSV(csvWithGarbage);
     assert.equal(rooms.length, 5);
+    // "Total" footer row is a known summary pattern — not counted as
+    // malformed (would otherwise cause every CA report to flag corruption).
+    assert.equal(anomalies.roomNumberMalformed, 0);
   });
 
   test('parses CRLF line endings (Windows-exported CSV)', () => {
     const crlf = SAMPLE_CSV.replace(/\n/g, '\r\n');
-    const rooms = parseCSV(crlf);
+    const { rooms } = parseCSV(crlf);
     assert.equal(rooms.length, 5);
+  });
+
+  test('returns anomalies object alongside parsed rooms', () => {
+    const result = parseCSV(SAMPLE_CSV);
+    assert.ok(result.anomalies, 'expected anomalies object');
+    assert.equal(typeof result.anomalies.nanAdults, 'number');
+    assert.equal(typeof result.anomalies.unknownStayType, 'number');
+    // Clean sample → all zeros.
+    assert.equal(result.anomalies.nanAdults, 0);
+    assert.equal(result.anomalies.unknownStayType, 0);
+    assert.equal(result.anomalies.bothDatesNull, 0);
   });
 });
 
@@ -115,7 +129,7 @@ describe('buildSnapshot', () => {
   const today = '2026-04-27';
 
   test('builds a non-degenerate snapshot from sample CSV', () => {
-    const rooms = parseCSV(SAMPLE_CSV);
+    const { rooms } = parseCSV(SAMPLE_CSV);
     const snap = buildSnapshot(rooms, 'morning', today);
     assert.equal(snap.date, today);
     assert.ok(snap.totalRooms >= 5, `expected totalRooms >= 5, got ${snap.totalRooms}`);
@@ -125,7 +139,7 @@ describe('buildSnapshot', () => {
   });
 
   test('snapshot includes the OOO room in oooRoomNumbers', () => {
-    const rooms = parseCSV(SAMPLE_CSV);
+    const { rooms } = parseCSV(SAMPLE_CSV);
     const snap = buildSnapshot(rooms, 'morning', today);
     assert.ok(Array.isArray(snap.oooRoomNumbers));
     assert.ok(snap.oooRoomNumbers.includes('105'));

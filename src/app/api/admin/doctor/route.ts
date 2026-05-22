@@ -175,6 +175,17 @@ const checks: Array<[string, CheckFn]> = [
   ['supabase_realtime_publication',  checkSupabaseRealtimePublication],
   ['supabase_heartbeat',             checkSupabaseHeartbeat],
   ['supabase_dashboard',             checkSupabaseDashboard],
+  // F7 (master plan v2): per-property dashboard freshness, aligned with
+  // the UI's DASHBOARD_STALE_MINUTES contract. Warns at 25 min (matching
+  // the customer-visible "stale" banner threshold), fails at 45 min
+  // (Codex review reframe — "reuse UI helper contract, don't redefine").
+  ['dashboard_freshness',            checkDashboardFreshness],
+  // F7 (master plan v2): bubble up watchdog degradation to /doctor.
+  // The scraper writes a coarse boolean degraded + degradedReason to
+  // scraper_status['vercel_watchdog'] each tick. If true, the SMS path
+  // is broken regardless of how green every other check is — surface
+  // that loudly here so we don't trust the silence.
+  ['vercel_watchdog_degraded',       checkVercelWatchdogDegraded],
   // Schema-drift detection: every migration in /supabase/migrations/ must be
   // recorded in applied_migrations on the live DB. Catches the "deployed
   // code that calls a column added in 00NN before 00NN was applied" failure
@@ -1213,6 +1224,85 @@ async function checkSupabaseDashboard(): Promise<Omit<Check, 'name' | 'durationM
       status: 'fail',
       detail: `Supabase read failed: ${errToString(err)}`,
     };
+  }
+}
+
+// F7: per-property dashboard freshness. Mirrors the UI's
+// DASHBOARD_STALE_MINUTES (25 min) at the warn threshold, fails at 45 min.
+// Skipped outside the scraper's 5am–11pm CT window so off-hours staleness
+// (when no pulls are scheduled) doesn't false-alarm.
+async function checkDashboardFreshness(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const localHour = parseInt(
+      new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: 'America/Chicago' }).format(new Date()),
+      10,
+    );
+    if (localHour < 5 || localHour >= 23) {
+      return { status: 'skipped', detail: `outside scraper window (local hour ${localHour})` };
+    }
+
+    // Pick the most-recently-pulled dashboard_by_date row across properties.
+    // Single-property today; multi-property generalizes naturally —
+    // aggregating to "worst staleness across the fleet" is a follow-up.
+    const { data, error } = await supabaseAdmin
+      .from('dashboard_by_date')
+      .select('property_id, pulled_at, error_code')
+      .order('pulled_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data || !data.pulled_at) {
+      return {
+        status: 'warn',
+        detail: 'no dashboard_by_date rows yet (scraper may not have pulled this property)',
+      };
+    }
+
+    const pulledAt = new Date(data.pulled_at as string);
+    const minAgo = Math.floor((Date.now() - pulledAt.getTime()) / 60_000);
+
+    if (minAgo > 45) {
+      return {
+        status: 'fail',
+        detail: `dashboard_by_date is ${minAgo} min stale (>45 min during scraper window)`,
+        fix: 'Check Railway scraper logs for dashboard-pull errors; check Choice Advantage login.',
+      };
+    }
+    if (minAgo > 25) {
+      return {
+        status: 'warn',
+        detail: `dashboard_by_date is ${minAgo} min stale (>25 min — matches UI stale banner)`,
+      };
+    }
+    return { status: 'ok', detail: `dashboard fresh (${minAgo} min ago)` };
+  } catch (err) {
+    return { status: 'fail', detail: `Supabase read failed: ${errToString(err)}` };
+  }
+}
+
+// F7: surface watchdog degradation. The scraper writes
+// scraper_status['vercel_watchdog'].degraded each tick. true means SMS
+// alerts will not fire (env missing, send failed, or alert phone unset).
+async function checkVercelWatchdogDegraded(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('scraper_status')
+      .select('data')
+      .eq('key', 'vercel_watchdog')
+      .maybeSingle();
+    if (error) throw error;
+    const value = (data?.data ?? {}) as { degraded?: boolean; degradedReason?: string };
+    if (value.degraded === true) {
+      return {
+        status: 'fail',
+        detail: `watchdog SMS path degraded (reason=${value.degradedReason ?? 'unknown'})`,
+        fix: 'Check TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM_NUMBER / OPS_ALERT_PHONE on Railway. A failed send also flips this — verify Twilio account status.',
+      };
+    }
+    return { status: 'ok', detail: 'watchdog SMS path healthy' };
+  } catch (err) {
+    return { status: 'fail', detail: `Supabase read failed: ${errToString(err)}` };
   }
 }
 

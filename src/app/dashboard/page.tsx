@@ -17,6 +17,7 @@ import {
 } from '@/lib/db';
 import { dashboardFreshness } from '@/lib/db/dashboard';
 import { useTodayStr } from '@/lib/use-today-str';
+import StaleDataBanner from '@/components/StaleDataBanner';
 import type { Room, WorkOrder, HandoffEntry } from '@/types';
 
 // Snow palette tokens — applied via CSS vars defined in globals.css.
@@ -335,6 +336,9 @@ export default function DashboardPage() {
         color: C.ink,
         padding: '32px 48px',
       }}>
+        {/* F8: stale-data banner — only shows when scraper data is >90min
+            old or the watchdog SMS path is degraded. Hidden in steady state. */}
+        <StaleDataBanner />
 
         {/* greeting strip — left-aligned. Greeting first, then a thin
             vertical rule, then the date. Right side intentionally

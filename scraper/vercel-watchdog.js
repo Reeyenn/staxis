@@ -193,19 +193,34 @@ async function pingDoctor(cronSecret) {
 }
 
 /**
+ * F3: Twilio env presence check. Returns { ok: bool, missing: [...] }.
+ * Hoisted from the inline check in sendTwilioSms() so callers can probe
+ * once at startup AND once per tick, and surface "watchdog is degraded"
+ * to scraper_status['vercel_watchdog'].degraded without trying to send.
+ */
+function twilioEnvPresence() {
+  const missing = [];
+  if (!env.TWILIO_ACCOUNT_SID)  missing.push('TWILIO_ACCOUNT_SID');
+  if (!env.TWILIO_AUTH_TOKEN)   missing.push('TWILIO_AUTH_TOKEN');
+  if (!env.TWILIO_FROM_NUMBER)  missing.push('TWILIO_FROM_NUMBER');
+  return { ok: missing.length === 0, missing };
+}
+
+/**
  * Send SMS directly via Twilio REST API. No twilio-node dependency.
  * Returns { ok: true } on success, { ok: false, detail } on failure.
  */
 async function sendTwilioSms(to, body) {
+  const presence = twilioEnvPresence();
+  if (!presence.ok) {
+    return { ok: false, detail: `Twilio env vars missing on Railway (${presence.missing.join(', ')})` };
+  }
   const sid   = env.TWILIO_ACCOUNT_SID;
   const token = env.TWILIO_AUTH_TOKEN;
   // Support both naming conventions — TWILIO_FROM_NUMBER is the canonical
   // one used by the Next.js sms.ts lib; TWILIO_PHONE_NUMBER is the legacy
   // Railway var. Fall back to either.
   const from  = env.TWILIO_FROM_NUMBER;
-  if (!sid || !token || !from) {
-    return { ok: false, detail: 'Twilio env vars missing on Railway (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM_NUMBER)' };
-  }
   // 2026-05-12 (Codex audit): wrap in a 10s AbortController so a hung
   // Twilio connection can't pin the watchdog tick and delay the next
   // scheduled run.
@@ -270,6 +285,14 @@ async function runVercelWatchdog({ supabase, timezone }) {
     return;
   }
 
+  // F3: precompute env-driven degradation so EVERY patch site below can
+  // include it without per-path divergence. Cleared/overridden by specific
+  // paths (twilio send fail → 'twilio_send_failed', no alert phone →
+  // 'missing_ops_phone'). Read once, propagate everywhere.
+  const presence = twilioEnvPresence();
+  const envDegraded = !presence.ok;
+  const envDegradedReason = envDegraded ? 'missing_twilio_env' : null;
+
   // Ping first so network errors are always visible in Railway logs even if
   // Supabase is unhappy.
   const result = await pingDoctor(cronSecret);
@@ -307,6 +330,10 @@ async function runVercelWatchdog({ supabase, timezone }) {
       // alert we couldn't send is now moot.
       alertSuppressedReason: null,
       alertSuppressedAt: null,
+      // F3: env-driven degradation. Specific paths below may override
+      // (e.g. recovery SMS failure → 'twilio_send_failed').
+      degraded: envDegraded,
+      degradedReason: envDegradedReason,
     };
 
     // Send recovery SMS only once — transitioning from alerted to ok.
@@ -318,6 +345,12 @@ async function runVercelWatchdog({ supabase, timezone }) {
       if (!smsRes.ok) log(`recovery SMS failed: ${smsRes.detail}`);
       patch.lastRecoverySmsAt = nowIso;
       patch.lastRecoverySmsOk = smsRes.ok;
+      // F3: a failed SMS overrides env-degraded reason (env was fine, the
+      // send itself broke — credentials revoked, Twilio outage, etc.).
+      if (!smsRes.ok) {
+        patch.degraded = true;
+        patch.degradedReason = 'twilio_send_failed';
+      }
     }
 
     // Phase J META gap-3 (2026-05-13): daily "all good" heartbeat SMS.
@@ -363,6 +396,10 @@ async function runVercelWatchdog({ supabase, timezone }) {
     lastStatus: result.status,
     lastDetail: result.detail,
     consecutiveFailures: newCount,
+    // F3: env-driven degradation default; later paths may override to
+    // 'twilio_send_failed' or 'missing_ops_phone'.
+    degraded: envDegraded,
+    degradedReason: envDegradedReason,
   };
 
   // Short-circuit: auth_mismatch means Vercel env var ≠ Railway env var for
@@ -424,6 +461,10 @@ async function runVercelWatchdog({ supabase, timezone }) {
     patch.alertActive = true;
     patch.alertSuppressedReason = 'no_alert_phone_on_railway';
     patch.alertSuppressedAt = nowIso;
+    // F3: missing-phone is its own kind of degradation; takes priority
+    // over a generic env-missing flag.
+    patch.degraded = true;
+    patch.degradedReason = 'missing_ops_phone';
     try { await mergeStatus(supabase, 'vercel_watchdog', patch); }
     catch (err) { log(`state write (no-phone) failed: ${err.message}`); }
     return;
@@ -444,6 +485,9 @@ async function runVercelWatchdog({ supabase, timezone }) {
       patch.alertActive = true;
       patch.alertSuppressedReason = 'twilio_backoff';
       patch.alertSuppressedAt = nowIso;
+      // F3: still in degraded state until a send succeeds.
+      patch.degraded = true;
+      patch.degradedReason = 'twilio_send_failed';
       try { await mergeStatus(supabase, 'vercel_watchdog', patch); }
       catch (err) { log(`state write (twilio-backoff) failed: ${err.message}`); }
       return;
@@ -484,12 +528,22 @@ async function runVercelWatchdog({ supabase, timezone }) {
     patch.alertSuppressedAt = null;
     patch.lastTwilioFailAt = null;
     patch.twilioFailCount = 0;
+    // F3: a successful send proves both env and creds are working.
+    // Clear degradation even if env-presence was suspicious (the send
+    // succeeded, that's what actually matters operationally).
+    patch.degraded = false;
+    patch.degradedReason = null;
     log(`ALERT sent: ${body}`);
   } else {
     // Increment the Twilio failure counter so the next tick honors the
     // backoff window (5m → 10m → 20m → 40m → 60m cap).
     patch.lastTwilioFailAt = nowIso;
     patch.twilioFailCount = twilioFailCount + 1;
+    // F3: send failed. The detail string already explains why (env
+    // missing, HTTP error, abort timeout) — we just need a coarse
+    // boolean for the UI banner.
+    patch.degraded = true;
+    patch.degradedReason = 'twilio_send_failed';
     log(`ALERT SMS FAILED (count=${patch.twilioFailCount}): ${smsRes.detail}. Backing off. Body: ${body}`);
   }
 
@@ -497,4 +551,4 @@ async function runVercelWatchdog({ supabase, timezone }) {
   catch (err) { log(`state write (alert) failed: ${err.message}`); }
 }
 
-module.exports = { runVercelWatchdog };
+module.exports = { runVercelWatchdog, twilioEnvPresence };
