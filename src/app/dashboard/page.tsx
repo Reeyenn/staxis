@@ -10,7 +10,7 @@
 
 export const dynamic = 'force-dynamic';
 
-import React, { useEffect, useState, useRef, useMemo } from 'react';
+import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
@@ -84,26 +84,29 @@ function Sparkles({ size = 14, color = 'currentColor' }: { size?: number; color?
   );
 }
 
-// ─── useElementWidth (matches design, with useEffect + RAF for prod) ──
-
-function useElementWidth(): [React.RefObject<HTMLDivElement | null>, number] {
-  const ref = useRef<HTMLDivElement | null>(null);
+// ─── useElementWidth — callback ref so measurement runs the moment
+// React attaches the DOM node. The previous useRef + useEffect version
+// had chartHostW stuck at 0 in production for some Next.js/Turbopack
+// hydration reason I couldn't pin down, which forced the SVG to render
+// at the 1200-px fallback while the host was 1598-px wide. A callback
+// ref runs synchronously on attach — no race conditions.
+function useElementWidth(): [(el: HTMLDivElement | null) => void, number] {
   const [w, setW] = useState(0);
-  useEffect(() => {
-    if (!ref.current) return;
+  const cleanupRef = useRef<(() => void) | null>(null);
+  const refCallback = useCallback((el: HTMLDivElement | null) => {
+    cleanupRef.current?.();
+    cleanupRef.current = null;
+    if (!el) return;
     const measure = () => {
-      if (ref.current) setW(ref.current.getBoundingClientRect().width);
+      const next = el.getBoundingClientRect().width;
+      if (next > 0) setW(next);
     };
     measure();
     const obs = new ResizeObserver(measure);
-    obs.observe(ref.current);
-    const raf = requestAnimationFrame(measure);
-    return () => {
-      obs.disconnect();
-      cancelAnimationFrame(raf);
-    };
+    obs.observe(el);
+    cleanupRef.current = () => obs.disconnect();
   }, []);
-  return [ref, w];
+  return [refCallback, w];
 }
 
 // ─── SpotlightChart (verbatim from dashboard.jsx, typed) ───────────────
