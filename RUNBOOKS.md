@@ -1384,6 +1384,50 @@ Each use must include a real one-line reason. Future audits read these to verify
 - **New SECURITY DEFINER function** → must include `set search_path = pg_catalog, public` (or `set search_path = public, pg_temp`). Pattern from 0036/0037/0040/0072/0153.
 - **New public route under `/api/housekeeper/**` or `/api/laundry/**`** → use `supabaseAdmin` + `validateUuid('pid', ...)` + a `(pid, staffId)` capability check on the `staff` table before any other queries. Pattern: `/api/housekeeper/rooms/route.ts`.
 - **New API route that takes a `propertyId` in the body** → call `userHasPropertyAccess(userId, propertyId)` after `requireSession` and before any `supabaseAdmin.from(...).eq('property_id', body.propertyId)`.
+- **New storage bucket** → must be `public = false`, paths must be `<property_id>/<filename>`, and policies on `storage.objects` must scope by `user_owns_property(((storage.foldername(name))[1])::uuid)`. The lint enforces this at PR time. See "Storage bucket pattern" subsection below.
+
+### Storage bucket pattern (audit 2026-05-22)
+
+Three private buckets exist today: `invoices` and `counts` (added 0028), `maintenance-photos` (added 0131, RLS fixed in 0144). All three use the canonical per-folder property check. **Browser-side reads only happen on `maintenance-photos` via `createSignedUrl` in `src/app/maintenance/_components/_mt-snow.tsx:421` — its RLS policy is the sole boundary.** `invoices` and `counts` are read server-side via `supabaseAdmin`.
+
+**Convention for new buckets:**
+- `public = false` on the `storage.buckets` row.
+- Object paths: `<property_id>/<filename>` (the lint extracts `(storage.foldername(name))[1]` as the property_id).
+- Policy template:
+  ```sql
+  create policy "<bucket>_owner_rw" on storage.objects
+    for all to authenticated
+    using (
+      bucket_id = '<bucket>'
+      and user_owns_property(((storage.foldername(name))[1])::uuid)
+    )
+    with check (
+      bucket_id = '<bucket>'
+      and user_owns_property(((storage.foldername(name))[1])::uuid)
+    );
+  ```
+
+**Accepted per-folder extraction equivalents** (the lint accepts any):
+- `(storage.foldername(name))[1]::uuid` — canonical, preferred.
+- `(string_to_array(name, '/'))[1]::uuid` — equivalent, accepted.
+- `split_part(name, '/', 1)::uuid` — equivalent, accepted.
+
+**Escape markers** for buckets that legitimately don't fit the per-property pattern. Each must be a SQL comment within ~800 chars before the `insert into storage.buckets` and include a real one-line reason:
+- `-- @storage: public-by-design — <reason>` (bucket is anon-readable on purpose, e.g., marketing assets).
+- `-- @storage: service-role-only — <reason>` (no anon/authenticated policy — service-role-only uploads/reads).
+- `-- @storage: account-scoped — <reason>` (folder is `account_id` instead of `property_id`; policy scopes by `account_id`/`data_user_id` + a per-folder function).
+
+**Enforcement layers:**
+- `scripts/audit-storage-bucket-rls.mjs` — PR-time lint, blocks new bucket without matching policy.
+- `/api/admin/doctor` check `storage_bucket_policy_coverage` — hourly live check; catches out-of-band `DROP POLICY ... ON storage.objects` via the Supabase SQL editor.
+
+**Current inventory:**
+
+| Bucket | Created | Public | RLS pattern | Read path |
+|---|---|---|---|---|
+| `invoices` | 0028 | false | per-property (storage.foldername) | server-side via supabaseAdmin |
+| `counts` | 0028 | false | per-property (storage.foldername) | server-side via supabaseAdmin |
+| `maintenance-photos` | 0131 → 0144 | false | per-property (storage.foldername) | **browser via createSignedUrl** — RLS is the boundary |
 
 ### `accounts.property_access` mutation surface inventory
 

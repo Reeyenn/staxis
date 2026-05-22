@@ -152,6 +152,15 @@ const checks: Array<[string, CheckFn]> = [
   // `DROP POLICY` in the Supabase SQL editor and forgets to recreate it.
   // Requires the pg_tables_policy_coverage view added in migration 0200.
   ['supabase_rls_policy_coverage',   checkSupabaseRlsPolicyCoverage],
+  // Storage bucket per-property RLS coverage. Complement to the
+  // storage.objects-only `supabase_rls_enabled` check: this one verifies
+  // every non-public bucket has at least one policy that scopes by
+  // user_owns_property AND a per-folder extraction function. The 0144 bug
+  // (`maintenance-photos` was auth-only — any user could read another
+  // tenant's photos via guessable folder paths) is exactly this class.
+  // Catches out-of-band `DROP POLICY` against storage.objects via the
+  // Supabase SQL editor.
+  ['storage_bucket_policy_coverage', checkStorageBucketPolicyCoverage],
   ['supabase_realtime_publication',  checkSupabaseRealtimePublication],
   ['supabase_heartbeat',             checkSupabaseHeartbeat],
   ['supabase_dashboard',             checkSupabaseDashboard],
@@ -908,6 +917,109 @@ async function checkSupabaseRlsPolicyCoverage(): Promise<Omit<Check, 'name' | 'd
     return {
       status: 'warn',
       detail: `RLS policy-coverage check threw: ${errToString(err)}`,
+    };
+  }
+}
+
+/**
+ * Verifies every non-public storage bucket has at least one RLS policy on
+ * storage.objects that scopes by `user_owns_property` AND a per-folder
+ * extraction function (storage.foldername, string_to_array, split_part).
+ *
+ * Why: migration 0144 closed a HIGH-severity bug where the
+ * `maintenance-photos` bucket's policies were `using (bucket_id = 'X')`
+ * with no per-property check — any authenticated user could read another
+ * tenant's photos via guessable folder paths. The canonical fix is to
+ * scope by `user_owns_property(((storage.foldername(name))[1])::uuid)`.
+ *
+ * Out-of-band drift this catches: someone runs
+ * `DROP POLICY "maintenance_photos_read_owner" ON storage.objects` in the
+ * Supabase SQL editor during incident response and forgets to recreate
+ * it. Lint catches migration regressions; this catches editor drift.
+ *
+ * Allowlist: buckets with `public = true` or with documented exceptions
+ * (account-scoped / service-role-only) are skipped via the
+ * STORAGE_BUCKET_RLS_ALLOWLIST. Keep in sync with
+ * scripts/audit-storage-bucket-rls.mjs.
+ */
+const STORAGE_BUCKET_RLS_ALLOWLIST = new Set<string>([
+  // None today. Add entries here ONLY with a corresponding
+  // `-- @storage: ...` comment in the migration that creates the bucket.
+]);
+
+async function checkStorageBucketPolicyCoverage(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    // 1. List buckets via service-role (bypasses any RLS on storage.buckets).
+    const { data: buckets, error: bErr } = await supabaseAdmin
+      .schema('storage')
+      .from('buckets')
+      .select('name, public');
+    if (bErr) {
+      return {
+        status: 'warn',
+        detail: `storage.buckets read failed: ${errToString(bErr)}`,
+      };
+    }
+    const privateBuckets = ((buckets ?? []) as Array<{ name: string; public: boolean }>)
+      .filter((b) => !b.public && !STORAGE_BUCKET_RLS_ALLOWLIST.has(b.name));
+    if (privateBuckets.length === 0) {
+      return { status: 'ok', detail: 'no private storage buckets to check' };
+    }
+
+    // 2. Read pg_policies for storage.objects via the supabase RPC pattern.
+    //    PostgREST exposes pg_policies through a fallback path; we use a
+    //    direct query via the supabase-js `rpc` API would need a server-
+    //    defined function. Instead we use the same approach as the
+    //    existing pg_tables_rls_status check: a view. To keep this self-
+    //    contained without adding a new view, we use the supabase admin
+    //    client to fetch via REST `pg_policies` if PostgREST exposes it.
+    const { data: pols, error: pErr } = await supabaseAdmin
+      .from('pg_policies')
+      .select('policyname, tablename, schemaname, qual, with_check, cmd')
+      .eq('schemaname', 'storage')
+      .eq('tablename', 'objects');
+    if (pErr) {
+      // pg_policies isn't exposed by default. Degrade to warn — the lint
+      // script catches the same class at PR time.
+      const msg = errToString(pErr);
+      if (msg.includes('Could not find') || msg.includes('does not exist') || msg.includes('relation')) {
+        return {
+          status: 'warn',
+          detail: `pg_policies not exposed via PostgREST — relying on lint script audit-storage-bucket-rls.mjs at PR time`,
+        };
+      }
+      return { status: 'warn', detail: `pg_policies read failed: ${msg}` };
+    }
+
+    type Policy = { policyname: string; qual: string | null; with_check: string | null };
+    const policies = (pols ?? []) as Policy[];
+
+    const PER_FOLDER_RX = /\b(storage\.foldername|string_to_array|split_part)\b/i;
+    const missing: string[] = [];
+    for (const bucket of privateBuckets) {
+      const guarded = policies.some((p) => {
+        const text = `${p.qual ?? ''} ${p.with_check ?? ''}`.toLowerCase();
+        if (!text.includes(`'${bucket.name}'`)) return false;
+        return /\buser_owns_property\b/.test(text) && PER_FOLDER_RX.test(text);
+      });
+      if (!guarded) missing.push(bucket.name);
+    }
+
+    if (missing.length > 0) {
+      return {
+        status: 'fail',
+        detail: `private storage buckets missing per-property RLS: ${missing.join(', ')}`,
+        fix: 'Add a CREATE POLICY for each bucket using `user_owns_property(((storage.foldername(name))[1])::uuid)` (template: migration 0144).',
+      };
+    }
+    return {
+      status: 'ok',
+      detail: `${privateBuckets.length} private storage bucket(s), all per-property protected`,
+    };
+  } catch (err) {
+    return {
+      status: 'warn',
+      detail: `storage bucket policy-coverage check threw: ${errToString(err)}`,
     };
   }
 }

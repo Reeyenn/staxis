@@ -9,7 +9,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint src scraper --max-warnings 0 && node scripts/check-env-access.mjs && node scripts/audit-force-dynamic.mjs && node scripts/audit-service-role-imports.mjs && node scripts/audit-public-page-direct-supabase.mjs && node scripts/audit-security-definer-search-path.mjs && node scripts/audit-rls-policy-coverage.mjs && node scripts/audit-api-route-tenant-scope.mjs",
+    "lint": "eslint src scraper --max-warnings 0 && node scripts/check-env-access.mjs && node scripts/audit-force-dynamic.mjs && node scripts/audit-service-role-imports.mjs && node scripts/audit-public-page-direct-supabase.mjs && node scripts/audit-security-definer-search-path.mjs && node scripts/audit-rls-policy-coverage.mjs && node scripts/audit-api-route-tenant-scope.mjs && node scripts/audit-storage-bucket-rls.mjs",
     "seed": "node scripts/seed-supabase.js",
     "seed:reset": "node scripts/seed-supabase.js --reset",
     "db:types": "npx supabase gen types typescript --project-id \"$SUPABASE_PROJECT_REF\" | sed '/<claude-code-hint/d' > src/types/database.types.ts",
