@@ -269,6 +269,29 @@ export async function POST(req: NextRequest) {
   }
   // Slot already incremented via the CAS at the top.
 
+  // Hole #1 fix (audit 2026-05-22): write a password proof so the
+  // client's first sign-in flow (signInWithOtp + verifyOtp + trust-device)
+  // succeeds. admin.createUser doesn't issue a client JWT, so the
+  // custom_access_token_hook doesn't fire here — we write the proof
+  // explicitly. The user JUST set their password via this endpoint, so
+  // the server can vouch for it. Non-fatal if the insert fails: the user
+  // can re-sign-in with the password they just set, which will trigger
+  // the normal hook-based proof write.
+  const proofExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  const { error: proofErr } = await supabaseAdmin
+    .from('password_signin_proofs')
+    .insert({
+      user_id: authData.user.id,
+      expires_at: proofExpiresAt,
+      user_agent: req.headers.get('user-agent') ?? null,
+      ip: ip || null,
+    });
+  if (proofErr) {
+    log.warn('[use-join-code] password_signin_proofs write failed (non-fatal)', {
+      requestId, userId: authData.user.id, err: proofErr.message,
+    });
+  }
+
   // Phase M1.5 (2026-05-14): when an OWNER signs up via an admin-issued
   // owner code, transfer properties.owner_id from the placeholder admin
   // (set at hotel creation time in /api/admin/properties/create) to the
