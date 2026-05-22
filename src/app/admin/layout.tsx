@@ -22,6 +22,13 @@
 // practice) so the cost is acceptable.
 //
 // Added 2026-05-22 in the auth/2FA audit (finding H1).
+//
+// @audit: tenant-scope-not-applicable — this is a server-side admin gate
+// that runs BEFORE any per-tenant query. supabaseAdmin is used here
+// (bypasses RLS) precisely so the role+trusted_devices check stays
+// independent of RLS drift on the accounts/trusted_devices tables. A
+// failure to read role here MUST fail closed (redirect to /) regardless
+// of whether the requesting user could read their own row via RLS.
 
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';

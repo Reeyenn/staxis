@@ -133,13 +133,21 @@ function checkFile(f, kind) {
     if (!METHOD_EXPORT_RX.test(src)) return; // not a handler-exporting file
   } else if (kind === 'page') {
     // Server components that import supabaseAdmin are a red flag in their
-    // own right — the audit confirmed today there are none. Fail-loud if
-    // one appears, regardless of guard presence: server components should
-    // go through createSupabaseServerClient (RLS-enforced) instead.
+    // own right — most should go through createSupabaseServerClient
+    // (RLS-enforced) instead. The escape marker exists for genuine
+    // security gates that must work independently of RLS (e.g., the
+    // /admin layout, which validates role + device trust on tables
+    // that have no user-readable RLS policy).
     if (usesAdmin) {
+      const firstChunkPage = src.split('\n').slice(0, 30).join('\n');
+      if (ESCAPE_RX.test(firstChunkPage)) {
+        escapeCount++;
+        scanned++;
+        return;
+      }
       violations.push({
         file: rel,
-        reason: 'server component imports supabaseAdmin — must use createSupabaseServerClient (RLS-enforced) instead',
+        reason: 'server component imports supabaseAdmin — must use createSupabaseServerClient (RLS-enforced) instead, OR add // @audit: tenant-scope-not-applicable — <reason>',
       });
       scanned++;
       return;

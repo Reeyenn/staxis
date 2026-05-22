@@ -1,4 +1,7 @@
--- Migration 0156: align CUA stale-job reap thresholds with job timeouts
+-- Migration 0165: align CUA stale-job reap thresholds with job timeouts
+-- (originally numbered 0156; renumbered during Phase 1/A/B merge on
+-- 2026-05-22 to resolve a version collision with the auth/2FA hardening
+-- migration. Not yet applied to prod at renumber time.)
 --
 -- The reapers (staxis_reap_stale_jobs / staxis_reap_stale_pull_jobs) were
 -- last set in 0037 / 0042 at 5 min (onboarding) and 3 min (pulls). The
@@ -122,7 +125,7 @@ grant  execute on function public.staxis_reap_stale_pull_jobs()  to   service_ro
 
 insert into applied_migrations (version, description)
 values (
-  '0156',
+  '0165',
   'CUA reaper thresholds aligned to worker timeouts: onboarding 5→16 min, pull 3→4 min. Prevents reaper from stealing legitimate long-running jobs.'
 )
 on conflict (version) do nothing;
