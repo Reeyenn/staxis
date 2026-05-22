@@ -138,9 +138,73 @@ function normaliseHeader(s) {
   return String(s || '').replace(/^"+|"+$/g, '').trim().toLowerCase();
 }
 
+/**
+ * F10: structural-only diagnostics. Returns URL, title, and visible-text
+ * length WITHOUT touching page.content() (HTML body never enters our
+ * logs). The header-row / title peek lets us still distinguish "logged
+ * out, got a sign-in form" vs "got the report page but wrong columns"
+ * vs "downloaded the wrong CSV" — without exposing guest names.
+ *
+ * Safe to call on any Playwright page; failures are swallowed and
+ * surfaced as { error } so the caller never gets a thrown diagnostics
+ * step.
+ */
+async function structuralDiagnostics(page) {
+  try {
+    const url = page.url();
+    const title = await page.title().catch(() => null);
+    return { url, title };
+  } catch (err) {
+    return { error: err && err.message ? err.message : String(err) };
+  }
+}
+
+/**
+ * F10: tiny opt-in dump writer. Default behavior is to do NOTHING (the
+ * structural diagnostics above are what gets logged). Set
+ * SCRAPER_DEBUG_DUMPS=true in Railway env when actively chasing a
+ * selector miss — flip back off when done.
+ */
+function writeDebugDump(filename, content, logger) {
+  if (!env.SCRAPER_DEBUG_DUMPS) return;
+  try {
+    fs.writeFileSync(path.join(__dirname, filename), content);
+    logger(`[CSV] (DEBUG) saved ${filename} (SCRAPER_DEBUG_DUMPS=true)`);
+  } catch (e) {
+    logger(`[CSV] (DEBUG) failed to save ${filename}: ${e.message}`);
+  }
+}
+
+// Known stayType values CA emits. Anything else is counted as an anomaly
+// but NOT dropped — downstream code already tolerates unknown strings.
+const KNOWN_STAY_TYPES = new Set(['Stay', 'C/O', '']);
+
+function emptyAnomalies() {
+  return {
+    nanAdults: 0,
+    nanChildren: 0,
+    unknownStayType: 0,
+    bothDatesNull: 0,
+    roomNumberMalformed: 0,
+    fieldCountShort: 0,
+  };
+}
+
+/**
+ * F4 telemetry-only validation. Counts rows that LOOK off (junk dates,
+ * non-numeric adults/children, unrecognised stayType, malformed room
+ * number) so we can see if real corruption ever starts — WITHOUT dropping
+ * rows or failing pulls. Null arrival/departure are legitimate for
+ * VAC/OOO/just-arrived rooms (see classifyStayover's missing-arrival
+ * fallback) so they only count when BOTH are null on an OCC/Stay row.
+ *
+ * Returns { rooms, anomalies }. Existing callers were updated 2026-05-22
+ * to destructure; the bare-array shape no longer exists.
+ */
 function parseCSV(csvText) {
   const lines = csvText.trim().split('\n');
-  if (lines.length < 2) return [];
+  const anomalies = emptyAnomalies();
+  if (lines.length < 2) return { rooms: [], anomalies };
 
   // ── Schema guard ──────────────────────────────────────────────────────
   // Validate the header row matches EXPECTED_CSV_HEADERS exactly (by name
@@ -182,7 +246,10 @@ function parseCSV(csvText) {
 
     // Parse CSV line respecting quoted fields
     const fields = parseCSVLine(line);
-    if (fields.length < 14) continue;
+    if (fields.length < 14) {
+      anomalies.fieldCountShort++;
+      continue;
+    }
 
     const [
       room, type, people, adults, children,
@@ -191,15 +258,40 @@ function parseCSV(csvText) {
       arrival, departure, lastClean
     ] = fields.map(f => f.trim());
 
-    // Skip if no room number
-    if (!room || !room.match(/^\d{3,4}$/)) continue;
+    // Skip rows whose first column isn't a room number. Count the ones
+    // that LOOK like they were trying to be rooms (non-empty, non-Total).
+    if (!room || !room.match(/^\d{3,4}$/)) {
+      if (room && !/^(total|grand total|count|summary)$/i.test(room)) {
+        anomalies.roomNumberMalformed++;
+      }
+      continue;
+    }
+
+    // Numeric coercion: parseInt('') is NaN, parseInt('abc') is NaN.
+    // We default to 0 (existing behavior) but flag rows where the raw
+    // field was a non-empty non-number — that's actual corruption,
+    // distinct from a legit blank cell.
+    const adultsParsed = parseInt(adults);
+    const childrenParsed = parseInt(children);
+    if (adults !== '' && Number.isNaN(adultsParsed)) anomalies.nanAdults++;
+    if (children !== '' && Number.isNaN(childrenParsed)) anomalies.nanChildren++;
+
+    // stayType: CA emits 'Stay', 'C/O', or blank. Anything else is new
+    // (day-use? complimentary block?) and worth knowing about.
+    if (!KNOWN_STAY_TYPES.has(stayCO)) anomalies.unknownStayType++;
+
+    // bothDatesNull is only meaningful on OCC+Stay rows; VAC/OOO/arrival
+    // rows legitimately have empty dates and shouldn't pollute the count.
+    if (status === 'OCC' && stayCO === 'Stay' && !arrival && !departure) {
+      anomalies.bothDatesNull++;
+    }
 
     rooms.push({
       number: room,
       roomType: type,                          // SNQQ, SNK, HSNK, etc.
       people: people || null,
-      adults: parseInt(adults) || 0,
-      children: parseInt(children) || 0,
+      adults: Number.isFinite(adultsParsed) ? adultsParsed : 0,
+      children: Number.isFinite(childrenParsed) ? childrenParsed : 0,
       status: status,                          // OCC, VAC, OOO
       condition: condition,                    // Clean, Dirty
       stayType: stayCO || null,                // Stay, C/O, or blank
@@ -212,7 +304,12 @@ function parseCSV(csvText) {
     });
   }
 
-  return rooms;
+  return { rooms, anomalies };
+}
+
+function anomaliesNonZero(a) {
+  if (!a) return false;
+  return Object.values(a).some(v => typeof v === 'number' && v > 0);
 }
 
 /**
@@ -561,14 +658,17 @@ async function downloadCSVFromCA(page, log) {
   }
 
   if (!csvSelectorUsed) {
-    // All approaches failed. Dump the page HTML and a screenshot so we can
-    // figure out the new layout offline.
-    try {
-      const html = await page.content();
-      fs.writeFileSync(path.join(__dirname, 'csv-form-dump.html'), html);
-      log('[CSV] saved csv-form-dump.html for selector diagnosis');
-    } catch (e) {
-      log(`[CSV] could not dump form HTML: ${e.message}`);
+    // F10: structural diagnostics over raw HTML. The full page dump is
+    // gated behind SCRAPER_DEBUG_DUMPS=true so guest-name-bearing HTML
+    // doesn't sit on the Railway disk during normal operation.
+    const struct = await structuralDiagnostics(page);
+    if (env.SCRAPER_DEBUG_DUMPS) {
+      try {
+        const html = await page.content();
+        writeDebugDump('csv-form-dump.html', html, log);
+      } catch (e) {
+        log(`[CSV] could not dump form HTML: ${e.message}`);
+      }
     }
     // Also pull a list of every checkbox on the page (id, name, visible)
     // and include in the error message so the upstream alert is useful.
@@ -588,8 +688,8 @@ async function downloadCSVFromCA(page, log) {
       ERROR_CODES.SELECTOR_MISS,
       `CSV export checkbox not actionable. Tried selectors: ${CSV_SELECTORS.join(' | ')}. ` +
       `Checkboxes on page: ${JSON.stringify(inventory)}. ` +
-      `See csv-form-dump.html for full HTML.`,
-      { page: 'csv', diagnostics: { inventory, url: page.url() } },
+      `Page: ${JSON.stringify(struct)}.`,
+      { page: 'csv', diagnostics: { inventory, ...struct } },
     );
   }
 
@@ -660,13 +760,17 @@ async function downloadCSVFromCA(page, log) {
       submitSelectorUsed = 'form.submit() via JS';
       log('[CSV] Submitted form directly via JS as last resort');
     } else {
-      // Dump diagnostics for the upstream alert and bail.
-      try {
-        const html = await page.content();
-        fs.writeFileSync(path.join(__dirname, 'csv-form-dump.html'), html);
-        log('[CSV] saved csv-form-dump.html for selector diagnosis');
-      } catch (e) {
-        log(`[CSV] could not dump form HTML: ${e.message}`);
+      // F10: same gated-dump pattern as the CSV-checkbox miss above.
+      // Structural fields go into the error message; raw HTML only
+      // touches disk if SCRAPER_DEBUG_DUMPS=true.
+      const struct = await structuralDiagnostics(page);
+      if (env.SCRAPER_DEBUG_DUMPS) {
+        try {
+          const html = await page.content();
+          writeDebugDump('csv-form-dump.html', html, log);
+        } catch (e) {
+          log(`[CSV] could not dump form HTML: ${e.message}`);
+        }
       }
       let buttonInventory = [];
       try {
@@ -684,8 +788,8 @@ async function downloadCSVFromCA(page, log) {
         `Submit control not actionable on the report form. ` +
         `Tried: ${SUBMIT_SELECTORS.join(' | ')}. ` +
         `Buttons/links visible: ${JSON.stringify(buttonInventory)}. ` +
-        `See csv-form-dump.html for full HTML.`,
-        { page: 'csv', diagnostics: { buttonInventory, url: page.url() } },
+        `Page: ${JSON.stringify(struct)}.`,
+        { page: 'csv', diagnostics: { buttonInventory, ...struct } },
       );
     }
   }
@@ -756,23 +860,28 @@ async function downloadCSVFromCA(page, log) {
   // Validate it looks like a CSV (first line should have "Room" header)
   if (!csvText.includes('"Room"') && !csvText.includes('Room,')) {
     await page.screenshot({ path: path.join(__dirname, 'csv-bad-content.png') });
-    log(`[CSV] Content preview: ${csvText.substring(0, 200)}`);
-    // Persist the response body so we can read it from outside Railway
-    // (i.e. in Supabase scraper_status when this error bubbles up).
-    try {
-      fs.writeFileSync(path.join(__dirname, 'csv-bad-content.txt'), csvText);
-    } catch { /* best effort */ }
-    // Inline a 600-char preview into the error message so the upstream
-    // scraper_status row carries enough context for us to act on without
-    // logging into Railway. Strip newlines so the alert SMS doesn't
-    // explode on multi-line content.
-    const preview = csvText
-      .replace(/\s+/g, ' ')
-      .substring(0, 600);
+    // F10: replace the 200-char raw-content log + 600-char inline error
+    // preview with structural-only diagnostics. The bad content can
+    // legitimately include guest reservation data on a misrouted page.
+    // The full response body only touches disk if SCRAPER_DEBUG_DUMPS
+    // is set; the structural fields are always logged.
+    const struct = await structuralDiagnostics(page);
+    const headerSnippet = csvText
+      .split(/\r?\n/, 1)[0]            // first line only
+      .slice(0, 200);                  // capped — the CSV header is ~140 chars
+    log(`[CSV] bad-content structural: ${JSON.stringify({
+      length: csvText.length,
+      firstLine: headerSnippet,
+      url: struct.url,
+      title: struct.title,
+    })}`);
+    if (env.SCRAPER_DEBUG_DUMPS) {
+      writeDebugDump('csv-bad-content.txt', csvText, log);
+    }
     throw new ScraperError(
       ERROR_CODES.CSV_BAD_CONTENT,
-      `Downloaded content is not CSV (got ${csvText.length} bytes). Preview: ${preview}`,
-      { page: 'csv', diagnostics: { length: csvText.length, preview } },
+      `Downloaded content is not CSV (got ${csvText.length} bytes, firstLine=${JSON.stringify(headerSnippet)}, page=${JSON.stringify(struct)})`,
+      { page: 'csv', diagnostics: { length: csvText.length, firstLine: headerSnippet, ...struct } },
     );
   }
 
@@ -933,8 +1042,11 @@ async function runCSVScrape(page, supabase, config, pullType, log) {
     const csvText = await downloadCSVFromCA(page, log);
 
     // Step 2: Parse
-    const rooms = parseCSV(csvText);
+    const { rooms, anomalies } = parseCSV(csvText);
     log(`[CSV] Parsed ${rooms.length} rooms from CSV`);
+    if (anomaliesNonZero(anomalies)) {
+      log(`[CSV] parse anomalies: ${JSON.stringify(anomalies)}`);
+    }
 
     if (rooms.length === 0) {
       throw new ScraperError(
@@ -961,6 +1073,9 @@ async function runCSVScrape(page, supabase, config, pullType, log) {
 
     // Step 3: Build snapshot
     const snapshot = buildSnapshot(rooms, pullType, targetDate, timezone);
+    // F4: forward parse-anomaly counts up to the status writer in scraper.js
+    // — strictly telemetry, never gates behavior here.
+    snapshot.parseAnomalies = anomalies;
 
     // Step 4: Save raw CSV to disk (backup)
     const timestamp = new Intl.DateTimeFormat('en-CA', {
@@ -1005,4 +1120,7 @@ module.exports = {
   classifyStayover,  // exported for unit testing / UI reuse
   computeTargetDate, // exported for unit testing
   CLEANING_TIMES,
+  // F4 telemetry helpers — exported for unit testing
+  anomaliesNonZero,
+  emptyAnomalies,
 };

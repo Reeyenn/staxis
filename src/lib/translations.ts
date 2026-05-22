@@ -221,7 +221,9 @@ type TranslationKey =
   | 'inspect' | 'inspection' | 'approve' | 'reject' | 'rejectReason'
   | 'roomApproved' | 'roomRejected' | 'allCaughtUp' | 'alreadyInspected'
   | 'roomsCleaned' | 'avgTime' | 'noRoomsCompleted' | 'avgTurnover'
-  | 'noDataYet' | 'cleanedBy' | 'cleanTime' | 'sendBack';
+  | 'noDataYet' | 'cleanedBy' | 'cleanTime' | 'sendBack'
+  // Stale-data banner (scraper hardening F8)
+  | 'staleDataYellow' | 'staleDataRed' | 'staleAlertingDegraded';
 
 const translations: Record<Language, Record<TranslationKey, string>> = {
   en: {
@@ -846,6 +848,11 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     cleanedBy: 'Cleaned by',
     cleanTime: 'Clean time',
     sendBack: 'Send Back',
+    // Stale-data banner (scraper hardening F8). {{age}} placeholder is
+    // replaced client-side with a human-friendly age ("45 min", "2h", "1d").
+    staleDataYellow:       'Numbers may be out of date (last updated {{age}} ago).',
+    staleDataRed:          'Live numbers unavailable. Don’t act on these until they update (last updated {{age}} ago).',
+    staleAlertingDegraded: 'Alerting is degraded — SMS notifications may not fire.',
   },
 
   es: {
@@ -1470,6 +1477,11 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     cleanedBy: 'Limpiada por',
     cleanTime: 'Tiempo de limpieza',
     sendBack: 'Devolver',
+    // Banner de datos desactualizados (F8). {{age}} se reemplaza al
+    // renderizar con la edad ("45 min", "2 h", "1 d").
+    staleDataYellow:       'Los números pueden estar desactualizados (última actualización hace {{age}}).',
+    staleDataRed:          'Datos en vivo no disponibles. No actúe sobre estos números hasta que se actualicen (última actualización hace {{age}}).',
+    staleAlertingDegraded: 'Las alertas están degradadas — las notificaciones SMS pueden no enviarse.',
   },
 };
 

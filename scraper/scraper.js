@@ -55,7 +55,7 @@ const { pullDashboardNumbers } = require('./dashboard-pull');
 const { pullOOOWorkOrders } = require('./ooo-pull');
 const { pullHkCenter } = require('./hk-center-pull');
 const { ScraperError, ERROR_CODES } = require('./scraper-errors');
-const { runVercelWatchdog } = require('./vercel-watchdog');
+const { runVercelWatchdog, twilioEnvPresence } = require('./vercel-watchdog');
 const { loadActiveProperties } = require('./properties-loader');
 const { safeEval, goWithSettle } = require('./page-helpers');
 const { clickFirstMatching, fillFirstMatching } = require('./selector-helpers');
@@ -179,6 +179,11 @@ async function writeHeartbeat() {
   }
 }
 
+function anomaliesNonZero(a) {
+  if (!a || typeof a !== 'object') return false;
+  return Object.values(a).some(v => typeof v === 'number' && v > 0);
+}
+
 async function writeScrapeStatus(pullType, status, extra = {}) {
   try {
     // Track consecutive failures so the cron can alert on the SECOND miss
@@ -190,10 +195,20 @@ async function writeScrapeStatus(pullType, status, extra = {}) {
       ? prev.consecutiveFailures
       : 0;
     const nextCount = status === 'error' ? prevCount + 1 : 0;
+
+    // F4: ANOMALY_TREND — if THIS pull and the previous one both have
+    // non-zero parse anomalies, flag a trend so doctor/SMS sees a sustained
+    // issue (a one-off junk row from a partial CA snapshot isn't worth
+    // alerting on, but two-in-a-row is).
+    const currentAnomalies = extra.parseAnomalies;
+    const prevAnomalies = prev && prev.parseAnomalies;
+    const anomalyTrend = anomaliesNonZero(currentAnomalies) && anomaliesNonZero(prevAnomalies);
+
     await mergeStatus(supabase, pullType, {
       at:     new Date().toISOString(),
       status, // 'success' | 'error'
       consecutiveFailures: nextCount,
+      anomalyTrend,
       ...extra,
     });
   } catch (err) {
@@ -552,6 +567,10 @@ async function runCSVScrapeFresh(page, pullType, relogin) {
       checkouts: snapshot?.checkouts ?? null,
       stayovers: snapshot?.stayovers ?? null,
       recommendedHKs: snapshot?.recommendedHKs ?? null,
+      // F4: telemetry-only — never gates behavior, surfaces ANOMALY_TREND
+      // via writeScrapeStatus when this and the previous pull both have
+      // non-zero anomaly counts.
+      parseAnomalies: snapshot?.parseAnomalies ?? null,
       errorCode: null,
       error: null,
     });
@@ -583,6 +602,7 @@ async function runCSVScrapeFresh(page, pullType, relogin) {
         await writeScrapeStatus(pullType, 'success', {
           date: snapshot?.date || todayISO(),
           totalRooms: snapshot?.totalRooms ?? null,
+          parseAnomalies: snapshot?.parseAnomalies ?? null,
           errorCode: null,
           error: null,
         });
@@ -804,6 +824,46 @@ async function maybeRunCSVPull(page, relogin) {
   if (ok) lastCSVPullAt = now;
 }
 
+// ─── Disk hygiene ──────────────────────────────────────────────────────────
+
+const DIAGNOSTIC_PATTERNS = [
+  /^csv-report-form\.png$/,
+  /^csv-download-fail\.png$/,
+  /^csv-bad-content\.png$/,
+  /^csv-error-.*\.png$/,
+  /^csv-form-dump\.html$/,
+  /^csv-bad-content\.txt$/,
+  /^login-debug\.png$/,
+  /^DEBUG-.*$/,
+];
+
+function purgeStaleDiagnostics(dir, maxAgeMs) {
+  let deleted = 0;
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    const cutoff = Date.now() - maxAgeMs;
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      if (!DIAGNOSTIC_PATTERNS.some(re => re.test(entry.name))) continue;
+      const full = path.join(dir, entry.name);
+      try {
+        const st = fs.statSync(full);
+        if (st.mtimeMs < cutoff) {
+          fs.unlinkSync(full);
+          deleted++;
+        }
+      } catch {
+        // Best-effort; another instance may have deleted it between
+        // readdir and stat/unlink.
+      }
+    }
+  } catch (err) {
+    log(`[diag-purge] failed to scan ${dir}: ${err.message}`);
+    return;
+  }
+  if (deleted > 0) log(`[diag-purge] removed ${deleted} stale diagnostic file(s) >24h old`);
+}
+
 // ─── Main loop ─────────────────────────────────────────────────────────────
 
 async function run() {
@@ -817,6 +877,28 @@ async function run() {
   log(`Property: ${CONFIG.PROPERTY_ID}`);
   log(`Timezone: ${CONFIG.TIMEZONE} | Local hour: ${localHour()} | Today: ${todayISO()}`);
   log(`Tick every ${CONFIG.TICK_MINUTES} min — CSV pulls hourly 5am–11pm, dashboard numbers + OOO work orders every 15 min 5am–11pm`);
+
+  // ─── Diagnostic dump rotation (F1) ──────────────────────────────────────
+  // Failed pulls historically left csv-form-dump.html, csv-bad-content.txt,
+  // and various screenshots in the scraper dir with no rotation, slowly
+  // filling Railway's container disk over weeks. Purge anything older than
+  // 24h on every boot — they're transient diagnostic artifacts; no
+  // external system reads them (cross-grep confirmed scraper-only).
+  purgeStaleDiagnostics(__dirname, 24 * 60 * 60 * 1000);
+
+  // ─── Watchdog credential preflight (F3) ─────────────────────────────────
+  // One-time loud log if Twilio env is missing on Railway. The watchdog
+  // itself still no-ops gracefully if creds are absent, but a silent
+  // no-op means SMS alerts never fire and we'd never know. Doctor's new
+  // watchdog_degraded check (F7) reads the scraper_status row that the
+  // watchdog updates each tick, so a UI surface picks this up too.
+  const _twilioPresence = twilioEnvPresence();
+  if (!_twilioPresence.ok) {
+    log(`⚠️  WATCHDOG DEGRADED: Twilio env vars missing on Railway — SMS alerts will not fire. Missing: ${_twilioPresence.missing.join(', ')}`);
+  }
+  if (!env.OPS_ALERT_PHONE) {
+    log(`⚠️  WATCHDOG DEGRADED: OPS_ALERT_PHONE not set on Railway — no alert recipient configured.`);
+  }
 
   // ─── Required env var preflight ─────────────────────────────────────────
   // If HOTELOPS_PROPERTY_ID is missing on Railway, every write ends up with
@@ -1033,13 +1115,28 @@ async function run() {
   // volume. Each wrapped fn() runs inside a try/catch so a failure
   // doesn't poison the chain for the next caller.
   let pageLock = Promise.resolve();
+  // F9: graceful shutdown flag. Flipped by SIGTERM/SIGINT below. Guards
+  // are at tick(), scheduleTick(), the HTTP handler, AND withPageLock so
+  // a request that arrives mid-shutdown can't enqueue new Playwright work
+  // behind the drain. Codex specifically called this race out — the v1
+  // plan only guarded tick/scheduleTick which left the HTTP handler free
+  // to grow the lock chain during the drain window.
+  let shuttingDown = false;
   function withPageLock(fn) {
-    const next = pageLock.then(() => fn());
+    if (shuttingDown) return Promise.reject(new Error('shutting_down'));
+    const next = pageLock.then(() => {
+      // Re-check at execution time: caller might have queued just before
+      // shutdown flipped. Bail rather than running their work against a
+      // closing browser context.
+      if (shuttingDown) throw new Error('shutting_down');
+      return fn();
+    });
     pageLock = next.catch(() => {}); // ignore failures for chain purposes
     return next;
   }
 
   async function tick() {
+    if (shuttingDown) return;
     try {
       // Heartbeat first so the app knows the scraper is alive even if the
       // scheduled pull didn't run this tick. Heartbeat is a Supabase write
@@ -1151,6 +1248,7 @@ async function run() {
   let tickInProgress = false;
 
   const scheduleTick = () => {
+    if (shuttingDown) return; // F9: do not re-arm during shutdown drain
     if (tickInProgress) {
       // Defensive: should never happen because we only call scheduleTick
       // from the tick's own finally. But if some future code path adds a
@@ -1170,6 +1268,7 @@ async function run() {
       })
       .finally(() => {
         tickInProgress = false;
+        if (shuttingDown) return; // F9: don't re-arm during shutdown
         const elapsed = Date.now() - startedAt;
         // Subtract elapsed time so a 3-min tick on a 5-min interval lands
         // 2 min later, not 5. Floor at 1s so we never hot-loop if a tick
@@ -1204,6 +1303,15 @@ async function run() {
     const method = req.method || 'GET';
     const requestId = Math.random().toString(36).slice(2, 8);
 
+    // F9: drain new work during shutdown. We DO still serve /health so
+    // Railway's container probe doesn't classify a 15-25s drain as a
+    // hung process and SIGKILL us prematurely.
+    if (shuttingDown && !(method === 'GET' && (url === '/health' || url === '/'))) {
+      res.writeHead(503, { 'Content-Type': 'application/json', 'Connection': 'close' });
+      res.end(JSON.stringify({ ok: false, error: 'shutting_down', requestId }));
+      return;
+    }
+
     // Health check — unauthenticated, returns scraper liveness.
     if (method === 'GET' && (url === '/health' || url === '/')) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1212,6 +1320,7 @@ async function run() {
         service: 'hotelops-scraper',
         propertyId: CONFIG.PROPERTY_ID,
         timestamp: new Date().toISOString(),
+        shuttingDown,
       }));
       return;
     }
@@ -1380,6 +1489,70 @@ async function run() {
   httpServer.listen(HTTP_PORT, '0.0.0.0', () => {
     log(`HTTP server listening on 0.0.0.0:${HTTP_PORT}`);
   });
+
+  // ── F9: graceful shutdown on SIGTERM/SIGINT ──────────────────────────
+  // Railway sends SIGTERM with a 30s grace before SIGKILL. Pattern:
+  //   1. flip shuttingDown so tick/scheduleTick/HTTP handler/withPageLock
+  //      all stop accepting new work
+  //   2. httpServer.close() — stop accepting new connections (existing
+  //      requests already inside withPageLock continue to completion)
+  //   3. wait for pageLock to drain (race vs 20s)
+  //   4. context.close() + browser.close() (race vs 2s each)
+  //   5. process.exit(0) — hard cap at 25s total so we always beat
+  //      Railway's SIGKILL window
+  //
+  // Codex review note: the shutdown guard MUST be inside withPageLock
+  // (above), not just on tick/scheduleTick, otherwise a POST that arrived
+  // during the drain could enqueue new Playwright work while we're closing
+  // the browser.
+  let shutdownInProgress = false;
+  async function gracefulShutdown(signal) {
+    if (shutdownInProgress) return;
+    shutdownInProgress = true;
+    shuttingDown = true;
+    log(`[shutdown] received ${signal}; draining (20s page-lock cap, 25s total)`);
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+    // 1) Stop accepting NEW HTTP connections. close() returns when all
+    // existing keep-alive connections close, which can take a while —
+    // we don't await it inline; the 25s hard cap below covers stragglers.
+    try { httpServer.close(); } catch (err) {
+      log(`[shutdown] httpServer.close threw: ${err && err.message ? err.message : err}`);
+    }
+
+    // 2) Hard cap on the whole drain — Railway SIGKILLs at 30s.
+    const hardCap = sleep(25_000).then(() => 'cap');
+
+    // 3) Drain in-flight Playwright work. pageLock represents the chain
+    // tail; awaiting it waits for whatever's currently queued.
+    try {
+      await Promise.race([pageLock.catch(() => {}), sleep(20_000), hardCap]);
+      log('[shutdown] page-lock drained');
+    } catch (err) {
+      log(`[shutdown] page-lock drain threw: ${err && err.message ? err.message : err}`);
+    }
+
+    // 4) Close Playwright resources. Each race'd against 2s — Chromium
+    // can wedge if a renderer crashed and we don't want to block exit.
+    try {
+      await Promise.race([context.close(), sleep(2_000), hardCap]);
+      log('[shutdown] context closed');
+    } catch (err) {
+      log(`[shutdown] context.close threw: ${err && err.message ? err.message : err}`);
+    }
+    try {
+      await Promise.race([browser.close(), sleep(2_000), hardCap]);
+      log('[shutdown] browser closed');
+    } catch (err) {
+      log(`[shutdown] browser.close threw: ${err && err.message ? err.message : err}`);
+    }
+
+    log('[shutdown] complete — exit 0');
+    process.exit(0);
+  }
+
+  process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });
+  process.on('SIGINT',  () => { void gracefulShutdown('SIGINT');  });
 }
 
 // ─── Entry point ───────────────────────────────────────────────────────────

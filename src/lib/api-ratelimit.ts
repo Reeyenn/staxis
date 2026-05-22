@@ -108,7 +108,11 @@ export type RateLimitEndpoint =
   // before that. Keyed on accountId (one bucket per user across
   // properties). MUST also be added to BILLING_IMPACTING_ENDPOINTS below
   // so an RPC failure fails closed.
-  | 'agent-tts-speak';
+  | 'agent-tts-speak'
+  // Scraper hardening v2 (F6) — read-only freshness probe powering the
+  // <StaleDataBanner /> on /dashboard and /staff. Polled every 60s
+  // from each open tab. Keyed on (userId, propertyId).
+  | 'scraper-status';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -211,6 +215,10 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // long before the $5 daily budget cap trips. Easy to bump if a real
   // user hits it.
   'agent-tts-speak':             30,
+  // scraper-status — banner polls every 60s = 60/hr per tab. Cap at
+  // 240/hr per (user, property) to absorb 4 open tabs without 429,
+  // while still stopping a runaway useEffect or stale-link DDoS.
+  'scraper-status':              240,
 };
 
 /**
