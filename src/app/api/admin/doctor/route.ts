@@ -304,6 +304,20 @@ const checks: Array<[string, CheckFn]> = [
   // Error tracking — Sentry no-ops gracefully when DSN missing, but a
   // malformed DSN means errors silently disappear. Fail on bad shape.
   ['sentry_dsn_shape',               checkSentryDsnShape],
+  // 2026-05-22 monitoring/logging/secrets hardening — three follow-on
+  // checks that complement the DSN shape check:
+  //   1. sentry_auth_token_present: source-map upload gated on the token
+  //      being set on Vercel (Production scope). Warns when absent.
+  //   2. sentry_client_initialized: verifies the SDK loaded (proves DSN
+  //      was syntactically valid AND Sentry.init() ran without throwing).
+  //   3. sentry_ingest_probe_recent: warns when the last successful
+  //      /api/admin/sentry-test ingest probe is older than 7 days.
+  //      The probe is the only path that proves end-to-end ingest works
+  //      (firewall, project mismatch, quota exhaustion are all things
+  //      DSN-shape + client-init can't detect).
+  ['sentry_auth_token_present',      checkSentryAuthTokenPresent],
+  ['sentry_client_initialized',      checkSentryClientInitialized],
+  ['sentry_ingest_probe_recent',     checkSentryIngestProbeRecent],
   // Picovoice wake-word — operator-visible state for "Hey Staxis". Warns
   // on half-configured (key OR .ppn but not both), oks both ways for
   // intentional disabled state and fully-wired state. Replaces the
@@ -4066,6 +4080,165 @@ async function checkSentryDsnShape(): Promise<Omit<Check, 'name' | 'durationMs'>
     status: 'ok',
     detail: 'Sentry fully configured (server + client DSNs valid)',
   };
+}
+
+/**
+ * sentry_auth_token_present — source-map upload gate.
+ *
+ * `withSentryConfig` in next.config.ts uploads source maps to Sentry only
+ * when SENTRY_AUTH_TOKEN is set in the Vercel build env (Production scope).
+ * Without the token, production stack traces in Sentry stay minified
+ * (`chunks/3-xy7.js:1:2391`) which is undebuggable.
+ *
+ * Warn-not-fail because the app still runs without source maps; this just
+ * makes the gap visible. Production-only — preview deploys are expected to
+ * skip source-map upload (we don't burn Sentry releases on every PR).
+ */
+async function checkSentryAuthTokenPresent(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  // Vercel sets VERCEL_ENV='production' on production deploys. We only
+  // care about the production case — preview/dev are expected to skip.
+  const isProd = (env.VERCEL_ENV || env.NODE_ENV) === 'production';
+  if (!isProd) {
+    return {
+      status: 'ok',
+      detail: 'Not a production environment — source-map upload not required.',
+    };
+  }
+  const token = (env.SENTRY_AUTH_TOKEN || '').trim();
+  if (!token) {
+    return {
+      status: 'warn',
+      detail:
+        'SENTRY_AUTH_TOKEN not set on Vercel — production source maps are not uploaded, so stack traces in Sentry stay minified.',
+      fix:
+        'Generate a token at sentry.io → Settings → Auth Tokens (scopes: project:read, project:releases). Set SENTRY_AUTH_TOKEN in Vercel → Project Settings → Environment Variables under PRODUCTION scope only (preview deploys do not need it). Redeploy.',
+    };
+  }
+  return {
+    status: 'ok',
+    detail: 'SENTRY_AUTH_TOKEN present — production source-map upload is wired.',
+  };
+}
+
+/**
+ * sentry_client_initialized — verifies Sentry.init() ran without throwing.
+ *
+ * `Sentry.getClient()` returns the active Sentry client when init was
+ * successful (DSN was syntactically valid AND the SDK loaded). Returns
+ * undefined when init was skipped or threw.
+ *
+ * This does NOT prove ingest works — see sentry_ingest_probe_recent for
+ * the end-to-end check. But it's a cheap sanity check that catches the
+ * "DSN looked right but Sentry.init() threw on a bad option" failure.
+ */
+async function checkSentryClientInitialized(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  // Lazy-import so doctor doesn't crash if @sentry/nextjs is somehow
+  // missing — the existing checks all guard their dependencies this way.
+  try {
+    // Use Function constructor to defeat Next's module-graph eagerness;
+    // we want a soft dynamic require so a missing dep WARNS rather than
+    // hard-fails the whole doctor.
+    const sentryMod = await import('@sentry/nextjs');
+    const client = (sentryMod as { getClient?: () => unknown }).getClient?.();
+    if (!client) {
+      // Distinguish "DSN unset" (expected no-op) from "init threw"
+      // (broken). DSN unset is already covered by sentry_dsn_shape;
+      // here we only flag the broken case.
+      const dsnSet = (env.SENTRY_DSN ?? '').trim() !== '' || (env.NEXT_PUBLIC_SENTRY_DSN ?? '').trim() !== '';
+      if (!dsnSet) {
+        return {
+          status: 'ok',
+          detail: 'Sentry SDK loaded but no client — DSN unset (see sentry_dsn_shape).',
+        };
+      }
+      return {
+        status: 'fail',
+        detail:
+          'Sentry DSN is set but Sentry.getClient() returned undefined — Sentry.init() did not produce an active client. Errors are NOT reaching Sentry.',
+        fix:
+          'Check Vercel function logs for "Sentry init failed" messages from sentry.server.config.ts. Common causes: DSN points at a project the auth token cannot reach, or a beforeSend hook threw at init.',
+      };
+    }
+    return {
+      status: 'ok',
+      detail: 'Sentry client initialized — SDK loaded successfully.',
+    };
+  } catch (e) {
+    return {
+      status: 'warn',
+      detail: `Could not introspect Sentry client: ${errToString(e)}`,
+    };
+  }
+}
+
+/**
+ * sentry_ingest_probe_recent — proves end-to-end ingest.
+ *
+ * Sentry.getClient() being non-null only proves the SDK loaded — it does
+ * NOT prove events reach Sentry (firewall, project mismatch, quota
+ * exhaustion, dropped events in beforeSend all break ingest without
+ * affecting the client object).
+ *
+ * The /api/admin/sentry-test endpoint is the canonical ingest probe.
+ * When invoked, it records an `app_events` row with event_type
+ * 'sentry_ingest_probe_fired'. This check reads the most-recent such
+ * row and warns when older than 7 days, prompting the operator to
+ * re-run the probe.
+ *
+ * Codex SHOULD-FIX: avoids the per-cron synthetic captureMessage that
+ * would inflate Sentry events ~8.7k/yr for no diagnostic value.
+ */
+async function checkSentryIngestProbeRecent(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('app_events')
+      .select('created_at')
+      .eq('event_type', 'sentry_ingest_probe_fired')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      // Schema gap or RLS issue — surface as warn rather than fail. The
+      // ingest path still works; we just can't measure its recency.
+      return {
+        status: 'warn',
+        detail: `Could not read app_events for sentry probe recency: ${error.message}`,
+        fix:
+          'Verify the app_events table exists and supabaseAdmin has SELECT on it. Run `/api/admin/sentry-test` with CRON_SECRET to fire a fresh probe.',
+      };
+    }
+    if (!data || !data.created_at) {
+      return {
+        status: 'warn',
+        detail:
+          'No record of a successful /api/admin/sentry-test probe has been seen. Sentry ingest unverified.',
+        fix:
+          'Fire the ingest probe: `curl -H "Authorization: Bearer $CRON_SECRET" https://getstaxis.com/api/admin/sentry-test`. Confirm the event appears in staxis.sentry.io within ~30s.',
+      };
+    }
+    const ageMs = Date.now() - new Date(data.created_at).getTime();
+    const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
+    if (ageMs > SEVEN_DAYS) {
+      const ageDays = Math.round(ageMs / (24 * 60 * 60 * 1000));
+      return {
+        status: 'warn',
+        detail: `Last successful Sentry ingest probe was ${ageDays} days ago — re-run weekly to keep ingest verified.`,
+        fix:
+          '`curl -H "Authorization: Bearer $CRON_SECRET" https://getstaxis.com/api/admin/sentry-test` and confirm the event reaches staxis.sentry.io.',
+      };
+    }
+    const ageHours = Math.round(ageMs / (60 * 60 * 1000));
+    return {
+      status: 'ok',
+      detail: `Last Sentry ingest probe was ${ageHours}h ago — ingest verified.`,
+    };
+  } catch (e) {
+    return {
+      status: 'warn',
+      detail: `Probe recency check threw: ${errToString(e)}`,
+    };
+  }
 }
 
 /**

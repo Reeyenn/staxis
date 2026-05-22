@@ -10,7 +10,8 @@ import { NextRequest } from 'next/server';
 import { createHash, randomBytes } from 'node:crypto';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId, log } from '@/lib/log';
+import { errToString } from '@/lib/utils';
 import { verifyTeamManager, canManageHotel } from '@/lib/team-auth';
 import { isAssignableRole } from '@/lib/roles';
 import { writeAudit } from '@/lib/audit';
@@ -48,7 +49,7 @@ export async function GET(req: NextRequest) {
     .is('accepted_at', null)
     .order('created_at', { ascending: false });
   if (qErr) {
-    console.error('[invites:GET] failed', qErr);
+    log.error('[invites:GET] failed', { requestId, msg: errToString(qErr) });
     return err('Failed to load invites', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   return ok({ invites: data ?? [] }, { requestId });
@@ -88,7 +89,7 @@ export async function POST(req: NextRequest) {
     invited_by: caller.accountId,
   }).select('id').single();
   if (insErr || !inserted) {
-    console.error('[invites:POST] insert failed', insErr);
+    log.error('[invites:POST] insert failed', { requestId, msg: errToString(insErr) });
     return err('Failed to create invite', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
@@ -114,7 +115,7 @@ export async function POST(req: NextRequest) {
       options: { redirectTo: inviteLink },
     });
   } catch (mailErr) {
-    console.error('[invites:POST] email send failed', mailErr);
+    log.error('[invites:POST] email send failed', { requestId, msg: errToString(mailErr) });
     // Non-fatal — admin can copy the link from the response.
   }
 
@@ -143,7 +144,7 @@ export async function DELETE(req: NextRequest) {
 
   const { error: delErr } = await supabaseAdmin.from('account_invites').delete().eq('id', id);
   if (delErr) {
-    console.error('[invites:DELETE] failed', delErr);
+    log.error('[invites:DELETE] failed', { requestId, msg: errToString(delErr) });
     return err('Failed to revoke invite', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   await writeAudit({

@@ -17,7 +17,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId, log } from '@/lib/log';
 
 function toE164(raw: string): string | null {
   if (!raw) return null;
@@ -81,7 +81,7 @@ export async function POST(req: NextRequest) {
     return ok({ scanned, nonPending, rewritten, skipped, examples }, { requestId });
   } catch (caughtErr) {
     const msg = errToString(caughtErr);
-    console.error('normalize-confirmation-phones error:', msg);
+    log.error('[admin/normalize-confirmation-phones] error', { msg });
     return err(msg, { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

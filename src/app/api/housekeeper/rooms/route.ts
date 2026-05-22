@@ -38,7 +38,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId, log } from '@/lib/log';
 import { fromRoomRow } from '@/lib/db-mappers';
 import {
   checkAndIncrementRateLimit,
@@ -89,7 +89,7 @@ export async function GET(req: NextRequest) {
     .eq('property_id', pid)
     .maybeSingle();
   if (staffErr) {
-    console.error('[housekeeper/rooms] staff lookup failed', errToString(staffErr));
+    log.error('[housekeeper/rooms] staff lookup failed', { requestId, msg: errToString(staffErr) });
     return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   if (!staffRow) {
@@ -110,7 +110,7 @@ export async function GET(req: NextRequest) {
     .eq('assigned_to', staffId);
 
   if (queryError) {
-    console.error('[housekeeper/rooms] query failed', errToString(queryError));
+    log.error('[housekeeper/rooms] query failed', { requestId, msg: errToString(queryError) });
     return err('Internal server error', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });

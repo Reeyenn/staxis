@@ -40,6 +40,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { revalidateTag } from 'next/cache';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { env } from '@/lib/env';
+import { log } from '@/lib/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -78,7 +79,7 @@ function checkLocalSyncSecret(req: NextRequest): NextResponse | null {
     const isVercelProd = env.VERCEL_ENV === 'production';
     const isOtherProd = env.NODE_ENV === 'production' && !env.VERCEL_ENV;
     if (isVercelProd || isOtherProd) {
-      console.error('[local-worktrees/sync] LOCAL_SYNC_SECRET unset in production — refusing');
+      log.error('[local-worktrees/sync] LOCAL_SYNC_SECRET unset in production — refusing');
       return NextResponse.json({ error: 'server misconfigured' }, { status: 500 });
     }
     return null;  // dev / preview without the secret — pass through
@@ -132,7 +133,7 @@ export async function POST(req: NextRequest) {
       .from('local_worktrees')
       .upsert(cleanRows, { onConflict: 'host,name' });
     if (error) {
-      console.error('[local-worktrees/sync] upsert failed', { msg: error.message });
+      log.error('[local-worktrees/sync] upsert failed', { msg: error.message, host });
       return NextResponse.json({ error: 'db error' }, { status: 500 });
     }
   }
@@ -152,7 +153,7 @@ export async function POST(req: NextRequest) {
   }
   const { error: pruneErr } = await pruneQuery;
   if (pruneErr) {
-    console.error('[local-worktrees/sync] prune failed', { msg: pruneErr.message });
+    log.error('[local-worktrees/sync] prune failed', { msg: pruneErr.message, host });
     // Not fatal — the sweep can retry next sync.
   }
 

@@ -25,7 +25,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId, log } from '@/lib/log';
 import {
   fromPublicAreaRow,
   fromLaundryRow,
@@ -80,7 +80,7 @@ export async function GET(req: NextRequest) {
     .eq('property_id', pid)
     .maybeSingle();
   if (staffErr) {
-    console.error('[laundry/bootstrap] staff lookup failed', errToString(staffErr));
+    log.error('[laundry/bootstrap] staff lookup failed', { requestId, msg: errToString(staffErr), pid, staffId });
     return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   if (!staffRow) {
@@ -112,10 +112,12 @@ export async function GET(req: NextRequest) {
   ]);
 
   if (areasRes.error || configRes.error || roomsRes.error) {
-    console.error(
-      '[laundry/bootstrap] query failed',
-      errToString(areasRes.error || configRes.error || roomsRes.error),
-    );
+    log.error('[laundry/bootstrap] query failed', {
+      requestId,
+      msg: errToString(areasRes.error || configRes.error || roomsRes.error),
+      pid,
+      staffId,
+    });
     return err('Internal server error', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });

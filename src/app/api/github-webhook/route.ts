@@ -24,6 +24,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { revalidateTag } from 'next/cache';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { env } from '@/lib/env';
+import { log } from '@/lib/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -32,7 +33,7 @@ export const maxDuration = 10;
 export async function POST(req: NextRequest) {
   const secret = env.GITHUB_WEBHOOK_SECRET;
   if (!secret) {
-    console.error('[github-webhook] GITHUB_WEBHOOK_SECRET not set');
+    log.error('[github-webhook] GITHUB_WEBHOOK_SECRET not set');
     return NextResponse.json({ error: 'webhook not configured' }, { status: 500 });
   }
 
@@ -92,8 +93,8 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (err) {
-    console.error('[github-webhook] failed to record event', {
-      eventType, err: err instanceof Error ? err.message : String(err),
+    log.error('[github-webhook] failed to record event', {
+      eventType, msg: err instanceof Error ? err.message : String(err),
     });
   }
 
@@ -102,7 +103,7 @@ export async function POST(req: NextRequest) {
   try {
     revalidateTag('github-data', 'max');
   } catch (err) {
-    console.error('[github-webhook] revalidateTag failed', { err });
+    log.error('[github-webhook] revalidateTag failed', { msg: err instanceof Error ? err.message : String(err) });
   }
 
   return NextResponse.json({ ok: true, eventType, branch });

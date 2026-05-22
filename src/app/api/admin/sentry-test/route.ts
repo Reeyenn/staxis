@@ -34,6 +34,7 @@ import { NextRequest } from 'next/server';
 import { requireCronSecret } from '@/lib/api-auth';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { ok } from '@/lib/api-response';
+import { recordAppEvent } from '@/lib/event-recorder';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -54,6 +55,19 @@ export async function GET(req: NextRequest) {
     err: syntheticErr,
     test_marker: marker,
   });
+
+  // 2026-05-22 monitoring/logging/secrets hardening — record a probe
+  // event so the doctor's sentry_ingest_probe_recent check can flag
+  // "no successful probe in the last 7 days". Best-effort; if the
+  // insert fails, the test still returned the marker to the caller
+  // who can verify Sentry by hand.
+  await recordAppEvent({
+    property_id: null,
+    user_id: null,
+    user_role: null,
+    event_type: 'sentry_ingest_probe_fired',
+    metadata: { marker, requestId },
+  }).catch(() => {});
 
   // Standard ApiResponse envelope. The sentry-test.yml workflow reads
   // `data.fired` to print the marker for searching in Sentry.

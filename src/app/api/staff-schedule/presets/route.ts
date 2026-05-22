@@ -15,7 +15,8 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId, log } from '@/lib/log';
+import { errToString } from '@/lib/utils';
 import { requireSession } from '@/lib/api-auth';
 import { verifyTeamManager, canManageHotel } from '@/lib/team-auth';
 import { validateUuid } from '@/lib/api-validate';
@@ -57,7 +58,7 @@ export async function GET(req: NextRequest) {
     .order('department', { ascending: true })
     .order('sort_order', { ascending: true });
   if (error) {
-    console.error('[presets:GET] query failed', error);
+    log.error('[presets:GET] query failed', { requestId, msg: errToString(error) });
     return err('Failed to load presets', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
@@ -130,7 +131,7 @@ export async function PUT(req: NextRequest) {
     const { error } = await supabaseAdmin
       .from('property_shift_presets').delete().in('id', toDelete);
     if (error) {
-      console.error('[presets:PUT] delete failed', error);
+      log.error('[presets:PUT] delete failed', { requestId, msg: errToString(error) });
       return err('Failed to remove presets', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
   }
@@ -138,7 +139,7 @@ export async function PUT(req: NextRequest) {
     const { error } = await supabaseAdmin
       .from('property_shift_presets').update(u.row).eq('id', u.id);
     if (error) {
-      console.error('[presets:PUT] update failed', error);
+      log.error('[presets:PUT] update failed', { requestId, msg: errToString(error) });
       return err('Failed to update preset', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
   }
@@ -146,7 +147,7 @@ export async function PUT(req: NextRequest) {
     const { error } = await supabaseAdmin
       .from('property_shift_presets').insert(toInsert);
     if (error) {
-      console.error('[presets:PUT] insert failed', error);
+      log.error('[presets:PUT] insert failed', { requestId, msg: errToString(error) });
       return err('Failed to create presets', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
   }

@@ -65,6 +65,22 @@ MAX_ROWS_CAP = get_settings().ml_max_rows_cap
 
 from src.auth import verify_bearer_token
 from src.health import router as health_router
+from src.log_scrub import scrub_string
+from src.sentry_init import init_sentry, is_initialized as sentry_is_initialized
+
+# Initialize Sentry at module load (idempotent, no-op without SENTRY_DSN).
+# Wrapped so any SDK import/init failure NEVER prevents ml-service from
+# booting — a crash-looping Python service is worse than one without
+# monitoring. init_sentry() also swallows its own errors internally,
+# but the outer try is defense in depth.
+try:
+    init_sentry()
+except Exception as _sentry_init_exc:  # pragma: no cover
+    print(
+        json.dumps({"evt": "ml_service_sentry_init_failed", "exception": str(_sentry_init_exc)[:500]}),
+        flush=True,
+    )
+
 from src.inference.demand import predict_demand
 from src.inference.inventory_rate import predict_inventory_rates
 from src.inference.supply import predict_supply
@@ -881,18 +897,50 @@ async def general_exception_handler(request: Request, exc: Exception):
     Plan v2 F-AI-12: the previous version returned `str(exc)` to the
     caller, which would leak psycopg2 error text + partial PII on
     internal failures. The thrown exception details now go to stdout for
-    the operator (Fly logs / Sentry) and the body is a generic error +
-    correlation id the caller can match against the logs.
+    the operator (Railway logs) and Sentry (when wired), and the
+    response body is a generic error + correlation id the caller can
+    match against the logs.
+
+    Two PII-defense layers:
+      1. str(exc) goes through scrub_string before being printed or
+         shipped to Sentry — psycopg2 errors regularly include row
+         values (e.g. a constraint violation embeds the offending row).
+      2. sentry_sdk.init runs with include_local_variables=False and
+         before_send=scrub_event so frame locals + the full event get
+         redacted before transport.
     """
     incident_id = _uuid.uuid4().hex
-    # Logged to stdout — picked up by Fly's log aggregator + Sentry.
+    # Scrub before BOTH print and Sentry capture — same string lands in
+    # Railway logs and (eventually) the Sentry message text, so a single
+    # scrub here covers both downstream surfaces.
+    message_scrubbed = scrub_string(str(exc))[:2000]
+    path = str(request.url.path)
+
+    # Logged to stdout — Railway's log aggregator + grep-by-incident_id.
     print(json.dumps({
         "evt": "ml_service_unhandled_exception",
         "incident_id": incident_id,
-        "path": str(request.url.path),
+        "path": path,
         "exception": type(exc).__name__,
-        "message": str(exc)[:2000],
+        "message": message_scrubbed,
     }), flush=True)
+
+    # Sentry capture is best-effort. The SDK's transport is async, so a
+    # network hiccup here can't block the response. Tag with endpoint +
+    # incident_id so the Sentry event correlates to the Railway log line.
+    if sentry_is_initialized():
+        try:
+            import sentry_sdk  # type: ignore
+            with sentry_sdk.push_scope() as scope:
+                scope.set_tag("endpoint", path)
+                scope.set_tag("incident_id", incident_id)
+                sentry_sdk.capture_exception(exc)
+        except Exception:
+            # Never let Sentry capture failures bubble — they'd replace
+            # the original 500 response with a 5xx that has no
+            # incident_id, breaking the correlate-by-id contract above.
+            pass
+
     return JSONResponse(
         status_code=500,
         content={
