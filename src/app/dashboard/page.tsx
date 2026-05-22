@@ -391,6 +391,10 @@ export default function DashboardPage() {
   // ── Localized strings ────────────────────────────────────────────────
 
   const locale = lang === 'es' ? 'es-MX' : 'en-US';
+  const monthName = new Date().toLocaleDateString(locale, { month: 'long' });
+  const monthCap = monthName.charAt(0).toUpperCase() + monthName.slice(1);
+  const headerTitle = lang === 'es' ? `${monthCap} de un vistazo.` : `${monthCap} at a glance.`;
+  const cursorHint  = lang === 'es' ? 'Mueve el cursor por el gráfico' : 'Move your cursor across the chart';
   const tForecast   = lang === 'es' ? 'Pronóstico' : 'Forecast';
   const tToday      = lang === 'es' ? 'Hoy' : 'Today';
   const tDaysAgo    = (n: number) => lang === 'es' ? `Hace ${n} día${n === 1 ? '' : 's'}` : `${n} day${n === 1 ? '' : 's'} ago`;
@@ -584,7 +588,25 @@ export default function DashboardPage() {
 
         <div style={{ position: 'relative', maxWidth: 1600, margin: '0 auto' }}>
 
-          {/* Chart card — sits flush at the top of the content area now */}
+          {/* Header strip — matches the Claude Design layout: empty-left
+              spacer (AppLayout already shows the Staxis chevron + property
+              name in the top nav, so we drop the design's redundant left
+              cluster), centered italic-serif title, right cursor hint. */}
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            marginBottom: 22, gap: 16, flexWrap: 'wrap',
+          }}>
+            <span style={LABEL} aria-hidden />
+            <h1 style={{
+              margin: 0, fontFamily: FONT_SERIF, fontSize: 26, fontWeight: 400,
+              fontStyle: 'italic', color: C.ink2, letterSpacing: '-0.01em',
+            }}>
+              {headerTitle}
+            </h1>
+            <span style={LABEL}>{cursorHint}</span>
+          </div>
+
+          {/* Chart card */}
           <div style={{
             background: 'rgba(255,255,255,0.85)',
             backdropFilter: 'blur(30px) saturate(140%)',
@@ -595,49 +617,46 @@ export default function DashboardPage() {
             marginBottom: 16,
             boxShadow: '0 1px 0 rgba(255,255,255,0.7) inset, 0 30px 60px -30px rgba(15,20,17,0.18)',
           }}>
-            {/* Top row: date (left), Forecast/Today/X days ago badge (center) */}
+            {/* Top row — exact layout from the locked Claude Design JSX:
+                small uppercase mono date label + big italic-serif number on
+                the LEFT, small Today/Forecast/X-days-ago pill on the RIGHT. */}
             <div style={{
-              display: 'grid',
-              gridTemplateColumns: '1fr auto 1fr',
-              alignItems: 'center',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'flex-end',
+              marginBottom: 4,
               gap: 12,
-              marginBottom: 14,
+              flexWrap: 'wrap',
             }}>
-              <div style={{
-                fontFamily: FONT_SANS,
-                fontSize: 15,
-                fontWeight: 500,
-                letterSpacing: '-0.01em',
-                color: C.ink2,
-              }}>
-                {cur ? cur.date.toLocaleDateString(locale, { weekday: 'long', month: 'long', day: 'numeric' }) : ''}
+              <div>
+                <div style={LABEL}>
+                  {cur
+                    ? `${cur.date.toLocaleDateString(locale, { weekday: 'long' }).toUpperCase()} · ${cur.date.toLocaleDateString(locale, { month: 'short' }).toUpperCase()} ${cur.day}`
+                    : ''}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, marginTop: 6 }}>
+                  <span style={{
+                    fontFamily: FONT_SERIF,
+                    fontSize: 76, lineHeight: 1, fontWeight: 500, fontStyle: 'italic',
+                    letterSpacing: '-0.035em',
+                    color: accent, transition: 'color 0.4s ease',
+                  }}>
+                    {cur ? m.format(cur[m.key] as number) : '—'}
+                  </span>
+                  <span style={{ fontSize: 16, color: C.ink2, fontStyle: 'italic', paddingBottom: 12 }}>
+                    {metricSublabel}
+                  </span>
+                </div>
               </div>
               <span style={{
-                justifySelf: 'center',
-                display: 'inline-flex', alignItems: 'center', gap: 7,
-                padding: '8px 18px', borderRadius: 999,
+                display: 'inline-flex', alignItems: 'center', gap: 5,
+                padding: '5px 12px', borderRadius: 999,
                 background: badgeBg, color: badgeColor,
-                fontSize: 13, fontWeight: 700, fontFamily: FONT_MONO,
+                fontSize: 11, fontWeight: 700, fontFamily: FONT_MONO,
                 letterSpacing: '0.14em', textTransform: 'uppercase',
               }}>
-                {cur?.isFuture && <Sparkles size={13} color={C.sage} />}
+                {cur?.isFuture && <Sparkles size={11} color={C.sage} />}
                 {badgeText}
-              </span>
-              <span aria-hidden />
-            </div>
-
-            {/* Big italic-serif metric value */}
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, marginBottom: 4 }}>
-              <span style={{
-                fontFamily: FONT_SERIF,
-                fontSize: 76, lineHeight: 1, fontWeight: 500, fontStyle: 'italic',
-                letterSpacing: '-0.035em',
-                color: accent, transition: 'color 0.4s ease',
-              }}>
-                {cur ? m.format(cur[m.key] as number) : '—'}
-              </span>
-              <span style={{ fontSize: 16, color: C.ink2, fontStyle: 'italic', paddingBottom: 12 }}>
-                {metricSublabel}
               </span>
             </div>
 
