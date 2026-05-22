@@ -1541,6 +1541,74 @@ Don't roll back unless something demonstrably breaks — the explicit deny polic
 
 ---
 
+## Custom Access Token hook (Hole #1 fix — Phase 2A, audit 2026-05-22)
+
+**Why it exists.** Before this hook, an attacker with brief access to a staff member's email could call `supabase.auth.signInWithOtp({email})` directly (public endpoint, no password needed), read the OTP from the inbox, complete `verifyOtp`, and call `/api/auth/trust-device` to mint a 1-year staxis_device cookie. The attacker never knew the password. The hook closes this by writing a `password_signin_proofs` row only when Supabase tags the JWT issuance with `authentication_method='password'`, and trust-device refuses to issue a cookie without that proof.
+
+**Where it lives.**
+- Function: `public.custom_access_token_hook(event jsonb) returns jsonb` (migrations `0158_custom_access_token_hook_v1.sql` and later `0159_custom_access_token_hook_v2_mfa_claim.sql`)
+- Registration: Supabase Dashboard → **Authentication → Hooks → Custom Access Token** (managed Supabase doesn't expose this via SQL — it MUST be set in the dashboard)
+- Backing table: `public.password_signin_proofs` (10-min TTL, single-use, service-role only)
+
+### Symptom — every user gets "Password sign-in required before this device can be trusted" on the OTP page
+
+**Diagnosis** — the hook is either not registered or not firing:
+
+```bash
+# Sign in via test account, then check whether a proof row was written
+psql "$SUPABASE_DB_URL" -c "
+  select user_id, created_at, expires_at, used_at
+    from password_signin_proofs
+   order by created_at desc
+   limit 5;
+"
+```
+
+If recent password sign-ins are NOT producing rows, the hook isn't running. Confirm registration:
+
+1. Open Supabase Dashboard → Authentication → Hooks
+2. Custom Access Token row should show **Enabled** with function `public.custom_access_token_hook`
+3. If not enabled, click → toggle Enabled → select `public.custom_access_token_hook` from the dropdown → Save
+
+**Fix** — register the hook in the dashboard (one-time setup, must be redone if the Supabase project is reset):
+
+1. Sign in to https://supabase.com/dashboard/project/xjoyasymmdejpmnzbjqu
+2. Authentication → Hooks → Custom Access Token
+3. Toggle **Enabled**
+4. Postgres function: `public.custom_access_token_hook`
+5. Save
+
+**Verify** — sign in with a real password, then re-run the diagnosis query. A new row should appear within seconds.
+
+**Prevention** — there is no failsafe for "hook is unregistered." Add a manual checklist item to the Supabase migration runbook and re-verify after any `supabase reset` or project recreation.
+
+### Symptom — `custom_access_token_hook: ... failed for <uuid>: <error>` notices flooding Postgres logs
+
+The hook is defensive — every operation is wrapped in a `begin / exception when others` block so a failure never blocks JWT issuance. The notice is informational.
+
+**Diagnosis** — read the notice text. Most likely:
+- `password_signin_proofs` table is missing (migration 0157 not applied)
+- `accounts` lookup is failing (RLS misconfiguration on `accounts_auth_hook_read` policy — Phase B only)
+- `trusted_devices` lookup is failing (Phase B only)
+
+**Fix** — apply the missing migration, or re-grant `supabase_auth_admin` access via the `_auth_hook_read` policies in migration 0158 / 0159.
+
+**Verify** — sign in with a real password and confirm the notice stops appearing and a proof row is written.
+
+### Rollback — emergency disable
+
+If the hook causes a sign-in incident:
+
+1. Supabase Dashboard → Authentication → Hooks → Custom Access Token → toggle **Disabled**
+2. **This will break trust-device for new sign-ins** because the proof gate still requires a row. Either:
+   - Ship a quick revert that bypasses the proof check in `src/app/api/auth/trust-device/route.ts`, OR
+   - Wait out the incident — users can still sign in (Phase 1's device-cookie + JWT flow keeps working), they just can't re-establish trust on a new device until the hook is re-enabled and they re-sign-in with password
+3. After mitigation, investigate the hook function via `psql` and re-enable when fixed
+
+**Do not drop the function** while the proof check in trust-device references the proof table — that would lock everyone out of `/signin/verify`.
+
+---
+
 ## Meta: how to add a new failure mode to this doc
 
 Every time something breaks and takes more than 30 min to fix, come back and add a section here with Symptom / Diagnosis / Fix / Verify / Prevention. This file only pays for itself if we update it.

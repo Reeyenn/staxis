@@ -269,6 +269,42 @@ export async function POST(req: NextRequest) {
   }
   // Slot already incremented via the CAS at the top.
 
+  // Hole #1 fix (audit 2026-05-22): write a password proof so the
+  // client's first sign-in flow (signInWithOtp + verifyOtp + trust-device)
+  // succeeds. admin.createUser doesn't issue a client JWT, so the
+  // custom_access_token_hook doesn't fire here — we write the proof
+  // explicitly. The user JUST set their password via this endpoint, so
+  // the server can vouch for it.
+  //
+  // EMPIRICALLY VERIFIED 2026-05-22 (Codex review #8 follow-up):
+  //   - @supabase/auth-js admin.createUser POSTs /admin/users and returns
+  //     {user}, NOT {session} — no JWT minted, hook does not fire.
+  //   - Both signup flows (/signup and /onboard) call signInWithOtp after
+  //     this endpoint returns. signInWithOtp triggers the hook with
+  //     authentication_method='otp', which is NOT the password branch —
+  //     so the hook does NOT write a proof on the post-signup OTP either.
+  //   - Without THIS manual write, a brand-new account has zero proofs →
+  //     trust-device 403s with "Password sign-in required" → user is
+  //     locked out of their own first device. NOT optional, NOT redundant.
+  //
+  // Non-fatal if the insert fails: the user can re-sign-in with the
+  // password they just set via the regular /signin flow, which will
+  // trigger the normal hook-based proof write.
+  const proofExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  const { error: proofErr } = await supabaseAdmin
+    .from('password_signin_proofs')
+    .insert({
+      user_id: authData.user.id,
+      expires_at: proofExpiresAt,
+      user_agent: req.headers.get('user-agent') ?? null,
+      ip: ip || null,
+    });
+  if (proofErr) {
+    log.warn('[use-join-code] password_signin_proofs write failed (non-fatal)', {
+      requestId, userId: authData.user.id, err: proofErr.message,
+    });
+  }
+
   // Phase M1.5 (2026-05-14): when an OWNER signs up via an admin-issued
   // owner code, transfer properties.owner_id from the placeholder admin
   // (set at hotel creation time in /api/admin/properties/create) to the

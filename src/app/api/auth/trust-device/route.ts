@@ -21,6 +21,7 @@ import {
 } from '@/lib/trusted-device';
 import { err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
+import { logSecurityEvent } from '@/lib/audit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -76,6 +77,48 @@ export async function POST(req: NextRequest) {
         { requestId, status: 401, code: ApiErrorCode.Unauthorized },
       );
     }
+  }
+
+  // Hole #1 enforcement (audit 2026-05-22). Require a server-written
+  // password_signin_proofs row that's unused and unexpired. The proof is
+  // written by the custom_access_token_hook (migration 0158) only when
+  // Supabase tags the JWT issuance with authentication_method='password'
+  // — an attacker calling signInWithOtp directly cannot fake the method,
+  // so they never get a proof and trust-device refuses to issue a
+  // staxis_device cookie. /api/auth/use-join-code also writes a proof
+  // for the first-time signup flow (where admin.createUser issues no
+  // client JWT, so the hook doesn't fire).
+  //
+  // Fail-closed: any error in the proof lookup returns 503 (caller will
+  // retry) rather than silently passing through.
+  const { data: proof, error: proofErr } = await supabaseAdmin
+    .from('password_signin_proofs')
+    .select('id')
+    .eq('user_id', userData.user.id)
+    .is('used_at', null)
+    .gt('expires_at', new Date().toISOString())
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (proofErr) {
+    log.error('[trust-device] password_signin_proofs lookup failed — failing closed', {
+      requestId, userId: userData.user.id, err: proofErr.message,
+    });
+    return err('Trust-device temporarily unavailable, please retry', {
+      requestId, status: 503, code: ApiErrorCode.InternalError,
+    });
+  }
+  if (!proof) {
+    await logSecurityEvent({
+      action: 'auth.trust_device_blocked_no_password_proof',
+      userId: userData.user.id,
+      requestId,
+      metadata: { reason: 'password_signin_proof_missing_or_expired' },
+    });
+    return err(
+      'Password sign-in required before this device can be trusted. Please sign in again with your password.',
+      { requestId, status: 403, code: ApiErrorCode.Unauthorized },
+    );
   }
 
   const { data: account, error: acctErr } = await supabaseAdmin
@@ -135,6 +178,22 @@ export async function POST(req: NextRequest) {
     log.error('[trust-device] insert failed', { requestId, accountId: account.id, err: insErr.message });
     return err('Failed to register trusted device', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
+    });
+  }
+
+  // Mark the proof consumed (single-use enforcement). Non-fatal if it
+  // fails — the trusted_devices row is already in place; worst case the
+  // proof rides out its 10-min TTL untouched, which a janitor cron can
+  // later sweep. Important: this MUST be after the trusted_devices
+  // insert succeeded, so a transient insert failure doesn't burn the
+  // user's only proof.
+  const { error: markErr } = await supabaseAdmin
+    .from('password_signin_proofs')
+    .update({ used_at: new Date().toISOString() })
+    .eq('id', proof.id);
+  if (markErr) {
+    log.warn('[trust-device] proof mark-used failed (non-fatal)', {
+      requestId, proofId: proof.id, err: markErr.message,
     });
   }
 
