@@ -26,6 +26,15 @@
 --   -2     — property mismatch
 --   -3     — user_id mismatch (NEW)
 
+-- Drop the old 2-arg signature first. Postgres treats functions with
+-- different parameter counts as separate overloads, so a plain
+-- `create or replace function` with a new argument would leave the old
+-- 2-arg version alive alongside the new 3-arg one. PostgREST would
+-- still call the right one (it matches by parameter name), but the
+-- `comment on function` below would be ambiguous, and a future caller
+-- that drops a positional argument could resolve to the dead overload.
+drop function if exists public.staxis_walkthrough_step(uuid, uuid);
+
 create or replace function public.staxis_walkthrough_step(
   p_run_id uuid,
   p_expected_property_id uuid default null,
@@ -74,7 +83,7 @@ begin
 end;
 $$;
 
-comment on function public.staxis_walkthrough_step is
+comment on function public.staxis_walkthrough_step(uuid, uuid, uuid) is
   'Atomically increment step_count under the MAX_STEPS=12 cap. Returns the new count, -1 if capped/not-found, -2 if property mismatch, or -3 if user_id mismatch. 2026-05-14 RC2 + 2026-05-22 user_id check (audit).';
 
 -- PostgREST schema-cache reload so the new parameter is recognized on
