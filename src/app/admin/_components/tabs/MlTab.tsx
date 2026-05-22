@@ -97,6 +97,11 @@ interface HKCockpitData {
     distinctStaff: number; distinctRooms: number;
     fleetMedianDay: number; daysOfHistoryRange: { min: number; max: number };
     healthCounts: { healthy: number; warming: number; issue: number };
+    // Phase 1.5 (2026-05-22) — honesty rollup from cockpit-data route.
+    warmingUpCount: number;
+    capacityUnavailableCount: number;
+    xgboostDeferredCount: number;
+    fullyFittedCount: number;
     daysToNextMilestoneMedian: number | null;
     nextMilestoneLabel: string;
     phaseHistogram: Array<{ phaseId: string; phaseLabel: string; phaseDay: number; hotelCount: number }>;
@@ -637,6 +642,10 @@ function HousekeepingPanels({ cockpit }: { cockpit: HKCockpitData }) {
           optimizerActive={aggregate.optimizerActive}
           nextTrainingAt={aggregate.nextTrainingAt}
           nextPredictionAt={aggregate.nextPredictionAt}
+          warmingUpCount={aggregate.warmingUpCount}
+          capacityUnavailableCount={aggregate.capacityUnavailableCount}
+          xgboostDeferredCount={aggregate.xgboostDeferredCount}
+          fullyFittedCount={aggregate.fullyFittedCount}
           hotelName={sp.name}
         />
         <HousekeepingOverridesTable mode="single" rows={recentOverrides} />
@@ -684,6 +693,10 @@ function HousekeepingPanels({ cockpit }: { cockpit: HKCockpitData }) {
         nextPredictionAt={aggregate.nextPredictionAt}
         hotelCount={aggregate.hotelCount}
         healthCounts={aggregate.healthCounts}
+        warmingUpCount={aggregate.warmingUpCount}
+        capacityUnavailableCount={aggregate.capacityUnavailableCount}
+        xgboostDeferredCount={aggregate.xgboostDeferredCount}
+        fullyFittedCount={aggregate.fullyFittedCount}
       />
       <HousekeepingOverridesTable mode="fleet" rows={recentOverrides} />
       <HousekeepingAdoption mode="fleet" rows={topAdoption} />

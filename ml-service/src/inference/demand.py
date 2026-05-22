@@ -426,6 +426,14 @@ async def predict_demand(
             prediction_row,
             on_conflict="property_id,date,model_run_id",
         )
+        # Honesty fields: trust model_runs.is_cold_start (migration 0123
+        # backfilled). Defense-in-depth: also fall back to the algorithm
+        # string prefix so a row the backfill missed still classifies
+        # correctly (mirrors src/inference/supply.py's approach).
+        active_algo = model_run.get("algorithm")
+        is_cold_start = bool(model_run.get("is_cold_start")) or (
+            str(active_algo or "").startswith("cold-start")
+        )
         return {
             "property_id": property_id,
             "date": str(prediction_date),
@@ -434,6 +442,8 @@ async def predict_demand(
             "predicted_headcount_p50": prediction_row["predicted_headcount_p50"],
             "predicted_headcount_p95": prediction_row["predicted_headcount_p95"],
             "model_version": model_run.get("model_version"),
+            "algorithm": active_algo,
+            "is_cold_start": is_cold_start,
         }
     except Exception as e:
         # Phase L discipline rule #3: never swallow silently. Returning

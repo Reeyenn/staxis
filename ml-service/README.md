@@ -433,6 +433,107 @@ Matches existing scraper log format for unified observability.
 - Wilcoxon test is p < 0.05 with active > baseline
 - Manually deactivate if rolling MAE degrades unexpectedly
 
+## Honesty contract for housekeeping ML (Phase 1, 2026-05-22)
+
+The service distinguishes three states per (property, layer) and
+surfaces each one explicitly to the UI so consumers never label a
+cohort-prior prediction as "AI recommendation":
+
+- **Fitted** — trained on this hotel's own cleaning data, ≥200 events,
+  passed all 5 activation gates. Predict response carries
+  `is_cold_start: false`. Schedule tab labels these as "AI recommendation".
+- **Cold-start** — cohort-prior backed. `algorithm = 'cold-start-cohort-prior'`,
+  `model_runs.is_cold_start = true`. Predict response carries
+  `is_cold_start: true`. Schedule tab labels these as "Industry
+  estimate · learning".
+- **Capacity model unavailable** — L1 demand fitted but fewer than 10
+  L2 supply predictions for the target date → optimizer drops to the
+  L1-only path. `optimizer_results.inputs_snapshot.used_l2_supply = false`.
+  Schedule tab labels these as "Industry estimate · learning" with the
+  capacity-unavailable tooltip.
+
+The optimizer also OMITS `completion_probability_curve` (writes `[]`)
+when both backing layers are cold-start. The Monte Carlo over
+fixed-multiplier quantiles produces a curve whose only variance comes
+from LPT bin-packing across H workers — calling it a "confidence band"
+would mislead the cockpit + Schedule tab consumers.
+
+## Walk-forward backtest (Phase 2, 2026-05-22)
+
+`scripts/backtest_housekeeping.py` replays the last 8 weeks of real
+`cleaning_events` for a property through the model code path,
+retraining weekly (matches the GitHub Actions cron cadence). Reports
+honest out-of-sample MAE separately for fitted days vs cold-start days.
+
+**Read-only by construction.** The script wraps the Supabase client in
+a `ReadOnlySupabaseClient` proxy that raises on `.upsert()`,
+`.insert()`, `.update()`, `.delete()`, `.rpc()` calls. The only
+sanctioned write is a single artifact upload to
+`backtest_results/{property_id}/{layer}/{YYYY-MM-DD}.json` in the
+`ml-models` Supabase Storage bucket. The matching test
+(`tests/test_backtest_is_read_only.py`) asserts the proxy is in use.
+
+Usage:
+```bash
+python -m scripts.backtest_housekeeping \
+  --property-id <uuid> --layer demand --weeks 8 [--dry-run] [--out PATH]
+```
+
+The admin cockpit reads the latest artifact via
+`GET /api/admin/ml/housekeeping/backtest-status?propertyId=<uuid>&layer=demand`
+and renders the "Last walk-forward backtest" tile in
+`HousekeepingSystemHealth.tsx`.
+
+**Refusal contract.** If `days_fitted < 14` within the window, the
+headline `fittedOnlyMae` is `null` and `refusalReason='INSUFFICIENT_FITTED_DATA'`.
+No silent green-pill on a number dominated by cohort-prior error. The
+common path for newly-onboarded hotels — most days in cold-start — is
+honestly labeled rather than averaged into a misleading aggregate.
+
+## Promotion safety gate (Phase 4a, 2026-05-22)
+
+Housekeeping retrains write `is_shadow=true, is_active=false,
+shadow_started_at=now()` when:
+
+1. The new fit would normally activate (passed gates), AND
+2. An active fitted (non-cold-start) model already exists for this
+   (property, layer).
+
+The already-layer-agnostic `ml-shadow-evaluate` cron
+(`src/app/api/cron/ml-shadow-evaluate/route.ts`) promotes shadows
+after a 7-day soak iff `shadow.validation_mae <= active.validation_mae × 1.05`;
+otherwise rejects with `deactivation_reason='shadow_underperformed'`.
+
+Fast-paths preserved:
+- **First model ever** → activates directly via the existing RPC.
+- **Active is cold-start** → replaces directly (cold-start is the
+  "anything beats this" baseline; no soak needed).
+- **Gates didn't pass** → existing RPC path, inserts as non-active
+  non-shadow row for operator inspection.
+
+Net effect: a single bad retrain can no longer silently degrade an
+active housekeeping model.
+
+## Known gap: statistical auto-rollback is not wired (out of scope for Phase 4a)
+
+`monitoring/shadow_mae.py:78-249` implements `compute_rolling_shadow_mae`
++ `check_auto_rollback` (paired Wilcoxon signed-rank on
+`prediction_log.abs_error`, 14-day window, n≥10, p<0.05). The file's
+own DEAD CODE NOTICE (lines 61-75) is accurate as of 2026-05-22:
+ZERO callers across all crons / routes / tasks. Enabling requires:
+
+1. A `prediction_log` writer (daily/per-prediction `abs_error` rows
+   for housekeeping demand+supply — exists for inventory only today).
+2. A new cron route `src/app/api/cron/ml-auto-rollback-check/route.ts`
+   that iterates active models per property and calls `check_auto_rollback`.
+3. Benjamini-Hochberg FDR correction across the fleet (line 71 backlog
+   item) to keep false-rollback rate manageable at fleet scale.
+
+Until these land, the promotion safety gate (above) is the only
+post-deployment safety net for housekeeping. A drifting active model
+that was good at promotion time won't be caught by the safety gate
+because there's no new shadow contending for promotion.
+
 ## License
 
 MIT

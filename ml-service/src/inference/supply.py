@@ -472,6 +472,8 @@ async def predict_supply(
             "date": str(prediction_date),
             "predicted_rooms": 0,
             "model_version": model_run.get("model_version"),
+            "algorithm": algorithm,
+            "is_cold_start": bool(model_run.get("is_cold_start")) or algorithm == "cold-start-cohort-prior",
         }
 
     pair_df = pd.DataFrame(pair_rows)
@@ -577,9 +579,14 @@ async def predict_supply(
                 "error": str(exc),
             }))
 
+    # Honesty fields: trust model_runs.is_cold_start (migration 0123
+    # backfilled). algorithm flows straight through so downstream cron
+    # / cockpit / UI can branch without an extra model_runs join.
     return {
         "property_id": property_id,
         "date": str(prediction_date),
         "predicted_rooms": len(predictions),
         "model_version": model_run.get("model_version"),
+        "algorithm": algorithm,
+        "is_cold_start": bool(model_run.get("is_cold_start")) or algorithm == "cold-start-cohort-prior",
     }

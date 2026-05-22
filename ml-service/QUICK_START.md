@@ -250,3 +250,33 @@ limit 5;
 5. Check model_runs table for activation
 6. Run /predict/demand to generate forecast
 7. Integrate with Schedule tab (P5)
+
+## Per-property readiness check
+
+The `/health` endpoint is intentionally trivial (`{status: "ok"}`) for
+the Railway load balancer probe. For per-property "is this hotel
+fully fitted vs warming up vs missing a model?" status, use the
+admin-side route which reads `model_runs` directly:
+
+```
+GET https://getstaxis.com/api/admin/ml-health?propertyId=<uuid>
+```
+
+Returns per-layer (demand / supply / optimizer / inventory_rate) status
+including `isColdStart`, `algorithm`, `trainedAt`, `validationMae`, and
+the freshness of `lastPredictionAt`. Admin-session gated.
+
+## Walk-forward backtest
+
+`scripts/backtest_housekeeping.py` is the read-only walk-forward
+accuracy tool. See README.md "Walk-forward backtest" for the full
+contract; the short version:
+
+```bash
+python -m scripts.backtest_housekeeping \
+  --property-id <uuid> --layer demand --weeks 8
+```
+
+The script refuses to report a headline MAE when `days_fitted < 14`;
+the admin cockpit reads the latest artifact via
+`/api/admin/ml/housekeeping/backtest-status`.

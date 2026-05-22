@@ -191,6 +191,11 @@ class PredictDemandResponse(BaseModel):
     predicted_headcount_p50: Optional[float] = None
     predicted_headcount_p95: Optional[float] = None
     model_version: Optional[str] = None
+    # Honesty fields: callers can distinguish a fitted-from-this-hotel
+    # Bayesian/XGBoost prediction from a cohort-prior cold-start prediction
+    # without an extra model_runs join.
+    algorithm: Optional[str] = None
+    is_cold_start: Optional[bool] = None
     error: Optional[str] = None
 
 
@@ -214,6 +219,9 @@ class PredictSupplyResponse(BaseModel):
     date: str
     predicted_rooms: Optional[int] = None
     model_version: Optional[str] = None
+    # Honesty fields — see PredictDemandResponse.
+    algorithm: Optional[str] = None
+    is_cold_start: Optional[bool] = None
     error: Optional[str] = None
 
 
@@ -238,6 +246,14 @@ class OptimizeResponse(BaseModel):
     recommended_headcount: Optional[int] = None
     achieved_completion_probability: Optional[float] = None
     completion_probability_curve: Optional[list] = None
+    # Honesty fields: callers (cron, cockpit, Schedule tab) can tell a fully
+    # fitted optimizer recommendation apart from one whose backing layers
+    # were cold-start, OR one that fell through to the L1-only path because
+    # fewer than 10 supply predictions were available for the date.
+    l1_is_cold_start: Optional[bool] = None
+    l2_any_cold_start: Optional[bool] = None
+    used_l2_supply: Optional[bool] = None
+    l2_prediction_count: Optional[int] = None
     error: Optional[str] = None
 
 
