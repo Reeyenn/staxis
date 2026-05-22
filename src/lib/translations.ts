@@ -102,6 +102,16 @@ type TranslationKey =
   // Housekeeper room view & ops-wall
   | 'doNotDisturb' | 'dnd' | 'needsCleaning' | 'startCleaning' | 'markDone'
   | 'markDnd' | 'removeDnd' | 'needHelp' | 'helpSentMsg' | 'helpAlertSent'
+  // Customer-facing SMS-link pages (housekeeper/[id] + laundry/[id])
+  | 'cxIncompleteLink' | 'cxIncompleteLinkHelp' | 'cxHelloPrefix' | 'cxGreatWorkToday'
+  | 'hkStartShift' | 'hkShiftStarted' | 'hkRoomShort'
+  | 'hkNextShiftPrefix' | 'hkLastShiftPrefix'
+  | 'hkTypeCheckout' | 'hkTypeStayover' | 'hkTypeVacant'
+  | 'hkReportIssueAria' | 'hkIssueShort' | 'hkResetShort' | 'hkUndoShort' | 'hkCompleteShort'
+  | 'hkOffline'
+  | 'hkErrCouldntMarkClean' | 'hkErrCouldntToggleDnd' | 'hkErrCouldntSaveIssue' | 'hkErrCouldntResetRoom'
+  | 'lndLoadingTasks' | 'lndLaundryLoadsHeading' | 'lndLoadsUnit'
+  | 'lndProgressOf' | 'lndProgressDone' | 'lndNoTasksToday'
   // Guest requests
   | 'pending' | 'doneToday' | 'assign' | 'unassigned'
   // Ops-wall
@@ -478,6 +488,35 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     needsCleaning: 'Needs Cleaning',
     startCleaning: 'Start Cleaning',
     markDone: 'Mark Done',
+    // Customer-facing SMS-link pages (housekeeper/[id] + laundry/[id])
+    cxIncompleteLink: 'Incomplete link',
+    cxIncompleteLinkHelp: 'Ask your manager for the full link. Parameters are missing.',
+    cxHelloPrefix: 'Hi',
+    cxGreatWorkToday: 'Great work today',
+    hkStartShift: 'Start Shift',
+    hkShiftStarted: 'Shift started',
+    hkRoomShort: 'Room',
+    hkNextShiftPrefix: 'Next shift: ',
+    hkLastShiftPrefix: 'Last shift: ',
+    hkTypeCheckout: 'CHECKOUT',
+    hkTypeStayover: 'STAYOVER',
+    hkTypeVacant: 'VACANT',
+    hkReportIssueAria: 'Report issue',
+    hkIssueShort: 'Issue',
+    hkResetShort: 'Reset',
+    hkUndoShort: 'Undo',
+    hkCompleteShort: 'Complete',
+    hkOffline: "You're offline. Changes won't save until you're back online.",
+    hkErrCouldntMarkClean: "Couldn't mark Clean. Check your connection and try again.",
+    hkErrCouldntToggleDnd: "Couldn't toggle Do Not Disturb.",
+    hkErrCouldntSaveIssue: "Couldn't save the issue. Try again.",
+    hkErrCouldntResetRoom: "Couldn't reset the room.",
+    lndLoadingTasks: 'Loading tasks...',
+    lndLaundryLoadsHeading: 'Laundry Loads',
+    lndLoadsUnit: 'loads',
+    lndProgressOf: 'of',
+    lndProgressDone: 'done',
+    lndNoTasksToday: 'No laundry tasks today. Check back later!',
     // Guest requests
     pending: 'Pending',
     doneToday: 'Done Today',
@@ -1073,6 +1112,35 @@ const translations: Record<Language, Record<TranslationKey, string>> = {
     needsCleaning: 'Necesita Limpieza',
     startCleaning: 'Iniciar Limpieza',
     markDone: 'Marcar Listo',
+    // Customer-facing SMS-link pages (housekeeper/[id] + laundry/[id])
+    cxIncompleteLink: 'Enlace incompleto',
+    cxIncompleteLinkHelp: 'Pídele a tu encargada el enlace completo. Faltan parámetros.',
+    cxHelloPrefix: 'Hola',
+    cxGreatWorkToday: '¡Buen trabajo hoy',
+    hkStartShift: 'Comenzar Turno',
+    hkShiftStarted: 'Turno iniciado',
+    hkRoomShort: 'Hab.',
+    hkNextShiftPrefix: 'Próximo turno: ',
+    hkLastShiftPrefix: 'Turno anterior: ',
+    hkTypeCheckout: 'SALIDA',
+    hkTypeStayover: 'OCUPADA',
+    hkTypeVacant: 'VACANTE',
+    hkReportIssueAria: 'Reportar problema',
+    hkIssueShort: 'Problema',
+    hkResetShort: 'Revertir',
+    hkUndoShort: 'Quitar',
+    hkCompleteShort: 'Completar',
+    hkOffline: 'Sin conexión. Tus cambios no se guardarán hasta volver a estar en línea.',
+    hkErrCouldntMarkClean: 'No se pudo guardar como Limpia. Verifica tu conexión e intenta de nuevo.',
+    hkErrCouldntToggleDnd: 'No se pudo cambiar No Molestar.',
+    hkErrCouldntSaveIssue: 'No se pudo guardar el problema. Tócalo otra vez.',
+    hkErrCouldntResetRoom: 'No se pudo reiniciar la habitación.',
+    lndLoadingTasks: 'Cargando tareas...',
+    lndLaundryLoadsHeading: 'Cargas de Lavandería',
+    lndLoadsUnit: 'cargas',
+    lndProgressOf: 'de',
+    lndProgressDone: 'listas',
+    lndNoTasksToday: 'No hay tareas de lavandería hoy. ¡Vuelve más tarde!',
     // Guest requests
     pending: 'Pendiente',
     doneToday: 'Listo Hoy',

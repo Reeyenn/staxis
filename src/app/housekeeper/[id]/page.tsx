@@ -564,9 +564,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
         const res = await callRoomActionApi(room, 'finish', ctx);
         if (!res.ok) {
           console.error('[housekeeper] finish room error:', res.error);
-          showActionError(lang === 'es'
-            ? 'No se pudo guardar como Limpia. Verifica tu conexi\u00f3n e intenta de nuevo.'
-            : 'Couldn\u2019t mark Clean. Check your connection and try again.');
+          showActionError(t('hkErrCouldntMarkClean', lang));
         }
       } finally {
         setSavingRoomId(null);
@@ -598,9 +596,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
         const j = await res.json().catch(() => ({}));
         if (!res.ok || !j?.ok) {
           console.error('[housekeeper] toggle DND error:', j?.error || res.status);
-          showActionError(lang === 'es'
-            ? 'No se pudo cambiar No Molestar.'
-            : 'Couldn\u2019t toggle Do Not Disturb.');
+          showActionError(t('hkErrCouldntToggleDnd', lang));
         }
       } finally {
         setSavingDnd(null);
@@ -639,9 +635,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       setIssueNote('');
     } catch (err) {
       console.error('[housekeeper] submit issue error:', err);
-      showActionError(lang === 'es'
-        ? 'No se pudo guardar el problema. T\u00f3calo otra vez.'
-        : 'Couldn\u2019t save the issue. Try again.');
+      showActionError(t('hkErrCouldntSaveIssue', lang));
     } finally {
       setSavingIssue(false);
     }
@@ -660,9 +654,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       const res = await callRoomActionApi(room, 'reset');
       if (!res.ok) {
         console.error('[housekeeper] reset room error:', res.error);
-        showActionError(lang === 'es'
-          ? 'No se pudo reiniciar la habitaci\u00f3n.'
-          : 'Couldn\u2019t reset the room.');
+        showActionError(t('hkErrCouldntResetRoom', lang));
       }
     } finally {
       setResettingRoomId(null);
@@ -694,12 +686,10 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
       }}>
         <AlertTriangle size={32} color="var(--red, #EF4444)" />
         <p style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
-          {lang === 'es' ? 'Enlace incompleto' : 'Incomplete link'}
+          {t('cxIncompleteLink', lang)}
         </p>
         <p style={{ fontSize: '14px', color: 'var(--text-muted)', maxWidth: '320px', margin: 0 }}>
-          {lang === 'es'
-            ? 'Pídele a tu encargada el enlace completo. Falta el identificador de la propiedad.'
-            : 'Ask your manager for the full link. The property ID is missing.'}
+          {t('cxIncompleteLinkHelp', lang)}
         </p>
       </div>
     );
@@ -750,9 +740,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
           letterSpacing: '0.01em',
         }}
       >
-        {lang === 'es'
-          ? 'Sin conexi\u00f3n. Tus cambios no se guardar\u00e1n hasta volver a estar en l\u00ednea.'
-          : 'You\u2019re offline. Changes won\u2019t save until you\u2019re back online.'}
+        {t('hkOffline', lang)}
       </div>
     )}
 
@@ -809,7 +797,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px' }}>
           <div>
             <h1 style={{ fontSize: '20px', fontWeight: 800, letterSpacing: '-0.02em', marginBottom: '2px', lineHeight: 1.1 }}>
-              {lang === 'es' ? `Hola, ${firstName}` : `Hi, ${firstName}`}
+              {`${t('cxHelloPrefix', lang)}, ${firstName}`}
             </h1>
             <p style={{ fontSize: '12px', opacity: 0.7, fontWeight: 500 }}>
               {(() => {
@@ -823,8 +811,8 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
                 // Different date — add a label so HK knows they're looking at a
                 // future (or past) shift.
                 return activeDate > today
-                  ? `${lang === 'es' ? 'Próximo turno: ' : 'Next shift: '}${formatted}`
-                  : `${lang === 'es' ? 'Turno anterior: ' : 'Last shift: '}${formatted}`;
+                  ? `${t('hkNextShiftPrefix', lang)}${formatted}`
+                  : `${t('hkLastShiftPrefix', lang)}${formatted}`;
               })()}
             </p>
           </div>
@@ -867,9 +855,9 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
           <div style={{ marginTop: '20px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
               <span style={{ fontSize: '14px', fontWeight: 600 }}>
-                {lang === 'es'
-                  ? `${done} de ${total} listas${dndCount > 0 ? ` · ${dndCount} DND` : ''}${inProgress > 0 ? ` · ${inProgress} en progreso` : ''}`
-                  : `${done} of ${total} done${dndCount > 0 ? ` · ${dndCount} DND` : ''}${inProgress > 0 ? ` · ${inProgress} in progress` : ''}`}
+                {`${done} ${t('lndProgressOf', lang)} ${total} ${t('lndProgressDone', lang)}`
+                  + (dndCount > 0 ? ` · ${dndCount} DND` : '')
+                  + (inProgress > 0 ? ` · ${inProgress} ${t('inProgress', lang).toLowerCase()}` : '')}
               </span>
               <span style={{ fontSize: '14px', fontWeight: 700, opacity: 0.9 }}>
                 {progressPct}%
@@ -922,7 +910,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
           >
             {shiftStarting
               ? '...'
-              : (lang === 'es' ? 'Comenzar Turno' : 'Start Shift')}
+              : t('hkStartShift', lang)}
           </button>
         )}
         {shiftStartedAt && total > 0 && !allDone && (
@@ -936,7 +924,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
             textAlign: 'center',
             marginBottom: '4px',
           }}>
-            {lang === 'es' ? 'Turno iniciado' : 'Shift started'} · {format(new Date(shiftStartedAt), 'h:mm a', lang === 'es' ? { locale: esLocale } : undefined)}
+            {t('hkShiftStarted', lang)} · {format(new Date(shiftStartedAt), 'h:mm a', lang === 'es' ? { locale: esLocale } : undefined)}
           </div>
         )}
 
@@ -957,9 +945,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
               {t('allDone', lang)}
             </h2>
             <p style={{ fontSize: '14px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-              {lang === 'es'
-                ? `¡Buen trabajo hoy, ${firstName}! 🎉`
-                : `Great work today, ${firstName}! 🎉`}
+              {`${t('cxGreatWorkToday', lang)}, ${firstName}! 🎉`}
             </p>
           </div>
         )}
@@ -970,9 +956,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
             borderRadius: '20px', boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
           }}>
             <p style={{ fontSize: '16px', color: 'var(--text-muted)', lineHeight: 1.8 }}>
-              {lang === 'es'
-                ? <><strong>{t('noRoomsAssigned', lang)}</strong><br />{t('checkBackSoon', lang)}</>
-                : <><strong>{t('noRoomsAssigned', lang)}</strong><br />{t('checkBackSoon', lang)}</>}
+              <><strong>{t('noRoomsAssigned', lang)}</strong><br />{t('checkBackSoon', lang)}</>
             </p>
           </div>
         ) : (
@@ -1025,7 +1009,7 @@ export default function HousekeeperRoomPage({ params }: { params: Promise<{ id: 
               {t('reportIssue', lang)}
             </h3>
             <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '16px' }}>
-              {lang === 'es' ? 'Hab.' : 'Room'} {rooms.find(r => r.id === issueRoomId)?.number}
+              {t('hkRoomShort', lang)} {rooms.find(r => r.id === issueRoomId)?.number}
             </p>
             <textarea
                
@@ -1115,9 +1099,9 @@ function RoomCard({
   const isInProgress = room.status === 'in_progress';
 
   const typeLabel =
-    room.type === 'checkout' ? (lang === 'es' ? 'SALIDA' : 'CHECKOUT')
-    : room.type === 'stayover' ? (lang === 'es' ? 'OCUPADA' : 'STAYOVER')
-    : (lang === 'es' ? 'VACANTE' : 'VACANT');
+    room.type === 'checkout' ? t('hkTypeCheckout', lang)
+    : room.type === 'stayover' ? t('hkTypeStayover', lang)
+    : t('hkTypeVacant', lang);
 
   const accentColor =
     isDone ? 'var(--green)'
@@ -1148,7 +1132,7 @@ function RoomCard({
           fontSize: '14px', fontWeight: 700, marginBottom: '12px',
           border: '1.5px solid var(--border-light, #E5E7EB)',
         }}>
-          {lang === 'es' ? '🚫 No Molestar' : '🚫 ' + t('doNotDisturb', lang)}
+          {`🚫 ${t('doNotDisturb', lang)}`}
         </div>
       )}
 
@@ -1177,7 +1161,7 @@ function RoomCard({
             color: isDone ? 'var(--green)' : isInProgress ? 'var(--navy-light, #2563EB)' : 'var(--text-secondary)',
           }}>
             {isInProgress
-              ? (lang === 'es' ? '⟳ ' + t('inProgress', lang) : '⟳ ' + t('inProgress', lang))
+              ? `⟳ ${t('inProgress', lang)}`
               : typeLabel}
           </span>
           {room.priority === 'vip' && !isDone && !isInProgress && (
@@ -1239,7 +1223,7 @@ function RoomCard({
                 color: 'var(--text-muted)',
                 whiteSpace: 'nowrap',
               }}>
-                {lang === 'es' ? 'DND' : 'DND'}
+                DND
               </span>
             </button>
           )}
@@ -1259,7 +1243,7 @@ function RoomCard({
               WebkitTapHighlightColor: 'transparent',
               touchAction: 'manipulation',
             }}
-            aria-label={lang === 'es' ? 'Reportar problema' : 'Report issue'}
+            aria-label={t('hkReportIssueAria', lang)}
           >
             <AlertTriangle size={14} color="var(--text-muted)" />
             <span style={{
@@ -1267,7 +1251,7 @@ function RoomCard({
               color: 'var(--text-muted)',
               whiteSpace: 'nowrap',
             }}>
-              {lang === 'es' ? 'Problema' : 'Issue'}
+              {t('hkIssueShort', lang)}
             </span>
           </button>
         </div>
@@ -1329,7 +1313,7 @@ function RoomCard({
           >
             {isResetting
               ? '...'
-              : (lang === 'es' ? 'Revertir' : 'Reset')}
+              : t('hkResetShort', lang)}
           </button>
         </div>
       ) : room.isDnd ? (
@@ -1341,7 +1325,7 @@ function RoomCard({
         }}>
           <span style={{ fontSize: '20px' }}>🚫</span>
           <span style={{ fontSize: '17px', fontWeight: 700, color: 'var(--text-secondary, #4B5563)' }}>
-            {lang === 'es' ? 'No Molestar' : 'Do Not Disturb'}
+            {t('doNotDisturb', lang)}
           </span>
           <span style={{ color: 'var(--border-light, #E5E7EB)', margin: '0 2px' }}>·</span>
           <button
@@ -1363,7 +1347,7 @@ function RoomCard({
               padding: '0 12px',
             }}
           >
-            {isSavingDnd ? '...' : (lang === 'es' ? 'Quitar' : 'Undo')}
+            {isSavingDnd ? '...' : t('hkUndoShort', lang)}
           </button>
         </div>
       ) : (
@@ -1414,7 +1398,7 @@ function CompleteButton({
     >
       {isSaving
         ? t('savingDots', lang)
-        : (lang === 'es' ? '✓ Completar' : '✓ Complete')}
+        : `✓ ${t('hkCompleteShort', lang)}`}
     </button>
   );
 }

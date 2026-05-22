@@ -184,12 +184,10 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
       }}>
         <AlertTriangle size={32} color="var(--red, #EF4444)" />
         <p style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
-          {lang === 'es' ? 'Enlace incompleto' : 'Incomplete link'}
+          {t('cxIncompleteLink', lang)}
         </p>
         <p style={{ fontSize: '14px', color: 'var(--text-muted)', maxWidth: '320px', margin: 0 }}>
-          {lang === 'es'
-            ? 'Pídele a tu encargada el enlace completo. Faltan parámetros.'
-            : 'Ask your manager for the full link. Parameters are missing.'}
+          {t('cxIncompleteLinkHelp', lang)}
         </p>
       </div>
     );
@@ -208,7 +206,7 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
           animation: 'spin 0.8s linear infinite',
         }} />
         <p style={{ color: 'var(--text-muted)', fontSize: '14px', fontWeight: 500 }}>
-          {lang === 'es' ? 'Cargando tareas...' : 'Loading tasks...'}
+          {t('lndLoadingTasks', lang)}
         </p>
         <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       </div>
@@ -233,7 +231,7 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px' }}>
           <div>
             <h1 style={{ fontSize: '20px', fontWeight: 800, letterSpacing: '-0.02em', marginBottom: '2px', lineHeight: 1.1 }}>
-              {lang === 'es' ? `Hola, ${firstName}` : `Hi, ${firstName}`}
+              {`${t('cxHelloPrefix', lang)}, ${firstName}`}
             </h1>
             <p style={{ fontSize: '12px', opacity: 0.7, fontWeight: 500 }}>
               {format(new Date(), 'EEEE, MMMM d', { locale: lang === 'es' ? esLocale : undefined })}
@@ -277,9 +275,7 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
           <div style={{ marginTop: '20px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
               <span style={{ fontSize: '14px', fontWeight: 600 }}>
-                {lang === 'es'
-                  ? `${completedTasks} de ${totalTasks} listas`
-                  : `${completedTasks} of ${totalTasks} done`}
+                {`${completedTasks} ${t('lndProgressOf', lang)} ${totalTasks} ${t('lndProgressDone', lang)}`}
               </span>
               <span style={{ fontSize: '14px', fontWeight: 700, opacity: 0.9 }}>
                 {progressPct}%
@@ -319,9 +315,7 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
               {t('allDone', lang)}
             </h2>
             <p style={{ fontSize: '16px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-              {lang === 'es'
-                ? `¡Buen trabajo hoy, ${firstName}! 🎉`
-                : `Great work today, ${firstName}! 🎉`}
+              {`${t('cxGreatWorkToday', lang)}, ${firstName}! 🎉`}
             </p>
           </div>
         ) : totalTasks === 0 ? (
@@ -330,9 +324,7 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
             borderRadius: '20px', boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
           }}>
             <p style={{ fontSize: '16px', color: 'var(--text-muted)', lineHeight: 1.8 }}>
-              {lang === 'es'
-                ? 'No hay tareas de lavandería hoy. ¡Vuelve más tarde!'
-                : 'No laundry tasks today. Check back later!'}
+              {t('lndNoTasksToday', lang)}
             </p>
           </div>
         ) : (
@@ -344,7 +336,7 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
                   fontSize: '16px', fontWeight: 700, color: 'var(--navy)',
                   marginBottom: '12px', marginTop: '8px', paddingLeft: '4px',
                 }}>
-                  {lang === 'es' ? 'Áreas Públicas' : 'Public Areas'}
+                  {t('publicAreas', lang)}
                 </h3>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                   {areasDueToday.map(area => (
@@ -375,7 +367,7 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
                   fontSize: '16px', fontWeight: 700, color: 'var(--navy)',
                   marginBottom: '12px', marginTop: areasDueToday.length > 0 ? '16px' : '8px', paddingLeft: '4px',
                 }}>
-                  {lang === 'es' ? 'Cargas de Lavandería' : 'Laundry Loads'}
+                  {t('lndLaundryLoadsHeading', lang)}
                 </h3>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                   {loadCards.map(load => (
@@ -455,7 +447,7 @@ function AreaTaskCard({
           <p style={{
             fontSize: '13px', color: isCompleted ? 'var(--text-muted)' : 'var(--text-muted)',
           }}>
-            {lang === 'es' ? 'Piso' : 'Floor'} {area.floor} • {area.minutesPerClean} {lang === 'es' ? 'min' : 'min'}
+            {t('floor', lang)} {area.floor} • {area.minutesPerClean} min
           </p>
         </div>
       </div>
@@ -513,7 +505,7 @@ function LaundryLoadCard({
           <p style={{
             fontSize: '13px', color: isCompleted ? 'var(--text-muted)' : 'var(--text-muted)',
           }}>
-            {load.loads} {lang === 'es' ? 'cargas' : 'loads'} • {load.minutes} {lang === 'es' ? 'min' : 'min'}
+            {load.loads} {t('lndLoadsUnit', lang)} • {load.minutes} min
           </p>
         </div>
       </div>
