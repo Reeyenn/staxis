@@ -24,6 +24,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
+import { recordAppEvent } from '@/lib/event-recorder';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -135,6 +136,25 @@ export async function POST(req: NextRequest) {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
   }
+
+  // Audit-trail event — answers "who kicked off this onboarding job for
+  // this hotel" without grepping web request logs. recordAppEvent is
+  // best-effort (try/catch + log on failure inside the helper), so a
+  // failed event write never breaks the user's request. user_role is
+  // 'owner' because the capability check above already required the
+  // caller to be the property's owner_id.
+  await recordAppEvent({
+    property_id: pidV.value!,
+    user_id: session.userId,
+    user_role: 'owner',
+    event_type: 'pms_onboarding_started',
+    metadata: {
+      job_id: job.id,
+      pms_type: creds.pms_type,
+      request_id: requestId,
+      source: 'web',
+    },
+  });
 
   return ok({ jobId: job.id, alreadyRunning: false }, { requestId, status: 202 });
 }

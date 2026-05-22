@@ -1144,6 +1144,133 @@ Lesson: when adding a "trivial" supabase-js `.select(...)` call after a `.delete
 
 ---
 
+## CUA hardening pass (May 2026) — Phase B cutover + rollback
+
+The Phase A hardening (recursive log redaction, audit-trail events, Sentry per-job scope, DNS preflight timeout, startup posture log + signing invariant, reaper-threshold migration) ships as behaviour-neutral code. The "guards actually block" flip is a separate operator step. Run this checklist when you want enforcement live.
+
+### B1. Apply migration 0156
+
+Migrations are applied manually (CLAUDE.md). From the repo root:
+
+```bash
+PGPASSWORD="<supabase db password>" psql \
+  "postgresql://postgres@db.xjoyasymmdejpmnzbjqu.supabase.co:5432/postgres" \
+  -f supabase/migrations/0156_align_cua_reap_thresholds.sql
+```
+
+Verify the new interval landed:
+
+```sql
+select pg_get_functiondef('public.staxis_reap_stale_jobs'::regproc);
+-- expect "interval '16 minutes'" in the WHERE clause
+select pg_get_functiondef('public.staxis_reap_stale_pull_jobs'::regproc);
+-- expect "interval '4 minutes'"
+```
+
+### B2. Verify the recipe-signing backfill ran
+
+```sql
+select pms_type, status, count(*)
+from pms_recipes
+where signature is null or signed_with_key_id is null
+group by pms_type, status;
+```
+
+If any rows return with `status='active'`, enforce mode would refuse them. Run the backfill before flipping:
+
+```bash
+npx tsx scripts/backfill-recipe-signatures.ts
+```
+
+Re-query until the result is empty for `status='active'`.
+
+### B3. Verify Fly secret state
+
+Fly secrets win over `[env]` in `fly.toml` — the config change can deploy clean while runtime still reads `warn`. Check:
+
+```bash
+fly secrets list -a staxis-cua | grep -E 'CUA_POLICY_ENFORCE|RECIPE_SIGNING_ENFORCE|CUA_DNS_PREFLIGHT'
+```
+
+If any of the three appear, unset them so the `fly.toml` value takes effect:
+
+```bash
+fly secrets unset CUA_POLICY_ENFORCE RECIPE_SIGNING_ENFORCE CUA_DNS_PREFLIGHT -a staxis-cua
+```
+
+Also confirm the signing key itself is set (the startup invariant will exit the worker if enforce mode is on without it):
+
+```bash
+fly secrets list -a staxis-cua | grep RECIPE_SIGNING_KEY
+```
+
+### B4. Flip the flags in `cua-service/fly.toml`
+
+Add to the `[env]` block:
+
+```toml
+CUA_POLICY_ENFORCE = "enforce"
+RECIPE_SIGNING_ENFORCE = "enforce"
+CUA_DNS_PREFLIGHT = "true"
+```
+
+Commit on this branch, then deploy with a rolling restart:
+
+```bash
+cd cua-service && fly deploy
+```
+
+### B5. Smoke-verify
+
+Watch the logs:
+
+```bash
+fly logs -a staxis-cua | grep cua_posture
+```
+
+You should see one line per machine showing `policyMode=enforce`, `signingMode=enforce`, `dnsPreflight=true`. Then trigger one onboarding (re-run for an existing PMS works) and confirm it completes normally. Confirm an `app_events` row landed:
+
+```sql
+select * from app_events where event_type = 'pms_onboarding_started' order by ts desc limit 5;
+```
+
+For admin-driven regenerations:
+
+```sql
+select * from admin_audit_log where action = 'cua.recipe.regenerate' order by ts desc limit 5;
+```
+
+### B6. Rollback (if onboarding/pulls start failing after B4)
+
+**Symptom:** onboarding jobs or pulls failing with "recipe verification refused" or policy-refusal errors.
+
+**Quick rollback** — `fly secrets` overrides `[env]`, so this flips runtime back to observe-mode without editing fly.toml:
+
+```bash
+fly secrets set \
+  CUA_POLICY_ENFORCE=warn \
+  RECIPE_SIGNING_ENFORCE=warn \
+  CUA_DNS_PREFLIGHT=false \
+  -a staxis-cua
+fly apps restart staxis-cua
+```
+
+Once the worker is healthy, diagnose:
+
+- Refusal logs are in `fly logs -a staxis-cua | grep policy_refusal` (policy) and `recipe_signing_mismatch` (signing).
+- For recipe-signing failures: re-run `scripts/backfill-recipe-signatures.ts` and check the `pms_recipes` query in B2 again.
+
+When the root cause is fixed, drop the secrets so `[env]` takes effect again:
+
+```bash
+fly secrets unset CUA_POLICY_ENFORCE RECIPE_SIGNING_ENFORCE CUA_DNS_PREFLIGHT -a staxis-cua
+fly apps restart staxis-cua
+```
+
+**Prevention:** the startup posture log (`cua_posture` event in Fly logs after every deploy) makes silent secret-shadowing visible at deploy time. Always grep for it after a CUA deploy.
+
+---
+
 ## Meta: how to add a new failure mode to this doc
 
 Every time something breaks and takes more than 30 min to fix, come back and add a section here with Symptom / Diagnosis / Fix / Verify / Prevention. This file only pays for itself if we update it.

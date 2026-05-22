@@ -26,6 +26,53 @@ import { env } from '../env.js';
 
 const dnsLookup = promisify(dns.lookup);
 
+/** Marker thrown by dnsLookupWithTimeout when the lookup races past its
+ *  budget. Plain Error with a sentinel name so safeGoto's catch can
+ *  distinguish "DNS hung" from "DNS resolved to junk" and log the right
+ *  event name without coupling to the message string. */
+class DnsPreflightTimeoutError extends Error {
+  constructor(hostname: string, budgetMs: number) {
+    super(`DNS preflight for "${hostname}" exceeded ${budgetMs}ms`);
+    this.name = 'DnsPreflightTimeoutError';
+  }
+}
+
+export function isDnsTimeout(err: unknown): boolean {
+  return err instanceof DnsPreflightTimeoutError;
+}
+
+/** Wrap dns.lookup in a Promise.race against a setTimeout. Without this,
+ *  a flaky resolver can hang the worker for the full default DNS retry
+ *  window (often 30+ seconds, OS-dependent) before any other code runs.
+ *  Playwright's own 30s navigation timeout is downstream of this await
+ *  and only starts once safeGoto resumes. */
+async function dnsLookupWithTimeout(
+  hostname: string,
+  budgetMs: number,
+  rawUrl: string,
+): Promise<{ address: string; family: number }> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new DnsPreflightTimeoutError(hostname, budgetMs)), budgetMs);
+    // unref so the timer doesn't keep the process alive on shutdown.
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([dnsLookup(hostname, { all: false }), timeout]);
+  } catch (err) {
+    // Annotate non-timeout errors with the URL for logs without leaking
+    // the credentials any URL might (URLs are query-string-redacted by
+    // sentry beforeSend, and we only log first 120 chars in safeGoto's
+    // catch). No-op for the timeout marker (message is fine as-is).
+    if (!(err instanceof DnsPreflightTimeoutError)) {
+      (err as Error).message = `dns.lookup("${hostname}") for ${rawUrl.slice(0, 80)}: ${(err as Error).message}`;
+    }
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /** Multi-part public suffixes — if the registrable domain check has to
  *  trim back further than 2 labels to avoid lumping different sites in
  *  the same ccTLD bucket. Ported from browser-tool.ts (single source of
@@ -207,7 +254,7 @@ export async function safeGoto(
   if (env.CUA_DNS_PREFLIGHT === 'true') {
     try {
       const parsed = new URL(url);
-      const lookup = await dnsLookup(parsed.hostname, { all: false });
+      const lookup = await dnsLookupWithTimeout(parsed.hostname, env.CUA_DNS_PREFLIGHT_TIMEOUT_MS, url);
       if (isPrivateOrLocalHost(lookup.address)) {
         throw new UnsafeNavigationError(
           `Refused: ${parsed.hostname} resolves to private IP ${lookup.address}: ${url.slice(0, 120)}`,
@@ -217,13 +264,15 @@ export async function safeGoto(
       }
     } catch (err) {
       if (err instanceof UnsafeNavigationError) throw err;
-      // dns.lookup can throw ENOTFOUND / ECONNREFUSED — we don't want
-      // DNS noise to brick a legitimate navigation. Log via stderr and
-      // proceed; safeGoto's existing string-check + Playwright's own
-      // resolve still apply.
+      // dns.lookup can throw ENOTFOUND / ECONNREFUSED OR the wrapper
+      // can throw a timeout marker — we don't want DNS noise to brick
+      // a legitimate navigation. Log via stderr and proceed;
+      // safeGoto's existing string-check + Playwright's own resolve
+      // still apply.
+      const evt = isDnsTimeout(err) ? 'cua_dns_preflight_timeout' : 'cua_dns_preflight_lookup_failed';
       process.stderr.write(JSON.stringify({
         level: 'warn',
-        evt: 'cua_dns_preflight_lookup_failed',
+        evt,
         url: url.slice(0, 120),
         error: (err as Error).message,
       }) + '\n');

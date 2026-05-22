@@ -22,7 +22,7 @@ import 'dotenv/config';
 // IMPORTANT: initSentry must be called before any other module loads
 // so the global error handler is in place when imports/initialization
 // throw. ./sentry.js is the only file that can be imported before this.
-import { initSentry, flushSentry } from './sentry.js';
+import { initSentry, flushSentry, withJobScope } from './sentry.js';
 const sentryReady = initSentry();
 
 import { supabase, verifyConnection } from './supabase.js';
@@ -121,17 +121,25 @@ async function pollLoop(): Promise<void> {
       if (job) {
         inFlightJobId = job.id;
         log.info('claimed job', { jobId: job.id, workerId: WORKER_ID });
-        try {
-          await runJob(job.id, WORKER_ID);
-        } catch (err) {
-          // runJob owns marking the job 'failed' on exception. This catch
-          // is the absolute backstop — if the job-runner itself crashed,
-          // we still want the worker process to keep polling.
-          log.error('runJob threw — should have been caught inside', {
-            jobId: job.id,
-            err: (err as Error).message,
-          });
-        }
+        // Wrap in a Sentry scope so unhandled errors inside the job body
+        // (Playwright crashes, dangling rejections, anything raised by a
+        // deep helper that doesn't pass `ctx` to captureException) still
+        // carry the job_id and worker_id tags in the Sentry dashboard.
+        // property.id and pms.type stay on explicit `captureException(err, ctx)`
+        // call sites — those have the data; the scope here is the floor.
+        await withJobScope({ jobId: job.id, workerId: WORKER_ID }, async () => {
+          try {
+            await runJob(job.id, WORKER_ID);
+          } catch (err) {
+            // runJob owns marking the job 'failed' on exception. This catch
+            // is the absolute backstop — if the job-runner itself crashed,
+            // we still want the worker process to keep polling.
+            log.error('runJob threw — should have been caught inside', {
+              jobId: job.id,
+              err: (err as Error).message,
+            });
+          }
+        });
         inFlightJobId = null;
       } else {
         // No onboarding work — try the steady-state pull queue.
@@ -139,14 +147,16 @@ async function pollLoop(): Promise<void> {
         if (pullJob) {
           inFlightJobId = pullJob.id;
           log.info('claimed pull job', { jobId: pullJob.id, workerId: WORKER_ID });
-          try {
-            await runPullJob(pullJob.id, WORKER_ID);
-          } catch (err) {
-            log.error('runPullJob threw — should have been caught inside', {
-              jobId: pullJob.id,
-              err: (err as Error).message,
-            });
-          }
+          await withJobScope({ jobId: pullJob.id, workerId: WORKER_ID }, async () => {
+            try {
+              await runPullJob(pullJob.id, WORKER_ID);
+            } catch (err) {
+              log.error('runPullJob threw — should have been caught inside', {
+                jobId: pullJob.id,
+                err: (err as Error).message,
+              });
+            }
+          });
           inFlightJobId = null;
         }
       }
@@ -211,6 +221,33 @@ function setupSignalHandlers(): void {
 async function main(): Promise<void> {
   setupSignalHandlers();
   log.info('worker startup', { sentryReady, workerId: WORKER_ID });
+
+  // Single-line posture confirmation — operators grep `cua_posture` in
+  // Fly logs after every deploy to confirm what enforce-mode the worker
+  // actually resolved to (fly.toml [env] vs `fly secrets` precedence is
+  // notoriously easy to get wrong — secrets win).
+  log.info('cua_posture', {
+    policyMode: env.CUA_POLICY_ENFORCE,
+    signingMode: env.RECIPE_SIGNING_ENFORCE,
+    dnsPreflight: env.CUA_DNS_PREFLIGHT,
+    autoScreenshot: env.CUA_AUTO_SCREENSHOT,
+    signingKeyPresent: !!env.RECIPE_SIGNING_KEY,
+    signingKeyPreviousPresent: !!env.RECIPE_SIGNING_KEY_PREVIOUS,
+  });
+
+  // Fail-fast invariant — refuse to start enforce-mode without a key.
+  // Otherwise every onboarding/pull job would refuse to launch (verify
+  // reports `no_key_configured` → enforce → refuse) and the misconfig
+  // would be silent and hotel-impacting. Better to crash loudly here.
+  if (env.RECIPE_SIGNING_ENFORCE === 'enforce' && !env.RECIPE_SIGNING_KEY) {
+    log.error('startup_invariant_failed', {
+      err: new Error('RECIPE_SIGNING_ENFORCE=enforce but RECIPE_SIGNING_KEY is unset'),
+      reason: 'recipe_signing_enforce_without_key',
+    });
+    await flushSentry(2000);
+    process.exit(1);
+  }
+
   const conn = await verifyConnection();
   if (!conn.ok) {
     log.error('supabase connection failed at startup', { err: new Error(conn.error) });

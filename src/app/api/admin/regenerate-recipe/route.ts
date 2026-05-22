@@ -30,6 +30,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid, validateString } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
+import { writeAudit } from '@/lib/audit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -110,6 +111,25 @@ export async function POST(req: NextRequest) {
       { requestId, status: 500, code: ApiErrorCode.InternalError },
     );
   }
+
+  // Admin audit trail. writeAudit is best-effort (try/catch + console.warn
+  // on failure inside the helper) so a Supabase blip never breaks the
+  // admin's regenerate request. Action name matches the example given in
+  // admin_audit_log.sql ('recipe.regenerate' → namespaced 'cua.recipe.regenerate'
+  // because we want CUA-specific events to be filterable as one bucket).
+  await writeAudit({
+    action: 'cua.recipe.regenerate',
+    actorUserId: auth.userId,
+    actorEmail: auth.email ?? undefined,
+    targetType: 'cua_onboarding_job',
+    targetId: job.id as string,
+    hotelId: pidV.value!,
+    metadata: {
+      pms_type: creds.pms_type,
+      reason: reasonV.value ?? null,
+      request_id: requestId,
+    },
+  });
 
   return ok({ jobId: job.id, pmsType: creds.pms_type }, { requestId, status: 202 });
 }

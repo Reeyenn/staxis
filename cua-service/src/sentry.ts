@@ -214,6 +214,57 @@ export function captureMessage(msg: string, level: 'info' | 'warning' | 'error' 
 }
 
 /**
+ * Wrap a job body in a Sentry scope tagged with job/property/worker IDs.
+ * Any captureException fired by helpers DEEP inside the callback inherits
+ * the tags automatically — no need to thread context through every layer.
+ *
+ * Why this exists (added 2026-05-22 hardening pass): captureException's
+ * `extra`+`tags` glue only fires when a caller remembers to pass `ctx`.
+ * Playwright crashes, dangling promise rejections, and uncaughtExceptions
+ * thrown from inside the worker's job body never had a ctx to attach,
+ * so they landed in Sentry without `cua.job_id` / `property.id` tags —
+ * undebuggable in the dashboard. Setting the scope at job-start fixes
+ * that without weakening the explicit `captureException(err, ctx)`
+ * pattern (explicit tags still win for keys they set, scope tags fill in
+ * the rest).
+ *
+ * v10 of @sentry/node uses AsyncLocalStorage under the hood, so the
+ * scope propagates correctly through awaits inside fn. Concurrency=1
+ * per worker, so cross-job leakage isn't a concern either way.
+ */
+export interface JobScopeContext {
+  jobId?: string;
+  propertyId?: string;
+  propertyName?: string;
+  pmsType?: string;
+  workerId?: string;
+}
+
+export async function withJobScope<T>(
+  ctx: JobScopeContext,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (!initialized) return fn();
+  return Sentry.withScope(async (scope) => {
+    const tags = buildPropertyTags({
+      job_id: ctx.jobId,
+      property_id: ctx.propertyId,
+      property_name: ctx.propertyName,
+    });
+    for (const [k, v] of Object.entries(tags)) scope.setTag(k, v);
+    if (ctx.pmsType) {
+      const cleaned = cleanTagValue(ctx.pmsType);
+      if (cleaned) scope.setTag('pms.type', cleaned);
+    }
+    if (ctx.workerId) {
+      const cleaned = cleanTagValue(ctx.workerId);
+      if (cleaned) scope.setTag('worker.id', cleaned);
+    }
+    return await fn();
+  });
+}
+
+/**
  * Flush pending events before process exit. Sentry's transport is async
  * so unsent events can vanish on crash. Call this from the SIGTERM
  * handler with a short timeout so deploys don't hang on a bad network.

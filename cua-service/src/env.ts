@@ -65,6 +65,14 @@ const Schema = z.object({
   // rollout because dns.lookup adds latency + can flake on slow DNS;
   // flip to 'true' once we've measured the impact.
   CUA_DNS_PREFLIGHT: z.enum(['true', 'false']).default('false'),
+  // Hard cap on the preflight lookup itself. Without this, a flaky
+  // resolver can hang dns.lookup() indefinitely — Playwright's own
+  // 30s navigation timeout only starts AFTER safeGoto's awaits return.
+  // The lookup races against this timer; on timeout we log + proceed
+  // (treat the preflight as best-effort, same as the existing ENOTFOUND
+  // fallback). 2s is comfortably above normal DNS roundtrip; tune via
+  // env if a region's resolver is consistently slower.
+  CUA_DNS_PREFLIGHT_TIMEOUT_MS: z.coerce.number().int().positive().default(2_000),
 
   // ── Platform auto-injected (read-only metadata) ───────
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
