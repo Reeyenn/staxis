@@ -46,6 +46,7 @@ import { errToString } from '@/lib/utils';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { log } from '@/lib/log';
 import { env } from '@/lib/env';
+import { captureException } from '@/lib/sentry';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -210,7 +211,16 @@ async function mergeStatus(key: string, patch: Record<string, unknown>): Promise
 
 // ─── Handler ─────────────────────────────────────────────────────────────
 
-async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCondition | 'ok'; detail: string }> {
+async function runHealthCheck(): Promise<{
+  alerted: boolean;
+  condition: AlertCondition | 'ok';
+  detail: string;
+  // Comms-voice audit P0 (2026-05-22): tracking SMS attempt + failure so the
+  // GET wrapper can flip `ok` to false when we tried and failed. `smsError`
+  // is null on success/skip; non-null only when sendSms threw.
+  smsError?: string | null;
+  smsAttempted?: boolean;
+}> {
   // Preflight the service_role key. If this throws, the catch in GET()
   // returns the specific error message to GitHub Actions — which then emails
   // Reeyen the exact fix instead of a generic "workflow failed". Memoized,
@@ -301,25 +311,50 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
       errorMessage,
     };
     const alertPhone = env.OPS_ALERT_PHONE;
+    let recoverySmsSent = false;
+    let recoverySmsError: string | null = null;
     if (alertPhone) {
       try {
         await sendSms(
           alertPhone,
           `Staxis scraper: recovered. PMS numbers are flowing again${ctx.pulledAtStr ? ` (last pull ${ctx.pulledAtStr})` : ''}.`
         );
+        recoverySmsSent = true;
       } catch (err) {
+        recoverySmsError = errToString(err);
         log.error('[scraper-health] recovery SMS failed', { err });
+        // Comms-voice audit P0 (2026-05-22): a failed recovery SMS used to
+        // log and continue — no Sentry, no upstream signal. Fire one Sentry
+        // event so on-call can see it in real time without waiting for the
+        // next doctor cron tick to read alertSuppressedReason.
+        captureException(err, {
+          subsystem: 'scraper-health',
+          failure_mode: 'recovery_sms_failed',
+        });
       }
     }
     await mergeStatus('alertState', {
       resolvedAt: new Date().toISOString(),
       lastCheckAt: new Date().toISOString(),
       // Recovery clears any pending "tried but couldn't deliver" markers.
-      alertSuppressedReason: null,
-      alertSuppressedAt: null,
-      lastSmsError: null,
+      // If the recovery SMS itself failed, we still clear because the new
+      // alertSuppressedReason on the NEXT alert path will pick it up — but
+      // we keep the smsError visible in the route response.
+      alertSuppressedReason: recoverySmsError ? 'recovery_sms_send_failed' : null,
+      alertSuppressedAt: recoverySmsError ? new Date().toISOString() : null,
+      lastSmsError: recoverySmsError,
     });
-    return { alerted: true, condition: 'ok', detail: 'recovered from ' + prevCondition };
+    return {
+      // `alerted` reflects "did the SMS for this run actually go out?". We
+      // used to hardcode `true` here, which lied to the GET wrapper. Now
+      // it's the truth so the cron monitor can detect a silent recovery
+      // failure.
+      alerted: recoverySmsSent,
+      condition: 'ok',
+      detail: 'recovered from ' + prevCondition,
+      smsError: recoverySmsError,
+      smsAttempted: !!alertPhone,
+    };
   }
 
   if (!condition) {
@@ -380,6 +415,15 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
       smsError = errToString(err);
       log.error('[scraper-health] SMS send failed', { err });
       suppressedReason = 'sms_send_failed';
+      // Comms-voice audit P0 (2026-05-22): the alert SMS failing was
+      // previously only visible via alertSuppressedReason which doctor
+      // reads on its hourly tick. That's too slow when the scraper itself
+      // is down. Fire Sentry now.
+      captureException(err, {
+        subsystem: 'scraper-health',
+        failure_mode: 'alert_sms_failed',
+        condition,
+      });
     }
   } else {
     console.warn('[scraper-health] MANAGER_PHONE env var not set — alert would fire:', message);
@@ -405,7 +449,13 @@ async function runHealthCheck(): Promise<{ alerted: boolean; condition: AlertCon
     pendingCondition: null,
   });
 
-  return { alerted: smsSent, condition, detail: message };
+  return {
+    alerted: smsSent,
+    condition,
+    detail: message,
+    smsError,
+    smsAttempted: !!alertPhone,
+  };
 }
 
 export async function GET(req: NextRequest) {
@@ -418,7 +468,17 @@ export async function GET(req: NextRequest) {
   try {
     const result = await runHealthCheck();
     await writeCronHeartbeat('scraper-health');
-    return NextResponse.json({ ok: true, ...result });
+    // Comms-voice audit P0 (2026-05-22): flip `ok` to false when we tried
+    // to send an SMS and Twilio errored. The GitHub Actions workflow at
+    // .github/workflows/scraper-health-cron.yml greps for `"ok":true` and
+    // fails the workflow step otherwise — that's how on-call gets paged.
+    //
+    // We deliberately keep HTTP 200 here. The GH workflow's curl uses
+    // `--retry 2 --retry-delay 5 --retry-connrefused` and `--fail-with-body`,
+    // so returning 502 would trigger up to 3 more cron hits inside ~15s and
+    // potentially send 3 alert SMSes. The body-grep is the right signal.
+    const smsFailed = !!(result.smsAttempted && result.smsError);
+    return NextResponse.json({ ok: !smsFailed, ...result });
   } catch (err) {
     const msg = errToString(err);
     log.error('[scraper-health] handler threw', { err });

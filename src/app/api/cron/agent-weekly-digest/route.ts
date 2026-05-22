@@ -19,10 +19,10 @@
  *   New users: 4 · Long convos summarized: 2
  */
 
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireCronSecret } from '@/lib/api-auth';
-import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { ok, err, ApiErrorCode, buildOkBody } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { sendSms } from '@/lib/sms';
@@ -148,6 +148,22 @@ export async function GET(req: NextRequest) {
       },
     });
 
+    // Comms-voice audit P0 (2026-05-22): if the phone was configured (so
+    // we DID attempt SMS) and the send failed, flip the response envelope
+    // so cron monitors / Sentry see this run as failed. The digest
+    // computation itself succeeded, but the user-visible "did the SMS land
+    // on Reeyen's phone" answer is no. Suppress when phone is unset/invalid
+    // (deliberate no-op, not a failure).
+    const phoneAttempted = !!phone && E164.test(phone);
+    const smsAttemptedAndFailed = phoneAttempted && !digest.smsSent;
+    if (smsAttemptedAndFailed) {
+      const body = {
+        ...buildOkBody(digest, requestId),
+        ok: false as const,
+        error: digest.smsSkippedReason ?? 'sms_send_failed',
+      };
+      return NextResponse.json(body, { status: 200 });
+    }
     return ok(digest, { requestId });
   } catch (e) {
     return err(`weekly digest failed: ${e instanceof Error ? e.message : String(e)}`, {

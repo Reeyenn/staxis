@@ -100,7 +100,15 @@ export type RateLimitEndpoint =
   // scraper /scrape/hk-center, which talks to Choice Advantage. Two
   // open browser tabs + a power-user clicking refresh shouldn't burn
   // through the CA session quota. Keyed on (userId, propertyId).
-  | 'refresh-from-pms';
+  | 'refresh-from-pms'
+  // Comms-voice audit P4 (2026-05-22) — /api/agent/speak walkthrough
+  // narration. ElevenLabs Turbo v2.5 costs ~$0.10/1k chars; a runaway
+  // client or compromised session can burn the $5 daily budget cap in
+  // ~50 calls of 1k chars each, but a request-count cap kicks in long
+  // before that. Keyed on accountId (one bucket per user across
+  // properties). MUST also be added to BILLING_IMPACTING_ENDPOINTS below
+  // so an RPC failure fails closed.
+  | 'agent-tts-speak';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -197,6 +205,12 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // "click roughly every 2 minutes for an hour" which is enough for any
   // legitimate troubleshooting and stops a runaway script dead.
   'refresh-from-pms':            30,
+  // Comms-voice audit P4 (2026-05-22) — TTS narration cap per user/hour.
+  // Real walkthroughs play 5–15 narrations; 30/hr is "do the full
+  // walkthrough twice with retries" headroom. Catches runaway clients
+  // long before the $5 daily budget cap trips. Easy to bump if a real
+  // user hits it.
+  'agent-tts-speak':             30,
 };
 
 /**
@@ -274,6 +288,11 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'test-sms-flow',
   // Resend transactional email (per-recipient charge).
   'email-transactional',
+  // Comms-voice audit P4 (2026-05-22) — ElevenLabs TTS billed per char.
+  // MUST be in this set so an RPC failure fails CLOSED (denies the call).
+  // Without this, a Supabase blip would let a runaway client bypass the
+  // cap until the daily budget tripped.
+  'agent-tts-speak',
 ]);
 
 /**

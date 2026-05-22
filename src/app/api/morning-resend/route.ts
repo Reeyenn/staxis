@@ -26,6 +26,7 @@ import { checkIdempotency, recordIdempotency } from '@/lib/idempotency';
 import { smartAssignRooms } from '@/lib/room-assignment';
 import { buildOkBody, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
+import { captureException } from '@/lib/sentry';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -267,6 +268,7 @@ export async function POST(req: NextRequest) {
     // size. Replaces the prior per-rejection `for (const r) log.error`,
     // which produced N log lines for a wide-fan-out failure.
     const rejections = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    const firstFewRejectionReasons = rejections.slice(0, 3).map(r => errToString(r.reason));
     if (smsFailures.length > 0 || rejections.length > 0) {
       log.error('[morning-resend] partial failures', {
         requestId,
@@ -277,6 +279,28 @@ export async function POST(req: NextRequest) {
         rejectionCount: rejections.length,
         rejectionReasons: rejections.map(r => errToString(r.reason)),
       });
+      // One Sentry event per cron run, NOT one-per-failure — a fleet-wide
+      // Twilio outage with 30 housekeepers must not fire 30 events.
+      // Comms-voice audit P0 (2026-05-22).
+      //
+      // morning-resend is single-shot: this route writes room assignments
+      // BEFORE attempting SMS, so a re-run sees `oldRooms === newRooms` and
+      // the `if (!changed) return;` gate at the per-HK fan-out skips the
+      // resend. We keep HTTP 200 and surface failures via Sentry + response
+      // body for the cron monitor to alert on. Manual recovery is via the
+      // Schedule tab.
+      captureException(
+        new Error(`morning-resend partial failures: ${smsFailures.length} SMS failed, ${rejections.length} rejections`),
+        {
+          subsystem: 'morning-resend',
+          failure_mode: 'partial_sms_fanout_failure',
+          requestId,
+          pid,
+          smsFailureCount: String(smsFailures.length),
+          rejectionCount: String(rejections.length),
+          firstFewRejectionReasons: firstFewRejectionReasons.join(' | '),
+        },
+      );
     }
 
     // Mirror the new assignments into schedule_assignments so the UI stays in
@@ -311,10 +335,18 @@ export async function POST(req: NextRequest) {
     // Build the envelope before recording so cache hits return the same
     // shape as fresh responses (see notify-housekeepers-sms for the same
     // pattern + rationale).
+    //
+    // Comms-voice audit P0 (2026-05-22): include smsFailureCount and
+    // smsFailureStaffIds in the response so external cron monitors (e.g.
+    // GitHub Actions, manual cron callers) can detect partial fan-out
+    // failures without scraping logs. We deliberately keep HTTP 200 here —
+    // see captureException above for why this route can't safely 5xx.
     const envelope = buildOkBody({
       message: `Morning resend complete. ${updatedCount} of ${numHKs} HKs received updated room lists.`,
       updated: updatedCount,
       total: numHKs,
+      smsFailureCount: smsFailures.length,
+      smsFailureStaffIds: smsFailures,
     }, requestId);
 
     if (idem.kind === 'first') {
