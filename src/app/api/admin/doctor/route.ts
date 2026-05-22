@@ -2155,12 +2155,24 @@ async function checkAppliedMigrations(): Promise<Omit<Check, 'name' | 'durationM
       return { status: 'warn', detail: `applied_migrations read failed: ${errToString(error)}` };
     }
     const applied = new Set((data ?? []).map(r => String((r as { version: string }).version)));
-    const missing = EXPECTED_MIGRATIONS.filter(v => !applied.has(v));
+    // Migrations intentionally pending an apply window. Each entry MUST
+    // have a target-apply condition documented here so this allowlist
+    // doesn't rot into a forever-pass. Mirror the entries in
+    // scripts/check-migrations-applied.ts.
+    //
+    // - 0162: Phase 2B helper-tighten — flips mfa_verified_or_grace from
+    //   coalesce-true (grace) to coalesce-false (deny). Scheduled to
+    //   apply 24h after Phase 2B's RLS sweep (2026-05-22 07:12 UTC) so
+    //   legacy trusted users have one full token-refresh cycle to pick
+    //   up mfa_verified=true. Apply window: 2026-05-23 07:12 UTC onwards.
+    const PENDING_INTENTIONALLY: ReadonlySet<string> = new Set(['0162']);
+    const missing = EXPECTED_MIGRATIONS.filter(v =>
+      !applied.has(v) && !PENDING_INTENTIONALLY.has(v));
     const unexpected = [...applied].filter(v => !EXPECTED_MIGRATIONS.includes(v));
     if (missing.length > 0) {
       return {
         status: 'fail',
-        detail: `${missing.length} migration(s) missing from live DB: ${missing.join(', ')}. Code expects all ${EXPECTED_MIGRATIONS.length} to be applied.`,
+        detail: `${missing.length} migration(s) missing from live DB: ${missing.join(', ')}. Code expects all ${EXPECTED_MIGRATIONS.length} to be applied (excluding ${PENDING_INTENTIONALLY.size} intentionally-pending).`,
         fix: `Apply ${missing.map(v => `supabase/migrations/${v}_*.sql`).join(', ')} via the Supabase SQL editor. Each migration is idempotent.`,
       };
     }

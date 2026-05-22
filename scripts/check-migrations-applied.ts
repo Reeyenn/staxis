@@ -59,7 +59,21 @@ async function main() {
     process.exit(2);
   }
 
-  const expectedVersions = files.map((f) => f.slice(0, 4));
+  // Allowlist for migrations intentionally pending an apply window. Each
+  // entry must include a target-apply date so the allowlist doesn't rot
+  // into a forever-pass. If you're adding here, also add a runbook entry.
+  //
+  // - 0162: the Phase 2B helper-tighten that flips mfa_verified_or_grace
+  //   from coalesce-true (grace) to coalesce-false (deny). Scheduled to
+  //   apply 24h after Phase 2B's RLS sweep landed (2026-05-22 07:12 UTC)
+  //   to give existing trusted users one full token-refresh cycle to
+  //   pick up the new mfa_verified=true claim. Apply window:
+  //   2026-05-23 07:12 UTC onwards.
+  const PENDING_INTENTIONALLY: ReadonlySet<string> = new Set(['0162']);
+
+  const expectedVersions = files
+    .map((f) => f.slice(0, 4))
+    .filter((v) => !PENDING_INTENTIONALLY.has(v));
 
   const pg = new Client({
     host,

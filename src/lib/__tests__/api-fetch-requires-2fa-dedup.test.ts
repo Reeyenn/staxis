@@ -87,7 +87,6 @@ beforeEach(async () => {
     data: { session: { access_token: 'tok', expires_at: Math.floor(Date.now() / 1000) + 3600 } },
     error: null,
   });
-  // @ts-expect-error monkey-patch
   supabase.auth.signOut = async () => {
     signOutCalls += 1;
     return { error: null };
