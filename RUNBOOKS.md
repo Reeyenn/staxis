@@ -1429,6 +1429,70 @@ Three private buckets exist today: `invoices` and `counts` (added 0028), `mainte
 | `counts` | 0028 | false | per-property (storage.foldername) | server-side via supabaseAdmin |
 | `maintenance-photos` | 0131 → 0144 | false | per-property (storage.foldername) | **browser via createSignedUrl** — RLS is the boundary |
 
+### Public-page rate limit tuning (audit 2026-05-22)
+
+Public-page POST endpoints (`/api/housekeeper/room-action`, `/api/housekeeper/save-language`, `/api/housekeeper/exchange-code`, `/api/housekeeper/log-legacy-token`) are rate-limited by `(pid, staffId)` (or by IP for `exchange-code` and `log-legacy-token`). The (pid, staffId) tuple is the capability token housekeepers receive via SMS — if it leaks (browser history, screenshots, support tickets, in-app browser referers), an attacker can hammer the endpoint up to the rate-limit cap.
+
+**Today's caps** (from `src/lib/api-ratelimit.ts`, see `HOURLY_CAPS` map):
+- `housekeeper-room-action`: 200/hr per (pid, staffId)
+- `housekeeper-save-language`: 60/hr per (pid, staffId)
+- `housekeeper-exchange-code`: 30/hr per IP
+- `housekeeper-log-legacy-token`: 30/hr per IP
+
+**The question:** is `housekeeper-room-action: 200/hr` too loose (lets an attacker mark 200 rooms "clean" per hour) or too tight (blocks a high-velocity housekeeper)? Don't guess — measure.
+
+**Paste-ready SQL** (run in the Supabase SQL editor when ready to tune):
+
+```sql
+-- Per-housekeeper hourly cleaning_events count over the past 14 days.
+-- Use this to derive p99 of legitimate housekeeper action rates. Set
+-- housekeeper-room-action cap to p99 × 1.5 (or higher if p99 is very low).
+with hourly as (
+  select staff_id, property_id,
+         date_trunc('hour', completed_at) as hr,
+         count(*)::int as actions
+  from cleaning_events
+  where completed_at >= now() - interval '14 days'
+    and status != 'discarded'
+  group by 1, 2, 3
+)
+select
+  percentile_cont(0.50) within group (order by actions) as p50,
+  percentile_cont(0.95) within group (order by actions) as p95,
+  percentile_cont(0.99) within group (order by actions) as p99,
+  max(actions) as max,
+  count(*) as samples
+from hourly;
+```
+
+**Decision matrix** (after running the query):
+- If `p99 < 40` and `max < 60` → cap of 60 is safe; lowering from 200 reduces the data-poisoning ceiling 3.3×. Edit `src/lib/api-ratelimit.ts` `HOURLY_CAPS['housekeeper-room-action']` from 200 to 60.
+- If `p99` in 40-80 → cap of 120 is a reasonable middle ground.
+- If `p99 > 80` or `max > 120` → leave at 200. Re-evaluate when (a) hotel count grows past 50, OR (b) the first abuse incident is reported.
+
+**How to change the cap once data justifies it:**
+1. Edit the value in `src/lib/api-ratelimit.ts` (single line).
+2. Verify locally: `npm run lint && npm test`.
+3. Commit + push. Vercel deploys in ~3 minutes.
+4. Monitor `app_events` for `rate_limit_exceeded` rows in the following 24h. If legitimate housekeepers start hitting the limit, raise back.
+
+**Why this isn't code-changed today:** picking 60 (or any number) without field data is voodoo. The cleaning_events table has all the signal needed; one SQL query in 30 seconds gives a defensible cap. Until then, 200 is the conservative choice (won't break any housekeeper).
+
+### Public-page POST CSRF/abuse threat model — what's already protected
+
+Per the audit, four state-changing public POSTs ranked by blast radius:
+
+| Endpoint | Severity | Existing protections |
+|---|---|---|
+| `/api/housekeeper/exchange-code` | 🔴 CRITICAL (auth mint) | Single-use CAS + 30/hr/IP rate limit + audit log |
+| `/api/housekeeper/room-action` | 🔴 HIGH (data poisoning) | 200/hr/(pid,staffId) + staff/room assignment check + cleaning_events audit |
+| `/api/housekeeper/save-language` | 🟡 MEDIUM (workflow disruption) | 60/hr/(pid,staffId) |
+| `/api/housekeeper/log-legacy-token` | 🟢 LOW (telemetry only) | 30/hr/IP + audit log |
+
+**Origin/Referer checks deferred.** At today's 4-hotel scale, 10-20% of housekeepers use in-app mobile browsers (Slack WebView, iOS Mail tap-through) that strip Origin/Referer. Adding the check would lock those housekeepers out for marginal security gain. Revisit when hotel count grows past 50 OR when an actual abuse incident emerges.
+
+**HMAC-signed capability tokens** deferred for the same reason — significant operational change for a future-threat that isn't urgent today.
+
 ### `accounts.property_access` mutation surface inventory
 
 `accounts.property_access` is the array that grants a user (`data_user_id`) read/write access to specific hotels. Mutating this is the most blast-radius operation in the codebase — appending a UUID grants access to that hotel. The RLS policy `accounts_deny_writes` (migration 0017) prevents the browser from touching it; ALL writes go through `/api/auth/*` routes via `supabaseAdmin`. The exhaustive list of writers as of audit 2026-05-22:
