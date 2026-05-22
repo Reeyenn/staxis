@@ -8,12 +8,22 @@
 
 export const dynamic = 'force-dynamic';
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
+import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
+import {
+  subscribeToRooms,
+  subscribeToWorkOrders,
+  subscribeToHandoffLogs,
+  subscribeToDashboardNumbers,
+  type DashboardNumbers,
+} from '@/lib/db';
+import { useTodayStr } from '@/lib/use-today-str';
 import { useMonthData, METRICS, type MetricKey, type DayRow } from '@/lib/dashboard/use-month-data';
+import type { Room, WorkOrder, HandoffEntry } from '@/types';
 
 // ─── Palette + per-metric color maps (verbatim from design source) ────
 
@@ -215,7 +225,9 @@ function SpotlightChart({ days, scrub, setScrub, metric, width, height, todayIdx
 export default function DashboardPage() {
   const { user, loading: authLoading } = useAuth();
   const { activeProperty, activePropertyId, loading: propLoading } = useProperty();
+  const { lang } = useLang();
   const router = useRouter();
+  const today = useTodayStr();
 
   useEffect(() => {
     if (!authLoading && !propLoading && !user) router.replace('/signin');
@@ -239,11 +251,95 @@ export default function DashboardPage() {
 
   const monthLong = new Date().toLocaleDateString('en-US', { month: 'long' });
 
+  // ── Real-time ops counters (preserved from the prior dashboard so
+  // Reeyen has visibility of the live operational numbers while he
+  // iterates the chart card in Claude Design). ─────────────────────
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
+  const [handoffs, setHandoffs] = useState<HandoffEntry[]>([]);
+  const [dashboardNums, setDashboardNums] = useState<DashboardNumbers | null>(null);
+
+  useEffect(() => {
+    if (!user || !activePropertyId) return;
+    return subscribeToRooms(user.uid, activePropertyId, today, setRooms);
+  }, [user, activePropertyId, today]);
+  useEffect(() => {
+    if (!user || !activePropertyId) return;
+    return subscribeToWorkOrders(user.uid, activePropertyId, setWorkOrders);
+  }, [user, activePropertyId]);
+  useEffect(() => {
+    if (!user || !activePropertyId) return;
+    return subscribeToHandoffLogs(user.uid, activePropertyId, setHandoffs);
+  }, [user, activePropertyId]);
+  useEffect(() => subscribeToDashboardNumbers(setDashboardNums), []);
+
+  const openOrders   = workOrders.filter(o => o.status === 'open');
+  const urgentOrders = openOrders.filter(o => o.priority === 'urgent');
+  const cleanRooms   = rooms.filter(r => r.status === 'clean' || r.status === 'inspected').length;
+  const inProgress   = rooms.filter(r => r.status === 'in_progress').length;
+  const dirtyRooms   = rooms.filter(r => r.status === 'dirty').length;
+  const inHouse      = dashboardNums?.inHouse ?? 0;
+  const arrivals     = dashboardNums?.arrivals ?? 0;
+  const departures   = dashboardNums?.departures ?? 0;
+
+  const avgTurnover = useMemo(() => {
+    const toMs = (v: unknown): number | null => {
+      if (!v) return null;
+      const obj = v as { toDate?: () => Date };
+      if (typeof obj.toDate === 'function') return obj.toDate().getTime();
+      const d = new Date(v as string | number | Date);
+      return isNaN(d.getTime()) ? null : d.getTime();
+    };
+    const timed = rooms
+      .filter(r => r.startedAt && r.completedAt)
+      .map(r => {
+        const s = toMs(r.startedAt); const e = toMs(r.completedAt);
+        if (!s || !e) return 0;
+        return (e - s) / 60000;
+      })
+      .filter(mins => mins > 0 && mins < 480);
+    return timed.length > 0 ? Math.round(timed.reduce((a, b) => a + b, 0) / timed.length) : null;
+  }, [rooms]);
+
+  const briefingItems = useMemo(() => {
+    type Item = { id: string; time: Date; tone: 'sage' | 'caramel' | 'warm'; text: string };
+    const items: Item[] = [];
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const safeDate = (raw: unknown): Date | null => {
+      if (!raw) return null;
+      if (raw instanceof Date) return isNaN(raw.getTime()) ? null : raw;
+      if (typeof raw === 'object' && raw !== null && 'toDate' in raw &&
+          typeof (raw as { toDate?: unknown }).toDate === 'function') {
+        const d = (raw as { toDate: () => Date }).toDate();
+        return isNaN(d.getTime()) ? null : d;
+      }
+      if (typeof raw === 'string' || typeof raw === 'number') {
+        const d = new Date(raw);
+        return isNaN(d.getTime()) ? null : d;
+      }
+      return null;
+    };
+    handoffs.forEach(h => {
+      const d = safeDate(h.createdAt);
+      if (!d || d < cutoff) return;
+      items.push({ id: `h-${h.id}`, time: d, tone: 'sage', text: `${h.shiftType}: ${h.notes}` });
+    });
+    openOrders.forEach(o => {
+      const d = safeDate(o.createdAt);
+      if (!d) return;
+      const tone: 'warm' | 'caramel' = o.priority === 'urgent' ? 'warm' : 'caramel';
+      const where = /^\d{1,4}$/.test(o.location.trim()) ? `Rm ${o.location.trim()}` : o.location;
+      items.push({ id: `wo-${o.id}`, time: d, tone, text: `${where}: ${o.description}` });
+    });
+    return items.sort((a, b) => b.time.getTime() - a.time.getTime()).slice(0, 4);
+  }, [handoffs, openOrders]);
+
   if (authLoading || propLoading || !user || !activePropertyId) {
     return <AppLayout><div /></AppLayout>;
   }
 
   const dayDelta = todayIdx - scrub;
+  const locale = lang === 'es' ? 'es-MX' : 'en-US';
 
   return (
     <AppLayout>
@@ -412,6 +508,117 @@ export default function DashboardPage() {
               </p>
             </div>
           </div>
+
+          {/* ── Right now — live operational counters ──────────────── */}
+          <div style={{ marginTop: 28 }}>
+            <div style={{ ...LABEL, marginBottom: 12 }}>
+              {lang === 'es' ? 'Ahora mismo' : 'Right now'}
+            </div>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+              gap: 12,
+            }}>
+              {([
+                {
+                  label: lang === 'es' ? 'Huéspedes' : 'Guests',
+                  lines: [
+                    { k: lang === 'es' ? 'En casa'   : 'In-house',   v: inHouse },
+                    { k: lang === 'es' ? 'Llegadas'  : 'Arrivals',   v: arrivals },
+                    { k: lang === 'es' ? 'Salidas'   : 'Departures', v: departures },
+                  ],
+                },
+                {
+                  label: lang === 'es' ? 'Habitaciones' : 'Rooms',
+                  lines: [
+                    { k: lang === 'es' ? 'Limpias'  : 'Clean',       v: cleanRooms },
+                    { k: lang === 'es' ? 'Sucias'   : 'Dirty',       v: dirtyRooms },
+                    { k: lang === 'es' ? 'En curso' : 'In progress', v: inProgress },
+                  ],
+                },
+                {
+                  label: lang === 'es' ? 'Órdenes de trabajo' : 'Work orders',
+                  lines: [
+                    { k: lang === 'es' ? 'Abiertas' : 'Open',   v: openOrders.length },
+                    { k: lang === 'es' ? 'Urgentes' : 'Urgent', v: urgentOrders.length },
+                  ],
+                },
+                {
+                  label: lang === 'es' ? 'Tiempo promedio' : 'Avg turnover',
+                  lines: [
+                    { k: 'min', v: avgTurnover ?? '—' },
+                  ],
+                },
+              ] as { label: string; lines: { k: string; v: number | string }[] }[]).map(card => (
+                <div key={card.label} style={{
+                  background: 'rgba(255,255,255,0.7)',
+                  backdropFilter: 'blur(20px)',
+                  WebkitBackdropFilter: 'blur(20px)',
+                  border: '1px solid rgba(255,255,255,0.7)',
+                  borderRadius: 14, padding: '14px 16px',
+                  boxShadow: '0 1px 0 rgba(255,255,255,0.6) inset',
+                }}>
+                  <div style={LABEL}>{card.label}</div>
+                  <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {card.lines.map(line => (
+                      <div key={line.k} style={{
+                        display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
+                        fontFamily: FONT_SANS, fontSize: 13, color: C.ink2,
+                      }}>
+                        <span>{line.k}</span>
+                        <span style={{
+                          fontFamily: FONT_MONO, fontSize: 16, fontWeight: 600, color: C.ink,
+                          letterSpacing: '-0.01em',
+                        }}>{line.v}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Briefing — recent handoffs + open work orders */}
+            <div style={{
+              marginTop: 16,
+              background: 'rgba(255,255,255,0.7)',
+              backdropFilter: 'blur(20px)',
+              WebkitBackdropFilter: 'blur(20px)',
+              border: '1px solid rgba(255,255,255,0.7)',
+              borderRadius: 14, padding: '14px 18px',
+              boxShadow: '0 1px 0 rgba(255,255,255,0.6) inset',
+            }}>
+              <div style={LABEL}>{lang === 'es' ? 'Resumen' : 'Briefing'}</div>
+              {briefingItems.length === 0 ? (
+                <div style={{ marginTop: 10, fontSize: 13, color: C.ink3, fontStyle: 'italic' }}>
+                  {lang === 'es' ? 'Sin novedades en las últimas 24 horas.' : 'Nothing new in the last 24 hours.'}
+                </div>
+              ) : (
+                <ul style={{ listStyle: 'none', padding: 0, margin: '10px 0 0', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {briefingItems.map(item => {
+                    const dotColor = item.tone === 'warm' ? C.warm : item.tone === 'caramel' ? C.caramel : C.sage;
+                    return (
+                      <li key={item.id} style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+                        <span style={{
+                          width: 8, height: 8, borderRadius: '50%', background: dotColor,
+                          flexShrink: 0, marginTop: 2,
+                        }} />
+                        <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: C.ink, lineHeight: 1.45 }}>
+                          {item.text}
+                        </span>
+                        <span style={{
+                          marginLeft: 'auto', fontFamily: FONT_MONO, fontSize: 11, color: C.ink3,
+                          letterSpacing: '0.04em', flexShrink: 0,
+                        }}>
+                          {item.time.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' })}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          </div>
+
         </div>
       </div>
     </AppLayout>
