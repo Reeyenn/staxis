@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     # silently and made auto-rollback dead code.
     database_url: Optional[str] = None
 
+    # Sentry DSN for error monitoring. When unset, sentry_init.init_sentry()
+    # no-ops and ml-service continues with Railway-logs-only visibility (the
+    # pre-monitoring baseline). Set to "" (empty string) on Railway to kill-
+    # switch monitoring without a code change.
+    sentry_dsn: Optional[str] = None
+
     # Model training thresholds
     training_row_count_min: int = 200
     training_row_count_activation: int = 500

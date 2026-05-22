@@ -10,6 +10,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { supabase } from '../supabase';
+import { log } from '../log';
 
 export { supabase };
 
@@ -53,8 +54,14 @@ export function logErr(tag: string, err: unknown): void {
   } else {
     msg = String(err);
   }
-   
-  console.error(`[Supabase] ${tag}:`, msg);
+
+  // 2026-05-22 monitoring/logging/secrets hardening: route through log.error
+  // so Sentry sees realtime/db failures alongside route errors. Previously
+  // this went to console.error only, which Vercel ingested but Sentry never
+  // saw — making "the housekeeper page silently stopped updating" the kind
+  // of bug we only learned about from screenshots. log.error also handles
+  // the structured-fields shape so jq filters work in Vercel/Railway logs.
+  log.error(`[Supabase] ${tag}`, { msg });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -288,10 +295,32 @@ export function subscribeTable<T>(
   // trust + auth.signOut() correctly tears down realtime auth in lock-
   // step with the cookie clear. Don't add manual setAuth wiring here —
   // it would double-call and risk a stale-channel race during refresh.
+  // Subscribe status callback (2026-05-22 monitoring hardening): the
+  // previous version of this code did .subscribe() with no callback, so
+  // a CHANNEL_ERROR / TIMED_OUT was silent — operators only learned the
+  // realtime path was broken when a customer reported "the page froze."
+  // Log on CHANNEL_ERROR + TIMED_OUT so Sentry sees the failure; don't
+  // touch the SUBSCRIBED/CLOSED transitions (visibilitychange recovery
+  // already handles re-establishment, and logging CLOSED would flood on
+  // every backgrounded tab).
+  const onSubscribeStatus = (status: string, errArg?: Error) => {
+    if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+      log.error('[realtime] subscribe failed', {
+        channel: channelName,
+        table,
+        // `status` in LogFields is reserved for HTTP status (number) by
+        // the log.ts convention; rename to channelStatus so the structured
+        // field is unambiguous in jq filters.
+        channelStatus: status,
+        msg: errArg ? errArg.message : 'no error message',
+      });
+    }
+  };
+
   let channel = supabase
     .channel(channelName)
     .on('postgres_changes' as never, filterSpec, onChange as never)
-    .subscribe();
+    .subscribe(onSubscribeStatus);
 
   // ── Mobile Safari / phone-wake recovery ────────────────────────────────
   // Realtime over WebSockets dies silently when iOS Safari throttles a
@@ -319,7 +348,7 @@ export function subscribeTable<T>(
       channel = supabase
         .channel(channelName)
         .on('postgres_changes' as never, filterSpec, onChange as never)
-        .subscribe();
+        .subscribe(onSubscribeStatus);
     }
   };
 

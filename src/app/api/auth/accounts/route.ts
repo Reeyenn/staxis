@@ -129,7 +129,7 @@ export async function GET(req: NextRequest) {
     .order('created_at', { ascending: true });
 
   if (error) {
-    console.error('[accounts:GET] query failed', error);
+    log.error('[accounts:GET] query failed', { requestId, msg: errToString(error) });
     return err('Failed to load accounts', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
@@ -138,7 +138,7 @@ export async function GET(req: NextRequest) {
   const emailByUserId = new Map<string, string>();
   const { data: authPage, error: listErr } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
   if (listErr) {
-    console.error('[accounts:GET] auth listUsers failed', listErr);
+    log.error('[accounts:GET] auth listUsers failed', { requestId, msg: errToString(listErr) });
     // Don't fail the request — render with blank emails so the UI is still usable.
   } else {
     for (const u of authPage?.users ?? []) {
@@ -197,7 +197,7 @@ export async function POST(req: NextRequest) {
     .eq('username', normalizedUsername)
     .maybeSingle();
   if (exErr) {
-    console.error('[accounts:POST] duplicate check failed', exErr);
+    log.error('[accounts:POST] duplicate check failed', { requestId, msg: errToString(exErr) });
     return err('Failed to create account', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   if (existing) {
@@ -215,7 +215,7 @@ export async function POST(req: NextRequest) {
   });
 
   if (authErr || !authData.user) {
-    console.error('[accounts:POST] auth.admin.createUser failed', authErr);
+    log.error('[accounts:POST] auth.admin.createUser failed', { requestId, msg: errToString(authErr) });
     // 422 is what Supabase returns for weak-password/invalid-email; surface
     // the message so the settings UI can display it.
     return err(authErr?.message ?? 'Failed to create auth user', {
@@ -241,7 +241,11 @@ export async function POST(req: NextRequest) {
     .single();
 
   if (insErr || !inserted) {
-    console.error('[accounts:POST] accounts insert failed, rolling back auth user', errToString(insErr));
+    log.error('[accounts:POST] accounts insert failed, rolling back auth user', {
+      requestId,
+      msg: errToString(insErr),
+      authUserId: authData.user.id,
+    });
     // Roll back the auth user so we don't leak orphaned auth rows.
     // Don't silently swallow the rollback failure — if the rollback ALSO
     // fails we end up with a permanent zombie auth.users row that future
@@ -350,7 +354,7 @@ export async function PUT(req: NextRequest) {
       .update(updates)
       .eq('id', accountId);
     if (updErr) {
-      console.error('[accounts:PUT] accounts update failed', updErr);
+      log.error('[accounts:PUT] accounts update failed', { requestId, msg: errToString(updErr), accountId });
       return err('Failed to update account', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
   }
@@ -372,7 +376,7 @@ export async function PUT(req: NextRequest) {
       authUpdates,
     );
     if (authErr) {
-      console.error('[accounts:PUT] auth update failed', authErr);
+      log.error('[accounts:PUT] auth update failed', { requestId, msg: errToString(authErr), accountId });
       return err(authErr.message ?? 'Failed to update account', {
         requestId, status: 400, code: ApiErrorCode.ValidationFailed,
       });
@@ -433,7 +437,12 @@ export async function DELETE(req: NextRequest) {
   // Delete the auth user — the FK cascade removes the accounts row too.
   const { error: delErr } = await supabaseAdmin.auth.admin.deleteUser(target.data_user_id);
   if (delErr) {
-    console.error('[accounts:DELETE] auth.admin.deleteUser failed', errToString(delErr));
+    log.error('[accounts:DELETE] auth.admin.deleteUser failed', {
+      requestId,
+      msg: errToString(delErr),
+      accountId,
+      authUserId: target.data_user_id,
+    });
     // If auth user was already gone, at least clean up the accounts row so
     // the admin isn't stuck with a zombie. PostgrestFilterBuilder is a
     // thenable but has no .catch — wrap in try/await.

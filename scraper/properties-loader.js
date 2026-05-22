@@ -44,6 +44,17 @@
  */
 
 const { env } = require('./env');
+// Lazy-require Sentry capture so unit tests that mock env can require this
+// module without forcing a Sentry SDK load. The capture helpers no-op when
+// Sentry didn't initialize, so this is safe in any context.
+let _captureException = null;
+function captureException(err, ctx) {
+  if (_captureException === null) {
+    try { _captureException = require('./sentry').captureException; }
+    catch { _captureException = () => {}; }
+  }
+  try { _captureException(err, ctx); } catch {}
+}
 
 const ENV_FALLBACK_INSTANCE_ID = 'default';
 
@@ -99,8 +110,9 @@ async function loadActiveProperties(supabase, opts = {}) {
 
   if (error) {
     console.error(
-      `[${new Date().toISOString()}] [properties-loader] scraper_credentials query failed: ${error.message}. Falling back to env vars.`,
+      `[${new Date().toISOString()}] [properties-loader] scraper_credentials query failed: ${error && error.message ? error.message : String(error)}. Falling back to env vars.`,
     );
+    captureException(error, { phase: 'properties_loader_query' });
     const fb = fromEnv();
     if (fb) {
       _cache = [fb];

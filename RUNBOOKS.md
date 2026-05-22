@@ -1720,6 +1720,79 @@ If something is catastrophically broken:
 
 ---
 
+## Monitoring & error visibility
+
+Added 2026-05-22 (monitoring/logging/secrets hardening pass).
+
+### Where errors surface per service
+
+| Service | Sentry project | Other sinks | How errors get there |
+|---|---|---|---|
+| Next.js app (Vercel) | staxis.sentry.io | Vercel function logs | `log.error()` in `src/lib/log.ts` → `captureException` |
+| `scraper/` (Railway) | staxis.sentry.io | Railway logs + `scraper_status` table | `captureException` in pull-loop catch blocks in `scraper/scraper.js` |
+| `ml-service/` (Railway) | staxis.sentry.io | Railway logs (structured JSON) | `sentry_sdk.capture_exception` in `general_exception_handler` in `ml-service/src/main.py` |
+| `cua-service/` (Fly) | staxis.sentry.io | Fly logs (structured JSON) | `log.error()` in `cua-service/src/log.ts` (auto-captures via `Sentry.captureException`) |
+
+One Sentry project, four services. Filter in Sentry by tag:
+- `service:scraper`
+- `service:ml-service`
+- `service:cua-worker` (legacy name)
+- (Next.js is the un-tagged baseline)
+
+### Sentry auth token (source-map upload)
+
+`next.config.ts` is wrapped with `withSentryConfig` and uploads source maps automatically when `SENTRY_AUTH_TOKEN` is present at build time on Vercel.
+
+**Scope MUST be Production only.** Preview deploys without the token explicitly skip source-map upload (gated on `sourcemaps.disable = !process.env.SENTRY_AUTH_TOKEN`). Setting the token in the "All Environments" scope would burn a Sentry release on every preview deploy, eating quota.
+
+The plugin has an `errorHandler` that warns + continues if upload fails — a bad token or Sentry outage during a deploy will NOT block production. Failures show up in the Vercel build log; check there if source maps stop appearing in Sentry.
+
+Doctor check: `sentry_auth_token_present` warns in production if the token is missing.
+
+### Weekly Sentry ingest verification
+
+`Sentry.getClient()` proves the SDK loaded. It does NOT prove events reach Sentry — firewalls, project mismatch, beforeSend dropping events, and quota exhaustion all break ingest without affecting the client object.
+
+The canonical end-to-end probe is `/api/admin/sentry-test`:
+
+```bash
+curl -H "Authorization: Bearer $CRON_SECRET" https://getstaxis.com/api/admin/sentry-test
+```
+
+The route fires a synthetic Error AND writes an `app_events` row with `event_type='sentry_ingest_probe_fired'`. Doctor's `sentry_ingest_probe_recent` check reads that row's age and warns when older than 7 days. Add this curl to a weekly habit (Monday-morning checklist) — keeps the doctor green and verifies the full pipeline.
+
+### Replay PII masking allowlist
+
+`sentry.client.config.ts` configures Sentry replay with default-mask + `.sentry-unmask` allowlist:
+
+```ts
+Sentry.replayIntegration({
+  mask: ['*'],
+  maskAllInputs: true,
+  blockAllMedia: true,
+  unmask: ['.sentry-unmask'],
+})
+```
+
+To make a non-PII component (status chips, icons, page headers) debuggable in replays, add the CSS class `sentry-unmask` to its root element. Do NOT unmask large containers — anything inside an unmasked element is also unmasked. Default to masking and unmask precisely.
+
+### Sentry kill switch (no code rollback needed)
+
+If Sentry init crashes a service on startup, or replay masking makes a critical bug undebuggable, or any other Sentry-side problem surfaces in production:
+
+1. **Next.js (Vercel)** — Unset `SENTRY_AUTH_TOKEN` (stops source-map upload) AND set `NEXT_PUBLIC_SENTRY_DSN=""` + `SENTRY_DSN=""` (Sentry SDK becomes no-op on init). Redeploy.
+2. **scraper (Railway)** — Set `SENTRY_DSN=""`. `scraper/sentry.js:initSentry()` returns false on empty DSN and the scraper continues with Railway-logs-only visibility. Restart the service.
+3. **ml-service (Railway)** — Set `SENTRY_DSN=""`. `ml-service/src/sentry_init.py:init_sentry()` returns False on empty DSN. Restart.
+4. **cua-service (Fly)** — `flyctl secrets unset SENTRY_DSN -a staxis-cua` then `fly deploy`. Same no-op pattern.
+
+All four init paths are wired to treat empty/missing DSN as "no monitoring" rather than crash. The new monitoring code is degradable, never blocking.
+
+### Expected first-week noise
+
+The first 7 days after enabling Sentry on the scraper and ml-service will surface previously-invisible errors. **Acknowledge them, don't suppress.** Tune Sentry alert rules to fire on issue *frequency* (e.g. "10+ in an hour") rather than "any new error" until the baseline stabilizes.
+
+---
+
 ## Meta: how to add a new failure mode to this doc
 
 Every time something breaks and takes more than 30 min to fix, come back and add a section here with Symptom / Diagnosis / Fix / Verify / Prevention. This file only pays for itself if we update it.

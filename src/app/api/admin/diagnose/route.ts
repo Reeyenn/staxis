@@ -149,7 +149,7 @@ export async function GET(req: NextRequest) {
     return ok({ webhookLogs, confirmations, twilioNumbers, twilioMessages }, { requestId });
   } catch (caughtErr) {
     const msg = errToString(caughtErr);
-    console.error('[admin/diagnose] error:', msg);
+    log.error('[admin/diagnose] error', { requestId, msg });
     return err(msg, { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

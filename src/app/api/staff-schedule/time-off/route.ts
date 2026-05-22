@@ -17,7 +17,8 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId, log } from '@/lib/log';
+import { errToString } from '@/lib/utils';
 import { requireSession } from '@/lib/api-auth';
 import { verifyTeamManager, canManageHotel } from '@/lib/team-auth';
 import { validateUuid } from '@/lib/api-validate';
@@ -76,7 +77,7 @@ export async function POST(req: NextRequest) {
       status:       'pending',
     }).select('*').single();
   if (error) {
-    console.error('[time-off:POST] insert failed', error);
+    log.error('[time-off:POST] insert failed', { requestId, msg: errToString(error) });
     return err(error.message || 'Failed to submit request', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
@@ -125,7 +126,7 @@ export async function PUT(req: NextRequest) {
   const { error: upErr } = await supabaseAdmin
     .from('time_off_requests').update(update).eq('id', idCheck.value!);
   if (upErr) {
-    console.error('[time-off:PUT] update failed', upErr);
+    log.error('[time-off:PUT] update failed', { requestId, msg: errToString(upErr) });
     return err('Failed to update request', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
@@ -139,7 +140,7 @@ export async function PUT(req: NextRequest) {
       .eq('shift_date', tor.request_date)
       .eq('kind', 'shift');
     if (delErr) {
-      console.error('[time-off:PUT] cascade shift delete failed', delErr);
+      log.error('[time-off:PUT] cascade shift delete failed', { requestId, msg: errToString(delErr) });
       // Don't fail the request — the TOR is approved; manager can manually unassign.
     } else if ((count ?? 0) > 0) {
       removedShift = true;

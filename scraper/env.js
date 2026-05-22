@@ -87,6 +87,14 @@ const Schema = z.object({
         `Plan v2 F-AI-14 — bearer secrets are only sent to known platform hosts.`,
     }),
 
+  // ── Monitoring (optional) ─────────────────────────────
+  // Sentry DSN for the scraper. When set, errors from the pull loops ship
+  // to staxis.sentry.io. When unset, sentry.js silently no-ops and the
+  // scraper continues with Railway-logs-only visibility (the pre-Sentry
+  // baseline). Set to "" (empty string) to kill-switch monitoring without
+  // a code change.
+  SENTRY_DSN: z.string().optional(),
+
   // ── Platform auto-injected ────────────────────────────
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().int().positive().optional(),

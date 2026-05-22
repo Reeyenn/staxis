@@ -30,6 +30,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { revalidateTag } from 'next/cache';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireHeartbeatSecret } from '@/lib/api-auth';
+import { log } from '@/lib/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -75,7 +76,7 @@ export async function POST(req: NextRequest) {
       })
       .eq('session_id', sessionId);
     if (error) {
-      console.error('[claude-heartbeat] stop update failed', { msg: error.message });
+      log.error('[claude-heartbeat] stop update failed', { msg: error.message, sessionId });
       return NextResponse.json(
         { ok: false, event: 'stop', error: 'database update failed' },
         { status: 500 },
@@ -105,7 +106,7 @@ export async function POST(req: NextRequest) {
     );
 
   if (error) {
-    console.error('[claude-heartbeat] upsert failed', { msg: error.message });
+    log.error('[claude-heartbeat] upsert failed', { msg: error.message, sessionId });
     return NextResponse.json(
       { ok: false, error: 'database upsert failed' },
       { status: 500 },

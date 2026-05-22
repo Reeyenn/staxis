@@ -24,7 +24,7 @@ import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
 import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId, log } from '@/lib/log';
 import { buildHousekeeperLink } from '@/lib/staff-auth';
 
 export const runtime = 'nodejs';
@@ -70,7 +70,7 @@ export async function POST(req: NextRequest) {
     .eq('property_id', pid)
     .maybeSingle();
   if (staffErr) {
-    console.error('[staff-link] staff lookup failed', errToString(staffErr));
+    log.error('[staff-link] staff lookup failed', { requestId, msg: errToString(staffErr) });
     return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   if (!staff) {
@@ -89,7 +89,7 @@ export async function POST(req: NextRequest) {
     .eq('data_user_id', session.userId)
     .maybeSingle();
   if (ownsErr) {
-    console.error('[staff-link] ownership check failed', errToString(ownsErr));
+    log.error('[staff-link] ownership check failed', { requestId, msg: errToString(ownsErr) });
     return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   const propertyAccess = (account?.property_access ?? []) as string[];
@@ -106,7 +106,7 @@ export async function POST(req: NextRequest) {
     const url = await buildHousekeeperLink(staffId, pid, origin);
     return ok({ url }, { requestId });
   } catch (caughtErr) {
-    console.error('[staff-link] mint failed', errToString(caughtErr));
+    log.error('[staff-link] mint failed', { requestId, msg: errToString(caughtErr) });
     return err('Failed to mint link', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });

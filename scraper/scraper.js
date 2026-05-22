@@ -57,6 +57,7 @@ const { pullHkCenter } = require('./hk-center-pull');
 const { ScraperError, ERROR_CODES } = require('./scraper-errors');
 const { runVercelWatchdog } = require('./vercel-watchdog');
 const { loadActiveProperties } = require('./properties-loader');
+const { initSentry, captureException, flushSentry } = require('./sentry');
 const { safeEval, goWithSettle } = require('./page-helpers');
 const { clickFirstMatching, fillFirstMatching } = require('./selector-helpers');
 const {
@@ -99,6 +100,21 @@ const CONFIG = {
   // Session state file (persists login cookies between runs)
   SESSION_FILE: path.join(__dirname, '.session.json'),
 };
+
+// ─── Sentry init ───────────────────────────────────────────────────────────
+// Runs at module load — before the `log()` helper below is defined, so use
+// console.log directly. Wrapped in a try/catch because a Sentry init failure
+// must NEVER crash the scraper: a degraded-monitoring scraper still serves
+// the hotel; a crash-looping one doesn't. initSentry() also swallows its own
+// errors internally, but the outer try is defense in depth.
+try {
+  const sentryOk = initSentry();
+  console.log(
+    `[${new Date().toISOString()}] Sentry ${sentryOk ? 'initialized — errors will ship to staxis.sentry.io' : 'not initialized (SENTRY_DSN unset) — errors stay in Railway logs only'}`,
+  );
+} catch (err) {
+  console.warn(`[${new Date().toISOString()}] Sentry init threw (continuing without monitoring): ${err && err.message ? err.message : err}`);
+}
 
 // ─── Supabase init ─────────────────────────────────────────────────────────
 // createSupabase throws at module load if SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY
@@ -590,6 +606,11 @@ async function runCSVScrapeFresh(page, pullType, relogin) {
       } catch (retryErr) {
         const retryCode = retryErr instanceof ScraperError ? retryErr.code : ERROR_CODES.UNKNOWN;
         log(`${pullType} scrape retry FAILED [${retryCode}]: ${retryErr.message}`);
+        captureException(retryErr, {
+          propertyId: CONFIG.PROPERTY_ID,
+          phase: `csv_${pullType}_retry`,
+          errorCode: retryCode,
+        });
         await writeScrapeStatus(pullType, 'error', {
           errorCode: retryCode,
           error: `retry failed: ${retryErr.message}`,
@@ -599,6 +620,11 @@ async function runCSVScrapeFresh(page, pullType, relogin) {
       }
     }
     log(`${pullType} CSV pull error [${code}]: ${err.message}`);
+    captureException(err, {
+      propertyId: CONFIG.PROPERTY_ID,
+      phase: `csv_${pullType}`,
+      errorCode: code,
+    });
     await writeScrapeStatus(pullType, 'error', {
       errorCode: code,
       error: err.message,
@@ -655,6 +681,11 @@ async function runDashboardPullFresh(page, relogin) {
         // session_expired error in scraper_status — but surface the login
         // failure too, because that's the real underlying problem now.
         log(`Re-login FAILED after session expiry: ${loginErr.message}`);
+        captureException(loginErr, {
+          propertyId: CONFIG.PROPERTY_ID,
+          phase: 'dashboard_relogin',
+          errorCode: loginErr instanceof ScraperError ? loginErr.code : ERROR_CODES.UNKNOWN,
+        });
         await mergeStatus(supabase, 'dashboard', {
           errorCode:    loginErr instanceof ScraperError ? loginErr.code : ERROR_CODES.UNKNOWN,
           errorMessage: `Re-login failed after session expiry: ${loginErr.message}`.slice(0, 500),
@@ -670,6 +701,11 @@ async function runDashboardPullFresh(page, relogin) {
         return await pullDashboardNumbers(page, supabase, log, CONFIG.PROPERTY_ID);
       } catch (retryErr) {
         log(`Dashboard pull retry FAILED: [${retryErr.code || 'unknown'}] ${retryErr.message}`);
+        captureException(retryErr, {
+          propertyId: CONFIG.PROPERTY_ID,
+          phase: 'dashboard_retry',
+          errorCode: retryErr instanceof ScraperError ? retryErr.code : ERROR_CODES.UNKNOWN,
+        });
         return null;
       }
     }
@@ -677,6 +713,11 @@ async function runDashboardPullFresh(page, relogin) {
     // Non-retryable code paths. pullDashboardNumbers already wrote the error
     // to scraper_status, so we just log and return.
     log(`Dashboard pull error [${code}]: ${err.message}`);
+    captureException(err, {
+      propertyId: CONFIG.PROPERTY_ID,
+      phase: 'dashboard',
+      errorCode: code,
+    });
     return null;
   }
 }
@@ -761,9 +802,19 @@ async function maybeRunOOOPull(page, relogin) {
       } catch (retryErr) {
         log(`OOO pull retry FAILED: [${retryErr.code || 'unknown'}] ${retryErr.message}`);
         metricCode = retryErr instanceof ScraperError ? retryErr.code : ERROR_CODES.UNKNOWN;
+        captureException(retryErr, {
+          propertyId: CONFIG.PROPERTY_ID,
+          phase: 'ooo_retry',
+          errorCode: metricCode,
+        });
       }
     } else {
       log(`OOO pull error [${code}]: ${err.message}`);
+      captureException(err, {
+        propertyId: CONFIG.PROPERTY_ID,
+        phase: 'ooo',
+        errorCode: code,
+      });
     }
   }
 
@@ -1355,6 +1406,12 @@ async function run() {
         const code = err instanceof ScraperError ? err.code : ERROR_CODES.UNKNOWN;
         const msg = err && err.message ? err.message : String(err);
         log(`[http ${requestId}] HK Center pull FAILED [${code}]: ${msg}`);
+        captureException(err, {
+          propertyId: CONFIG.PROPERTY_ID,
+          phase: 'hk_center_on_demand',
+          errorCode: code,
+          requestId,
+        });
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: msg, code }));
         await writePullMetric(supabase, {
@@ -1384,7 +1441,22 @@ async function run() {
 
 // ─── Entry point ───────────────────────────────────────────────────────────
 
-run().catch(err => {
+// Flush Sentry on graceful shutdown so events queued in the final seconds
+// before SIGTERM (Railway scale-down, redeploy) aren't lost. flushSentry()
+// is a no-op when Sentry didn't initialize, so this is safe regardless of
+// env state. We don't call process.exit ourselves — Railway sends SIGKILL
+// after its grace window, and exiting cleanly only matters for the flush.
+async function gracefulShutdown(signal) {
+  console.log(`[${new Date().toISOString()}] Received ${signal} — flushing Sentry and shutting down`);
+  try { await flushSentry(2000); } catch {}
+  process.exit(0);
+}
+process.on('SIGTERM', () => { gracefulShutdown('SIGTERM').catch(() => process.exit(1)); });
+process.on('SIGINT',  () => { gracefulShutdown('SIGINT').catch(() => process.exit(1)); });
+
+run().catch(async err => {
   console.error('Fatal error:', err);
+  try { captureException(err, { phase: 'run_fatal' }); } catch {}
+  try { await flushSentry(2000); } catch {}
   process.exit(1);
 });
