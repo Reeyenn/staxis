@@ -14,7 +14,7 @@
 
 export const dynamic = 'force-dynamic';
 
-import React, { useState, useEffect, useMemo, useRef, useLayoutEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
@@ -97,14 +97,21 @@ function Sparkles({ size = 14, color = 'currentColor' }: { size?: number; color?
 function useElementWidth<T extends HTMLElement = HTMLDivElement>(): [React.RefObject<T | null>, number] {
   const ref = useRef<T | null>(null);
   const [w, setW] = useState(0);
-  useLayoutEffect(() => {
+  useEffect(() => {
     if (!ref.current) return;
-    const obs = new ResizeObserver(entries => {
-      for (const e of entries) setW(e.contentRect.width);
-    });
+    const measure = () => {
+      if (ref.current) setW(ref.current.getBoundingClientRect().width);
+    };
+    measure();
+    const obs = new ResizeObserver(measure);
     obs.observe(ref.current);
-    setW(ref.current.getBoundingClientRect().width);
-    return () => obs.disconnect();
+    // Belt-and-suspenders: also poll once on the next frame in case the
+    // first commit raced past the observer's first fire.
+    const raf = requestAnimationFrame(measure);
+    return () => {
+      obs.disconnect();
+      cancelAnimationFrame(raf);
+    };
   }, []);
   return [ref, w];
 }
@@ -275,7 +282,11 @@ export default function DashboardPage() {
   const blobs = BG_BLOBS[metric];
 
   const [chartHostRef, chartHostW] = useElementWidth<HTMLDivElement>();
-  const chartWidth = Math.max(320, chartHostW);
+  // Fall back to a sensible default while ResizeObserver hasn't fired yet
+  // (first commit, suspended hydration, etc.) — without this, the chart
+  // would render conditionally and a slow first measure would leave the
+  // card visually empty.
+  const chartWidth = Math.max(320, chartHostW || 1200);
   const chartHeight = 250;
 
   // ── Real-time subscriptions (preserved from the old Snow dashboard) ──
@@ -632,7 +643,7 @@ export default function DashboardPage() {
 
             {/* Host div is what the chart fits to */}
             <div ref={chartHostRef} style={{ padding: '16px 0 4px', width: '100%' }}>
-              {chartHostW > 0 && cur && (
+              {cur && (
                 <SpotlightChart
                   days={days}
                   scrub={scrub}
