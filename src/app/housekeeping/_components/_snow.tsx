@@ -370,15 +370,6 @@ export function RoomTileBase({
           display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}>!</span>
       )}
-      {r.helpRequested && (
-        <span style={{
-          position: 'absolute', top: -5, right: -5,
-          padding: '2px 5px', borderRadius: 999,
-          background: T.warm, color: '#fff',
-          fontFamily: FONT_SANS, fontSize: 8, fontWeight: 700, letterSpacing: '0.06em',
-          boxShadow: `0 0 0 3px ${T.warmDim}`,
-        }}>{lang === 'es' ? 'AYUDA' : 'HELP'}</span>
-      )}
     </button>
   );
 }

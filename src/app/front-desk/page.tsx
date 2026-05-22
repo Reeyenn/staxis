@@ -651,19 +651,6 @@ export default function FrontDeskPage() {
                     </p>
                   </div>
                 )}
-                {selectedRoom.helpRequested && (
-                  <div style={{
-                    flex: '1 1 140px', padding: '14px 16px',
-                    background: 'rgba(186,26,26,0.06)', borderRadius: '16px',
-                    border: '1px solid rgba(186,26,26,0.15)',
-                    display: 'flex', alignItems: 'center', gap: '10px',
-                  }}>
-                    <span className="material-symbols-outlined" style={{ fontSize: '20px', color: '#ba1a1a' }}>sos</span>
-                    <span style={{ fontSize: '14px', fontWeight: 600, color: '#ba1a1a', fontFamily: 'Inter, sans-serif' }}>
-                      {lang === 'es' ? 'Ayuda Solicitada' : 'Help Requested'}
-                    </span>
-                  </div>
-                )}
               </div>
 
               {/* Action Buttons */}

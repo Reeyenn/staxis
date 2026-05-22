@@ -9,9 +9,7 @@
 //   • crew-on-the-floor strip at the bottom
 //   • AI Intelligence Recommendation card removed per design lock
 //
-// Click a room → popup with status-cycle actions, same as before. If a
-// room has helpRequested = true, the popup is replaced by the backup
-// picker (same flow as before, just re-skinned to Snow).
+// Click a room → popup with status-cycle actions, same as before.
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
@@ -55,10 +53,9 @@ export function RoomsTab() {
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [toastKind, setToastKind] = useState<'success' | 'error'>('success');
   const [actionRoom, setActionRoom] = useState<Room | null>(null);
-  const [backupRoom, setBackupRoom] = useState<Room | null>(null);
   const [populating, setPopulating] = useState(false);
   const [pulledAt, setPulledAt] = useState<Date | null>(null);
-  const [filter, setFilter] = useState<'all' | 'toturn' | 'cleaning' | 'ready' | 'dnd' | 'help'>('all');
+  const [filter, setFilter] = useState<'all' | 'toturn' | 'cleaning' | 'ready' | 'dnd'>('all');
   const [search, setSearch] = useState('');
   const [, setNowMs] = useState(Date.now());
 
@@ -140,7 +137,7 @@ export function RoomsTab() {
   // merge above creates a phantom 'vacant' row for every untouched room,
   // which would inflate the DND count to "every room not yet touched today."
   const counts = useMemo(() => {
-    const c = { total: 0, ready: 0, cleaning: 0, dirty: 0, dnd: 0, blocked: 0, help: 0 };
+    const c = { total: 0, ready: 0, cleaning: 0, dirty: 0, dnd: 0, blocked: 0 };
     for (const r of displayRooms) {
       c.total++;
       if (r.status === 'clean' || r.status === 'inspected') c.ready++;
@@ -148,7 +145,6 @@ export function RoomsTab() {
       if (r.status === 'dirty') c.dirty++;
       if (r.isDnd) c.dnd++;
       if (openWoRooms.has(r.number)) c.blocked++;
-      if (r.helpRequested) c.help++;
     }
     return c;
   }, [displayRooms, openWoRooms]);
@@ -230,58 +226,6 @@ export function RoomsTab() {
     setActionRoom(null);
   };
 
-  // Assign a backup housekeeper to a room that hit "help requested".
-  //   1. Send the SMS first so we know whether it actually went out.
-  //   2. Only clear `helpRequested` if the SMS succeeded — otherwise the
-  //      HELP badge stays on the room as the obvious retry cue (and we
-  //      surface a warm toast so the manager knows the text didn't land).
-  //   3. Pass the *backup housekeeper's own* language to the API so a
-  //      Spanish-speaking housekeeper gets a Spanish text, not the UI's
-  //      current language. (Hardcoded 'en' was wrong even when the UI
-  //      was in Spanish.)
-  const handleSendBackup = async (room: Room, backupStaff: StaffMember) => {
-    if (!user || !activePropertyId) return;
-    if (!navigator.onLine) recordOfflineAction();
-    let smsFailed = false;
-    try {
-      const res = await fetchWithAuth('/api/notify-backup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          uid: user.uid, pid: activePropertyId,
-          backupStaffId: backupStaff.id,
-          roomNumber: room.number,
-          language: backupStaff.language ?? 'en',
-        }),
-      });
-      if (!res.ok) smsFailed = true;
-    } catch {
-      smsFailed = true;
-    }
-    if (!smsFailed) {
-      // SMS confirmed — safe to clear the HELP badge. Without this
-      // ordering, a network failure left the room un-flagged AND the
-      // backup uninformed — invisible to the manager until they noticed.
-      await updateRoom(user.uid, activePropertyId, room.id, {
-        helpRequested: false,
-        issueNote: `Backup sent: ${backupStaff.name} at ${new Date().toLocaleTimeString()}`,
-      });
-    }
-    setBackupRoom(null);
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    if (smsFailed) {
-      setToastKind('error');
-      setToastMessage(lang === 'es'
-        ? `${backupStaff.name} no recibió el aviso — intenta de nuevo`
-        : `${backupStaff.name} not notified — try again`);
-    } else {
-      setToastKind('success');
-      setToastMessage(lang === 'es'
-        ? `${backupStaff.name} enviado a ${room.number}`
-        : `${backupStaff.name} sent to Room ${room.number}`);
-    }
-    toastTimer.current = setTimeout(() => setToastMessage(null), 3500);
-  };
 
   // Group rooms by floor → reversed so the top floor renders first
   // (matches the design's "top-down" stack).
@@ -312,7 +256,6 @@ export function RoomsTab() {
     if (filter === 'cleaning') return r.status === 'in_progress';
     if (filter === 'ready')    return r.status === 'clean' || r.status === 'inspected';
     if (filter === 'dnd')      return Boolean(r.isDnd) || openWoRooms.has(r.number);
-    if (filter === 'help')     return Boolean(r.helpRequested);
     return true;
   };
 
@@ -322,7 +265,6 @@ export function RoomsTab() {
     { key: 'cleaning', label: lang === 'es' ? 'Limpiando'    : 'Cleaning',        n: counts.cleaning },
     { key: 'ready',    label: lang === 'es' ? 'Listas'       : 'Ready',           n: counts.ready },
     { key: 'dnd',      label: lang === 'es' ? 'DND / Bloq.'  : 'DND / blocked',   n: counts.dnd + counts.blocked },
-    { key: 'help',     label: lang === 'es' ? 'Ayuda'        : 'Help requested',  n: counts.help, danger: true },
   ];
 
   // Active crew → housekeepers currently assigned to at least one room
@@ -534,7 +476,7 @@ export function RoomsTab() {
                     r={r}
                     lang={lang}
                     hasWorkOrder={openWoRooms.has(r.number)}
-                    onClick={() => r.helpRequested ? setBackupRoom(r) : setActionRoom(r)}
+                    onClick={() => setActionRoom(r)}
                   />
                 ))}
               </div>
@@ -601,70 +543,6 @@ export function RoomsTab() {
                 : actionRoom.status === 'in_progress' ? (lang === 'es' ? 'Marcar como lista'      : 'Mark as ready')
                 : actionRoom.status === 'clean'       ? (lang === 'es' ? 'Reiniciar a sucia'      : 'Reset to dirty')
                 : (lang === 'es' ? 'Inspeccionada (bloqueada)' : 'Inspected (locked)')}
-            </Btn>
-          </div>
-        </>
-      )}
-
-      {/* BACKUP PICKER — opens when clicking a room with helpRequested */}
-      {backupRoom && (
-        <>
-          <div
-            style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(31,35,28,0.32)' }}
-            onClick={() => setBackupRoom(null)}
-          />
-          <div style={{
-            position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
-            zIndex: 61, background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
-            padding: '20px 22px', minWidth: 360, maxWidth: 420,
-            boxShadow: '0 24px 48px rgba(31,35,28,0.18)',
-            display: 'flex', flexDirection: 'column', gap: 14,
-          }}>
-            <div>
-              <Caps>{lang === 'es' ? 'Enviar refuerzo' : 'Send backup'}</Caps>
-              <h3 style={{
-                fontFamily: FONT_SERIF, fontSize: 28, color: T.ink, margin: '2px 0 0',
-                fontStyle: 'italic', letterSpacing: '-0.02em', lineHeight: 1,
-              }}>
-                {lang === 'es' ? `Cuarto ${backupRoom.number}` : `Room ${backupRoom.number}`}
-              </h3>
-              <p style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, margin: '6px 0 0' }}>
-                {lang === 'es'
-                  ? 'Elige a quién enviar como refuerzo. Recibirán un SMS.'
-                  : 'Pick who to send as backup. They’ll get an SMS.'}
-              </p>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 320, overflowY: 'auto' }}>
-              {staff
-                // Match the historical filter: undefined isActive defaults
-                // to active; undefined department defaults to housekeeping.
-                // Also exclude the housekeeper who's already on this room
-                // (no point sending backup to themselves).
-                .filter(s =>
-                  s.isActive !== false &&
-                  (!s.department || s.department === 'housekeeping') &&
-                  s.id !== backupRoom.assignedTo,
-                )
-                .map(s => (
-                <button
-                  key={s.id}
-                  onClick={() => handleSendBackup(backupRoom, s)}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 12,
-                    padding: '10px 14px', borderRadius: 12,
-                    background: T.bg, border: `1px solid ${T.rule}`, cursor: 'pointer',
-                    fontFamily: FONT_SANS, fontSize: 14, color: T.ink, fontWeight: 500,
-                    textAlign: 'left',
-                  }}
-                >
-                  <HousekeeperDot staff={s} size={28} />
-                  <span style={{ flex: 1 }}>{s.name}</span>
-                  <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink3 }}>SMS →</span>
-                </button>
-              ))}
-            </div>
-            <Btn variant="ghost" size="sm" onClick={() => setBackupRoom(null)}>
-              {lang === 'es' ? 'Cancelar' : 'Cancel'}
             </Btn>
           </div>
         </>

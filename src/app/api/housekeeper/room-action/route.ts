@@ -21,7 +21,7 @@
  *   Server-side route using supabaseAdmin (service-role, RLS-bypass).
  *   Capability check: the URL contains (uid, pid, staffId) — we verify
  *   staffId actually belongs to pid before doing anything. Same trust
- *   model as /api/staff-list and /api/help-request.
+ *   model as /api/staff-list.
  *
  *   For 'finish' actions we ALSO write a cleaning_events row in the same
  *   transaction so the audit log captures what actually happened. The
@@ -50,7 +50,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 15;
 
-type RoomAction = 'finish' | 'reset' | 'dnd_on' | 'dnd_off' | 'issue' | 'help';
+type RoomAction = 'finish' | 'reset' | 'dnd_on' | 'dnd_off' | 'issue';
 
 interface RequestBody {
   pid: string;
@@ -260,7 +260,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers,
     });
   }
-  if (!['finish', 'reset', 'dnd_on', 'dnd_off', 'issue', 'help'].includes(action)) {
+  if (!['finish', 'reset', 'dnd_on', 'dnd_off', 'issue'].includes(action)) {
     log.warn('room-action: invalid action', { requestId, route: 'housekeeper/room-action', action });
     return err('invalid action', { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
   }
@@ -666,23 +666,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
       }
       return ok({ action: 'dnd_off' }, { requestId, headers });
-    }
-
-    // ─── HELP REQUEST (flag the room as needing manager attention) ────
-    // The actual SMS send still goes through /api/help-request which has
-    // its own validation, retry, and Twilio handling. This action just
-    // flips the helpRequested flag on the room row so Maria's UI shows
-    // the SOS badge — that update was previously silently failing.
-    if (action === 'help') {
-      const { error: helpErr } = await supabaseAdmin
-        .from('rooms')
-        .update({ help_requested: true })
-        .eq('id', roomId);
-      if (helpErr) {
-        log.error('room-action: room update failed (help)', { requestId, pid, staffId, err: errToString(helpErr) });
-        return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
-      }
-      return ok({ action: 'help' }, { requestId, headers });
     }
 
     // ─── ISSUE NOTE (housekeeper reports a problem) ────────────────────
