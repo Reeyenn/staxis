@@ -29,6 +29,36 @@ const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const DATE_RX = /^\d{4}-\d{2}-\d{2}$/;
 const PHONE_RX_LOOSE = /^[+()\d\s.\-]{7,20}$/;
 
+// Comms-voice audit follow-up (2026-05-22): pragmatic email regex.
+// Not RFC 5322 — that would be 600 chars of regex for negligible benefit.
+// Catches the realistic failure modes (typo'd `@`, missing TLD, single-
+// char TLD, embedded whitespace) without rejecting legitimate plus-
+// addressing or hyphenated domains. Resend still validates after this
+// gate; we just don't want to pay them to reject obvious junk.
+//
+// Shape:
+//   local @ (label .)+ tld
+// where each label is 1–63 chars (DNS limit) and the TLD is 2+ chars.
+const EMAIL_RX = /^[A-Z0-9._%+\-]+@(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z0-9][A-Z0-9-]{0,61}[A-Z0-9]$/i;
+const EMAIL_MAX_LEN = 254;  // RFC 5321 line-length cap
+
+/**
+ * Returns true if `s` looks like a plausibly valid email address.
+ *
+ * Checks: ≤254 chars, no whitespace or control chars, exactly one `@`,
+ * a domain with at least one dot, and a TLD of 2+ chars. Header-injection
+ * bytes (\r, \n, \0) are rejected by the regex (whitespace class doesn't
+ * match), with a defensive explicit check too.
+ *
+ * Pure / no I/O — safe to call from any context.
+ */
+export function isValidEmail(s: unknown): s is string {
+  if (typeof s !== 'string') return false;
+  if (s.length === 0 || s.length > EMAIL_MAX_LEN) return false;
+  if (/[\r\n\0\s]/.test(s)) return false;
+  return EMAIL_RX.test(s);
+}
+
 export function validateUuid(v: unknown, label = 'id'): { error?: string; value?: string } {
   if (typeof v !== 'string') return { error: `${label} must be a string` };
   if (!UUID_RX.test(v)) return { error: `${label} is not a valid UUID` };

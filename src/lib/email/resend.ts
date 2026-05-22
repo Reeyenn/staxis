@@ -27,6 +27,7 @@ import { writeAudit } from '@/lib/audit';
 import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
 import { env } from '@/lib/env';
 import { captureException } from '@/lib/sentry';
+import { isValidEmail } from '@/lib/api-validate';
 
 const RESEND_API_URL = 'https://api.resend.com/emails';
 
@@ -83,6 +84,21 @@ export type SendEmailResult =
 export async function sendTransactionalEmail(
   params: SendEmailParams,
 ): Promise<SendEmailResult> {
+  // Comms-voice audit follow-up (2026-05-22): pragmatic recipient
+  // validation. The pre-audit gate at admin/properties/create only
+  // checked `.includes('@')`, so addresses like `alice@` or `foo@bar`
+  // would slip through and be rejected at Resend's HTTP boundary
+  // (counting against the per-recipient rate limit). Reject obvious
+  // junk here so Resend's API quota tracks real attempts.
+  if (!isValidEmail(params.to)) {
+    const result: SendEmailResult = {
+      ok: false,
+      error: 'invalid_recipient_email',
+    };
+    await logEmailOutcome(params, result);
+    return result;
+  }
+
   // Comms-voice audit P3 (2026-05-22): reject control chars in subject and
   // null bytes in body before any HTTP call.
   //
