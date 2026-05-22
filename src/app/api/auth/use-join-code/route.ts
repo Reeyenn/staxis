@@ -274,9 +274,22 @@ export async function POST(req: NextRequest) {
   // succeeds. admin.createUser doesn't issue a client JWT, so the
   // custom_access_token_hook doesn't fire here — we write the proof
   // explicitly. The user JUST set their password via this endpoint, so
-  // the server can vouch for it. Non-fatal if the insert fails: the user
-  // can re-sign-in with the password they just set, which will trigger
-  // the normal hook-based proof write.
+  // the server can vouch for it.
+  //
+  // EMPIRICALLY VERIFIED 2026-05-22 (Codex review #8 follow-up):
+  //   - @supabase/auth-js admin.createUser POSTs /admin/users and returns
+  //     {user}, NOT {session} — no JWT minted, hook does not fire.
+  //   - Both signup flows (/signup and /onboard) call signInWithOtp after
+  //     this endpoint returns. signInWithOtp triggers the hook with
+  //     authentication_method='otp', which is NOT the password branch —
+  //     so the hook does NOT write a proof on the post-signup OTP either.
+  //   - Without THIS manual write, a brand-new account has zero proofs →
+  //     trust-device 403s with "Password sign-in required" → user is
+  //     locked out of their own first device. NOT optional, NOT redundant.
+  //
+  // Non-fatal if the insert fails: the user can re-sign-in with the
+  // password they just set via the regular /signin flow, which will
+  // trigger the normal hook-based proof write.
   const proofExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
   const { error: proofErr } = await supabaseAdmin
     .from('password_signin_proofs')
