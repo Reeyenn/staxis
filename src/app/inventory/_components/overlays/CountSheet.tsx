@@ -44,6 +44,11 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
   }, [autoFill]);
 
   // Load MAE % for the header caption when the sheet opens.
+  // Honesty-audit Phase 4: read currentMaeRatioVsMean (the real gate ratio)
+  // — the "% off" caption only makes sense as gate ratio, not overfit. May
+  // be null for ~7 days post-Phase-2 ship until next weekly retrain
+  // populates hyperparameters.mean_observed_rate; we leave the caption
+  // empty in that window rather than showing a misleading number.
   useEffect(() => {
     if (!open || !activePropertyId) return;
     let cancelled = false;
@@ -55,9 +60,9 @@ export function CountSheet({ open, onClose, items, display, autoFill, aiMode }: 
         );
         if (!res.ok) return;
         const json = (await res.json()) as {
-          data?: { currentMaeRatio: number | null };
+          data?: { currentMaeRatioVsMean: number | null };
         };
-        const ratio = json.data?.currentMaeRatio;
+        const ratio = json.data?.currentMaeRatioVsMean;
         if (!cancelled && typeof ratio === 'number') setMae(ratio * 100);
       } catch { /* ignore */ }
     })();

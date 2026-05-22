@@ -232,6 +232,100 @@ export async function fetchMlPredictedRates(
   return out;
 }
 
+// ─── Burn-source selection ─────────────────────────────────────────────────
+//
+// Honesty-audit Phase 4 (2026-05-22): every item card displays a `daysLeft`
+// number. The UI used to compute that number from one of three sources
+// silently — ML prediction, configured usage rule, or the par/60 default —
+// with no way for the GM to tell which. The default produces a confident-
+// looking number from zero data: par=120 always reports "60d left" forever,
+// regardless of actual usage.
+//
+// `selectBurnRate` makes the source explicit. The UI uses BurnSource to:
+//   - render the daysLeft number when source ∈ {ml, rule-occupancy}
+//   - render an em-dash when source ∈ {fallback-60d, no-data} (no real
+//     prediction available; numeric daysLeft is misleading)
+//   - skip auto-pre-check in the reorder panel for items without real data
+//   - show the onboarding banner ("Add your first counts ...") when ALL
+//     items lack real data
+//
+// Pure function — extracted to lib so it's unit-testable from
+// src/lib/__tests__ without dragging in the inventory UI tree.
+
+const ITEM_TYPICAL_BURN_DAYS = 60;
+
+export type BurnSource = 'ml' | 'rule-occupancy' | 'fallback-60d' | 'no-data';
+
+export interface SelectedBurnRate {
+  /** Per-day burn rate the UI shows. May be derived from rate-per-occ-room
+   *  via the `occRoomsPerDay` arg. */
+  burnPerDay: number;
+  /** Original rate, useful for callers that want to know the underlying
+   *  per-occ-room rate before multiplication. */
+  burn: number;
+  /** Unit of `burn`. The adapter consumes this to drive existing UI
+   *  formatting; new UI code should prefer `burnPerDay`. */
+  burnUnit: '/day' | '/occ-room';
+  /** Source provenance — drives the UI badge + pre-check logic. */
+  burnSource: BurnSource;
+}
+
+/**
+ * Pick the burn rate for a single inventory item from the four sources, in
+ * descending order of evidence quality.
+ *
+ *   ml             — ML model wrote a prediction (mlRate > 0).
+ *   rule-occupancy — operator-configured per-checkout / per-stayover usage rule.
+ *   fallback-60d   — par level / 60 days (no rule, no model, but item has par).
+ *   no-data        — neither rule nor par; default burn=1/day (will show em-dash).
+ */
+export function selectBurnRate(
+  item: {
+    id: string;
+    usagePerCheckout?: number | null;
+    usagePerStayover?: number | null;
+    parLevel?: number | null;
+  },
+  mlRate: number | undefined,
+  occRoomsPerDay: number,
+): SelectedBurnRate {
+  if (typeof mlRate === 'number' && mlRate > 0) {
+    return {
+      burnPerDay: mlRate,
+      burn: mlRate,
+      burnUnit: '/day',
+      burnSource: 'ml',
+    };
+  }
+  const perCheckout = item.usagePerCheckout ?? 0;
+  const perStayover = item.usagePerStayover ?? 0;
+  if (perCheckout > 0 || perStayover > 0) {
+    const rate = Math.max(perCheckout, perStayover);
+    return {
+      burnPerDay: rate * Math.max(occRoomsPerDay, 1),
+      burn: rate,
+      burnUnit: '/occ-room',
+      burnSource: 'rule-occupancy',
+    };
+  }
+  const par = Math.max(0, item.parLevel ?? 0);
+  if (par > 0) {
+    const rate = par / ITEM_TYPICAL_BURN_DAYS;
+    return {
+      burnPerDay: rate,
+      burn: rate,
+      burnUnit: '/day',
+      burnSource: 'fallback-60d',
+    };
+  }
+  return {
+    burnPerDay: 1,
+    burn: 1,
+    burnUnit: '/day',
+    burnSource: 'no-data',
+  };
+}
+
 // ─── Single-item prediction ────────────────────────────────────────────────
 
 export function predictReorder(

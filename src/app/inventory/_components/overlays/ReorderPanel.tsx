@@ -76,6 +76,7 @@ export function ReorderPanel({
         cost: sq.qty * (d.unitCost || 0),
         reason,
         urgency,
+        burnSource: d.burnSource,
         display: d,
       });
     }
@@ -87,15 +88,27 @@ export function ReorderPanel({
     return out;
   }, [open, display, averages, mlRateMap]);
 
+  // Honesty-audit Phase 4: detect newly-onboarded hotel (every rec is
+  // fallback-60d or no-data) so we can render the onboarding banner instead
+  // of letting the GM stare at a list of unchecked items with no explanation.
+  const allRecsAreFallback =
+    recs.length > 0 &&
+    recs.every((r) => r.burnSource === 'fallback-60d' || r.burnSource === 'no-data');
+
   const [state, setState] = useState<Record<string, LineState>>({});
   const [saving, setSaving] = useState(false);
 
   // Reset state whenever recs change (e.g. panel reopens with new data).
+  // Honesty-audit Phase 4: only pre-check items that have REAL signal
+  // (ML prediction or operator-configured rule). Items that ended up in
+  // the panel via the par/60 fallback don't have enough evidence to
+  // auto-include in the cart — the GM should explicitly opt them in.
   useEffect(() => {
     if (!open) return;
     const next: Record<string, LineState> = {};
     for (const r of recs) {
-      next[r.itemId] = { checked: r.urgency === 'now', qty: r.suggestQty };
+      const hasRealSignal = r.burnSource === 'ml' || r.burnSource === 'rule-occupancy';
+      next[r.itemId] = { checked: r.urgency === 'now' && hasRealSignal, qty: r.suggestQty };
     }
     setState(next);
   }, [open, recs]);
@@ -197,6 +210,31 @@ export function ReorderPanel({
             );
           })}
         </div>
+
+        {/* Honesty-audit Phase 4 onboarding banner: when EVERY rec is from
+            the par/60 fallback (no ML model AND no operator-configured
+            usage rule), tell the GM why nothing is pre-checked instead of
+            leaving them to guess. */}
+        {allRecsAreFallback && (
+          <div
+            style={{
+              background: T.paper,
+              border: `1px solid ${T.rule}`,
+              borderRadius: 12,
+              padding: '14px 16px',
+              fontFamily: fonts.sans,
+              fontSize: 13,
+              color: T.ink2,
+              lineHeight: 1.5,
+            }}
+          >
+            <b style={{ color: T.ink }}>No usage data yet.</b>{' '}
+            These suggestions are based on par levels, not real usage. Add a
+            few counts so the AI can learn how fast each item moves — once
+            it&apos;s seen ~3 counts per item it&apos;ll start predicting
+            daily rates and pre-checking what&apos;s actually low.
+          </div>
+        )}
 
         {/* Urgency groups */}
         {recs.length === 0 ? (

@@ -112,7 +112,16 @@ export function ItemRow({ it, onClick }: ItemRowProps) {
             whiteSpace: 'nowrap',
           }}
         >
-          {daysOutLabel(it.daysLeft)}
+          {/*
+            Honesty-audit Phase 4: when the burn rate came from the par/60
+            default (no rule, no model) or there is no data at all, the
+            numeric daysLeft is a fixed function of par — not a prediction.
+            Render an em-dash instead so the GM doesn't read "60d left" as
+            a forecast. ML and rule-occupancy items keep showing the number.
+          */}
+          {it.burnSource === 'fallback-60d' || it.burnSource === 'no-data'
+            ? '—'
+            : daysOutLabel(it.daysLeft)}
         </span>
       </div>
 

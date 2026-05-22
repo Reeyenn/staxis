@@ -4,13 +4,16 @@
 import type { InventoryItem } from '@/types';
 import type { OccupancyBundle, OccupancySinceLastCount } from '@/lib/inventory-estimate';
 import { calculateEstimatedStock, computeOccupancyForItem } from '@/lib/inventory-estimate';
-import { predictReorder, type DailyAverages, type PredictionResult } from '@/lib/inventory-predictions';
+import {
+  predictReorder,
+  selectBurnRate,
+  type DailyAverages,
+  type PredictionResult,
+} from '@/lib/inventory-predictions';
 import type { DisplayItem } from './types';
 import { ratioStatus } from './format';
 import { thumbKindFor } from './ItemThumb';
 import type { InvCat } from './tokens';
-
-const ITEM_TYPICAL_BURN_DAYS = 60; // fallback horizon when no rate data exists
 
 export function toDisplayItem(
   item: InventoryItem,
@@ -32,31 +35,28 @@ export function toDisplayItem(
   const par = Math.max(0, item.parLevel || 0);
   const status = ratioStatus(estimated, par);
 
-  // Per-day burn — prefer ML rate when present, else fall back to
-  // usage-per-occ-room math, else default to 60-day burn-through.
-  const ml = opts.mlRateMap.get(item.id);
-  let burn: number;
-  let burnUnit: '/day' | '/occ-room';
-  if (typeof ml === 'number' && ml > 0) {
-    burn = ml;
-    burnUnit = '/day';
-  } else if (item.usagePerCheckout || item.usagePerStayover) {
-    const perCheckout = item.usagePerCheckout ?? 0;
-    const perStayover = item.usagePerStayover ?? 0;
-    const ratePerOccRoom = Math.max(perCheckout, perStayover);
-    burn = ratePerOccRoom;
-    burnUnit = '/occ-room';
-  } else {
-    burn = par > 0 ? par / ITEM_TYPICAL_BURN_DAYS : 1;
-    burnUnit = '/day';
-  }
-
-  // Convert to per-day for daysLeft.
+  // Honesty-audit Phase 4: explicit burn-source selection via the pure
+  // helper in @/lib/inventory-predictions. The previous inline if/else
+  // produced numbers without telling the UI which source they came from.
+  // selectBurnRate classifies every item into ml / rule-occupancy /
+  // fallback-60d / no-data, and the UI consumes burnSource to decide
+  // when to show a real number vs. an em-dash and how to pre-check the
+  // reorder panel.
   const occRoomsToday = opts.dailyAverages
     ? Math.max(1, opts.dailyAverages.avgDailyCheckouts + opts.dailyAverages.avgDailyStayovers)
     : 1;
-  const burnPerDay = burnUnit === '/occ-room' ? burn * occRoomsToday : burn;
-  const daysLeft = burnPerDay > 0 ? estimated / burnPerDay : 90;
+  const ml = opts.mlRateMap.get(item.id);
+  const selected = selectBurnRate(
+    {
+      id: item.id,
+      usagePerCheckout: item.usagePerCheckout,
+      usagePerStayover: item.usagePerStayover,
+      parLevel: par,
+    },
+    ml,
+    occRoomsToday,
+  );
+  const daysLeft = selected.burnPerDay > 0 ? estimated / selected.burnPerDay : 90;
 
   return {
     raw: item,
@@ -71,8 +71,9 @@ export function toDisplayItem(
     unitCost: item.unitCost ?? 0,
     vendor: item.vendorName ?? '',
     leadDays: item.reorderLeadDays ?? 3,
-    burn,
-    burnUnit,
+    burn: selected.burn,
+    burnUnit: selected.burnUnit,
+    burnSource: selected.burnSource,
     graduated: opts.autoFillGraduated.has(item.id),
     status,
     daysLeft: Math.max(0, Math.min(90, Math.round(daysLeft))),
@@ -99,11 +100,20 @@ export function recommendReorder(
   const urgency: 'now' | 'soon' | 'ok' =
     pred.urgency === 'now' ? 'now' : pred.urgency === 'soon' ? 'soon' : 'ok';
   // Build a friendly reason string. predictReorder doesn't return one.
+  // Honesty-audit Phase 4: append a source suffix so a row that came from
+  // the 60-day fallback is visibly different from a row backed by ML.
   let reason: string;
   if (pred.daysUntilOut == null) {
     reason = 'no usage history yet';
   } else {
     reason = `${Math.max(0, Math.round(pred.daysUntilOut))}d left, ${d.leadDays}d lead`;
+  }
+  if (d.burnSource === 'fallback-60d') {
+    reason = `${reason} · est`;
+  } else if (d.burnSource === 'no-data') {
+    reason = `${reason} · no data`;
+  } else if (d.burnSource === 'ml') {
+    reason = `${reason} · ai`;
   }
   return { urgency, pred, reason };
 }

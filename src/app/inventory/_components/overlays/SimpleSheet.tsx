@@ -187,8 +187,21 @@ interface AIStatusShape {
   itemsWithModel: number;
   itemsGraduated: number;
   itemsExpectedToGraduate: number;
-  currentMaeRatio: number | null;
+  /**
+   * Honesty-audit Phase 4: the field this UI cares about for the "% off"
+   * accuracy card. validation_mae / mean_observed_rate — the real
+   * activation gate ratio. Returns null for ~7 days post-Phase 2 ship
+   * until the trainer populates hyperparameters.mean_observed_rate on
+   * next weekly retrain; we render "Populating…" during that window.
+   */
+  currentMaeRatioVsMean: number | null;
+  /** val_mae / train_mae — fit-tightness, NOT the activation gate.
+   *  Kept on the type for forward compat but the UI no longer reads it
+   *  for the "% off" card. */
+  overfitRatio: number | null;
   lastInferenceAt: string | null;
+  lastInferenceStale: boolean;
+  predictionsLast7Days: number;
 }
 
 function AIHelperSheet({
@@ -241,10 +254,20 @@ function AIHelperSheet({
     setTotalCounts(stats ? stats.itemsWithModel : null);
   }, [stats]);
 
+  // Honesty-audit Phase 4: read `currentMaeRatioVsMean` (the gate ratio) for
+  // the "% off" card, not the misnamed-overfit `currentMaeRatio` we used to
+  // ship. The "% off" label only makes semantic sense as the gate ratio —
+  // before this change, the UI was multiplying an overfit ratio by 100 and
+  // calling it "% off", which is the wrong number with a misleading label.
+  // Pre-retrain window: stats may have null until next weekly training,
+  // in which case maePctOrNull is null and the StatusCard shows "Populating".
+  const maePctOrNull =
+    stats?.currentMaeRatioVsMean != null ? stats.currentMaeRatioVsMean * 100 : null;
   const ml = {
     eventsLogged: totalCounts ?? 0,
     eventsNeeded: 30,
-    maePct: stats?.currentMaeRatio != null ? stats.currentMaeRatio * 100 : 0,
+    maePctOrNull,
+    maePct: maePctOrNull ?? 0,
     maeTarget: 10,
     consecutivePasses: Math.min(5, Math.floor((stats?.daysSinceFirstCount ?? 0) / 30)),
     passesNeeded: 5,
@@ -477,6 +500,10 @@ function StatusTab({
   ml: {
     eventsLogged: number;
     eventsNeeded: number;
+    /** Null during the post-Phase-2 backfill window (until next weekly
+     *  retrain populates hyperparameters.mean_observed_rate). UI renders
+     *  "Populating…" in that case instead of the misleading 0.0% off. */
+    maePctOrNull: number | null;
     maePct: number;
     maeTarget: number;
     consecutivePasses: number;
@@ -500,9 +527,13 @@ function StatusTab({
         />
         <StatusCard
           label="Accuracy"
-          big={`${ml.maePct.toFixed(1)}% off`}
-          target={`under ${ml.maeTarget}% to pass`}
-          passing={ml.maePct > 0 && ml.maePct <= ml.maeTarget}
+          big={ml.maePctOrNull == null ? 'Populating…' : `${ml.maePctOrNull.toFixed(1)}% off`}
+          target={
+            ml.maePctOrNull == null
+              ? 'first weekly retrain fills this in'
+              : `under ${ml.maeTarget}% to pass`
+          }
+          passing={ml.maePctOrNull != null && ml.maePctOrNull > 0 && ml.maePctOrNull <= ml.maeTarget}
         />
         <StatusCard
           label="Stable months"
