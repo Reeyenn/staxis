@@ -93,6 +93,28 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // Phase 2B (audit 2026-05-22): also revoke session-bound mfa_verified
+  // for ALL of this user's sessions, not just the current one. Sign-out
+  // is an unambiguous "kill every trust" action — matches the existing
+  // trusted_devices semantics above. After this delete, the next JWT
+  // refresh (or fresh sign-in) computes mfa_verified=false via the auth
+  // hook → PostgREST + Realtime reject the user until they re-establish
+  // trust through OTP + /api/auth/trust-device.
+  //
+  // Non-fatal: if this fails the trusted_devices delete already happened
+  // (primary action), so the website-layer gate (Phase 1) is still
+  // closed. Only the database-layer gate (Phase 2B) is briefly stale
+  // until the FK CASCADE on auth.sessions or the janitor cron catches it.
+  const { error: mfaDelErr, count: mfaDeletedCount } = await supabaseAdmin
+    .from('mfa_verified_sessions')
+    .delete({ count: 'exact' })
+    .eq('user_id', userData.user.id);
+  if (mfaDelErr) {
+    log.error('[revoke-trust] mfa_verified_sessions delete failed (non-fatal)', {
+      requestId, userId: userData.user.id, err: mfaDelErr.message,
+    });
+  }
+
   // Visible-on-failure security event. Distinct from writeAudit because
   // an audit gap on a revoke means we can't tell after-the-fact whether
   // a "trust still active" was the user not signing out yet or an audit
@@ -105,6 +127,7 @@ export async function POST(req: NextRequest) {
       accountId: account.id,
       source,
       deletedCount: deletedCount ?? 0,
+      mfaSessionsDeletedCount: mfaDeletedCount ?? 0,
     },
   });
 

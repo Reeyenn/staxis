@@ -44,6 +44,34 @@ function decodeJwtIat(token: string): number | null {
   }
 }
 
+/**
+ * Decode the `session_id` claim from a Supabase JWT. Phase 2B (audit
+ * 2026-05-22): trust-device binds the issued staxis_device cookie to
+ * the specific auth.sessions row by writing a mfa_verified_sessions
+ * row keyed on this session_id. The custom_access_token_hook checks
+ * for that row to compute mfa_verified=true. An attacker creating a
+ * fresh signInWithPassword session would have a different session_id
+ * with no matching row → the hook computes mfa_verified=false → RLS
+ * denies via mfa_verified_or_grace().
+ *
+ * Same caveat as decodeJwtIat: no signature verification here. Caller
+ * must have already validated the token via supabaseAdmin.auth.getUser.
+ */
+function decodeJwtSessionId(token: string): string | null {
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  try {
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const json = Buffer.from(b64, 'base64').toString('utf8');
+    const obj = JSON.parse(json) as { session_id?: unknown };
+    return typeof obj.session_id === 'string' && obj.session_id.length > 0
+      ? obj.session_id
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
 
@@ -135,6 +163,44 @@ export async function POST(req: NextRequest) {
     log.error('[trust-device] insert failed', { requestId, accountId: account.id, err: insErr.message });
     return err('Failed to register trusted device', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
+    });
+  }
+
+  // Phase 2B (audit 2026-05-22): bind THIS session to the trust we just
+  // established. The custom_access_token_hook reads session_id from the
+  // JWT event payload and checks mfa_verified_sessions to compute
+  // mfa_verified=true. An attacker calling supabase.auth.signInWithPassword
+  // directly with a stolen password would get a NEW session_id with no
+  // matching row → hook computes mfa_verified=false → RLS denies via
+  // public.mfa_verified_or_grace(). Closes Door B (PostgREST/Realtime
+  // bypass) for users with existing trust — the original user-bound design
+  // was theater because a user with any trusted device anywhere had every
+  // JWT flagged.
+  //
+  // Idempotent on conflict (a repeat trust-device call for the same session
+  // should not 500). Non-fatal on other errors — the trusted_devices row
+  // is in place; worst case the user hits RLS denials and re-runs OTP.
+  const sessionId = decodeJwtSessionId(token);
+  if (sessionId) {
+    const { error: mfaErr } = await supabaseAdmin
+      .from('mfa_verified_sessions')
+      .insert({
+        session_id: sessionId,
+        user_id: userData.user.id,
+        verified_from_ip: ip,
+        verified_from_ua: ua,
+      });
+    if (mfaErr && mfaErr.code !== '23505') {
+      log.warn('[trust-device] mfa_verified_sessions insert failed (non-fatal)', {
+        requestId, sessionId, userId: userData.user.id, err: mfaErr.message,
+      });
+    }
+  } else {
+    // JWT has no session_id claim — shouldn't happen with current Supabase
+    // versions (added 2024-ish). Log so we notice if Supabase ever changes
+    // the claim shape and the hook stops binding correctly.
+    log.warn('[trust-device] JWT missing session_id claim — mfa_verified_sessions skipped', {
+      requestId, userId: userData.user.id,
     });
   }
 

@@ -81,6 +81,22 @@ function VerifyInner() {
         // again on their next sign-in from this device.
         console.warn('trust-device call failed', err);
       }
+
+      // Phase 2B (audit 2026-05-22): force a token refresh so the new
+      // JWT carries the `mfa_verified=true` claim minted by the auth hook
+      // (it reads the freshly-written mfa_verified_sessions row). Without
+      // this, the user's first batch of PostgREST/Realtime calls after
+      // sign-in would be rejected by RLS until the natural ~1h refresh
+      // — empty dashboard / no live updates until then.
+      //
+      // Non-fatal: if the refresh fails, the natural refresh will pick
+      // it up eventually. Subsequent fetch retries will succeed at that
+      // point.
+      try {
+        await supabase.auth.refreshSession();
+      } catch (err) {
+        console.warn('refreshSession after trust-device failed', err);
+      }
     }
 
     router.replace(redirectTarget);

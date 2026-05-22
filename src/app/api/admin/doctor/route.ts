@@ -132,6 +132,12 @@ type CheckFn = () => Promise<Omit<Check, 'name' | 'durationMs'>>;
 
 const checks: Array<[string, CheckFn]> = [
   ['env_vars',                       checkEnvVars],
+  // Audit 2026-05-22 Phase 2B: synthetic-event self-test for the
+  // custom_access_token_hook. Function-exists is not enough — the inner
+  // exception blocks can swallow grant failures silently, leaving every
+  // JWT without mfa_verified. Calls the hook directly with a known
+  // skip_2fa demo user and asserts the claim is set correctly.
+  ['mfa_verified_hook_self_test',    checkMfaVerifiedHookSelfTest],
   ['supabase_admin_auth',            checkSupabaseAdminAuth],
   ['supabase_jwt_expiry',            checkSupabaseJwtExpiry],
   // Project consistency: NEXT_PUBLIC_SUPABASE_URL (where the browser
@@ -442,6 +448,71 @@ async function checkEnvVars(): Promise<Omit<Check, 'name' | 'durationMs'>> {
     detail: parts.join(' | '),
     fix: 'Vercel → Project Settings → Environment Variables. Set missing/empty vars and redeploy.',
   };
+}
+
+/**
+ * Audit 2026-05-22 Phase 2B — synthetic-event self-test for the
+ * custom_access_token_hook. Function-exists is insufficient: the hook's
+ * inner exception blocks swallow grant failures and RLS-policy issues,
+ * leaving every JWT without the mfa_verified claim. That state would
+ * pass a "function exists" check but break the security guarantee silently.
+ *
+ * This check calls the hook directly with a synthetic event payload for
+ * a known skip_2fa demo user (test@staxis.local, role=general_manager).
+ * The hook should return claims with `mfa_verified=true` via the
+ * skip_2fa path. Any other result indicates a silent failure.
+ */
+async function checkMfaVerifiedHookSelfTest(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  // The known demo user (test@staxis.local). Its auth.users.id was
+  // observed in prod as 8b1ca426-fa48-43c9-90e4-eb69fed168b6 during the
+  // Phase A hook-verification run. If this UUID changes, the doctor
+  // check breaks — but so would the entire investor demo, so it's
+  // self-documenting.
+  const KNOWN_DEMO_USER_ID = '8b1ca426-fa48-43c9-90e4-eb69fed168b6';
+  // Synthetic session_id — not a real session. The hook's skip_2fa
+  // branch fires before the session_id lookup so this doesn't need
+  // to match a real auth.sessions row.
+  const SYNTHETIC_SESSION_ID = '00000000-0000-0000-0000-000000000001';
+
+  try {
+    const { data, error } = await supabaseAdmin.rpc('custom_access_token_hook', {
+      event: {
+        user_id: KNOWN_DEMO_USER_ID,
+        authentication_method: 'token_refresh',
+        claims: { session_id: SYNTHETIC_SESSION_ID },
+      },
+    });
+    if (error) {
+      return {
+        status: 'fail',
+        detail: `hook RPC errored: ${error.message}`,
+        fix: 'check that migrations 0159 + 0160 are applied; verify supabase_auth_admin has SELECT on accounts + mfa_verified_sessions; review Postgres logs for "custom_access_token_hook: ... failed" notices.',
+      };
+    }
+    const result = data as { claims?: { mfa_verified?: unknown } } | null;
+    const claim = result?.claims?.mfa_verified;
+    if (claim === undefined || claim === null) {
+      return {
+        status: 'fail',
+        detail: 'hook ran but did NOT set mfa_verified claim — silent failure inside the function. Every authenticated user is currently bypassing Door B until this is fixed.',
+        fix: 'check Postgres logs for "custom_access_token_hook: ... failed" notices. Most likely a grant or RLS-policy issue on accounts or mfa_verified_sessions. Migration 0160 must be applied; re-run if uncertain.',
+      };
+    }
+    if (claim !== true) {
+      return {
+        status: 'fail',
+        detail: `demo user expected mfa_verified=true (skip_2fa path) but got ${JSON.stringify(claim)} — skip_2fa path may be broken`,
+        fix: 'verify accounts.skip_2fa = true for the demo user; verify accounts.role <> "admin"; check the hook function body in migration 0160.',
+      };
+    }
+    return { status: 'ok', detail: 'hook returns mfa_verified=true for demo user (synthetic event)' };
+  } catch (err) {
+    return {
+      status: 'fail',
+      detail: `hook self-test threw: ${errToString(err)}`,
+      fix: 'function may be missing or has a syntax error. Apply migrations 0159 + 0160.',
+    };
+  }
 }
 
 async function checkSupabaseAdminAuth(): Promise<Omit<Check, 'name' | 'durationMs'>> {
@@ -2233,6 +2304,7 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'walkthrough-heal-stale',        cadenceHours: 30/60, description: 'every-30-min walkthrough recovery (heals stale runs left mid-walkthrough by crashed clients)' },
   { name: 'walkthrough-health-alert',      cadenceHours: 10/60, description: 'every-10-min walkthrough health monitor (alerts on stuck step counts)' },
   { name: 'sweep-orphan-auth-users',       cadenceHours: 30/60, description: 'every-30-min orphan auth-user reconciler — deletes auth.users rows with no matching accounts row (audit fix #4)' },
+  { name: 'sweep-mfa-verified-sessions',   cadenceHours: 6,     description: 'every-6-hour sweep of mfa_verified_sessions rows older than 30 days — Phase 2B Door B fix' },
   { name: 'seed-rooms-daily',              cadenceHours: 1,     description: 'hourly heal of partial rooms-today seeds against properties.room_inventory (Round 14)' },
   { name: 'seal-daily',                    cadenceHours: 1,     description: 'hourly per-property daily-seal' },
   // Round 17 (2026-05-15): two-slot cron that auto-builds Maria's
