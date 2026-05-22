@@ -580,6 +580,13 @@ def _train_single_item(
         "hyperparameters": {
             "prior_rate_used": prior_rate,
             "cohort_key": cohort_key,
+            # Persisted bit-for-bit from the local variable computed up at the
+            # mean_observed_rate site (line ~451). Read back by
+            # /api/inventory/ai-status to compute the TRUE activation-gate
+            # ratio (validation_mae / mean_observed_rate) — distinct from
+            # the misnamed val/train overfit ratio that the UI used to call
+            # "% off". Honesty-audit Phase 2 (2026-05-22).
+            "mean_observed_rate": mean_observed_rate,
             **(model.get_config() if hasattr(model, "get_config") else {}),
         },
         "notes": mae_reject_notes,

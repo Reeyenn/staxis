@@ -93,6 +93,23 @@ export interface AggregateStats {
   lastAnomalyFiredAt: string | null;
   predictionsLast24h: number;
   activeItemModelCount: number;
+  /**
+   * Count of distinct items whose LATEST non-shadow inventory_rate model_run
+   * is `algorithm='xgboost-quantile' AND is_active=false`. Honesty-audit
+   * Phase 2: surfaces the XGBoost graduation cliff
+   * (ml-service/src/layers/xgboost_quantile.py XGBOOST_INFERENCE_READY=False)
+   * — items that hit ≥100 training events and re-trained as XGBoost, but
+   * inference can't deserialize the artifact so the run is force-deactivated.
+   *
+   * Filtered to LATEST run per (property_id, item_id) so a stale XGBoost
+   * experiment from 6 months ago doesn't permanently mark an item "blocked"
+   * when the latest run is a healthy Bayesian fit. Also restricted to
+   * is_shadow=false rows (shadow XGBoost belongs to a separate soak path).
+   *
+   * Admin-only — NOT surfaced in /api/inventory/ai-status. A GM has zero
+   * context on "XGBoost blocked" and would read it as "the AI is broken."
+   */
+  xgboostBlockedCount: number;
   /** Next scheduled training cron firing (ISO). Computed at request time. */
   nextTrainingAt: string;
   /** Next scheduled inference cron firing (ISO). Computed at request time. */
@@ -233,6 +250,25 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       .eq('layer', 'inventory_rate')
       .eq('is_active', true);
     const runs = runRows ?? [];
+
+    // 4b. Honesty-audit Phase 2: ALL non-shadow inventory_rate runs ordered
+    // newest-first, used downstream to compute xgboostBlockedCount via
+    // "latest run per (property, item)" dedupe. We need historical rows so
+    // we can identify items whose MOST-RECENT run is xgboost-quantile +
+    // inactive — those are the real graduation-cliff items. Without the
+    // latest-only dedupe, a 6-month-old XGBoost experiment would mark an
+    // item "blocked" even when the latest run is a healthy Bayesian fit.
+    // Capped at 50000 rows ≈ 50 items × 1000 runs/item per scope — plenty
+    // of headroom for the foreseeable fleet size.
+    const { data: latestRunRows } = await supabaseAdmin
+      .from('model_runs')
+      .select('property_id, item_id, algorithm, is_active, trained_at')
+      .in('property_id', scopeIds)
+      .eq('layer', 'inventory_rate')
+      .eq('is_shadow', false)
+      .order('trained_at', { ascending: false })
+      .limit(50000);
+    const latestRuns = latestRunRows ?? [];
 
     // 5. Inventory rate predictions — for last prediction time + count last 24h
     const { data: predRows } = await supabaseAdmin
@@ -516,6 +552,27 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     })();
     const lastAnomalyFiredAt = anomalies[0]?.ts ?? null;
 
+    // Honesty-audit Phase 2: xgboostBlockedCount over LATEST run per item.
+    // latestRuns is already ordered by trained_at DESC, so the first time we
+    // see a given (property_id, item_id) is its most-recent run. We count an
+    // item as "XGBoost-blocked" only when that latest row is
+    // xgboost-quantile + is_active=false.
+    const seenItemKeys = new Set<string>();
+    let xgboostBlockedCount = 0;
+    const scopedIdSet = new Set(scopedSidebar.map((p) => p.id));
+    for (const r of latestRuns) {
+      const pid = String(r.property_id);
+      if (!scopedIdSet.has(pid)) continue;
+      const iid = r.item_id ? String(r.item_id) : '';
+      if (!iid) continue;
+      const key = `${pid}:${iid}`;
+      if (seenItemKeys.has(key)) continue;
+      seenItemKeys.add(key);
+      if (r.algorithm === 'xgboost-quantile' && r.is_active === false) {
+        xgboostBlockedCount += 1;
+      }
+    }
+
     const aggregate: AggregateStats = {
       hotelCount: scopedSidebar.length,
       totalCounts,
@@ -537,6 +594,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       lastAnomalyFiredAt,
       predictionsLast24h: predLast24h,
       activeItemModelCount: scopedSidebar.reduce((s, p) => s + (activeByProp.get(p.id) ?? 0), 0),
+      xgboostBlockedCount,
       ...getInventoryNextScheduled(),
     };
 

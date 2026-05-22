@@ -699,13 +699,21 @@ export async function getInventoryAutoFillMap(
 /**
  * Live status for the AI Helper page on /inventory/ai-helper.
  *
- * Returns:
- *   - daysSinceFirstCount       — how long the AI has been "learning"
- *   - itemsTotal                — total items in inventory
- *   - itemsWithModel            — items that have any active model_runs row
- *   - itemsGraduated            — items with auto_fill_enabled=true
- *   - itemsExpectedToGraduate   — items currently passing 2 of 3 gates
- *   - currentMaeRatio           — average MAE/mean across all active models
+ * Mirror of the /api/inventory/ai-status response shape. Both this function
+ * AND the route compute the same fields against the same tables — keep them
+ * in lockstep. Honesty-audit Phase 2 (2026-05-22):
+ *
+ *   - overfitRatio (renamed from currentMaeRatio) — val_mae/train_mae, the
+ *     fit-tightness number. NOT the activation gate.
+ *   - currentMaeRatioVsMean (new) — val_mae/mean_observed_rate, the TRUE
+ *     activation gate ratio. Reads hyperparameters.mean_observed_rate
+ *     populated by the trainer (one-line change in inventory_rate.py).
+ *     Null for ~7 days after Phase 2 ships until next weekly retrain.
+ *   - lastInferenceStale — true when lastInferenceAt > 26h old (one missed
+ *     daily cron + 2h grace).
+ *   - predictionsLast7Days — count of recent predictions; 0 with
+ *     itemsWithModel > 0 indicates probable cron outage.
+ *   - currentMaeRatio (deprecated) — alias for overfitRatio, kept one release.
  */
 export interface InventoryAiStatus {
   aiMode: 'off' | 'auto' | 'always-on';
@@ -714,9 +722,17 @@ export interface InventoryAiStatus {
   itemsWithModel: number;
   itemsGraduated: number;
   itemsExpectedToGraduate: number;
+  overfitRatio: number | null;
+  currentMaeRatioVsMean: number | null;
+  /** @deprecated Use `overfitRatio` instead. Removed after one release. */
   currentMaeRatio: number | null;
   lastInferenceAt: string | null;
+  lastInferenceStale: boolean;
+  predictionsLast7Days: number;
 }
+
+// Honesty-audit Phase 2: keep aligned with src/app/api/inventory/ai-status/route.ts.
+const STALE_INFERENCE_HOURS = 26;
 
 /**
  * Network-wide cohort summary for the InventoryNetworkHealth panel.
@@ -809,7 +825,9 @@ export async function getInventoryNetworkSummary(): Promise<InventoryNetworkSumm
 }
 
 export async function getInventoryAiStatus(pid: string): Promise<InventoryAiStatus> {
-  const [propRes, countRes, itemsRes, runsRes, predRes] = await Promise.all([
+  const sevenDaysAgoIso = new Date(Date.now() - 7 * 86400000).toISOString();
+
+  const [propRes, countRes, itemsRes, runsRes, predRes, predsLast7Res] = await Promise.all([
     supabase
       .from('properties')
       .select('inventory_ai_mode')
@@ -828,7 +846,9 @@ export async function getInventoryAiStatus(pid: string): Promise<InventoryAiStat
       .eq('property_id', pid),
     supabase
       .from('model_runs')
-      .select('item_id,validation_mae,training_mae,auto_fill_enabled,training_row_count,consecutive_passing_runs')
+      // Honesty-audit Phase 2: pull `hyperparameters` so the gate-ratio
+      // computation can read mean_observed_rate per active run.
+      .select('item_id,validation_mae,training_mae,auto_fill_enabled,training_row_count,consecutive_passing_runs,hyperparameters')
       .eq('property_id', pid)
       .eq('layer', 'inventory_rate')
       .eq('is_active', true)
@@ -840,6 +860,12 @@ export async function getInventoryAiStatus(pid: string): Promise<InventoryAiStat
       .order('predicted_at', { ascending: false })
       .limit(1)
       .maybeSingle(),
+    // Phase 2: 7-day prediction count (head:true avoids fetching 50K rows).
+    supabase
+      .from('inventory_rate_predictions')
+      .select('property_id', { count: 'exact', head: true })
+      .eq('property_id', pid)
+      .gte('predicted_at', sevenDaysAgoIso),
   ]);
 
   const aiMode = (propRes.data?.inventory_ai_mode ?? 'auto') as 'off' | 'auto' | 'always-on';
@@ -858,18 +884,48 @@ export async function getInventoryAiStatus(pid: string): Promise<InventoryAiStat
     return passes >= 3 || enough;     // close to graduating
   }).length;
 
-  let currentMaeRatio: number | null = null;
-  const ratios: number[] = [];
+  // overfitRatio: val_mae / train_mae (fit-tightness, NOT activation gate).
+  let overfitRatio: number | null = null;
+  const overfitRatios: number[] = [];
   for (const r of runs) {
     const mae = r.validation_mae;
     const trainMae = r.training_mae;
     if (mae !== null && mae !== undefined && trainMae !== null && trainMae !== undefined && Number(trainMae) > 0) {
-      ratios.push(Number(mae) / Number(trainMae));
+      overfitRatios.push(Number(mae) / Number(trainMae));
     }
   }
-  if (ratios.length > 0) {
-    currentMaeRatio = ratios.reduce((a, b) => a + b, 0) / ratios.length;
+  if (overfitRatios.length > 0) {
+    overfitRatio = overfitRatios.reduce((a, b) => a + b, 0) / overfitRatios.length;
   }
+
+  // currentMaeRatioVsMean: val_mae / mean_observed_rate (the REAL gate).
+  let currentMaeRatioVsMean: number | null = null;
+  const gateRatios: number[] = [];
+  for (const r of runs) {
+    const mae = r.validation_mae;
+    const hp = (r.hyperparameters ?? null) as Record<string, unknown> | null;
+    const meanRaw = hp ? hp.mean_observed_rate : null;
+    const mean = typeof meanRaw === 'number' ? meanRaw : Number(meanRaw);
+    if (
+      mae !== null &&
+      mae !== undefined &&
+      Number.isFinite(mean) &&
+      mean > 1e-9
+    ) {
+      gateRatios.push(Number(mae) / mean);
+    }
+  }
+  if (gateRatios.length > 0) {
+    currentMaeRatioVsMean = gateRatios.reduce((a, b) => a + b, 0) / gateRatios.length;
+  }
+
+  const lastInferenceAt = predRes.data?.predicted_at ?? null;
+  const lastInferenceStale = (() => {
+    if (!lastInferenceAt) return true;
+    const ageHours = (Date.now() - new Date(lastInferenceAt).getTime()) / 3600000;
+    return ageHours > STALE_INFERENCE_HOURS;
+  })();
+  const predictionsLast7Days = predsLast7Res.count ?? 0;
 
   return {
     aiMode,
@@ -878,8 +934,12 @@ export async function getInventoryAiStatus(pid: string): Promise<InventoryAiStat
     itemsWithModel,
     itemsGraduated,
     itemsExpectedToGraduate,
-    currentMaeRatio,
-    lastInferenceAt: predRes.data?.predicted_at ?? null,
+    overfitRatio,
+    currentMaeRatioVsMean,
+    currentMaeRatio: overfitRatio,
+    lastInferenceAt,
+    lastInferenceStale,
+    predictionsLast7Days,
   };
 }
 
