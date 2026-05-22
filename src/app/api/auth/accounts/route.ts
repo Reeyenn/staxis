@@ -1,4 +1,4 @@
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
@@ -21,6 +21,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { ALL_ROLES, isValidRole, type AppRole } from '@/lib/roles';
 import { writeAudit } from '@/lib/audit';
 import { captureException } from '@/lib/sentry';
+import { requireSession } from '@/lib/api-auth';
 
 type AccountRole = AppRole;
 
@@ -33,27 +34,33 @@ function isValidEmail(s: string): boolean {
 /**
  * Admin check.
  *
- * The caller must present BOTH:
+ * The caller must present:
  *   - `x-account-id`: the accounts.id of the row claiming admin
- *   - `Authorization: Bearer <jwt>`: a valid Supabase access token whose
- *     user.id matches accounts.data_user_id for that row
+ *   - `Authorization: Bearer <jwt>`: a valid Supabase access token
+ *   - The `staxis_device` cookie matching a non-expired trusted_devices
+ *     row for the caller's account (enforced via requireSession; closes
+ *     the gap where a leaked admin password JWT could call this route
+ *     without ever completing OTP). Audit 2026-05-22 finding.
  *
- * Either alone is insufficient. Previously we accepted x-account-id alone
- * as a "legacy fallback" — that was a real privilege-escalation hole:
- * anyone who knew or could guess an admin's UUID could send the header
- * with no Authorization and impersonate the admin (full create/delete/
- * password-reset access). The bearer-token requirement is now mandatory.
- *
- * Returns the admin's accounts row on success, null on failure.
+ * Returns the admin's accounts row on success, or a NextResponse the
+ * caller should immediately return on failure (401 / 403 / requires_2fa).
  */
-async function verifyAdmin(req: NextRequest) {
-  const accountId = req.headers.get('x-account-id');
-  if (!accountId) return null;
+async function verifyAdmin(req: NextRequest): Promise<
+  | { ok: true; id: string; role: string; data_user_id: string; userId: string; userEmail: string | undefined }
+  | { ok: false; response: import('next/server').NextResponse }
+> {
+  // Phase 1: validate JWT + device trust via the shared helper.
+  // requireSession default-enforces 2FA, so a JWT-only attacker is
+  // rejected here with requires_2fa even before we read x-account-id.
+  const session = await requireSession(req);
+  if (!session.ok) {
+    return { ok: false, response: session.response };
+  }
 
-  // Bearer token is REQUIRED — no fallback. Closes the spoofing backdoor.
-  const authHeader = req.headers.get('authorization');
-  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  if (!token) return null;
+  const accountId = req.headers.get('x-account-id');
+  if (!accountId) {
+    return { ok: false, response: NextResponse.json({ error: 'missing x-account-id' }, { status: 400 }) };
+  }
 
   // Look up the account row (service role bypasses RLS).
   const { data: account, error: acctErr } = await supabaseAdmin
@@ -62,17 +69,25 @@ async function verifyAdmin(req: NextRequest) {
     .eq('id', accountId)
     .maybeSingle();
 
-  if (acctErr || !account || account.role !== 'admin') return null;
-
-  // Verify the JWT really belongs to the auth user this account row points
-  // to. supabaseAdmin.auth.getUser(token) hits the auth server with the
-  // service role to validate the token signature & expiry.
-  const { data: userData, error: userErr } = await supabaseAdmin.auth.getUser(token);
-  if (userErr || userData.user?.id !== account.data_user_id) {
-    return null;
+  if (acctErr || !account || account.role !== 'admin') {
+    return { ok: false, response: NextResponse.json({ error: 'Unauthorized' }, { status: 403 }) };
   }
 
-  return { ...account, userId: userData.user.id, userEmail: userData.user.email ?? undefined };
+  // Spoofing guard: the x-account-id MUST match the JWT user. Without
+  // this, anyone with any valid session could put another user's
+  // accounts.id in the header and try to inherit admin actions.
+  if (account.data_user_id !== session.userId) {
+    return { ok: false, response: NextResponse.json({ error: 'Unauthorized' }, { status: 403 }) };
+  }
+
+  return {
+    ok: true,
+    id: account.id as string,
+    role: account.role as string,
+    data_user_id: account.data_user_id as string,
+    userId: session.userId,
+    userEmail: session.email ?? undefined,
+  };
 }
 
 // Translate an accounts row to the public-facing shape consumed by
@@ -106,7 +121,7 @@ export const dynamic = 'force-dynamic';
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const caller = await verifyAdmin(req);
-  if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  if (!caller.ok) return caller.response;
 
   const { data, error } = await supabaseAdmin
     .from('accounts')
@@ -138,7 +153,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const caller = await verifyAdmin(req);
-  if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  if (!caller.ok) return caller.response;
 
   const body = await req.json();
   const { username, email, password, displayName, role, propertyAccess } = body as {
@@ -286,7 +301,7 @@ export async function POST(req: NextRequest) {
 export async function PUT(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const caller = await verifyAdmin(req);
-  if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  if (!caller.ok) return caller.response;
 
   const body = await req.json();
   const { accountId, displayName, email, role, propertyAccess, password } = body as {
@@ -390,7 +405,7 @@ export async function PUT(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const caller = await verifyAdmin(req);
-  if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  if (!caller.ok) return caller.response;
 
   const { searchParams } = new URL(req.url);
   const accountId = searchParams.get('accountId');

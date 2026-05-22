@@ -9,6 +9,12 @@
  * classification so the next time someone tweaks the JWT logic they get
  * a red diff instead of a silent regression.
  *
+ * Scope note: this file covers JWT-validation logic ONLY. The 2026-05-22
+ * audit added server-side 2FA enforcement (validateDeviceTrust) that
+ * runs AFTER successful JWT validation; tests that exercise the
+ * happy-path explicitly pass `{ enforce2FA: false }` to skip that layer,
+ * which is covered separately in api-auth-2fa-enforcement.test.ts.
+ *
  * Strategy: monkey-patch supabaseAdmin.auth.getUser so we never hit the
  * network. The api-auth module imports supabaseAdmin as a named import
  * but the underlying object is a singleton — methods replaced on the
@@ -95,7 +101,8 @@ describe('requireSession — header parsing', () => {
       error: null,
     } as unknown as GetUserResult);
     const jwt = mintJwt({ sub: 'user-abc', exp: Math.floor(Date.now() / 1000) + 3600 });
-    await requireSession(reqWith(`Bearer ${jwt}`));
+    // enforce2FA: false — this test is about JWT plumbing, not 2FA.
+    await requireSession(reqWith(`Bearer ${jwt}`), { enforce2FA: false });
     assert.equal(getUserCalls.length, 1);
     assert.equal(getUserCalls[0], jwt);
   });
@@ -251,6 +258,9 @@ describe('requireSession — failure classification', () => {
 });
 
 describe('requireSession — happy path', () => {
+  // These tests cover the userId/email return shape only — the 2FA
+  // enforcement layer is opted out via { enforce2FA: false } and lives
+  // in api-auth-2fa-enforcement.test.ts.
   test('valid session → ok:true with userId and email', async () => {
     nextGetUser = async () => ({
       data: { user: { id: 'user-real-id', email: 'mario@hotel.com' } },
@@ -261,7 +271,7 @@ describe('requireSession — happy path', () => {
       iss: process.env.NEXT_PUBLIC_SUPABASE_URL ?? 'https://placeholder.supabase.co',
       exp: Math.floor(Date.now() / 1000) + 3600,
     });
-    const result = await requireSession(reqWith(`Bearer ${jwt}`));
+    const result = await requireSession(reqWith(`Bearer ${jwt}`), { enforce2FA: false });
     assert.equal(result.ok, true);
     if (result.ok) {
       assert.equal(result.userId, 'user-real-id');
@@ -281,7 +291,7 @@ describe('requireSession — happy path', () => {
       iss: process.env.NEXT_PUBLIC_SUPABASE_URL ?? 'https://placeholder.supabase.co',
       exp: Math.floor(Date.now() / 1000) + 3600,
     });
-    const result = await requireSession(reqWith(`Bearer ${jwt}`));
+    const result = await requireSession(reqWith(`Bearer ${jwt}`), { enforce2FA: false });
     if (result.ok) {
       assert.equal(result.email, null);
     }

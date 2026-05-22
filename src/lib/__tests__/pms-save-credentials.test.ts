@@ -82,6 +82,10 @@ beforeEach(() => {
   // ── from: records the table accessed; returns a chainable stub. The
   //        ownership check chains .select('id, owner_id').eq('id', pid)
   //        .maybeSingle() and expects { data: { owner_id }, error: null }.
+  //        Audit 2026-05-22: requireSession now also reads accounts +
+  //        trusted_devices via validateDeviceTrust. Return shapes that
+  //        let the 2FA gate succeed so the test exercises the actual
+  //        route logic instead of bouncing on requires_2fa.
   supabaseAdmin.from = ((table: string) => {
     const chain: string[] = [];
     fromCalls.push({ table, chain });
@@ -93,10 +97,36 @@ beforeEach(() => {
         if (table === 'properties') {
           return { data: { id: PROPERTY_ID, owner_id: OWNER_ID }, error: null };
         }
+        // validateDeviceTrust path (Phase-1 audit 2026-05-22): satisfy
+        // both reads so the route reaches its actual handler logic.
+        if (table === 'accounts') {
+          return {
+            data: { id: 'account-id', skip_2fa: false, role: 'owner', property_access: [PROPERTY_ID] },
+            error: null,
+          };
+        }
+        if (table === 'trusted_devices') {
+          // No cookie present in the test request → returning null forces
+          // the no_cookie reason. Tests that don't care about 2FA mock
+          // the route's downstream logic; for those, we'd need to provide
+          // a real trusted_devices row. Instead, supply a perpetually-
+          // valid row that the LEFT-JOIN lookup will find regardless of
+          // the (missing) cookie hash — the test mock just doesn't filter
+          // on token_hash. Good enough for "the gate doesn't false-positive".
+          return {
+            data: {
+              id: 'device-id',
+              expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+              absolute_expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+            },
+            error: null,
+          };
+        }
         return { data: null, error: null };
       },
       upsert(...args: unknown[]) { chain.push(`upsert(${JSON.stringify(args)})`); return builder; },
       update(...args: unknown[]) { chain.push(`update(${JSON.stringify(args)})`); return builder; },
+      insert(...args: unknown[]) { chain.push(`insert(${JSON.stringify(args)})`); return Promise.resolve({ error: null }); },
       then: (resolve: (v: unknown) => unknown) => resolve({ data: null, error: null }),
     };
     return builder;
@@ -112,14 +142,27 @@ afterEach(() => {
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
 function makeRequest(body: Record<string, unknown>): NextRequest {
-  return new Request('https://staxis.test/api/pms/save-credentials', {
+  // Audit 2026-05-22: requireSession now reads req.cookies to validate
+  // device trust. Plain Request doesn't carry .cookies (it's a NextRequest
+  // extension) and a Proxy wrapper breaks Request's private #headers field.
+  // Build a fully duck-typed mock that satisfies the four APIs the route
+  // chain touches: .headers.get, .cookies.get, .url, .json.
+  const headers = new Headers({
+    authorization: 'Bearer fake-jwt-the-mock-accepts-anything',
+    'content-type': 'application/json',
+  });
+  const cookies = new Map<string, { value: string }>([
+    ['staxis_device', { value: 'a'.repeat(64) }],
+  ]);
+  return {
+    url: 'https://staxis.test/api/pms/save-credentials',
     method: 'POST',
-    headers: {
-      authorization: 'Bearer fake-jwt-the-mock-accepts-anything',
-      'content-type': 'application/json',
+    headers,
+    cookies: {
+      get: (name: string) => cookies.get(name) ?? undefined,
     },
-    body: JSON.stringify(body),
-  }) as unknown as NextRequest;
+    json: async () => body,
+  } as unknown as NextRequest;
 }
 
 const VALID_BODY = {

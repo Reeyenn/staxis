@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
 
   const { data: account, error: acctErr } = await supabaseAdmin
     .from('accounts')
-    .select('id, skip_2fa')
+    .select('id, skip_2fa, role, property_access')
     .eq('data_user_id', userData.user.id)
     .maybeSingle();
   if (acctErr || !account) {
@@ -46,23 +46,25 @@ export async function POST(req: NextRequest) {
   }
 
   // Role-demo bypass: shared investor accounts (test / testhk / testfd)
-  // skip OTP. F-01 Phase 2 in the security plan — two gates layered:
+  // skip OTP. F-01 Phase 2 in the security plan — THREE gates layered now
+  // (third added in the 2026-05-22 audit):
   //
-  //   1. env.SKIP_2FA_ENABLED must be literal 'true' (Phase 1's grace-
-  //      period default-honored is over). A future SQL typo flipping
-  //      skip_2fa=true on a real customer doesn't matter if the env
-  //      gate isn't on.
+  //   1. env.SKIP_2FA_ENABLED must be literal 'true'.
   //
   //   2. account.data_user_id must appear in env.SKIP_2FA_USER_IDS
-  //      (comma-separated). Even with the env gate on, a non-allowlisted
-  //      account with skip_2fa=true is refused — and the attempt is
-  //      logged via logSecurityEvent so on-call sees the alert in Sentry
-  //      the same hour it happens.
+  //      (comma-separated).
   //
-  // Either check failing falls through to the normal cookie-based trust
-  // path — a legitimate user with a real trusted-device cookie still
-  // gets the trust granted; only the *bypass-via-DB-flag* path is
-  // gated.
+  //   3. account.role MUST NOT be 'admin', AND property_access MUST NOT
+  //      include '*'. The demo accounts are general_manager + scoped to a
+  //      single property. If config drift ever flips skip_2fa=true on an
+  //      admin row AND that admin's UUID lands in the env allowlist, the
+  //      bypass is REFUSED at this layer regardless. A DB CHECK constraint
+  //      (migration 0157) backstops this at the storage layer too.
+  //
+  // Any check failing falls through to the normal cookie-based trust path
+  // — a legitimate admin signing in from a trusted device still works.
+  // Only the *bypass-via-DB-flag* path is gated; logSecurityEvent for the
+  // refusal so on-call sees the alert in Sentry the same hour it happens.
   if (account.skip_2fa) {
     const envOn = env.SKIP_2FA_ENABLED === 'true';
     const allowlist = (env.SKIP_2FA_USER_IDS ?? '')
@@ -70,8 +72,29 @@ export async function POST(req: NextRequest) {
       .map(s => s.trim())
       .filter(Boolean);
     const onAllowlist = allowlist.includes(userData.user.id);
+    const role = (account.role as string) ?? '';
+    const access = (account.property_access ?? []) as string[];
+    const hadWildcardAccess = access.includes('*');
+    const isPrivileged = role === 'admin' || hadWildcardAccess;
 
-    if (envOn && onAllowlist) {
+    // Privileged refusal runs BEFORE the env-gate / allowlist checks.
+    // Reason: even if someone (mis)configures the env allowlist to include
+    // an admin's UUID, we still want this to fail loudly. The other two
+    // checks would have failed silently in that scenario; this one names
+    // the smoking gun.
+    if (isPrivileged) {
+      await logSecurityEvent({
+        action: 'auth.skip_2fa_refused_privileged',
+        userId: userData.user.id,
+        requestId,
+        metadata: {
+          accountId: account.id,
+          role,
+          hadWildcardAccess,
+        },
+      });
+      // Fall through to normal cookie-trust path below.
+    } else if (envOn && onAllowlist) {
       await logSecurityEvent({
         action: 'auth.skip_2fa_used',
         userId: userData.user.id,
@@ -79,13 +102,7 @@ export async function POST(req: NextRequest) {
         metadata: { accountId: account.id },
       });
       return ok({ trusted: true }, { requestId });
-    }
-
-    // Bypass blocked. Two distinct reasons → two distinct events so
-    // the Sentry filter can alert specifically on "skip_2fa=true on an
-    // account NOT in the allowlist" — that's the smoking-gun signal
-    // for the failure mode this gate exists to catch.
-    if (!envOn) {
+    } else if (!envOn) {
       await logSecurityEvent({
         action: 'auth.skip_2fa_blocked_by_env',
         userId: userData.user.id,
