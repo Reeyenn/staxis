@@ -14,6 +14,7 @@
 // telemetry hook. Funneling all walkthrough traffic through start → step
 // → end gives the server the visibility it was missing.
 
+import { createHash } from 'crypto';
 import type { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
@@ -130,6 +131,12 @@ export async function POST(req: NextRequest): Promise<Response> {
     );
   }
 
-  log.info('[walkthrough/start]', { requestId, runId, accountId, task: task.slice(0, 80) });
+  // 2026-05-22 audit: raw user-typed task content was previously logged
+  // (first 80 chars). Task is free-form input that can contain guest names,
+  // room incidents, internal jargon — anything an operator might type.
+  // Log a SHA-256 prefix instead so identical tasks still cluster for
+  // triage without exposing content to Vercel logs / Sentry breadcrumbs.
+  const taskHash = createHash('sha256').update(task).digest('hex').slice(0, 12);
+  log.info('[walkthrough/start]', { requestId, runId, accountId, taskLen: task.length, taskHash });
   return Response.json({ ok: true, runId, requestId });
 }

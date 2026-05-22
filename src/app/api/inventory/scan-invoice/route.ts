@@ -21,6 +21,7 @@ import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { assertAudioBudget, recordNonRequestCost } from '@/lib/agent/cost-controls';
+import { captureException } from '@/lib/sentry';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -291,13 +292,50 @@ export async function POST(req: NextRequest) {
           kind: 'vision',
         });
       } catch (costErr) {
-        // Don't let a cost-ledger failure leak as a 500 to the user — the
-        // vision result already returned (or already errored). Log loudly
-        // so it shows up in Sentry + the doctor's surface.
+        // 2026-05-22 audit (Codex): cost-ledger failure previously only
+        // hit log.error. The Anthropic call already happened (we owe
+        // Anthropic the spend) but agent_costs has no row, so subsequent
+        // assertAudioBudget calls see a stale daily total and the cap
+        // loses fidelity for the rest of the UTC day. Now we:
+        //   - log.error with full unrecorded-spend metadata (manual
+        //     reconciliation surface),
+        //   - captureException to Sentry so a single failure pages,
+        //   - write a durable app_events row so an operator can sum
+        //     across these rows + agent_costs to recover the real total.
+        // We do NOT 500 the user — the vision result already returned.
+        const errObj = costErr instanceof Error ? costErr : new Error(String(costErr));
         log.error('[scan-invoice] cost-ledger write failed', {
-          err: costErr instanceof Error ? costErr : new Error(String(costErr)),
-          pid,
+          err: errObj,
+          pid, accountId,
+          unrecorded: {
+            tokensIn: u.inputTokens,
+            tokensOut: u.outputTokens,
+            costUsd: u.costUsd,
+            modelId: u.modelId,
+          },
         });
+        captureException(errObj, {
+          subsystem: 'cost-ledger',
+          route: 'scan-invoice',
+          severity: 'high',
+          pid, accountId,
+          cost_usd: u.costUsd,
+        });
+        try {
+          await supabaseAdmin.from('app_events').insert({
+            property_id: pid,
+            event_type: 'cost_ledger_failure',
+            metadata: {
+              route: 'scan-invoice',
+              accountId,
+              model: u.model,
+              modelId: u.modelId,
+              tokensIn: u.inputTokens,
+              tokensOut: u.outputTokens,
+              costUsd: u.costUsd,
+            },
+          });
+        } catch { /* Sentry already paged; durable fallback best-effort */ }
       }
     }
   }
