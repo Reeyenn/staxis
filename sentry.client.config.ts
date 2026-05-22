@@ -33,6 +33,31 @@ Sentry.init({
   // Always replay sessions where an error occurred — best signal-per-byte.
   replaysOnErrorSampleRate: 1.0,
 
+  // Replay PII masking (2026-05-22 monitoring/logging/secrets hardening).
+  //
+  // The housekeeper page renders guest names, room numbers, and (when the
+  // SMS-confirmation toggle is on) staff phone numbers — exactly the
+  // surface that lands in a replay when a JS error fires. Default Sentry
+  // replay masks text + inputs already, but the configuration was implicit
+  // and easy to drift. Configure explicitly with an opt-out allowlist
+  // class (`.sentry-unmask`) so future devs can selectively unmask
+  // layout-only regions for debugging without disabling masking globally.
+  //
+  // mask:['*']          — mask every text node by default (defense in depth)
+  // maskAllInputs:true  — input values never leak (room search box, etc.)
+  // blockAllMedia:true  — <img>/<video>/<svg> blocked; never carries guest
+  //                       data today but cheap insurance
+  // unmask:['.sentry-unmask'] — selective override for elements explicitly
+  //                       marked safe (icons, button labels, status chips)
+  integrations: [
+    Sentry.replayIntegration({
+      mask: ['*'],
+      maskAllInputs: true,
+      blockAllMedia: true,
+      unmask: ['.sentry-unmask'],
+    }),
+  ],
+
   // 2026-05-12 (Codex audit follow-up): use the SHARED scrubString from
   // sentry-scrub.ts so breadcrumbs and events scrub against the same set
   // of patterns. Previously the breadcrumb hook used a 3-pattern inline

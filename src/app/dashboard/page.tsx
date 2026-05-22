@@ -25,6 +25,7 @@ import {
 } from '@/lib/db';
 import { useTodayStr } from '@/lib/use-today-str';
 import { useMonthData, METRICS, type MetricKey, type DayRow } from '@/lib/dashboard/use-month-data';
+import StaleDataBanner from '@/components/StaleDataBanner';
 import type { Room, WorkOrder, HandoffEntry } from '@/types';
 
 // ─── Palette + per-metric color maps (verbatim from design source) ────
@@ -356,6 +357,11 @@ export default function DashboardPage() {
         }} />
 
         <div style={{ position: 'relative', maxWidth: 1600, margin: '0 auto' }}>
+
+          {/* F8 stale-data banner from main — only renders when scraper
+              data is >90 min stale or the watchdog SMS path is degraded.
+              Self-hides in the steady state. */}
+          <StaleDataBanner />
 
           {/* Chart card — card padding removed on the chart's row so the
               SVG goes truly edge-to-edge of the card; the top row keeps

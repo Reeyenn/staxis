@@ -28,6 +28,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { verifyWebhookSignature, stripeIsConfigured, type Stripe } from '@/lib/stripe';
 import { redactStripeId } from '@/lib/api-validate';
 import { log } from '@/lib/log';
+import { errToString } from '@/lib/utils';
 
 // Stripe sends webhooks as raw JSON in the request body. Next.js by
 // default does NOT consume the body before the route handler runs (that
@@ -94,12 +95,19 @@ export async function POST(req: NextRequest) {
     // would double-process every event. 500 → Stripe retries with
     // exponential backoff for up to 3 days, by which point the dedupe
     // table is presumably healthy again. (Pass-3 fix.)
-    console.error('[stripe/webhook] dedupe insert failed — refusing to process', insertErr);
+    log.error('[stripe/webhook] dedupe insert failed — refusing to process', {
+      msg: errToString(insertErr),
+      eventId: event.id,
+      eventType: event.type,
+    });
     return NextResponse.json({ error: 'Dedupe table unhealthy — try again' }, { status: 500 });
   } else if (!dedupeRow) {
     // No error AND no row means something weird happened — refuse to
     // process (Stripe will retry; we'll see the error in logs).
-    console.error('[stripe/webhook] dedupe insert returned no row and no error — bailing');
+    log.error('[stripe/webhook] dedupe insert returned no row and no error — bailing', {
+      eventId: event.id,
+      eventType: event.type,
+    });
     return NextResponse.json({ error: 'Dedupe check failed' }, { status: 500 });
   }
 
@@ -115,7 +123,11 @@ export async function POST(req: NextRequest) {
         .eq('event_id', event.id);
     }
   } catch (err) {
-    console.error(`[stripe/webhook] ${event.type} handler threw`, err);
+    log.error('[stripe/webhook] handler threw', {
+      msg: errToString(err),
+      eventId: event.id,
+      eventType: event.type,
+    });
     // Delete the dedupe row so the next retry has a chance to succeed.
     await supabaseAdmin
       .from('stripe_processed_events')

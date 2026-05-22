@@ -175,6 +175,17 @@ const checks: Array<[string, CheckFn]> = [
   ['supabase_realtime_publication',  checkSupabaseRealtimePublication],
   ['supabase_heartbeat',             checkSupabaseHeartbeat],
   ['supabase_dashboard',             checkSupabaseDashboard],
+  // F7 (master plan v2): per-property dashboard freshness, aligned with
+  // the UI's DASHBOARD_STALE_MINUTES contract. Warns at 25 min (matching
+  // the customer-visible "stale" banner threshold), fails at 45 min
+  // (Codex review reframe — "reuse UI helper contract, don't redefine").
+  ['dashboard_freshness',            checkDashboardFreshness],
+  // F7 (master plan v2): bubble up watchdog degradation to /doctor.
+  // The scraper writes a coarse boolean degraded + degradedReason to
+  // scraper_status['vercel_watchdog'] each tick. If true, the SMS path
+  // is broken regardless of how green every other check is — surface
+  // that loudly here so we don't trust the silence.
+  ['vercel_watchdog_degraded',       checkVercelWatchdogDegraded],
   // Schema-drift detection: every migration in /supabase/migrations/ must be
   // recorded in applied_migrations on the live DB. Catches the "deployed
   // code that calls a column added in 00NN before 00NN was applied" failure
@@ -284,9 +295,34 @@ const checks: Array<[string, CheckFn]> = [
   // workflow's jq guard passed because .ok was true. Doctor now reads the
   // pair together so drift between them screams instead of whispering.
   ['ml_service_urls_configured',     checkMlServiceUrlsConfigured],
+  // deploy-ci-cron Step 7.5 (2026-05-22): pings ML /health. The lifespan
+  // handler added in main.py blocks /health from responding until env
+  // validation passes, so a 200 here proves the new fail-fast startup
+  // gate is alive. Surfaces in MlHealthPanel (filters checks by `ml_`
+  // prefix) so Reeyen sees the safety net on /admin/ml without hunting.
+  ['ml_service_lifespan_active',     checkMlServiceLifespanActive],
   // Error tracking — Sentry no-ops gracefully when DSN missing, but a
   // malformed DSN means errors silently disappear. Fail on bad shape.
   ['sentry_dsn_shape',               checkSentryDsnShape],
+  // Phase E2E (2026-05-22) — async email-lifecycle webhook readiness.
+  // Warns if RESEND_API_KEY is set (we're sending email) but
+  // RESEND_WEBHOOK_SECRET isn't, which means async bounces / complaints
+  // go un-tracked. Complements the live /api/resend-webhook route.
+  ['resend_webhook_secret_configured', checkResendWebhookSecretConfigured],
+  // 2026-05-22 monitoring/logging/secrets hardening — three follow-on
+  // checks that complement the DSN shape check:
+  //   1. sentry_auth_token_present: source-map upload gated on the token
+  //      being set on Vercel (Production scope). Warns when absent.
+  //   2. sentry_client_initialized: verifies the SDK loaded (proves DSN
+  //      was syntactically valid AND Sentry.init() ran without throwing).
+  //   3. sentry_ingest_probe_recent: warns when the last successful
+  //      /api/admin/sentry-test ingest probe is older than 7 days.
+  //      The probe is the only path that proves end-to-end ingest works
+  //      (firewall, project mismatch, quota exhaustion are all things
+  //      DSN-shape + client-init can't detect).
+  ['sentry_auth_token_present',      checkSentryAuthTokenPresent],
+  ['sentry_client_initialized',      checkSentryClientInitialized],
+  ['sentry_ingest_probe_recent',     checkSentryIngestProbeRecent],
   // Picovoice wake-word — operator-visible state for "Hey Staxis". Warns
   // on half-configured (key OR .ppn but not both), oks both ways for
   // intentional disabled state and fully-wired state. Replaces the
@@ -317,6 +353,13 @@ const checks: Array<[string, CheckFn]> = [
   // `cua_action_policy_refusal` stderr stream for one full mapping run
   // with no false-positive refusals.
   ['cua_action_policy_enforce_status', checkCuaActionPolicyEnforceStatus],
+  // deploy-ci-cron Step 7.5 (2026-05-22): CUA service had no CI gate
+  // before; a TypeScript regression surfaced at Fly deploy time, after
+  // an onboarding job was already queued. This check confirms the
+  // tests.yml workflow's last run on main passed. Surfaces on
+  // /admin/pms (filters checks by `cua_` prefix) so Reeyen sees the
+  // onboarding safety net in the same place he opens for PMS work.
+  ['cua_service_ci_recent_pass',     checkCuaServiceCiRecentPass],
   // Round 14 (2026-05-14): every active property's `rooms` table for
   // today should have one row per inventory entry. The AI tools now
   // compute totals from room_inventory (Layer 1), but if today's seed
@@ -1213,6 +1256,85 @@ async function checkSupabaseDashboard(): Promise<Omit<Check, 'name' | 'durationM
       status: 'fail',
       detail: `Supabase read failed: ${errToString(err)}`,
     };
+  }
+}
+
+// F7: per-property dashboard freshness. Mirrors the UI's
+// DASHBOARD_STALE_MINUTES (25 min) at the warn threshold, fails at 45 min.
+// Skipped outside the scraper's 5am–11pm CT window so off-hours staleness
+// (when no pulls are scheduled) doesn't false-alarm.
+async function checkDashboardFreshness(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const localHour = parseInt(
+      new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: 'America/Chicago' }).format(new Date()),
+      10,
+    );
+    if (localHour < 5 || localHour >= 23) {
+      return { status: 'skipped', detail: `outside scraper window (local hour ${localHour})` };
+    }
+
+    // Pick the most-recently-pulled dashboard_by_date row across properties.
+    // Single-property today; multi-property generalizes naturally —
+    // aggregating to "worst staleness across the fleet" is a follow-up.
+    const { data, error } = await supabaseAdmin
+      .from('dashboard_by_date')
+      .select('property_id, pulled_at, error_code')
+      .order('pulled_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data || !data.pulled_at) {
+      return {
+        status: 'warn',
+        detail: 'no dashboard_by_date rows yet (scraper may not have pulled this property)',
+      };
+    }
+
+    const pulledAt = new Date(data.pulled_at as string);
+    const minAgo = Math.floor((Date.now() - pulledAt.getTime()) / 60_000);
+
+    if (minAgo > 45) {
+      return {
+        status: 'fail',
+        detail: `dashboard_by_date is ${minAgo} min stale (>45 min during scraper window)`,
+        fix: 'Check Railway scraper logs for dashboard-pull errors; check Choice Advantage login.',
+      };
+    }
+    if (minAgo > 25) {
+      return {
+        status: 'warn',
+        detail: `dashboard_by_date is ${minAgo} min stale (>25 min — matches UI stale banner)`,
+      };
+    }
+    return { status: 'ok', detail: `dashboard fresh (${minAgo} min ago)` };
+  } catch (err) {
+    return { status: 'fail', detail: `Supabase read failed: ${errToString(err)}` };
+  }
+}
+
+// F7: surface watchdog degradation. The scraper writes
+// scraper_status['vercel_watchdog'].degraded each tick. true means SMS
+// alerts will not fire (env missing, send failed, or alert phone unset).
+async function checkVercelWatchdogDegraded(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('scraper_status')
+      .select('data')
+      .eq('key', 'vercel_watchdog')
+      .maybeSingle();
+    if (error) throw error;
+    const value = (data?.data ?? {}) as { degraded?: boolean; degradedReason?: string };
+    if (value.degraded === true) {
+      return {
+        status: 'fail',
+        detail: `watchdog SMS path degraded (reason=${value.degradedReason ?? 'unknown'})`,
+        fix: 'Check TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM_NUMBER / OPS_ALERT_PHONE on Railway. A failed send also flips this — verify Twilio account status.',
+      };
+    }
+    return { status: 'ok', detail: 'watchdog SMS path healthy' };
+  } catch (err) {
+    return { status: 'fail', detail: `Supabase read failed: ${errToString(err)}` };
   }
 }
 
@@ -3753,6 +3875,195 @@ async function checkMlServiceUrlsConfigured(): Promise<Omit<Check, 'name' | 'dur
 }
 
 /**
+ * deploy-ci-cron Step 7.5 — ml_service_lifespan_active
+ *
+ * Pings the ML service's /health endpoint. main.py's new lifespan handler
+ * blocks /health from responding until Pydantic Settings validation passes
+ * — so a 200 from /health proves the new fail-fast startup is alive. If
+ * env on the Railway side is broken, this check FAILs and Reeyen sees a
+ * row on /admin/ml indicating the safety net caught a misconfig.
+ *
+ * Why this matters: before the lifespan, missing env on ml-service only
+ * surfaced as a 500 on the first /predict — operators saw a "healthy"
+ * container that silently couldn't serve traffic. This check converts
+ * that into a loud, named failure surfacing on the admin page.
+ */
+async function checkMlServiceLifespanActive(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const raw = env.ML_SERVICE_URLS;
+  const urls = raw && raw.trim()
+    ? raw.split(',').map((u) => u.trim()).filter((u) => u.length > 0)
+    : [];
+  if (urls.length === 0) {
+    return {
+      status: 'skipped',
+      detail: 'ML_SERVICE_URLS not configured — startup-validation gate cannot be probed without a service URL.',
+    };
+  }
+
+  const startedAt = Date.now();
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8_000);
+    let res: Response;
+    try {
+      res = await fetch(new URL('/health', urls[0]).toString(), {
+        method: 'GET',
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    const elapsedMs = Date.now() - startedAt;
+    if (res.status === 200) {
+      return {
+        status: 'ok',
+        detail: `ML service /health responded 200 in ${elapsedMs}ms — lifespan startup validation passed (env validated at boot).`,
+      };
+    }
+    return {
+      status: 'fail',
+      detail: `ML service /health returned ${res.status} after ${elapsedMs}ms. The lifespan handler blocks /health until env validation passes, so a non-200 means startup is broken or the service is offline.`,
+      fix: 'Railway → ml-service → Deployments → check the latest build logs for a `Settings validation failed at startup` error. Most common cause: a missing or invalid env var (SUPABASE_URL, ML_SERVICE_SECRET). Fix the env in Railway → Variables, then redeploy. See RUNBOOKS.md > Deployment + Rollback per unit.',
+    };
+  } catch (err) {
+    return {
+      status: 'fail',
+      detail: `ML service /health unreachable: ${errToString(err)}. Either the service is offline, the URL is wrong, or the lifespan refused to start.`,
+      fix: 'Railway → ml-service → Logs: look for `Settings validation failed at startup`. If absent, the service is down for another reason — check Railway deployment status. See RUNBOOKS.md > Deployment + Rollback per unit.',
+    };
+  }
+}
+
+/**
+ * deploy-ci-cron Step 7.5 — cua_service_ci_recent_pass
+ *
+ * Asks GitHub for the most recent completed run of `tests.yml` on `main`.
+ * tests.yml now includes the CUA service lint+build steps (added in Step 4
+ * of this plan), so a green main run is proof that a typo in cua-service
+ * couldn't have slipped through to the Fly deploy. If the most recent run
+ * failed, Reeyen sees a red row on /admin/pms (the onboarding admin
+ * surface) so he can react before kicking off another onboarding.
+ */
+async function checkCuaServiceCiRecentPass(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const token = env.GITHUB_TOKEN;
+  if (!token) {
+    return {
+      status: 'skipped',
+      detail: 'GITHUB_TOKEN not set — cannot query GitHub Actions for tests.yml status.',
+      fix: 'Vercel → Project Settings → Environment Variables → set GITHUB_TOKEN to a fine-grained PAT with Actions:read. Used here only to confirm tests.yml ran green on main.',
+    };
+  }
+  const startedAt = Date.now();
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8_000);
+    let res: Response;
+    try {
+      // `event=push` + `branch=main` filters to merges on main (excludes
+      // pull_request runs which are also triggered by tests.yml). `status=
+      // completed` excludes in-flight runs whose `conclusion` is null.
+      res = await fetch(
+        'https://api.github.com/repos/Reeyenn/staxis/actions/workflows/tests.yml/runs?branch=main&event=push&status=completed&per_page=1',
+        {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+          signal: controller.signal,
+        }
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+    if (res.status === 401 || res.status === 403) {
+      return {
+        status: 'fail',
+        detail: `GitHub API returned ${res.status} when fetching tests.yml runs — token may be missing the actions:read scope.`,
+        fix: 'Regenerate GITHUB_TOKEN as a fine-grained PAT for the Reeyenn/staxis repo with Permissions → Repository → Actions: Read. Update on Vercel + redeploy.',
+      };
+    }
+    if (!res.ok) {
+      return {
+        status: 'warn',
+        detail: `GitHub API returned ${res.status} when fetching tests.yml runs.`,
+      };
+    }
+    const body = await res.json() as { workflow_runs?: Array<{ conclusion: string; created_at: string; html_url: string; head_sha: string }> };
+    const runs = body.workflow_runs ?? [];
+    if (runs.length === 0) {
+      return {
+        status: 'warn',
+        detail: 'No completed tests.yml runs found on main yet. The CUA CI gate is added but has not run once.',
+      };
+    }
+    const last = runs[0];
+    const ageMs = Date.now() - new Date(last.created_at).getTime();
+    const ageDays = Math.floor(ageMs / 86_400_000);
+    if (last.conclusion !== 'success') {
+      return {
+        status: 'fail',
+        detail: `Last tests.yml run on main FAILED (${last.conclusion}) ${ageDays}d ago for commit ${last.head_sha.slice(0, 7)}. CUA quality gate is broken; investigate before next onboarding.`,
+        fix: `GitHub Actions → ${last.html_url} — open the failing run and fix the underlying break.`,
+      };
+    }
+    if (ageDays > 14) {
+      return {
+        status: 'warn',
+        detail: `Last tests.yml run on main is ${ageDays}d old (commit ${last.head_sha.slice(0, 7)}). No recent main pushes — CI hasn't exercised the CUA gate lately.`,
+      };
+    }
+    const elapsedMs = Date.now() - startedAt;
+    return {
+      status: 'ok',
+      detail: `Onboarding (CUA) CI: last run passed ${ageDays === 0 ? 'today' : `${ageDays}d ago`} (commit ${last.head_sha.slice(0, 7)}; queried in ${elapsedMs}ms).`,
+    };
+  } catch (err) {
+    return {
+      status: 'warn',
+      detail: `Could not query GitHub Actions: ${errToString(err)}.`,
+    };
+  }
+}
+
+/**
+ * resend_webhook_secret_configured — Phase E2E (2026-05-22). If Resend is
+ * sending email (RESEND_API_KEY set) but the webhook secret isn't
+ * configured, async lifecycle events (bounces, delivery_delayed,
+ * complaints) hit /api/resend-webhook and get rejected → Resend retries
+ * for ~24h then marks them permanent, and Staxis never learns about a
+ * bounced 2FA email. Warn when only one side is configured.
+ */
+async function checkResendWebhookSecretConfigured(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const apiKeySet = !!(env.RESEND_API_KEY ?? '').trim();
+  const webhookSet = !!(env.RESEND_WEBHOOK_SECRET ?? '').trim();
+  if (!apiKeySet && !webhookSet) {
+    return {
+      status: 'skipped',
+      detail: 'Resend not configured — webhook secret not required.',
+    };
+  }
+  if (apiKeySet && !webhookSet) {
+    return {
+      status: 'warn',
+      detail: 'RESEND_API_KEY set but RESEND_WEBHOOK_SECRET unset. Async bounces / complaints are not being recorded by /api/resend-webhook.',
+      fix: 'Resend Dashboard → Webhooks → add https://hotelops-ai.vercel.app/api/resend-webhook (events: email.sent, email.delivered, email.delivery_delayed, email.bounced, email.complained). Copy the signing secret into Vercel env as RESEND_WEBHOOK_SECRET.',
+    };
+  }
+  if (!apiKeySet && webhookSet) {
+    return {
+      status: 'warn',
+      detail: 'RESEND_WEBHOOK_SECRET set but RESEND_API_KEY unset — we have a webhook receiver but aren\'t sending email.',
+    };
+  }
+  return {
+    status: 'ok',
+    detail: 'Resend API key + webhook secret both configured.',
+  };
+}
+
+/**
  * sentry_dsn_shape — error tracking config check.
  *
  * Same all-or-nothing pattern as Stripe: missing is OK (Sentry no-ops
@@ -3810,6 +4121,165 @@ async function checkSentryDsnShape(): Promise<Omit<Check, 'name' | 'durationMs'>
     status: 'ok',
     detail: 'Sentry fully configured (server + client DSNs valid)',
   };
+}
+
+/**
+ * sentry_auth_token_present — source-map upload gate.
+ *
+ * `withSentryConfig` in next.config.ts uploads source maps to Sentry only
+ * when SENTRY_AUTH_TOKEN is set in the Vercel build env (Production scope).
+ * Without the token, production stack traces in Sentry stay minified
+ * (`chunks/3-xy7.js:1:2391`) which is undebuggable.
+ *
+ * Warn-not-fail because the app still runs without source maps; this just
+ * makes the gap visible. Production-only — preview deploys are expected to
+ * skip source-map upload (we don't burn Sentry releases on every PR).
+ */
+async function checkSentryAuthTokenPresent(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  // Vercel sets VERCEL_ENV='production' on production deploys. We only
+  // care about the production case — preview/dev are expected to skip.
+  const isProd = (env.VERCEL_ENV || env.NODE_ENV) === 'production';
+  if (!isProd) {
+    return {
+      status: 'ok',
+      detail: 'Not a production environment — source-map upload not required.',
+    };
+  }
+  const token = (env.SENTRY_AUTH_TOKEN || '').trim();
+  if (!token) {
+    return {
+      status: 'warn',
+      detail:
+        'SENTRY_AUTH_TOKEN not set on Vercel — production source maps are not uploaded, so stack traces in Sentry stay minified.',
+      fix:
+        'Generate a token at sentry.io → Settings → Auth Tokens (scopes: project:read, project:releases). Set SENTRY_AUTH_TOKEN in Vercel → Project Settings → Environment Variables under PRODUCTION scope only (preview deploys do not need it). Redeploy.',
+    };
+  }
+  return {
+    status: 'ok',
+    detail: 'SENTRY_AUTH_TOKEN present — production source-map upload is wired.',
+  };
+}
+
+/**
+ * sentry_client_initialized — verifies Sentry.init() ran without throwing.
+ *
+ * `Sentry.getClient()` returns the active Sentry client when init was
+ * successful (DSN was syntactically valid AND the SDK loaded). Returns
+ * undefined when init was skipped or threw.
+ *
+ * This does NOT prove ingest works — see sentry_ingest_probe_recent for
+ * the end-to-end check. But it's a cheap sanity check that catches the
+ * "DSN looked right but Sentry.init() threw on a bad option" failure.
+ */
+async function checkSentryClientInitialized(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  // Lazy-import so doctor doesn't crash if @sentry/nextjs is somehow
+  // missing — the existing checks all guard their dependencies this way.
+  try {
+    // Use Function constructor to defeat Next's module-graph eagerness;
+    // we want a soft dynamic require so a missing dep WARNS rather than
+    // hard-fails the whole doctor.
+    const sentryMod = await import('@sentry/nextjs');
+    const client = (sentryMod as { getClient?: () => unknown }).getClient?.();
+    if (!client) {
+      // Distinguish "DSN unset" (expected no-op) from "init threw"
+      // (broken). DSN unset is already covered by sentry_dsn_shape;
+      // here we only flag the broken case.
+      const dsnSet = (env.SENTRY_DSN ?? '').trim() !== '' || (env.NEXT_PUBLIC_SENTRY_DSN ?? '').trim() !== '';
+      if (!dsnSet) {
+        return {
+          status: 'ok',
+          detail: 'Sentry SDK loaded but no client — DSN unset (see sentry_dsn_shape).',
+        };
+      }
+      return {
+        status: 'fail',
+        detail:
+          'Sentry DSN is set but Sentry.getClient() returned undefined — Sentry.init() did not produce an active client. Errors are NOT reaching Sentry.',
+        fix:
+          'Check Vercel function logs for "Sentry init failed" messages from sentry.server.config.ts. Common causes: DSN points at a project the auth token cannot reach, or a beforeSend hook threw at init.',
+      };
+    }
+    return {
+      status: 'ok',
+      detail: 'Sentry client initialized — SDK loaded successfully.',
+    };
+  } catch (e) {
+    return {
+      status: 'warn',
+      detail: `Could not introspect Sentry client: ${errToString(e)}`,
+    };
+  }
+}
+
+/**
+ * sentry_ingest_probe_recent — proves end-to-end ingest.
+ *
+ * Sentry.getClient() being non-null only proves the SDK loaded — it does
+ * NOT prove events reach Sentry (firewall, project mismatch, quota
+ * exhaustion, dropped events in beforeSend all break ingest without
+ * affecting the client object).
+ *
+ * The /api/admin/sentry-test endpoint is the canonical ingest probe.
+ * When invoked, it records an `app_events` row with event_type
+ * 'sentry_ingest_probe_fired'. This check reads the most-recent such
+ * row and warns when older than 7 days, prompting the operator to
+ * re-run the probe.
+ *
+ * Codex SHOULD-FIX: avoids the per-cron synthetic captureMessage that
+ * would inflate Sentry events ~8.7k/yr for no diagnostic value.
+ */
+async function checkSentryIngestProbeRecent(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('app_events')
+      .select('created_at')
+      .eq('event_type', 'sentry_ingest_probe_fired')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      // Schema gap or RLS issue — surface as warn rather than fail. The
+      // ingest path still works; we just can't measure its recency.
+      return {
+        status: 'warn',
+        detail: `Could not read app_events for sentry probe recency: ${error.message}`,
+        fix:
+          'Verify the app_events table exists and supabaseAdmin has SELECT on it. Run `/api/admin/sentry-test` with CRON_SECRET to fire a fresh probe.',
+      };
+    }
+    if (!data || !data.created_at) {
+      return {
+        status: 'warn',
+        detail:
+          'No record of a successful /api/admin/sentry-test probe has been seen. Sentry ingest unverified.',
+        fix:
+          'Fire the ingest probe: `curl -H "Authorization: Bearer $CRON_SECRET" https://getstaxis.com/api/admin/sentry-test`. Confirm the event appears in staxis.sentry.io within ~30s.',
+      };
+    }
+    const ageMs = Date.now() - new Date(data.created_at).getTime();
+    const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
+    if (ageMs > SEVEN_DAYS) {
+      const ageDays = Math.round(ageMs / (24 * 60 * 60 * 1000));
+      return {
+        status: 'warn',
+        detail: `Last successful Sentry ingest probe was ${ageDays} days ago — re-run weekly to keep ingest verified.`,
+        fix:
+          '`curl -H "Authorization: Bearer $CRON_SECRET" https://getstaxis.com/api/admin/sentry-test` and confirm the event reaches staxis.sentry.io.',
+      };
+    }
+    const ageHours = Math.round(ageMs / (60 * 60 * 1000));
+    return {
+      status: 'ok',
+      detail: `Last Sentry ingest probe was ${ageHours}h ago — ingest verified.`,
+    };
+  } catch (e) {
+    return {
+      status: 'warn',
+      detail: `Probe recency check threw: ${errToString(e)}`,
+    };
+  }
 }
 
 /**

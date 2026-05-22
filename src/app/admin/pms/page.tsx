@@ -20,6 +20,7 @@ import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { AppLayout } from '@/components/layout/AppLayout';
+import { DoctorChecksSection } from '@/app/admin/_components/DoctorChecksSection';
 import {
   CheckCircle2, AlertCircle, Clock, ShieldAlert, RefreshCw, ChevronLeft,
 } from 'lucide-react';
@@ -138,6 +139,15 @@ export default function AdminPMSPage() {
             <Chip label="Total PMSes" value={rows.length} color="var(--text-secondary)" />
           </div>
         )}
+
+        {/* deploy-ci-cron Step 7.5: surface the CUA service safety nets here so
+            Reeyen sees onboarding-service health on the page he already opens
+            for PMS work. Filters doctor checks whose name starts with `cua_`. */}
+        <DoctorChecksSection
+          filterPrefixes={['cua_']}
+          title="Onboarding service health"
+          description="Live status of the CUA (onboarding) worker. Green = the safety nets added 2026-05-22 are alive."
+        />
 
         {error && (
           <div style={{

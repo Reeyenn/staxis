@@ -69,6 +69,11 @@ const Schema = z.object({
   CSV_TEST_ON_STARTUP: z.coerce.boolean().default(false),
   HEADED: z.coerce.boolean().default(false),
   SCRAPER_INSTANCE_ID: z.string().default('default'),
+  // F10: opt-in raw HTML / CSV dumps to disk on failure. Default OFF —
+  // structural diagnostics (URL, title, length, content-type) are kept
+  // in logs and ScraperError diagnostics regardless. Set true in dev or
+  // when actively chasing a CA-side selector miss; clear when done.
+  SCRAPER_DEBUG_DUMPS: z.coerce.boolean().default(false),
 
   // ── Alerting (optional) ───────────────────────────────
   TWILIO_ACCOUNT_SID: z.string().optional(),
@@ -86,6 +91,14 @@ const Schema = z.object({
         `VERCEL_DOCTOR_URL hostname must end with one of: ${SERVICE_HOSTNAME_SUFFIXES.join(', ')}. ` +
         `Plan v2 F-AI-14 — bearer secrets are only sent to known platform hosts.`,
     }),
+
+  // ── Monitoring (optional) ─────────────────────────────
+  // Sentry DSN for the scraper. When set, errors from the pull loops ship
+  // to staxis.sentry.io. When unset, sentry.js silently no-ops and the
+  // scraper continues with Railway-logs-only visibility (the pre-Sentry
+  // baseline). Set to "" (empty string) to kill-switch monitoring without
+  // a code change.
+  SENTRY_DSN: z.string().optional(),
 
   // ── Platform auto-injected ────────────────────────────
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),

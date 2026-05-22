@@ -55,8 +55,9 @@ const { pullDashboardNumbers } = require('./dashboard-pull');
 const { pullOOOWorkOrders } = require('./ooo-pull');
 const { pullHkCenter } = require('./hk-center-pull');
 const { ScraperError, ERROR_CODES } = require('./scraper-errors');
-const { runVercelWatchdog } = require('./vercel-watchdog');
+const { runVercelWatchdog, twilioEnvPresence } = require('./vercel-watchdog');
 const { loadActiveProperties } = require('./properties-loader');
+const { initSentry, captureException, flushSentry } = require('./sentry');
 const { safeEval, goWithSettle } = require('./page-helpers');
 const { clickFirstMatching, fillFirstMatching } = require('./selector-helpers');
 const {
@@ -99,6 +100,21 @@ const CONFIG = {
   // Session state file (persists login cookies between runs)
   SESSION_FILE: path.join(__dirname, '.session.json'),
 };
+
+// ─── Sentry init ───────────────────────────────────────────────────────────
+// Runs at module load — before the `log()` helper below is defined, so use
+// console.log directly. Wrapped in a try/catch because a Sentry init failure
+// must NEVER crash the scraper: a degraded-monitoring scraper still serves
+// the hotel; a crash-looping one doesn't. initSentry() also swallows its own
+// errors internally, but the outer try is defense in depth.
+try {
+  const sentryOk = initSentry();
+  console.log(
+    `[${new Date().toISOString()}] Sentry ${sentryOk ? 'initialized — errors will ship to staxis.sentry.io' : 'not initialized (SENTRY_DSN unset) — errors stay in Railway logs only'}`,
+  );
+} catch (err) {
+  console.warn(`[${new Date().toISOString()}] Sentry init threw (continuing without monitoring): ${err && err.message ? err.message : err}`);
+}
 
 // ─── Supabase init ─────────────────────────────────────────────────────────
 // createSupabase throws at module load if SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY
@@ -179,6 +195,11 @@ async function writeHeartbeat() {
   }
 }
 
+function anomaliesNonZero(a) {
+  if (!a || typeof a !== 'object') return false;
+  return Object.values(a).some(v => typeof v === 'number' && v > 0);
+}
+
 async function writeScrapeStatus(pullType, status, extra = {}) {
   try {
     // Track consecutive failures so the cron can alert on the SECOND miss
@@ -190,10 +211,20 @@ async function writeScrapeStatus(pullType, status, extra = {}) {
       ? prev.consecutiveFailures
       : 0;
     const nextCount = status === 'error' ? prevCount + 1 : 0;
+
+    // F4: ANOMALY_TREND — if THIS pull and the previous one both have
+    // non-zero parse anomalies, flag a trend so doctor/SMS sees a sustained
+    // issue (a one-off junk row from a partial CA snapshot isn't worth
+    // alerting on, but two-in-a-row is).
+    const currentAnomalies = extra.parseAnomalies;
+    const prevAnomalies = prev && prev.parseAnomalies;
+    const anomalyTrend = anomaliesNonZero(currentAnomalies) && anomaliesNonZero(prevAnomalies);
+
     await mergeStatus(supabase, pullType, {
       at:     new Date().toISOString(),
       status, // 'success' | 'error'
       consecutiveFailures: nextCount,
+      anomalyTrend,
       ...extra,
     });
   } catch (err) {
@@ -552,6 +583,10 @@ async function runCSVScrapeFresh(page, pullType, relogin) {
       checkouts: snapshot?.checkouts ?? null,
       stayovers: snapshot?.stayovers ?? null,
       recommendedHKs: snapshot?.recommendedHKs ?? null,
+      // F4: telemetry-only — never gates behavior, surfaces ANOMALY_TREND
+      // via writeScrapeStatus when this and the previous pull both have
+      // non-zero anomaly counts.
+      parseAnomalies: snapshot?.parseAnomalies ?? null,
       errorCode: null,
       error: null,
     });
@@ -583,6 +618,7 @@ async function runCSVScrapeFresh(page, pullType, relogin) {
         await writeScrapeStatus(pullType, 'success', {
           date: snapshot?.date || todayISO(),
           totalRooms: snapshot?.totalRooms ?? null,
+          parseAnomalies: snapshot?.parseAnomalies ?? null,
           errorCode: null,
           error: null,
         });
@@ -590,6 +626,11 @@ async function runCSVScrapeFresh(page, pullType, relogin) {
       } catch (retryErr) {
         const retryCode = retryErr instanceof ScraperError ? retryErr.code : ERROR_CODES.UNKNOWN;
         log(`${pullType} scrape retry FAILED [${retryCode}]: ${retryErr.message}`);
+        captureException(retryErr, {
+          propertyId: CONFIG.PROPERTY_ID,
+          phase: `csv_${pullType}_retry`,
+          errorCode: retryCode,
+        });
         await writeScrapeStatus(pullType, 'error', {
           errorCode: retryCode,
           error: `retry failed: ${retryErr.message}`,
@@ -599,6 +640,11 @@ async function runCSVScrapeFresh(page, pullType, relogin) {
       }
     }
     log(`${pullType} CSV pull error [${code}]: ${err.message}`);
+    captureException(err, {
+      propertyId: CONFIG.PROPERTY_ID,
+      phase: `csv_${pullType}`,
+      errorCode: code,
+    });
     await writeScrapeStatus(pullType, 'error', {
       errorCode: code,
       error: err.message,
@@ -655,6 +701,11 @@ async function runDashboardPullFresh(page, relogin) {
         // session_expired error in scraper_status — but surface the login
         // failure too, because that's the real underlying problem now.
         log(`Re-login FAILED after session expiry: ${loginErr.message}`);
+        captureException(loginErr, {
+          propertyId: CONFIG.PROPERTY_ID,
+          phase: 'dashboard_relogin',
+          errorCode: loginErr instanceof ScraperError ? loginErr.code : ERROR_CODES.UNKNOWN,
+        });
         await mergeStatus(supabase, 'dashboard', {
           errorCode:    loginErr instanceof ScraperError ? loginErr.code : ERROR_CODES.UNKNOWN,
           errorMessage: `Re-login failed after session expiry: ${loginErr.message}`.slice(0, 500),
@@ -670,6 +721,11 @@ async function runDashboardPullFresh(page, relogin) {
         return await pullDashboardNumbers(page, supabase, log, CONFIG.PROPERTY_ID);
       } catch (retryErr) {
         log(`Dashboard pull retry FAILED: [${retryErr.code || 'unknown'}] ${retryErr.message}`);
+        captureException(retryErr, {
+          propertyId: CONFIG.PROPERTY_ID,
+          phase: 'dashboard_retry',
+          errorCode: retryErr instanceof ScraperError ? retryErr.code : ERROR_CODES.UNKNOWN,
+        });
         return null;
       }
     }
@@ -677,6 +733,11 @@ async function runDashboardPullFresh(page, relogin) {
     // Non-retryable code paths. pullDashboardNumbers already wrote the error
     // to scraper_status, so we just log and return.
     log(`Dashboard pull error [${code}]: ${err.message}`);
+    captureException(err, {
+      propertyId: CONFIG.PROPERTY_ID,
+      phase: 'dashboard',
+      errorCode: code,
+    });
     return null;
   }
 }
@@ -761,9 +822,19 @@ async function maybeRunOOOPull(page, relogin) {
       } catch (retryErr) {
         log(`OOO pull retry FAILED: [${retryErr.code || 'unknown'}] ${retryErr.message}`);
         metricCode = retryErr instanceof ScraperError ? retryErr.code : ERROR_CODES.UNKNOWN;
+        captureException(retryErr, {
+          propertyId: CONFIG.PROPERTY_ID,
+          phase: 'ooo_retry',
+          errorCode: metricCode,
+        });
       }
     } else {
       log(`OOO pull error [${code}]: ${err.message}`);
+      captureException(err, {
+        propertyId: CONFIG.PROPERTY_ID,
+        phase: 'ooo',
+        errorCode: code,
+      });
     }
   }
 
@@ -804,6 +875,46 @@ async function maybeRunCSVPull(page, relogin) {
   if (ok) lastCSVPullAt = now;
 }
 
+// ─── Disk hygiene ──────────────────────────────────────────────────────────
+
+const DIAGNOSTIC_PATTERNS = [
+  /^csv-report-form\.png$/,
+  /^csv-download-fail\.png$/,
+  /^csv-bad-content\.png$/,
+  /^csv-error-.*\.png$/,
+  /^csv-form-dump\.html$/,
+  /^csv-bad-content\.txt$/,
+  /^login-debug\.png$/,
+  /^DEBUG-.*$/,
+];
+
+function purgeStaleDiagnostics(dir, maxAgeMs) {
+  let deleted = 0;
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    const cutoff = Date.now() - maxAgeMs;
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      if (!DIAGNOSTIC_PATTERNS.some(re => re.test(entry.name))) continue;
+      const full = path.join(dir, entry.name);
+      try {
+        const st = fs.statSync(full);
+        if (st.mtimeMs < cutoff) {
+          fs.unlinkSync(full);
+          deleted++;
+        }
+      } catch {
+        // Best-effort; another instance may have deleted it between
+        // readdir and stat/unlink.
+      }
+    }
+  } catch (err) {
+    log(`[diag-purge] failed to scan ${dir}: ${err.message}`);
+    return;
+  }
+  if (deleted > 0) log(`[diag-purge] removed ${deleted} stale diagnostic file(s) >24h old`);
+}
+
 // ─── Main loop ─────────────────────────────────────────────────────────────
 
 async function run() {
@@ -817,6 +928,28 @@ async function run() {
   log(`Property: ${CONFIG.PROPERTY_ID}`);
   log(`Timezone: ${CONFIG.TIMEZONE} | Local hour: ${localHour()} | Today: ${todayISO()}`);
   log(`Tick every ${CONFIG.TICK_MINUTES} min — CSV pulls hourly 5am–11pm, dashboard numbers + OOO work orders every 15 min 5am–11pm`);
+
+  // ─── Diagnostic dump rotation (F1) ──────────────────────────────────────
+  // Failed pulls historically left csv-form-dump.html, csv-bad-content.txt,
+  // and various screenshots in the scraper dir with no rotation, slowly
+  // filling Railway's container disk over weeks. Purge anything older than
+  // 24h on every boot — they're transient diagnostic artifacts; no
+  // external system reads them (cross-grep confirmed scraper-only).
+  purgeStaleDiagnostics(__dirname, 24 * 60 * 60 * 1000);
+
+  // ─── Watchdog credential preflight (F3) ─────────────────────────────────
+  // One-time loud log if Twilio env is missing on Railway. The watchdog
+  // itself still no-ops gracefully if creds are absent, but a silent
+  // no-op means SMS alerts never fire and we'd never know. Doctor's new
+  // watchdog_degraded check (F7) reads the scraper_status row that the
+  // watchdog updates each tick, so a UI surface picks this up too.
+  const _twilioPresence = twilioEnvPresence();
+  if (!_twilioPresence.ok) {
+    log(`⚠️  WATCHDOG DEGRADED: Twilio env vars missing on Railway — SMS alerts will not fire. Missing: ${_twilioPresence.missing.join(', ')}`);
+  }
+  if (!env.OPS_ALERT_PHONE) {
+    log(`⚠️  WATCHDOG DEGRADED: OPS_ALERT_PHONE not set on Railway — no alert recipient configured.`);
+  }
 
   // ─── Required env var preflight ─────────────────────────────────────────
   // If HOTELOPS_PROPERTY_ID is missing on Railway, every write ends up with
@@ -1033,13 +1166,28 @@ async function run() {
   // volume. Each wrapped fn() runs inside a try/catch so a failure
   // doesn't poison the chain for the next caller.
   let pageLock = Promise.resolve();
+  // F9: graceful shutdown flag. Flipped by SIGTERM/SIGINT below. Guards
+  // are at tick(), scheduleTick(), the HTTP handler, AND withPageLock so
+  // a request that arrives mid-shutdown can't enqueue new Playwright work
+  // behind the drain. Codex specifically called this race out — the v1
+  // plan only guarded tick/scheduleTick which left the HTTP handler free
+  // to grow the lock chain during the drain window.
+  let shuttingDown = false;
   function withPageLock(fn) {
-    const next = pageLock.then(() => fn());
+    if (shuttingDown) return Promise.reject(new Error('shutting_down'));
+    const next = pageLock.then(() => {
+      // Re-check at execution time: caller might have queued just before
+      // shutdown flipped. Bail rather than running their work against a
+      // closing browser context.
+      if (shuttingDown) throw new Error('shutting_down');
+      return fn();
+    });
     pageLock = next.catch(() => {}); // ignore failures for chain purposes
     return next;
   }
 
   async function tick() {
+    if (shuttingDown) return;
     try {
       // Heartbeat first so the app knows the scraper is alive even if the
       // scheduled pull didn't run this tick. Heartbeat is a Supabase write
@@ -1151,6 +1299,7 @@ async function run() {
   let tickInProgress = false;
 
   const scheduleTick = () => {
+    if (shuttingDown) return; // F9: do not re-arm during shutdown drain
     if (tickInProgress) {
       // Defensive: should never happen because we only call scheduleTick
       // from the tick's own finally. But if some future code path adds a
@@ -1170,6 +1319,7 @@ async function run() {
       })
       .finally(() => {
         tickInProgress = false;
+        if (shuttingDown) return; // F9: don't re-arm during shutdown
         const elapsed = Date.now() - startedAt;
         // Subtract elapsed time so a 3-min tick on a 5-min interval lands
         // 2 min later, not 5. Floor at 1s so we never hot-loop if a tick
@@ -1204,6 +1354,15 @@ async function run() {
     const method = req.method || 'GET';
     const requestId = Math.random().toString(36).slice(2, 8);
 
+    // F9: drain new work during shutdown. We DO still serve /health so
+    // Railway's container probe doesn't classify a 15-25s drain as a
+    // hung process and SIGKILL us prematurely.
+    if (shuttingDown && !(method === 'GET' && (url === '/health' || url === '/'))) {
+      res.writeHead(503, { 'Content-Type': 'application/json', 'Connection': 'close' });
+      res.end(JSON.stringify({ ok: false, error: 'shutting_down', requestId }));
+      return;
+    }
+
     // Health check — unauthenticated, returns scraper liveness.
     if (method === 'GET' && (url === '/health' || url === '/')) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1212,6 +1371,7 @@ async function run() {
         service: 'hotelops-scraper',
         propertyId: CONFIG.PROPERTY_ID,
         timestamp: new Date().toISOString(),
+        shuttingDown,
       }));
       return;
     }
@@ -1355,6 +1515,12 @@ async function run() {
         const code = err instanceof ScraperError ? err.code : ERROR_CODES.UNKNOWN;
         const msg = err && err.message ? err.message : String(err);
         log(`[http ${requestId}] HK Center pull FAILED [${code}]: ${msg}`);
+        captureException(err, {
+          propertyId: CONFIG.PROPERTY_ID,
+          phase: 'hk_center_on_demand',
+          errorCode: code,
+          requestId,
+        });
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: msg, code }));
         await writePullMetric(supabase, {
@@ -1380,11 +1546,90 @@ async function run() {
   httpServer.listen(HTTP_PORT, '0.0.0.0', () => {
     log(`HTTP server listening on 0.0.0.0:${HTTP_PORT}`);
   });
+
+  // ── F9: graceful shutdown on SIGTERM/SIGINT ──────────────────────────
+  // Railway sends SIGTERM with a 30s grace before SIGKILL. Pattern:
+  //   1. flip shuttingDown so tick/scheduleTick/HTTP handler/withPageLock
+  //      all stop accepting new work
+  //   2. httpServer.close() — stop accepting new connections (existing
+  //      requests already inside withPageLock continue to completion)
+  //   3. wait for pageLock to drain (race vs 20s)
+  //   4. context.close() + browser.close() (race vs 2s each)
+  //   5. process.exit(0) — hard cap at 25s total so we always beat
+  //      Railway's SIGKILL window
+  //
+  // Codex review note: the shutdown guard MUST be inside withPageLock
+  // (above), not just on tick/scheduleTick, otherwise a POST that arrived
+  // during the drain could enqueue new Playwright work while we're closing
+  // the browser.
+  let shutdownInProgress = false;
+  async function gracefulShutdown(signal) {
+    if (shutdownInProgress) return;
+    shutdownInProgress = true;
+    shuttingDown = true;
+    log(`[shutdown] received ${signal}; draining (20s page-lock cap, 25s total)`);
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+    // 1) Stop accepting NEW HTTP connections. close() returns when all
+    // existing keep-alive connections close, which can take a while —
+    // we don't await it inline; the 25s hard cap below covers stragglers.
+    try { httpServer.close(); } catch (err) {
+      log(`[shutdown] httpServer.close threw: ${err && err.message ? err.message : err}`);
+    }
+
+    // 2) Hard cap on the whole drain — Railway SIGKILLs at 30s.
+    const hardCap = sleep(25_000).then(() => 'cap');
+
+    // 3) Drain in-flight Playwright work. pageLock represents the chain
+    // tail; awaiting it waits for whatever's currently queued.
+    try {
+      await Promise.race([pageLock.catch(() => {}), sleep(20_000), hardCap]);
+      log('[shutdown] page-lock drained');
+    } catch (err) {
+      log(`[shutdown] page-lock drain threw: ${err && err.message ? err.message : err}`);
+    }
+
+    // 4) Close Playwright resources. Each race'd against 2s — Chromium
+    // can wedge if a renderer crashed and we don't want to block exit.
+    try {
+      await Promise.race([context.close(), sleep(2_000), hardCap]);
+      log('[shutdown] context closed');
+    } catch (err) {
+      log(`[shutdown] context.close threw: ${err && err.message ? err.message : err}`);
+    }
+    try {
+      await Promise.race([browser.close(), sleep(2_000), hardCap]);
+      log('[shutdown] browser closed');
+    } catch (err) {
+      log(`[shutdown] browser.close threw: ${err && err.message ? err.message : err}`);
+    }
+
+    log('[shutdown] complete — exit 0');
+    process.exit(0);
+  }
+
+  process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });
+  process.on('SIGINT',  () => { void gracefulShutdown('SIGINT');  });
 }
 
 // ─── Entry point ───────────────────────────────────────────────────────────
 
-run().catch(err => {
+// Flush Sentry on graceful shutdown so events queued in the final seconds
+// before SIGTERM (Railway scale-down, redeploy) aren't lost. flushSentry()
+// is a no-op when Sentry didn't initialize, so this is safe regardless of
+// env state. We don't call process.exit ourselves — Railway sends SIGKILL
+// after its grace window, and exiting cleanly only matters for the flush.
+async function gracefulShutdown(signal) {
+  console.log(`[${new Date().toISOString()}] Received ${signal} — flushing Sentry and shutting down`);
+  try { await flushSentry(2000); } catch {}
+  process.exit(0);
+}
+process.on('SIGTERM', () => { gracefulShutdown('SIGTERM').catch(() => process.exit(1)); });
+process.on('SIGINT',  () => { gracefulShutdown('SIGINT').catch(() => process.exit(1)); });
+
+run().catch(async err => {
   console.error('Fatal error:', err);
+  try { captureException(err, { phase: 'run_fatal' }); } catch {}
+  try { await flushSentry(2000); } catch {}
   process.exit(1);
 });

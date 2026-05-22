@@ -20,6 +20,7 @@ import { HousekeepingDataFuelGauge } from './_components/housekeeping/Housekeepi
 import { HousekeepingSystemHealth } from './_components/housekeeping/HousekeepingSystemHealth';
 import { HousekeepingOverridesTable } from './_components/housekeeping/HousekeepingOverridesTable';
 import { HousekeepingAdoption } from './_components/housekeeping/HousekeepingAdoption';
+import { DoctorChecksSection } from '@/app/admin/_components/DoctorChecksSection';
 
 /**
  * /admin/ml — Owner-only ML cockpit.
@@ -294,6 +295,15 @@ function MLPageInner() {
             Monitor model health, predictions, and system state.
           </p>
         </div>
+
+        {/* deploy-ci-cron Step 7.5: surface ML service safety nets here so
+            Reeyen sees ML service-level health on the page he already opens
+            for ML work. Filters doctor checks whose name starts with `ml_`. */}
+        <DoctorChecksSection
+          filterPrefixes={['ml_service_lifespan_active', 'ml_service_urls_configured', 'ml_service_secret_strength']}
+          title="ML service health"
+          description="Live status of the ML prediction service. Green = the deploy-time safety nets are alive."
+        />
 
         {/* Tab selector */}
         <div

@@ -22,6 +22,34 @@ The doctor endpoint tests every critical dependency in parallel and returns a re
 
 ---
 
+## Faster signal: the live System Status panel
+
+Phase E2E (2026-05-22). When you just need "is the wiring up RIGHT NOW", the admin **System tab** has a live status panel below the timeline. Six rows — web, ML brain, CUA worker, scraper heartbeat, scraper on-demand HTTP, Supabase — each green/yellow/red with latency and last-checked time. Auto-refreshes every 30s.
+
+JSON form (same data, watchdog-friendly):
+
+```bash
+curl -H "Authorization: Bearer $CRON_SECRET" \
+  https://hotelops-ai.vercel.app/api/admin/system-status | python3 -m json.tool
+```
+
+### When a row goes red
+
+| Row goes red | What it means | First action |
+|---|---|---|
+| **Web app** | This endpoint itself is down — you wouldn't see this | Check Vercel deploys |
+| **ML brain** | One or more shard `/health` failed | Railway → ml-service → check logs + restart |
+| **CUA worker** | Oldest queued onboarding job is >30 min — worker dead or stuck | Fly → `staxis-cua` → check logs + `flyctl machine restart` |
+| **Scraper heartbeat** | Node process hasn't ticked in 20+ min | Railway → scraper → check logs + redeploy |
+| **Scraper on-demand** | Scraper HTTP `/health` 5xx or unreachable | Same as above — worker probably crashed |
+| **Database** | Supabase read of `accounts` table failed (catches PostgREST schema-cache-stale, not just SELECT 1) | Run `NOTIFY pgrst, 'reload schema'` in SQL editor, then re-check |
+
+### Yellow vs red
+
+Yellow = degraded but not catastrophic (e.g. scraper heartbeat fresh but PMS pull is 45+ min stale during business hours). Red = hard down. The panel uses the SAME thresholds the watchdog SMS uses (DASHBOARD_STALE_MIN, HEARTBEAT_DEAD_MIN — see `src/lib/scraper-staleness.ts`) so a red here matches the SMS Reeyen would get.
+
+---
+
 ## Supabase service_role key rotation
 
 (Successor to the legacy Firebase service account rotation procedure.
@@ -1717,6 +1745,200 @@ If something is catastrophically broken:
 - `scripts/audit-mfa-gate-policies.mjs` (runs in `npm run lint`) catches new policies that target authenticated/public/anon without including `mfa_verified_or_grace()` in their body.
 - Doctor's `mfa_verified_hook_self_test` polls the synthetic event to catch silent hook failures.
 - Janitor cron `/api/cron/sweep-mfa-verified-sessions` runs every 6h to remove rows older than 30 days (the FK CASCADE on auth.sessions handles most cleanup; this is belt-and-suspenders).
+
+---
+
+## Deployment + Rollback per unit
+
+Added 2026-05-22 (deploy-ci-cron plan). Reeyen-facing: "if a deploy breaks the live hotel, here's how to get back to the previous working version per deployable piece." All four units deploy independently and can be rolled back independently — the live site (Vercel), the data-puller (Railway scraper), the prediction brain (Railway ml-service), and the new-hotel onboarder (Fly.io cua-service).
+
+The `HealthBanner` at the top of every admin page links here when any check fails.
+
+### Vercel (live website at hotelops-ai.vercel.app)
+
+#### Symptom
+- HealthBanner shows red failure on every admin page.
+- `/admin/doctor` reports red checks tied to a recent deploy.
+- Customer reports "the site is broken" after a recent push to main.
+
+#### Fix (~2 min, no code changes)
+
+1. Open https://vercel.com → `staxis` project → **Deployments**.
+2. Find the last green deployment (look for the green ✓ pip in the status column) — typically the one right before the current red one.
+3. Click the **⋯ menu** on that row → **"Promote to Production"** (Vercel may also label this "Promote" or "Redeploy with cache"; the menu item is in the kebab).
+4. Vercel re-routes traffic to that build in ~30 seconds.
+5. Verify: refresh https://hotelops-ai.vercel.app and confirm the site loads. Run the doctor:
+   ```bash
+   curl -H "Authorization: Bearer $CRON_SECRET" \
+     https://hotelops-ai.vercel.app/api/admin/doctor
+   ```
+   All checks should be green/warn (not fail).
+
+#### When NOT to use this
+- If the issue is a database migration, rolling back Vercel restores the OLD code but the NEW migration is still in Postgres. The code may now reference columns that no longer exist (or worse, write to ones that don't yet exist). Fix forward with a corrective migration instead — see the Supabase migrations section below.
+
+### Fly.io (cua-service worker — onboarding new hotels)
+
+#### Symptom
+- HealthBanner shows red on `cua_service_ci_recent_pass` OR `cua_action_policy_enforce_status`.
+- A new-hotel onboarding job is stuck or failing.
+- Fly health checks for `staxis-cua` are red.
+
+#### Diagnosis
+```bash
+# Are recent releases healthy?
+fly releases list -a staxis-cua
+
+# What's the worker actually doing?
+fly logs -a staxis-cua --no-tail | tail -100
+```
+
+#### Fix (~2 min)
+
+1. List the previous releases:
+   ```bash
+   fly releases list -a staxis-cua
+   ```
+2. Identify the last release that ran cleanly (typically the one BEFORE the failing version).
+3. Roll back to it:
+   ```bash
+   fly releases rollback <version> -a staxis-cua
+   ```
+   Replace `<version>` with the numeric version (e.g., `47`) from the list output.
+4. Fly does a rolling restart (~1–2 min). Confirm with:
+   ```bash
+   fly status -a staxis-cua
+   ```
+5. Verify: the next polled job from `onboarding_jobs` should process cleanly. The doctor's `cua_service_ci_recent_pass` won't update until the next push to `main`, so re-verify by manually re-triggering a mapping run or watching `cua_action_policy_enforce_status`.
+
+### Railway (scraper — Choice Advantage data puller)
+
+#### Symptom
+- `scraper_csv_pull` doctor check fails, OR `supabase_heartbeat` is stale.
+- Operations staff report stale room status in the housekeeper view.
+
+#### Fix (~3 min, dashboard-only — no CLI rollback)
+
+1. Open https://railway.app → `hotelops-scraper` project → **Deployments**.
+2. Find the previous build that was green (look at the deploy time + status).
+3. Click the **⋯ menu** → **"Redeploy"**. Railway re-runs `npm install + playwright install + start` from that commit.
+4. Wait ~90 seconds for the container to start. The scraper's preflight DB read either fires (`heartbeat` row updates) or the container crash-loops with a clear error in Railway logs.
+5. Verify: doctor `supabase_heartbeat` should be green within 5 min (scraper writes the heartbeat every tick).
+
+### Railway (ml-service — prediction brain)
+
+#### Symptom
+- `ml_service_lifespan_active` doctor check fails (added 2026-05-22).
+- ML cron jobs fail with 401 or timeout.
+- `ml_*_predictions_fresh` checks turn red.
+
+#### Diagnosis first — is it env or code?
+1. **Open Railway → ml-service → Deployments → latest build → Logs.** Look for `Settings validation failed at startup` — that's the new fail-fast lifespan. If you see this line, the issue is an env var, NOT the code. Skip the rollback; fix the env var (Railway → Variables) and redeploy.
+2. If logs show no startup error but `/health` is unreachable, proceed with rollback below.
+
+#### Fix (~3 min, dashboard-only)
+
+1. Open https://railway.app → ml-service project → **Deployments**.
+2. Find the last green build.
+3. Click **⋯** → **"Redeploy"**.
+4. Wait ~60 seconds. Watch the build logs — the lifespan handler will log "Settings validation passed at startup" (or crash loudly with a Pydantic error).
+5. Verify: doctor `ml_service_lifespan_active` should turn green within 60 seconds. The next ML cron tick will write predictions; `ml_*_predictions_fresh` greens up within an hour.
+
+### Supabase migrations (database schema)
+
+**Do NOT do a destructive rollback. Schema reverts can lose data.** Migrations in this repo are always forward-only. If a migration broke something, write a NEW migration that fixes the break.
+
+#### Symptom
+- API routes 500 with `relation "..." not found` or `column "..." does not exist`.
+- A recently-applied migration introduced a bad constraint, a missing column, or a faulty function definition.
+
+#### Fix (~5–10 min depending on scope)
+
+1. Find the offending migration in `supabase/migrations/` (typically the highest-numbered file applied recently).
+2. Write a NEW migration in the same directory with the next number. Name it descriptively, e.g., `0210_fix_<thing>.sql`.
+3. The new migration should:
+   - **Drop or alter** the bad object (table, column, policy, function).
+   - **Restore** the prior shape if the operational code expects it.
+   - **NOT touch data tables in a destructive way** (no `DROP TABLE`, no unconditional `DELETE`).
+4. Apply via Supabase Dashboard → SQL Editor (paste the migration body, run).
+5. The doctor's `supabase_migrations_applied` check verifies the migration is recorded.
+6. After the dashboard run, ALSO commit the new migration file to the repo so the recorded state matches the applied state.
+
+#### What if I really need to undo recent inserts/updates?
+- Supabase has Point-in-Time Recovery (PITR). Use the dashboard → Database → Backups → Restore. **This rolls the WHOLE database**, including any unrelated writes between the bad migration and now. Get help before doing this — it can lose customer data.
+
+---
+
+## Monitoring & error visibility
+
+Added 2026-05-22 (monitoring/logging/secrets hardening pass).
+
+### Where errors surface per service
+
+| Service | Sentry project | Other sinks | How errors get there |
+|---|---|---|---|
+| Next.js app (Vercel) | staxis.sentry.io | Vercel function logs | `log.error()` in `src/lib/log.ts` → `captureException` |
+| `scraper/` (Railway) | staxis.sentry.io | Railway logs + `scraper_status` table | `captureException` in pull-loop catch blocks in `scraper/scraper.js` |
+| `ml-service/` (Railway) | staxis.sentry.io | Railway logs (structured JSON) | `sentry_sdk.capture_exception` in `general_exception_handler` in `ml-service/src/main.py` |
+| `cua-service/` (Fly) | staxis.sentry.io | Fly logs (structured JSON) | `log.error()` in `cua-service/src/log.ts` (auto-captures via `Sentry.captureException`) |
+
+One Sentry project, four services. Filter in Sentry by tag:
+- `service:scraper`
+- `service:ml-service`
+- `service:cua-worker` (legacy name)
+- (Next.js is the un-tagged baseline)
+
+### Sentry auth token (source-map upload)
+
+`next.config.ts` is wrapped with `withSentryConfig` and uploads source maps automatically when `SENTRY_AUTH_TOKEN` is present at build time on Vercel.
+
+**Scope MUST be Production only.** Preview deploys without the token explicitly skip source-map upload (gated on `sourcemaps.disable = !process.env.SENTRY_AUTH_TOKEN`). Setting the token in the "All Environments" scope would burn a Sentry release on every preview deploy, eating quota.
+
+The plugin has an `errorHandler` that warns + continues if upload fails — a bad token or Sentry outage during a deploy will NOT block production. Failures show up in the Vercel build log; check there if source maps stop appearing in Sentry.
+
+Doctor check: `sentry_auth_token_present` warns in production if the token is missing.
+
+### Weekly Sentry ingest verification
+
+`Sentry.getClient()` proves the SDK loaded. It does NOT prove events reach Sentry — firewalls, project mismatch, beforeSend dropping events, and quota exhaustion all break ingest without affecting the client object.
+
+The canonical end-to-end probe is `/api/admin/sentry-test`:
+
+```bash
+curl -H "Authorization: Bearer $CRON_SECRET" https://getstaxis.com/api/admin/sentry-test
+```
+
+The route fires a synthetic Error AND writes an `app_events` row with `event_type='sentry_ingest_probe_fired'`. Doctor's `sentry_ingest_probe_recent` check reads that row's age and warns when older than 7 days. Add this curl to a weekly habit (Monday-morning checklist) — keeps the doctor green and verifies the full pipeline.
+
+### Replay PII masking allowlist
+
+`sentry.client.config.ts` configures Sentry replay with default-mask + `.sentry-unmask` allowlist:
+
+```ts
+Sentry.replayIntegration({
+  mask: ['*'],
+  maskAllInputs: true,
+  blockAllMedia: true,
+  unmask: ['.sentry-unmask'],
+})
+```
+
+To make a non-PII component (status chips, icons, page headers) debuggable in replays, add the CSS class `sentry-unmask` to its root element. Do NOT unmask large containers — anything inside an unmasked element is also unmasked. Default to masking and unmask precisely.
+
+### Sentry kill switch (no code rollback needed)
+
+If Sentry init crashes a service on startup, or replay masking makes a critical bug undebuggable, or any other Sentry-side problem surfaces in production:
+
+1. **Next.js (Vercel)** — Unset `SENTRY_AUTH_TOKEN` (stops source-map upload) AND set `NEXT_PUBLIC_SENTRY_DSN=""` + `SENTRY_DSN=""` (Sentry SDK becomes no-op on init). Redeploy.
+2. **scraper (Railway)** — Set `SENTRY_DSN=""`. `scraper/sentry.js:initSentry()` returns false on empty DSN and the scraper continues with Railway-logs-only visibility. Restart the service.
+3. **ml-service (Railway)** — Set `SENTRY_DSN=""`. `ml-service/src/sentry_init.py:init_sentry()` returns False on empty DSN. Restart.
+4. **cua-service (Fly)** — `flyctl secrets unset SENTRY_DSN -a staxis-cua` then `fly deploy`. Same no-op pattern.
+
+All four init paths are wired to treat empty/missing DSN as "no monitoring" rather than crash. The new monitoring code is degradable, never blocking.
+
+### Expected first-week noise
+
+The first 7 days after enabling Sentry on the scraper and ml-service will surface previously-invisible errors. **Acknowledge them, don't suppress.** Tune Sentry alert rules to fire on issue *frequency* (e.g. "10+ in an hour") rather than "any new error" until the baseline stabilizes.
 
 ---
 

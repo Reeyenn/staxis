@@ -99,3 +99,35 @@ on this key, so re-running the same scrape is idempotent.
   first hit) trigger SMS alerts. Gracefully no-ops if `CRON_SECRET` is
   missing. Wrapped in its own try/catch so watchdog bugs can never crash
   the main scraper loop.
+- **Disk hygiene:** on boot the scraper purges diagnostic files
+  (`csv-form-dump.html`, `csv-bad-content.txt`, `csv-error-*.png`,
+  `DEBUG-*`, etc.) older than 24h from its working directory so Railway's
+  container disk doesn't fill up across long uptimes.
+
+## Scraping risks, rate-limiting, and Choice Advantage TOS
+
+A few facts worth keeping in mind when changing scraper behavior:
+
+- **Authenticated mode, not anonymous crawling.** The scraper signs in
+  with the hotel's real Choice Advantage credentials and acts on its own
+  data. That puts it under the hotel's existing CA service agreement; we
+  are not bypassing auth, scraping competitor data, or evading any access
+  control. It is the same behavior a person at the hotel would perform by
+  clicking through the same screens.
+- **No IP rotation.** All traffic exits Railway's single egress IP. If CA
+  starts rate-limiting or IP-blocking us, we will lose access until they
+  un-block — there is no pool of fallback IPs.
+- **No proactive rate-limit backoff.** The tick loop is fixed at
+  `TICK_MINUTES` (default 5 min). On observed CA-side throttling we have
+  historically seen two failure modes: (a) the login form silently
+  bounces back to itself on submit (the "blank-form bounce"), and (b)
+  un-migrated SkyTouch accounts get force-logged-out via a chain through
+  `/choice.LogUserOff`. Both surface as `LOGIN_FAILED` and self-recover
+  on the next tick once CA settles.
+- **Be careful turning the tick rate down.** The hourly CSV cadence is
+  load-bearing for ML demand prediction (`ml-run-inference` at 5:30am CT
+  reads `plan_snapshots` for tomorrow). The 15-min dashboard cadence is
+  load-bearing for the Schedule tab live counts.
+- **One scraper instance per property.** Multi-instance fleet wiring
+  exists in `scraper_credentials` but `loadActiveProperties` still
+  enforces N=1 — see the FATAL exit in `scraper.js` if the count drifts.

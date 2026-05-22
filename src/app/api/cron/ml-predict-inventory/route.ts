@@ -16,13 +16,14 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { runWithConcurrency } from '@/lib/parallel';
-import { classifyMlServiceConfig, resolveMlShardUrl } from '@/lib/ml-routing';
+import { classifyMlServiceConfig } from '@/lib/ml-routing';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import {
   emitPropertyMisconfiguredEvent,
   parsePropertyMisconfiguredError,
   MISCONFIG_STATUSES,
 } from '@/lib/ml-misconfigured-events';
+import { predictInventoryRates } from '@/lib/ml-predict-invoke';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -49,7 +50,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       { status: 503 },
     );
   }
-  const { secret: mlServiceSecret } = config;
 
   // Pull `timezone` so each property's "tomorrow" is computed against its
   // own local clock (a Florida hotel must not predict a Texas-timed date).
@@ -95,29 +95,27 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
   // Parallel fan-out (concurrency 5).
   const outcomes = await runWithConcurrency(eligible, async (property) => {
-    const propertyTz = property.timezone as string;
-    const mlServiceUrl = resolveMlShardUrl(property.id)!;
-    const res = await fetch(`${mlServiceUrl.replace(/\/$/, '')}/predict/inventory-rate`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${mlServiceSecret}`,
-        'Content-Type': 'application/json',
-        'x-request-id': requestId,
-      },
-      body: JSON.stringify({ property_id: property.id, property_timezone: propertyTz }),
-      signal: AbortSignal.timeout(75_000),
+    // Phase E2E (2026-05-22): fetch+parse+shape validation moved into
+    // predictInventoryRates so a malformed FastAPI response can't slip
+    // past the JSON cast and land as `predicted: null` with status 'ok'.
+    const result = await predictInventoryRates(property.id, {
+      propertyTimezone: property.timezone as string,
+      requestId,
     });
-    const json = await res.json().catch(() => ({ error: 'non_json_response', http: res.status }));
+    const predicted =
+      typeof (result.detail as { predicted?: number } | undefined)?.predicted === 'number'
+        ? (result.detail as { predicted?: number }).predicted
+        : null;
     log.info('ml-predict-inventory: result', {
       requestId, property_id: property.id,
-      predicted: (json as { predicted?: number }).predicted ?? null,
+      predicted,
     });
 
     // Codex follow-up 2026-05-13 (A2): if the ML service returned a
     // property_misconfigured error (e.g. for a field caught Python-side
     // we don't pre-check here), persist the event and return a clean
     // skipped outcome.
-    const errStr = (json as { error?: string }).error;
+    const errStr = result.error;
     if (typeof errStr === 'string' && errStr.startsWith('property_misconfigured:')) {
       const parsed = parsePropertyMisconfiguredError(errStr);
       if (parsed) {
@@ -136,15 +134,15 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // here, which let `{error: 'No active model'}` or HTTP 500s fall
     // through. Result mapper defaults missing `status` to 'ok' →
     // anyError stays false → heartbeat goes green while inventory
-    // predictions are absent. Same hardening A2/A6 added to the
-    // training crons; was missed here.
-    if (typeof errStr === 'string' || !res.ok) {
+    // predictions are absent. The wrapper now sets ok=false for all
+    // those cases.
+    if (!result.ok) {
       return {
         status: 'error',
-        detail: errStr ?? (json as { http?: number }).http ?? `HTTP ${res.status}`,
+        detail: errStr ?? result.http ?? `HTTP ${result.http ?? '???'}`,
       };
     }
-    return json;
+    return result.detail ?? {};
   }, 5);
 
   const results = [

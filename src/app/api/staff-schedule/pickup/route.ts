@@ -9,7 +9,8 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId, log } from '@/lib/log';
+import { errToString } from '@/lib/utils';
 import { requireSession } from '@/lib/api-auth';
 import { validateUuid } from '@/lib/api-validate';
 import { fromScheduledShiftRow } from '@/lib/db-mappers';
@@ -69,7 +70,7 @@ export async function POST(req: NextRequest) {
     .select('*').maybeSingle();
 
   if (upErr) {
-    console.error('[pickup:POST] update failed', upErr);
+    log.error('[pickup:POST] update failed', { requestId, msg: errToString(upErr) });
     return err(upErr.message || 'Failed to pick up', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   if (!updated) {

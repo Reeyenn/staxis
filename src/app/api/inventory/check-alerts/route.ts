@@ -26,6 +26,7 @@ import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { env } from '@/lib/env';
 import { err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { captureException } from '@/lib/sentry';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -153,11 +154,36 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Comms-voice audit P0 (2026-05-22): batched Sentry capture when any
+  // SMS failed. One event per request regardless of fan-out size — a
+  // fleet-wide Twilio outage must not fire N events. Retry safety: the
+  // sendSms-then-update-last_alerted_at order at line 142-150 means a
+  // failed item leaves last_alerted_at unchanged, so the next cron tick
+  // naturally retries that item. No 502 needed.
+  if (errors.length > 0) {
+    captureException(
+      new Error(`inventory check-alerts: ${errors.length} SMS failed, ${sent} sent`),
+      {
+        subsystem: 'inventory-check-alerts',
+        failure_mode: 'sms_send_failed',
+        requestId,
+        pid,
+        sent: String(sent),
+        failureCount: String(errors.length),
+        firstFewErrors: errors.slice(0, 3).map(e => e.error).join(' | '),
+      },
+    );
+  }
+
+  // ok=false when nothing got out at all; ok=true on partial success so
+  // the inventory page UI doesn't flash red when some items succeeded.
+  // Cron monitors should also check errors.length to surface partial fails.
+  const allFailed = sent === 0 && errors.length > 0;
   return NextResponse.json({
-    ok: errors.length === 0,
+    ok: !allFailed,
     sent,
     skipped,
     errors: errors.length > 0 ? errors : undefined,
     propertyName: prop.name,
-  });
+  }, { status: allFailed ? 502 : 200 });
 }

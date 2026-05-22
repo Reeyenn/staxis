@@ -1,0 +1,1604 @@
+{
+  "components": {
+    "schemas": {
+      "AggregatePriorsResponse": {
+        "description": "Response for cohort prior aggregation.\n\nPhase M3 (2026-05-14): widened with optional fields so the demand +\nsupply aggregators can reuse this model. They return hotels_seen +\nskipped_low_n (which inventory doesn't), and don't return\nitems_canonical (which only inventory does).",
+        "properties": {
+          "cohorts_updated": {
+            "default": 0,
+            "title": "Cohorts Updated",
+            "type": "integer"
+          },
+          "errors": {
+            "default": [],
+            "items": {},
+            "title": "Errors",
+            "type": "array"
+          },
+          "hotels_seen": {
+            "default": 0,
+            "title": "Hotels Seen",
+            "type": "integer"
+          },
+          "items_canonical": {
+            "default": 0,
+            "title": "Items Canonical",
+            "type": "integer"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "skipped_low_n": {
+            "default": 0,
+            "title": "Skipped Low N",
+            "type": "integer"
+          }
+        },
+        "title": "AggregatePriorsResponse",
+        "type": "object"
+      },
+      "FleetRollbackRequest": {
+        "description": "Request for the daily rollback pipeline.\n\n`property_ids` is optional \u2014 None means \"all properties with at\nleast one active fitted (non-cold-start) housekeeping model\".\nTests + manual triggers can scope down.",
+        "properties": {
+          "property_ids": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Property Ids"
+          }
+        },
+        "title": "FleetRollbackRequest",
+        "type": "object"
+      },
+      "FleetRollbackResponse": {
+        "description": "Response for the daily rollback pipeline.\n\nMirrors what `run_daily_rollback_pipeline` returns. The TS cron\nroute iterates `results` to write per-property app_events rows.\nPermissive shape (Dict-of-anything) so future additions to the\norchestrator don't require a Pydantic-schema bump at every cron.",
+        "properties": {
+          "alpha": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alpha"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "dry_run_would_fire": {
+            "default": 0,
+            "title": "Dry Run Would Fire",
+            "type": "integer"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "execute_failures": {
+            "default": [],
+            "items": {},
+            "title": "Execute Failures",
+            "type": "array"
+          },
+          "phase_backfill": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase Backfill"
+          },
+          "phase_check": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase Check"
+          },
+          "results": {
+            "default": [],
+            "items": {},
+            "title": "Results",
+            "type": "array"
+          },
+          "rollbacks_fired": {
+            "default": 0,
+            "title": "Rollbacks Fired",
+            "type": "integer"
+          }
+        },
+        "title": "FleetRollbackResponse",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "InventoryBacktestRequest": {
+        "description": "Request to run a realized-MAE backtest for the inventory layer.\n\nHonesty-audit Phase 3 (2026-05-22). Read-only \u2014 never writes to\nmodel_runs or inventory_rate_predictions.",
+        "properties": {
+          "property_id": {
+            "title": "Property Id",
+            "type": "string"
+          },
+          "window_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": 30,
+            "title": "Window Days"
+          }
+        },
+        "required": [
+          "property_id"
+        ],
+        "title": "InventoryBacktestRequest",
+        "type": "object"
+      },
+      "InventoryBacktestResponse": {
+        "description": "Realized-MAE rollup over the prediction_log window. Read-only.",
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "n_pairs": {
+            "default": 0,
+            "title": "N Pairs",
+            "type": "integer"
+          },
+          "per_item": {
+            "default": [],
+            "items": {},
+            "title": "Per Item",
+            "type": "array"
+          },
+          "property_id": {
+            "title": "Property Id",
+            "type": "string"
+          },
+          "stale_active_models": {
+            "default": [],
+            "items": {},
+            "title": "Stale Active Models",
+            "type": "array"
+          },
+          "window_days": {
+            "default": 30,
+            "title": "Window Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "property_id"
+        ],
+        "title": "InventoryBacktestResponse",
+        "type": "object"
+      },
+      "OptimizeRequest": {
+        "description": "Request headcount optimization.",
+        "properties": {
+          "date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date"
+          },
+          "property_id": {
+            "title": "Property Id",
+            "type": "string"
+          },
+          "property_timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Property Timezone"
+          }
+        },
+        "required": [
+          "property_id"
+        ],
+        "title": "OptimizeRequest",
+        "type": "object"
+      },
+      "OptimizeResponse": {
+        "description": "Optimization response.",
+        "properties": {
+          "achieved_completion_probability": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Achieved Completion Probability"
+          },
+          "completion_probability_curve": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completion Probability Curve"
+          },
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "l1_is_cold_start": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "L1 Is Cold Start"
+          },
+          "l2_any_cold_start": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "L2 Any Cold Start"
+          },
+          "l2_prediction_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "L2 Prediction Count"
+          },
+          "property_id": {
+            "title": "Property Id",
+            "type": "string"
+          },
+          "recommended_headcount": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recommended Headcount"
+          },
+          "used_l2_supply": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Used L2 Supply"
+          }
+        },
+        "required": [
+          "property_id",
+          "date"
+        ],
+        "title": "OptimizeResponse",
+        "type": "object"
+      },
+      "PredictDemandRequest": {
+        "description": "Request demand prediction.",
+        "properties": {
+          "date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date"
+          },
+          "property_id": {
+            "title": "Property Id",
+            "type": "string"
+          },
+          "property_timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Property Timezone"
+          }
+        },
+        "required": [
+          "property_id"
+        ],
+        "title": "PredictDemandRequest",
+        "type": "object"
+      },
+      "PredictDemandResponse": {
+        "description": "Demand prediction response.",
+        "properties": {
+          "algorithm": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Algorithm"
+          },
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "is_cold_start": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Cold Start"
+          },
+          "model_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Version"
+          },
+          "predicted_headcount_p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Predicted Headcount P50"
+          },
+          "predicted_headcount_p95": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Predicted Headcount P95"
+          },
+          "predicted_minutes_p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Predicted Minutes P50"
+          },
+          "predicted_minutes_p95": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Predicted Minutes P95"
+          },
+          "property_id": {
+            "title": "Property Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "property_id",
+          "date"
+        ],
+        "title": "PredictDemandResponse",
+        "type": "object"
+      },
+      "PredictInventoryRateRequest": {
+        "description": "Request to generate inventory_rate predictions for a property.",
+        "properties": {
+          "date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date"
+          },
+          "property_id": {
+            "title": "Property Id",
+            "type": "string"
+          },
+          "property_timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Property Timezone"
+          }
+        },
+        "required": [
+          "property_id"
+        ],
+        "title": "PredictInventoryRateRequest",
+        "type": "object"
+      },
+      "PredictInventoryRateResponse": {
+        "description": "Response for inventory_rate prediction run.",
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "errors": {
+            "default": [],
+            "items": {},
+            "title": "Errors",
+            "type": "array"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "predicted": {
+            "default": 0,
+            "title": "Predicted",
+            "type": "integer"
+          },
+          "skipped_no_active_model": {
+            "default": 0,
+            "title": "Skipped No Active Model",
+            "type": "integer"
+          },
+          "target_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Date"
+          }
+        },
+        "title": "PredictInventoryRateResponse",
+        "type": "object"
+      },
+      "PredictSupplyRequest": {
+        "description": "Request supply prediction.",
+        "properties": {
+          "date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date"
+          },
+          "property_id": {
+            "title": "Property Id",
+            "type": "string"
+          },
+          "property_timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Property Timezone"
+          }
+        },
+        "required": [
+          "property_id"
+        ],
+        "title": "PredictSupplyRequest",
+        "type": "object"
+      },
+      "PredictSupplyResponse": {
+        "description": "Supply prediction response.",
+        "properties": {
+          "algorithm": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Algorithm"
+          },
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "is_cold_start": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Cold Start"
+          },
+          "model_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Version"
+          },
+          "predicted_rooms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Predicted Rooms"
+          },
+          "property_id": {
+            "title": "Property Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "property_id",
+          "date"
+        ],
+        "title": "PredictSupplyResponse",
+        "type": "object"
+      },
+      "TrainDemandRequest": {
+        "description": "Request to train demand model.",
+        "properties": {
+          "max_rows": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Rows"
+          },
+          "property_id": {
+            "title": "Property Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "property_id"
+        ],
+        "title": "TrainDemandRequest",
+        "type": "object"
+      },
+      "TrainDemandResponse": {
+        "description": "Response from demand training.",
+        "properties": {
+          "baseline_mae": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Baseline Mae"
+          },
+          "beats_baseline_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Beats Baseline Pct"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "model_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Run Id"
+          },
+          "training_mae": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Training Mae"
+          },
+          "training_row_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Training Row Count"
+          },
+          "validation_mae": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Validation Mae"
+          }
+        },
+        "required": [
+          "is_active"
+        ],
+        "title": "TrainDemandResponse",
+        "type": "object"
+      },
+      "TrainInventoryRateRequest": {
+        "description": "Request to train inventory_rate models for a property.\n\nitem_id is optional \u2014 when omitted, trains every item in the property.\nThe cockpit's \"Retrain this item\" button passes a specific item_id.",
+        "properties": {
+          "item_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Id"
+          },
+          "max_rows": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Rows"
+          },
+          "property_id": {
+            "title": "Property Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "property_id"
+        ],
+        "title": "TrainInventoryRateRequest",
+        "type": "object"
+      },
+      "TrainInventoryRateResponse": {
+        "description": "Response for inventory_rate training run.\n\nReturns aggregate counts across all items trained in this run.",
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "errors": {
+            "default": [],
+            "items": {},
+            "title": "Errors",
+            "type": "array"
+          },
+          "items_skipped_insufficient_data": {
+            "default": 0,
+            "title": "Items Skipped Insufficient Data",
+            "type": "integer"
+          },
+          "items_trained": {
+            "default": 0,
+            "title": "Items Trained",
+            "type": "integer"
+          },
+          "items_with_active_model": {
+            "default": 0,
+            "title": "Items With Active Model",
+            "type": "integer"
+          },
+          "items_with_auto_fill": {
+            "default": 0,
+            "title": "Items With Auto Fill",
+            "type": "integer"
+          }
+        },
+        "title": "TrainInventoryRateResponse",
+        "type": "object"
+      },
+      "TrainSupplyRequest": {
+        "description": "Request to train supply model.",
+        "properties": {
+          "max_rows": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Rows"
+          },
+          "property_id": {
+            "title": "Property Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "property_id"
+        ],
+        "title": "TrainSupplyRequest",
+        "type": "object"
+      },
+      "TrainSupplyResponse": {
+        "description": "Response from supply training.",
+        "properties": {
+          "beats_baseline_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Beats Baseline Pct"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "model_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Run Id"
+          },
+          "training_mae": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Training Mae"
+          },
+          "training_row_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Training Row Count"
+          },
+          "validation_mae": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Validation Mae"
+          }
+        },
+        "required": [
+          "is_active"
+        ],
+        "title": "TrainSupplyResponse",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "Housekeeping demand/supply prediction and optimization",
+    "title": "Staxis ML Service",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/eval/inventory-backtest": {
+      "post": {
+        "description": "Compute realized-MAE rollups for the inventory layer.\n\nHonesty-audit Phase 3 (2026-05-22). Reads prediction_log rows for the\ngiven property + window, joins to model_runs (single batched\n`.in_('id', ...)` round-trip \u2014 no N+1), and returns per-item realized\nMAE plus a list of active model_runs whose realized error has drifted\nbeyond 1.5\u00d7 their training-time validation_mae.\n\nPURE READ. Never writes to model_runs or inventory_rate_predictions.\nThe caller decides what to do with the stale-models flag \u2014 no\nauto-rollback. Bearer-authenticated, no TS proxy: admin-only via\ncurl with ML_SERVICE_SECRET.\n\nWindow clamped server-side to [1, 180] days. Default 30.",
+        "operationId": "inventory_backtest_endpoint_eval_inventory_backtest_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InventoryBacktestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InventoryBacktestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Realized-MAE backtest from prediction_log (read-only, admin)",
+        "tags": [
+          "evaluation"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "description": "Health check endpoint (no auth required).\n\nReturns:\n    Status dictionary",
+        "operationId": "health_check_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Health Check Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health Check",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/monitor/run-daily-rollback-pipeline": {
+      "post": {
+        "description": "Run the full daily rollback pipeline.\n\nPipeline (see fleet_rollback.run_daily_rollback_pipeline for the\nimplementation):\n  1. Backfill prediction_log over the 3-day rolling correction\n     window using UPSERT against the natural key from migration\n     0156. Uses cleaning_minutes_per_day_view.total_approved_minutes\n     (NOT recorded) so Maria's flag/discard corrections propagate.\n  2. For each (property, layer) with an active fitted model and\n     n>=21 mature paired observations, run the paired Wilcoxon\n     signed-rank test (active model vs same-DOW historical actual).\n  3. Skip pairs that rolled back within the last 14 days\n     (cooldown \u2014 prevents oscillation).\n  4. Apply Benjamini-Hochberg false-discovery correction fleet-wide\n     at settings.auto_rollback_fdr_alpha.\n  5. For each surviving rejection: call execute_rollback in either\n     dry-run mode (default \u2014 logs only, no model_runs touched) or\n     live mode (deactivates the active fitted model; property\n     falls through to cold-start cohort prior until next training).\n\nBearer-gated. Body-size capped by the global middleware.",
+        "operationId": "run_daily_rollback_pipeline_endpoint_monitor_run_daily_rollback_pipeline_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FleetRollbackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetRollbackResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Daily auto-rollback orchestrator (Phase 7 v2)",
+        "tags": [
+          "monitoring"
+        ]
+      }
+    },
+    "/predict/demand": {
+      "post": {
+        "description": "Predict total workload for a property.\n\nRequires bearer token authentication.",
+        "operationId": "predict_demand_endpoint_predict_demand_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PredictDemandRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PredictDemandResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Predict demand (Layer 1)",
+        "tags": [
+          "inference"
+        ]
+      }
+    },
+    "/predict/inventory-rate": {
+      "post": {
+        "description": "Generate inventory_rate predictions for tomorrow (or a specified date).\n\nIterates every active model_runs row of layer='inventory_rate' for the\nproperty, predicts daily_rate via the cached posterior, computes\npredicted_current_stock for Count Mode auto-fill, and writes one row\nper item to inventory_rate_predictions.\n\nRequires bearer token authentication.",
+        "operationId": "predict_inventory_rate_endpoint_predict_inventory_rate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PredictInventoryRateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PredictInventoryRateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Predict inventory daily rates (per item)",
+        "tags": [
+          "inference"
+        ]
+      }
+    },
+    "/predict/optimizer": {
+      "post": {
+        "description": "Recommend optimal headcount via Monte Carlo.\n\nRequires bearer token authentication.",
+        "operationId": "optimize_endpoint_predict_optimizer_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OptimizeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OptimizeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Optimize headcount (Layer 3)",
+        "tags": [
+          "optimizer"
+        ]
+      }
+    },
+    "/predict/supply": {
+      "post": {
+        "description": "Predict per-room \u00d7 per-housekeeper cleaning times.\n\nRequires bearer token authentication.",
+        "operationId": "predict_supply_endpoint_predict_supply_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PredictSupplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PredictSupplyResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Predict supply (Layer 2)",
+        "tags": [
+          "inference"
+        ]
+      }
+    },
+    "/train/demand": {
+      "post": {
+        "description": "Train demand model for a property.\n\nRequires bearer token authentication. Plan v2 F-AI-4: uses a\nnonblocking advisory lock so concurrent calls return 409\n`already_running` instead of stacking blocked DB connections.",
+        "operationId": "train_demand_endpoint_train_demand_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrainDemandRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrainDemandResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Train Layer 1 demand model",
+        "tags": [
+          "training"
+        ]
+      }
+    },
+    "/train/demand-priors": {
+      "post": {
+        "description": "Recompute demand_priors from network data.\n\nReads cleaning_minutes_per_day_view for the last 90 days, normalizes\neach property's daily total to per-room (so hotels of different sizes\nare comparable), takes per-property median, then per-cohort median.\n\nCohort key construction matches inventory_priors:\n  ['global', '<brand-region-size_tier>'] when all 3 fields populated.\n\n'global' cohort needs 5+ hotels before overriding the\nindustry-benchmark seed in demand_priors. Specific cohorts always\nupsert (they only exist when there's real cohort data).\n\nIdempotent \u2014 each run replaces every cohort row with source='cohort-aggregate'.\nIndustry-benchmark seeds (source='industry-benchmark') are NOT touched.\n\nRequires bearer token authentication.",
+        "operationId": "train_demand_priors_endpoint_train_demand_priors_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AggregatePriorsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Aggregate cross-hotel demand cohort priors (Phase M3)",
+        "tags": [
+          "training"
+        ]
+      }
+    },
+    "/train/inventory-priors": {
+      "post": {
+        "description": "Recompute cohort + global inventory_rate_priors from network data.\n\nNo body \u2014 operates across all properties. Idempotent: each run replaces\nevery (cohort_key, item_canonical_name) row. Industry-benchmark seeds\nfrom migration 0062 are NOT overwritten because they live under\ncohort_key='global' with source='industry-benchmark', and this endpoint\nonly writes rows with source='cohort-aggregate' for cohorts that have\nactual data. Cohorts with no aggregated data don't touch the seeds.\n\nRequires bearer token authentication.",
+        "operationId": "train_inventory_priors_endpoint_train_inventory_priors_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AggregatePriorsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Aggregate cross-hotel cohort priors",
+        "tags": [
+          "training"
+        ]
+      }
+    },
+    "/train/inventory-rate": {
+      "post": {
+        "description": "Train per-(property \u00d7 item) inventory rate models.\n\nWhen item_id is provided, retrains just that item. Otherwise iterates\nevery inventory.id in the property and trains one model per item that\nhas \u22653 count events.\n\nRequires bearer token authentication. Plan v2 F-AI-4: nonblocking\nadvisory lock \u2192 409 on contention.",
+        "operationId": "train_inventory_rate_endpoint_train_inventory_rate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrainInventoryRateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrainInventoryRateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Train inventory_rate models (per item)",
+        "tags": [
+          "training"
+        ]
+      }
+    },
+    "/train/supply": {
+      "post": {
+        "description": "Train supply model for a property.\n\nRequires bearer token authentication. Plan v2 F-AI-4: nonblocking\nadvisory lock \u2192 409 on contention.",
+        "operationId": "train_supply_endpoint_train_supply_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrainSupplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrainSupplyResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Train Layer 2 supply model",
+        "tags": [
+          "training"
+        ]
+      }
+    },
+    "/train/supply-priors": {
+      "post": {
+        "description": "Recompute supply_priors from network data.\n\nReads cleaning_events.duration_minutes for the last 90 days\n(status='recorded' only \u2014 flagged events are operator-marked outliers\nthat would skew the median). Per-property median, then per-cohort.\n\nSame cohort key construction + skip-low-n logic as demand-priors above.\n\nIdempotent \u2014 each run replaces every cohort row with source='cohort-aggregate'.\nIndustry-benchmark seeds (source='industry-benchmark') are NOT touched.\n\nRequires bearer token authentication.",
+        "operationId": "train_supply_priors_endpoint_train_supply_priors_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AggregatePriorsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Aggregate cross-hotel supply cohort priors (Phase M3)",
+        "tags": [
+          "training"
+        ]
+      }
+    }
+  }
+}

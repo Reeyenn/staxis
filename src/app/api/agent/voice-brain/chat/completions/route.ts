@@ -50,6 +50,8 @@ import { getOrMintRequestId, log } from '@/lib/log';
 // Side-effect import — registers all tools against the catalog.
 import '@/lib/agent/tools/index';
 import { env } from '@/lib/env';
+import { supabaseAdmin } from '@/lib/supabase-admin';
+import { captureException } from '@/lib/sentry';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -536,8 +538,49 @@ export async function POST(req: NextRequest): Promise<Response> {
               kind: 'audio',
             });
           } catch (e) {
-            // Cost-ledger write failure must not break the reply.
-            log.error('[voice-brain] cost-ledger write failed', { requestId, e });
+            // 2026-05-22 audit (Codex): cost-ledger write failure must not
+            // break the reply (the SSE has already streamed), but it MUST
+            // page. Anthropic was billed; agent_costs has no row; the
+            // audio budget cap loses fidelity until next UTC day if this
+            // persists. captureException pages immediately; the app_events
+            // row is the durable reconciliation surface.
+            const errObj = e instanceof Error ? e : new Error(String(e));
+            log.error('[voice-brain] cost-ledger write failed', {
+              requestId,
+              err: errObj,
+              accountId: ctx.accountId,
+              propertyId: ctx.propertyId,
+              unrecorded: {
+                tokensIn: finalUsage.inputTokens,
+                tokensOut: finalUsage.outputTokens,
+                costUsd: finalUsage.costUsd,
+                modelId: finalUsage.modelId,
+              },
+            });
+            captureException(errObj, {
+              subsystem: 'cost-ledger',
+              route: 'voice-brain',
+              severity: 'high',
+              accountId: ctx.accountId,
+              propertyId: ctx.propertyId,
+              cost_usd: finalUsage.costUsd,
+            });
+            try {
+              await supabaseAdmin.from('app_events').insert({
+                property_id: ctx.propertyId,
+                event_type: 'cost_ledger_failure',
+                metadata: {
+                  route: 'voice-brain',
+                  accountId: ctx.accountId,
+                  model: finalUsage.model,
+                  modelId: finalUsage.modelId,
+                  tokensIn: finalUsage.inputTokens,
+                  tokensOut: finalUsage.outputTokens,
+                  costUsd: finalUsage.costUsd,
+                  kind: 'audio',
+                },
+              });
+            } catch { /* Sentry already paged; durable fallback best-effort */ }
           }
         }
 

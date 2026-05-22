@@ -21,6 +21,7 @@ import { ManagerSchedule } from './_components/ManagerSchedule';
 import { ManagerDirectory } from './_components/ManagerDirectory';
 import { MyShifts } from './_components/MyShifts';
 import { T, fonts } from './_components/_tokens';
+import StaleDataBanner from '@/components/StaleDataBanner';
 
 const TAB_STORAGE_KEY = 'staxis-staff-tab';
 
@@ -56,6 +57,11 @@ function ManagerView() {
 
   return (
     <div style={{ background: T.bg, color: T.ink, fontFamily: fonts.sans, minHeight: '100%' }}>
+      {/* F8: stale-data banner — surfaces scraper degradation on the
+          staffing surface (schedule decisions depend on dashboard counts). */}
+      <div style={{ padding: '0 24px', paddingTop: 12 }}>
+        <StaleDataBanner />
+      </div>
       <SubTabBar tab={tab} onTab={setTab}/>
       {tab === 'schedule'  && <ManagerSchedule/>}
       {tab === 'directory' && <ManagerDirectory/>}

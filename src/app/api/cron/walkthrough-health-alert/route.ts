@@ -22,6 +22,7 @@
  * Scale-readiness Phase 1C (2026-05-14), Phase 1D follow-up (cannot_help split + threshold tune).
  */
 
+import { createHash } from 'crypto';
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireCronSecret } from '@/lib/api-auth';
@@ -89,6 +90,15 @@ export async function GET(req: NextRequest) {
       // without dropping into psql. Doctor's failing-check-names trick
       // (Round 16) made on-call triage hours faster — same idea here.
       // We query in the same UTC day window the daily view uses.
+      //
+      // 2026-05-22 audit: raw task text used to flow into Sentry alert
+      // title + extras. Tasks are free-form user input that can contain
+      // guest names, room incidents, or operationally sensitive text.
+      // Now we group by a SHA-256 prefix so identical tasks still cluster
+      // for triage without exposing content. If a hash needs to be tied
+      // back to a real task, the operator can SELECT FROM walkthrough_runs
+      // WHERE substring(encode(digest(task, 'sha256'), 'hex'), 1, 12) = …
+      // under DB-access auditing instead of Sentry's broad org access.
       const dayStart = `${row.day}T00:00:00Z`;
       const dayEnd = `${row.day}T23:59:59.999Z`;
       const { data: badRows } = await supabaseAdmin
@@ -97,22 +107,18 @@ export async function GET(req: NextRequest) {
         .in('status', ['errored', 'timeout', 'capped'])
         .gte('started_at', dayStart)
         .lte('started_at', dayEnd);
-      const byTask = new Map<string, number>();
+      const byTaskHash = new Map<string, number>();
       for (const r of (badRows ?? []) as Array<{ task: string }>) {
-        byTask.set(r.task, (byTask.get(r.task) ?? 0) + 1);
+        const h = createHash('sha256').update(r.task ?? '').digest('hex').slice(0, 12);
+        byTaskHash.set(h, (byTaskHash.get(h) ?? 0) + 1);
       }
-      const topTasks = [...byTask.entries()]
+      const topTaskHashes = [...byTaskHash.entries()]
         .sort((a, b) => b[1] - a[1])
         .slice(0, 3)
-        .map(([t, n]) => `"${t}" (${n})`);
-      // Round 18: tasks are LLM-generated and can hit the 200-char DB
-      // constraint. Three of those in the title would overflow Sentry's
-      // ~200-char truncation, splitting fingerprints. Cap the title at
-      // SENTRY_TITLE_MAX with "+N more" overflow; full task list stays
-      // in extra.top_failing_tasks for the operator to drill into.
-      const prefix = `walkthrough bad-outcome rate ${Math.round(rate * 100)}% — top failing: `;
-      const tailWithCap = topTasks.length > 0
-        ? truncateListForSentryTitle(prefix, topTasks)
+        .map(([h, n]) => `${h} (${n})`);
+      const prefix = `walkthrough bad-outcome rate ${Math.round(rate * 100)}% — top failing hashes: `;
+      const tailWithCap = topTaskHashes.length > 0
+        ? truncateListForSentryTitle(prefix, topTaskHashes)
         : 'no tasks identified';
       const alertTitle = prefix + tailWithCap;
 
@@ -120,7 +126,7 @@ export async function GET(req: NextRequest) {
         requestId,
         rate: Math.round(rate * 1000) / 10,
         total: row.total,
-        topTasks,
+        topTaskHashes,
         breakdown: {
           completed: row.completed,
           user_stopped: row.user_stopped,
@@ -140,7 +146,7 @@ export async function GET(req: NextRequest) {
         hit_step_cap: row.hit_step_cap,
         errored: row.errored,
         timed_out: row.timed_out,
-        top_failing_tasks: topTasks,
+        top_failing_task_hashes: topTaskHashes,
       });
     }
 

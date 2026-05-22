@@ -155,6 +155,13 @@ const ServerSchema = z.object({
 
   // ── Email ─────────────────────────────────────────────
   RESEND_API_KEY: z.string().optional(),
+  // Comms-voice audit follow-up (2026-05-22): Resend webhook signing
+  // secret for /api/webhooks/resend. Format: `whsec_<base64>`. Generated
+  // by Resend when you add a webhook endpoint on their dashboard; copy
+  // the value into Vercel env. Optional — if unset, the webhook route
+  // refuses every request (fail-closed) so a misconfigured deploy can't
+  // accept unsigned bounce/complaint POSTs.
+  RESEND_WEBHOOK_SECRET: z.string().optional(),
 
   // ── Sentry ────────────────────────────────────────────
   SENTRY_DSN: z.string().url().optional(),

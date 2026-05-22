@@ -239,11 +239,31 @@ export default withSentryConfig(nextConfig, {
   // Upload source maps in production builds only — local `next dev` doesn't
   // need them, and uploading on every `next build` during local dev would
   // waste Sentry quota.
+  //
+  // Gated on SENTRY_AUTH_TOKEN: when the token is absent (preview deploys,
+  // local builds, deploys before the token is provisioned), explicitly
+  // skip upload instead of letting the plugin try-and-fail. Without this
+  // gate, preview builds run through the plugin and hit Sentry with an
+  // unauthenticated request, which the plugin treats as an error rather
+  // than a no-op in @sentry/nextjs ≥ 8.
   sourcemaps: {
-    disable: false,
+    disable: !process.env.SENTRY_AUTH_TOKEN,
     // Delete uploaded source maps from the build artifact so they don't
     // ship to the browser. Sentry has them; users shouldn't.
     deleteSourcemapsAfterUpload: true,
+  },
+
+  // Codex BLOCKER #3 — never let a Sentry plugin error block the Vercel
+  // deploy. If the token is invalid, the project slug is wrong, or
+  // Sentry's API is down during a deploy, we want a noisy build log but
+  // a successful release. Without this handler the plugin throws and
+  // Vercel marks the deploy failed, taking the live hotel app down for
+  // a monitoring-side problem.
+  errorHandler: (err) => {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[sentry-plugin] source-map upload skipped/failed (build continues): ${err && err.message ? err.message : err}`,
+    );
   },
 
   // Tree-shake Sentry SDK debug-logger statements out of the bundle —

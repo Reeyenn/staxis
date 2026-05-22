@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     # silently and made auto-rollback dead code.
     database_url: Optional[str] = None
 
+    # Sentry DSN for error monitoring. When unset, sentry_init.init_sentry()
+    # no-ops and ml-service continues with Railway-logs-only visibility (the
+    # pre-monitoring baseline). Set to "" (empty string) on Railway to kill-
+    # switch monitoring without a code change.
+    sentry_dsn: Optional[str] = None
+
     # Model training thresholds
     training_row_count_min: int = 200
     training_row_count_activation: int = 500
@@ -101,6 +107,21 @@ class Settings(BaseSettings):
     inventory_graduation_min_events: int = 30           # Auto-fill graduation gate #1
     inventory_graduation_mae_ratio: float = 0.10        # Auto-fill graduation gate #2 (MAE/mean must be < this)
     inventory_graduation_consecutive_passes: int = 5    # Auto-fill graduation gate #3
+
+    # Plan v2 F-AI-4 — API-boundary safety limits. Promoted from
+    # os.environ.get(...) reads in main.py so the values flow through
+    # Pydantic validation and are documented in .env.example.
+    #
+    # ml_max_body_bytes: 64 KiB. ML endpoints all carry tiny JSON
+    # bodies (UUID + date string); 64 KB is far above anything
+    # legitimate and cuts off the obvious DoS vector of POSTing a
+    # giant payload. test_main_hardening.py sends an 80 KiB body
+    # expecting a 413 — changing this default WILL break that test.
+    # ml_max_rows_cap: 200,000. Hard ceiling on per-property training
+    # row pulls so a bearer-token holder can't force Railway to
+    # materialize arbitrarily large dataframes into memory.
+    ml_max_rows_cap: int = 200_000
+    ml_max_body_bytes: int = 64 * 1024
 
     @field_validator("ml_service_secret")
     @classmethod

@@ -182,18 +182,45 @@ async function reconcileOOO(supabase, config, ooo, log) {
     }
   }
 
-  // 2) Walk the CA list, upsert each one.
+  // 2a) F5 — caKeys-before-validation pass.
+  //
+  // Build the "CA still considers this work order active" key set from the
+  // RAW payload before any per-row validation can drop it. Reconciliation
+  // (step 3) uses this set to decide what to auto-resolve. If a row makes
+  // it onto CA's list with a real workOrderNumber but a malformed payload
+  // (bad room number, junk dates), we MUST NOT treat the still-active
+  // block as resolved just because we can't safely write it. Codex caught
+  // this race in v1 review — the v1 plan auto-resolved on validation
+  // failure, silently turning a real maintenance block into "fixed".
   const caKeys = new Set();
-  let created = 0, updated = 0, reopened = 0;
+  for (const w of ooo) {
+    const caKey = String(w.workOrderNumber || '');
+    if (caKey) caKeys.add(caKey);
+  }
+
+  // 2b) Walk the CA list with loose payload validation. Rows that fail
+  // validation get their key kept (already in caKeys), but the write is
+  // skipped + counted so persistent drops surface in scraper_status[ooo].
+  let created = 0, updated = 0, reopened = 0, invalidPayloadCount = 0;
+  const invalidPayloadKeys = [];
 
   for (const w of ooo) {
     const caKey = String(w.workOrderNumber || '');
     if (!caKey) continue; // no stable ID = can't dedup safely, skip
-    caKeys.add(caKey);
+
+    const roomNumberRaw = String(w.roomNumber || w.item || '');
+    // Loose validation: room number must match \d{3,4}; everything else
+    // (dates, notes) may be null/empty. Open-ended OOO blocks legitimately
+    // have null toDate, so we don't gate on dates.
+    if (!/^\d{3,4}$/.test(roomNumberRaw)) {
+      invalidPayloadCount++;
+      if (invalidPayloadKeys.length < 20) invalidPayloadKeys.push(caKey);
+      continue;
+    }
 
     const payload = {
       property_id:          config.PROPERTY_ID,
-      room_number:          String(w.roomNumber || w.item || ''),
+      room_number:          roomNumberRaw,
       description:          `[CA] ${w.reason || 'Out of Order'}`.slice(0, 300),
       severity:             'medium',
       source:               'ca_ooo',
@@ -241,6 +268,8 @@ async function reconcileOOO(supabase, config, ooo, log) {
   }
 
   // 3) Anything that WAS open and is no longer in the CA list → resolved.
+  //    caKeys was built from raw payload in step 2a so malformed rows can't
+  //    sneak past this check and false-resolve an active block.
   let resolved = 0;
   const nowIso = new Date().toISOString();
   for (const [caKey, { id }] of openByCaNumber.entries()) {
@@ -253,8 +282,19 @@ async function reconcileOOO(supabase, config, ooo, log) {
     resolved++;
   }
 
+  if (invalidPayloadCount > 0) {
+    log(`OOO reconcile — invalidPayloadCount=${invalidPayloadCount} (kept in caKeys, write skipped)`);
+  }
   log(`OOO reconcile — created=${created} updated=${updated} auto-resolved=${resolved}`);
-  return { created, updated, resolved, total: ooo.length };
+  return {
+    created,
+    updated,
+    reopened,
+    resolved,
+    total: ooo.length,
+    invalidPayloadCount,
+    invalidPayloadKeys,
+  };
 }
 
 /**
@@ -298,17 +338,22 @@ async function pullOOOWorkOrders(page, supabase, config, log) {
 
   // Success → clear error fields, write fresh snapshot + counters.
   await mergeStatus(supabase, 'ooo', {
-    pulledAt:         new Date().toISOString(),
-    oooCount:         stats.total,
-    createdThisTick:  stats.created,
-    updatedThisTick:  stats.updated,
-    resolvedThisTick: stats.resolved,
-    errorCode:        null,
-    errorMessage:     null,
-    erroredAt:        null,
+    pulledAt:             new Date().toISOString(),
+    oooCount:             stats.total,
+    createdThisTick:      stats.created,
+    updatedThisTick:      stats.updated,
+    resolvedThisTick:     stats.resolved,
+    // F5: persistent malformed payloads need to be debuggable without
+    // tailing Railway logs. Count + first-20 keys land in the status
+    // row so the doctor / SMS path can see drift quickly.
+    invalidPayloadCount:  stats.invalidPayloadCount || 0,
+    invalidPayloadKeys:   stats.invalidPayloadKeys || [],
+    errorCode:            null,
+    errorMessage:         null,
+    erroredAt:            null,
   });
 
   return stats;
 }
 
-module.exports = { pullOOOWorkOrders };
+module.exports = { pullOOOWorkOrders, reconcileOOO };

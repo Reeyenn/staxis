@@ -16,8 +16,15 @@
  * from request handlers (e.g. on the onboarding wizard finalize) where a
  * failed ML call must not surface to the user — the daily aggregator cron
  * is the safety net that re-tries the next morning.
+ *
+ * Phase E2E (2026-05-22): added shape validation at the boundary. If
+ * FastAPI ever changes its response shape (renames a field, changes a type),
+ * `validateMlBoundaryShape` flags it via captureMessage with a deduping
+ * fingerprint so the cron heartbeat flips error instead of silently passing
+ * malformed payloads through to callers that cast unknown JSON.
  */
 
+import * as Sentry from '@sentry/nextjs';
 import { resolveMlShardUrl } from '@/lib/ml-routing';
 import { log } from '@/lib/log';
 import { env } from '@/lib/env';
@@ -91,6 +98,33 @@ export async function triggerMlTraining(
     const json = await res
       .json()
       .catch(() => ({ error: 'non_json_response', http: res.status }) as Record<string, unknown>);
+
+    const shape = validateMlBoundaryShape(json);
+    if (!shape.valid) {
+      reportShapeMismatch({
+        endpoint: `/train/${layer}`,
+        propertyId,
+        itemId: options.itemId,
+        requestId: options.requestId,
+        reason: shape.reason,
+        http: res.status,
+      });
+      log.warn('ml_train_invoked', {
+        layer,
+        pid: propertyId,
+        mlStatus: 'shape_mismatch',
+        durationMs: Date.now() - t0,
+      });
+      return {
+        ok: false,
+        status: 'error',
+        http: res.status,
+        error: `response_shape_mismatch: ${shape.reason}`,
+        detail: json,
+        elapsedMs: Date.now() - t0,
+      };
+    }
+
     const status = (json as { status?: string }).status ?? (res.ok ? 'ok' : 'error');
     const error = (json as { error?: string }).error;
     const ok = res.ok && status !== 'error' && !error;
@@ -127,5 +161,74 @@ export async function triggerMlTraining(
       error,
       elapsedMs: Date.now() - t0,
     };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Shape validation — shared between training (above) and prediction
+// (ml-predict-invoke.ts). The web app only reads `status`, `error`, and a
+// small set of optional numeric fields off ML responses; this validator
+// asserts only those fields' types, NOT the presence of every Pydantic
+// field. That matches the audit principle "only enforce what the caller
+// reads" so legitimate FastAPI additions don't flag as drift.
+// ---------------------------------------------------------------------------
+
+export type MlShapeValidation = { valid: true } | { valid: false; reason: string };
+
+export function validateMlBoundaryShape(
+  json: unknown,
+  extraChecks?: (obj: Record<string, unknown>) => string | null,
+): MlShapeValidation {
+  if (typeof json !== 'object' || json === null || Array.isArray(json)) {
+    return { valid: false, reason: `root_not_object: ${json === null ? 'null' : Array.isArray(json) ? 'array' : typeof json}` };
+  }
+  const obj = json as Record<string, unknown>;
+  if ('status' in obj && typeof obj.status !== 'string') {
+    return { valid: false, reason: `status_type: ${typeof obj.status}` };
+  }
+  if ('error' in obj && typeof obj.error !== 'string') {
+    return { valid: false, reason: `error_type: ${typeof obj.error}` };
+  }
+  if (extraChecks) {
+    const extra = extraChecks(obj);
+    if (extra) return { valid: false, reason: extra };
+  }
+  return { valid: true };
+}
+
+/**
+ * Sentry alert for a shape-mismatch event. Uses a deduping fingerprint so a
+ * repeated drift (e.g. every cron tick during an outage) collapses into a
+ * single Sentry issue per endpoint rather than spamming.
+ */
+export function reportShapeMismatch(args: {
+  endpoint: string;
+  propertyId?: string;
+  itemId?: string;
+  requestId?: string;
+  reason: string;
+  http: number;
+}): void {
+  try {
+    Sentry.withScope((scope) => {
+      scope.setFingerprint(['ml_response_shape_mismatch', args.endpoint]);
+      scope.setLevel('warning');
+      scope.setExtras({
+        endpoint: args.endpoint,
+        propertyId: args.propertyId,
+        itemId: args.itemId,
+        requestId: args.requestId,
+        reason: args.reason,
+        http: args.http,
+      });
+      if (args.propertyId) {
+        scope.setTag('property.id', args.propertyId);
+      }
+      scope.setTag('ml.endpoint', args.endpoint);
+      Sentry.captureMessage(`ml_response_shape_mismatch: ${args.endpoint}`);
+    });
+  } catch {
+    // Sentry SDK is fire-and-forget; we never want telemetry to break the
+    // wrapper. Suppress any rare init/transport failure.
   }
 }

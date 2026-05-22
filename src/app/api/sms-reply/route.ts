@@ -36,6 +36,12 @@ import {
 } from '@/lib/api-ratelimit';
 import twilio from 'twilio';
 import { env } from '@/lib/env';
+import { captureException } from '@/lib/sentry';
+import {
+  ES_SET,
+  EN_SET,
+  classifyReply,
+} from '@/lib/sms-reply-keywords';
 
 // Twilio expects TwiML (XML), not JSON. An empty <Response/> tells Twilio
 // "handled, send no auto-reply" — we've fired our own sendSms() already.
@@ -125,8 +131,9 @@ function normalise(text: string): string {
   return text.trim().toUpperCase().replace(/[.!?¿¡,;:()"'`]/g, '').trim();
 }
 
-const ES_SET = new Set(['ESPANOL', 'ESPAÑOL', 'SPANISH', 'ESP']);
-const EN_SET = new Set(['ENGLISH', 'INGLES', 'INGLÉS', 'EN']);
+// ES_SET / EN_SET / STOP_SET / START_SET / classifyReply / ReplyClass
+// live in src/lib/sms-reply-keywords.ts so they can be unit-tested without
+// standing up the full webhook plumbing. Imported above.
 
 // Debug: write every webhook hit (and the final lookup outcome) to the
 // `webhook_log` table so we can diagnose failures end-to-end.
@@ -308,22 +315,65 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Comms-voice audit P2 (2026-05-22): minimize PII stored in webhook_log.
+    // The previous shape persisted the full `text` and a 500-char
+    // `rawBodyPreview` for every inbound SMS. A housekeeper texting personal
+    // medical or employment info ended up with that content sitting in our
+    // database. Twilio's own console retains the body if we ever genuinely
+    // need to reconstruct an incident — we just need the MessageSid (kept
+    // in the dedup table at line 287). Here we log classification + length
+    // only, plus the already-redacted phone.
     await logHit({
       stage: 'received',
       contentType,
       fromNumber: fromNumber ?? null,
-      text: text ?? null,
+      textLen: text?.length ?? 0,
       rawBodyLen: rawBodyForLog.length,
-      rawBodyPreview: rawBodyForLog.slice(0, 500),
     });
 
     if (!fromNumber || !text) {
-      await logHit({ stage: 'drop_missing_from_or_text', fromNumber, text });
+      await logHit({
+        stage: 'drop_missing_from_or_text',
+        fromNumber,
+        hasFromNumber: !!fromNumber,
+        hasText: !!text,
+        textLen: text?.length ?? 0,
+      });
       return twimlOk();
     }
 
     const phone164 = toE164(fromNumber);
     if (!phone164) return twimlOk();
+
+    // Comms-voice audit P1 (2026-05-22): STOP/START classification runs
+    // BEFORE the rate-limit check so a rate-limited sender can still opt
+    // out (compliance: opt-out is higher priority than rate-limiting), and
+    // AFTER webhook dedup (line 281-309) so Twilio retries don't double-log
+    // the same opt-out event.
+    //
+    // We send NO reply on STOP/START — Twilio's carrier handles the
+    // confirmation template on its side. Replying would mean texting a
+    // user who just asked us to stop, which is the bug we're fixing.
+    const earlyNormalised = normalise(text);
+    const earlyClass = classifyReply(earlyNormalised);
+    if (earlyClass === 'STOP') {
+      await logHit({
+        stage: 'opt_out_request',
+        replyClass: 'STOP',
+        phone164,
+        textLen: text.length,
+      });
+      return twimlOk();
+    }
+    if (earlyClass === 'START') {
+      await logHit({
+        stage: 'opt_in_request',
+        replyClass: 'START',
+        phone164,
+        textLen: text.length,
+      });
+      return twimlOk();
+    }
 
     // 2026-05-20 audit M3 — per-sender rate limit. Twilio signature
     // validation is the primary gate; this is defense in depth. Keyed
@@ -429,9 +479,14 @@ export async function POST(req: NextRequest) {
       return twimlOk();
     }
 
+    // Comms-voice audit P2 (2026-05-22): `reply` is normalise()'d but still
+    // free-form user text — a housekeeper texting "I am sick today" would
+    // land here as "I AM SICK TODAY". Log classification instead so PII
+    // doesn't leak into webhook_log on the post-lookup hop either.
     await logHit({
       stage: 'after_lookup',
-      reply,
+      replyClass: classifyReply(reply),
+      replyLen: reply.length,
       phone164,
       staffId: staff.id,
       token: conf.token,
@@ -480,17 +535,50 @@ export async function POST(req: NextRequest) {
       if (rpcErr) log.warn('[sms-reply] set_staff_language RPC failed', { err: rpcErr });
     };
 
+    // Comms-voice audit P5 (2026-05-22): the three outbound `sendSms` calls
+    // below used to throw on Twilio failure, which the outer catch turned
+    // into a non-2xx response. That triggered Twilio's inbound-webhook retry,
+    // which then re-fired the language-switch / friendly-ack on the next
+    // delivery — duplicate outbound SMS to a housekeeper for a single
+    // inbound. Webhook dedup is per-MessageSid (line 281-309), not
+    // per-action, so the retry slips past it on the first one-shot send.
+    //
+    // Now: capture the failure to Sentry, log to webhook_log, and return
+    // twimlOk so Twilio does NOT retry. We accept one missed outbound ack
+    // over the retry-storm alternative.
+    const safeOutboundSend = async (
+      msg: string,
+      subStage: 'lang-switch-es' | 'lang-switch-en' | 'friendly-ack',
+    ): Promise<void> => {
+      try {
+        await sendSms(phone164, msg);
+      } catch (e) {
+        captureException(e, {
+          subsystem: 'sms-reply',
+          failure_mode: 'outbound_send_failed',
+          subStage,
+          phone: redactPhone(phone164),
+        });
+        await logHit({
+          stage: 'outbound_send_failed',
+          subStage,
+          phone164,
+          errMsg: (e instanceof Error ? e.message : String(e)).slice(0, 200),
+        });
+      }
+    };
+
     // ── ESPAÑOL — switch to Spanish and resend the link ─────────────────────
     if (ES_SET.has(reply)) {
       await mirrorLang('es');
-      await sendSms(phone164, renderLinkMessage('es'));
+      await safeOutboundSend(renderLinkMessage('es'), 'lang-switch-es');
       return twimlOk();
     }
 
     // ── ENGLISH — switch to English and resend the link ─────────────────────
     if (EN_SET.has(reply)) {
       await mirrorLang('en');
-      await sendSms(phone164, renderLinkMessage('en'));
+      await safeOutboundSend(renderLinkMessage('en'), 'lang-switch-en');
       return twimlOk();
     }
 
@@ -499,7 +587,7 @@ export async function POST(req: NextRequest) {
     const hint = lang === 'es'
       ? `¡Gracias, ${firstName}! Abre tu enlace para ver tu lista.\n– ${hotelName}`
       : `Thanks, ${firstName}! Open your link to see your list.\n– ${hotelName}`;
-    await sendSms(phone164, hint);
+    await safeOutboundSend(hint, 'friendly-ack');
 
     return twimlOk();
   } catch (err) {

@@ -41,6 +41,26 @@ yarn-error.log*
 # local env files
 .env*.local
 
+# 2026-05-22 monitoring/logging/secrets hardening — explicit defense in depth
+# for the per-sub-unit .env files (scraper/, cua-service/, ml-service/). The
+# root `.env*.local` rule above matches `.env.local` at any depth, but a
+# stray `git add scraper/` would still pick up a literal `scraper/.env` file
+# that doesn't have the `.local` suffix. Listing each unit explicitly keeps
+# secrets out of git even when a contributor copies `.env.example` to
+# `.env` without thinking.
+scraper/.env
+scraper/.env.local
+scraper/.env.*
+!scraper/.env.example
+cua-service/.env
+cua-service/.env.local
+cua-service/.env.*
+!cua-service/.env.example
+ml-service/.env
+ml-service/.env.local
+ml-service/.env.*
+!ml-service/.env.example
+
 # vercel
 .vercel
 

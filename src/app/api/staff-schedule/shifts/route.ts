@@ -15,7 +15,8 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId, log } from '@/lib/log';
+import { errToString } from '@/lib/utils';
 import { verifyTeamManager, canManageHotel } from '@/lib/team-auth';
 import { validateUuid } from '@/lib/api-validate';
 import { fromScheduledShiftRow } from '@/lib/db-mappers';
@@ -99,7 +100,7 @@ export async function POST(req: NextRequest) {
       .from('scheduled_shifts').update(row).eq('id', idCheck.value!)
       .eq('property_id', hotelId).select('*').single();
     if (error) {
-      console.error('[shifts:POST] update failed', error);
+      log.error('[shifts:POST] update failed', { requestId, msg: errToString(error) });
       return err(error.message || 'Failed to update shift', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
     savedId = String(data.id);
@@ -119,13 +120,13 @@ export async function POST(req: NextRequest) {
           .eq('property_id', hotelId).eq('staff_id', row.staff_id).eq('shift_date', row.shift_date)
           .eq('kind', 'shift').select('*').single();
         if (upErr) {
-          console.error('[shifts:POST] conflict-retry update failed', upErr);
+          log.error('[shifts:POST] conflict-retry update failed', { requestId, msg: errToString(upErr) });
           return err('Failed to upsert shift', { requestId, status: 500, code: ApiErrorCode.InternalError });
         }
         savedId = String(upd.id);
         return ok({ shift: fromScheduledShiftRow(upd) }, { requestId });
       }
-      console.error('[shifts:POST] insert failed', error);
+      log.error('[shifts:POST] insert failed', { requestId, msg: errToString(error) });
       return err(error.message || 'Failed to create shift', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
     savedId = String(data.id);
@@ -153,7 +154,7 @@ export async function DELETE(req: NextRequest) {
     .from('scheduled_shifts').delete()
     .eq('id', idCheck.value!).eq('property_id', hotelId);
   if (error) {
-    console.error('[shifts:DELETE] failed', error);
+    log.error('[shifts:DELETE] failed', { requestId, msg: errToString(error) });
     return err('Failed to delete shift', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   return ok({ ok: true }, { requestId });

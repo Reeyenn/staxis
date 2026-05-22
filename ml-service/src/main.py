@@ -1,14 +1,18 @@
 """FastAPI application for ML Service."""
 import json
+import logging
 import os
 import uuid as _uuid
+from contextlib import asynccontextmanager
 from datetime import date as DateType  # alias to avoid shadowing the Pydantic field name `date`
 from typing import Optional
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, status, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ValidationError, field_validator
+
+logger = logging.getLogger(__name__)
 
 # Plan v2 Phase 2 — fleet-wide rate limit. Without this a leaked
 # bearer token (or a misfiring cron) can hammer /predict and /train
@@ -49,15 +53,34 @@ def _client_ip_for_rate_limit(request: Request) -> str:
 
 limiter = Limiter(key_func=_client_ip_for_rate_limit, default_limits=["60/minute"])
 
+from src.config import get_settings
+
 # Plan v2 F-AI-4: hard ceiling on `max_rows` so a bearer-token holder
 # (or a misfiring cron) can't cause Railway to pull arbitrarily large
-# dataframes into memory. The cap lives in env so per-property
-# back-fills (5+ years of history) can override without code change.
-MAX_ROWS_CAP = int(os.environ.get("ML_MAX_ROWS_CAP", "200000"))
+# dataframes into memory. Sourced from Pydantic Settings (env var
+# ML_MAX_ROWS_CAP, default 200_000); see ml-service/src/config.py.
+# Kept as module-level `MAX_ROWS_CAP` because test_main_hardening.py
+# imports it by that name.
+MAX_ROWS_CAP = get_settings().ml_max_rows_cap
 
 from src.auth import verify_bearer_token
-from src.config import get_settings
 from src.health import router as health_router
+from src.log_scrub import scrub_string
+from src.sentry_init import init_sentry, is_initialized as sentry_is_initialized
+
+# Initialize Sentry at module load (idempotent, no-op without SENTRY_DSN).
+# Wrapped so any SDK import/init failure NEVER prevents ml-service from
+# booting — a crash-looping Python service is worse than one without
+# monitoring. init_sentry() also swallows its own errors internally,
+# but the outer try is defense in depth.
+try:
+    init_sentry()
+except Exception as _sentry_init_exc:  # pragma: no cover
+    print(
+        json.dumps({"evt": "ml_service_sentry_init_failed", "exception": str(_sentry_init_exc)[:500]}),
+        flush=True,
+    )
+
 from src.inference.demand import predict_demand
 from src.inference.inventory_rate import predict_inventory_rates
 from src.inference.supply import predict_supply
@@ -399,11 +422,34 @@ class AggregatePriorsResponse(BaseModel):
     note: Optional[str] = None
 
 
+# Plan deploy-ci-cron Step 3: fail-fast startup validation.
+# Before this gate, missing/invalid env (SUPABASE_URL, ML_SERVICE_SECRET,
+# etc.) only surfaced as a 500 on the first /predict — operators saw a
+# "healthy" container that silently couldn't serve traffic. Mirrors the
+# Zod throw-at-module-load pattern in src/lib/env.ts and scraper/env.js.
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        get_settings()
+    except ValidationError as exc:
+        # Crash the container with a clear log instead of serving 500s.
+        # Railway's restart policy + Fly/Vercel equivalents bound this to
+        # a deploy-time failure that ops will SEE rather than have to
+        # discover via cron timeouts.
+        logger.error(
+            "ml-service: Settings validation failed at startup",
+            extra={"error": str(exc)},
+        )
+        raise
+    yield
+
+
 # FastAPI app
 app = FastAPI(
     title="Staxis ML Service",
     description="Housekeeping demand/supply prediction and optimization",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # Wire up slowapi. `app.state.limiter` is read by the SlowAPIMiddleware
@@ -418,8 +464,9 @@ app.add_middleware(SlowAPIMiddleware)
 # Plan v2 F-AI-4: refuse oversized bodies BEFORE FastAPI tries to parse
 # them. ML endpoints all carry tiny JSON bodies (a UUID + a date string);
 # 64 KB is far above anything legitimate and cuts off the obvious DoS
-# vector of POSTing a giant payload.
-_MAX_BODY_BYTES = int(os.environ.get("ML_MAX_BODY_BYTES", str(64 * 1024)))
+# vector of POSTing a giant payload. Sourced from Pydantic Settings (env
+# var ML_MAX_BODY_BYTES, default 64*1024); see ml-service/src/config.py.
+_MAX_BODY_BYTES = get_settings().ml_max_body_bytes
 
 
 @app.middleware("http")
@@ -850,18 +897,50 @@ async def general_exception_handler(request: Request, exc: Exception):
     Plan v2 F-AI-12: the previous version returned `str(exc)` to the
     caller, which would leak psycopg2 error text + partial PII on
     internal failures. The thrown exception details now go to stdout for
-    the operator (Fly logs / Sentry) and the body is a generic error +
-    correlation id the caller can match against the logs.
+    the operator (Railway logs) and Sentry (when wired), and the
+    response body is a generic error + correlation id the caller can
+    match against the logs.
+
+    Two PII-defense layers:
+      1. str(exc) goes through scrub_string before being printed or
+         shipped to Sentry — psycopg2 errors regularly include row
+         values (e.g. a constraint violation embeds the offending row).
+      2. sentry_sdk.init runs with include_local_variables=False and
+         before_send=scrub_event so frame locals + the full event get
+         redacted before transport.
     """
     incident_id = _uuid.uuid4().hex
-    # Logged to stdout — picked up by Fly's log aggregator + Sentry.
+    # Scrub before BOTH print and Sentry capture — same string lands in
+    # Railway logs and (eventually) the Sentry message text, so a single
+    # scrub here covers both downstream surfaces.
+    message_scrubbed = scrub_string(str(exc))[:2000]
+    path = str(request.url.path)
+
+    # Logged to stdout — Railway's log aggregator + grep-by-incident_id.
     print(json.dumps({
         "evt": "ml_service_unhandled_exception",
         "incident_id": incident_id,
-        "path": str(request.url.path),
+        "path": path,
         "exception": type(exc).__name__,
-        "message": str(exc)[:2000],
+        "message": message_scrubbed,
     }), flush=True)
+
+    # Sentry capture is best-effort. The SDK's transport is async, so a
+    # network hiccup here can't block the response. Tag with endpoint +
+    # incident_id so the Sentry event correlates to the Railway log line.
+    if sentry_is_initialized():
+        try:
+            import sentry_sdk  # type: ignore
+            with sentry_sdk.push_scope() as scope:
+                scope.set_tag("endpoint", path)
+                scope.set_tag("incident_id", incident_id)
+                sentry_sdk.capture_exception(exc)
+        except Exception:
+            # Never let Sentry capture failures bubble — they'd replace
+            # the original 500 response with a 5xx that has no
+            # incident_id, breaking the correlate-by-id contract above.
+            pass
+
     return JSONResponse(
         status_code=500,
         content={

@@ -30,6 +30,7 @@ import { errToString } from '@/lib/utils';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { log } from '@/lib/log';
 import { env } from '@/lib/env';
+import { captureException } from '@/lib/sentry';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -81,7 +82,14 @@ async function mergeStatus(key: string, patch: Record<string, unknown>): Promise
   if (error) throw error;
 }
 
-async function runDigest(): Promise<{ sent: boolean; detail: string }> {
+async function runDigest(): Promise<{
+  sent: boolean;
+  detail: string;
+  // Comms-voice audit P0 (2026-05-22): track SMS attempt + failure so the
+  // GET wrapper can flip `ok` to false when we tried and failed.
+  smsError?: string | null;
+  smsAttempted?: boolean;
+}> {
   const [counters, dashboard, digest] = await Promise.all([
     getStatus('dashboard_counters'),
     getStatus('dashboard'),
@@ -126,12 +134,23 @@ async function runDigest(): Promise<{ sent: boolean; detail: string }> {
 
   const alertPhone = env.OPS_ALERT_PHONE;
   let smsSent = false;
+  let smsError: string | null = null;
   if (alertPhone) {
     try {
       await sendSms(alertPhone, message);
       smsSent = true;
     } catch (err) {
+      smsError = errToString(err);
       log.error('[scraper-weekly-digest] SMS send failed', { err });
+      // Comms-voice audit P0 (2026-05-22): Codex flagged this route — same
+      // silent-fail pattern as the other digest routes. The GH Actions cron
+      // hits this endpoint once a week; a Twilio outage during that one tick
+      // used to disappear entirely with no Sentry trace and `ok:true` in the
+      // response body (workflow passed).
+      captureException(err, {
+        subsystem: 'scraper-weekly-digest',
+        failure_mode: 'twilio_send_failed',
+      });
     }
   } else {
     console.warn('[scraper-weekly-digest] MANAGER_PHONE/OPS_ALERT_PHONE env var not set — digest would say:', message);
@@ -145,7 +164,12 @@ async function runDigest(): Promise<{ sent: boolean; detail: string }> {
     lastDigestSmsSent: smsSent,
   });
 
-  return { sent: smsSent, detail: message };
+  return {
+    sent: smsSent,
+    detail: message,
+    smsError,
+    smsAttempted: !!alertPhone,
+  };
 }
 
 export async function GET(req: NextRequest) {
@@ -156,7 +180,13 @@ export async function GET(req: NextRequest) {
   try {
     const result = await runDigest();
     await writeCronHeartbeat('scraper-weekly-digest');
-    return NextResponse.json({ ok: true, ...result });
+    // Comms-voice audit P0 (2026-05-22): flip `ok` to false when an SMS
+    // was attempted and failed. The GitHub Actions workflow greps for
+    // `"ok":true` to pass the step. We keep HTTP 200 because curl in the
+    // workflow has `--retry 2 --retry-delay 5 --retry-connrefused` and we
+    // don't want a degraded Twilio to fire 3 SMS via cron retries.
+    const smsFailed = !!(result.smsAttempted && result.smsError);
+    return NextResponse.json({ ok: !smsFailed, ...result });
   } catch (err) {
     const msg = errToString(err);
     log.error('[scraper-weekly-digest] handler threw', { err });

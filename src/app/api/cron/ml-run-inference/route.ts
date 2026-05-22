@@ -21,12 +21,18 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { runWithConcurrency, applyShardFilter } from '@/lib/parallel';
-import { classifyMlServiceConfig, resolveMlShardUrl } from '@/lib/ml-routing';
+import { classifyMlServiceConfig } from '@/lib/ml-routing';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import {
   emitPropertyMisconfiguredEvent,
   parsePropertyMisconfiguredError,
 } from '@/lib/ml-misconfigured-events';
+import {
+  predictDemand,
+  predictSupply,
+  predictOptimizer,
+  type MlPredictResult,
+} from '@/lib/ml-predict-invoke';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -57,7 +63,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       { status: 503 },
     );
   }
-  const { secret: mlServiceSecret } = config;
 
   // Pull `timezone` along with id so each property's "tomorrow" is computed
   // against its own local clock — a Florida hotel on America/New_York must
@@ -92,68 +97,56 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     propertyTz: string,
     targetDate: string,
   ) => {
-    const path = stage === 'optimizer' ? '/predict/optimizer' : `/predict/${stage}`;
-    // resolveMlShardUrl per property — all three stages for one property
-    // pin to the same shard (deterministic hash on property_id), so the
-    // optimizer's read of demand+supply rows lands on the shard that
-    // just wrote them. Single-shard deploys keep ML_SERVICE_URL.
-    const mlServiceUrl = resolveMlShardUrl(propertyId)!;
-    const t0 = Date.now();
-    try {
-      const res = await fetch(`${mlServiceUrl.replace(/\/$/, '')}${path}`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${mlServiceSecret}`,
-          'Content-Type': 'application/json',
-          'x-request-id': requestId,
-        },
-        // Pass both the computed date AND the property's tz — the date is
-        // authoritative for the prediction key, the tz is belt-and-suspenders
-        // so the ML service's own date fallback uses the same zone.
-        body: JSON.stringify({ property_id: propertyId, date: targetDate, property_timezone: propertyTz }),
-        signal: AbortSignal.timeout(45_000),
-      });
-      const json = await res.json().catch(() => ({ status: 'non_json_response', http: res.status }));
-      log.info('ml-run-inference: stage complete', {
-        requestId, stage, property_id: propertyId, elapsedMs: Date.now() - t0,
-        mlStatus: (json as { status?: string }).status ?? 'unknown',
-      });
+    // Phase E2E (2026-05-22): fetch+parse+shape validation moved into
+    // ml-predict-invoke.ts so the same wrapper guards every predict call.
+    // The wrapper pins all three stages of one property to the same shard
+    // (deterministic hash on property_id) so the optimizer reads from the
+    // shard demand+supply just wrote to.
+    const fetchPredict = (): Promise<MlPredictResult> => {
+      const predictOpts = { date: targetDate, propertyTimezone: propertyTz, requestId };
+      if (stage === 'demand') return predictDemand(propertyId, predictOpts);
+      if (stage === 'supply') return predictSupply(propertyId, predictOpts);
+      return predictOptimizer(propertyId, predictOpts);
+    };
 
-      // Codex adversarial review 2026-05-13 (#2): the ML service signals
-      // misconfigured properties via {error: 'property_misconfigured: ...'},
-      // not via a status field. Without this branch, those responses
-      // were getting mapped to status: 'unknown' — the heartbeat-degraded
-      // logic missed them and no app_events row was ever written.
-      const errStr = (json as { error?: string }).error;
-      if (typeof errStr === 'string' && errStr.startsWith('property_misconfigured:')) {
-        const parsed = parsePropertyMisconfiguredError(errStr);
-        if (parsed) {
-          await emitPropertyMisconfiguredEvent({
-            requestId,
-            propertyId,
-            layer: stage,
-            field: parsed.field,
-            originalField: parsed.originalField,
-            value: parsed.value,
-          });
-        }
-        return { stage, status: 'skipped', detail: errStr };
-      }
-      // Non-misconfiguration errors stay as errors so the cron heartbeat
-      // refuses to write OK.
-      if (typeof errStr === 'string' || !res.ok) {
-        return {
-          stage,
-          status: 'error',
-          detail: errStr ?? (json as { http?: number }).http ?? `HTTP ${res.status}`,
-        };
-      }
+    const result = await fetchPredict();
+    log.info('ml-run-inference: stage complete', {
+      requestId, stage, property_id: propertyId, elapsedMs: result.elapsedMs,
+      mlStatus: result.status ?? 'unknown',
+    });
 
-      return { stage, status: (json as { status?: string }).status ?? 'unknown', detail: json };
-    } catch (err) {
-      log.error('ml-run-inference: stage failed', { requestId, stage, property_id: propertyId, err: err as Error });
-      return { stage, status: 'error', detail: errToString(err) };
+    // Codex adversarial review 2026-05-13 (#2): the ML service signals
+    // misconfigured properties via {error: 'property_misconfigured: ...'},
+    // not via a status field. Without this branch, those responses
+    // were getting mapped to status: 'unknown' — the heartbeat-degraded
+    // logic missed them and no app_events row was ever written.
+    const errStr = result.error;
+    if (typeof errStr === 'string' && errStr.startsWith('property_misconfigured:')) {
+      const parsed = parsePropertyMisconfiguredError(errStr);
+      if (parsed) {
+        await emitPropertyMisconfiguredEvent({
+          requestId,
+          propertyId,
+          layer: stage,
+          field: parsed.field,
+          originalField: parsed.originalField,
+          value: parsed.value,
+        });
+      }
+      return { stage, status: 'skipped', detail: errStr };
     }
+    // Non-misconfiguration errors stay as errors so the cron heartbeat
+    // refuses to write OK. The wrapper sets ok=false for shape mismatches,
+    // HTTP non-2xx, network failures, and explicit error fields.
+    if (!result.ok) {
+      return {
+        stage,
+        status: 'error',
+        detail: errStr ?? result.http ?? `HTTP ${result.http ?? '???'}`,
+      };
+    }
+
+    return { stage, status: result.status ?? 'unknown', detail: result.detail };
   };
 
   // Inter-property: parallel (concurrency 3 — Layer-3 optimizer is the most

@@ -21,7 +21,8 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId, log } from '@/lib/log';
+import { errToString } from '@/lib/utils';
 import { verifyTeamManager, canManageHotel } from '@/lib/team-auth';
 import { isAssignableRole, type AppRole } from '@/lib/roles';
 import { writeAudit } from '@/lib/audit';
@@ -50,7 +51,7 @@ export async function GET(req: NextRequest) {
     .select('id, username, display_name, role, property_access, created_at, data_user_id, staff_id')
     .order('created_at', { ascending: true });
   if (qErr) {
-    console.error('[team:GET] query failed', qErr);
+    log.error('[team:GET] query failed', { requestId, msg: errToString(qErr) });
     return err('Failed to load team', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
@@ -67,7 +68,7 @@ export async function GET(req: NextRequest) {
   const emailByUserId = new Map<string, string>();
   const { data: authPage, error: listErr } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
   if (listErr) {
-    console.error('[team:GET] auth listUsers failed', listErr);
+    log.error('[team:GET] auth listUsers failed', { requestId, msg: errToString(listErr) });
   } else {
     for (const u of authPage?.users ?? []) {
       if (u.id && u.email) emailByUserId.set(u.id, u.email);
@@ -226,7 +227,7 @@ export async function PUT(req: NextRequest) {
     }
     const { error: pwErr } = await supabaseAdmin.auth.admin.updateUserById(target.data_user_id, { password });
     if (pwErr) {
-      console.error('[team:PUT] password update failed', pwErr);
+      log.error('[team:PUT] password update failed', { requestId, msg: errToString(pwErr) });
       return err(pwErr.message || 'Failed to update password', {
         requestId, status: 500, code: ApiErrorCode.InternalError,
       });
@@ -239,7 +240,7 @@ export async function PUT(req: NextRequest) {
       .update(updates)
       .eq('id', accountId);
     if (upErr) {
-      console.error('[team:PUT] update failed', upErr);
+      log.error('[team:PUT] update failed', { requestId, msg: errToString(upErr) });
       return err('Failed to update account', {
         requestId, status: 500, code: ApiErrorCode.InternalError,
       });
@@ -312,7 +313,7 @@ export async function DELETE(req: NextRequest) {
     { p_account_id: accountId, p_hotel_id: hotelId },
   );
   if (rpcErr) {
-    console.error('[team:DELETE] staxis_remove_property_access failed', rpcErr);
+    log.error('[team:DELETE] staxis_remove_property_access failed', { requestId, msg: errToString(rpcErr) });
     return err('Failed to remove access', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });

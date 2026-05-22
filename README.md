@@ -65,6 +65,47 @@ Required to boot:
 
 Optional integrations (graceful disable when unset): Twilio (`TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_FROM_NUMBER`), Stripe, Sentry, ElevenLabs, Resend, Picovoice. CRON_SECRET is required in production; requireCronSecret() fails closed.
 
+### Run all 4 services locally
+
+The full stack is four deployable units (web, scraper, CUA worker, ML service). Most product work needs only the web app. To exercise cross-service flows (predict crons, onboarding wizard end-to-end, voice agents) you'll want them all up. Each has its own `.env.example`:
+
+```bash
+# Terminal 1 — web app (Next.js → Vercel in prod)
+npm install
+npm run dev                                              # → http://localhost:3000
+
+# Terminal 2 — ML service (FastAPI → Railway in prod)
+cd ml-service
+python3.11 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+cp .env.example .env                                     # fill in ML_SERVICE_SECRET + Supabase
+.venv/bin/uvicorn src.main:app --reload --port 8000      # → http://localhost:8000
+
+# Terminal 3 — CUA worker (Playwright + Claude vision → Fly in prod)
+cd cua-service
+npm install
+npx playwright install chromium
+cp .env.example .env                                     # fill in ANTHROPIC_API_KEY + Supabase
+npm run dev                                              # tsx watch on src/index.ts
+
+# Terminal 4 — scraper (Playwright → Railway in prod). Requires real
+# Choice Advantage credentials; skip for pure UI work.
+cd scraper
+npm install
+cp .env.example .env                                     # fill in CA_USERNAME/CA_PASSWORD + Supabase
+npm start
+```
+
+Wire the web app to the local services in `.env.local`:
+
+```
+ML_SERVICE_URLS=http://localhost:8000
+ML_SERVICE_SECRET=<same value as ml-service/.env>
+RAILWAY_SCRAPER_URL=http://localhost:3000   # only if testing /api/refresh-from-pms
+```
+
+**Smoke test** — once everything is up, sign into the admin and open the **System tab**. The live System Status panel should show green for ML and web, yellow/red for the scraper if it hasn't pulled in 45 min. JSON form: `curl http://localhost:3000/api/admin/system-status -H "Cookie: <admin-session>"`. The endpoint accepts either admin session cookies (browser path) or `Authorization: Bearer $CRON_SECRET` (watchdog path).
+
 ---
 
 ## Useful npm scripts

@@ -31,6 +31,7 @@ import { NextRequest, after } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
+import { errToString } from '@/lib/utils';
 import { requireSession } from '@/lib/api-auth';
 import {
   checkAndIncrementRateLimit,
@@ -127,7 +128,7 @@ export async function GET(req: NextRequest) {
     .eq('id', resolved.propertyId)
     .maybeSingle();
   if (propErr || !prop) {
-    console.error('[onboard/wizard:GET] property fetch failed', { requestId, propertyId: resolved.propertyId, error: propErr });
+    log.error('[onboard/wizard:GET] property fetch failed', { requestId, propertyId: resolved.propertyId, msg: errToString(propErr) });
     return err('Property not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
 
@@ -301,7 +302,7 @@ export async function PATCH(req: NextRequest) {
     .eq('id', resolved.propertyId)
     .maybeSingle();
   if (readErr || !current) {
-    console.error('[onboard/wizard:PATCH] state read failed', { requestId, error: readErr });
+    log.error('[onboard/wizard:PATCH] state read failed', { requestId, msg: errToString(readErr) });
     return err('Property not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
   const currentState = (current.onboarding_state as OnboardingState) ?? { step: 1 };
@@ -326,7 +327,7 @@ export async function PATCH(req: NextRequest) {
     .update(update)
     .eq('id', resolved.propertyId);
   if (updErr) {
-    console.error('[onboard/wizard:PATCH] update failed', { requestId, error: updErr });
+    log.error('[onboard/wizard:PATCH] update failed', { requestId, msg: errToString(updErr) });
     return err(`Update failed: ${updErr.message}`, {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });

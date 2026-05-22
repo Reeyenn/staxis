@@ -29,6 +29,7 @@ import {
   externalFetch,
   EXTERNAL_FETCH_TIMEOUT_MS,
 } from '@/lib/external-service-config';
+import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -108,6 +109,11 @@ export async function POST(req: NextRequest): Promise<Response> {
   const accountId = account.id as string;
 
   // ── Cost cap pre-check (sums ALL kinds, see INV-17 note) ───────────────
+  //
+  // Comms-voice audit P4 (2026-05-22): budget check MUST run before the
+  // per-request rate limit. A user denied by daily budget shouldn't
+  // consume a rate-limit slot — that would push legit users toward the
+  // hourly cap during a budget-saturated day.
   try {
     const budget = await assertAudioBudget({
       userId: accountId,
@@ -125,6 +131,26 @@ export async function POST(req: NextRequest): Promise<Response> {
     captureException(e, { route: 'agent/speak', step: 'budget' });
     return err('audio budget check failed', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
+    });
+  }
+
+  // ── Per-request rate limit (count-based, complements daily budget) ─────
+  //
+  // Comms-voice audit P4 (2026-05-22): the daily $5 budget cap bounds total
+  // spend but lets a runaway client fire ~50 1k-char narrations before
+  // tripping. 30/hr per user catches that long before the budget burns.
+  //
+  // 'agent-tts-speak' is in BILLING_IMPACTING_ENDPOINTS, so an RPC failure
+  // here fails CLOSED — defense against bypassing the cap via Supabase
+  // jitter.
+  const ttsRl = await checkAndIncrementRateLimit('agent-tts-speak', accountId);
+  if (!ttsRl.allowed) {
+    return err(`rate_limited: ${ttsRl.current}/${ttsRl.cap} in current hour`, {
+      requestId,
+      status: 429,
+      code: ApiErrorCode.RateLimited,
+      headers: { 'Retry-After': String(ttsRl.retryAfterSec) },
+      details: { retryAfterSec: ttsRl.retryAfterSec },
     });
   }
 

@@ -26,6 +26,8 @@ import { createHash } from 'crypto';
 import { writeAudit } from '@/lib/audit';
 import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
 import { env } from '@/lib/env';
+import { captureException } from '@/lib/sentry';
+import { isValidEmail } from '@/lib/api-validate';
 
 const RESEND_API_URL = 'https://api.resend.com/emails';
 
@@ -82,6 +84,62 @@ export type SendEmailResult =
 export async function sendTransactionalEmail(
   params: SendEmailParams,
 ): Promise<SendEmailResult> {
+  // Comms-voice audit follow-up (2026-05-22): pragmatic recipient
+  // validation. The pre-audit gate at admin/properties/create only
+  // checked `.includes('@')`, so addresses like `alice@` or `foo@bar`
+  // would slip through and be rejected at Resend's HTTP boundary
+  // (counting against the per-recipient rate limit). Reject obvious
+  // junk here so Resend's API quota tracks real attempts.
+  if (!isValidEmail(params.to)) {
+    const result: SendEmailResult = {
+      ok: false,
+      error: 'invalid_recipient_email',
+    };
+    await logEmailOutcome(params, result);
+    return result;
+  }
+
+  // Comms-voice audit P3 (2026-05-22): reject control chars in subject and
+  // null bytes in body before any HTTP call.
+  //
+  // Subject is a single-line email header; CRLF lets a malicious caller
+  // inject additional headers (Bcc:, etc.) if Resend's server-side
+  // validation ever slips. Today the only path that synthesizes subject
+  // from user input is admin-only (admin/properties/create:hotelName), but
+  // future templates may add public-input paths, so we guard at the
+  // wrapper so every caller inherits the protection.
+  //
+  // Body content can legitimately contain \r\n (it's HTML/plaintext), but
+  // a null byte (\0) is never legitimate in an email body and is a strong
+  // smell of either a broken upstream encoder or a probe attempt.
+  if (/[\r\n\0]/.test(params.subject)) {
+    const result: SendEmailResult = {
+      ok: false,
+      error: 'subject_contains_control_chars',
+    };
+    captureException(new Error('email subject contained control chars'), {
+      subsystem: 'email',
+      failure_mode: 'subject_control_chars',
+      to: params.to,
+      subjectLen: String(params.subject.length),
+    });
+    await logEmailOutcome(params, result);
+    return result;
+  }
+  if (params.html.includes('\0') || (params.text ?? '').includes('\0')) {
+    const result: SendEmailResult = {
+      ok: false,
+      error: 'body_contains_null_bytes',
+    };
+    captureException(new Error('email body contained null bytes'), {
+      subsystem: 'email',
+      failure_mode: 'body_null_bytes',
+      to: params.to,
+    });
+    await logEmailOutcome(params, result);
+    return result;
+  }
+
   const apiKey = env.RESEND_API_KEY;
   if (!apiKey) {
     const result: SendEmailResult = {

@@ -11,7 +11,8 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId, log } from '@/lib/log';
+import { errToString } from '@/lib/utils';
 import { verifyTeamManager, canManageHotel } from '@/lib/team-auth';
 import { validateUuid } from '@/lib/api-validate';
 
@@ -57,7 +58,7 @@ export async function POST(req: NextRequest) {
       .eq('status', 'draft')
       .gte('shift_date', weekStart).lte('shift_date', weekEnd);
     if (upErr) {
-      console.error('[publish:POST] update failed', upErr);
+      log.error('[publish:POST] update failed', { requestId, msg: errToString(upErr) });
       return err('Failed to publish', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
 
@@ -69,7 +70,7 @@ export async function POST(req: NextRequest) {
         published_by: caller.accountId,
       });
     if (pubErr) {
-      console.error('[publish:POST] publication insert failed', pubErr);
+      log.error('[publish:POST] publication insert failed', { requestId, msg: errToString(pubErr) });
       return err('Failed to record publication', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
 
@@ -89,7 +90,7 @@ export async function POST(req: NextRequest) {
       .gte('shift_date', sourceStart).lte('shift_date', sourceEnd)
       .not('staff_id', 'is', null);
     if (srcErr) {
-      console.error('[publish:copy] source query failed', srcErr);
+      log.error('[publish:copy] source query failed', { requestId, msg: errToString(srcErr) });
       return err('Failed to read source week', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
     if (!src || src.length === 0) {
@@ -134,7 +135,7 @@ export async function POST(req: NextRequest) {
 
     const { error: insErr } = await supabaseAdmin.from('scheduled_shifts').insert(toInsert);
     if (insErr) {
-      console.error('[publish:copy] insert failed', insErr);
+      log.error('[publish:copy] insert failed', { requestId, msg: errToString(insErr) });
       return err('Failed to copy week', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
     return ok({ ok: true, copied: toInsert.length, skipped: src.length - toInsert.length }, { requestId });

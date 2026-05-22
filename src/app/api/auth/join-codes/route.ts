@@ -9,7 +9,8 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId, log } from '@/lib/log';
+import { errToString } from '@/lib/utils';
 import { verifyTeamManager, canManageHotel } from '@/lib/team-auth';
 import { writeAudit } from '@/lib/audit';
 import {
@@ -46,7 +47,7 @@ export async function GET(req: NextRequest) {
     .is('revoked_at', null)
     .order('created_at', { ascending: false });
   if (qErr) {
-    console.error('[join-codes:GET] failed', qErr);
+    log.error('[join-codes:GET] failed', { requestId, msg: errToString(qErr) });
     return err('Failed to load codes', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   return ok({ codes: data ?? [] }, { requestId });
@@ -99,7 +100,7 @@ export async function POST(req: NextRequest) {
     lastErr = insErr;
     if (insErr && !String(insErr.message ?? '').toLowerCase().includes('duplicate')) break;
   }
-  console.error('[join-codes:POST] insert failed after retries', lastErr);
+  log.error('[join-codes:POST] insert failed after retries', { requestId, msg: errToString(lastErr) });
   return err('Failed to create join code', { requestId, status: 500, code: ApiErrorCode.InternalError });
 }
 
@@ -123,7 +124,7 @@ export async function DELETE(req: NextRequest) {
     .update({ revoked_at: new Date().toISOString() })
     .eq('id', id);
   if (updErr) {
-    console.error('[join-codes:DELETE] failed', updErr);
+    log.error('[join-codes:DELETE] failed', { requestId, msg: errToString(updErr) });
     return err('Failed to revoke', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   await writeAudit({
