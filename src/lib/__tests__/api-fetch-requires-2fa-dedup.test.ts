@@ -27,6 +27,14 @@ import {
   SessionEndedError,
   __resetSessionEndForTesting,
 } from '@/lib/api-fetch';
+// IMPORTANT: static import here so we share the same cached supabase
+// instance with @/lib/api-fetch. With tsx + Node 20 (CI env), a dynamic
+// `await import('@/lib/supabase')` inside beforeEach was returning a
+// SECOND supabase client (different ESM cache key for static vs dynamic
+// alias-import), so our signOut mock attached to instance B while
+// api-fetch held a reference to instance A. The static import binds
+// us to the same instance api-fetch.ts uses, so the mock actually fires.
+import { supabase } from '@/lib/supabase';
 
 // ─── Browser-globals stub ────────────────────────────────────────────────
 //
@@ -52,7 +60,7 @@ let originalFetch: typeof globalThis.fetch | undefined;
 // or rely on the import being already-evaluated. Simpler: stub via a
 // global supabase reference. fetchWithAuth imports from '@/lib/supabase';
 // we mock it lazily.
-beforeEach(async () => {
+beforeEach(() => {
   signOutCalls = 0;
   location = {
     pathname: '/dashboard',
@@ -79,20 +87,28 @@ beforeEach(async () => {
   // Reset the module-scoped one-shot guard between tests.
   __resetSessionEndForTesting();
 
-  // Stub the supabase auth methods used by fetchWithAuth + the redirect path.
-  // We import the real module and replace methods on the singleton.
-  const { supabase } = await import('@/lib/supabase');
-  // @ts-expect-error monkey-patch test singleton
-  supabase.auth.getSession = async () => ({
+  // Stub the supabase auth methods used by fetchWithAuth + the redirect
+  // path. supabase is imported statically at the top of this file (same
+  // ESM cache entry as api-fetch.ts uses); mocking here actually patches
+  // the instance api-fetch reads from.
+  type AuthMock = {
+    getSession: typeof supabase.auth.getSession;
+    signOut: typeof supabase.auth.signOut;
+    refreshSession: typeof supabase.auth.refreshSession;
+  };
+  const authMock = supabase.auth as unknown as AuthMock;
+  authMock.getSession = (async () => ({
     data: { session: { access_token: 'tok', expires_at: Math.floor(Date.now() / 1000) + 3600 } },
     error: null,
-  });
-  supabase.auth.signOut = async () => {
+  })) as typeof supabase.auth.getSession;
+  authMock.signOut = (async () => {
     signOutCalls += 1;
     return { error: null };
-  };
-  // @ts-expect-error monkey-patch
-  supabase.auth.refreshSession = async () => ({ data: { session: null }, error: null });
+  }) as typeof supabase.auth.signOut;
+  authMock.refreshSession = (async () => ({
+    data: { session: null, user: null },
+    error: null,
+  })) as typeof supabase.auth.refreshSession;
 });
 
 afterEach(() => {
