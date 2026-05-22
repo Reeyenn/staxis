@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- Staxis / HotelOps AI — prediction_log natural key + date index (Migration 0157)
+-- Staxis / HotelOps AI — prediction_log natural key + date index (Migration 0159)
 --
 -- Phase 7 v2 (2026-05-22). Enables the statistical auto-rollback pipeline by
 -- making the prediction_log table support UPSERT-style rewriting of rows
@@ -37,5 +37,5 @@ create index if not exists prediction_log_property_layer_date_idx
   on prediction_log (property_id, layer, date);
 
 insert into public.applied_migrations (version, description)
-values ('0157', 'Phase 7 v2: prediction_log natural unique key + (property, layer, date) index for safe UPSERT and rolling-MAE queries')
+values ('0159', 'Phase 7 v2: prediction_log natural unique key + (property, layer, date) index for safe UPSERT and rolling-MAE queries')
 on conflict (version) do nothing;
