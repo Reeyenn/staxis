@@ -22,6 +22,34 @@ The doctor endpoint tests every critical dependency in parallel and returns a re
 
 ---
 
+## Faster signal: the live System Status panel
+
+Phase E2E (2026-05-22). When you just need "is the wiring up RIGHT NOW", the admin **System tab** has a live status panel below the timeline. Six rows — web, ML brain, CUA worker, scraper heartbeat, scraper on-demand HTTP, Supabase — each green/yellow/red with latency and last-checked time. Auto-refreshes every 30s.
+
+JSON form (same data, watchdog-friendly):
+
+```bash
+curl -H "Authorization: Bearer $CRON_SECRET" \
+  https://hotelops-ai.vercel.app/api/admin/system-status | python3 -m json.tool
+```
+
+### When a row goes red
+
+| Row goes red | What it means | First action |
+|---|---|---|
+| **Web app** | This endpoint itself is down — you wouldn't see this | Check Vercel deploys |
+| **ML brain** | One or more shard `/health` failed | Railway → ml-service → check logs + restart |
+| **CUA worker** | Oldest queued onboarding job is >30 min — worker dead or stuck | Fly → `staxis-cua` → check logs + `flyctl machine restart` |
+| **Scraper heartbeat** | Node process hasn't ticked in 20+ min | Railway → scraper → check logs + redeploy |
+| **Scraper on-demand** | Scraper HTTP `/health` 5xx or unreachable | Same as above — worker probably crashed |
+| **Database** | Supabase read of `accounts` table failed (catches PostgREST schema-cache-stale, not just SELECT 1) | Run `NOTIFY pgrst, 'reload schema'` in SQL editor, then re-check |
+
+### Yellow vs red
+
+Yellow = degraded but not catastrophic (e.g. scraper heartbeat fresh but PMS pull is 45+ min stale during business hours). Red = hard down. The panel uses the SAME thresholds the watchdog SMS uses (DASHBOARD_STALE_MIN, HEARTBEAT_DEAD_MIN — see `src/lib/scraper-staleness.ts`) so a red here matches the SMS Reeyen would get.
+
+---
+
 ## Supabase service_role key rotation
 
 (Successor to the legacy Firebase service account rotation procedure.

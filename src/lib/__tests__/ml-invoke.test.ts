@@ -201,4 +201,61 @@ describe('triggerMlTraining', () => {
     const shardUrls = ['https://ml-shard-0.example.com/train/demand', 'https://ml-shard-1.example.com/train/demand'];
     assert.ok(shardUrls.includes(fetchCalls[0].url), `unexpected URL: ${fetchCalls[0].url}`);
   });
+
+  // Phase E2E (2026-05-22): shape-mismatch protection.
+  describe('shape mismatch detection', () => {
+    it('flags shape_mismatch when response is an array', async () => {
+      process.env.ML_SERVICE_URLS = 'https://ml.example.com';
+      process.env.ML_SERVICE_SECRET = 'secret-12345';
+      nextResponse = { status: 200, body: [1, 2, 3] };
+      const { triggerMlTraining } = await loadHelper();
+
+      const result = await triggerMlTraining('8a041d6e-d881-4f19-83e0-7250f0e36eaa', 'demand');
+
+      assert.equal(result.ok, false);
+      assert.equal(result.status, 'error');
+      assert.match(result.error ?? '', /response_shape_mismatch.*root_not_object.*array/);
+    });
+
+    it('flags shape_mismatch when status field is the wrong type', async () => {
+      process.env.ML_SERVICE_URLS = 'https://ml.example.com';
+      process.env.ML_SERVICE_SECRET = 'secret-12345';
+      nextResponse = { status: 200, body: { status: 42 } };
+      const { triggerMlTraining } = await loadHelper();
+
+      const result = await triggerMlTraining('8a041d6e-d881-4f19-83e0-7250f0e36eaa', 'demand');
+
+      assert.equal(result.ok, false);
+      assert.equal(result.status, 'error');
+      assert.match(result.error ?? '', /response_shape_mismatch.*status_type.*number/);
+    });
+
+    it('flags shape_mismatch when error field is the wrong type', async () => {
+      process.env.ML_SERVICE_URLS = 'https://ml.example.com';
+      process.env.ML_SERVICE_SECRET = 'secret-12345';
+      nextResponse = { status: 200, body: { error: { code: 'bad' } } };
+      const { triggerMlTraining } = await loadHelper();
+
+      const result = await triggerMlTraining('8a041d6e-d881-4f19-83e0-7250f0e36eaa', 'demand');
+
+      assert.equal(result.ok, false);
+      assert.equal(result.status, 'error');
+      assert.match(result.error ?? '', /response_shape_mismatch.*error_type.*object/);
+    });
+
+    it('passes through legitimate train response missing the `status` field', async () => {
+      // FastAPI's TrainDemandResponse does not define `status` — it returns
+      // is_active, training_mae, etc. Tolerating missing status is critical
+      // to avoid false-flagging every successful train as drift.
+      process.env.ML_SERVICE_URLS = 'https://ml.example.com';
+      process.env.ML_SERVICE_SECRET = 'secret-12345';
+      nextResponse = { status: 200, body: { is_active: true, training_mae: 0.42, training_row_count: 1024 } };
+      const { triggerMlTraining } = await loadHelper();
+
+      const result = await triggerMlTraining('8a041d6e-d881-4f19-83e0-7250f0e36eaa', 'demand');
+
+      assert.equal(result.ok, true);
+      assert.equal(result.status, 'ok'); // synthesized fallback when status missing + res.ok
+    });
+  });
 });

@@ -1,25 +1,36 @@
 'use client';
 
 /**
- * System tab — Snow design (May 2026).
+ * System tab — Snow design (May 2026), revised E2E (2026-05-22).
  *
  * Top (full-width): Marvel timeline — commits, deploys, worktrees,
- * active Claude sessions.
+ *   active Claude sessions. Compact (~30% shorter via zoom) so the
+ *   live System Status panel below fits in viewport without scrolling.
  *
- * Below (2-column grid):
- *   Your roadmap (CRUD)  │  Admin audit log (read-only)
+ * Below: live System Status panel. Polls /api/admin/system-status
+ *   every 30s with admin session credentials (fetchWithAuth) and
+ *   renders a green/yellow/red row per downstream service:
+ *     - ML brain (every shard)
+ *     - CUA onboarding worker (via queue freshness)
+ *     - Scraper heartbeat
+ *     - Scraper on-demand HTTP
+ *     - Supabase (catches PostgREST schema-cache-stale)
+ *     - Web app (this server)
+ *
+ * Removed in E2E: roadmap CRUD + admin audit log sections. The
+ * /api/admin/roadmap and /api/admin/audit-log endpoints stay (other
+ * callers may exist), only the UI sections were retired in favor of
+ * the live status panel.
  */
 
 import React, { useEffect, useRef, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import { Plus, Save, Trash2 } from 'lucide-react';
 import { MarvelTimeline } from '@/app/admin/_components/MarvelTimeline';
 import {
   T, FONT_SANS, FONT_MONO, FONT_SERIF,
-  Caps, Card, Btn,
+  Caps, Card, Pill, StatusDot,
 } from '@/app/admin/_components/_snow';
-
-type RoadmapStatus = 'idea' | 'planned' | 'in_progress' | 'done' | 'dropped';
+import type { SystemStatusResponse, ServiceColor } from '@/app/api/admin/system-status/route';
 
 interface Commit {
   sha: string; shortSha: string; message: string; authorName: string; authorEmail: string; ts: string; url: string;
@@ -70,17 +81,7 @@ interface ActiveSessionsResp {
 
 const CURSOR_MS = 2_000;
 const REFRESH_MS = 60_000;
-
-interface RoadmapItem {
-  id: string; title: string; description: string | null;
-  status: RoadmapStatus; priority: number;
-  created_at: string; updated_at: string; done_at: string | null;
-}
-interface AuditEntry {
-  id: string; ts: string; actor_email: string | null; action: string;
-  target_type: string | null; target_id: string | null;
-  metadata: Record<string, unknown>;
-}
+const STATUS_REFRESH_MS = 30_000;
 
 export function SystemTab() {
   const [build, setBuild] = useState<{
@@ -89,26 +90,20 @@ export function SystemTab() {
     pushes?: Push[]; openPRs?: OpenPR[];
     mainLatestTs?: string | null;
   } | null>(null);
-  const [roadmap, setRoadmap] = useState<RoadmapItem[] | null>(null);
-  const [audit, setAudit] = useState<AuditEntry[] | null>(null);
   const [activeSessions, setActiveSessions] = useState<ActiveSessionsResp | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = async () => {
     setError(null);
     try {
-      const [buildRes, roadmapRes, auditRes, sessionsRes] = await Promise.all([
+      const [buildRes, sessionsRes] = await Promise.all([
         fetchWithAuth('/api/admin/build-status'),
-        fetchWithAuth('/api/admin/roadmap'),
-        fetchWithAuth('/api/admin/audit-log?limit=30'),
         fetchWithAuth('/api/admin/active-sessions'),
       ]);
-      const [buildJson, roadmapJson, auditJson, sessionsJson] = await Promise.all([
-        buildRes.json(), roadmapRes.json(), auditRes.json(), sessionsRes.json(),
+      const [buildJson, sessionsJson] = await Promise.all([
+        buildRes.json(), sessionsRes.json(),
       ]);
       if (buildJson.ok) setBuild(buildJson.data);
-      if (roadmapJson.ok) setRoadmap(roadmapJson.data.items);
-      if (auditJson.ok) setAudit(auditJson.data.entries);
       if (sessionsJson.ok) setActiveSessions(sessionsJson.data);
     } catch (err) {
       setError(`Network error: ${(err as Error).message}`);
@@ -177,7 +172,7 @@ export function SystemTab() {
     );
   }
 
-  if (!build || !roadmap || !audit) {
+  if (!build) {
     return (
       <div style={{ padding: '60px 0', textAlign: 'center' }}>
         <div className="spinner" style={{ width: 24, height: 24, margin: '0 auto' }} />
@@ -189,40 +184,30 @@ export function SystemTab() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24, fontFamily: FONT_SANS }}>
 
       <section>
-        <MarvelTimeline
-          commits={build.commits}
-          deploys={build.deploys}
-          worktrees={build.worktrees}
-          branches={build.branches ?? []}
-          merged={build.merged ?? []}
-          pushes={build.pushes ?? []}
-          openPRs={build.openPRs ?? []}
-          mainLatestTs={build.mainLatestTs ?? null}
-          activeSessions={activeSessions?.sessions ?? []}
-        />
+        {/* Compact wrapper: zoom 0.7 shrinks the SVG-based timeline ~30%
+            vertically AND horizontally while preserving text legibility
+            (CSS zoom scales children proportionally and the parent's
+            layout flow shrinks accordingly). Reeyen asked for this so
+            the System Status panel below fits without scrolling. */}
+        <div style={{ zoom: 0.7 as unknown as string }}>
+          <MarvelTimeline
+            commits={build.commits}
+            deploys={build.deploys}
+            worktrees={build.worktrees}
+            branches={build.branches ?? []}
+            merged={build.merged ?? []}
+            pushes={build.pushes ?? []}
+            openPRs={build.openPRs ?? []}
+            mainLatestTs={build.mainLatestTs ?? null}
+            activeSessions={activeSessions?.sessions ?? []}
+          />
+        </div>
         {activeSessions && activeSessions.totalActive > 0 && (
           <ActiveSessionsPanel resp={activeSessions} />
         )}
       </section>
 
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))',
-        gap: 18,
-        alignItems: 'start',
-      }}>
-        <RoadmapSection items={roadmap} reload={load} />
-        <section style={{ minWidth: 0 }}>
-          <SectionTitle caps="Audit" title="Admin" italic="audit log" />
-          {audit.length === 0 ? (
-            <EmptyState text="No admin actions logged yet." />
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
-              {audit.map((a) => <AuditRow key={a.id} entry={a} />)}
-            </div>
-          )}
-        </section>
-      </div>
+      <SystemStatusPanel />
     </div>
   );
 }
@@ -297,207 +282,184 @@ function ActiveSessionsPanel({ resp }: { resp: ActiveSessionsResp }) {
   );
 }
 
-const STATUS_COLOR: Record<RoadmapStatus, string> = {
-  idea: T.ink3,
-  planned: T.ink2,
-  in_progress: T.caramelDeep,
-  done: T.sageDeep,
-  dropped: T.warm,
+// ---------------------------------------------------------------------------
+// SystemStatusPanel — live monitoring grid (Phase E2E, 2026-05-22).
+// Polls /api/admin/system-status every 30s; renders one row per
+// downstream service with a colored pill, latency, and last-checked
+// time. Click a row to expand for the message.
+// ---------------------------------------------------------------------------
+
+interface ServiceRow {
+  key: keyof SystemStatusResponse['services'];
+  label: string;
+  caption: string;
+}
+
+const SERVICE_ROWS: ServiceRow[] = [
+  { key: 'web',               label: 'Web app',          caption: 'Vercel (this server)' },
+  { key: 'ml',                label: 'ML brain',         caption: 'Railway — forecast service' },
+  { key: 'cua',               label: 'Onboarding robot', caption: 'Fly.io — queue freshness' },
+  { key: 'scraper_heartbeat', label: 'Scraper heartbeat', caption: 'Railway — Node process tick' },
+  { key: 'scraper_on_demand', label: 'Scraper (live)',   caption: 'Railway — on-demand /scrape' },
+  { key: 'supabase',          label: 'Database',         caption: 'Supabase — PostgREST + cache' },
+];
+
+const COLOR_TONE: Record<ServiceColor, 'sage' | 'caramel' | 'warm'> = {
+  green: 'sage',
+  yellow: 'caramel',
+  red: 'warm',
+};
+const DOT_TONE: Record<ServiceColor, 'sage' | 'caramel' | 'warm'> = {
+  green: 'sage',
+  yellow: 'caramel',
+  red: 'warm',
+};
+const COLOR_LABEL: Record<ServiceColor, string> = {
+  green: 'OK',
+  yellow: 'DEGRADED',
+  red: 'DOWN',
 };
 
-function RoadmapSection({ items, reload }: { items: RoadmapItem[]; reload: () => Promise<void> }) {
-  const [adding, setAdding] = useState(false);
-  const [newTitle, setNewTitle] = useState('');
+function SystemStatusPanel() {
+  const [snapshot, setSnapshot] = useState<SystemStatusResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const create = async () => {
-    if (!newTitle.trim()) return;
-    await fetchWithAuth('/api/admin/roadmap', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: newTitle.trim() }),
+  const fetchStatus = async () => {
+    try {
+      const res = await fetchWithAuth('/api/admin/system-status');
+      const json = (await res.json()) as SystemStatusResponse;
+      if (typeof json !== 'object' || json === null) {
+        setError('Malformed status response.');
+        return;
+      }
+      setSnapshot(json);
+      setError(null);
+    } catch (err) {
+      setError(`Status fetch failed: ${(err as Error).message}`);
+    }
+  };
+
+  useEffect(() => {
+    void fetchStatus();
+    const tick = () => {
+      pollTimer.current = setTimeout(async () => {
+        await fetchStatus();
+        tick();
+      }, STATUS_REFRESH_MS);
+    };
+    tick();
+    return () => {
+      if (pollTimer.current) clearTimeout(pollTimer.current);
+    };
+  }, []);
+
+  const toggleExpand = (key: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
     });
-    setNewTitle('');
-    setAdding(false);
-    await reload();
   };
 
-  const updateStatus = async (id: string, status: RoadmapStatus) => {
-    await fetchWithAuth('/api/admin/roadmap', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, status }),
-    });
-    await reload();
-  };
-
-  const remove = async (id: string) => {
-    if (!confirm('Delete this roadmap item?')) return;
-    await fetchWithAuth('/api/admin/roadmap', {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id }),
-    });
-    await reload();
-  };
-
-  const grouped = {
-    in_progress: items.filter((i) => i.status === 'in_progress'),
-    planned: items.filter((i) => i.status === 'planned'),
-    idea: items.filter((i) => i.status === 'idea'),
-    done: items.filter((i) => i.status === 'done').slice(0, 5),
-    dropped: items.filter((i) => i.status === 'dropped').slice(0, 5),
-  };
+  const generatedAt = snapshot ? new Date(snapshot.generated_at) : null;
 
   return (
-    <section style={{ minWidth: 0 }}>
+    <section>
       <SectionTitle
-        caps="Roadmap"
-        title="Your"
-        italic="roadmap"
-        right={!adding && (
-          <Btn variant="ghost" size="sm" onClick={() => setAdding(true)}>
-            <Plus size={12} /> Add
-          </Btn>
-        )}
+        caps="Status"
+        title="System"
+        italic="status"
+        right={
+          generatedAt && (
+            <span style={{
+              fontSize: 11, fontStyle: 'italic',
+              fontFamily: FONT_SERIF, color: T.ink3,
+            }}>
+              Updated {timeAgo(generatedAt.toISOString())}
+            </span>
+          )
+        }
       />
 
-      {adding && (
-        <Card padding="10px 12px" style={{ marginTop: 8, display: 'flex', gap: 6 }}>
-          <input
-            autoFocus
-            value={newTitle}
-            onChange={(e) => setNewTitle(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') void create(); if (e.key === 'Escape') { setAdding(false); setNewTitle(''); } }}
-            placeholder="What do you want to build next?"
-            style={{
-              flex: 1, fontSize: 13, padding: '8px 12px',
-              border: `1px solid ${T.rule}`, borderRadius: 999, outline: 'none',
-              fontFamily: FONT_SANS, background: T.paper, color: T.ink,
-            }}
-          />
-          <Btn variant="primary" size="sm" onClick={create}>
-            <Save size={12} /> Save
-          </Btn>
-          <Btn variant="ghost" size="sm" onClick={() => { setAdding(false); setNewTitle(''); }}>
-            Cancel
-          </Btn>
-        </Card>
+      {error && (
+        <div style={{
+          marginTop: 8, padding: '10px 14px',
+          background: T.warmDim,
+          border: `1px solid rgba(184,92,61,0.25)`,
+          borderRadius: 12,
+          fontSize: 12, color: T.warm,
+        }}>{error}</div>
       )}
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginTop: 8 }}>
-        {(['in_progress', 'planned', 'idea', 'done', 'dropped'] as RoadmapStatus[]).map((s) => {
-          const list = grouped[s];
-          if (list.length === 0) return null;
-          return (
-            <div key={s}>
-              <div style={{
-                fontFamily: FONT_MONO, fontSize: 10, fontWeight: 600,
-                color: STATUS_COLOR[s], textTransform: 'uppercase',
-                letterSpacing: '0.16em', marginBottom: 6,
-              }}>
-                {s.replace('_', ' ')}
-                <span style={{ marginLeft: 6, fontWeight: 400, color: T.ink3 }}>
-                  · {list.length}
-                </span>
+      {!snapshot && !error && (
+        <div style={{ padding: '40px 0', textAlign: 'center' }}>
+          <div className="spinner" style={{ width: 20, height: 20, margin: '0 auto' }} />
+        </div>
+      )}
+
+      {snapshot && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+          {SERVICE_ROWS.map((row) => {
+            const svc = snapshot.services[row.key];
+            const isOpen = expanded.has(row.key);
+            return (
+              <div key={row.key}>
+                <button
+                  type="button"
+                  onClick={() => toggleExpand(row.key)}
+                  style={{
+                    width: '100%',
+                    padding: '12px 16px',
+                    background: T.paper,
+                    border: `1px solid ${T.rule}`,
+                    borderRadius: 12,
+                    display: 'flex', alignItems: 'center', gap: 12,
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                    fontFamily: FONT_SANS,
+                  }}
+                  aria-expanded={isOpen}
+                >
+                  <StatusDot tone={DOT_TONE[svc.status]} size={9} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, color: T.ink, fontWeight: 500, letterSpacing: '-0.005em' }}>
+                      {row.label}
+                    </div>
+                    <div style={{ fontSize: 11, color: T.ink3, fontFamily: FONT_SERIF, fontStyle: 'italic', marginTop: 1 }}>
+                      {row.caption}
+                    </div>
+                  </div>
+                  {svc.latency_ms !== undefined && (
+                    <span style={{
+                      fontFamily: FONT_MONO, fontSize: 11, color: T.ink2,
+                      letterSpacing: '0.04em', flexShrink: 0,
+                    }}>
+                      {svc.latency_ms}ms
+                    </span>
+                  )}
+                  <Pill tone={COLOR_TONE[svc.status]}>{COLOR_LABEL[svc.status]}</Pill>
+                </button>
+                {isOpen && svc.message && (
+                  <div style={{
+                    margin: '4px 12px 0 36px',
+                    padding: '10px 14px',
+                    background: T.ruleSoft,
+                    border: `1px solid ${T.rule}`,
+                    borderRadius: 10,
+                    fontSize: 12, color: T.ink2,
+                    fontFamily: FONT_MONO,
+                    lineHeight: 1.5,
+                  }}>{svc.message}</div>
+                )}
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                {list.map((item) => (
-                  <RoadmapItemRow key={item.id} item={item} onStatusChange={updateStatus} onDelete={remove} />
-                ))}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
     </section>
-  );
-}
-
-function RoadmapItemRow({ item, onStatusChange, onDelete }: {
-  item: RoadmapItem;
-  onStatusChange: (id: string, status: RoadmapStatus) => Promise<void>;
-  onDelete: (id: string) => Promise<void>;
-}) {
-  return (
-    <div style={{
-      padding: '10px 14px',
-      background: T.paper,
-      border: `1px solid ${T.rule}`,
-      borderRadius: 12,
-      display: 'flex', alignItems: 'center', gap: 10,
-    }}>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, color: T.ink, letterSpacing: '-0.005em' }}>{item.title}</div>
-        {item.description && (
-          <div style={{ fontSize: 11, color: T.ink2, marginTop: 2 }}>{item.description}</div>
-        )}
-      </div>
-      <select
-        value={item.status}
-        onChange={(e) => onStatusChange(item.id, e.target.value as RoadmapStatus)}
-        style={{
-          fontSize: 11, padding: '4px 10px',
-          border: `1px solid ${T.rule}`, borderRadius: 999,
-          fontFamily: FONT_SANS, background: T.paper, color: T.ink2,
-          outline: 'none', cursor: 'pointer',
-        }}
-      >
-        <option value="idea">Idea</option>
-        <option value="planned">Planned</option>
-        <option value="in_progress">In progress</option>
-        <option value="done">Done</option>
-        <option value="dropped">Dropped</option>
-      </select>
-      <button
-        onClick={() => onDelete(item.id)}
-        aria-label="Delete"
-        style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 4, display: 'flex' }}
-      >
-        <Trash2 size={12} color={T.ink3} />
-      </button>
-    </div>
-  );
-}
-
-function AuditRow({ entry }: { entry: AuditEntry }) {
-  return (
-    <div style={{
-      padding: '10px 14px',
-      background: T.paper,
-      border: `1px solid ${T.rule}`,
-      borderRadius: 10,
-      fontSize: 12,
-      display: 'flex', alignItems: 'center', gap: 12,
-    }}>
-      <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: T.ink3, flexShrink: 0, letterSpacing: '0.04em' }}>
-        {timeAgo(entry.ts)}
-      </span>
-      <span style={{ color: T.ink2, minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        <strong style={{ color: T.ink, letterSpacing: '-0.005em' }}>{entry.actor_email ?? 'system'}</strong>
-        {' · '}
-        <span style={{ fontFamily: FONT_MONO }}>{entry.action}</span>
-        {entry.target_id && (
-          <span style={{ color: T.ink3 }}> on {entry.target_type}/{entry.target_id.slice(0, 8)}</span>
-        )}
-      </span>
-    </div>
-  );
-}
-
-function EmptyState({ text }: { text: string }) {
-  return (
-    <div style={{
-      marginTop: 8,
-      padding: '24px 20px',
-      background: T.ruleSoft,
-      border: `1px dashed ${T.rule}`,
-      borderRadius: 14,
-      textAlign: 'center',
-      fontSize: 12.5,
-      color: T.ink2,
-      fontStyle: 'italic',
-      fontFamily: FONT_SERIF,
-    }}>{text}</div>
   );
 }
 

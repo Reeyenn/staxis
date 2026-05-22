@@ -37,9 +37,9 @@ import { mintVoiceSession, VOICE_SESSION_DYNVAR_KEY } from '@/lib/agent/voice-se
 import type { AppRole } from '@/lib/roles';
 import { env } from '@/lib/env';
 import {
-  externalFetch,
-  EXTERNAL_FETCH_SHORT_TIMEOUT_MS,
-} from '@/lib/external-service-config';
+  elevenLabsFetch,
+  ELEVENLABS_SHORT_TIMEOUT_MS,
+} from '@/lib/elevenlabs-client';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -160,9 +160,9 @@ export async function POST(req: NextRequest): Promise<Response> {
   // block the user staring at a connecting spinner. (Audit finding #6.)
   let signedUrl: string;
   try {
-    const r = await externalFetch(
-      `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${encodeURIComponent(agentId)}`,
-      { headers: { 'xi-api-key': apiKey }, timeoutMs: EXTERNAL_FETCH_SHORT_TIMEOUT_MS },
+    const r = await elevenLabsFetch(
+      `/v1/convai/conversation/get-signed-url?agent_id=${encodeURIComponent(agentId)}`,
+      { timeoutMs: ELEVENLABS_SHORT_TIMEOUT_MS, diagnosticLabel: 'voice-session.signed_url' },
     );
     if (!r.ok) {
       const txt = await r.text().catch(() => '');

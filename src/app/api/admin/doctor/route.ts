@@ -304,6 +304,11 @@ const checks: Array<[string, CheckFn]> = [
   // Error tracking — Sentry no-ops gracefully when DSN missing, but a
   // malformed DSN means errors silently disappear. Fail on bad shape.
   ['sentry_dsn_shape',               checkSentryDsnShape],
+  // Phase E2E (2026-05-22) — async email-lifecycle webhook readiness.
+  // Warns if RESEND_API_KEY is set (we're sending email) but
+  // RESEND_WEBHOOK_SECRET isn't, which means async bounces / complaints
+  // go un-tracked. Complements the live /api/resend-webhook route.
+  ['resend_webhook_secret_configured', checkResendWebhookSecretConfigured],
   // 2026-05-22 monitoring/logging/secrets hardening — three follow-on
   // checks that complement the DSN shape check:
   //   1. sentry_auth_token_present: source-map upload gated on the token
@@ -4020,6 +4025,42 @@ async function checkCuaServiceCiRecentPass(): Promise<Omit<Check, 'name' | 'dura
       detail: `Could not query GitHub Actions: ${errToString(err)}.`,
     };
   }
+}
+
+/**
+ * resend_webhook_secret_configured — Phase E2E (2026-05-22). If Resend is
+ * sending email (RESEND_API_KEY set) but the webhook secret isn't
+ * configured, async lifecycle events (bounces, delivery_delayed,
+ * complaints) hit /api/resend-webhook and get rejected → Resend retries
+ * for ~24h then marks them permanent, and Staxis never learns about a
+ * bounced 2FA email. Warn when only one side is configured.
+ */
+async function checkResendWebhookSecretConfigured(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const apiKeySet = !!(env.RESEND_API_KEY ?? '').trim();
+  const webhookSet = !!(env.RESEND_WEBHOOK_SECRET ?? '').trim();
+  if (!apiKeySet && !webhookSet) {
+    return {
+      status: 'skipped',
+      detail: 'Resend not configured — webhook secret not required.',
+    };
+  }
+  if (apiKeySet && !webhookSet) {
+    return {
+      status: 'warn',
+      detail: 'RESEND_API_KEY set but RESEND_WEBHOOK_SECRET unset. Async bounces / complaints are not being recorded by /api/resend-webhook.',
+      fix: 'Resend Dashboard → Webhooks → add https://hotelops-ai.vercel.app/api/resend-webhook (events: email.sent, email.delivered, email.delivery_delayed, email.bounced, email.complained). Copy the signing secret into Vercel env as RESEND_WEBHOOK_SECRET.',
+    };
+  }
+  if (!apiKeySet && webhookSet) {
+    return {
+      status: 'warn',
+      detail: 'RESEND_WEBHOOK_SECRET set but RESEND_API_KEY unset — we have a webhook receiver but aren\'t sending email.',
+    };
+  }
+  return {
+    status: 'ok',
+    detail: 'Resend API key + webhook secret both configured.',
+  };
 }
 
 /**
