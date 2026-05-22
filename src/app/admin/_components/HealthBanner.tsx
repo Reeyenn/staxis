@@ -117,6 +117,25 @@ export function HealthBanner() {
           </div>
         ))}
       </div>
+      {/* deploy-ci-cron Step 7.5 (2026-05-22): direct link to the rollback
+          playbook so Reeyen has the recovery steps one click away when this
+          banner appears. Opens GitHub-rendered RUNBOOKS.md anchored to the
+          new "Deployment + Rollback per unit" section. */}
+      <div style={{
+        borderTop: `1px solid ${T.warmDim}`,
+        paddingTop: 8,
+        marginTop: 2,
+        fontSize: 12,
+      }}>
+        <a
+          href="https://github.com/Reeyenn/staxis/blob/main/RUNBOOKS.md#deployment--rollback-per-unit"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: T.warm, textDecoration: 'underline' }}
+        >
+          View rollback playbook →
+        </a>
+      </div>
     </div>
   );
 }

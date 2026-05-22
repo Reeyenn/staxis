@@ -284,6 +284,12 @@ const checks: Array<[string, CheckFn]> = [
   // workflow's jq guard passed because .ok was true. Doctor now reads the
   // pair together so drift between them screams instead of whispering.
   ['ml_service_urls_configured',     checkMlServiceUrlsConfigured],
+  // deploy-ci-cron Step 7.5 (2026-05-22): pings ML /health. The lifespan
+  // handler added in main.py blocks /health from responding until env
+  // validation passes, so a 200 here proves the new fail-fast startup
+  // gate is alive. Surfaces in MlHealthPanel (filters checks by `ml_`
+  // prefix) so Reeyen sees the safety net on /admin/ml without hunting.
+  ['ml_service_lifespan_active',     checkMlServiceLifespanActive],
   // Error tracking — Sentry no-ops gracefully when DSN missing, but a
   // malformed DSN means errors silently disappear. Fail on bad shape.
   ['sentry_dsn_shape',               checkSentryDsnShape],
@@ -317,6 +323,13 @@ const checks: Array<[string, CheckFn]> = [
   // `cua_action_policy_refusal` stderr stream for one full mapping run
   // with no false-positive refusals.
   ['cua_action_policy_enforce_status', checkCuaActionPolicyEnforceStatus],
+  // deploy-ci-cron Step 7.5 (2026-05-22): CUA service had no CI gate
+  // before; a TypeScript regression surfaced at Fly deploy time, after
+  // an onboarding job was already queued. This check confirms the
+  // tests.yml workflow's last run on main passed. Surfaces on
+  // /admin/pms (filters checks by `cua_` prefix) so Reeyen sees the
+  // onboarding safety net in the same place he opens for PMS work.
+  ['cua_service_ci_recent_pass',     checkCuaServiceCiRecentPass],
   // Round 14 (2026-05-14): every active property's `rooms` table for
   // today should have one row per inventory entry. The AI tools now
   // compute totals from room_inventory (Layer 1), but if today's seed
@@ -3750,6 +3763,159 @@ async function checkMlServiceUrlsConfigured(): Promise<Omit<Check, 'name' | 'dur
     status: 'ok',
     detail: `ML_SERVICE_URLS set (${urls.length} shard${urls.length === 1 ? '' : 's'}); paired ML_SERVICE_SECRET present.`,
   };
+}
+
+/**
+ * deploy-ci-cron Step 7.5 — ml_service_lifespan_active
+ *
+ * Pings the ML service's /health endpoint. main.py's new lifespan handler
+ * blocks /health from responding until Pydantic Settings validation passes
+ * — so a 200 from /health proves the new fail-fast startup is alive. If
+ * env on the Railway side is broken, this check FAILs and Reeyen sees a
+ * row on /admin/ml indicating the safety net caught a misconfig.
+ *
+ * Why this matters: before the lifespan, missing env on ml-service only
+ * surfaced as a 500 on the first /predict — operators saw a "healthy"
+ * container that silently couldn't serve traffic. This check converts
+ * that into a loud, named failure surfacing on the admin page.
+ */
+async function checkMlServiceLifespanActive(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const raw = env.ML_SERVICE_URLS;
+  const urls = raw && raw.trim()
+    ? raw.split(',').map((u) => u.trim()).filter((u) => u.length > 0)
+    : [];
+  if (urls.length === 0) {
+    return {
+      status: 'skipped',
+      detail: 'ML_SERVICE_URLS not configured — startup-validation gate cannot be probed without a service URL.',
+    };
+  }
+
+  const startedAt = Date.now();
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8_000);
+    let res: Response;
+    try {
+      res = await fetch(new URL('/health', urls[0]).toString(), {
+        method: 'GET',
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    const elapsedMs = Date.now() - startedAt;
+    if (res.status === 200) {
+      return {
+        status: 'ok',
+        detail: `ML service /health responded 200 in ${elapsedMs}ms — lifespan startup validation passed (env validated at boot).`,
+      };
+    }
+    return {
+      status: 'fail',
+      detail: `ML service /health returned ${res.status} after ${elapsedMs}ms. The lifespan handler blocks /health until env validation passes, so a non-200 means startup is broken or the service is offline.`,
+      fix: 'Railway → ml-service → Deployments → check the latest build logs for a `Settings validation failed at startup` error. Most common cause: a missing or invalid env var (SUPABASE_URL, ML_SERVICE_SECRET). Fix the env in Railway → Variables, then redeploy. See RUNBOOKS.md > Deployment + Rollback per unit.',
+    };
+  } catch (err) {
+    return {
+      status: 'fail',
+      detail: `ML service /health unreachable: ${errToString(err)}. Either the service is offline, the URL is wrong, or the lifespan refused to start.`,
+      fix: 'Railway → ml-service → Logs: look for `Settings validation failed at startup`. If absent, the service is down for another reason — check Railway deployment status. See RUNBOOKS.md > Deployment + Rollback per unit.',
+    };
+  }
+}
+
+/**
+ * deploy-ci-cron Step 7.5 — cua_service_ci_recent_pass
+ *
+ * Asks GitHub for the most recent completed run of `tests.yml` on `main`.
+ * tests.yml now includes the CUA service lint+build steps (added in Step 4
+ * of this plan), so a green main run is proof that a typo in cua-service
+ * couldn't have slipped through to the Fly deploy. If the most recent run
+ * failed, Reeyen sees a red row on /admin/pms (the onboarding admin
+ * surface) so he can react before kicking off another onboarding.
+ */
+async function checkCuaServiceCiRecentPass(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const token = env.GITHUB_TOKEN;
+  if (!token) {
+    return {
+      status: 'skipped',
+      detail: 'GITHUB_TOKEN not set — cannot query GitHub Actions for tests.yml status.',
+      fix: 'Vercel → Project Settings → Environment Variables → set GITHUB_TOKEN to a fine-grained PAT with Actions:read. Used here only to confirm tests.yml ran green on main.',
+    };
+  }
+  const startedAt = Date.now();
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8_000);
+    let res: Response;
+    try {
+      // `event=push` + `branch=main` filters to merges on main (excludes
+      // pull_request runs which are also triggered by tests.yml). `status=
+      // completed` excludes in-flight runs whose `conclusion` is null.
+      res = await fetch(
+        'https://api.github.com/repos/Reeyenn/staxis/actions/workflows/tests.yml/runs?branch=main&event=push&status=completed&per_page=1',
+        {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+          signal: controller.signal,
+        }
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+    if (res.status === 401 || res.status === 403) {
+      return {
+        status: 'fail',
+        detail: `GitHub API returned ${res.status} when fetching tests.yml runs — token may be missing the actions:read scope.`,
+        fix: 'Regenerate GITHUB_TOKEN as a fine-grained PAT for the Reeyenn/staxis repo with Permissions → Repository → Actions: Read. Update on Vercel + redeploy.',
+      };
+    }
+    if (!res.ok) {
+      return {
+        status: 'warn',
+        detail: `GitHub API returned ${res.status} when fetching tests.yml runs.`,
+      };
+    }
+    const body = await res.json() as { workflow_runs?: Array<{ conclusion: string; created_at: string; html_url: string; head_sha: string }> };
+    const runs = body.workflow_runs ?? [];
+    if (runs.length === 0) {
+      return {
+        status: 'warn',
+        detail: 'No completed tests.yml runs found on main yet. The CUA CI gate is added but has not run once.',
+      };
+    }
+    const last = runs[0];
+    const ageMs = Date.now() - new Date(last.created_at).getTime();
+    const ageDays = Math.floor(ageMs / 86_400_000);
+    if (last.conclusion !== 'success') {
+      return {
+        status: 'fail',
+        detail: `Last tests.yml run on main FAILED (${last.conclusion}) ${ageDays}d ago for commit ${last.head_sha.slice(0, 7)}. CUA quality gate is broken; investigate before next onboarding.`,
+        fix: `GitHub Actions → ${last.html_url} — open the failing run and fix the underlying break.`,
+      };
+    }
+    if (ageDays > 14) {
+      return {
+        status: 'warn',
+        detail: `Last tests.yml run on main is ${ageDays}d old (commit ${last.head_sha.slice(0, 7)}). No recent main pushes — CI hasn't exercised the CUA gate lately.`,
+      };
+    }
+    const elapsedMs = Date.now() - startedAt;
+    return {
+      status: 'ok',
+      detail: `Onboarding (CUA) CI: last run passed ${ageDays === 0 ? 'today' : `${ageDays}d ago`} (commit ${last.head_sha.slice(0, 7)}; queried in ${elapsedMs}ms).`,
+    };
+  } catch (err) {
+    return {
+      status: 'warn',
+      detail: `Could not query GitHub Actions: ${errToString(err)}.`,
+    };
+  }
 }
 
 /**

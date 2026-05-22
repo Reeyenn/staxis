@@ -140,6 +140,25 @@ jobs:
           ML_SERVICE_SECRET: 'placeholder-secret-12345'
         run: python -m pytest -v --tb=short
 
+      # deploy-ci-cron Step 4 (2026-05-22): cua-service had no CI coverage.
+      # A TypeScript regression in the Fly worker only surfaced at deploy
+      # time, after a hotel onboarding job had already been queued. These
+      # three steps run inside cua-service/ so the lint + build catch the
+      # regression at PR-open time. No tests yet — cua-service has no test
+      # suite — but `tsc --noEmit` (the lint script) and `npm run build`
+      # together prove the TypeScript compiles cleanly.
+      - name: Install cua-service deps
+        working-directory: cua-service
+        run: npm ci
+
+      - name: Lint cua-service
+        working-directory: cua-service
+        run: npm run lint
+
+      - name: Build cua-service
+        working-directory: cua-service
+        run: npm run build
+
       # Codex round-5 META J1.4 (2026-05-13): warn on overgrown ML files.
       # The `_train_single_item` function in inventory_rate.py grew from
       # 908 → 979 lines across 5 review rounds, mostly comments
