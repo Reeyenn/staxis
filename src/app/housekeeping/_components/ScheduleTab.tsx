@@ -33,6 +33,7 @@ import {
 } from '@/lib/db';
 import type { PlanSnapshot, ScheduleAssignments, DashboardNumbers, CsvRoomSnapshot } from '@/lib/db';
 import { autoAssignRooms } from '@/lib/calculations';
+import { captureException } from '@/lib/sentry';
 import type { ShiftConfirmation, StaffMember, SchedulePriority } from '@/types';
 import {
   defaultShiftDate, addDays, formatDisplayDate, snapshotToShiftRooms, formatPulledAt,
@@ -411,7 +412,7 @@ export function ScheduleTab() {
         staffNames,
         csvRoomSnapshot: csvSnapshot,
         csvPulledAt: csvPulledAtIso,
-      }).catch(err => console.error('[Schedule] save failed:', err));
+      }).catch(err => captureException(err, { route: 'housekeeping/schedule', op: 'saveScheduleAssignments', pid }));
     }, 500);
     // planSnapshot IS in the dep array — when the CSV refreshes mid-edit
     // we want a subsequent save (triggered by an assignment change) to

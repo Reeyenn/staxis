@@ -31,6 +31,7 @@ export default function ROIPage() {
 
   const [logs, setLogs] = useState<DailyLog[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!authLoading && !propLoading && !user) router.replace('/signin');
@@ -42,15 +43,21 @@ export default function ROIPage() {
 
     void (async () => {
       try {
+        setLoadError(null);
         const dailyLogs = await getRecentDailyLogs(user.uid, activePropertyId, 90);
         setLogs(dailyLogs);
       } catch (error) {
         console.error('Error fetching daily logs:', error);
+        setLoadError(
+          lang === 'es'
+            ? 'No pudimos cargar los datos ROI. Inténtalo de nuevo en un momento.'
+            : "Couldn't load ROI data. Try again in a moment.",
+        );
       } finally {
         setLoading(false);
       }
     })();
-  }, [user, activePropertyId]);
+  }, [user, activePropertyId, lang]);
 
   if (authLoading || propLoading || loading) {
     return (
@@ -60,6 +67,30 @@ export default function ROIPage() {
             <div className="animate-spin w-8 h-8 border-4 rounded-full mb-3 mx-auto" style={{ borderColor: 'var(--border)', borderTopColor: 'var(--green)' }} />
             <div className="text-sm font-medium" style={{ color: 'var(--text-muted)' }}>
               {lang === 'es' ? 'Cargando datos ROI...' : 'Loading ROI data...'}
+            </div>
+          </div>
+        </div>
+      </AppLayout>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <AppLayout>
+        <div className="flex items-center justify-center h-screen">
+          <div
+            role="alert"
+            className="text-center"
+            style={{
+              maxWidth: 360,
+              padding: '20px 24px',
+              border: '1px solid var(--border)',
+              borderRadius: 12,
+              background: 'var(--surface, #FFFFFF)',
+            }}
+          >
+            <div className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+              {loadError}
             </div>
           </div>
         </div>

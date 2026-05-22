@@ -12,6 +12,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import { Users, Plus, Trash2, Pencil, X, Check, ChevronLeft, Shield, User, Mail, KeyRound, Copy, Link2 } from 'lucide-react';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { captureException } from '@/lib/sentry';
 
 import { ALL_ROLES, ASSIGNABLE_ROLES, roleLabel, canManageTeam, type AppRole, type AssignableRole } from '@/lib/roles';
 
@@ -233,7 +234,7 @@ export default function AccountsPage() {
       setAccounts(body.data?.accounts ?? []);
     } catch (err) {
       setError('Failed to load accounts');
-      console.error(err);
+      captureException(err, { route: 'settings/accounts', op: 'loadAccounts' });
     } finally {
       setLoading(false);
     }

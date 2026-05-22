@@ -76,6 +76,10 @@ export async function POST(req: NextRequest) {
       .eq('session_id', sessionId);
     if (error) {
       console.error('[claude-heartbeat] stop update failed', { msg: error.message });
+      return NextResponse.json(
+        { ok: false, event: 'stop', error: 'database update failed' },
+        { status: 500 },
+      );
     }
     try { revalidateTag('claude-sessions', 'max'); } catch { /* swallow */ }
     return NextResponse.json({ ok: true, event: 'stop' });
@@ -102,6 +106,10 @@ export async function POST(req: NextRequest) {
 
   if (error) {
     console.error('[claude-heartbeat] upsert failed', { msg: error.message });
+    return NextResponse.json(
+      { ok: false, error: 'database upsert failed' },
+      { status: 500 },
+    );
   }
 
   try { revalidateTag('claude-sessions', 'max'); } catch { /* swallow */ }

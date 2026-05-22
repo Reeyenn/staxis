@@ -17,6 +17,7 @@ export const dynamic = 'force-dynamic';
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
+import { useLang } from '@/contexts/LanguageContext';
 import { Plus, Send, Trash2 } from 'lucide-react';
 import { MessageList } from '@/components/agent/MessageList';
 import { useAgentChat } from '@/components/agent/useAgentChat';
@@ -40,6 +41,7 @@ const FONT_SERIF = "var(--font-instrument-serif), 'Times New Roman', Georgia, se
 export default function ChatPage() {
   const { user, loading: authLoading } = useAuth();
   const { activePropertyId, loading: propertyLoading } = useProperty();
+  const { lang } = useLang();
   const {
     messages,
     conversations,
@@ -283,8 +285,36 @@ export default function ChatPage() {
                 color: 'var(--snow-warm, #B85C3D)',
                 fontFamily: FONT_SANS,
                 fontSize: 13,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 12,
               }}>
-                {error}
+                <span>{error}</span>
+                {(() => {
+                  const lastUserText = [...messages].reverse().find(m => m.role === 'user')?.text;
+                  if (!lastUserText || streaming) return null;
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => { void sendMessage(lastUserText); }}
+                      style={{
+                        flexShrink: 0,
+                        padding: '6px 12px',
+                        background: 'transparent',
+                        border: '1px solid rgba(184, 92, 61, 0.30)',
+                        borderRadius: 6,
+                        color: 'var(--snow-warm, #B85C3D)',
+                        fontFamily: FONT_SANS,
+                        fontSize: 12,
+                        fontWeight: 500,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {lang === 'es' ? 'Reintentar' : 'Try again'}
+                    </button>
+                  );
+                })()}
               </div>
             )}
           </div>
