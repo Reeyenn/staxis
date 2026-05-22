@@ -1,5 +1,14 @@
 -- Phase 2B / Door B fix (audit 2026-05-22) — session-scoped MFA-verified state.
 --
+-- NOTE: originally numbered 0159; renumbered to 0166 during the merge of
+-- the three auth/2FA branches on 2026-05-22 to resolve a version
+-- collision with 0159_prediction_log_natural_key (ML housekeeping
+-- session). The migration body had ALREADY been applied to prod at
+-- 07:12 UTC (the table + helper exist); only the applied_migrations
+-- tracker row was lost because the original 0159 insert collided. This
+-- migration re-runs cleanly (all DDL is idempotent) and inserts the
+-- correct version row.
+--
 -- Replaces the user-bound design the senior pass killed. User-bound was
 -- theater: if Maria had any trusted device anywhere, every login token she
 -- (or an attacker with her stolen password) received was flagged
@@ -85,7 +94,7 @@ notify pgrst, 'reload schema';
 
 insert into public.applied_migrations (version, description)
 values (
-  '0159',
+  '0166',
   'Audit 2026-05-22 Phase 2B: mfa_verified_sessions table (session-bound design) + mfa_verified_or_grace() helper.'
 )
 on conflict (version) do nothing;

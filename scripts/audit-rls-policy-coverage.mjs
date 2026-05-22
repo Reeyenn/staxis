@@ -107,6 +107,11 @@ const SERVICE_ROLE_ONLY = new Set([
   // trust-device reads via supabaseAdmin. Never user-readable — the
   // raw rows would leak that a password sign-in happened.
   'password_signin_proofs',
+  // Phase 2B (2026-05-22 audit, Door B): hook writes mfa_verified_sessions
+  // rows when a session is bound to a trusted device via trust-device.
+  // Read-only by supabase_auth_admin (hook) + service-role. Never user-
+  // readable — would leak which sessions are device-trusted vs not.
+  'mfa_verified_sessions',
   // RLS-on with explicit deny-browser policies (no end-user access).
   // Listed for clarity; they'd pass the policy check via their deny policy
   // text containing `false` and the table name, but the lint matches on
