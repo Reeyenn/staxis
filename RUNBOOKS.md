@@ -1271,6 +1271,82 @@ fly apps restart staxis-cua
 
 ---
 
+## Inventory ML triage
+
+The May 2026 honesty audit added several signals to the inventory ML surface. Use this section to interpret them in production.
+
+### Symptom: `/api/inventory/ai-status` returns `lastInferenceStale: true`
+
+**Meaning.** The most recent `inventory_rate_predictions` row for this property is more than 26 hours old — at least one daily prediction cron has missed. Threshold is intentionally tighter than the doctor's ~48h `cron_heartbeats_fresh` warning so operators see this in the GM UI before the doctor pages.
+
+**Diagnosis (in order).**
+1. Check `cron_heartbeats` for `ml-predict-inventory` in Supabase: `select * from cron_heartbeats where cron_name = 'ml-predict-inventory'`. If the row is missing, the cron has never fired — check `.github/workflows/ml-cron.yml` is enabled and the schedule fires for the right secret.
+2. Check the Railway ml-service logs. If you see `ml_service_config_drift` or `not_configured`, env vars on the Next side (`ML_SERVICE_URL`, `ML_SERVICE_SECRET`) are misconfigured.
+3. If the Railway service is up but predictions aren't landing, hit `POST /predict/inventory-rate` directly with curl + the bearer token and read the response. Likely failures: `property_misconfigured` (missing timezone or total_rooms), `predicted: 0` (no active models — see next entry).
+4. If the cron is running successfully but `predictionsLast7Days: 0`, the property has no `is_active=true` inventory_rate model_runs. Check Phase 2 graduation (≥3 events per item → cold-start prior installs; ≥30 events + MAE/mean < 0.10 + 5 consecutive passes → graduation).
+
+**Fix.** Whichever sub-issue surfaced. Most common: cron disabled in GitHub Actions, or a property `timezone` is null.
+
+**Prevention.** The doctor's `cron_heartbeats_fresh` check warns at ~48h and fails at ~72h for daily crons — ai-status flips at 26h so the GM sees stale-prediction signal before the doctor escalates.
+
+### Symptom: `overfitRatio` vs `currentMaeRatioVsMean` — which is "% off"?
+
+`/api/inventory/ai-status` returns two MAE ratios. They mean different things:
+
+- **`currentMaeRatioVsMean = validation_mae / mean_observed_rate`.** The activation gate ratio. Below 0.10 means the model beats the constant-mean baseline by ≥10× the mean. THIS is the number the "% off" label in `SimpleSheet.tsx` reads. Returns `null` until the next weekly retrain populates `model_runs.hyperparameters.mean_observed_rate` (Phase 2 ships with this null for ~7 days after deploy).
+- **`overfitRatio = validation_mae / training_mae`.** Fit-tightness. >1 means the model is looser on held-out data than on training — overfitting signal. NOT the activation gate. Historical name for this field was `currentMaeRatio` — still aliased for one release; remove after Phase 2 is two weeks old.
+
+If a GM asks why the "% off" number changed after a deploy: Phase 4 (2026-05-22) switched the UI from `overfitRatio` to `currentMaeRatioVsMean`. The number itself didn't get worse — the UI used to show the wrong number under a misleading label.
+
+### Symptom: admin cockpit shows `xgboostBlockedCount > 0`
+
+**Meaning.** One or more items reached ≥100 training events and would have graduated to the XGBoost-quantile algorithm, but the inference path can't deserialize XGBoost artifacts yet (`ml-service/src/layers/xgboost_quantile.py:24` — `XGBOOST_INFERENCE_READY = False`). The training run is force-deactivated to prevent silent prediction loss. Bayesian predictions continue if there's still a Bayesian run; otherwise the item stops getting per-day predictions.
+
+This is the **XGBoost graduation cliff** — a known incomplete code path, not a regression. Flipping `XGBOOST_INFERENCE_READY = True` alone won't fix it; `inference/inventory_rate.py:261-265` also needs to wire up artifact deserialization. Two-step fix, intentionally deferred.
+
+**What to do today.** Nothing. The count is informational. Do NOT flip the readiness flag — it's shared with demand+supply layers and would activate broken XGBoost there too.
+
+### How to invoke the inventory-backtest endpoint
+
+Phase 3 added a read-only realized-MAE evaluation endpoint. Use it to spot-check production model performance against ground truth (predicted-vs-actual pairs accumulated in `prediction_log`):
+
+```bash
+curl -X POST "$ML_SERVICE_URL/eval/inventory-backtest" \
+  -H "Authorization: Bearer $ML_SERVICE_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"property_id": "<uuid>", "window_days": 30}'
+```
+
+Response shape:
+```json
+{
+  "property_id": "<uuid>",
+  "window_days": 30,
+  "n_pairs": 142,
+  "per_item": [
+    {"item_id": "<uuid>", "n_pairs": 14, "realized_mae": 1.2,
+     "training_mae": 0.4, "validation_mae": 0.8, "drift_ratio": 1.5},
+    ...
+  ],
+  "stale_active_models": [
+    {"item_id": "<uuid>", "model_run_id": "<uuid>",
+     "realized_mae": 2.1, "validation_mae": 1.0, "ratio": 2.1}
+  ]
+}
+```
+
+Window clamped to `[1, 180]` days server-side. Stale flag = active model + realized_mae > 1.5× validation_mae + ≥10 pairs. **Read-only — never writes to `model_runs`.** Decide manually whether to retrain a flagged item via the admin cockpit's "Retrain this item" button.
+
+### Symptom: reorder panel shows no items pre-checked even when stock is low
+
+**Meaning.** Phase 4 changed the pre-check rule. Items now only auto-include in the cart when `urgency === 'now' AND burnSource ∈ {ml, rule-occupancy}` — i.e. there's evidence behind the suggestion. If every item in the panel was classified as `fallback-60d` (par/60 default) or `no-data`, none will pre-check.
+
+This is intentional behavior, not a bug. The GM should see the onboarding banner ("No usage data yet. These suggestions are based on par levels, not real usage. Add a few counts so the AI can learn …"). If the banner is missing AND items aren't pre-checked, that's a real bug — check that `ReorderPanel.tsx`'s `allRecsAreFallback` computation is finding the `burnSource` field on each rec.
+
+**Fix workflow for a new hotel.** Have the GM log 3+ counts per item. After the next weekly training cron, cold-start cohort-prior models install (`algorithm='cold-start-cohort-prior'`, `is_active=true`, `auto_fill_enabled=false`). Predictions start flowing within ~24h of the next daily inference cron. Items move from `burnSource: 'fallback-60d'` to `burnSource: 'ml'` and the pre-check resumes.
+
+---
+
 ## Meta: how to add a new failure mode to this doc
 
 Every time something breaks and takes more than 30 min to fix, come back and add a section here with Symptom / Diagnosis / Fix / Verify / Prevention. This file only pays for itself if we update it.

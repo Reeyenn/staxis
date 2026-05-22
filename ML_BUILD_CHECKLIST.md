@@ -151,3 +151,50 @@ Plus modifications to:
 - `src/components/layout/Header.tsx` (ML nav tab, owner-only)
 
 That's the build. Three steps from here to a live, self-improving ML system.
+
+---
+
+## Phase 3.6: Honesty surface (2026-05-22)
+
+The May 2026 inventory ML audit added explicit-source labelling and a true gate ratio everywhere the UI reads from. The model itself didn't change — predictions and graduation logic are identical. What changed is what the UI exposes about its own confidence.
+
+### What shipped
+
+- **`/api/inventory/ai-status` (and `getInventoryAiStatus` mirror in `ml-inventory-cockpit.ts`):**
+  - Renamed `currentMaeRatio` → `overfitRatio` (val_mae/train_mae — fit-tightness, not the activation gate).
+  - New `currentMaeRatioVsMean` (val_mae/mean_observed_rate — the **real** activation gate ratio).
+  - New `lastInferenceStale` (true past 26h — one missed daily cron + 2h grace; flips before doctor's 48h heartbeat threshold).
+  - New `predictionsLast7Days` (cron-outage signal even when lastInferenceAt looks fresh).
+  - Kept `currentMaeRatio` as a deprecated alias for one release.
+
+- **`/api/admin/ml/inventory/cockpit-data`:** new `xgboostBlockedCount` in `AggregateStats`. Filtered to LATEST run per (property, item) so stale historical XGBoost experiments don't permanently mark items "blocked". Admin-only — NOT surfaced in GM ai-status.
+
+- **`ml-service/src/training/inventory_rate.py`:** persists `mean_observed_rate` in `model_runs.hyperparameters` (single bit-for-bit value already computed by the trainer; no DDL, accepted by RPC `staxis_install_inventory_model_run` as JSONB pass-through).
+
+- **`ml-service/src/training/_gates.py`** (new): pure helper `should_force_deactivate(...)` extracted from the inlined safety gates. Returns `(force, reason)` mirroring the three gates (no-validation-set / max-MAE / XGBoost-blocked). Behavior preserved bit-for-bit; tested in `tests/test_inventory_gate_helpers.py`.
+
+- **`ml-service/src/eval/inventory_backtest.py`** (new): read-only realized-MAE backtest sourced from `prediction_log` (predicted-vs-actual pairs written by `post-count-process`). Single batched `client.client.table('model_runs').select(...).in_('id', run_ids).execute()` join — explicitly NOT a per-run-id loop. Endpoint `POST /eval/inventory-backtest`, bearer-only, admin-via-curl (no TS proxy). See RUNBOOKS "How to invoke the inventory-backtest endpoint".
+
+- **Inventory UI (`src/app/inventory/_components/`):**
+  - New `BurnSource = 'ml' | 'rule-occupancy' | 'fallback-60d' | 'no-data'` type. `DisplayItem.burnSource` and `ReorderRec.burnSource` REQUIRED — TypeScript flushes out any constructor that drops it.
+  - `selectBurnRate(...)` pure helper in `lib/inventory-predictions.ts` encapsulates the classification logic.
+  - `ItemRow.tsx`: `daysLeft` renders as em-dash for `fallback-60d` and `no-data` (par/60 is a fixed function of par, not a prediction).
+  - `ReorderPanel.tsx`: pre-check only on `urgency==='now' && burnSource ∈ {ml, rule-occupancy}`. Onboarding banner when ALL recs are fallback (new-hotel signal).
+  - `SimpleSheet.tsx`, `CountSheet.tsx`: "% off" card reads `currentMaeRatioVsMean` (the real gate ratio) instead of the misnamed `currentMaeRatio`. Shows "Populating…" during the ~7-day post-Phase-2 backfill window.
+
+### Tests added
+
+- `ml-service/tests/test_inventory_gate_helpers.py` (14 cases — gate priority, near-zero floor, is_currently_active short-circuit)
+- `ml-service/tests/test_inventory_cold_start_no_autofill.py` (5 cases — RPC payload shape, is_active/auto_fill_enabled contract)
+- `ml-service/tests/test_inventory_backtest.py` (11 cases — including anti-N+1 single-`.in_()`-call invariant, read-only invariant)
+- `src/lib/__tests__/inventory-predictions.test.ts` (7 cases — fetchMlPredictedRates failure paths)
+- `src/lib/__tests__/inventory-ai-status.test.ts` (13 cases — 26h staleness, gate ratio vs overfit, divide-by-zero)
+- `src/lib/__tests__/inventory-burn-source.test.ts` (14 cases — all four sources, priority order, NaN/0/null handling)
+
+### What did NOT change
+
+- Bayesian regression, XGBoost-quantile, static baseline layers (`ml-service/src/layers/`). Shared with demand+supply; out of scope.
+- Demand/supply training + inference. Out of scope.
+- Activation gates, graduation thresholds, cohort prior strengths, max-MAE threshold (1.0×). Same values; the logic was just extracted to a helper.
+- The `XGBOOST_INFERENCE_READY = False` flag — flipping it would activate broken XGBoost in housekeeping ML. Stays False; cliff is documented in RUNBOOKS.
+- Any Supabase migrations / RLS policies. No DDL needed (mean_observed_rate goes into existing JSONB column).
