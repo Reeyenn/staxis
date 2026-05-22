@@ -61,18 +61,7 @@ const LABEL: React.CSSProperties = {
 
 const fmtMoney = (n: number) => '$' + n.toLocaleString('en-US');
 
-// ─── Icons (verbatim from shared.jsx) ────────────────────────────────
-
-function ChevronMark({ size = 22, color = '#1A1F1B' }: { size?: number; color?: string }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 64 64" aria-hidden="true">
-      <path
-        d="M18 28 L26 20 M18 38 L38 18 M28 38 L38 28 M28 48 L46 30"
-        stroke={color} strokeWidth={4.4} strokeLinecap="round" strokeLinejoin="round" fill="none"
-      />
-    </svg>
-  );
-}
+// ─── Sparkles icon (verbatim from shared.jsx) ────────────────────────
 
 function Sparkles({ size = 14, color = 'currentColor' }: { size?: number; color?: string }) {
   return (
@@ -234,7 +223,6 @@ export default function DashboardPage() {
   }, [user, authLoading, propLoading, activePropertyId, router]);
 
   const totalRooms = activeProperty?.totalRooms || 108;
-  const propertyName = activeProperty?.name || 'Comfort Suites Beaumont';
   const { days, todayIdx } = useMonthData(totalRooms);
   const [metric, setMetric] = useState<MetricKey>('Occupancy');
   const [scrub, setScrub] = useState<number>(todayIdx);
@@ -297,24 +285,10 @@ export default function DashboardPage() {
 
         <div style={{ position: 'relative', maxWidth: 1600, margin: '0 auto' }}>
 
-          {/* Header strip — verbatim from design */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 22, gap: 16, flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <ChevronMark size={20} />
-              <span style={{ fontWeight: 600, fontSize: 14, letterSpacing: '-0.01em' }}>Staxis</span>
-              <span style={{ width: 1, height: 14, background: C.rule, margin: '0 4px' }} />
-              <span style={{ fontSize: 12.5, color: C.ink2 }}>{propertyName}</span>
-            </div>
-            <h1 style={{
-              margin: 0, fontFamily: FONT_SERIF, fontSize: 26, fontWeight: 400,
-              fontStyle: 'italic', color: C.ink2, letterSpacing: '-0.01em',
-            }}>
-              {monthLong} at a glance.
-            </h1>
-            <span style={LABEL}>Move your cursor across the chart</span>
-          </div>
-
-          {/* Chart card */}
+          {/* Chart card — chart sits flush at the top now per Reeyen's
+              ask; header strip (Staxis chevron + property name, "{Month}
+              at a glance.", cursor hint) was removed. Chart layout
+              itself is untouched. */}
           <div style={{
             background: 'rgba(255,255,255,0.85)',
             backdropFilter: 'blur(30px) saturate(140%)',
