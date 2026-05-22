@@ -1,14 +1,18 @@
 """FastAPI application for ML Service."""
 import json
+import logging
 import os
 import uuid as _uuid
+from contextlib import asynccontextmanager
 from datetime import date as DateType  # alias to avoid shadowing the Pydantic field name `date`
 from typing import Optional
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, status, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ValidationError, field_validator
+
+logger = logging.getLogger(__name__)
 
 # Plan v2 Phase 2 — fleet-wide rate limit. Without this a leaked
 # bearer token (or a misfiring cron) can hammer /predict and /train
@@ -49,14 +53,17 @@ def _client_ip_for_rate_limit(request: Request) -> str:
 
 limiter = Limiter(key_func=_client_ip_for_rate_limit, default_limits=["60/minute"])
 
+from src.config import get_settings
+
 # Plan v2 F-AI-4: hard ceiling on `max_rows` so a bearer-token holder
 # (or a misfiring cron) can't cause Railway to pull arbitrarily large
-# dataframes into memory. The cap lives in env so per-property
-# back-fills (5+ years of history) can override without code change.
-MAX_ROWS_CAP = int(os.environ.get("ML_MAX_ROWS_CAP", "200000"))
+# dataframes into memory. Sourced from Pydantic Settings (env var
+# ML_MAX_ROWS_CAP, default 200_000); see ml-service/src/config.py.
+# Kept as module-level `MAX_ROWS_CAP` because test_main_hardening.py
+# imports it by that name.
+MAX_ROWS_CAP = get_settings().ml_max_rows_cap
 
 from src.auth import verify_bearer_token
-from src.config import get_settings
 from src.health import router as health_router
 from src.inference.demand import predict_demand
 from src.inference.inventory_rate import predict_inventory_rates
@@ -399,11 +406,34 @@ class AggregatePriorsResponse(BaseModel):
     note: Optional[str] = None
 
 
+# Plan deploy-ci-cron Step 3: fail-fast startup validation.
+# Before this gate, missing/invalid env (SUPABASE_URL, ML_SERVICE_SECRET,
+# etc.) only surfaced as a 500 on the first /predict — operators saw a
+# "healthy" container that silently couldn't serve traffic. Mirrors the
+# Zod throw-at-module-load pattern in src/lib/env.ts and scraper/env.js.
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        get_settings()
+    except ValidationError as exc:
+        # Crash the container with a clear log instead of serving 500s.
+        # Railway's restart policy + Fly/Vercel equivalents bound this to
+        # a deploy-time failure that ops will SEE rather than have to
+        # discover via cron timeouts.
+        logger.error(
+            "ml-service: Settings validation failed at startup",
+            extra={"error": str(exc)},
+        )
+        raise
+    yield
+
+
 # FastAPI app
 app = FastAPI(
     title="Staxis ML Service",
     description="Housekeeping demand/supply prediction and optimization",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # Wire up slowapi. `app.state.limiter` is read by the SlowAPIMiddleware
@@ -418,8 +448,9 @@ app.add_middleware(SlowAPIMiddleware)
 # Plan v2 F-AI-4: refuse oversized bodies BEFORE FastAPI tries to parse
 # them. ML endpoints all carry tiny JSON bodies (a UUID + a date string);
 # 64 KB is far above anything legitimate and cuts off the obvious DoS
-# vector of POSTing a giant payload.
-_MAX_BODY_BYTES = int(os.environ.get("ML_MAX_BODY_BYTES", str(64 * 1024)))
+# vector of POSTing a giant payload. Sourced from Pydantic Settings (env
+# var ML_MAX_BODY_BYTES, default 64*1024); see ml-service/src/config.py.
+_MAX_BODY_BYTES = get_settings().ml_max_body_bytes
 
 
 @app.middleware("http")

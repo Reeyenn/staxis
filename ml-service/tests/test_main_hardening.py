@@ -16,6 +16,13 @@ Coverage:
 import os
 import json
 
+# Pydantic Settings (src/config.py) maps `supabase_url` to env var SUPABASE_URL
+# (case_sensitive=False). The earlier NEXT_PUBLIC_SUPABASE_URL line was the
+# Next.js convention and DIDN'T satisfy Pydantic — this file only passed in
+# CI because tests.yml also set SUPABASE_URL externally. Once main.py started
+# calling get_settings() at module load (Step 2 of the deploy-ci-cron plan),
+# this file had to be self-sufficient too.
+os.environ.setdefault("SUPABASE_URL", "https://placeholder.supabase.co")
 os.environ.setdefault("NEXT_PUBLIC_SUPABASE_URL", "https://placeholder.supabase.co")
 os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "placeholder-service-role-key-min-20-chars")
 os.environ.setdefault("ML_SERVICE_SECRET", "placeholder-ml-service-secret-min-32-bytes-padding")

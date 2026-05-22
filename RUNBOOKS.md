@@ -1720,6 +1720,127 @@ If something is catastrophically broken:
 
 ---
 
+## Deployment + Rollback per unit
+
+Added 2026-05-22 (deploy-ci-cron plan). Reeyen-facing: "if a deploy breaks the live hotel, here's how to get back to the previous working version per deployable piece." All four units deploy independently and can be rolled back independently — the live site (Vercel), the data-puller (Railway scraper), the prediction brain (Railway ml-service), and the new-hotel onboarder (Fly.io cua-service).
+
+The `HealthBanner` at the top of every admin page links here when any check fails.
+
+### Vercel (live website at hotelops-ai.vercel.app)
+
+#### Symptom
+- HealthBanner shows red failure on every admin page.
+- `/admin/doctor` reports red checks tied to a recent deploy.
+- Customer reports "the site is broken" after a recent push to main.
+
+#### Fix (~2 min, no code changes)
+
+1. Open https://vercel.com → `staxis` project → **Deployments**.
+2. Find the last green deployment (look for the green ✓ pip in the status column) — typically the one right before the current red one.
+3. Click the **⋯ menu** on that row → **"Promote to Production"** (Vercel may also label this "Promote" or "Redeploy with cache"; the menu item is in the kebab).
+4. Vercel re-routes traffic to that build in ~30 seconds.
+5. Verify: refresh https://hotelops-ai.vercel.app and confirm the site loads. Run the doctor:
+   ```bash
+   curl -H "Authorization: Bearer $CRON_SECRET" \
+     https://hotelops-ai.vercel.app/api/admin/doctor
+   ```
+   All checks should be green/warn (not fail).
+
+#### When NOT to use this
+- If the issue is a database migration, rolling back Vercel restores the OLD code but the NEW migration is still in Postgres. The code may now reference columns that no longer exist (or worse, write to ones that don't yet exist). Fix forward with a corrective migration instead — see the Supabase migrations section below.
+
+### Fly.io (cua-service worker — onboarding new hotels)
+
+#### Symptom
+- HealthBanner shows red on `cua_service_ci_recent_pass` OR `cua_action_policy_enforce_status`.
+- A new-hotel onboarding job is stuck or failing.
+- Fly health checks for `staxis-cua` are red.
+
+#### Diagnosis
+```bash
+# Are recent releases healthy?
+fly releases list -a staxis-cua
+
+# What's the worker actually doing?
+fly logs -a staxis-cua --no-tail | tail -100
+```
+
+#### Fix (~2 min)
+
+1. List the previous releases:
+   ```bash
+   fly releases list -a staxis-cua
+   ```
+2. Identify the last release that ran cleanly (typically the one BEFORE the failing version).
+3. Roll back to it:
+   ```bash
+   fly releases rollback <version> -a staxis-cua
+   ```
+   Replace `<version>` with the numeric version (e.g., `47`) from the list output.
+4. Fly does a rolling restart (~1–2 min). Confirm with:
+   ```bash
+   fly status -a staxis-cua
+   ```
+5. Verify: the next polled job from `onboarding_jobs` should process cleanly. The doctor's `cua_service_ci_recent_pass` won't update until the next push to `main`, so re-verify by manually re-triggering a mapping run or watching `cua_action_policy_enforce_status`.
+
+### Railway (scraper — Choice Advantage data puller)
+
+#### Symptom
+- `scraper_csv_pull` doctor check fails, OR `supabase_heartbeat` is stale.
+- Operations staff report stale room status in the housekeeper view.
+
+#### Fix (~3 min, dashboard-only — no CLI rollback)
+
+1. Open https://railway.app → `hotelops-scraper` project → **Deployments**.
+2. Find the previous build that was green (look at the deploy time + status).
+3. Click the **⋯ menu** → **"Redeploy"**. Railway re-runs `npm install + playwright install + start` from that commit.
+4. Wait ~90 seconds for the container to start. The scraper's preflight DB read either fires (`heartbeat` row updates) or the container crash-loops with a clear error in Railway logs.
+5. Verify: doctor `supabase_heartbeat` should be green within 5 min (scraper writes the heartbeat every tick).
+
+### Railway (ml-service — prediction brain)
+
+#### Symptom
+- `ml_service_lifespan_active` doctor check fails (added 2026-05-22).
+- ML cron jobs fail with 401 or timeout.
+- `ml_*_predictions_fresh` checks turn red.
+
+#### Diagnosis first — is it env or code?
+1. **Open Railway → ml-service → Deployments → latest build → Logs.** Look for `Settings validation failed at startup` — that's the new fail-fast lifespan. If you see this line, the issue is an env var, NOT the code. Skip the rollback; fix the env var (Railway → Variables) and redeploy.
+2. If logs show no startup error but `/health` is unreachable, proceed with rollback below.
+
+#### Fix (~3 min, dashboard-only)
+
+1. Open https://railway.app → ml-service project → **Deployments**.
+2. Find the last green build.
+3. Click **⋯** → **"Redeploy"**.
+4. Wait ~60 seconds. Watch the build logs — the lifespan handler will log "Settings validation passed at startup" (or crash loudly with a Pydantic error).
+5. Verify: doctor `ml_service_lifespan_active` should turn green within 60 seconds. The next ML cron tick will write predictions; `ml_*_predictions_fresh` greens up within an hour.
+
+### Supabase migrations (database schema)
+
+**Do NOT do a destructive rollback. Schema reverts can lose data.** Migrations in this repo are always forward-only. If a migration broke something, write a NEW migration that fixes the break.
+
+#### Symptom
+- API routes 500 with `relation "..." not found` or `column "..." does not exist`.
+- A recently-applied migration introduced a bad constraint, a missing column, or a faulty function definition.
+
+#### Fix (~5–10 min depending on scope)
+
+1. Find the offending migration in `supabase/migrations/` (typically the highest-numbered file applied recently).
+2. Write a NEW migration in the same directory with the next number. Name it descriptively, e.g., `0210_fix_<thing>.sql`.
+3. The new migration should:
+   - **Drop or alter** the bad object (table, column, policy, function).
+   - **Restore** the prior shape if the operational code expects it.
+   - **NOT touch data tables in a destructive way** (no `DROP TABLE`, no unconditional `DELETE`).
+4. Apply via Supabase Dashboard → SQL Editor (paste the migration body, run).
+5. The doctor's `supabase_migrations_applied` check verifies the migration is recorded.
+6. After the dashboard run, ALSO commit the new migration file to the repo so the recorded state matches the applied state.
+
+#### What if I really need to undo recent inserts/updates?
+- Supabase has Point-in-Time Recovery (PITR). Use the dashboard → Database → Backups → Restore. **This rolls the WHOLE database**, including any unrelated writes between the bad migration and now. Get help before doing this — it can lose customer data.
+
+---
+
 ## Meta: how to add a new failure mode to this doc
 
 Every time something breaks and takes more than 30 min to fix, come back and add a section here with Symptom / Diagnosis / Fix / Verify / Prevention. This file only pays for itself if we update it.
