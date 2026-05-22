@@ -23,10 +23,12 @@
 //
 // Added 2026-05-22 in the auth/2FA audit (finding H1).
 
+import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { createSupabaseServerClient } from '@/lib/supabase-server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
+import { hashDeviceToken, TRUST_COOKIE_NAME } from '@/lib/trusted-device';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -54,7 +56,7 @@ export default async function AdminLayout({
   // gate independent of RLS drift on the accounts table.
   const { data: account, error: acctErr } = await supabaseAdmin
     .from('accounts')
-    .select('role')
+    .select('id, role')
     .eq('data_user_id', user.id)
     .maybeSingle();
 
@@ -75,6 +77,60 @@ export default async function AdminLayout({
     // because there's no legitimate path for a non-admin user to reach
     // /admin/* — the link only appears in the admin nav.
     redirect('/');
+  }
+
+  // Audit 2026-05-22 (Codex review finding #4): role check alone is not
+  // enough — a stolen admin password gives the attacker a valid Supabase
+  // session (passes the getUser check above) and they happen to have
+  // role='admin' (because they're using Reeyen's account). They'd then
+  // see the admin HTML shell + any RSC-rendered content before any API
+  // call gets blocked by Phase 1's requireSession device-trust gate.
+  //
+  // Close the shell-leak gap by enforcing the same device-trust check
+  // here as requireSession does for API routes: the staxis_device cookie
+  // must match a non-expired trusted_devices row for THIS account.
+  const cookieStore = await cookies();
+  const deviceCookieValue = cookieStore.get(TRUST_COOKIE_NAME)?.value ?? null;
+  let hasValidDeviceTrust = false;
+
+  if (deviceCookieValue) {
+    const tokenHash = hashDeviceToken(deviceCookieValue);
+    const { data: deviceRow, error: deviceErr } = await supabaseAdmin
+      .from('trusted_devices')
+      .select('id, expires_at, absolute_expires_at')
+      .eq('account_id', account.id)
+      .eq('token_hash', tokenHash)
+      .maybeSingle();
+    if (deviceErr) {
+      log.error('[admin/layout] trusted_devices lookup failed — failing closed', {
+        userId: user.id,
+        accountId: account.id,
+        err: deviceErr.message,
+      });
+      redirect('/signin?reason=2fa_required&redirect=%2Fadmin');
+    }
+    if (deviceRow) {
+      const now = Date.now();
+      const expires = new Date(deviceRow.expires_at).getTime();
+      const absExpRaw = (deviceRow as { absolute_expires_at?: string | null })
+        .absolute_expires_at;
+      const absExpires = absExpRaw ? new Date(absExpRaw).getTime() : 0;
+      if (expires > now && absExpires > now) {
+        hasValidDeviceTrust = true;
+      }
+    }
+  }
+
+  if (!hasValidDeviceTrust) {
+    // Admin signed in but device not trusted → could be a fresh stolen-
+    // password sign-in via curl. Bounce to /signin?reason=2fa_required
+    // so the user re-OTPs. Same posture as Phase 1's requires_2fa for
+    // /api/* routes.
+    log.warn('[admin/layout] admin without device trust — bouncing', {
+      userId: user.id,
+      accountId: account.id,
+    });
+    redirect('/signin?reason=2fa_required&redirect=%2Fadmin');
   }
 
   return <>{children}</>;
