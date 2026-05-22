@@ -277,6 +277,17 @@ export function subscribeTable<T>(
   // `let`, not `const`: visibility recovery may swap the channel out for a
   // fresh one if iOS Safari (or any other mobile browser) silently kills
   // the WebSocket while the tab is backgrounded.
+  //
+  // Auth refresh: we do NOT need a TOKEN_REFRESHED listener here. The
+  // @supabase/supabase-js client (v2.104+) auto-wires `onAuthStateChange`
+  // → `_handleTokenChanged` → `realtime.setAuth(newToken)` →
+  // `_performAuth` iterates `this.channels` and pushes the new
+  // `access_token` event to each joined channel. Verified in
+  // node_modules/@supabase/realtime-js/dist/main/RealtimeClient.js. Same
+  // path fires SIGNED_OUT → setAuth() (no token), which is why revoke-
+  // trust + auth.signOut() correctly tears down realtime auth in lock-
+  // step with the cookie clear. Don't add manual setAuth wiring here —
+  // it would double-call and risk a stale-channel race during refresh.
   let channel = supabase
     .channel(channelName)
     .on('postgres_changes' as never, filterSpec, onChange as never)

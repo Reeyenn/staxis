@@ -45,6 +45,34 @@ function decodeJwtIat(token: string): number | null {
   }
 }
 
+/**
+ * Decode the `session_id` claim from a Supabase JWT. Phase 2B (audit
+ * 2026-05-22): trust-device binds the issued staxis_device cookie to
+ * the specific auth.sessions row by writing a mfa_verified_sessions
+ * row keyed on this session_id. The custom_access_token_hook checks
+ * for that row to compute mfa_verified=true. An attacker creating a
+ * fresh signInWithPassword session would have a different session_id
+ * with no matching row → the hook computes mfa_verified=false → RLS
+ * denies via mfa_verified_or_grace().
+ *
+ * Same caveat as decodeJwtIat: no signature verification here. Caller
+ * must have already validated the token via supabaseAdmin.auth.getUser.
+ */
+function decodeJwtSessionId(token: string): string | null {
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  try {
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const json = Buffer.from(b64, 'base64').toString('utf8');
+    const obj = JSON.parse(json) as { session_id?: unknown };
+    return typeof obj.session_id === 'string' && obj.session_id.length > 0
+      ? obj.session_id
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
 
@@ -79,41 +107,35 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Hole #1 enforcement (audit 2026-05-22). Require a server-written
-  // password_signin_proofs row that's unused and unexpired. The proof is
-  // written by the custom_access_token_hook (migration 0158) only when
-  // Supabase tags the JWT issuance with authentication_method='password'
-  // — an attacker calling signInWithOtp directly cannot fake the method,
-  // so they never get a proof and trust-device refuses to issue a
-  // staxis_device cookie. /api/auth/use-join-code also writes a proof
-  // for the first-time signup flow (where admin.createUser issues no
-  // client JWT, so the hook doesn't fire).
+  // Phase A (Hole #1 fix, audit 2026-05-22): require an atomically-claimed
+  // password_signin_proofs row. Written by custom_access_token_hook when
+  // Supabase tags the JWT issuance with authentication_method='password'.
+  // Attackers calling supabase.auth.signInWithOtp directly cannot fake the
+  // method — the hook tags 'otp' and no proof gets written. So they have
+  // a valid Supabase JWT but no proof → 403 here → can't mint trust.
   //
-  // Fail-closed: any error in the proof lookup returns 503 (caller will
-  // retry) rather than silently passing through.
-  const { data: proof, error: proofErr } = await supabaseAdmin
-    .from('password_signin_proofs')
-    .select('id')
-    .eq('user_id', userData.user.id)
-    .is('used_at', null)
-    .gt('expires_at', new Date().toISOString())
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (proofErr) {
-    log.error('[trust-device] password_signin_proofs lookup failed — failing closed', {
-      requestId, userId: userData.user.id, err: proofErr.message,
+  // The claim is via an RPC (migration 0164) instead of SELECT+UPDATE to
+  // close a race where two concurrent OTP verifications could both
+  // consume the same proof and mint two trusted devices. FOR UPDATE
+  // SKIP LOCKED inside the RPC ensures exactly one caller wins the row.
+  const { data: claimedProofId, error: proofClaimErr } = await supabaseAdmin.rpc(
+    'staxis_claim_password_signin_proof',
+    { p_user_id: userData.user.id },
+  );
+  if (proofClaimErr) {
+    log.error('[trust-device] password proof RPC failed — failing closed', {
+      requestId, userId: userData.user.id, err: proofClaimErr.message,
     });
     return err('Trust-device temporarily unavailable, please retry', {
       requestId, status: 503, code: ApiErrorCode.InternalError,
     });
   }
-  if (!proof) {
+  if (!claimedProofId) {
     await logSecurityEvent({
       action: 'auth.trust_device_blocked_no_password_proof',
       userId: userData.user.id,
       requestId,
-      metadata: { reason: 'password_signin_proof_missing_or_expired' },
+      metadata: { reason: 'password_signin_proof_missing_or_expired_or_used' },
     });
     return err(
       'Password sign-in required before this device can be trusted. Please sign in again with your password.',
@@ -127,6 +149,13 @@ export async function POST(req: NextRequest) {
     .eq('data_user_id', userData.user.id)
     .maybeSingle();
   if (acctErr || !account) {
+    // Release the claimed proof so the user can retry without losing it.
+    try {
+      await supabaseAdmin.rpc('staxis_release_password_signin_proof', { p_id: claimedProofId });
+    } catch {
+      // Best-effort — the user will need to re-sign-in with their password
+      // if the release also fails. Logged via Sentry from the route caller.
+    }
     return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
 
@@ -176,24 +205,59 @@ export async function POST(req: NextRequest) {
   });
   if (insErr) {
     log.error('[trust-device] insert failed', { requestId, accountId: account.id, err: insErr.message });
+    // Release the claimed proof so the user can retry without re-doing
+    // their password sign-in. Otherwise a transient DB error burns the
+    // proof and forces them all the way back to /signin.
+    try {
+      await supabaseAdmin.rpc('staxis_release_password_signin_proof', { p_id: claimedProofId });
+    } catch {
+      // Best-effort.
+    }
     return err('Failed to register trusted device', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
   }
 
-  // Mark the proof consumed (single-use enforcement). Non-fatal if it
-  // fails — the trusted_devices row is already in place; worst case the
-  // proof rides out its 10-min TTL untouched, which a janitor cron can
-  // later sweep. Important: this MUST be after the trusted_devices
-  // insert succeeded, so a transient insert failure doesn't burn the
-  // user's only proof.
-  const { error: markErr } = await supabaseAdmin
-    .from('password_signin_proofs')
-    .update({ used_at: new Date().toISOString() })
-    .eq('id', proof.id);
-  if (markErr) {
-    log.warn('[trust-device] proof mark-used failed (non-fatal)', {
-      requestId, proofId: proof.id, err: markErr.message,
+  // Phase 2B (audit 2026-05-22): bind THIS session to the trust we just
+  // established. The custom_access_token_hook reads session_id from the
+  // JWT event payload and checks mfa_verified_sessions to compute
+  // mfa_verified=true. An attacker calling supabase.auth.signInWithPassword
+  // directly with a stolen password would get a NEW session_id with no
+  // matching row → hook computes mfa_verified=false → RLS denies via
+  // public.mfa_verified_or_grace(). Closes Door B (PostgREST/Realtime
+  // bypass) for users with existing trust — the original user-bound design
+  // was theater because a user with any trusted device anywhere had every
+  // JWT flagged.
+  //
+  // Idempotent on conflict (a repeat trust-device call for the same session
+  // should not 500). Non-fatal on other errors — the trusted_devices row
+  // is in place; worst case the user hits RLS denials and re-runs OTP.
+  //
+  // Note: the password proof was already marked consumed inside the
+  // staxis_claim_password_signin_proof RPC at the top of this handler
+  // (atomic UPDATE returning the claimed id), so no separate mark-used
+  // step is needed here.
+  const sessionId = decodeJwtSessionId(token);
+  if (sessionId) {
+    const { error: mfaErr } = await supabaseAdmin
+      .from('mfa_verified_sessions')
+      .insert({
+        session_id: sessionId,
+        user_id: userData.user.id,
+        verified_from_ip: ip,
+        verified_from_ua: ua,
+      });
+    if (mfaErr && mfaErr.code !== '23505') {
+      log.warn('[trust-device] mfa_verified_sessions insert failed (non-fatal)', {
+        requestId, sessionId, userId: userData.user.id, err: mfaErr.message,
+      });
+    }
+  } else {
+    // JWT has no session_id claim — shouldn't happen with current Supabase
+    // versions (added 2024-ish). Log so we notice if Supabase ever changes
+    // the claim shape and the hook stops binding correctly.
+    log.warn('[trust-device] JWT missing session_id claim — mfa_verified_sessions skipped', {
+      requestId, userId: userData.user.id,
     });
   }
 

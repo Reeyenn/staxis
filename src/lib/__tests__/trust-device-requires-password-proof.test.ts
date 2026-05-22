@@ -1,25 +1,29 @@
 /**
- * Tests for the password-proof gate added to /api/auth/trust-device in
- * the 2026-05-22 auth audit (Phase 2A / Hole #1 fix).
+ * Tests for the password-proof gate on /api/auth/trust-device.
+ *
+ * Original Phase A (2026-05-22 audit, Hole #1) gated trust-device on a
+ * password_signin_proofs row written by the custom_access_token_hook
+ * when Supabase tagged the JWT issuance with authentication_method=
+ * 'password'. The lookup was SELECT … FOR UPDATE-NOTHING then
+ * UPDATE used_at=now() — two statements with a race.
+ *
+ * Phase B follow-up (Codex review #3, migration 0164) made the claim
+ * atomic via `staxis_claim_password_signin_proof(uuid)` RPC. This file
+ * tests the post-integration behavior (RPC-based) since that's the
+ * version that ships once Phase B merges on top of Phase A.
  *
  * The attack this exists to block:
  *   1. Attacker (no password, but brief access to victim's email)
  *      calls supabase.auth.signInWithOtp({email}) directly — public
  *      endpoint, no auth required
- *   2. OTP lands in victim's inbox
- *   3. Attacker reads OTP
- *   4. Attacker calls verifyOtp → gets a real Supabase JWT
- *   5. Pre-fix: attacker calls /api/auth/trust-device → succeeds →
- *      gets a staxis_device cookie + DB row valid for up to 1 year
- *   6. Post-fix: trust-device requires a password_signin_proofs row,
- *      which is only written by the custom_access_token_hook when
- *      Supabase tags the JWT issuance with authentication_method=
- *      'password'. The OTP-only path produces no proof, so the
- *      attacker is refused at trust-device with 403.
- *
- * What we mock here: supabaseAdmin so we control the proof-lookup
- * result. The actual hook is a Postgres function and is verified by
- * end-to-end staging tests rather than unit tests.
+ *   2. OTP lands in victim's inbox; attacker reads it
+ *   3. Attacker calls verifyOtp → gets a real Supabase JWT
+ *   4. Pre-fix: attacker calls /api/auth/trust-device → succeeds → gets
+ *      a staxis_device cookie + DB row valid for up to 1 year
+ *   5. Post-fix: trust-device calls staxis_claim_password_signin_proof
+ *      RPC, which returns NULL because the hook only writes a proof
+ *      when authentication_method='password' (not 'otp'). Attacker is
+ *      refused with 403.
  */
 
 import { test, describe, beforeEach, afterEach } from 'node:test';
@@ -33,89 +37,70 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 
 type GetUserFn = typeof supabaseAdmin.auth.getUser;
 type FromFn = typeof supabaseAdmin.from;
+type RpcFn = typeof supabaseAdmin.rpc;
 
 const originalGetUser: GetUserFn = supabaseAdmin.auth.getUser.bind(supabaseAdmin.auth);
 const originalFrom: FromFn = supabaseAdmin.from.bind(supabaseAdmin);
-
-interface ProofRow {
-  id: string;
-  expires_at: string;
-  used_at: string | null;
-}
+const originalRpc: RpcFn = supabaseAdmin.rpc.bind(supabaseAdmin);
 
 interface MockState {
   user: { id: string; email?: string | null } | null;
-  proof: ProofRow | null;
-  proofLookupError: { message: string } | null;
-  proofThrows: boolean;
   account: { id: string } | null;
+  claimedProofId: string | null;
+  claimRpcError: { message: string } | null;
+  claimRpcThrows: boolean;
   insertError: { message: string } | null;
-  markUsedError: { message: string } | null;
   insertedEvents: Array<{ event_type: string; metadata: Record<string, unknown> }>;
   trustedDevicesInsertCalls: number;
-  markUsedCalls: Array<{ proofId: string }>;
+  claimRpcCalls: number;
+  releaseRpcCalls: number;
 }
 
 const state: MockState = {
   user: null,
-  proof: null,
-  proofLookupError: null,
-  proofThrows: false,
   account: null,
+  claimedProofId: null,
+  claimRpcError: null,
+  claimRpcThrows: false,
   insertError: null,
-  markUsedError: null,
   insertedEvents: [],
   trustedDevicesInsertCalls: 0,
-  markUsedCalls: [],
+  claimRpcCalls: 0,
+  releaseRpcCalls: 0,
 };
 
 beforeEach(() => {
   state.user = null;
-  state.proof = null;
-  state.proofLookupError = null;
-  state.proofThrows = false;
   state.account = null;
+  state.claimedProofId = null;
+  state.claimRpcError = null;
+  state.claimRpcThrows = false;
   state.insertError = null;
-  state.markUsedError = null;
   state.insertedEvents = [];
   state.trustedDevicesInsertCalls = 0;
-  state.markUsedCalls = [];
+  state.claimRpcCalls = 0;
+  state.releaseRpcCalls = 0;
 
   supabaseAdmin.auth.getUser = (async () => ({
     data: { user: state.user as { id: string; email?: string | null } | null },
     error: null,
   })) as unknown as GetUserFn;
 
+  supabaseAdmin.rpc = (async (fn: string) => {
+    if (fn === 'staxis_claim_password_signin_proof') {
+      state.claimRpcCalls += 1;
+      if (state.claimRpcThrows) throw new Error('rpc threw');
+      return { data: state.claimedProofId, error: state.claimRpcError };
+    }
+    if (fn === 'staxis_release_password_signin_proof') {
+      state.releaseRpcCalls += 1;
+      return { data: null, error: null };
+    }
+    throw new Error(`unexpected rpc: ${fn}`);
+  }) as unknown as RpcFn;
+
   // @ts-expect-error monkey-patch singleton
   supabaseAdmin.from = (table: string) => {
-    if (table === 'password_signin_proofs') {
-      return {
-        // Lookup chain: .select(...).eq(...).is(...).gt(...).order(...).limit(...).maybeSingle()
-        select: () => ({
-          eq: () => ({
-            is: () => ({
-              gt: () => ({
-                order: () => ({
-                  limit: () => ({
-                    maybeSingle: async () => {
-                      if (state.proofThrows) throw new Error('proof lookup threw');
-                      return { data: state.proof, error: state.proofLookupError };
-                    },
-                  }),
-                }),
-              }),
-            }),
-          }),
-        }),
-        // Mark-used chain: .update(...).eq(...)
-        update: (_vals: Record<string, unknown>) => ({
-          eq: async (_col: string, val: string) => {
-            state.markUsedCalls.push({ proofId: val });
-            return { error: state.markUsedError };
-          },
-        }),
-      };
-    }
     if (table === 'accounts') {
       return {
         select: () => ({
@@ -127,7 +112,6 @@ beforeEach(() => {
     }
     if (table === 'trusted_devices') {
       return {
-        // dedup-by-fingerprint .delete().eq().gte().eq().eq()
         delete: () => {
           const chain = {
             eq: () => chain,
@@ -136,11 +120,17 @@ beforeEach(() => {
           };
           return chain;
         },
-        // Final insert that registers the device
         insert: async () => {
           state.trustedDevicesInsertCalls += 1;
           return { error: state.insertError };
         },
+      };
+    }
+    if (table === 'mfa_verified_sessions') {
+      // Phase B addition — not the focus of this file but the integrated
+      // route writes here too. Default: success, no-op for these tests.
+      return {
+        insert: async () => ({ error: null }),
       };
     }
     if (table === 'app_events') {
@@ -158,6 +148,7 @@ beforeEach(() => {
 afterEach(() => {
   supabaseAdmin.auth.getUser = originalGetUser;
   supabaseAdmin.from = originalFrom;
+  supabaseAdmin.rpc = originalRpc;
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
@@ -171,12 +162,17 @@ function mintJwt(claims: Record<string, unknown>): string {
 const USER_ID = '11111111-2222-3333-4444-555555555555';
 const ACCOUNT_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 const PROOF_ID = 'pppppppp-pppp-pppp-pppp-pppppppppppp';
-const FUTURE = () => new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-const PAST = () => new Date(Date.now() - 60 * 1000).toISOString();
+const SESSION_ID = '99999999-8888-7777-6666-555555555555';
 
 function freshJwt(): string {
-  // iat within the 5-min session-age guard.
-  return mintJwt({ sub: USER_ID, iat: Math.floor(Date.now() / 1000) - 5 });
+  // iat within the 5-min session-age guard; include session_id for the
+  // Phase B mfa_verified_sessions write (otherwise the route logs warn
+  // but still 200s).
+  return mintJwt({
+    sub: USER_ID,
+    iat: Math.floor(Date.now() / 1000) - 5,
+    session_id: SESSION_ID,
+  });
 }
 
 function mockReq(opts: { jwt?: string } = {}): NextRequest {
@@ -191,9 +187,7 @@ function mockReq(opts: { jwt?: string } = {}): NextRequest {
     url: 'https://staxis.test/api/auth/trust-device',
     method: 'POST',
     headers,
-    cookies: {
-      get: () => undefined,
-    },
+    cookies: { get: () => undefined },
   } as unknown as NextRequest;
 }
 
@@ -202,16 +196,12 @@ function ok(): void {
   state.account = { id: ACCOUNT_ID };
 }
 
-function validProof(): ProofRow {
-  return { id: PROOF_ID, expires_at: FUTURE(), used_at: null };
-}
-
 // ─── Tests ───────────────────────────────────────────────────────────────
 
-describe('trust-device — password-proof gate (Hole #1)', () => {
-  test('proof missing → 403, security event logged, no trusted_devices insert', async () => {
+describe('trust-device — password-proof gate (Hole #1, RPC-based)', () => {
+  test('RPC returns NULL (no proof) → 403, security event logged, no trusted_devices insert', async () => {
     ok();
-    state.proof = null;
+    state.claimedProofId = null;
 
     const res = await POST(mockReq());
     assert.equal(res.status, 403);
@@ -221,79 +211,78 @@ describe('trust-device — password-proof gate (Hole #1)', () => {
       (e) => e.event_type === 'auth.trust_device_blocked_no_password_proof',
     );
     assert.ok(blocked, 'auth.trust_device_blocked_no_password_proof must be logged');
-    assert.equal(blocked?.metadata.reason, 'password_signin_proof_missing_or_expired');
+    assert.equal(
+      blocked?.metadata.reason,
+      'password_signin_proof_missing_or_expired_or_used',
+    );
   });
 
-  test('proof exists, unused, unexpired → 200, trusted_devices inserted, proof marked used', async () => {
+  test('RPC returns proof id → 200, trusted_devices inserted exactly once', async () => {
     ok();
-    state.proof = validProof();
+    state.claimedProofId = PROOF_ID;
 
     const res = await POST(mockReq());
     assert.equal(res.status, 200);
     assert.equal(state.trustedDevicesInsertCalls, 1, 'trusted_devices insert should fire exactly once');
-    assert.equal(state.markUsedCalls.length, 1, 'proof should be marked used');
-    assert.equal(state.markUsedCalls[0].proofId, PROOF_ID);
+    assert.equal(state.claimRpcCalls, 1, 'RPC must be called exactly once — atomic single-use claim');
+    assert.equal(state.releaseRpcCalls, 0, 'no release on happy path');
   });
 
-  test('proof lookup throws DB error → 503 fail-closed, no trusted_devices insert', async () => {
+  test('RPC errors (Supabase error) → 503 fail-closed, no trusted_devices insert', async () => {
     ok();
-    state.proofThrows = true;
-
-    let threw = false;
-    try {
-      const res = await POST(mockReq());
-      assert.equal(res.status, 503, 'expected 503 fail-closed');
-    } catch (err) {
-      // Either a thrown error or a 503 response is acceptable — the
-      // important invariant is no trusted_devices insert happened.
-      threw = true;
-      assert.ok(err instanceof Error);
-    }
-    assert.equal(state.trustedDevicesInsertCalls, 0, 'must NOT insert on lookup failure');
-    assert.ok(threw || true, 'either path is fail-closed');
-  });
-
-  test('proof lookup returns Supabase error → 503, no trusted_devices insert', async () => {
-    ok();
-    state.proof = null;
-    state.proofLookupError = { message: 'connection reset' };
+    state.claimedProofId = null;
+    state.claimRpcError = { message: 'connection reset' };
 
     const res = await POST(mockReq());
     assert.equal(res.status, 503);
     assert.equal(state.trustedDevicesInsertCalls, 0);
+    assert.equal(state.releaseRpcCalls, 0, 'never claimed → nothing to release');
   });
 
-  test('trusted_devices insert fails after proof passes → 500, proof NOT marked used', async () => {
-    // If the insert fails, the proof should remain unused so the user
-    // can retry without re-establishing a fresh password sign-in.
+  test('RPC throws → fail-closed, no trusted_devices insert', async () => {
     ok();
-    state.proof = validProof();
+    state.claimRpcThrows = true;
+
+    let threw = false;
+    try {
+      const res = await POST(mockReq());
+      // Either a 5xx response or a thrown error is acceptable — invariant
+      // is no trusted_devices insert.
+      assert.ok(res.status >= 500, 'expected fail-closed response');
+    } catch (err) {
+      threw = true;
+      assert.ok(err instanceof Error);
+    }
+    assert.equal(state.trustedDevicesInsertCalls, 0, 'must NOT insert on RPC failure');
+    assert.ok(threw || true, 'either path is fail-closed');
+  });
+
+  test('trusted_devices insert fails after RPC claim succeeds → 500, release RPC fires (proof not burned)', async () => {
+    // The proof was atomically claimed (used_at=now()). If the downstream
+    // trusted_devices insert fails, we MUST release the claim — otherwise
+    // a transient DB error during the trust mint burns the proof and
+    // forces the user to a fresh password sign-in.
+    ok();
+    state.claimedProofId = PROOF_ID;
     state.insertError = { message: 'transient db error' };
 
     const res = await POST(mockReq());
     assert.equal(res.status, 500);
-    assert.equal(state.markUsedCalls.length, 0, 'proof MUST NOT be marked used on insert failure');
+    assert.equal(state.releaseRpcCalls, 1, 'release RPC must fire on trusted_devices failure');
   });
 
-  test('proof mark-used failure is non-fatal — response is still 200 + cookie set', async () => {
+  test('stale JWT (iat > 5 min ago) → 401 — existing session-age guard still wins (short-circuits RPC)', async () => {
     ok();
-    state.proof = validProof();
-    state.markUsedError = { message: 'transient update error' };
-
-    const res = await POST(mockReq());
-    assert.equal(res.status, 200, 'mark-used failure must not poison the success path');
-    assert.equal(state.trustedDevicesInsertCalls, 1);
-  });
-
-  test('stale JWT (iat > 5 min ago) → 401 — existing session-age guard still wins', async () => {
-    // Regression check: the proof gate runs AFTER the session-age guard,
-    // so a stale JWT should be refused before the proof is even consulted.
-    ok();
-    state.proof = validProof();
-    const staleJwt = mintJwt({ sub: USER_ID, iat: Math.floor(Date.now() / 1000) - 6 * 60 });
+    state.claimedProofId = PROOF_ID;
+    const staleJwt = mintJwt({
+      sub: USER_ID,
+      iat: Math.floor(Date.now() / 1000) - 6 * 60,
+      session_id: SESSION_ID,
+    });
 
     const res = await POST(mockReq({ jwt: staleJwt }));
     assert.equal(res.status, 401);
     assert.equal(state.trustedDevicesInsertCalls, 0, 'stale-session refusal short-circuits the proof check');
+    assert.equal(state.claimRpcCalls, 0, 'RPC should not run for a stale JWT — wastes a single-use claim');
   });
 });

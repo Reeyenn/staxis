@@ -1609,6 +1609,117 @@ If the hook causes a sign-in incident:
 
 ---
 
+## Phase 2B: session-bound `mfa_verified` claim + RLS sweep (audit 2026-05-22)
+
+**Why it exists.** Closes Door B from the auth audit: an attacker with a stolen staff password could call Supabase's PostgREST or Realtime API directly with a fresh login token and bypass the Phase 1 website-layer gate. Phase 2B uses Supabase's `custom_access_token_hook` to stamp every login token with `mfa_verified=true` only when the token's `session_id` matches a row in `public.mfa_verified_sessions` (written by `/api/auth/trust-device` after the OTP step). ~57 RLS policies AND the new claim into their USING / WITH CHECK clauses via the `public.mfa_verified_or_grace()` helper.
+
+**Key components:**
+- `public.mfa_verified_sessions(session_id PK → auth.sessions(id), user_id, verified_at, ...)` — one row per Supabase session that's completed trust-device
+- `public.mfa_verified_or_grace()` — SQL function called by every gated RLS policy. Returns the JWT's mfa_verified claim, or a coalesce default. Migration 0162 flips that default from TRUE (grace) to FALSE (post-soak).
+- `public.custom_access_token_hook` v2 — same function registered in Supabase Dashboard since Phase A; v2 also reads `mfa_verified_sessions` to compute the claim
+
+### Symptom — "I can't see ANY data on the dashboard, just empty lists"
+
+Authenticated user, fully signed in, but every PostgREST read returns `[]`. Realtime channels stop emitting updates.
+
+**Diagnosis** — check that the user's JWT actually has `mfa_verified=true`:
+
+```bash
+# Have the user copy the access_token from devtools → Application →
+# Cookies → sb-<projectRef>-auth-token. Then locally:
+echo "$JWT" | cut -d'.' -f2 | base64 -d | jq '.mfa_verified, .session_id, .sub'
+```
+
+If `mfa_verified` is `false` or missing, check the `mfa_verified_sessions` table for that user:
+
+```sql
+select * from public.mfa_verified_sessions where user_id = '<user uuid>';
+```
+
+If no rows → the user never completed trust-device, OR their session_id changed (re-sign-in). They need to sign out fully and sign back in.
+
+If rows exist but the session_id doesn't match → token rotation hasn't picked up yet; ask user to hard-refresh / sign out + sign in.
+
+**Fix** — sign out + sign in to mint a fresh session that goes through `/api/auth/trust-device`.
+
+### Symptom — Doctor's `mfa_verified_hook_self_test` check is failing
+
+The hook is registered but isn't returning the expected mfa_verified claim for the synthetic demo user.
+
+**Diagnosis** — read the doctor's detail field. Common causes:
+
+1. **Function missing or replaced incorrectly.** `select to_regprocedure('public.custom_access_token_hook(jsonb)')` returns null. Re-apply migrations 0158 + 0160.
+
+2. **Grant or RLS-policy issue.** The hook runs as `supabase_auth_admin`. It needs SELECT on `accounts` and `mfa_verified_sessions`. Check:
+   ```sql
+   select table_name, privilege_type
+     from information_schema.table_privileges
+    where grantee = 'supabase_auth_admin'
+      and table_name in ('accounts', 'mfa_verified_sessions');
+   ```
+   If missing, re-apply migration 0160's grant statements.
+
+3. **Hook is dropping the claim silently.** Read Postgres logs in Supabase Studio for `custom_access_token_hook: ... failed` notices.
+
+### Symptom — "Every authenticated user is denied" right after applying 0162
+
+The coalesce-tighten migration just landed and active sessions started getting denied across the board.
+
+**Diagnosis** — confirm the tighten took effect:
+```sql
+select pg_get_functiondef(oid) from pg_proc
+ where proname = 'mfa_verified_or_grace';
+-- Expected: '... coalesce(... false)'
+```
+
+If yes, and users are denied: either (a) the hook isn't firing for new tokens (see doctor diagnosis above), or (b) active sessions never refreshed past the post-0160 window. Force them to sign out + sign in.
+
+**Emergency rollback to grace** — flip the helper back to `coalesce(..., true)`:
+
+```sql
+create or replace function public.mfa_verified_or_grace()
+returns boolean language sql stable security invoker as $$
+  select coalesce((auth.jwt() ->> 'mfa_verified')::boolean, true);
+$$;
+notify pgrst, 'reload schema';
+```
+
+### Symptom — Backup / point-in-time restore performed; everyone is locked out
+
+Supabase PITR restored prod to a snapshot from BEFORE Phase 2B. The `mfa_verified_or_grace()` function no longer exists; all ~57 gated policies reference a missing function; every authenticated read fails.
+
+**Fix** — re-apply migrations IN ORDER:
+
+```bash
+psql "$SUPABASE_DB_URL" -f supabase/migrations/0159_mfa_verified_sessions.sql
+psql "$SUPABASE_DB_URL" -f supabase/migrations/0160_custom_access_token_hook_v2.sql
+# wait ~5-10 min for active sessions to refresh
+psql "$SUPABASE_DB_URL" -f supabase/migrations/0161_rls_require_mfa_verified.sql
+# only re-apply 0162 if the previous timeline was past the 24h soak
+```
+
+The auth hook ITSELF (registered in Supabase Dashboard) survives PITR — but verify in Dashboard → Authentication → Hooks that Customize Access Token hook is still pointing at `public.custom_access_token_hook` and ENABLED.
+
+### Phase 2B emergency disable (full stop)
+
+If something is catastrophically broken:
+
+1. Supabase Dashboard → Authentication → Hooks → toggle Customize Access Token OFF. New tokens stop having the claim; existing tokens age out within ~1h refresh.
+2. AS the coalesce default is set, all old tokens (no claim) pass through (grace=true) or are denied (post-tighten=false). To open the gate fully:
+   ```sql
+   create or replace function public.mfa_verified_or_grace() returns boolean
+   language sql stable security invoker as $$ select true; $$;
+   ```
+3. Do NOT drop the function — the ~57 RLS policies reference it. Dropping causes catastrophic deny-all on every authenticated read.
+
+### Prevention
+
+- `scripts/audit-mfa-gate-policies.mjs` (runs in `npm run lint`) catches new policies that target authenticated/public/anon without including `mfa_verified_or_grace()` in their body.
+- Doctor's `mfa_verified_hook_self_test` polls the synthetic event to catch silent hook failures.
+- Janitor cron `/api/cron/sweep-mfa-verified-sessions` runs every 6h to remove rows older than 30 days (the FK CASCADE on auth.sessions handles most cleanup; this is belt-and-suspenders).
+
+---
+
 ## Meta: how to add a new failure mode to this doc
 
 Every time something breaks and takes more than 30 min to fix, come back and add a section here with Symptom / Diagnosis / Fix / Verify / Prevention. This file only pays for itself if we update it.

@@ -79,6 +79,14 @@ export function cadenceHoursFromCron(cron: string): number {
   if (hour === '*' && dom === '*' && month === '*' && dow === '*') {
     return 1; // every hour at minute M
   }
+  // Every-N-hours form (e.g., '0 */6 * * *' for every 6 hours at minute 0).
+  if (hour.startsWith('*/') && dom === '*' && month === '*' && dow === '*') {
+    const n = Number(hour.slice(2));
+    if (!Number.isFinite(n) || n < 1 || n > 23) {
+      throw new Error(`cron "${cron}" has unsupported hour step "${hour}"`);
+    }
+    return n; // every N hours at minute M
+  }
   if (hour !== '*' && dom === '*' && month === '*' && dow === '*') {
     return 24; // once per day at H:M
   }
