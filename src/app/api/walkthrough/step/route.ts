@@ -366,10 +366,12 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   // ── Server-side step gate (RC2 root-cause fix) ────────────────────────
   // Atomically: (a) verify the run is still active and belongs to this
-  // user's property, (b) increment step_count, (c) reject if MAX_STEPS=12
-  // was hit. Returns:
+  // user's property + user, (b) increment step_count, (c) reject if
+  // MAX_STEPS=12 was hit. Returns:
   //   -1 → run not active / not found / cap hit
   //   -2 → property mismatch (user switched property mid-walkthrough)
+  //   -3 → user_id mismatch (2026-05-22 audit — defense in depth; the
+  //         route-layer ownership check normally catches this earlier)
   //   1..12 → the new step count
   //
   // This is the only place server-side that enforces a step cap. The
@@ -377,6 +379,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   const { data: stepRpc, error: stepRpcErr } = await supabaseAdmin.rpc('staxis_walkthrough_step', {
     p_run_id: body.runId,
     p_expected_property_id: body.propertyId,
+    p_expected_user_id: accountId,
   });
   if (stepRpcErr) {
     log.error('[walkthrough/step] step RPC failed', { requestId, runId: body.runId, err: stepRpcErr });
@@ -392,6 +395,19 @@ export async function POST(req: NextRequest): Promise<Response> {
         requestId,
       },
       { status: 400 },
+    );
+  }
+  if (stepCount === -3) {
+    // The route-layer check at checkRunOwnership above should have caught
+    // this. Reaching the RPC's -3 branch means a logic bug let a foreign
+    // owner through. Log loudly; return the same 403 shape so behavior
+    // is consistent with the route-layer rejection.
+    log.error('[walkthrough/step] rpc_user_mismatch — route-layer check missed', {
+      requestId, runId: body.runId, accountId,
+    });
+    return Response.json(
+      { ok: false, code: 'forbidden', error: 'this is not your walkthrough', requestId },
+      { status: 403 },
     );
   }
   if (stepCount < 0) {
