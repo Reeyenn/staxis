@@ -345,17 +345,21 @@ export default function DashboardPage() {
 
         <div style={{ position: 'relative', maxWidth: 1600, margin: '0 auto' }}>
 
-          {/* Chart card */}
+          {/* Chart card — card padding removed on the chart's row so the
+              SVG goes truly edge-to-edge of the card; the top row keeps
+              its 32px side padding so the big number / date / badge
+              don't touch the card's rounded corners. */}
           <div style={{
             background: 'rgba(255,255,255,0.85)',
             backdropFilter: 'blur(30px) saturate(140%)',
             WebkitBackdropFilter: 'blur(30px) saturate(140%)',
             border: '1px solid rgba(255,255,255,0.8)', borderRadius: 22,
-            padding: '26px 32px 22px', marginBottom: 16,
+            padding: '26px 0 22px', marginBottom: 16,
             boxShadow: '0 1px 0 rgba(255,255,255,0.7) inset, 0 30px 60px -30px rgba(15,20,17,0.18)',
           }}>
             {/* 3-column top row: big number left, centered date middle, badge right */}
             <div style={{
+              padding: '0 32px',
               display: 'grid',
               gridTemplateColumns: '1fr auto 1fr',
               alignItems: 'flex-start',
