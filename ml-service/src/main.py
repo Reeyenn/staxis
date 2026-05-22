@@ -70,6 +70,7 @@ from src.training.demand_supply_priors import (
 )
 from src.training.inventory_rate import train_inventory_rate_model
 from src.training.supply import train_supply_model
+from src.eval.inventory_backtest import run_inventory_backtest
 
 
 def _validate_uuid_str(value: str) -> str:
@@ -311,6 +312,52 @@ class PredictInventoryRateResponse(BaseModel):
     target_date: Optional[str] = None
     error: Optional[str] = None
     note: Optional[str] = None
+
+
+class InventoryBacktestRequest(BaseModel):
+    """Request to run a realized-MAE backtest for the inventory layer.
+
+    Honesty-audit Phase 3 (2026-05-22). Read-only — never writes to
+    model_runs or inventory_rate_predictions.
+    """
+
+    property_id: str
+    # Window in days; clamped server-side to [1, 180]. Defaults to 30 days
+    # for the typical "how's the model doing recently?" question.
+    window_days: Optional[int] = 30
+
+    @field_validator("property_id")
+    @classmethod
+    def _check_pid(cls, v: str) -> str:
+        return _validate_uuid_str(v)
+
+
+class InventoryBacktestPerItemRow(BaseModel):
+    item_id: str
+    n_pairs: int
+    realized_mae: float
+    training_mae: Optional[float] = None
+    validation_mae: Optional[float] = None
+    drift_ratio: Optional[float] = None
+
+
+class InventoryBacktestStaleRow(BaseModel):
+    item_id: str
+    model_run_id: str
+    realized_mae: float
+    validation_mae: Optional[float] = None
+    ratio: float
+
+
+class InventoryBacktestResponse(BaseModel):
+    """Realized-MAE rollup over the prediction_log window. Read-only."""
+
+    property_id: str
+    window_days: int = 30
+    n_pairs: int = 0
+    per_item: list = []
+    stale_active_models: list = []
+    error: Optional[str] = None
 
 
 class AggregatePriorsResponse(BaseModel):
@@ -639,6 +686,38 @@ async def predict_inventory_rate_endpoint(
         property_timezone=request.property_timezone,
     )
     return PredictInventoryRateResponse(**result)
+
+
+@app.post(
+    "/eval/inventory-backtest",
+    response_model=InventoryBacktestResponse,
+    tags=["evaluation"],
+    summary="Realized-MAE backtest from prediction_log (read-only, admin)",
+)
+async def inventory_backtest_endpoint(
+    request: InventoryBacktestRequest,
+    token: str = Depends(verify_bearer_token),
+) -> InventoryBacktestResponse:
+    """Compute realized-MAE rollups for the inventory layer.
+
+    Honesty-audit Phase 3 (2026-05-22). Reads prediction_log rows for the
+    given property + window, joins to model_runs (single batched
+    `.in_('id', ...)` round-trip — no N+1), and returns per-item realized
+    MAE plus a list of active model_runs whose realized error has drifted
+    beyond 1.5× their training-time validation_mae.
+
+    PURE READ. Never writes to model_runs or inventory_rate_predictions.
+    The caller decides what to do with the stale-models flag — no
+    auto-rollback. Bearer-authenticated, no TS proxy: admin-only via
+    curl with ML_SERVICE_SECRET.
+
+    Window clamped server-side to [1, 180] days. Default 30.
+    """
+    result = run_inventory_backtest(
+        property_id=request.property_id,
+        window_days=request.window_days or 30,
+    )
+    return InventoryBacktestResponse(**result)
 
 
 # Error handlers
