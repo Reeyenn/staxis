@@ -158,8 +158,17 @@ function SpotlightChart({ days, scrub, setScrub, metric, width, height, todayIdx
   const spotR = Math.min(180, Math.max(110, width * 0.10));
 
   return (
-    <svg ref={svgRef} width={width} height={height + 32}
-      style={{ overflow: 'visible', cursor: 'crosshair', userSelect: 'none', display: 'block' }}
+    <svg ref={svgRef}
+      viewBox={`0 0 ${width} ${height + 32}`}
+      preserveAspectRatio="none"
+      style={{
+        overflow: 'visible',
+        cursor: 'crosshair',
+        userSelect: 'none',
+        display: 'block',
+        width: '100%',
+        height: height + 32,
+      }}
       onMouseMove={handleMove} onClick={handleMove} onMouseDown={handleMove}>
       <defs>
         <radialGradient id="v35-spot" cx="0.5" cy="0.5" r="0.5">
