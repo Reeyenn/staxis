@@ -70,6 +70,12 @@ from src.training.demand_supply_priors import (
 )
 from src.training.inventory_rate import train_inventory_rate_model
 from src.training.supply import train_supply_model
+# Phase 7 v2 (2026-05-22) — statistical auto-rollback orchestrator.
+# Imported here so the new POST /monitor/run-daily-rollback-pipeline
+# endpoint below can call it. The module composes
+# ml-service/src/actuals.py (backfill) + ml-service/src/monitoring/
+# {shadow_mae,fleet_rollback}.py (decide + execute).
+from src.monitoring.fleet_rollback import run_daily_rollback_pipeline
 
 
 def _validate_uuid_str(value: str) -> str:
@@ -668,6 +674,83 @@ async def predict_inventory_rate_endpoint(
 # /api/cron/ml-run-inference look like a Vercel 502 (the ML service was
 # returning a broken response body that the TS route couldn't parse).
 # FastAPI exception handlers MUST return a Response — wrap the dict.
+
+# Phase 7 v2 (2026-05-22) — auto-rollback orchestration endpoint.
+#
+# Single endpoint that runs the full daily pipeline: prediction_log
+# backfill → per-(property, layer) Wilcoxon → cooldown filter →
+# BH-FDR fleet-wide → execute (or dry-run-log) rollbacks. The TS
+# cron route /api/cron/ml-auto-rollback hits this once per day at
+# 06:45 CDT. Bearer-gated like the other /train and /predict routes.
+
+class FleetRollbackRequest(BaseModel):
+    """Request for the daily rollback pipeline.
+
+    `property_ids` is optional — None means "all properties with at
+    least one active fitted (non-cold-start) housekeeping model".
+    Tests + manual triggers can scope down.
+    """
+
+    property_ids: Optional[list] = None
+
+
+class FleetRollbackResponse(BaseModel):
+    """Response for the daily rollback pipeline.
+
+    Mirrors what `run_daily_rollback_pipeline` returns. The TS cron
+    route iterates `results` to write per-property app_events rows.
+    Permissive shape (Dict-of-anything) so future additions to the
+    orchestrator don't require a Pydantic-schema bump at every cron.
+    """
+
+    phase_backfill: Optional[dict] = None
+    phase_check: Optional[dict] = None
+    rollbacks_fired: int = 0
+    dry_run_would_fire: int = 0
+    execute_failures: list = []
+    dry_run: bool = True
+    alpha: Optional[float] = None
+    results: list = []
+    error: Optional[str] = None
+
+
+@app.post(
+    "/monitor/run-daily-rollback-pipeline",
+    response_model=FleetRollbackResponse,
+    tags=["monitoring"],
+    summary="Daily auto-rollback orchestrator (Phase 7 v2)",
+)
+async def run_daily_rollback_pipeline_endpoint(
+    request: FleetRollbackRequest,
+    token: str = Depends(verify_bearer_token),
+) -> FleetRollbackResponse:
+    """Run the full daily rollback pipeline.
+
+    Pipeline (see fleet_rollback.run_daily_rollback_pipeline for the
+    implementation):
+      1. Backfill prediction_log over the 3-day rolling correction
+         window using UPSERT against the natural key from migration
+         0156. Uses cleaning_minutes_per_day_view.total_approved_minutes
+         (NOT recorded) so Maria's flag/discard corrections propagate.
+      2. For each (property, layer) with an active fitted model and
+         n>=21 mature paired observations, run the paired Wilcoxon
+         signed-rank test (active model vs same-DOW historical actual).
+      3. Skip pairs that rolled back within the last 14 days
+         (cooldown — prevents oscillation).
+      4. Apply Benjamini-Hochberg false-discovery correction fleet-wide
+         at settings.auto_rollback_fdr_alpha.
+      5. For each surviving rejection: call execute_rollback in either
+         dry-run mode (default — logs only, no model_runs touched) or
+         live mode (deactivates the active fitted model; property
+         falls through to cold-start cohort prior until next training).
+
+    Bearer-gated. Body-size capped by the global middleware.
+    """
+    result = await run_daily_rollback_pipeline(
+        property_ids=request.property_ids,
+    )
+    return FleetRollbackResponse(**result)
+
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):

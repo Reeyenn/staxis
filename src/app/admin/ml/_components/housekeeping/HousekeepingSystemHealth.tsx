@@ -52,6 +52,15 @@ interface CommonProps {
     daysColdStart: number;
     refusalReason: string | null;
   } | null;
+  /**
+   * Phase 7 v2 (2026-05-22) — statistical auto-rollback signals.
+   * `lastAutoRollbackAt` is per-hotel (single mode) or fleet-max (fleet
+   * mode). Counts are always fleet-wide and split real vs dry-run.
+   * All optional — rendering uses sensible defaults when omitted.
+   */
+  lastAutoRollbackAt?: string | null;
+  autoRollbacksLast7d?: number;
+  dryRunRollbacksLast7d?: number;
 }
 
 interface SingleModeProps extends CommonProps {
@@ -184,6 +193,43 @@ export function HousekeepingSystemHealth(props: SingleModeProps | FleetModeProps
             }
             healthy={false}
             subtitle="XGBoost inference not yet wired — using Bayesian fallback"
+          />
+        )}
+        {/* Phase 7 v2 (2026-05-22) — statistical auto-rollback signals.
+            Three rows: last rollback (hidden when null), safety mode
+            (always shown so operators know dry-run vs live), 7-day
+            count (hidden when 0+0). The fleet banner above also adds
+            "K rollback(s) fired in last 7 days" to the detail line. */}
+        {props.lastAutoRollbackAt && (
+          <Row
+            label="Last auto-rollback"
+            value={fmt(props.lastAutoRollbackAt)}
+            healthy={false}
+            subtitle="Drift detector deactivated a model that was worse than naive baseline"
+          />
+        )}
+        <Row
+          label="Rollback safety mode"
+          value={
+            // Live mode if we've seen a real fire in the last 7 days.
+            // Otherwise dry-run (the Phase 7 default, kept on for the
+            // first 30 days while operators audit decisions).
+            (props.autoRollbacksLast7d ?? 0) > 0
+              ? 'Live (deactivates bad models)'
+              : 'Dry-run (logs only — first 30 days)'
+          }
+          healthy={(props.autoRollbacksLast7d ?? 0) > 0}
+          subtitle="Flip via AUTO_ROLLBACK_DRY_RUN env var on Railway (hot-reload)"
+        />
+        {((props.autoRollbacksLast7d ?? 0) + (props.dryRunRollbacksLast7d ?? 0)) > 0 && (
+          <Row
+            label="Rollbacks in last 7 days"
+            value={
+              (props.autoRollbacksLast7d ?? 0) > 0
+                ? `${props.autoRollbacksLast7d} fired${(props.dryRunRollbacksLast7d ?? 0) > 0 ? ` · ${props.dryRunRollbacksLast7d} dry-run-only` : ''}`
+                : `${props.dryRunRollbacksLast7d} would-have-fired (dry-run)`
+            }
+            healthy={(props.autoRollbacksLast7d ?? 0) === 0}
           />
         )}
         {/* Phase 2.3 walk-forward backtest tile. Hidden when no backtest

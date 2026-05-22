@@ -90,6 +90,8 @@ interface HKCockpitData {
     eventsLast1h: number;
     joinedAt: string | null;
     isTest: boolean;
+    // Phase 7 v2 (2026-05-22) — per-property last auto-rollback ts.
+    lastAutoRollbackAt: string | null;
   }>;
   aggregate: {
     hotelCount: number; totalEvents: number; totalEventsLast7d: number;
@@ -102,6 +104,10 @@ interface HKCockpitData {
     capacityUnavailableCount: number;
     xgboostDeferredCount: number;
     fullyFittedCount: number;
+    // Phase 7 v2 (2026-05-22) — auto-rollback (drift detector) rollup.
+    lastAutoRollbackAt: string | null;
+    autoRollbacksLast7d: number;
+    dryRunRollbacksLast7d: number;
     daysToNextMilestoneMedian: number | null;
     nextMilestoneLabel: string;
     phaseHistogram: Array<{ phaseId: string; phaseLabel: string; phaseDay: number; hotelCount: number }>;
@@ -646,6 +652,9 @@ function HousekeepingPanels({ cockpit }: { cockpit: HKCockpitData }) {
           capacityUnavailableCount={aggregate.capacityUnavailableCount}
           xgboostDeferredCount={aggregate.xgboostDeferredCount}
           fullyFittedCount={aggregate.fullyFittedCount}
+          lastAutoRollbackAt={me?.lastAutoRollbackAt ?? null}
+          autoRollbacksLast7d={aggregate.autoRollbacksLast7d}
+          dryRunRollbacksLast7d={aggregate.dryRunRollbacksLast7d}
           hotelName={sp.name}
         />
         <HousekeepingOverridesTable mode="single" rows={recentOverrides} />
@@ -697,6 +706,9 @@ function HousekeepingPanels({ cockpit }: { cockpit: HKCockpitData }) {
         capacityUnavailableCount={aggregate.capacityUnavailableCount}
         xgboostDeferredCount={aggregate.xgboostDeferredCount}
         fullyFittedCount={aggregate.fullyFittedCount}
+        lastAutoRollbackAt={aggregate.lastAutoRollbackAt}
+        autoRollbacksLast7d={aggregate.autoRollbacksLast7d}
+        dryRunRollbacksLast7d={aggregate.dryRunRollbacksLast7d}
       />
       <HousekeepingOverridesTable mode="fleet" rows={recentOverrides} />
       <HousekeepingAdoption mode="fleet" rows={topAdoption} />

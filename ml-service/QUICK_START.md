@@ -280,3 +280,22 @@ python -m scripts.backtest_housekeeping \
 The script refuses to report a headline MAE when `days_fitted < 14`;
 the admin cockpit reads the latest artifact via
 `/api/admin/ml/housekeeping/backtest-status`.
+
+## Auto-rollback drift detector (Phase 7 v2)
+
+Daily at 06:45 CDT, `/api/cron/ml-auto-rollback` calls
+`POST /monitor/run-daily-rollback-pipeline` which backfills
+`prediction_log` rows, runs a paired Wilcoxon signed-rank test
+against the same-DOW historical actual baseline for each (property,
+layer), applies Benjamini-Hochberg fleet-wide, and deactivates
+models that have statistically drifted worse than naive. Required
+window: ≥21 mature paired days. 14-day cooldown after a fire.
+
+Safety: ships in dry-run mode by default. Operator audits
+`app_events.event_type='ml_auto_rollback_fired'` rows for 30 days,
+then flips `AUTO_ROLLBACK_DRY_RUN=false` on Railway to go live
+(hot-reloads, no redeploy).
+
+See README.md "Statistical auto-rollback" section for the full
+pipeline + rationale (why same-DOW comparator vs previously-active
+model, why no fallback promotion, etc.).

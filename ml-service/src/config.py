@@ -57,6 +57,40 @@ class Settings(BaseSettings):
     disagreement_threshold_fallback: float = 0.30
     disagreement_zscore_threshold: float = 2.0
 
+    # Phase 7 v2 (2026-05-22) — statistical auto-rollback for housekeeping
+    # demand/supply. The default-true dry-run flag is the safety lever:
+    # for the first 30 days, the cron runs backfill + check + BH-FDR
+    # end-to-end but only LOGS "would-have-fired" — does NOT touch
+    # model_runs. Operators audit the dry-run app_events rows to validate
+    # the same-DOW comparator + n>=21 + BH-FDR combination produces ~0
+    # false fires across the fleet. Flip to false via Railway env var
+    # (get_settings() instantiates fresh per request so env-var changes
+    # hot-reload without a redeploy).
+    auto_rollback_dry_run: bool = True
+
+    # Benjamini-Hochberg fleet-wide false-discovery rate. 0.05 means at
+    # most 5% of fired rollbacks are expected to be spurious.
+    auto_rollback_fdr_alpha: float = 0.05
+
+    # Minimum MATURE paired observations before a rollback can fire for
+    # a (property, layer). "Mature" = outside the actuals correction
+    # window below. Independent of auto_rollback_window_days (lookback
+    # range). Codex high-pri finding: n=10 at the 14-day boundary is
+    # underpowered; 21 gives the Wilcoxon test real signal.
+    auto_rollback_min_paired_days: int = 21
+
+    # Cooldown after a rollback fires for (property, layer). Prevents
+    # oscillation if the next-up active also drifts immediately.
+    auto_rollback_cooldown_days: int = 14
+
+    # Actuals correction window. prediction_log rows whose date is within
+    # this many days of today are excluded from the rolling-MAE check
+    # (because their actual_value may still flip when Maria reviews
+    # cleaning_events). Also defines the backfill's UPSERT rolling window:
+    # each morning's backfill UPSERTs prediction_log rows for today minus
+    # 1..N days so corrections propagate.
+    auto_rollback_actuals_correction_days: int = 3
+
     # Inventory rate model
     # Inventory has way less data per (property × item) than housekeeping has
     # per property — typically 12–50 count events per item per year vs ~365

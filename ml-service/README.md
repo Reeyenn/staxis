@@ -514,25 +514,76 @@ Fast-paths preserved:
 Net effect: a single bad retrain can no longer silently degrade an
 active housekeeping model.
 
-## Known gap: statistical auto-rollback is not wired (out of scope for Phase 4a)
+## Statistical auto-rollback (Phase 7 v2, 2026-05-22)
 
-`monitoring/shadow_mae.py:78-249` implements `compute_rolling_shadow_mae`
-+ `check_auto_rollback` (paired Wilcoxon signed-rank on
-`prediction_log.abs_error`, 14-day window, n≥10, p<0.05). The file's
-own DEAD CODE NOTICE (lines 61-75) is accurate as of 2026-05-22:
-ZERO callers across all crons / routes / tasks. Enabling requires:
+A drifting active model — good at promotion time but slowly less
+accurate as the hotel changes (new staff, new amenities, seasonal
+shift) — is caught by the daily rolling-MAE check.
 
-1. A `prediction_log` writer (daily/per-prediction `abs_error` rows
-   for housekeeping demand+supply — exists for inventory only today).
-2. A new cron route `src/app/api/cron/ml-auto-rollback-check/route.ts`
-   that iterates active models per property and calls `check_auto_rollback`.
-3. Benjamini-Hochberg FDR correction across the fleet (line 71 backlog
-   item) to keep false-rollback rate manageable at fleet scale.
+Pipeline (single cron @ 06:45 CDT daily, `/api/cron/ml-auto-rollback`
+→ `POST /monitor/run-daily-rollback-pipeline`):
 
-Until these land, the promotion safety gate (above) is the only
-post-deployment safety net for housekeeping. A drifting active model
-that was good at promotion time won't be caught by the safety gate
-because there's no new shadow contending for promotion.
+1. **Backfill** — `actuals.py:backfill_prediction_log` UPSERTs
+   `prediction_log` rows for the last 3 days for each active fitted
+   non-cold-start housekeeping model. `actual_value` reads
+   `cleaning_minutes_per_day_view.total_approved_minutes` (NOT
+   recorded), so Maria's approve/flag/discard corrections propagate
+   into the rolling MAE via the natural-key UPSERT (migration 0156).
+   Per-property advisory lock prevents TOCTOU races.
+
+2. **Check** — `monitoring/shadow_mae.py:compute_rolling_mae_vs_baseline`
+   computes a paired Wilcoxon signed-rank test for each
+   (property, layer) with ≥21 mature paired observations (mature =
+   outside the 3-day actuals correction window):
+   - Pair = (active_model_error, same_DOW_naive_error) per date.
+   - "Same-DOW naive" = median of `total_approved_minutes` for the
+     last 4 same-DOWs before the prediction date.
+   - Null hypothesis: active error is NOT greater than naive error.
+   - Reject null = "active model is statistically worse than just
+     looking up last week's same-day actual" = drift detected.
+
+3. **Cooldown** — `monitoring/shadow_mae.py:recent_rollback_within_cooldown`
+   drops any (property, layer) whose latest rollback fired within
+   the last 14 days. Prevents oscillation.
+
+4. **BH-FDR** — `monitoring/fleet_rollback.py:adjusted_alpha_mask`
+   applies Benjamini-Hochberg fleet-wide at α=0.05 (via
+   `scipy.stats.false_discovery_control`). At 50 hotels × 2 layers
+   = 100 simultaneous tests, raw `p<0.05` would fire ~5 spurious
+   rollbacks per day under the null; BH-FDR caps the expected
+   false-rollback proportion.
+
+5. **Execute** — `monitoring/shadow_mae.py:execute_rollback` deactivates
+   the active model under an advisory lock. NO fallback promotion
+   (Codex high-priority finding). The property serves cold-start
+   cohort prior until next Sunday's training cycle produces a fresh
+   active. Cleaner than blind-promoting a stale fallback that could
+   also be drifting.
+
+6. **Alerts** — every fire (real OR dry-run) writes one
+   `app_events.event_type='ml_auto_rollback_fired'` row with full
+   diagnostics (active_mae, baseline_mae, pvalue, adjusted_pvalue).
+   Real fires also `Sentry.captureMessage` at error severity.
+
+Safety: `AUTO_ROLLBACK_DRY_RUN=true` (default) means the cron logs
+"would-have-fired" without touching `model_runs`. Flip via Railway
+env var (hot-reloads on next request — verified, no redeploy needed)
+once 30 days of dry-run `app_events` look clean.
+
+## Known gaps (Phase 7 v2)
+
+- Same-DOW comparator uses the last 4 same-DOWs of approved actuals
+  as the naive baseline. On a property with strong seasonality
+  (e.g., 4-day holiday weekend) the comparator can briefly become
+  meaningless. The n≥21 minimum + 14-day cooldown soften this; if
+  it bites at fleet scale, swap median for a season-aware EMA.
+- After a rollback the property serves cold-start cohort prior
+  until next Sunday. That's ~3-7 days of degraded predictions,
+  which is the right trade vs serving a statistically-bad model.
+- Inventory ML is NOT covered by Phase 7. Inventory has a different
+  shadow-promotion path (Phase 5 of inventory) wired separately. If
+  inventory needs drift detection later, the same orchestrator
+  pattern applies but the per-(item, day) grain differs.
 
 ## License
 

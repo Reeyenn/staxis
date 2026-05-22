@@ -218,21 +218,36 @@ def test_bayesian_inference_rejects_feature_shape_mismatch():
 # the 0.05 trigger. A single 5-of-5 unlucky comparison would fire false
 # rollback. Bumped to n=10 (min p ~0.001).
 # ────────────────────────────────────────────────────────────────────────────
-def test_wilcoxon_floor_is_n10_not_n5():
-    """The shadow-MAE Wilcoxon test must require n>=10 paired observations.
+def test_wilcoxon_floor_is_n21_not_n10():
+    """The auto-rollback Wilcoxon test must require n>=21 mature paired
+    observations (Phase 7 v2, 2026-05-22 — supersedes the H-4 fix of
+    n>=10 because v2 replaced the entire comparator design).
 
-    This locks in H-4 step 1. Replaying with n=9 must return None
-    (insufficient data); n=10 must run the test.
+    H-4's original concern was that n=5 was underpowered (one-sided
+    minimum p ~0.031, already below the 0.05 trigger). H-4 raised the
+    floor to n=10 (minimum p ~0.001). Phase 7 v2 raises it further to
+    n=21 because:
+      - The comparator switched from "previously-active model" (which
+        couldn't be populated — see Phase 7 plan) to "same-DOW
+        historical actual" (which exists in cleaning_minutes_per_day_view).
+      - With the new comparator the cold-start graduation boundary
+        (model just became eligible) hits the test at exactly the
+        moment the model has the fewest paired observations, where
+        false-positive risk is highest. 21 mature days gives the test
+        real power and aligns with the 3-day actuals correction window
+        (28-day lookback - 3-day mutable window - some same-DOW gaps).
+
+    This lock-in test reads the config value the new compute_rolling_mae_vs_baseline
+    function uses, rather than inspecting source — the new function
+    parameterizes the floor through settings.auto_rollback_min_paired_days.
     """
-    from src.monitoring.shadow_mae import compute_rolling_shadow_mae
-    import inspect
-    src = inspect.getsource(compute_rolling_shadow_mae)
-    # The function module-level cutoff is parametric; assert the literal
-    # 10 appears AND no `< 5` line is left from the prior version.
-    assert "len(paired_active) < 10" in src, (
-        "Wilcoxon floor must require n>=10 — the source no longer "
-        "contains the `< 10` guard. H-4 regression."
+    from src.config import get_settings
+    settings = get_settings()
+    assert settings.auto_rollback_min_paired_days >= 21, (
+        f"auto_rollback_min_paired_days must be >=21 for Phase 7 v2, "
+        f"got {settings.auto_rollback_min_paired_days}. Lowering this gate "
+        "exposes the rolling-MAE check to false-positive rollbacks at the "
+        "cold-start graduation boundary — see Phase 7 plan + Codex H-pri #6."
     )
-    assert "len(paired_active) < 5\n" not in src, (
-        "Old `len(paired_active) < 5` guard still present — H-4 fix reverted."
-    )
+    # Also assert the new function exists where the old one was removed.
+    from src.monitoring.shadow_mae import compute_rolling_mae_vs_baseline  # noqa: F401

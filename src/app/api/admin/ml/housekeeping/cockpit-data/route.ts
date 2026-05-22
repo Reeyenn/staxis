@@ -56,6 +56,13 @@ export interface HKPropertyEntry {
   joinedAt: string | null;
   /** True for test/canary properties; excluded from fleet aggregates. */
   isTest: boolean;
+  /**
+   * Phase 7 v2 (2026-05-22) — most recent auto-rollback timestamp for
+   * THIS hotel. null when no rollback has ever fired for it. The
+   * single-hotel cockpit view uses this to render the "Last
+   * auto-rollback" row honestly.
+   */
+  lastAutoRollbackAt: string | null;
 }
 
 export interface HKAggregateStats {
@@ -96,6 +103,27 @@ export interface HKAggregateStats {
   capacityUnavailableCount: number;
   xgboostDeferredCount: number;
   fullyFittedCount: number;
+  /**
+   * Phase 7 v2 (2026-05-22) auto-rollback fleet rollup. Surfaces the
+   * statistical drift-detection pipeline's recent activity.
+   *
+   * - `lastAutoRollbackAt`     : ISO timestamp of the most recent
+   *                              `deactivation_reason='auto_rollback'`
+   *                              event across the fleet, or null if
+   *                              no rollback has ever fired.
+   * - `autoRollbacksLast7d`    : count of LIVE rollbacks fired in the
+   *                              last 7 days (from app_events.event_type
+   *                              ='ml_auto_rollback_fired', payload.dry_run=false).
+   * - `dryRunRollbacksLast7d`  : count of would-have-fired (dry-run) events
+   *                              in the last 7 days. During the first 30
+   *                              days of Phase 7 these are the ONLY events;
+   *                              operators audit them to validate the
+   *                              same-DOW + n>=21 + BH-FDR combination
+   *                              before flipping AUTO_ROLLBACK_DRY_RUN=false.
+   */
+  lastAutoRollbackAt: string | null;
+  autoRollbacksLast7d: number;
+  dryRunRollbacksLast7d: number;
   daysToNextMilestoneMedian: number | null;
   nextMilestoneLabel: string;
   phaseHistogram: Array<{ phaseId: string; phaseLabel: string; phaseDay: number; hotelCount: number }>;
@@ -379,6 +407,51 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       if (Date.now() - t <= 86400000) predLast24h += 1;
     }
 
+    // Phase 7 v2 (2026-05-22) — pull auto-rollback signals for the
+    // cockpit's drift-detection surface. Two sources:
+    //   1. model_runs.deactivation_reason='auto_rollback' — when a
+    //      rollback actually flipped a model. Gives lastAutoRollbackAt.
+    //   2. app_events.event_type='ml_auto_rollback_fired' — every fire
+    //      (real OR dry-run), with payload.dry_run flag distinguishing.
+    //      Gives autoRollbacksLast7d + dryRunRollbacksLast7d counts.
+    const sevenDaysAgoIso = new Date(Date.now() - 7 * 86400000).toISOString();
+    const [rollbackRunsRes, rollbackEventsRes] = await Promise.all([
+      supabaseAdmin
+        .from('model_runs')
+        .select('property_id, deactivated_at')
+        .in('property_id', scopeIds)
+        .eq('deactivation_reason', 'auto_rollback')
+        .order('deactivated_at', { ascending: false })
+        .limit(2000),
+      supabaseAdmin
+        .from('app_events')
+        .select('property_id, payload, ts')
+        .in('property_id', scopeIds)
+        .eq('event_type', 'ml_auto_rollback_fired')
+        .gte('ts', sevenDaysAgoIso)
+        .limit(5000),
+    ]);
+    // Per-property: max deactivated_at where reason=auto_rollback.
+    const lastRollbackByProp = new Map<string, number>();
+    for (const r of rollbackRunsRes.data ?? []) {
+      const pid = r.property_id as string;
+      const t = r.deactivated_at ? new Date(r.deactivated_at as string).getTime() : 0;
+      if (t > (lastRollbackByProp.get(pid) ?? 0)) lastRollbackByProp.set(pid, t);
+    }
+    // Fleet counts: split real vs dry-run by payload.dry_run.
+    let autoRollbacksLast7d = 0;
+    let dryRunRollbacksLast7d = 0;
+    for (const ev of rollbackEventsRes.data ?? []) {
+      const payload = (ev.payload ?? {}) as { dry_run?: boolean };
+      if (payload.dry_run === true) dryRunRollbacksLast7d += 1;
+      else autoRollbacksLast7d += 1;
+    }
+    const lastAutoRollbackAt: string | null = (() => {
+      let maxT = 0;
+      for (const t of lastRollbackByProp.values()) if (t > maxT) maxT = t;
+      return maxT > 0 ? new Date(maxT).toISOString() : null;
+    })();
+
     // Phase 1.5 (2026-05-22): pull latest optimizer_results per property
     // so we can compute the `capacityUnavailableCount` rollup (hotels whose
     // latest optimizer run had used_l2_supply=false, i.e. < 10 supply
@@ -432,6 +505,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         eventsLast1h: t?.last1h ?? 0,
         joinedAt: (p as { created_at?: string }).created_at ?? null,
         isTest: Boolean(p.is_test),
+        // Phase 7 v2 — per-property last auto-rollback timestamp.
+        // Null if never rolled back. The HousekeepingSystemHealth row
+        // hides itself when null (no fake "N/A" placeholder).
+        lastAutoRollbackAt: lastRollbackByProp.has(p.id)
+          ? new Date(lastRollbackByProp.get(p.id)!).toISOString()
+          : null,
       };
     });
 
@@ -637,6 +716,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       capacityUnavailableCount,
       xgboostDeferredCount,
       fullyFittedCount,
+      // Phase 7 v2 auto-rollback rollup (drift detection)
+      lastAutoRollbackAt,
+      autoRollbacksLast7d,
+      dryRunRollbacksLast7d,
       daysToNextMilestoneMedian: nextMilestone.daysToNext,
       nextMilestoneLabel: nextMilestone.label,
       phaseHistogram,
