@@ -1344,6 +1344,92 @@ Window clamped to `[1, 180]` days server-side. Stale flag = active model + reali
 This is intentional behavior, not a bug. The GM should see the onboarding banner ("No usage data yet. These suggestions are based on par levels, not real usage. Add a few counts so the AI can learn …"). If the banner is missing AND items aren't pre-checked, that's a real bug — check that `ReorderPanel.tsx`'s `allRecsAreFallback` computation is finding the `burnSource` field on each rec.
 
 **Fix workflow for a new hotel.** Have the GM log 3+ counts per item. After the next weekly training cron, cold-start cohort-prior models install (`algorithm='cold-start-cohort-prior'`, `is_active=true`, `auto_fill_enabled=false`). Predictions start flowing within ~24h of the next daily inference cron. Items move from `burnSource: 'fallback-60d'` to `burnSource: 'ml'` and the pre-check resumes.
+---
+
+## Tenant isolation regression checklist (audit 2026-05-22)
+
+Multi-tenant scoping is the difference between Hotel A and Hotel B seeing their own data vs. each other's. This section enumerates the protections in place and the checklist for any new feature that touches per-property data.
+
+### Automatic protections (run on every PR)
+
+- `npm run lint` runs four audit scripts that fail the build on:
+  - **Public pages with direct `supabase.from(...)`** — the #1 recurring bug class. `scripts/audit-public-page-direct-supabase.mjs`. Anon RLS returns 200 + [] silently; the page renders empty. Reads/writes must go through `/api/...` + `supabaseAdmin` + capability check.
+  - **SECURITY DEFINER functions without `set search_path`** — `scripts/audit-security-definer-search-path.mjs`. Catches schema-shadowing risk (CVE-2018-1058 family). Cumulative state across all migrations.
+  - **Tenant-scoped tables missing an RLS policy** — `scripts/audit-rls-policy-coverage.mjs`. Walks every migration, tracks `CREATE TABLE` / `ALTER TABLE ADD COLUMN` / `DROP TABLE` / `ENABLE ROW LEVEL SECURITY` / `CREATE POLICY` cumulatively. Flags any public table with `property_id` (or other tenant column) that has no policy referencing `user_owns_property`, `auth.uid()`, or the tenant column itself.
+  - **API routes using `supabaseAdmin` without a known auth guard** — `scripts/audit-api-route-tenant-scope.mjs`. Flags any `src/app/api/**/route.ts` that imports `supabaseAdmin` and exports a method handler but doesn't reference one of the known guards (`requireSession`, `requireAdmin`, `validateUuid`, `verifyWebhookSignature`, etc.) or use an inline capability check.
+
+- `npm test` runs the same checks as part of the suite plus:
+  - `src/lib/__tests__/rls-policies-shape.test.ts` — asserts specific RLS invariants are preserved (core tables still have RLS enabled, `accounts_deny_writes` exists, `user_owns_property` is still SECURITY DEFINER + search_path-pinned, migration 0200 is intact).
+  - `src/lib/__tests__/public-page-route-scoping.test.ts` — asserts every route under `/api/housekeeper/**` and `/api/laundry/**` imports `supabaseAdmin`, validates `pid`, and scopes queries by `property_id` (or honors `// @audit: public-page-shape-ok` for legitimate exceptions).
+  - `src/lib/__tests__/rls-tenant-isolation.integration.test.ts` — spins up a real Postgres via pglite, seeds two tenants, switches connection role to `authenticated`, and asserts user A literally cannot SELECT/INSERT/UPDATE/DELETE user B's data. The one test that exercises the Postgres RLS layer end-to-end. Run via `npm run test:integration`.
+
+- `/api/admin/doctor` runs hourly via the doctor-check cron. Two RLS-related checks:
+  - `supabase_rls_enabled` — verifies RLS is ON on every per-property table.
+  - `supabase_rls_policy_coverage` — verifies every tenant-scoped public table has at least one RLS policy. Catches out-of-band `DROP POLICY` via the Supabase SQL editor. Requires the `pg_tables_policy_coverage` view from migration 0200.
+
+### Escape markers (use sparingly)
+
+Each lint script supports an explicit escape comment for legitimate exceptions:
+- `// @audit: public-page-data-ok — <reason>` (above the call site) — for an auth path on a public page that legitimately uses `supabase.from`.
+- `-- @audit: security-definer-search-path-ok — <reason>` (above CREATE FUNCTION) — for a SECURITY DEFINER function that genuinely can't pin search_path.
+- `-- @rls: service-role-only — <reason>` (above CREATE TABLE) — for a table where deny-by-default is the intended posture.
+- `// @audit: tenant-scope-not-applicable — <reason>` (top of file) — for an API route that genuinely doesn't need per-tenant scope (rare).
+- `// @audit: public-page-shape-ok — <reason>` (top of file) — for a public-page route that doesn't follow the canonical shape.
+
+Each use must include a real one-line reason. Future audits read these to verify the exception is still justified.
+
+### Patterns to follow
+
+- **New tenant-scoped table** → must include `alter table X enable row level security;` + a `create policy ... using (user_owns_property(property_id)) with check (user_owns_property(property_id));` in the same migration. The lint enforces this at PR time.
+- **New SECURITY DEFINER function** → must include `set search_path = pg_catalog, public` (or `set search_path = public, pg_temp`). Pattern from 0036/0037/0040/0072/0153.
+- **New public route under `/api/housekeeper/**` or `/api/laundry/**`** → use `supabaseAdmin` + `validateUuid('pid', ...)` + a `(pid, staffId)` capability check on the `staff` table before any other queries. Pattern: `/api/housekeeper/rooms/route.ts`.
+- **New API route that takes a `propertyId` in the body** → call `userHasPropertyAccess(userId, propertyId)` after `requireSession` and before any `supabaseAdmin.from(...).eq('property_id', body.propertyId)`.
+
+### `accounts.property_access` mutation surface inventory
+
+`accounts.property_access` is the array that grants a user (`data_user_id`) read/write access to specific hotels. Mutating this is the most blast-radius operation in the codebase — appending a UUID grants access to that hotel. The RLS policy `accounts_deny_writes` (migration 0017) prevents the browser from touching it; ALL writes go through `/api/auth/*` routes via `supabaseAdmin`. The exhaustive list of writers as of audit 2026-05-22:
+
+1. **`POST /api/auth/accept-invite`** (`src/app/api/auth/accept-invite/route.ts:119`)
+   - Writes: `property_access: [invite.hotel_id]` (new account, single property).
+   - Auth: signed invite token + `canManageTeam(inviter.role, invite.role)` re-check before insert (prevents the inviter-demoted-but-invite-still-valid race).
+   - Rate-limited: `accept-invite` per IP.
+   - Audit: `writeAudit` row on every successful insert.
+
+2. **`POST /api/auth/use-join-code`** (`src/app/api/auth/use-join-code/route.ts:238`)
+   - Writes: `property_access: [row.hotel_id]` (new account, single property).
+   - Auth: join-code hash lookup; code must be unrevoked and unexpired.
+   - DB-level safeguard: migration 0152 revoked all legacy owner/GM codes and added a CHECK constraint forbidding `role IN ('owner','general_manager')` on future codes. App-layer still re-checks role.
+   - Rate-limited + audited.
+
+3. **`PUT /api/auth/accounts`** (`src/app/api/auth/accounts/route.ts:328`)
+   - Updates: `property_access = effectiveRole === 'admin' ? [] : propertyAccess.filter(id => id !== '*')`. Admins keep an empty array (since `user_owns_property` checks `role = 'admin' OR p_id = ANY(property_access)` and the role check wins for admins). Non-admins are stripped of wildcard tokens.
+   - Auth: bearer token validated against `supabaseAdmin.auth.getUser` → caller's role must satisfy `canManageTeam` for the target.
+   - Audit: `writeAudit` on every update.
+
+**No other code path writes to `property_access`.** Verified via `grep -rEn "property_access.*[=:].*\[|update.*property_access" src/`. Tests, type definitions, and read paths (`AuthContext`, `team-auth`, settings UI, etc.) are not writers.
+
+**Why this list matters:** any new code path that writes `property_access` must (a) gate on `canManageTeam` or higher, (b) audit via `writeAudit`, (c) rate-limit if exposed publicly, and (d) be added here. The lint scripts catch the table-level pattern; this list catches the specific high-blast-radius mutation.
+
+### Manual prod-apply checklist for migration 0200
+
+`supabase/migrations/0200_explicit_deny_all_service_role_only_tables.sql` is applied to prod manually (per `project_migration_application_manual.md`). Order of operations:
+
+1. Open the Supabase SQL editor for the prod project.
+2. Paste the migration content; click Run. It's idempotent (`drop policy if exists` + `create policy`), so re-running is safe.
+3. Verify in `/api/admin/doctor` that `supabase_rls_policy_coverage` flips from `warn` (view not present) to `ok`.
+4. Verify `supabase_migrations_applied` no longer flags 0200 as missing.
+5. The migration touches:
+   - 7 RLS-on-no-policy tables: adds explicit `<table>_deny_all_browser` policies (no behavior change — Postgres deny-by-default already in effect).
+   - `pull_metrics` and `scraper_session`: **real fix** — enables RLS + REVOKEs anon/authenticated grants + adds deny-browser policy. Closes the gap where `anon` could SELECT Playwright PMS login cookies via PostgREST.
+   - Adds the `pg_tables_policy_coverage` view that the new doctor check reads.
+
+**Rollback (only if a real incident emerges):**
+```sql
+drop policy if exists pull_metrics_deny_all_browser on public.pull_metrics;
+alter table public.pull_metrics disable row level security;
+-- etc., per table
+```
+Don't roll back unless something demonstrably breaks — the explicit deny policies are no-ops for service-role and the closed PMS-cookie hole is a real security improvement.
 
 ---
 

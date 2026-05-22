@@ -144,6 +144,14 @@ const checks: Array<[string, CheckFn]> = [
   ['supabase_project_consistency',   checkSupabaseProjectConsistency],
   ['supabase_anon_key',              checkSupabaseAnonKeyShape],
   ['supabase_rls_enabled',           checkSupabaseRlsEnabled],
+  // Complement to supabase_rls_enabled: the existing check verifies RLS is
+  // ON; this one verifies that every tenant-scoped public table also has
+  // at least one policy. RLS + no policy = deny-all, which is correct for
+  // service-role-only tables but a regression for per-tenant tables that
+  // should be visible to their owner. Catches the case where someone runs
+  // `DROP POLICY` in the Supabase SQL editor and forgets to recreate it.
+  // Requires the pg_tables_policy_coverage view added in migration 0200.
+  ['supabase_rls_policy_coverage',   checkSupabaseRlsPolicyCoverage],
   ['supabase_realtime_publication',  checkSupabaseRealtimePublication],
   ['supabase_heartbeat',             checkSupabaseHeartbeat],
   ['supabase_dashboard',             checkSupabaseDashboard],
@@ -785,6 +793,121 @@ async function checkSupabaseRlsEnabled(): Promise<Omit<Check, 'name' | 'duration
     return {
       status: 'fail',
       detail: `RLS check failed: ${errToString(err)}`,
+    };
+  }
+}
+
+/**
+ * Verifies every tenant-scoped public table has at least one RLS policy.
+ *
+ * The existing `supabase_rls_enabled` check confirms RLS is ON. That alone
+ * is insufficient — RLS + zero policies = deny-all (correct for service-
+ * role-only tables, but a regression for per-tenant tables that owners
+ * need to see). This check finds tables that have:
+ *   1. RLS enabled (relrowsecurity=true), AND
+ *   2. A tenant identifier column (property_id, account_id, etc.), AND
+ *   3. Zero policies in pg_policies for that table.
+ *
+ * That combination means the owner can't read their own data — a silent-
+ * empty-state bug from the production side. Out-of-band changes via the
+ * Supabase SQL editor (e.g., dropping a policy during incident response
+ * and forgetting to recreate it) are the most likely cause.
+ *
+ * Excludes the SERVICE_ROLE_ONLY allowlist: tables that intentionally have
+ * RLS-on with no end-user policies (server-role accesses them via
+ * supabaseAdmin). Mirrors the allowlist in scripts/audit-rls-policy-
+ * coverage.mjs — KEEP THESE IN SYNC.
+ *
+ * Requires the `pg_tables_policy_coverage` view added in migration 0200.
+ * Until 0200 is applied to prod, this check returns 'warn' rather than
+ * 'fail' so the doctor doesn't alert during the rollout window.
+ */
+const RLS_SERVICE_ROLE_ONLY_ALLOWLIST = new Set([
+  'agent_eval_baselines',
+  'agent_prompts',
+  'agent_conversations_archived',
+  'agent_messages_archived',
+  'agent_voice_sessions',
+  'error_logs',
+  'webhook_log',
+  'api_limits',
+  'app_events',
+  'user_feedback',
+  'expenses',
+  'claude_usage_log',
+  'trusted_devices',
+  'agent_cost_finalize_failures',
+  'staff_magic_codes',
+  'scraper_credentials',
+  'idempotency_log',
+  'sms_jobs',
+  'onboarding_jobs',
+  'stripe_processed_events',
+  'pull_jobs',
+  'processed_twilio_webhooks',
+  'pull_metrics',
+  'scraper_session',
+]);
+
+async function checkSupabaseRlsPolicyCoverage(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('pg_tables_policy_coverage')
+      .select('tablename, rls_enabled, policy_count, has_tenant_column');
+    if (error) {
+      // The view is created by migration 0200. Before 0200 is applied to
+      // prod the view doesn't exist — return a warn, not a fail, so the
+      // doctor doesn't page Reeyen during the rollout window.
+      const msg = errToString(error);
+      if (msg.includes('relation') || msg.includes('does not exist') || msg.includes('Could not find')) {
+        return {
+          status: 'warn',
+          detail: 'pg_tables_policy_coverage view missing — migration 0200 not yet applied',
+          fix: 'Apply supabase/migrations/0200_explicit_deny_all_service_role_only_tables.sql in the Supabase SQL editor.',
+        };
+      }
+      return {
+        status: 'warn',
+        detail: `policy-coverage view read failed: ${msg}`,
+      };
+    }
+
+    const missing: string[] = [];
+    for (const row of (data ?? []) as Array<{
+      tablename: string;
+      rls_enabled: boolean;
+      policy_count: number;
+      has_tenant_column: boolean;
+    }>) {
+      if (!row.has_tenant_column) continue;
+      if (RLS_SERVICE_ROLE_ONLY_ALLOWLIST.has(row.tablename)) continue;
+      if (!row.rls_enabled) {
+        // Covered by checkSupabaseRlsEnabled; flag it here too for
+        // belt-and-suspenders since this check has the tenant-column
+        // signal that the older check doesn't.
+        missing.push(`${row.tablename} (RLS disabled)`);
+        continue;
+      }
+      if (row.policy_count === 0) {
+        missing.push(`${row.tablename} (no policies)`);
+      }
+    }
+
+    if (missing.length > 0) {
+      return {
+        status: 'fail',
+        detail: `tenant-scoped public tables missing RLS policy: ${missing.join(', ')}`,
+        fix: 'Add a CREATE POLICY for each affected table (canonical pattern: `for all using (user_owns_property(property_id))`).',
+      };
+    }
+    return {
+      status: 'ok',
+      detail: `every tenant-scoped public table has RLS + at least one policy (${(data ?? []).length} tables scanned)`,
+    };
+  } catch (err) {
+    return {
+      status: 'warn',
+      detail: `RLS policy-coverage check threw: ${errToString(err)}`,
     };
   }
 }
