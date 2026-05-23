@@ -67,7 +67,7 @@ const READ_TIMEOUT_MS = 120_000;
 interface ScraperSessionRow {
   property_id: string;
   state: Record<string, unknown> | null;
-  updated_at: string | null;
+  refreshed_at: string | null;
 }
 
 export interface SessionDriverOptions {
@@ -710,9 +710,12 @@ export class SessionDriver {
     password: string;
     loginUrl: string;
   } | null> {
+    // Read from the decrypted view, not the raw table (migration 0069
+    // moved the actual values into vault-encrypted columns; the view
+    // returns plaintext via decrypt_pms_credential).
     const { data, error } = await supabase
-      .from('scraper_credentials')
-      .select('*')
+      .from('scraper_credentials_decrypted')
+      .select('ca_login_url, ca_username, ca_password, is_active')
       .eq('property_id', this.propertyId)
       .eq('is_active', true)
       .maybeSingle();
@@ -728,7 +731,7 @@ export class SessionDriver {
   private async loadStorageState(): Promise<Record<string, unknown> | null> {
     const { data, error } = await supabase
       .from('scraper_session')
-      .select('state, updated_at')
+      .select('state, refreshed_at')
       .eq('property_id', this.propertyId)
       .maybeSingle();
     if (error || !data) return null;
@@ -743,7 +746,7 @@ export class SessionDriver {
         {
           property_id: this.propertyId,
           state,
-          updated_at: new Date().toISOString(),
+          refreshed_at: new Date().toISOString(),
         },
         { onConflict: 'property_id' },
       );
