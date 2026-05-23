@@ -175,8 +175,16 @@ export class SessionDriver {
       return;
     }
 
-    // 5. Kick off polling + heartbeat.
-    await this.updateStatus({ status: 'alive', last_alive_at: new Date().toISOString() });
+    // 5. Kick off polling + heartbeat. Reset restart_count here so a
+    //    string of successful logins doesn't leave the dead-letter
+    //    counter close to its limit from earlier failed attempts.
+    await this.updateStatus({
+      status: 'alive',
+      last_alive_at: new Date().toISOString(),
+      restart_count: 0,
+      paused_reason: null,
+      paused_until: null,
+    });
     this.scheduleNextPoll();
     this.heartbeatHandle = setInterval(() => {
       void this.publishHeartbeat();
@@ -185,7 +193,11 @@ export class SessionDriver {
     log.info('session-driver: started', { propertyId: this.propertyId });
   }
 
-  /** Graceful stop — save state, close browser, exit. */
+  /** Graceful stop — save state, close browser. Does NOT update
+   *  status; 'stopped' is reserved for admin-initiated halts. A graceful
+   *  shutdown (SIGTERM during Fly deploy, supervisor restart, etc.)
+   *  should leave the property_sessions row in whatever state it was so
+   *  the next supervisor boot picks it back up via the reconcile loop. */
   async stop(): Promise<void> {
     if (this.stopping) return;
     this.stopping = true;
@@ -194,13 +206,15 @@ export class SessionDriver {
     if (this.pollHandle) clearTimeout(this.pollHandle);
     if (this.heartbeatHandle) clearInterval(this.heartbeatHandle);
 
-    // Save final storage state.
+    // Save final storage state. context.storageState can fail if Fly
+    // already started tearing down the firecracker VM — the warn is
+    // expected on hard shutdowns and not actionable.
     if (this.context) {
       try {
         const state = await this.context.storageState();
         await this.saveStorageState(state as unknown as Record<string, unknown>);
       } catch (err) {
-        log.warn('session-driver: final storageState save failed', {
+        log.warn('session-driver: final storageState save failed (non-fatal)', {
           propertyId: this.propertyId,
           err: err instanceof Error ? err.message : String(err),
         });
@@ -209,7 +223,13 @@ export class SessionDriver {
 
     await this.closeBrowser();
     this.running = false;
-    await this.updateStatus({ status: 'stopped' });
+  }
+
+  /** True iff the driver is actively running (start() succeeded and
+   *  stop() hasn't been called). Supervisor uses this to detect drivers
+   *  that silently exited and prune them from its map. */
+  isRunning(): boolean {
+    return this.running && !this.stopping;
   }
 
   /**
@@ -463,7 +483,13 @@ export class SessionDriver {
         await this.page.fill(step.selector as string, resolve(step.value as string), { timeout: 10_000 });
         return;
       case 'click':
-        await this.page.click(step.selector as string, { timeout: 10_000 });
+        // Ordered fallback: scraper.js uses clickFirstMatching that
+        // tries selectors in order, escalating to force-click on miss.
+        // CSS unions ("a, b, c") would let Playwright pick whichever
+        // matches first in the DOM — possibly the wrong element (e.g.
+        // a "Remember me" toggle instead of the Login submit). Treat
+        // a comma-separated selector value as an ordered fallback list.
+        await this.clickFirstMatching(step.selector as string);
         return;
       case 'wait_for':
         await this.page.waitForSelector(step.selector as string, {
@@ -826,6 +852,43 @@ export class SessionDriver {
         err: error.message,
       });
     }
+  }
+
+  /**
+   * Ordered-fallback click. Splits a comma-separated selector list and
+   * tries each in order with progressively-escalated strategies (plain
+   * → force → JS-direct). Closes the bug where CSS unions like
+   * `a#greenButton, input[type="submit"]` let Playwright pick the first
+   * DOM match — possibly the wrong element (e.g., a "Remember me"
+   * toggle adjacent to the actual Login button). Mirrors the
+   * clickFirstMatching pattern from scraper.js.
+   */
+  private async clickFirstMatching(rawSelector: string): Promise<void> {
+    if (!this.page) throw new Error('clickFirstMatching: no page');
+    // Naive split on `,` — selectors containing `,` inside `:has-text("a,b")`
+    // would be mis-split, but Playwright's :has-text rarely uses commas
+    // in its arg in practice. Good enough for login button lists.
+    const selectors = rawSelector
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+
+    const errors: string[] = [];
+    for (const selector of selectors) {
+      try {
+        await this.page.click(selector, { timeout: 5_000 });
+        return;
+      } catch (err) {
+        errors.push(`${selector}: ${(err as Error).message}`);
+      }
+      try {
+        await this.page.click(selector, { timeout: 3_000, force: true });
+        return;
+      } catch (err) {
+        errors.push(`${selector} (force): ${(err as Error).message}`);
+      }
+    }
+    throw new Error(`clickFirstMatching exhausted ${selectors.length} selectors: ${errors.join(' | ')}`);
   }
 
   private async closeBrowser(): Promise<void> {

@@ -209,43 +209,49 @@ export async function recordSpend(
     return checkBudget(propertyId);
   }
 
-  // Atomic increment via Postgres expression — Supabase doesn't have
-  // a first-class "increment column" so we use the RPC pattern or
-  // round-trip update. For simplicity (and at our volume — < 10
-  // recordSpend/hour/hotel in steady state), a read-modify-write is
-  // fine; race risk is overshoot by a few hundred micros.
-  const current = await checkBudget(propertyId);
-  if (!current.ok && current.reason === 'cap_tripped') {
-    log.warn('cost-cap: spend recorded but cap already tripped', {
-      propertyId,
-      attemptedSpendMicros: micros,
-      capMicros: current.capMicros,
-      spentMicros: current.spentMicros,
-      kind: context.kind,
-    });
-    // Still write the spend — accounting is important even when
-    // overshooting (helps debug "why did this hotel spend $7 today").
-  }
+  // Atomic increment via staxis_cua_increment_spend RPC (migration
+  // 0205). Replaces the prior read-modify-write that lost increments
+  // under concurrent recordSpend calls. Codex 2026-05-23 finding.
+  const { data, error } = await supabase
+    .rpc('staxis_cua_increment_spend', {
+      p_property_id: propertyId,
+      p_micros: micros,
+    })
+    .single();
 
-  const newTotal = current.spentMicros + micros;
-  const { error } = await supabase
-    .from('property_sessions')
-    .update({ daily_claude_cost_micros: newTotal })
-    .eq('property_id', propertyId);
-
-  if (error) {
-    log.error('cost-cap: failed to record spend', {
+  if (error || !data) {
+    log.error('cost-cap: atomic recordSpend RPC failed — falling back to RMW', {
       propertyId,
       spendMicros: micros,
       err: error,
     });
+    // Fallback so we don't silently drop accounting on RPC outage.
+    const current = await checkBudget(propertyId);
+    const newTotal = current.spentMicros + micros;
+    await supabase
+      .from('property_sessions')
+      .update({ daily_claude_cost_micros: newTotal })
+      .eq('property_id', propertyId);
+    if (newTotal >= DAILY_CAP_MICROS && current.ok) {
+      await markPaused(propertyId, current.resetsAt);
+    }
+    return {
+      ok: newTotal < DAILY_CAP_MICROS,
+      reason: newTotal >= DAILY_CAP_MICROS ? 'cap_tripped' : undefined,
+      spentMicros: newTotal,
+      capMicros: DAILY_CAP_MICROS,
+      resetsAt: current.resetsAt,
+    };
   }
 
+  const row = data as { new_total_micros: number; resets_at: string; status: string };
+  const newTotal = Number(row.new_total_micros);
+  const resetsAt = new Date(row.resets_at);
   const tripped = newTotal >= DAILY_CAP_MICROS;
-  if (tripped && current.ok) {
-    // Newly tripped — set status to paused_cost_cap. Session-supervisor
-    // will surface this via SMS + heartbeat + doctor.
-    await markPaused(propertyId, current.resetsAt);
+  const wasRunnable = row.status === 'alive' || row.status === 'starting';
+
+  if (tripped && wasRunnable) {
+    await markPaused(propertyId, resetsAt);
   }
 
   return {
@@ -253,7 +259,7 @@ export async function recordSpend(
     reason: tripped ? 'cap_tripped' : undefined,
     spentMicros: newTotal,
     capMicros: DAILY_CAP_MICROS,
-    resetsAt: current.resetsAt,
+    resetsAt,
   };
 }
 

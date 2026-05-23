@@ -96,7 +96,22 @@ export class SessionSupervisor {
       const enabled = await this.loadEnabledSessions();
       const enabledById = new Map(enabled.map((s) => [s.property_id, s]));
 
-      // Start drivers for newly-enabled hotels.
+      // First: prune dead drivers from the map. A driver whose start()
+      // returned without throwing (e.g. login failed, knowledge file
+      // missing) leaves this.drivers populated with a non-running
+      // instance. Without this prune, the spawn loop below sees
+      // `this.drivers.has(propertyId)` and silently skips forever —
+      // hotel sits dead with no respawn. Found 2026-05-23 in the
+      // Comfort Suites Beaumont login regression test.
+      for (const [propertyId, driver] of this.drivers.entries()) {
+        if (!driver.isRunning()) {
+          log.info('session-supervisor: pruning dead driver from map', { propertyId });
+          this.drivers.delete(propertyId);
+        }
+      }
+
+      // Start drivers for newly-enabled hotels (or hotels whose driver
+      // just got pruned).
       for (const session of enabled) {
         if (this.drivers.has(session.property_id)) continue;
         if (session.restart_count >= MAX_RESTARTS_PER_HOUR) {
@@ -109,6 +124,11 @@ export class SessionSupervisor {
           continue;
         }
 
+        // Bump restart_count atomically before spawning so we don't
+        // infinitely thrash on a hotel whose login keeps failing.
+        // Resets when the driver successfully reaches `alive`.
+        await this.bumpRestartCount(session.property_id);
+
         const driver = new SessionDriver({
           propertyId: session.property_id,
           pmsFamily: session.pms_family,
@@ -117,6 +137,8 @@ export class SessionSupervisor {
         this.drivers.set(session.property_id, driver);
 
         // Fire-and-forget: start runs forever; we don't await it.
+        // If it returns/throws, the next reconcile prunes it via the
+        // dead-driver check at the top of this method.
         void driver.start().catch((err) => {
           log.error('session-supervisor: driver.start() threw', {
             propertyId: session.property_id,
@@ -126,10 +148,13 @@ export class SessionSupervisor {
         });
       }
 
-      // Stop drivers for hotels that were disabled.
+      // Stop drivers for hotels that were intentionally stopped by an
+      // admin (status='stopped'). We DON'T treat the absence of a row
+      // as "disabled" — only an explicit 'stopped' status.
       for (const [propertyId, driver] of this.drivers.entries()) {
-        if (!enabledById.has(propertyId)) {
-          log.info('session-supervisor: stopping driver (hotel disabled)', { propertyId });
+        const session = enabledById.get(propertyId);
+        if (!session) {
+          log.info('session-supervisor: stopping driver (no enabled row)', { propertyId });
           await driver.stop();
           this.drivers.delete(propertyId);
         }
@@ -142,14 +167,36 @@ export class SessionSupervisor {
   }
 
   private async loadEnabledSessions(): Promise<SessionRow[]> {
+    // 'paused_mfa' and 'paused_cost_cap' don't get drivers spawned —
+    // those are intentional pauses awaiting manual / time-based resume.
+    // 'failed_restart' is the dead-letter state (too many restarts).
+    // The supervisor only spawns for actively-runnable states.
     const { data, error } = await supabase
       .from('property_sessions')
       .select('property_id, pms_family, status, restart_count')
-      .neq('status', 'stopped');
+      .in('status', ['starting', 'alive']);
     if (error) {
       log.warn('session-supervisor: loadEnabledSessions failed', { err: error.message });
       return [];
     }
     return (data ?? []) as SessionRow[];
+  }
+
+  private async bumpRestartCount(propertyId: string): Promise<void> {
+    // Read-modify-write. Two concurrent supervisors would race and one
+    // increment would be lost — acceptable for a soft restart counter
+    // that's bounded by MAX_RESTARTS_PER_HOUR=5. In Plan v4's
+    // one-Fly-machine-per-hotel deployment topology, there's only ever
+    // one supervisor managing a given hotel anyway.
+    const { data } = await supabase
+      .from('property_sessions')
+      .select('restart_count')
+      .eq('property_id', propertyId)
+      .maybeSingle();
+    const current = (data?.restart_count as number | undefined) ?? 0;
+    await supabase
+      .from('property_sessions')
+      .update({ restart_count: current + 1 })
+      .eq('property_id', propertyId);
   }
 }
