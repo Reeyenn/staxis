@@ -26,6 +26,7 @@
  */
 
 import { log } from './log.js';
+import { env } from './env.js';
 
 /** RAM utilization threshold (% of available) above which we restart. */
 const DEFAULT_RESTART_THRESHOLD_PCT = 80;
@@ -169,22 +170,11 @@ function sample_memory(): MemorySample {
 }
 
 /**
- * Fly.io sets VM_MEMORY_MB on every machine. Fallback to /proc on Linux
- * for local Docker; null on macOS local dev.
+ * Fly.io sets VM_MEMORY_MB on every machine. Fallback to FLY_MEMORY_MB
+ * (older alias). Returns null on macOS local dev where neither is set.
  */
 function machineMemoryLimitMb(): number | null {
-  const env = process.env.VM_MEMORY_MB;
-  if (env) {
-    const n = Number.parseInt(env, 10);
-    if (Number.isFinite(n) && n > 0) return n;
-  }
-  // FLY_MEMORY_MB is another name Fly uses in some contexts.
-  const alt = process.env.FLY_MEMORY_MB;
-  if (alt) {
-    const n = Number.parseInt(alt, 10);
-    if (Number.isFinite(n) && n > 0) return n;
-  }
-  return null;
+  return env.VM_MEMORY_MB ?? env.FLY_MEMORY_MB ?? null;
 }
 
 function requestRestart(reason: string): void {

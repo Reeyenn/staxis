@@ -292,6 +292,24 @@ export class SessionDriver {
 
     log.info('session-driver: session expired — logging in', { propertyId: this.propertyId });
 
+    // Match scraper.js convention: clear cookies before login. CA's
+    // partial-session-cookie state can land us in a redirect chain that
+    // bounces to j_security_check even with correct credentials.
+    // Re-navigating to the start URL after clearing forces a fresh login
+    // form render.
+    try {
+      await this.context!.clearCookies();
+      await safeGoto(this.page, login.startUrl, {
+        allowedHost: null,
+        context: 'session-driver:relogin',
+      });
+    } catch (err) {
+      log.warn('session-driver: clearCookies/re-goto before login failed', {
+        propertyId: this.propertyId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+
     // MFA detection: if the probe landed us on an MFA prompt directly,
     // pause before attempting any login steps (the stored session was
     // valid until trust expired).
@@ -341,18 +359,70 @@ export class SessionDriver {
       return false;
     }
 
-    // Wait for success selector.
-    const selectors = login.successSelectors.length > 0 ? login.successSelectors : ['body'];
+    // Wait for login to actually succeed. CA's flow:
+    //   - The browser POSTs the form to j_security_check
+    //   - CA returns either:
+    //     (a) 302 redirect to Welcome.init (success — URL becomes Welcome)
+    //     (b) Re-render of login form with error (failure — URL still
+    //         contains j_security_check OR back at Welcome.init with
+    //         the j_username input visible)
+    //   - The redirect chain can take 15-30 sec on slow networks (per
+    //     scraper.js — choice.LogUserOff intermediate hops)
+    //
+    // So we wait for BOTH:
+    //   1. The URL to leave j_security_check (positive signal)
+    //   2. The username input to be gone (no re-render of login form)
+    // Either failing → login failed.
+    const loginTimeoutMs = login.timeoutMs ?? 30_000;
     try {
-      await Promise.race(
-        selectors.map((sel) => this.page!.waitForSelector(sel, { timeout: login.timeoutMs ?? 15_000 })),
+      await this.page!.waitForURL(
+        (url) => {
+          const s = url.toString();
+          return !s.includes('j_security_check') && !s.includes('sign_in');
+        },
+        { timeout: loginTimeoutMs },
       );
     } catch (err) {
-      log.error('session-driver: login success selector did not appear', {
+      log.error('session-driver: URL never left j_security_check', {
         propertyId: this.propertyId,
+        url: safeUrl(this.page!),
         err: err instanceof Error ? err : new Error(String(err)),
       });
       return false;
+    }
+    // Now wait for the login form to be absent — catches the case where
+    // CA redirected back to the login page (still URL-distinct from
+    // j_security_check but with the form re-rendered).
+    try {
+      await this.page!.waitForSelector('input[name="j_username"], input[name="username"]', {
+        state: 'detached',
+        timeout: 10_000,
+      });
+    } catch (err) {
+      log.error('session-driver: login form re-appeared after submit (bad credentials?)', {
+        propertyId: this.propertyId,
+        url: safeUrl(this.page!),
+        err: err instanceof Error ? err : new Error(String(err)),
+      });
+      return false;
+    }
+    const finalUrl = safeUrl(this.page!) ?? '';
+    // Best-effort: also wait for a successSelector if configured, but
+    // don't fail the login if it doesn't appear (it's a secondary hint).
+    if (login.successSelectors.length > 0) {
+      try {
+        await Promise.race(
+          login.successSelectors.map((sel) =>
+            this.page!.waitForSelector(sel, { timeout: 5_000 }),
+          ),
+        );
+      } catch {
+        log.warn('session-driver: login succeeded by URL/form check but no successSelectors matched', {
+          propertyId: this.propertyId,
+          url: finalUrl,
+          selectors: login.successSelectors,
+        });
+      }
     }
 
     // Save fresh storage state.
