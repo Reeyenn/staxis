@@ -375,6 +375,23 @@ const checks: Array<[string, CheckFn]> = [
   // maintenance photos). Add new private buckets here when migrations
   // create them.
   ['storage_buckets_private',        checkStorageBucketsPrivate],
+  // ─── CUA (Plan v4 universal CUA rebuild — 2026-05-23) ────────────────
+  // Per-hotel session-driver health. Each enabled hotel must heartbeat
+  // every 60s; a 5-min-stale heartbeat means the driver crashed and the
+  // supervisor hasn't respawned it. Fails loudly so we know before
+  // customer data goes silently missing.
+  ['cua_sessions_alive',             checkCuaSessionsAlive],
+  // Hotels currently paused for $5/day Claude cost cap. Warn-level —
+  // these auto-resume at midnight local, but recurring trips mean
+  // something's broken (PMS UI changed → infinite repair loop, etc.).
+  ['cua_cost_cap_paused',            checkCuaCostCapPaused],
+  // Hotels waiting on manual MFA re-login. Warn-level — Reeyen sees
+  // this on the doctor page + can resolve via /admin/mfa-resume/[id].
+  ['cua_mfa_pending',                checkCuaMfaPending],
+  // Every enabled hotel needs an active knowledge file for its
+  // pms_family — without one the session-driver refuses to start. Fail
+  // if any session's pms_family has no active knowledge file row.
+  ['cua_knowledge_files_active',     checkCuaKnowledgeFilesActive],
 ];
 
 // ─── Individual checks ───────────────────────────────────────────────────
@@ -3413,6 +3430,137 @@ async function checkLayerPredictionsFresh(opts: {
       };
     }
     return { status: 'ok', detail: `${opts.table} has fresh rows for ${today} or later` };
+  } catch (err) {
+    return { status: 'warn', detail: `check threw: ${errToString(err)}` };
+  }
+}
+
+// ─── CUA checks (Plan v4 universal CUA rebuild — 2026-05-23) ──────────────
+
+const CUA_HEARTBEAT_STALE_MS = 5 * 60_000;
+
+async function checkCuaSessionsAlive(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('property_sessions')
+      .select('property_id, status, last_alive_at, pms_family')
+      .neq('status', 'stopped');
+    if (error) {
+      return { status: 'warn', detail: `property_sessions read failed: ${errToString(error)}` };
+    }
+    if (!data || data.length === 0) {
+      return {
+        status: 'skipped',
+        detail: 'no enabled property_sessions rows yet — CUA worker has nothing to do',
+      };
+    }
+    const now = Date.now();
+    type SessionRow = { property_id: string; status: string; last_alive_at: string | null; pms_family: string };
+    const stale: string[] = [];
+    for (const row of data as SessionRow[]) {
+      const lastAlive = row.last_alive_at ? new Date(row.last_alive_at).getTime() : 0;
+      if (now - lastAlive > CUA_HEARTBEAT_STALE_MS) {
+        stale.push(`${row.property_id} (${row.pms_family}, status=${row.status}, last_alive=${row.last_alive_at ?? 'never'})`);
+      }
+    }
+    if (stale.length > 0) {
+      return {
+        status: 'fail',
+        detail: `${stale.length}/${data.length} CUA sessions missed heartbeat (>5min stale): ${stale.slice(0, 5).join('; ')}`,
+        fix: 'Check Fly machine logs for the affected property. Likely a Playwright crash; supervisor should respawn within 30s.',
+      };
+    }
+    return { status: 'ok', detail: `all ${data.length} CUA sessions heartbeating within ${CUA_HEARTBEAT_STALE_MS / 60_000} min` };
+  } catch (err) {
+    return { status: 'warn', detail: `check threw: ${errToString(err)}` };
+  }
+}
+
+async function checkCuaCostCapPaused(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('property_sessions')
+      .select('property_id, daily_claude_cost_micros, daily_claude_cost_resets_at, paused_reason')
+      .eq('status', 'paused_cost_cap');
+    if (error) {
+      return { status: 'warn', detail: `property_sessions read failed: ${errToString(error)}` };
+    }
+    if (!data || data.length === 0) {
+      return { status: 'ok', detail: 'no hotels paused for cost' };
+    }
+    type Row = { property_id: string; daily_claude_cost_micros: number; daily_claude_cost_resets_at: string };
+    const summaries = (data as Row[]).map(
+      (r) => `${r.property_id} ($${(r.daily_claude_cost_micros / 1_000_000).toFixed(2)} spent, resets ${r.daily_claude_cost_resets_at})`,
+    );
+    return {
+      status: 'warn',
+      detail: `${data.length} hotel(s) paused for $5/day cost cap: ${summaries.join('; ')}`,
+      fix: 'Auto-resumes at midnight local. If recurring, check for a knowledge-file repair loop or runaway workflow.',
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `check threw: ${errToString(err)}` };
+  }
+}
+
+async function checkCuaMfaPending(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('property_sessions')
+      .select('property_id, paused_reason')
+      .eq('status', 'paused_mfa');
+    if (error) {
+      return { status: 'warn', detail: `property_sessions read failed: ${errToString(error)}` };
+    }
+    if (!data || data.length === 0) {
+      return { status: 'ok', detail: 'no hotels waiting on MFA' };
+    }
+    type Row = { property_id: string; paused_reason: string | null };
+    const ids = (data as Row[]).map((r) => r.property_id);
+    return {
+      status: 'warn',
+      detail: `${data.length} hotel(s) waiting on manual MFA re-login: ${ids.join(', ')}`,
+      fix: 'Resolve via /admin/mfa-resume/[propertyId]. Walk through the PMS login in a side browser, then click Resume.',
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `check threw: ${errToString(err)}` };
+  }
+}
+
+async function checkCuaKnowledgeFilesActive(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data: sessions, error: sessErr } = await supabaseAdmin
+      .from('property_sessions')
+      .select('property_id, pms_family')
+      .neq('status', 'stopped');
+    if (sessErr) {
+      return { status: 'warn', detail: `property_sessions read failed: ${errToString(sessErr)}` };
+    }
+    if (!sessions || sessions.length === 0) {
+      return { status: 'skipped', detail: 'no enabled property_sessions yet' };
+    }
+    type Sess = { property_id: string; pms_family: string };
+    const families = Array.from(new Set((sessions as Sess[]).map((s) => s.pms_family)));
+    const { data: kfs, error: kfErr } = await supabaseAdmin
+      .from('pms_knowledge_files')
+      .select('pms_family, version')
+      .eq('status', 'active')
+      .in('pms_family', families);
+    if (kfErr) {
+      return { status: 'warn', detail: `pms_knowledge_files read failed: ${errToString(kfErr)}` };
+    }
+    const haveActive = new Set((kfs as Array<{ pms_family: string }> | null ?? []).map((r) => r.pms_family));
+    const missing = families.filter((f) => !haveActive.has(f));
+    if (missing.length > 0) {
+      return {
+        status: 'fail',
+        detail: `${missing.length}/${families.length} PMS families lack an active knowledge file: ${missing.join(', ')}`,
+        fix: 'Run the mapper or apply a seed migration for the affected pms_family.',
+      };
+    }
+    return {
+      status: 'ok',
+      detail: `every active session has an active knowledge file (${families.length} families)`,
+    };
   } catch (err) {
     return { status: 'warn', detail: `check threw: ${errToString(err)}` };
   }
